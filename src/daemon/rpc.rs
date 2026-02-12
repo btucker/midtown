@@ -244,7 +244,7 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
 
         "shutdown" => {
             info!("Shutdown requested via RPC");
-            Response::success(request.id, serde_json::json!({"status": "shutting_down"}))
+            Response::success(request.id, serde_json::json!({"message": "shutting_down"}))
         }
 
         "daemon.enter-drain" => {
@@ -252,7 +252,7 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
             state
                 .draining
                 .store(true, std::sync::atomic::Ordering::SeqCst);
-            Response::success(request.id, serde_json::json!({"status": "draining"}))
+            Response::success(request.id, serde_json::json!({"message": "draining"}))
         }
 
         "daemon.exec-restart" => {
@@ -263,7 +263,7 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
             // Trigger the shutdown broadcast so the main event loop exits.
             // The run() function checks restart_requested and returns ExecRestart.
             let _ = state.shutdown_tx.send(());
-            Response::success(request.id, serde_json::json!({"status": "restarting"}))
+            Response::success(request.id, serde_json::json!({"message": "restarting"}))
         }
 
         "daemon.check-pending" => {
@@ -272,7 +272,7 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
             let pending_effects = super::dispatch::spawn_for_pending_tasks(&snap, state);
             state.mark_in_flight_spawns_from_effects(&pending_effects);
             effects::execute_effects(pending_effects, state).await;
-            Response::success(request.id, serde_json::json!({"status": "ok"}))
+            Response::success(request.id, serde_json::json!({"message": "ok"}))
         }
 
         // ---- Snapshot / headless ----
@@ -505,162 +505,6 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
     }
 }
 
-// ============================================================================
-// Tests
-// ============================================================================
-
+#[path = "rpc_tests.rs"]
 #[cfg(test)]
-mod tests {
-    use std::collections::HashMap;
-    use std::time::{Duration, Instant};
-
-    use crate::rpc::{RequestId, Response, RpcError};
-
-    // ---- RPC idempotency cache tests ----
-
-    #[test]
-    fn test_rpc_cache_ttl_expiration() {
-        let mut cache: HashMap<RequestId, (Response, Instant)> = HashMap::new();
-        let request_id = RequestId::String("test-ttl-123".to_string());
-        let cached_response =
-            Response::success(request_id.clone(), serde_json::json!({"task_id": 42}));
-
-        let old_timestamp = Instant::now() - Duration::from_secs(61);
-        cache.insert(request_id.clone(), (cached_response, old_timestamp));
-
-        let now = Instant::now();
-        let cache_hit = cache
-            .get(&request_id)
-            .filter(|(_, timestamp)| now.duration_since(*timestamp).as_secs() < 60);
-
-        assert!(
-            cache_hit.is_none(),
-            "Entry older than 60 seconds should be a cache miss"
-        );
-    }
-
-    #[test]
-    fn test_rpc_cache_within_ttl() {
-        let mut cache: HashMap<RequestId, (Response, Instant)> = HashMap::new();
-        let request_id = RequestId::String("test-fresh-456".to_string());
-        let cached_response =
-            Response::success(request_id.clone(), serde_json::json!({"task_id": 99}));
-
-        cache.insert(request_id.clone(), (cached_response, Instant::now()));
-
-        let now = Instant::now();
-        let cache_hit = cache
-            .get(&request_id)
-            .filter(|(_, timestamp)| now.duration_since(*timestamp).as_secs() < 60);
-
-        assert!(cache_hit.is_some(), "Recent entry should be a cache hit");
-    }
-
-    #[test]
-    fn test_rpc_cache_cleanup_removes_expired_entries() {
-        let mut cache: HashMap<RequestId, (Response, Instant)> = HashMap::new();
-
-        let old_timestamp = Instant::now() - Duration::from_secs(120);
-        for i in 0..100 {
-            let id = RequestId::String(format!("expired-{}", i));
-            let resp = Response::success(id.clone(), serde_json::json!({"i": i}));
-            cache.insert(id, (resp, old_timestamp));
-        }
-
-        let fresh_timestamp = Instant::now();
-        for i in 0..3 {
-            let id = RequestId::String(format!("fresh-{}", i));
-            let resp = Response::success(id.clone(), serde_json::json!({"i": i}));
-            cache.insert(id, (resp, fresh_timestamp));
-        }
-
-        assert_eq!(cache.len(), 103);
-
-        let now = Instant::now();
-        cache.retain(|_, (_, timestamp)| now.duration_since(*timestamp).as_secs() < 60);
-
-        assert_eq!(
-            cache.len(),
-            3,
-            "Cleanup should remove all 100 expired entries, keeping 3 fresh ones"
-        );
-
-        for i in 0..3 {
-            let id = RequestId::String(format!("fresh-{}", i));
-            assert!(
-                cache.contains_key(&id),
-                "Fresh entry {} should be retained",
-                i
-            );
-        }
-    }
-
-    #[test]
-    fn test_rpc_cache_only_caches_success_responses() {
-        let success = Response::success(
-            RequestId::String("s1".to_string()),
-            serde_json::json!({"ok": true}),
-        );
-        let error = Response::error(
-            RequestId::String("e1".to_string()),
-            RpcError::invalid_params(),
-        );
-
-        assert!(!success.is_error(), "Success response should not be error");
-        assert!(error.is_error(), "Error response should be error");
-
-        let mut cache: HashMap<RequestId, (Response, Instant)> = HashMap::new();
-        let responses = vec![success, error];
-
-        for resp in &responses {
-            if !resp.is_error() {
-                cache.insert(
-                    RequestId::String("test".to_string()),
-                    (resp.clone(), Instant::now()),
-                );
-            }
-        }
-
-        assert_eq!(cache.len(), 1, "Only success response should be cached");
-    }
-
-    #[test]
-    fn test_rpc_cache_numeric_id_collision() {
-        let mut cache: HashMap<RequestId, (Response, Instant)> = HashMap::new();
-
-        let id_from_process_a = RequestId::Number(1);
-        let response_a = Response::success(
-            id_from_process_a.clone(),
-            serde_json::json!({"task_id": 100}),
-        );
-        cache.insert(id_from_process_a.clone(), (response_a, Instant::now()));
-
-        let id_from_process_b = RequestId::Number(1);
-
-        let now = Instant::now();
-        let cache_hit = cache
-            .get(&id_from_process_b)
-            .filter(|(_, timestamp)| now.duration_since(*timestamp).as_secs() < 60);
-
-        assert!(
-            cache_hit.is_some(),
-            "Numeric ID collision: same id=1 from different processes hits cache (this is the bug)"
-        );
-
-        let id_with_pid_a = RequestId::String("12345-1".to_string());
-        let id_with_pid_b = RequestId::String("12346-1".to_string());
-
-        let response_a2 =
-            Response::success(id_with_pid_a.clone(), serde_json::json!({"task_id": 100}));
-        cache.insert(id_with_pid_a, (response_a2, Instant::now()));
-
-        let cache_hit = cache
-            .get(&id_with_pid_b)
-            .filter(|(_, timestamp)| now.duration_since(*timestamp).as_secs() < 60);
-
-        assert!(
-            cache_hit.is_none(),
-            "PID-prefixed string IDs from different processes should NOT collide"
-        );
-    }
-}
+mod tests;
