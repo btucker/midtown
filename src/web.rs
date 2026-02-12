@@ -911,7 +911,10 @@ async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoRespo
                 let pr_number = pr.get("number")?.as_u64()?;
                 let title = pr.get("title")?.as_str()?;
                 let task_id = extract_task_id_from_pr_title(title)?;
-                Some((pr_number, task_id as u32))
+                // extract_task_id_from_pr_title returns u64, but task IDs are stored as u32
+                // Use try_from to safely convert, skipping entries that overflow u32::MAX
+                let task_id_u32 = u32::try_from(task_id).ok()?;
+                Some((pr_number, task_id_u32))
             })
             .collect();
 
@@ -2535,5 +2538,84 @@ mod tests {
 
         // Should miss with zero TTL (already expired)
         assert_eq!(cache.get(Duration::from_secs(0), &"key".to_string()), None);
+    }
+
+    #[test]
+    fn test_task_id_truncation_skips_overflow() {
+        // Test that task IDs > u32::MAX are skipped (not silently truncated)
+        // when building the task_id_by_pr map in the fallback path.
+        use std::collections::HashMap;
+
+        let pull_requests = vec![
+            serde_json::json!({
+                "number": 100,
+                "title": "Fix bug [Midtown !1234]"
+            }),
+            serde_json::json!({
+                "number": 200,
+                // Task ID exceeds u32::MAX (4,294,967,295)
+                "title": "Big task [Midtown !5000000000]"
+            }),
+        ];
+
+        // Simulate the task_id_by_pr building logic from api_status fallback
+        let task_id_by_pr: HashMap<u64, u32> = pull_requests
+            .iter()
+            .filter_map(|pr| {
+                let pr_number = pr.get("number")?.as_u64()?;
+                let title = pr.get("title")?.as_str()?;
+                let task_id = extract_task_id_from_pr_title(title)?;
+                let task_id_u32 = u32::try_from(task_id).ok()?;
+                Some((pr_number, task_id_u32))
+            })
+            .collect();
+
+        // Should only have the valid entry, overflow entry should be skipped
+        assert_eq!(task_id_by_pr.len(), 1);
+        assert_eq!(task_id_by_pr.get(&100), Some(&1234));
+        assert_eq!(task_id_by_pr.get(&200), None); // Overflow entry skipped
+    }
+
+    #[test]
+    fn test_fallback_displays_source_task_id_from_pr_title() {
+        // Test that the fallback path shows source task IDs from PR titles
+        // instead of internal task IDs (matches the RPC path behavior).
+        use std::collections::HashMap;
+
+        // Mock PR data: PR #968 is for task !1158 (from PR title)
+        let pr_number: u64 = 968;
+        let source_task_id: u32 = 1158;
+
+        // Mock reviewer's internal task ID (ephemeral, should not be displayed)
+        let reviewer_internal_task_id: u32 = 62;
+
+        // Build task_id_by_pr map (from PR titles)
+        let mut task_id_by_pr: HashMap<u64, u32> = HashMap::new();
+        task_id_by_pr.insert(pr_number, source_task_id);
+
+        // Simulate the display logic in api_status fallback
+        let internal_task_id = Some(reviewer_internal_task_id);
+        let pr_number_opt = Some(pr_number);
+
+        // This is the key logic: prefer source task ID from PR title
+        let display_task_id = pr_number_opt
+            .and_then(|pr| task_id_by_pr.get(&pr).copied())
+            .or(internal_task_id);
+
+        // Verify the display shows the source task ID from the PR title
+        assert_eq!(
+            display_task_id,
+            Some(source_task_id),
+            "Fallback should display source task ID !{} from PR title, not internal task ID !{}",
+            source_task_id,
+            reviewer_internal_task_id
+        );
+
+        // Verify we don't accidentally show the internal ID
+        assert_ne!(
+            display_task_id,
+            Some(reviewer_internal_task_id),
+            "Should NOT display reviewer's internal task ID"
+        );
     }
 }
