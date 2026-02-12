@@ -309,73 +309,52 @@ pub(crate) fn decide_idle_shutdowns(
     let mut to_shutdown = Vec::new();
     let mut transitions = Vec::new();
 
-    for cw in ctx.coworkers {
-        let coworker = &cw.name;
-
-        // Check minimum lifetime
-        let lifetime = ctx.now_utc.signed_duration_since(cw.started_at);
-        if lifetime < chrono::Duration::from_std(ctx.minimum_lifetime).unwrap_or_default() {
-            if matches!(
-                get_health(ctx.records, coworker),
-                Some(SessionHealth::Idle { .. })
-            ) {
-                transitions.push(HealthTransition::Clear {
-                    name: coworker.clone(),
-                });
-            }
-            continue;
-        }
-
-        let is_busy = hashset_contains_icase(ctx.busy_coworkers, coworker);
-        let has_open_pr = hashset_contains_icase(ctx.coworkers_with_open_prs, coworker);
-        let is_reviewing = hashset_contains_icase(ctx.active_reviewers, coworker);
-        let has_unblocked_deps =
-            hashset_contains_icase(ctx.coworkers_with_unblocked_deps, coworker);
-        let ci_passed = hashset_contains_icase(ctx.ci_passed_pr_coworkers, coworker);
-        let is_usage_limited = hashset_contains_icase(ctx.usage_limited_coworkers, coworker);
-        let has_api_error = hashset_contains_icase(ctx.api_error_coworkers, coworker);
-        let has_pending_task = hashset_contains_icase(ctx.pending_task_owners, coworker);
-        let has_review_feedback =
-            hashset_contains_icase(ctx.review_feedback_pr_coworkers, coworker);
-
-        // Coworkers with active/pending tasks, review assignments, unblocked deps,
-        // usage limits, or API errors are never sent on break.
-        //
-        // Coworkers with open PRs CAN go on break if their CI has passed
-        // AND they have no review feedback to address. If they DO have review
-        // feedback, they're protected (prevents spawn→idle→break loop from #753).
-        let protected_by_open_pr = has_open_pr && (!ci_passed || has_review_feedback);
-        if is_busy
-            || has_pending_task
-            || protected_by_open_pr
-            || is_reviewing
-            || has_unblocked_deps
-            || is_usage_limited
-            || has_api_error
-        {
-            if matches!(
-                get_health(ctx.records, coworker),
-                Some(SessionHealth::Idle { .. })
-            ) {
-                transitions.push(HealthTransition::Clear {
-                    name: coworker.clone(),
-                });
-            }
-        } else {
-            // All unprotected coworkers go on break immediately.
-            // The daemon will recall them when:
-            // - A task is assigned to them
-            // - Their PR gets review feedback
-            // - A blocked task unblocks
-            // This avoids coworkers sitting idle waiting for work that may
-            // take a while (PR reviews, blocked dependencies, etc.)
-            to_shutdown.push(ShutdownDecision {
-                name: coworker.clone(),
+    /// If the coworker has an Idle health state, push a Clear transition.
+    fn clear_idle_health(
+        records: &HashMap<String, CoworkerRecord>,
+        name: &str,
+        transitions: &mut Vec<HealthTransition>,
+    ) {
+        if matches!(get_health(records, name), Some(SessionHealth::Idle { .. })) {
+            transitions.push(HealthTransition::Clear {
+                name: name.to_string(),
             });
         }
     }
 
-    // Clear phase for shutdown coworkers (entry preserved for last_activity)
+    let min_lifetime = chrono::Duration::from_std(ctx.minimum_lifetime).unwrap_or_default();
+
+    for cw in ctx.coworkers {
+        let name = &cw.name;
+
+        // Young coworkers are protected regardless of other state.
+        if ctx.now_utc.signed_duration_since(cw.started_at) < min_lifetime {
+            clear_idle_health(ctx.records, name, &mut transitions);
+            continue;
+        }
+
+        // A coworker is protected from break if any of these hold:
+        let protected_by_open_pr = hashset_contains_icase(ctx.coworkers_with_open_prs, name)
+            && (!hashset_contains_icase(ctx.ci_passed_pr_coworkers, name)
+                || hashset_contains_icase(ctx.review_feedback_pr_coworkers, name));
+
+        let is_protected = hashset_contains_icase(ctx.busy_coworkers, name)
+            || hashset_contains_icase(ctx.pending_task_owners, name)
+            || protected_by_open_pr
+            || hashset_contains_icase(ctx.active_reviewers, name)
+            || hashset_contains_icase(ctx.coworkers_with_unblocked_deps, name)
+            || hashset_contains_icase(ctx.usage_limited_coworkers, name)
+            || hashset_contains_icase(ctx.api_error_coworkers, name);
+
+        if is_protected {
+            clear_idle_health(ctx.records, name, &mut transitions);
+        } else {
+            // Unprotected coworkers go on break immediately.
+            to_shutdown.push(ShutdownDecision { name: name.clone() });
+        }
+    }
+
+    // Clear health state for shutdown coworkers (record entry preserved for last_activity).
     for decision in &to_shutdown {
         transitions.push(HealthTransition::Clear {
             name: decision.name.clone(),
@@ -465,33 +444,38 @@ fn is_at_usage_limit(content: &str) -> bool {
     is_at_pattern(content, USAGE_LIMIT_PATTERNS)
 }
 
+/// Returns `true` if `c` is a UI chrome character (box-drawing, bullets, prompts, rules).
+fn is_ui_chrome_char(c: char) -> bool {
+    matches!(
+        c,
+        // Horizontal rules
+        '─' | '━' | '=' | '-'
+        // Box-drawing
+        | '│' | '┌' | '├' | '└' | '┐' | '┤' | '┘' | '┬' | '┴' | '┼'
+        | '╭' | '╮' | '╯' | '╰'
+        // Bullet / task indicators
+        | '◼' | '◻' | '✔' | '●' | '○' | '■' | '□' | '▪' | '▫'
+        // Cursor prompts
+        | '❯' | '>' | '$' | '%'
+        // Whitespace (counted toward chrome ratio)
+        | ' '
+    )
+}
+
 /// Check if a line is UI chrome (visual elements, not meaningful content).
 ///
-/// Filters out:
-/// - Horizontal rules (─, ━, =, -)
-/// - Box-drawing characters (│, ┌, ├, └, etc.)
-/// - Bullet points and task indicators (◼, ◻, ✔, ●, ○, ■, □)
-/// - Cursor prompts (❯, >, $, %)
-/// - Claude Code task list lines (◼/◻/✔ + text)
-/// - Claude Code cogitation/status indicators (✻, ⏵)
-/// - Claude Code UI hints (lines containing "ctrl+" key bindings)
+/// Matches horizontal rules, box-drawing lines, Claude Code task list items
+/// (◼/◻/✔), cogitation indicators (✻/⏵), and UI key hints (ctrl+… to …).
+/// Lines where ≥80% of non-whitespace chars are chrome characters also match.
 fn is_ui_chrome(line: &str) -> bool {
-    // Lines that are entirely horizontal rules
-    if line
-        .chars()
-        .all(|c| matches!(c, '─' | '━' | '=' | '-' | ' '))
-    {
+    // Lines that are entirely horizontal rules / chrome chars
+    if line.chars().all(is_ui_chrome_char) {
         return true;
     }
 
-    // Claude Code task list lines: bullet character followed by text.
-    // These appear after usage limit screens and are UI, not recovery content.
+    // Claude Code task list lines or cogitation/status indicators
     let first_non_ws = line.trim_start();
-    if first_non_ws
-        .chars()
-        .next()
-        .is_some_and(|c| matches!(c, '◼' | '◻' | '✔' | '✻' | '⏵'))
-    {
+    if first_non_ws.starts_with(['◼', '◻', '✔', '✻', '⏵']) {
         return true;
     }
 
@@ -500,48 +484,10 @@ fn is_ui_chrome(line: &str) -> bool {
         return true;
     }
 
-    // Lines that are mostly box-drawing or bullet characters
-    let ui_chars: usize = line
-        .chars()
-        .filter(|c| {
-            matches!(
-                c,
-                '│' | '┌'
-                    | '├'
-                    | '└'
-                    | '┐'
-                    | '┤'
-                    | '┘'
-                    | '┬'
-                    | '┴'
-                    | '┼'
-                    | '╭'
-                    | '╮'
-                    | '╯'
-                    | '╰'
-                    | '◼'
-                    | '◻'
-                    | '✔'
-                    | '●'
-                    | '○'
-                    | '■'
-                    | '□'
-                    | '▪'
-                    | '▫'
-                    | '❯'
-                    | '>'
-                    | '$'
-                    | '%'
-                    | '─'
-                    | '━'
-                    | ' '
-            )
-        })
-        .count();
-
-    // If more than 80% of non-whitespace chars are UI chrome, consider it chrome
+    // If ≥80% of non-whitespace chars are chrome, consider it chrome
     let non_ws_count = line.chars().filter(|c| !c.is_whitespace()).count();
-    non_ws_count > 0 && ui_chars * 100 / non_ws_count >= 80
+    non_ws_count > 0
+        && line.chars().filter(|c| is_ui_chrome_char(*c)).count() * 100 / non_ws_count >= 80
 }
 
 /// Decision output for usage limit expiry check.
@@ -591,9 +537,9 @@ pub(crate) struct StuckExemptions<'a> {
 
 /// Check if a process should be considered stuck.
 ///
-/// Returns `true` if the process is alive, not in any exempt state
-/// (usage-limited, API error, attached, subagent running, pending tool),
-/// and has not emitted events for longer than `stuck_threshold`.
+/// Returns `true` if the process is alive, not exempt (usage-limited, API error,
+/// attached, subagent running, pending tool), and has not emitted events for
+/// longer than `stuck_threshold`.
 fn is_process_stuck(
     name: &str,
     health: &crate::daemon::snapshot::ProcessHealth,
@@ -601,22 +547,17 @@ fn is_process_stuck(
     now_utc: DateTime<Utc>,
     stuck_threshold: chrono::Duration,
 ) -> bool {
-    if !health.is_alive {
-        return false;
-    }
-    if hashset_contains_icase(exemptions.usage_limited, name)
+    let is_exempt = !health.is_alive
+        || health.has_running_subagent
+        || health.has_pending_tool
+        || hashset_contains_icase(exemptions.usage_limited, name)
         || hashset_contains_icase(exemptions.api_error, name)
-        || hashset_contains_icase(exemptions.attached, name)
-    {
-        return false;
-    }
-    if health.has_running_subagent || health.has_pending_tool {
-        return false;
-    }
-    match health.last_event_at {
-        None => false,
-        Some(t) => now_utc.signed_duration_since(t) >= stuck_threshold,
-    }
+        || hashset_contains_icase(exemptions.attached, name);
+
+    !is_exempt
+        && health
+            .last_event_at
+            .is_some_and(|t| now_utc.signed_duration_since(t) >= stuck_threshold)
 }
 
 /// Detect coworkers whose headless process has not emitted events for
@@ -852,18 +793,19 @@ fn resolve_pr_handoff(
     reason_label: &str,
     empty_owner_fallback: PrAction,
 ) -> PrAction {
+    if owner.is_empty() {
+        return empty_owner_fallback;
+    }
+
     let is_active = contains_icase(active_coworkers, owner);
     let is_idle = contains_icase(idle_coworkers, owner);
 
+    // Owner is active and idle — nudge directly (they're available).
     if is_active && is_idle {
         return PrAction::NudgeOwner {
             owner: owner.to_string(),
             message: message.to_string(),
         };
-    }
-
-    if !is_active && !is_idle && owner.is_empty() {
-        return empty_owner_fallback;
     }
 
     // Owner is either active-but-busy or inactive. Try handoff first;
@@ -1216,24 +1158,27 @@ pub(crate) fn decide_orphan_recovery(
 
     for (task_id, task_subject, owner) in in_progress {
         let owner_clean = owner.trim().trim_matches('"').to_string();
-        if owner_clean.is_empty() || owner_clean.eq_ignore_ascii_case("lead") {
-            continue;
-        }
         let owner_lower = owner_clean.to_lowercase();
-        if !crate::coworker::is_coworker_name(&owner_lower) {
+
+        // Skip non-coworker owners and owners that shouldn't be recovered.
+        let is_valid_coworker = !owner_clean.is_empty()
+            && !owner_clean.eq_ignore_ascii_case("lead")
+            && crate::coworker::is_coworker_name(&owner_lower);
+
+        if !is_valid_coworker
+            || should_skip_orphan(
+                &owner_lower,
+                active_names,
+                attached_coworkers,
+                recently_stopped,
+                coworkers_with_open_prs,
+                review_feedback_pr_coworkers,
+            )
+        {
             continue;
         }
-        if should_skip_orphan(
-            &owner_lower,
-            active_names,
-            attached_coworkers,
-            recently_stopped,
-            coworkers_with_open_prs,
-            review_feedback_pr_coworkers,
-        ) {
-            continue;
-        }
-        // Found an orphan — return the first one (rate-limited)
+
+        // Found an orphan — return the first one (rate-limited).
         return Some(OrphanRecovery {
             task_id: task_id.clone(),
             task_subject: task_subject.clone(),
