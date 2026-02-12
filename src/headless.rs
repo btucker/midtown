@@ -473,26 +473,18 @@ impl HeadlessSession {
                     cmd.arg("--agent-name").arg(agent_name);
                 }
 
-                // Settings file
-                if let Some(ref settings) = config.settings_path {
-                    cmd.arg("--settings").arg(settings);
-                }
-
-                // Setting sources
-                if let Some(ref sources) = config.setting_sources {
-                    cmd.arg("--setting-sources").arg(sources);
-                }
-
                 // Settings file — skip on resume to avoid duplicate tool registrations.
                 // Resumed sessions already have their plugins loaded from saved state;
                 // passing --settings again causes "Tool names must be unique" API errors.
-                if !is_resume && let Some(ref settings) = config.settings_path {
-                    cmd.arg("--settings").arg(settings);
-                }
+                if !is_resume {
+                    if let Some(ref settings) = config.settings_path {
+                        cmd.arg("--settings").arg(settings);
+                    }
 
-                // Setting sources
-                if let Some(ref sources) = config.setting_sources {
-                    cmd.arg("--setting-sources").arg(sources);
+                    // Setting sources — also skip on resume for consistency
+                    if let Some(ref sources) = config.setting_sources {
+                        cmd.arg("--setting-sources").arg(sources);
+                    }
                 }
 
                 cmd
@@ -1118,6 +1110,10 @@ pub struct HeadlessResult {
     /// Session ID from Claude Code.
     pub session_id: Option<String>,
 }
+
+#[path = "headless_spawn_tests.rs"]
+#[cfg(test)]
+mod spawn_tests;
 
 #[cfg(test)]
 mod tests {
