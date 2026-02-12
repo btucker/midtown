@@ -26,7 +26,7 @@ use crate::headless::{HeadlessConfig, HeadlessSession, StreamEvent};
 /// - "Invalid authentication credentials"
 ///
 /// Returns true if the error is an auth error that requires re-authentication.
-fn is_auth_error(error_msg: &str) -> bool {
+pub(super) fn is_auth_error(error_msg: &str) -> bool {
     let lowercase = error_msg.to_lowercase();
     lowercase.contains("oauth") && lowercase.contains("expired")
         || lowercase.contains("authentication_error")
