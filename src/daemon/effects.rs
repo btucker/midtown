@@ -1101,8 +1101,9 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     let mut ps = state.persistent_state.lock().await;
                     let removed = ps.worktree_registry.cleanup_for_merged_pr(pr_number);
                     // Also clean up pr_author_sessions for this PR (defense-in-depth)
-                    ps.github.pr_author_sessions.remove(&pr_number);
-                    if removed.is_some()
+                    let pr_session_removed = ps.github.pr_author_sessions.remove(&pr_number);
+                    // Save if either worktree or pr_author_session was removed
+                    if (removed.is_some() || pr_session_removed.is_some())
                         && let Err(e) = ps.save_for_repo(&state.repo_name)
                     {
                         warn!("Failed to save daemon state after worktree cleanup: {}", e);
@@ -2106,6 +2107,67 @@ mod tests {
             persistent_state.github.pr_author_sessions.len(),
             1,
             "Should have exactly 1 remaining entry (1002)"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_cleanup_merged_worktree_saves_when_only_pr_session_removed() {
+        use crate::daemon::state::DaemonPersistentState;
+        use crate::github_state::PrAuthorSession;
+        use chrono::Utc;
+        use std::collections::HashMap;
+        use tempfile::tempdir;
+
+        // Create temp dir for persistent state
+        let temp_dir = tempdir().unwrap();
+        let repo_name = "test-repo";
+
+        // Initial state: pr_author_sessions has a stale entry for PR #2001,
+        // but worktree_registry has NO entry (worktree was already cleaned up somehow)
+        let mut persistent_state = DaemonPersistentState::default();
+        let mut pr_sessions = HashMap::new();
+        pr_sessions.insert(
+            2001,
+            PrAuthorSession {
+                session_id: "stale-session".to_string(),
+                branch: "old-branch".to_string(),
+                original_author: "columbus".to_string(),
+                stored_at: Utc::now(),
+                task_id: Some("123".to_string()),
+            },
+        );
+        persistent_state.github.pr_author_sessions = pr_sessions;
+
+        // Save initial state to disk
+        unsafe {
+            std::env::set_var("MIDTOWN_PROJECTS_ROOT", temp_dir.path());
+        }
+        persistent_state.save_for_repo(repo_name).unwrap();
+
+        // Verify stale entry exists on disk
+        let loaded_before = DaemonPersistentState::load_for_repo(repo_name).unwrap();
+        assert!(
+            loaded_before.github.pr_author_sessions.contains_key(&2001),
+            "Stale PR session should exist before cleanup"
+        );
+
+        // Simulate CleanupMergedWorktree cleanup for PR #2001
+        // worktree_registry.cleanup_for_merged_pr returns None (no worktree found)
+        // but pr_author_sessions.remove returns Some (stale entry found)
+        let pr_session_removed = persistent_state.github.pr_author_sessions.remove(&2001);
+        assert!(
+            pr_session_removed.is_some(),
+            "Should have removed the stale pr_author_session"
+        );
+
+        // The fix ensures save happens when either worktree OR pr_session is removed
+        persistent_state.save_for_repo(repo_name).unwrap();
+
+        // Verify PR #2001 session is removed from disk (defense-in-depth actually persisted)
+        let loaded_after = DaemonPersistentState::load_for_repo(repo_name).unwrap();
+        assert!(
+            !loaded_after.github.pr_author_sessions.contains_key(&2001),
+            "Stale PR session should be removed from disk after cleanup"
         );
     }
 }
