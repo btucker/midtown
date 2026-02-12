@@ -1255,7 +1255,7 @@ impl App {
         let mut items = Vec::new();
 
         // Add "lead" first
-        if "lead".contains(query) {
+        if "lead".starts_with(query) {
             items.push(AutocompleteItem {
                 value: "@lead".to_string(),
                 description: None,
@@ -1265,7 +1265,7 @@ impl App {
         // In test mode, use self.coworkers instead of daemon
         if self.test_mode {
             for cw in &self.coworkers {
-                if cw.name.to_lowercase().contains(query) {
+                if cw.name.to_lowercase().starts_with(query) {
                     // Look up current task from the tasks cache
                     let current_task = self
                         .current_tasks_cache
@@ -1280,7 +1280,7 @@ impl App {
         } else {
             // Add coworkers from cached list (populated from daemon status)
             for cw in &self.coworkers {
-                if cw.name.to_lowercase().contains(query) {
+                if cw.name.to_lowercase().starts_with(query) {
                     // Look up current task from the tasks cache
                     let current_task = self
                         .current_tasks_cache

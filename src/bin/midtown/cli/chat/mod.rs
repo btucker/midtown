@@ -422,8 +422,13 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                     EventResult::Continue
                 }
                 // Enter: select autocomplete item if showing, otherwise auto-focus InputBar or send message
+                // Shift+Enter: insert newline
                 KeyCode::Enter => {
-                    if app.autocomplete.show {
+                    if key.modifiers.contains(KeyModifiers::SHIFT) {
+                        // Shift+Enter inserts a newline
+                        auto_focus_and_insert_char(app, '\n');
+                        EventResult::Continue
+                    } else if app.autocomplete.show {
                         app.insert_autocomplete_item();
                         EventResult::Continue
                     } else if app.focused_pane != FocusedPane::InputBar {
