@@ -1306,7 +1306,7 @@ impl App {
             let base_dir = channel.base_dir();
             if let Ok(channels) = Channel::list(base_dir) {
                 for channel_name in channels {
-                    if channel_name.to_lowercase().contains(query) {
+                    if channel_name.to_lowercase().starts_with(query) {
                         items.push(AutocompleteItem {
                             value: format!("#{}", channel_name),
                             description: None,
@@ -1323,7 +1323,9 @@ impl App {
     fn get_task_items(&self, query: &str) -> Vec<AutocompleteItem> {
         self.tasks
             .iter()
-            .filter(|task| task.id.contains(query) || task.subject.to_lowercase().contains(query))
+            .filter(|task| {
+                task.id.starts_with(query) || task.subject.to_lowercase().starts_with(query)
+            })
             .map(|task| AutocompleteItem {
                 value: format!("!{}", task.id),
                 description: Some(task.subject.clone()),

@@ -258,3 +258,98 @@ fn test_enter_selects_autocomplete_when_shown() {
     );
     assert!(!app.autocomplete.show, "Autocomplete should be hidden");
 }
+
+#[test]
+fn test_channel_autocomplete_uses_prefix_matching() {
+    // Issue #2 from review: Channel autocomplete should use prefix matching (consistent with @mentions)
+    use midtown::Channel;
+    use tempfile::TempDir;
+
+    let mut app = test_app();
+
+    // Create temporary channel directory
+    let temp_dir = TempDir::new().unwrap();
+    let base_dir = temp_dir.path().to_path_buf();
+
+    // Create test channels in channels/ subdirectory
+    let channels_dir = base_dir.join("channels");
+    std::fs::create_dir_all(&channels_dir).unwrap();
+    std::fs::write(channels_dir.join("midtown.jsonl"), "").unwrap();
+    std::fs::write(channels_dir.join("madison.jsonl"), "").unwrap();
+    std::fs::write(channels_dir.join("admin.jsonl"), "").unwrap();
+
+    // Set up channel
+    app.channel = Some(Channel::new(base_dir.clone(), "test").unwrap());
+
+    // Test prefix matching: "m" should match "midtown" and "madison", not "admin"
+    let items = app.get_channel_items("m");
+    assert_eq!(items.len(), 2, "Should match 2 channels starting with 'm'");
+    assert!(items.iter().any(|i| i.value == "#midtown"));
+    assert!(items.iter().any(|i| i.value == "#madison"));
+    assert!(!items.iter().any(|i| i.value == "#admin"));
+
+    // Test "ad" should match only "admin", not "madison"
+    let items = app.get_channel_items("ad");
+    assert_eq!(items.len(), 1, "Should match 1 channel starting with 'ad'");
+    assert_eq!(items[0].value, "#admin");
+}
+
+#[test]
+fn test_task_autocomplete_uses_prefix_matching() {
+    // Issue #2 from review: Task autocomplete should use prefix matching (consistent with @mentions)
+    use super::{KanbanTask, TaskStatus};
+
+    let mut app = test_app();
+
+    // Add test tasks
+    app.tasks = vec![
+        KanbanTask {
+            id: "1224".to_string(),
+            subject: "Fix chat TUI autocomplete".to_string(),
+            owner: None,
+            status: TaskStatus::InProgress,
+            modified_at: None,
+            channel: None,
+            blocked_by: Vec::new(),
+        },
+        KanbanTask {
+            id: "1234".to_string(),
+            subject: "Add new feature".to_string(),
+            owner: None,
+            status: TaskStatus::Pending,
+            modified_at: None,
+            channel: None,
+            blocked_by: Vec::new(),
+        },
+        KanbanTask {
+            id: "2245".to_string(),
+            subject: "Debug issue".to_string(),
+            owner: None,
+            status: TaskStatus::Pending,
+            modified_at: None,
+            channel: None,
+            blocked_by: Vec::new(),
+        },
+    ];
+
+    // Test prefix matching by ID: "12" should match 1224 and 1234, not 2245
+    let items = app.get_task_items("12");
+    assert_eq!(items.len(), 2, "Should match 2 tasks starting with '12'");
+    assert!(items.iter().any(|i| i.value == "!1224"));
+    assert!(items.iter().any(|i| i.value == "!1234"));
+    assert!(!items.iter().any(|i| i.value == "!2245"));
+
+    // Test prefix matching by subject: "fix" should match "Fix chat TUI", not "Debug" or "Add"
+    let items = app.get_task_items("fix");
+    assert_eq!(
+        items.len(),
+        1,
+        "Should match 1 task with subject starting with 'fix'"
+    );
+    assert_eq!(items[0].value, "!1224");
+
+    // Test prefix matching by subject: "add" should match "Add new feature"
+    let items = app.get_task_items("add");
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].value, "!1234");
+}
