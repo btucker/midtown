@@ -39,6 +39,7 @@
     bind:this={dropdownElement}
     style:top="{position.top}px"
     style:left="{position.left}px"
+    style:width={position.width ? `${position.width}px` : 'auto'}
   >
     {#each items as item, i}
       <button
