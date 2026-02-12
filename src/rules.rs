@@ -29,11 +29,19 @@ pub(crate) struct CoworkerSnapshot {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Case-insensitive membership check for a name in any iterable of `String`.
+/// Case-insensitive membership check for a name in a slice of `String`.
 ///
-/// Works with `&HashSet<String>`, `&[String]`, `&Vec<String>`, etc.
-fn contains_icase<'a>(items: impl IntoIterator<Item = &'a String>, name: &str) -> bool {
-    items.into_iter().any(|s| s.eq_ignore_ascii_case(name))
+/// O(n) scan — appropriate for `&[String]` and `&Vec<String>`.
+fn contains_icase(items: &[String], name: &str) -> bool {
+    items.iter().any(|s| s.eq_ignore_ascii_case(name))
+}
+
+/// Case-insensitive membership check for a name in a `HashSet<String>`.
+///
+/// O(1) lookup — requires that the set stores **lowercase-normalized** names
+/// (which all snapshot-derived sets do).
+fn hashset_contains_icase(set: &HashSet<String>, name: &str) -> bool {
+    set.contains(&name.to_lowercase())
 }
 
 // ---------------------------------------------------------------------------
@@ -318,15 +326,17 @@ pub(crate) fn decide_idle_shutdowns(
             continue;
         }
 
-        let is_busy = contains_icase(ctx.busy_coworkers, coworker);
-        let has_open_pr = contains_icase(ctx.coworkers_with_open_prs, coworker);
-        let is_reviewing = contains_icase(ctx.active_reviewers, coworker);
-        let has_unblocked_deps = contains_icase(ctx.coworkers_with_unblocked_deps, coworker);
-        let ci_passed = contains_icase(ctx.ci_passed_pr_coworkers, coworker);
-        let is_usage_limited = contains_icase(ctx.usage_limited_coworkers, coworker);
-        let has_api_error = contains_icase(ctx.api_error_coworkers, coworker);
-        let has_pending_task = contains_icase(ctx.pending_task_owners, coworker);
-        let has_review_feedback = contains_icase(ctx.review_feedback_pr_coworkers, coworker);
+        let is_busy = hashset_contains_icase(ctx.busy_coworkers, coworker);
+        let has_open_pr = hashset_contains_icase(ctx.coworkers_with_open_prs, coworker);
+        let is_reviewing = hashset_contains_icase(ctx.active_reviewers, coworker);
+        let has_unblocked_deps =
+            hashset_contains_icase(ctx.coworkers_with_unblocked_deps, coworker);
+        let ci_passed = hashset_contains_icase(ctx.ci_passed_pr_coworkers, coworker);
+        let is_usage_limited = hashset_contains_icase(ctx.usage_limited_coworkers, coworker);
+        let has_api_error = hashset_contains_icase(ctx.api_error_coworkers, coworker);
+        let has_pending_task = hashset_contains_icase(ctx.pending_task_owners, coworker);
+        let has_review_feedback =
+            hashset_contains_icase(ctx.review_feedback_pr_coworkers, coworker);
 
         // Coworkers with active/pending tasks, review assignments, unblocked deps,
         // usage limits, or API errors are never sent on break.
@@ -594,10 +604,9 @@ fn is_process_stuck(
     if !health.is_alive {
         return false;
     }
-    let name_lower = name.to_lowercase();
-    if exemptions.usage_limited.contains(&name_lower)
-        || exemptions.api_error.contains(&name_lower)
-        || exemptions.attached.contains(&name_lower)
+    if hashset_contains_icase(exemptions.usage_limited, name)
+        || hashset_contains_icase(exemptions.api_error, name)
+        || hashset_contains_icase(exemptions.attached, name)
     {
         return false;
     }
@@ -3207,6 +3216,25 @@ mod tests {
         assert!(
             restarts.is_empty(),
             "usage-limited coworker should be skipped"
+        );
+    }
+
+    #[test]
+    fn stuck_detection_skips_exempt_mixed_case() {
+        let now = Utc::now();
+        // Set stores lowercase "lexington", but coworker name has mixed case.
+        // hashset_contains_icase should still match via O(1) lowercase lookup.
+        let restarts = run_stuck_check(
+            "Lexington",
+            stuck_health(now),
+            now,
+            &set(&["lexington"]),
+            &HashSet::new(),
+            &HashSet::new(),
+        );
+        assert!(
+            restarts.is_empty(),
+            "mixed-case coworker should be recognized as exempt"
         );
     }
 
