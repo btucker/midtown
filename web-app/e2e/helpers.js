@@ -47,12 +47,6 @@ export const MOCK_STATUS = {
       started_at: '2025-01-15T09:00:00Z',
     },
     {
-      name: 'madison',
-      status: 'active',
-      current_task: 'Fix autocomplete bug',
-      started_at: '2025-01-15T09:15:00Z',
-    },
-    {
       name: 'amsterdam',
       status: 'idle',
       current_task: null,
