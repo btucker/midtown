@@ -194,8 +194,8 @@ static OPEN_PRS_CACHE: TtlCache<Vec<serde_json::Value>> = TtlCache::new();
 /// Cached merged PR list.
 static MERGED_PRS_CACHE: TtlCache<Vec<serde_json::Value>> = TtlCache::new();
 
-/// Cached usage data (session + weekly utilization).
-static USAGE_CACHE: TtlCache<crate::usage::UsageData> = TtlCache::new();
+/// Cached multi-account usage data.
+static MULTI_USAGE_CACHE: TtlCache<Vec<crate::usage::UsageData>> = TtlCache::new();
 
 /// TTL for usage data cache (2 minutes, matching TUI refresh interval).
 const USAGE_CACHE_TTL: Duration = Duration::from_secs(120);
@@ -1353,13 +1353,47 @@ async fn api_auth_switch(
 /// Get API usage data (session + weekly utilization).
 ///
 /// Fetches from the Anthropic OAuth usage API with a 2-minute TTL cache.
-/// Returns 204 No Content if credentials are unavailable or the API call fails.
-async fn api_usage() -> Result<impl IntoResponse, StatusCode> {
-    let data = tokio::task::spawn_blocking(|| {
-        USAGE_CACHE.get(USAGE_CACHE_TTL).or_else(|| {
-            let data = crate::usage::fetch_usage_with_credentials()?;
-            USAGE_CACHE.set(data.clone());
-            Some(data)
+/// Returns array of usage data for all active provider/profile combinations,
+/// plus flat fields for the primary account (backwards compatibility).
+/// Returns 204 No Content if no credentials are available.
+async fn api_usage(State(state): State<Arc<WebState>>) -> Result<impl IntoResponse, StatusCode> {
+    // Collect active provider/profile combinations from running coworkers
+    let active_profiles: Vec<(crate::auth::AuthProvider, String)> = state
+        .coworkers
+        .as_ref()
+        .map(|cm| {
+            let coworkers = cm.list();
+            let mut seen = std::collections::HashSet::new();
+            let mut profiles = Vec::new();
+            for cw in coworkers {
+                let key = (cw.provider, cw.profile.clone());
+                if seen.insert(key.clone()) {
+                    profiles.push(key);
+                }
+            }
+            profiles
+        })
+        .unwrap_or_default();
+
+    // If no active coworkers, fall back to current profile
+    let profiles_to_fetch = if active_profiles.is_empty() {
+        vec![(
+            crate::auth::AuthProvider::Claude,
+            crate::auth::current_profile(),
+        )]
+    } else {
+        active_profiles
+    };
+
+    let data = tokio::task::spawn_blocking(move || {
+        MULTI_USAGE_CACHE.get(USAGE_CACHE_TTL).or_else(|| {
+            let data = crate::usage::fetch_multi_usage(&profiles_to_fetch);
+            if data.is_empty() {
+                None
+            } else {
+                MULTI_USAGE_CACHE.set(data.clone());
+                Some(data)
+            }
         })
     })
     .await
@@ -1369,14 +1403,37 @@ async fn api_usage() -> Result<impl IntoResponse, StatusCode> {
     })?;
 
     match data {
-        Some(usage) => Ok(axum::Json(serde_json::json!({
-            "session_util": usage.session_util,
-            "session_resets": usage.session_resets.map(|d| d.to_rfc3339()),
-            "week_util": usage.week_util,
-            "week_resets": usage.week_resets.map(|d| d.to_rfc3339()),
-            "account_email": usage.account_email,
-        }))),
-        None => Err(StatusCode::NO_CONTENT),
+        Some(usage_list) if !usage_list.is_empty() => {
+            // Primary account (first in list) for backwards compatibility
+            let primary = &usage_list[0];
+
+            // Convert to JSON array
+            let usage_array: Vec<serde_json::Value> = usage_list
+                .iter()
+                .map(|u| {
+                    serde_json::json!({
+                        "provider": u.provider.as_str(),
+                        "profile": u.profile_name,
+                        "session_util": u.session_util,
+                        "session_resets": u.session_resets.as_ref().map(|d| d.to_rfc3339()),
+                        "week_util": u.week_util,
+                        "week_resets": u.week_resets.as_ref().map(|d| d.to_rfc3339()),
+                        "account_email": u.account_email,
+                    })
+                })
+                .collect();
+
+            Ok(axum::Json(serde_json::json!({
+                "usage": usage_array,
+                // Backwards compatibility: flat fields for primary account
+                "session_util": primary.session_util,
+                "session_resets": primary.session_resets.as_ref().map(|d| d.to_rfc3339()),
+                "week_util": primary.week_util,
+                "week_resets": primary.week_resets.as_ref().map(|d| d.to_rfc3339()),
+                "account_email": primary.account_email,
+            })))
+        }
+        _ => Err(StatusCode::NO_CONTENT),
     }
 }
 

@@ -11,47 +11,74 @@ use ratatui::{
 
 use super::super::app::App;
 
-/// Draw the usage progress bars (session + weekly utilization).
+/// Draw the usage progress bars (session + weekly utilization) for all active accounts.
 ///
-/// Renders two compact lines showing utilization percentage as progress bars
-/// with color thresholds: green <60%, yellow 60-80%, red >80%.
+/// Renders stacked pairs of progress bars (session + weekly) for each account.
+/// Accounts with no usage data (e.g., z.ai) show "No usage data available".
 pub fn draw_usage_bars(f: &mut Frame, app: &App, area: Rect) {
-    let usage = match &app.usage_data {
-        Some(data) => data,
-        None => return,
-    };
-
-    let title = match &usage.account_email {
-        Some(email) => format!(" Usage ({}) ", email),
-        None => " Usage ".to_string(),
-    };
+    if app.usage_data.is_empty() {
+        return;
+    }
 
     let block = Block::default()
-        .title(title)
+        .title(" Usage ")
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::DarkGray));
 
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    if inner.height < 2 {
-        return;
+    let mut lines = Vec::new();
+
+    for usage in &app.usage_data {
+        // Account label line
+        let label = if let Some(ref email) = usage.account_email {
+            format!("{} ({})", usage.provider.as_str().to_uppercase(), email)
+        } else {
+            format!(
+                "{} ({})",
+                usage.provider.as_str().to_uppercase(),
+                usage.profile_name
+            )
+        };
+        lines.push(Line::from(vec![Span::styled(
+            label,
+            Style::default().fg(Color::Cyan),
+        )]));
+
+        // Session + weekly bars (or "no data" message)
+        if usage.session_resets.is_some() || usage.week_resets.is_some() {
+            lines.push(render_usage_line(
+                "  Session",
+                usage.session_util,
+                usage.session_resets.as_ref(),
+                true,
+            ));
+            lines.push(render_usage_line(
+                "  Week   ",
+                usage.week_util,
+                usage.week_resets.as_ref(),
+                false,
+            ));
+        } else {
+            lines.push(Line::from(vec![Span::styled(
+                "  No usage data available",
+                Style::default().fg(Color::DarkGray),
+            )]));
+        }
+
+        // Blank line between accounts (if not the last)
+        // Compare by profile and provider since UsageData doesn't implement PartialEq
+        let is_last = app
+            .usage_data
+            .last()
+            .map(|last| usage.provider == last.provider && usage.profile_name == last.profile_name)
+            .unwrap_or(false);
+        if !is_last {
+            lines.push(Line::from(""));
+        }
     }
 
-    let session_line = render_usage_line(
-        "Session",
-        usage.session_util,
-        usage.session_resets.as_ref(),
-        true,
-    );
-    let week_line = render_usage_line(
-        "Week   ",
-        usage.week_util,
-        usage.week_resets.as_ref(),
-        false,
-    );
-
-    let lines = vec![session_line, week_line];
     let paragraph = Paragraph::new(lines);
     f.render_widget(paragraph, inner);
 }

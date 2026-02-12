@@ -144,6 +144,7 @@ fn test_concurrent_name_allocation_no_overwrites() {
                         session_id: None,
                         model: "sonnet".to_string(),
                         provider: midtown::auth::AuthProvider::Claude,
+                        profile: "default".to_string(),
                     });
 
                     if inserted {
@@ -248,6 +249,7 @@ fn test_spawn_race_reviewer_gets_shared_tasks() {
             session_id: None,
             model: "sonnet".to_string(),
             provider: midtown::auth::AuthProvider::Claude,
+            profile: "default".to_string(),
         });
         *spawn1_result_clone.lock().unwrap() = Some(inserted);
     });
@@ -280,6 +282,7 @@ fn test_spawn_race_reviewer_gets_shared_tasks() {
             session_id: None,
             model: "sonnet".to_string(),
             provider: midtown::auth::AuthProvider::Claude,
+            profile: "default".to_string(),
         });
         *spawn2_result_clone.lock().unwrap() = Some(inserted);
     });
@@ -346,6 +349,7 @@ fn test_spawn_should_be_atomic() {
         session_id: None,
         model: "sonnet".to_string(),
         provider: midtown::auth::AuthProvider::Claude,
+        profile: "default".to_string(),
     });
 
     // Second spawn attempt should fail (name already in use)
