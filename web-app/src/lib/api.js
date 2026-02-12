@@ -526,6 +526,9 @@ export async function fetchAllAuthProfiles() {
 }
 
 // Switch to a different auth profile via the daemon RPC.
+// Parameters:
+//   - profile: Profile name to switch to (e.g., "work", "personal")
+//   - provider: Provider name ('claude', 'codex', or 'zai')
 // Returns { ok: true } on success, or { ok: false, error: string } on failure.
 export async function switchAuthProfile(profile, provider) {
   authSwitching.set(true)
@@ -537,7 +540,7 @@ export async function switchAuthProfile(profile, provider) {
     })
     if (res.ok) {
       // Refresh all profiles after switching
-      await fetchAuthProfiles()
+      await fetchAllAuthProfiles()
       return { ok: true }
     }
     let errorMsg = `Switch failed (${res.status})`
