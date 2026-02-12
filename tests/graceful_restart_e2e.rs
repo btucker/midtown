@@ -91,7 +91,7 @@ fn test_enter_drain_mode() {
         "method": "daemon.enter-drain",
         "id": 1
     });
-    writeln!(stream, "{}", request.to_string()).unwrap();
+    writeln!(stream, "{}", request).unwrap();
 
     // Read response
     let mut reader = BufReader::new(stream);

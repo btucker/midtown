@@ -102,7 +102,7 @@ fn test_wait_for_coworkers_reports_status_and_completes() {
         "method": "daemon.enter-drain",
         "id": 1
     });
-    writeln!(stream, "{}", request.to_string()).unwrap();
+    writeln!(stream, "{}", request).unwrap();
 
     // Read response
     let mut response_line = String::new();
@@ -122,7 +122,7 @@ fn test_wait_for_coworkers_reports_status_and_completes() {
         "method": "status",
         "id": 2
     });
-    writeln!(stream, "{}", status_request.to_string()).unwrap();
+    writeln!(stream, "{}", status_request).unwrap();
     {
         let mut reader = BufReader::new(&mut stream);
         reader.read_line(&mut response_line).unwrap();
