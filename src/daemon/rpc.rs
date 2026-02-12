@@ -2650,6 +2650,15 @@ async fn handle_kanban_data(id: RequestId, state: &DaemonState) -> Response {
         .map(|ps| ps.github.active_assignments())
         .unwrap_or_default();
 
+    // Build reviewer -> PR number map from reviewer_assignments
+    // We do this before spawn_blocking so we can use the reviewer_assignments data
+    // without needing a second try_lock() later (which could fail and cause reviewers
+    // to show their internal task IDs instead of the source task ID from PR titles).
+    let reviewer_pr_map: HashMap<String, u64> = reviewer_assignments
+        .iter()
+        .map(|(pr_number, assignment)| (assignment.reviewer.clone(), *pr_number))
+        .collect();
+
     let is_multi_repo = all_repo_paths.len() > 1;
 
     // Pre-resolve repo full names (this uses caching and is fast)
@@ -2735,23 +2744,6 @@ async fn handle_kanban_data(id: RequestId, state: &DaemonState) -> Response {
             let health_guard = state.headless_health.read().unwrap();
             health_guard.clone()
         };
-
-        // Build reviewer -> PR number map from GitHub state (best-effort via try_lock)
-        let reviewer_pr_map: HashMap<String, u64> = state
-            .persistent_state
-            .try_lock()
-            .map(|github_state| {
-                active_coworkers
-                    .iter()
-                    .filter_map(|cw| {
-                        github_state
-                            .github
-                            .pr_for_reviewer(&cw.name)
-                            .map(|pr| (cw.name.clone(), pr))
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
 
         active_coworkers
             .iter()
