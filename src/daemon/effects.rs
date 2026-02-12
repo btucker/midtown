@@ -922,22 +922,20 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     warn!("Failed to complete task !{}: {}", task_id, e);
                 } else {
                     info!("Auto-completed task !{}", task_id);
-                    // Mark worktree as completed (for time-based cleanup)
+                    // Mark worktree as completed (for time-based cleanup) and clean up pr_author_sessions
                     {
                         let mut ps = state.persistent_state.lock().await;
                         if let Some(wt_id) = ps.worktree_registry.find_worktree_by_task(&task_id) {
                             ps.worktree_registry
                                 .mark_completed(&wt_id, chrono::Utc::now());
-                            if let Err(e) = ps.save_for_repo(&repo_name) {
-                                warn!("Failed to save worktree completion timestamp: {}", e);
-                            }
                         }
                         // Clean up pr_author_sessions for this task to prevent stale state
                         ps.github
                             .pr_author_sessions
                             .retain(|_, session| session.task_id.as_deref() != Some(&task_id));
+                        // Save both mutations in a single write
                         if let Err(e) = ps.save_for_repo(&repo_name) {
-                            warn!("Failed to save pr_author_sessions cleanup: {}", e);
+                            warn!("Failed to save task completion state: {}", e);
                         }
                     }
                     // Clear task assignment tracking (coworker is now free)
@@ -1098,10 +1096,12 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 }
             }
             Effect::CleanupMergedWorktree { pr_number, branch } => {
-                // Remove from registry
+                // Remove from registry and clean up pr_author_sessions
                 let removed = {
                     let mut ps = state.persistent_state.lock().await;
                     let removed = ps.worktree_registry.cleanup_for_merged_pr(pr_number);
+                    // Also clean up pr_author_sessions for this PR (defense-in-depth)
+                    ps.github.pr_author_sessions.remove(&pr_number);
                     if removed.is_some()
                         && let Err(e) = ps.save_for_repo(&state.repo_name)
                     {
@@ -1949,5 +1949,138 @@ mod tests {
         } else {
             panic!("Expected NudgeCoworkerWithCallbacks");
         }
+    }
+
+    #[tokio::test]
+    async fn test_complete_task_cleans_up_pr_author_sessions() {
+        use crate::daemon::state::DaemonPersistentState;
+        use crate::github_state::PrAuthorSession;
+        use chrono::Utc;
+        use std::collections::HashMap;
+
+        let mut persistent_state = DaemonPersistentState::default();
+
+        // Set up pr_author_sessions with entries for different tasks
+        let mut pr_sessions = HashMap::new();
+        pr_sessions.insert(
+            1001,
+            PrAuthorSession {
+                session_id: "session-abc".to_string(),
+                branch: "vernon/fix-task-42".to_string(),
+                original_author: "vernon".to_string(),
+                stored_at: Utc::now(),
+                task_id: Some("42".to_string()),
+            },
+        );
+        pr_sessions.insert(
+            1002,
+            PrAuthorSession {
+                session_id: "session-def".to_string(),
+                branch: "madison/fix-task-43".to_string(),
+                original_author: "madison".to_string(),
+                stored_at: Utc::now(),
+                task_id: Some("43".to_string()),
+            },
+        );
+        pr_sessions.insert(
+            1003,
+            PrAuthorSession {
+                session_id: "session-ghi".to_string(),
+                branch: "park/no-task".to_string(),
+                original_author: "park".to_string(),
+                stored_at: Utc::now(),
+                task_id: None, // No task_id (legacy data)
+            },
+        );
+        persistent_state.github.pr_author_sessions = pr_sessions;
+
+        // Verify all sessions are present before cleanup
+        assert_eq!(persistent_state.github.pr_author_sessions.len(), 3);
+        assert!(persistent_state.github.pr_author_sessions.contains_key(&1001));
+
+        // Simulate CompleteTask effect cleanup for task "42"
+        let task_id = "42";
+        persistent_state
+            .github
+            .pr_author_sessions
+            .retain(|_, session| session.task_id.as_deref() != Some(task_id));
+
+        // Verify task 42's session is removed
+        assert!(
+            !persistent_state.github.pr_author_sessions.contains_key(&1001),
+            "PR #1001 session should be removed when task 42 completes"
+        );
+
+        // Verify other sessions are preserved
+        assert_eq!(
+            persistent_state.github.pr_author_sessions.len(),
+            2,
+            "Should have 2 sessions remaining"
+        );
+        assert!(
+            persistent_state.github.pr_author_sessions.contains_key(&1002),
+            "Task 43's session should be preserved"
+        );
+        assert!(
+            persistent_state.github.pr_author_sessions.contains_key(&1003),
+            "Session without task_id should be preserved"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_cleanup_merged_worktree_removes_pr_author_session() {
+        use crate::daemon::state::DaemonPersistentState;
+        use crate::github_state::PrAuthorSession;
+        use chrono::Utc;
+        use std::collections::HashMap;
+
+        let mut persistent_state = DaemonPersistentState::default();
+
+        // Set up pr_author_sessions
+        let mut pr_sessions = HashMap::new();
+        pr_sessions.insert(
+            2001,
+            PrAuthorSession {
+                session_id: "session-xyz".to_string(),
+                branch: "york/feature".to_string(),
+                original_author: "york".to_string(),
+                stored_at: Utc::now(),
+                task_id: Some("99".to_string()),
+            },
+        );
+        pr_sessions.insert(
+            2002,
+            PrAuthorSession {
+                session_id: "session-uvw".to_string(),
+                branch: "columbus/other".to_string(),
+                original_author: "columbus".to_string(),
+                stored_at: Utc::now(),
+                task_id: Some("100".to_string()),
+            },
+        );
+        persistent_state.github.pr_author_sessions = pr_sessions;
+
+        // Verify both sessions are present
+        assert_eq!(persistent_state.github.pr_author_sessions.len(), 2);
+
+        // Simulate CleanupMergedWorktree cleanup for PR #2001
+        persistent_state.github.pr_author_sessions.remove(&2001);
+
+        // Verify PR #2001 session is removed
+        assert!(
+            !persistent_state.github.pr_author_sessions.contains_key(&2001),
+            "PR #2001 session should be removed when worktree is cleaned up"
+        );
+
+        // Verify other session is preserved
+        assert_eq!(
+            persistent_state.github.pr_author_sessions.len(),
+            1,
+            "Should have 1 session remaining"
+        );
+        assert!(
+            persistent_state.github.pr_author_sessions.contains_key(&2002),
+            "PR #2002 session should be preserved"
+        );
     }
 }
