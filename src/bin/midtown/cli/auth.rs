@@ -67,12 +67,11 @@ fn resolve_provider_for_profile(
     }
 
     // Default provider doesn't have it — search all providers
-    let matching_providers: Vec<midtown::auth::AuthProvider> =
-        midtown::auth::AuthProvider::all()
-            .iter()
-            .copied()
-            .filter(|&p| midtown::auth::profile_exists_for(p, profile))
-            .collect();
+    let matching_providers: Vec<midtown::auth::AuthProvider> = midtown::auth::AuthProvider::all()
+        .iter()
+        .copied()
+        .filter(|&p| midtown::auth::profile_exists_for(p, profile))
+        .collect();
 
     match matching_providers.len() {
         0 => Err(format!(
@@ -161,7 +160,7 @@ fn prompt_provider_selection(
             }
             match key.code {
                 KeyCode::Char('q') | KeyCode::Esc => {
-                    return Err("Provider selection cancelled".to_string())
+                    return Err("Provider selection cancelled".to_string());
                 }
                 KeyCode::Up | KeyCode::Char('k') => {
                     let i = state.selected().unwrap_or(0);
@@ -250,44 +249,6 @@ pub fn handle_list_all_providers() -> Result<Response, String> {
     Ok(Response::Message {
         message: sections.join("\n\n"),
     })
-}
-
-/// Handle login command with interactive provider selection.
-pub fn handle_login_with_prompt(cmd: &AuthCommand) -> Result<Response, String> {
-    if let AuthCommand::Login { email, key } = cmd {
-        // Prompt user to select provider
-        let provider = prompt_provider_selection()?;
-        handle_login(email, key.as_deref(), provider)
-    } else {
-        Err("Expected Login command".to_string())
-    }
-}
-
-/// Prompt the user to select an auth provider.
-fn prompt_provider_selection() -> Result<midtown::auth::AuthProvider, String> {
-    println!("Select authentication provider:");
-    println!("  1. Claude (claude.ai)");
-    println!("  2. Codex (codex.cloud)");
-    println!("  3. z.ai (z.ai)");
-    println!();
-    eprint!("Choice [1-3]: ");
-    std::io::Write::flush(&mut std::io::stderr())
-        .map_err(|e| format!("Failed to flush stderr: {}", e))?;
-
-    let mut input = String::new();
-    std::io::stdin()
-        .read_line(&mut input)
-        .map_err(|e| format!("Failed to read input: {}", e))?;
-
-    match input.trim() {
-        "1" => Ok(midtown::auth::AuthProvider::Claude),
-        "2" => Ok(midtown::auth::AuthProvider::Codex),
-        "3" => Ok(midtown::auth::AuthProvider::Zai),
-        other => Err(format!(
-            "Invalid choice '{}'. Please enter 1, 2, or 3.",
-            other
-        )),
-    }
 }
 
 fn handle_login(
@@ -1298,8 +1259,10 @@ mod tests {
             midtown::auth::AuthProvider::Claude,
         );
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .contains("Profile 'nonexistent@example.com' not found"));
+        assert!(
+            result
+                .unwrap_err()
+                .contains("Profile 'nonexistent@example.com' not found")
+        );
     }
 }
