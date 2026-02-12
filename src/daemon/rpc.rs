@@ -4704,6 +4704,100 @@ mod tests {
         );
     }
 
+    /// Reproduce the exact deadlock scenario: `collect_world_snapshot` holds
+    /// `persistent_state.lock().await` while an RPC call to `handle_task_done`
+    /// arrives on the same single-threaded tokio runtime.
+    ///
+    /// Before the fix, `handle_task_done` used `blocking_lock()` which blocks
+    /// the worker thread — the snapshot task can never release the lock, so
+    /// both tasks deadlock. After the fix (`.lock().await`), the RPC handler
+    /// yields cooperatively, the snapshot task completes, and the RPC handler
+    /// acquires the lock.
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_blocking_lock_deadlock_reproduction() {
+        use crate::daemon::DaemonState;
+        use std::sync::Arc;
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().expect("temp dir");
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(temp_dir.path())
+            .output()
+            .expect("git init");
+        std::process::Command::new("git")
+            .args(["config", "user.email", "test@example.com"])
+            .current_dir(temp_dir.path())
+            .output()
+            .expect("git config");
+        std::process::Command::new("git")
+            .args(["config", "user.name", "Test"])
+            .current_dir(temp_dir.path())
+            .output()
+            .expect("git config");
+        std::process::Command::new("git")
+            .args(["commit", "--allow-empty", "-m", "init"])
+            .current_dir(temp_dir.path())
+            .output()
+            .expect("git commit");
+
+        let base_dir = temp_dir.path().to_path_buf();
+        let wm = crate::worktree::WorktreeManager::new(base_dir.clone()).expect("worktree manager");
+        let cm = crate::coworker::CoworkerManager::new("test-session", wm);
+        let channel_router = crate::ChannelRouter::new(&base_dir, "midtown");
+        std::mem::forget(temp_dir);
+
+        let (shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(1);
+        let state = Arc::new(
+            DaemonState::new(
+                "/tmp/test-contention.sock".into(),
+                cm,
+                "test-repo".to_string(),
+                vec![base_dir],
+                channel_router,
+                None,
+                10,
+                None,
+                "main".to_string(),
+                shutdown_tx,
+            )
+            .expect("daemon state"),
+        );
+
+        // Simulate collect_world_snapshot holding the lock (as it does in production
+        // across multiple await points during snapshot collection).
+        let state_snapshot = Arc::clone(&state);
+        let snapshot_task = tokio::spawn(async move {
+            let _guard = state_snapshot.persistent_state.lock().await;
+            // Simulate the work collect_world_snapshot does while holding the lock.
+            // On a single-threaded runtime, this yield point is where the RPC handler
+            // gets a chance to run.
+            tokio::task::yield_now().await;
+        });
+
+        // Simulate an RPC call to handle_task_done arriving while the snapshot
+        // holds the lock. With blocking_lock(), this would deadlock because it
+        // blocks the only worker thread — the snapshot task above can never
+        // reach its yield point to release the lock.
+        let state_rpc = Arc::clone(&state);
+        let rpc_task = tokio::spawn(async move {
+            handle_task_done(RequestId::Number(1), "nonexistent-task", &state_rpc).await
+        });
+
+        // With the fix (.lock().await), both tasks complete. With blocking_lock(),
+        // this timeout would fire because the runtime is deadlocked.
+        let result = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            snapshot_task.await.expect("snapshot task panicked");
+            rpc_task.await.expect("rpc task panicked")
+        })
+        .await;
+
+        assert!(
+            result.is_ok(),
+            "Deadlock detected: handle_task_done likely uses blocking_lock() instead of .lock().await"
+        );
+    }
+
     /// Ensure no daemon code uses blocking_lock() on tokio::Mutex.
     ///
     /// blocking_lock() in async context causes deadlocks when the tokio runtime
