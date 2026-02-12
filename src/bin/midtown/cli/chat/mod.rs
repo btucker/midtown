@@ -1080,4 +1080,56 @@ mod tests {
             "Autocomplete should not trigger for @ in middle of word"
         );
     }
+
+    /// Regression test for web UI binding-timing bug (verify TUI doesn't have it)
+    ///
+    /// The web UI had a bug where typing '@m' then 'a' then 'd' caused autocomplete
+    /// to disappear because oninput fired before bind:value updated the inputText
+    /// variable. The cursor was at position 4 but text was still "@m" (length 2),
+    /// causing out-of-bounds access and detection failure.
+    ///
+    /// This test verifies the TUI doesn't have an analogous issue. In Rust, state
+    /// updates are synchronous: input_text.insert() and input_cursor += 1 happen
+    /// before detect_autocomplete_trigger() is called, so cursor and text are
+    /// always in sync.
+    #[test]
+    fn test_autocomplete_no_binding_timing_bug() {
+        use app::FocusedPane;
+        let mut app = test_app();
+        app.focused_pane = FocusedPane::InputBar;
+
+        // Type '@' - should trigger autocomplete for @lead
+        auto_focus_and_insert_char(&mut app, '@');
+        assert!(app.autocomplete.show, "Autocomplete should show after '@'");
+        assert_eq!(app.autocomplete.trigger_type, Some('@'));
+        assert_eq!(app.autocomplete.query, "");
+        assert_eq!(app.input_text, "@");
+        assert_eq!(app.input_cursor, 1);
+
+        // Type 'm' - autocomplete detection should work (text and cursor in sync)
+        auto_focus_and_insert_char(&mut app, 'm');
+        // The key assertion: autocomplete detection didn't crash or fail due to
+        // cursor being ahead of text (the web UI bug pattern)
+        assert_eq!(app.autocomplete.query, "m");
+        assert_eq!(app.input_text, "@m");
+        assert_eq!(app.input_cursor, 2);
+
+        // Type 'a'
+        auto_focus_and_insert_char(&mut app, 'a');
+        assert_eq!(app.autocomplete.query, "ma");
+        assert_eq!(app.input_text, "@ma");
+        assert_eq!(app.input_cursor, 3);
+
+        // Type 'd' - this is where the web UI bug manifested
+        // (cursor at 4, text still "@m" length 2 → out of bounds)
+        // In TUI, both are updated synchronously before detection
+        auto_focus_and_insert_char(&mut app, 'd');
+        assert_eq!(app.autocomplete.query, "mad");
+        assert_eq!(app.input_text, "@mad");
+        assert_eq!(app.input_cursor, 4);
+
+        // Autocomplete detection succeeded without crashing
+        assert_eq!(app.autocomplete.trigger_type, Some('@'));
+        assert_eq!(app.autocomplete.trigger_start_pos, 0);
+    }
 }
