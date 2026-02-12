@@ -9,6 +9,7 @@ use serde_json::Value;
 ///
 /// The actual Response enum is in src/bin/midtown/cli/response.rs.
 /// We reproduce it here to test RPC response deserialization.
+#[allow(dead_code)]
 #[derive(Debug, serde::Deserialize)]
 #[serde(untagged)]
 enum CliResponse {
@@ -20,6 +21,7 @@ enum CliResponse {
     PullRequests { pull_requests: Vec<Value> },
 }
 
+#[allow(dead_code)]
 #[derive(Debug, serde::Deserialize)]
 struct StatusResponse {
     daemon_running: bool,

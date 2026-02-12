@@ -2546,9 +2546,9 @@ fn test_daemon_rpc_daemon_check_pending_returns_ok() {
         response["error"]
     );
     assert_eq!(
-        response["result"]["status"].as_str(),
+        response["result"]["message"].as_str(),
         Some("ok"),
-        "Should return status=ok"
+        "Should return message=ok"
     );
 }
 
