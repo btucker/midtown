@@ -1072,11 +1072,11 @@ fn kill_orphaned_webhook_forwarders(messages: &mut Vec<String>) {
     }
 }
 
-/// Wait for coworkers to drain (reach idle state) before shutdown.
+/// Wait for coworkers to drain (reach stopped/stopping state) before shutdown.
 ///
 /// First signals the daemon to enter draining mode (stops new task assignments).
 /// Then polls coworker status every 500ms and displays progress. Returns once all
-/// coworkers are idle/stopped, or after the timeout expires (5 minutes).
+/// coworkers are stopped/stopping, or after the timeout expires (5 minutes).
 fn wait_for_coworkers_to_drain(timeout_secs: u64) -> Result<(), String> {
     use std::collections::HashMap;
 
@@ -1192,7 +1192,7 @@ fn wait_for_coworkers_to_drain(timeout_secs: u64) -> Result<(), String> {
 /// session and all running Claude processes (Lead and coworkers).
 ///
 /// When `force` is false (default):
-/// - Waits for all coworkers to finish their current work and reach idle state
+/// - Waits for all coworkers to finish their current work and reach stopped state
 /// - Displays real-time status of which coworkers are still working
 /// - Times out after 5 minutes and force-kills stuck coworkers
 ///
@@ -1841,7 +1841,7 @@ mod tests {
         let is_working = invalid_status != "stopped" && invalid_status != "stopping";
         assert!(
             is_working,
-            "Status 'idle' doesn't exist in CoworkerStatus, but would be incorrectly considered 'working'"
+            "Status 'idle' doesn't exist in CoworkerStatus — if it appeared, it would be conservatively treated as 'working' (safe default for unknown statuses)"
         );
     }
 }
