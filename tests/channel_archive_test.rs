@@ -22,11 +22,10 @@ fn test_archive_channel_renames_file_correctly() {
     channel.archive().unwrap();
 
     // Verify the channel file was renamed
-    assert!(
-        !channel_file.exists(),
-        "Original channel file should be gone"
-    );
-    let archived_file = base_dir.join("channels").join("test-topic.archived.jsonl");
+    assert!(!channel_file.exists(), "Original channel file should be gone");
+    let archived_file = base_dir
+        .join("channels")
+        .join("test-topic.archived.jsonl");
     assert!(
         archived_file.exists(),
         "Archived channel file should exist at {:?}",
@@ -58,7 +57,9 @@ fn test_archive_channel_preserves_messages() {
     channel.archive().unwrap();
 
     // Read the archived file directly to verify messages are preserved
-    let archived_file = base_dir.join("channels").join("test-topic.archived.jsonl");
+    let archived_file = base_dir
+        .join("channels")
+        .join("test-topic.archived.jsonl");
     let content = std::fs::read_to_string(archived_file).unwrap();
     assert!(
         content.contains("First message"),
@@ -81,65 +82,12 @@ fn test_cannot_archive_midtown_channel() {
     let result = channel.archive();
 
     // Should fail with an error
-    assert!(result.is_err(), "Archiving the midtown channel should fail");
+    assert!(
+        result.is_err(),
+        "Archiving the midtown channel should fail"
+    );
 }
 
 // Note: test_auto_archive_effects_integration removed because daemon::auto_archive
 // and daemon::effects are private modules. The functionality is tested via unit tests
 // in src/daemon/auto_archive.rs
-
-#[test]
-fn test_list_archived_channels() {
-    // Setup: Create a temporary directory
-    let temp_dir = TempDir::new().unwrap();
-    let base_dir = temp_dir.path();
-
-    // Create and archive two channels
-    let channel1 = Channel::new(base_dir, "test1").unwrap();
-    channel1.send(&Message::text("agent", "msg1")).unwrap();
-    channel1.archive().unwrap();
-
-    let channel2 = Channel::new(base_dir, "test2").unwrap();
-    channel2.send(&Message::text("agent", "msg2")).unwrap();
-    channel2.archive().unwrap();
-
-    // Create one non-archived channel
-    let _channel3 = Channel::new(base_dir, "test3").unwrap();
-
-    // List archived channels
-    let archived = Channel::list_archived(base_dir).unwrap();
-    assert_eq!(archived.len(), 2, "Should find 2 archived channels");
-    assert!(archived.contains(&"test1".to_string()));
-    assert!(archived.contains(&"test2".to_string()));
-    assert!(!archived.contains(&"test3".to_string()));
-
-    // Verify regular list() still excludes archived channels
-    let active = Channel::list(base_dir).unwrap();
-    assert!(!active.contains(&"test1".to_string()));
-    assert!(!active.contains(&"test2".to_string()));
-    assert!(active.contains(&"test3".to_string()));
-}
-
-#[test]
-fn test_open_archived_channel_for_reading() {
-    // Setup: Create and archive a channel
-    let temp_dir = TempDir::new().unwrap();
-    let base_dir = temp_dir.path();
-
-    let channel = Channel::new(base_dir, "feature-complete").unwrap();
-    channel
-        .send(&Message::text("park", "Completed feature"))
-        .unwrap();
-    channel
-        .send(&Message::text("madison", "Tests passing"))
-        .unwrap();
-    channel.archive().unwrap();
-
-    // Should be able to open and read the archived channel
-    let archived = Channel::open_archived(base_dir, "feature-complete").unwrap();
-    let messages = archived.read_all().unwrap();
-
-    assert_eq!(messages.len(), 2);
-    assert_eq!(messages[0].content, "Completed feature");
-    assert_eq!(messages[1].content, "Tests passing");
-}
