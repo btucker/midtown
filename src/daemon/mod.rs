@@ -69,6 +69,19 @@ pub(crate) struct TaskAssignment {
     pub task_id: String,
 }
 
+/// Result of daemon execution — determines what happens after the event loop exits.
+#[derive(Debug)]
+pub enum DaemonExitStatus {
+    /// Normal shutdown (SIGTERM/SIGINT). Process should exit.
+    Shutdown,
+    /// Exec-restart requested. Process should re-exec itself with the given args
+    /// to preserve the original (unsandboxed) process context.
+    ExecRestart {
+        workdir: PathBuf,
+        project_name: Option<String>,
+    },
+}
+
 /// Configuration for the daemon server.
 #[derive(Debug, Clone)]
 pub struct DaemonConfig {
@@ -490,6 +503,16 @@ pub(crate) struct DaemonState {
     /// Allows coworkers to finish their current tasks without being assigned new work,
     /// enabling graceful shutdown.
     draining: std::sync::atomic::AtomicBool,
+    /// Exec-restart requested flag — when set, the daemon re-execs itself after
+    /// graceful shutdown instead of exiting. This preserves the original (unsandboxed)
+    /// process context across restarts, avoiding sandbox-exec nesting failures.
+    restart_requested: std::sync::atomic::AtomicBool,
+    /// Broadcast sender for triggering daemon shutdown from RPC handlers.
+    ///
+    /// The main event loop subscribes to this channel. When an RPC handler
+    /// (e.g., `daemon.exec-restart`) needs to trigger shutdown, it sends on
+    /// this channel to break the main loop.
+    shutdown_tx: broadcast::Sender<()>,
 }
 
 impl DaemonState {
@@ -620,6 +643,7 @@ impl DaemonState {
         max_coworkers: usize,
         push_manager: Option<std::sync::Arc<crate::push::PushManager>>,
         default_branch: String,
+        shutdown_tx: broadcast::Sender<()>,
     ) -> crate::Result<Self> {
         // Load unified persistent state (migrates from legacy files if needed)
         let persistent_state = state::DaemonPersistentState::load_for_repo(&repo_name)
@@ -672,6 +696,8 @@ impl DaemonState {
             rpc_response_cache: Mutex::new(HashMap::new()),
             kanban_cache: rpc::KanbanCache::new(),
             draining: std::sync::atomic::AtomicBool::new(false),
+            restart_requested: std::sync::atomic::AtomicBool::new(false),
+            shutdown_tx,
         })
     }
 
@@ -1411,8 +1437,11 @@ async fn run_tick(event: &events::DaemonEvent, state: &DaemonState) {
 /// Run the daemon server with the given configuration.
 ///
 /// This function will block until the daemon receives a shutdown signal
-/// (SIGTERM or SIGINT) or the socket is removed.
-pub async fn run(config: DaemonConfig) -> crate::Result<()> {
+/// (SIGTERM, SIGINT, or exec-restart RPC).
+///
+/// Returns `DaemonExitStatus` to indicate whether the caller should exit
+/// or re-exec the daemon binary (for sandbox-safe restarts).
+pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
     // Install panic hook so unhandled panics are logged to stderr before aborting
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
@@ -1648,6 +1677,9 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
         debug!("Webhook server disabled (no port configured)");
     }
 
+    // Set up shutdown signal handler (created before state so it can be shared)
+    let (shutdown_tx, _) = broadcast::channel::<()>(1);
+
     // Create daemon state (pass channel and web updates sender so messages
     // are broadcast to WebSocket clients in real-time)
     let state = Arc::new(DaemonState::new(
@@ -1660,6 +1692,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
         config.max_coworkers,
         shared_push_manager,
         default_branch,
+        shutdown_tx.clone(),
     )?);
     info!(
         "Max coworkers limit: {} (dev: {}, reserving {} for reviewers)",
@@ -1710,10 +1743,10 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
         effects::execute_effects(recovery_effects, &state).await;
     }
 
-    // Set up shutdown signal handler
-    let (shutdown_tx, _) = broadcast::channel::<()>(1);
     let mut sigterm = signal(SignalKind::terminate())?;
     let mut sigint = signal(SignalKind::interrupt())?;
+    // Subscribe to shutdown broadcasts (triggered by RPC exec-restart handler)
+    let mut shutdown_rx = shutdown_tx.subscribe();
 
     // Set up idle check interval
     let mut idle_check_interval = interval(IDLE_CHECK_INTERVAL);
@@ -2296,6 +2329,12 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
                 let _ = shutdown_tx.send(());
                 break;
             }
+
+            // Handle RPC-triggered shutdown (exec-restart or explicit shutdown)
+            _ = shutdown_rx.recv() => {
+                info!("Shutdown triggered via RPC");
+                break;
+            }
         }
     }
 
@@ -2347,8 +2386,21 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
         Err(e) => warn!("Failed to remove PID file: {}", e),
     }
 
-    info!("Daemon stopped");
-    Ok(())
+    // Check if an exec-restart was requested (vs normal shutdown)
+    let restart = state
+        .restart_requested
+        .load(std::sync::atomic::Ordering::Relaxed);
+
+    if restart {
+        info!("Daemon stopped — exec-restart requested");
+        Ok(DaemonExitStatus::ExecRestart {
+            workdir: config.workdir.clone(),
+            project_name: config.project_name.clone(),
+        })
+    } else {
+        info!("Daemon stopped");
+        Ok(DaemonExitStatus::Shutdown)
+    }
 }
 
 // ─── Pure Decision Functions ───────────────────────────────────────────────

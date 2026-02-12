@@ -197,6 +197,17 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
             Response::success(request.id, serde_json::json!({"status": "draining"}))
         }
 
+        "daemon.exec-restart" => {
+            info!("Exec-restart requested via RPC — daemon will re-exec after shutdown");
+            state
+                .restart_requested
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            // Trigger the shutdown broadcast so the main event loop exits.
+            // The run() function checks restart_requested and returns ExecRestart.
+            let _ = state.shutdown_tx.send(());
+            Response::success(request.id, serde_json::json!({"status": "restarting"}))
+        }
+
         "coworker.spawn" => {
             let params = request.params.as_ref();
             let resume = params
@@ -471,7 +482,7 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
             let id = params.and_then(|p| p.get("id")).and_then(|v| v.as_str());
 
             match id {
-                Some(id) => handle_task_metadata(request.id, id, state),
+                Some(id) => handle_task_metadata(request.id, id, state).await,
                 None => Response::error(request.id, RpcError::invalid_params()),
             }
         }
@@ -2104,8 +2115,8 @@ fn handle_task_done(id: RequestId, task_id: &str, state: &DaemonState) -> Respon
 ///
 /// Returns channel and model mappings stored in DaemonPersistentState.
 /// These are stored separately from Claude Code's native task storage.
-fn handle_task_metadata(id: RequestId, task_id: &str, state: &DaemonState) -> Response {
-    let ps = state.persistent_state.blocking_lock();
+async fn handle_task_metadata(id: RequestId, task_id: &str, state: &DaemonState) -> Response {
+    let ps = state.persistent_state.lock().await;
     let channel = ps.task_channel.get(task_id).cloned();
     let model = ps.task_model.get(task_id).cloned();
 

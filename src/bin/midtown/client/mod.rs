@@ -453,6 +453,14 @@ impl DaemonClient {
         self.send("daemon.enter-drain", None)
     }
 
+    /// Request the daemon to re-exec itself after graceful shutdown.
+    ///
+    /// This preserves the daemon's original process context (including sandbox
+    /// state), avoiding sandbox-exec nesting failures on macOS.
+    pub fn exec_restart(&self) -> Result<Response, String> {
+        self.send("daemon.exec-restart", None)
+    }
+
     // Auth commands
 
     pub fn auth_switch(
