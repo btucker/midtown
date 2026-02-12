@@ -1,4 +1,4 @@
-//! Board panel: kanban task swimlanes and coworker status table.
+//! Board panel: channel list and coworker status table.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -14,7 +14,7 @@ use super::super::app::{App, KanbanTask, TaskStatus};
 use super::Hyperlink;
 use super::text::wrap_content;
 
-/// Draw the board panel (left side) with channel swimlanes
+/// Draw the board panel (left side) with channel list
 pub fn draw_board_panel(f: &mut Frame, app: &mut App, area: Rect) -> Vec<Hyperlink> {
     // Split board area vertically: tasks at top, coworkers at bottom
     let active_coworker_count = app.coworkers.len();
@@ -50,8 +50,6 @@ pub fn draw_board_panel(f: &mut Frame, app: &mut App, area: Rect) -> Vec<Hyperli
         let channel_key = task.channel.as_deref().unwrap_or(main_channel).to_string();
         tasks_by_channel.entry(channel_key).or_default().push(task);
     }
-
-    let _wrap_width = area.width.saturating_sub(2).max(20) as usize;
 
     // Count active PRs per channel
     let mut prs_by_channel: HashMap<String, Vec<&super::super::app::KanbanPr>> = HashMap::new();
