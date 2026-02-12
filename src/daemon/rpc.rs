@@ -2693,19 +2693,22 @@ async fn handle_kanban_data(id: RequestId, state: &DaemonState) -> Response {
             health_guard.clone()
         };
 
-        // Build reviewer -> PR number map from GitHub state
-        let reviewer_pr_map: HashMap<String, u64> = {
-            let github_state = state.persistent_state.lock().await;
-            active_coworkers
-                .iter()
-                .filter_map(|cw| {
-                    github_state
-                        .github
-                        .pr_for_reviewer(&cw.name)
-                        .map(|pr| (cw.name.clone(), pr))
-                })
-                .collect()
-        };
+        // Build reviewer -> PR number map from GitHub state (best-effort via try_lock)
+        let reviewer_pr_map: HashMap<String, u64> = state
+            .persistent_state
+            .try_lock()
+            .map(|github_state| {
+                active_coworkers
+                    .iter()
+                    .filter_map(|cw| {
+                        github_state
+                            .github
+                            .pr_for_reviewer(&cw.name)
+                            .map(|pr| (cw.name.clone(), pr))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
 
         active_coworkers
             .iter()
