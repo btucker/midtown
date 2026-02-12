@@ -74,22 +74,82 @@ pub(super) fn get_coworkers_with_open_prs(state: &DaemonState) -> Vec<String> {
     }
 }
 
-/// Look up the topic channel for a PR based on its associated task.
+/// Data extracted from persistent state for PR decision-making.
 ///
-/// Returns the channel name if the PR is linked to a task that has a channel assignment,
-/// or `None` if the PR has no task association or the task has no channel (falls back to main).
-///
-/// Takes mappings from WorldSnapshot to avoid blocking locks in decision functions.
-fn get_pr_channel(
-    pr_number: u64,
-    pr_task_associations: &HashMap<u64, String>,
-    task_channel: &HashMap<String, String>,
-) -> Option<String> {
-    // Look up PR → task association
-    let task_id = pr_task_associations.get(&pr_number)?;
+/// Bundles channel routing and session context extraction into a single
+/// lock acquisition. Callers acquire `persistent_state.lock().await` once,
+/// build this context, then pass it into pure `*_to_effects` functions.
+/// This avoids `blocking_lock()` on the tokio::Mutex (which deadlocks).
+struct PrContext {
+    /// Channel routing: PR number → task ID → channel name
+    pr_task_associations: HashMap<u64, String>,
+    task_channel: HashMap<String, String>,
+    /// Session context for the target PR (if the PR has a stored author session)
+    session_context: Option<crate::rules::PrSessionContext>,
+}
 
-    // Look up task → channel mapping
-    task_channel.get(task_id).cloned()
+impl PrContext {
+    /// Extract all PR decision context from persistent state for a given PR.
+    ///
+    /// Caller must hold `persistent_state.lock().await`. This method reads
+    /// channel routing data (shared across all PRs) and session context
+    /// (specific to `pr_number`) in a single pass.
+    fn from_persistent_state(ps: &super::state::DaemonPersistentState, pr_number: u64) -> Self {
+        let pr_task_associations: HashMap<u64, String> = ps
+            .github
+            .pr_author_sessions
+            .iter()
+            .filter_map(|(pr_num, session)| {
+                session
+                    .task_id
+                    .as_ref()
+                    .map(|task_id| (*pr_num, task_id.clone()))
+            })
+            .collect();
+
+        let session_context =
+            ps.github
+                .get_pr_author_session(pr_number)
+                .map(|s| crate::rules::PrSessionContext {
+                    session_id: s.session_id.clone(),
+                    branch: s.branch.clone(),
+                    original_author: s.original_author.clone(),
+                    pr_number,
+                });
+
+        Self {
+            pr_task_associations,
+            task_channel: ps.task_channel.clone(),
+            session_context,
+        }
+    }
+
+    /// Extract only channel routing data (when session context isn't needed).
+    fn routing_only(ps: &super::state::DaemonPersistentState) -> Self {
+        let pr_task_associations: HashMap<u64, String> = ps
+            .github
+            .pr_author_sessions
+            .iter()
+            .filter_map(|(pr_num, session)| {
+                session
+                    .task_id
+                    .as_ref()
+                    .map(|task_id| (*pr_num, task_id.clone()))
+            })
+            .collect();
+
+        Self {
+            pr_task_associations,
+            task_channel: ps.task_channel.clone(),
+            session_context: None,
+        }
+    }
+
+    /// Look up the topic channel for a PR based on its associated task.
+    fn get_channel(&self, pr_number: u64) -> Option<String> {
+        let task_id = self.pr_task_associations.get(&pr_number)?;
+        self.task_channel.get(task_id).cloned()
+    }
 }
 
 /// How often to re-fetch merged PRs (5 minutes). Merges aren't urgent so
@@ -625,7 +685,7 @@ pub(super) async fn poll_prs_for_issues(
             // Author-driven merge decisions: Instead of auto-merging approved PRs,
             // nudge the author so THEY can decide to merge. This keeps merge decisions
             // with the agent who has full context of the PR and review feedback.
-            use crate::rules::{PrSessionContext, decide_pr_issue_action_with_handoff};
+            use crate::rules::decide_pr_issue_action_with_handoff;
 
             // Format the nudge message
             let message = format!(
@@ -636,17 +696,10 @@ pub(super) async fn poll_prs_for_issues(
                 get_issue_action(issue_type)
             );
 
-            // Get session context for potential handoff (if available)
-            let session_context: Option<PrSessionContext> = {
+            // Extract all decision context from persistent state in one lock
+            let pr_ctx = {
                 let ps = state.persistent_state.lock().await;
-                ps.github
-                    .get_pr_author_session(pr_number)
-                    .map(|s| PrSessionContext {
-                        session_id: s.session_id.clone(),
-                        branch: s.branch.clone(),
-                        original_author: s.original_author.clone(),
-                        pr_number,
-                    })
+                PrContext::from_persistent_state(&ps, pr_number)
             };
 
             // Decide action using pure decision function with handoff support
@@ -655,12 +708,12 @@ pub(super) async fn poll_prs_for_issues(
                 &active_coworkers,
                 &idle_coworkers,
                 state.is_at_dev_limit(),
-                session_context.as_ref(),
+                pr_ctx.session_context.as_ref(),
                 &message,
             );
 
             effects.extend(pr_action_to_effects(
-                action, pr_number, title, issue_type, state,
+                action, pr_number, title, issue_type, state, &pr_ctx,
             ));
         }
     }
@@ -841,8 +894,11 @@ async fn collect_green_with_feedback_effects(
             get_issue_action(PrIssueType::GreenWithFeedback)
         );
 
-        // Look up session context for potential handoff
-        let session_context = get_pr_session_context(state, pr_number).await;
+        // Extract all decision context from persistent state in one lock
+        let pr_ctx = {
+            let ps = state.persistent_state.lock().await;
+            PrContext::from_persistent_state(&ps, pr_number)
+        };
 
         // Decide action using handoff-aware decision function (matches webhook path)
         let action = crate::rules::decide_pr_issue_action_with_handoff(
@@ -850,7 +906,7 @@ async fn collect_green_with_feedback_effects(
             active_coworkers,
             idle_coworkers,
             state.is_at_dev_limit(),
-            session_context.as_ref(),
+            pr_ctx.session_context.as_ref(),
             &message,
         );
 
@@ -860,6 +916,7 @@ async fn collect_green_with_feedback_effects(
             title,
             PrIssueType::GreenWithFeedback,
             state,
+            &pr_ctx,
         ));
     }
 
@@ -878,28 +935,12 @@ fn pr_action_to_effects(
     title: &str,
     issue_type: PrIssueType,
     state: &DaemonState,
+    ctx: &PrContext,
 ) -> Vec<Effect> {
     use crate::rules::PrAction;
 
-    // Extract channel routing data once (avoids repeated blocking_lock calls in get_pr_channel)
-    let (pr_task_associations, task_channel) = {
-        let ps = state.persistent_state.blocking_lock();
-        let pr_task: HashMap<u64, String> = ps
-            .github
-            .pr_author_sessions
-            .iter()
-            .filter_map(|(pr_num, session)| {
-                session
-                    .task_id
-                    .as_ref()
-                    .map(|task_id| (*pr_num, task_id.clone()))
-            })
-            .collect();
-        (pr_task, ps.task_channel.clone())
-    };
-
     // Look up topic channel for this PR's task (falls back to main if not found)
-    let channel = get_pr_channel(pr_number, &pr_task_associations, &task_channel);
+    let channel = ctx.get_channel(pr_number);
 
     match action {
         PrAction::NudgeOwner { owner, message } => {
@@ -1000,6 +1041,7 @@ fn pr_action_to_effects(
             title,
             issue_type,
             state,
+            ctx,
         ),
         PrAction::PostToChannel { message } => {
             vec![
@@ -1505,8 +1547,11 @@ async fn collect_comment_notification_effects(
             pr_number, owner
         );
 
-        // Look up session context for potential handoff
-        let session_context = get_pr_session_context(state, pr_number).await;
+        // Extract all decision context from persistent state in one lock
+        let pr_ctx = {
+            let ps = state.persistent_state.lock().await;
+            PrContext::from_persistent_state(&ps, pr_number)
+        };
 
         // Decide action using handoff-aware decision function (preserves session
         // resume and idle-coworker handoff capabilities)
@@ -1516,11 +1561,13 @@ async fn collect_comment_notification_effects(
             active_coworkers,
             idle_coworkers,
             state.is_at_dev_limit(),
-            session_context.as_ref(),
+            pr_ctx.session_context.as_ref(),
             &nudge_msg,
         );
 
-        effects.extend(comment_action_to_effects(action, pr_number, title, state));
+        effects.extend(comment_action_to_effects(
+            action, pr_number, title, state, &pr_ctx,
+        ));
 
         // If this is a lead/* branch, also nudge the lead so they see review feedback
         if is_lead_branch(head_ref) {
@@ -1547,29 +1594,13 @@ fn comment_action_to_effects(
     pr_number: u64,
     title: &str,
     state: &DaemonState,
+    ctx: &PrContext,
 ) -> Vec<Effect> {
     use crate::rules::PrAction;
     let issue_type = PrIssueType::ReviewComment;
 
-    // Extract channel routing data once
-    let (pr_task_associations, task_channel) = {
-        let ps = state.persistent_state.blocking_lock();
-        let pr_task: HashMap<u64, String> = ps
-            .github
-            .pr_author_sessions
-            .iter()
-            .filter_map(|(pr_num, session)| {
-                session
-                    .task_id
-                    .as_ref()
-                    .map(|task_id| (*pr_num, task_id.clone()))
-            })
-            .collect();
-        (pr_task, ps.task_channel.clone())
-    };
-
     // Look up topic channel for this PR's task (falls back to main if not found)
-    let channel = get_pr_channel(pr_number, &pr_task_associations, &task_channel);
+    let channel = ctx.get_channel(pr_number);
 
     match action {
         PrAction::NudgeOwner { owner, message } => {
@@ -1669,6 +1700,7 @@ fn comment_action_to_effects(
             title,
             issue_type,
             state,
+            ctx,
         ),
         PrAction::PostToChannel { message } => {
             vec![
@@ -1709,26 +1741,10 @@ fn handoff_to_coworker_effects(
     title: &str,
     issue_type: PrIssueType,
     state: &DaemonState,
+    ctx: &PrContext,
 ) -> Vec<Effect> {
-    // Extract channel routing data once
-    let (pr_task_associations, task_channel) = {
-        let ps = state.persistent_state.blocking_lock();
-        let pr_task: HashMap<u64, String> = ps
-            .github
-            .pr_author_sessions
-            .iter()
-            .filter_map(|(pr_num, session)| {
-                session
-                    .task_id
-                    .as_ref()
-                    .map(|task_id| (*pr_num, task_id.clone()))
-            })
-            .collect();
-        (pr_task, ps.task_channel.clone())
-    };
-
     // Look up topic channel for this PR's task (falls back to main if not found)
-    let channel = get_pr_channel(pr_number, &pr_task_associations, &task_channel);
+    let channel = ctx.get_channel(pr_number);
 
     let config = crate::launch::LaunchConfig::pr_handoff(
         assignee.to_string(),
@@ -1914,8 +1930,13 @@ async fn collect_reviewer_effects_with_source(
                         &nudge_msg,
                     );
 
+                    let pr_ctx = {
+                        let ps = state.persistent_state.lock().await;
+                        PrContext::routing_only(&ps)
+                    };
+
                     effects.extend(review_complete_action_to_effects(
-                        action, pr_number, title, state,
+                        action, pr_number, title, state, &pr_ctx,
                     ));
                 }
             }
@@ -1976,24 +1997,13 @@ async fn collect_reviewer_effects_with_source(
 
         // Ensure the worktree exists BEFORE spawning (fixes effect ordering bug)
         // Extract channel routing data (async-safe)
-        let (pr_task_associations, task_channel) = {
+        let pr_ctx = {
             let ps = state.persistent_state.lock().await;
-            let pr_task: HashMap<u64, String> = ps
-                .github
-                .pr_author_sessions
-                .iter()
-                .filter_map(|(pr_num, session)| {
-                    session
-                        .task_id
-                        .as_ref()
-                        .map(|task_id| (*pr_num, task_id.clone()))
-                })
-                .collect();
-            (pr_task, ps.task_channel.clone())
+            PrContext::routing_only(&ps)
         };
 
         // Look up topic channel for this PR's task (falls back to main if not found)
-        let channel = get_pr_channel(pr_number, &pr_task_associations, &task_channel);
+        let channel = pr_ctx.get_channel(pr_number);
 
         effects.push(Effect::EnsureWorktree {
             worktree_id: worktree_id.clone(),
@@ -2079,29 +2089,13 @@ fn review_complete_action_to_effects(
     pr_number: u64,
     title: &str,
     state: &DaemonState,
+    ctx: &PrContext,
 ) -> Vec<Effect> {
     use crate::rules::PrAction;
     let issue_type = PrIssueType::ReviewComplete;
 
-    // Extract channel routing data once
-    let (pr_task_associations, task_channel) = {
-        let ps = state.persistent_state.blocking_lock();
-        let pr_task: HashMap<u64, String> = ps
-            .github
-            .pr_author_sessions
-            .iter()
-            .filter_map(|(pr_num, session)| {
-                session
-                    .task_id
-                    .as_ref()
-                    .map(|task_id| (*pr_num, task_id.clone()))
-            })
-            .collect();
-        (pr_task, ps.task_channel.clone())
-    };
-
     // Look up topic channel for this PR's task (falls back to main if not found)
-    let channel = get_pr_channel(pr_number, &pr_task_associations, &task_channel);
+    let channel = ctx.get_channel(pr_number);
 
     match action {
         PrAction::NudgeOwner { owner, message } => {
@@ -2201,6 +2195,7 @@ fn review_complete_action_to_effects(
             title,
             issue_type,
             state,
+            ctx,
         ),
         PrAction::PostToChannel { message } => {
             vec![
@@ -2468,25 +2463,6 @@ async fn get_pr_branch_async(pr_number: u64) -> Option<String> {
     Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-/// Look up stored session context for a PR author, for use in handoff decisions.
-///
-/// Shared helper that avoids duplicating the persistent state lock + map lookup
-/// across polling paths and webhook handlers.
-async fn get_pr_session_context(
-    state: &DaemonState,
-    pr_number: u64,
-) -> Option<crate::rules::PrSessionContext> {
-    let ps = state.persistent_state.lock().await;
-    ps.github
-        .get_pr_author_session(pr_number)
-        .map(|s| crate::rules::PrSessionContext {
-            session_id: s.session_id.clone(),
-            branch: s.branch.clone(),
-            original_author: s.original_author.clone(),
-            pr_number,
-        })
-}
-
 /// Handle nudging a PR owner when a comment/review is posted on their PR.
 ///
 /// This is called from the webhook event loop when a `PrActivity` is present.
@@ -2645,8 +2621,11 @@ pub(super) async fn handle_pr_comment_nudge(
         .cloned()
         .collect();
 
-    // Get session context for potential handoff
-    let session_context = get_pr_session_context(state, pr_number).await;
+    // Extract all decision context from persistent state in one lock
+    let pr_ctx = {
+        let ps = state.persistent_state.lock().await;
+        PrContext::from_persistent_state(&ps, pr_number)
+    };
 
     // Decide action using pure decision function with handoff support
     let action = crate::rules::decide_pr_comment_action_with_handoff(
@@ -2655,14 +2634,14 @@ pub(super) async fn handle_pr_comment_nudge(
         &active_coworkers,
         &idle_coworkers,
         state.is_at_dev_limit(),
-        session_context.as_ref(),
+        pr_ctx.session_context.as_ref(),
         &nudge_msg,
     );
 
     // Convert PrAction → Effects using the same pure converter as polling,
     // then execute via the standard effect pipeline.
     let is_actionable = !matches!(action, crate::rules::PrAction::Skip { .. });
-    let mut effects = comment_action_to_effects(action, pr_number, "", state);
+    let mut effects = comment_action_to_effects(action, pr_number, "", state, &pr_ctx);
 
     // If this is a lead/* branch, also nudge the lead so they see review feedback
     if let Some(branch) = get_pr_branch_async(pr_number).await
@@ -2749,21 +2728,24 @@ pub(super) async fn handle_webhook_review_state_change(
         .cloned()
         .collect();
 
-    // Get session context for potential handoff
-    let session_context = get_pr_session_context(state, pr_number).await;
+    // Extract all decision context from persistent state in one lock
+    let pr_ctx = {
+        let ps = state.persistent_state.lock().await;
+        PrContext::from_persistent_state(&ps, pr_number)
+    };
 
     let action = crate::rules::decide_pr_issue_action_with_handoff(
         &owner,
         &active_coworkers,
         &idle_coworkers,
         state.is_at_dev_limit(),
-        session_context.as_ref(),
+        pr_ctx.session_context.as_ref(),
         &nudge_msg,
     );
 
     // Convert PrAction → Effects using the same pure converter as polling,
     // then execute via the standard effect pipeline.
-    let effects = pr_action_to_effects(action, pr_number, "", issue_type, state);
+    let effects = pr_action_to_effects(action, pr_number, "", issue_type, state, &pr_ctx);
     super::effects::execute_effects(effects, state).await;
 }
 
@@ -2823,21 +2805,25 @@ pub(super) async fn handle_webhook_ci_failure(
         .cloned()
         .collect();
 
-    // Get session context for potential handoff
-    let session_context = get_pr_session_context(state, pr_number).await;
+    // Extract all decision context from persistent state in one lock
+    let pr_ctx = {
+        let ps = state.persistent_state.lock().await;
+        PrContext::from_persistent_state(&ps, pr_number)
+    };
 
     let action = crate::rules::decide_pr_issue_action_with_handoff(
         &owner,
         &active_coworkers,
         &idle_coworkers,
         state.is_at_dev_limit(),
-        session_context.as_ref(),
+        pr_ctx.session_context.as_ref(),
         &nudge_msg,
     );
 
     // Convert PrAction → Effects using the same pure converter as polling,
     // then execute via the standard effect pipeline.
-    let effects = pr_action_to_effects(action, pr_number, "", PrIssueType::CiFailed, state);
+    let effects =
+        pr_action_to_effects(action, pr_number, "", PrIssueType::CiFailed, state, &pr_ctx);
     super::effects::execute_effects(effects, state).await;
 }
 
@@ -4117,7 +4103,19 @@ mod tests {
             message: "PR #42 needs attention".to_string(),
         };
 
-        let effects = pr_action_to_effects(action, 42, "Fix bug", PrIssueType::CiFailed, &state);
+        let pr_ctx = PrContext {
+            pr_task_associations: HashMap::new(),
+            task_channel: HashMap::new(),
+            session_context: None,
+        };
+        let effects = pr_action_to_effects(
+            action,
+            42,
+            "Fix bug",
+            PrIssueType::CiFailed,
+            &state,
+            &pr_ctx,
+        );
 
         assert_eq!(effects.len(), 1);
         match &effects[0] {
@@ -4144,7 +4142,13 @@ mod tests {
             message: "PR #99 CI failed".to_string(),
         };
 
-        let effects = pr_action_to_effects(action, 99, "Fix CI", PrIssueType::CiFailed, &state);
+        let pr_ctx = PrContext {
+            pr_task_associations: HashMap::new(),
+            task_channel: HashMap::new(),
+            session_context: None,
+        };
+        let effects =
+            pr_action_to_effects(action, 99, "Fix CI", PrIssueType::CiFailed, &state, &pr_ctx);
 
         assert_eq!(effects.len(), 1);
         match &effects[0] {
@@ -4186,7 +4190,19 @@ mod tests {
             reason: "Owner not found".to_string(),
         };
 
-        let effects = pr_action_to_effects(action, 42, "Fix bug", PrIssueType::CiFailed, &state);
+        let pr_ctx = PrContext {
+            pr_task_associations: HashMap::new(),
+            task_channel: HashMap::new(),
+            session_context: None,
+        };
+        let effects = pr_action_to_effects(
+            action,
+            42,
+            "Fix bug",
+            PrIssueType::CiFailed,
+            &state,
+            &pr_ctx,
+        );
         assert!(effects.is_empty());
     }
 
@@ -4198,7 +4214,12 @@ mod tests {
             message: "PR #55 has review feedback".to_string(),
         };
 
-        let effects = comment_action_to_effects(action, 55, "Add feature", &state);
+        let pr_ctx = PrContext {
+            pr_task_associations: HashMap::new(),
+            task_channel: HashMap::new(),
+            session_context: None,
+        };
+        let effects = comment_action_to_effects(action, 55, "Add feature", &state, &pr_ctx);
 
         assert_eq!(effects.len(), 1);
         match &effects[0] {
@@ -4231,8 +4252,19 @@ mod tests {
             message: "PR #77 needs review".to_string(),
         };
 
-        let effects =
-            pr_action_to_effects(action, 77, "Review PR", PrIssueType::ReviewComment, &state);
+        let pr_ctx = PrContext {
+            pr_task_associations: HashMap::new(),
+            task_channel: HashMap::new(),
+            session_context: None,
+        };
+        let effects = pr_action_to_effects(
+            action,
+            77,
+            "Review PR",
+            PrIssueType::ReviewComment,
+            &state,
+            &pr_ctx,
+        );
 
         assert_eq!(effects.len(), 1);
         match &effects[0] {
