@@ -2707,6 +2707,17 @@ async fn handle_kanban_data(id: RequestId, state: &DaemonState) -> Response {
         let coworker_records = state.coworker_records.read().await;
         let prs_by_task_id = build_pr_task_map(&prs);
 
+        // Read tasks to get explicit PR associations (task !1151)
+        let all_tasks = crate::tasks::read_tasks();
+        let task_pr_map: HashMap<u32, u64> = all_tasks
+            .iter()
+            .filter_map(|task| {
+                let task_id: u32 = task.id.parse().ok()?;
+                let pr = task.pr?;
+                Some((task_id, pr))
+            })
+            .collect();
+
         // Build reverse map: PR number -> source task ID (from PR titles)
         let task_id_by_pr: HashMap<u64, u32> = prs
             .iter()
@@ -2773,12 +2784,13 @@ async fn handle_kanban_data(id: RequestId, state: &DaemonState) -> Response {
                     "green" // default healthy
                 };
 
-                // Find PR number and source task ID for this coworker
-                // For reviewers: use GitHub state to find their assigned PR
-                // For authors: use their internal task ID to find PR from prs_by_task_id
-                let pr_number = reviewer_pr_map
-                    .get(&cw.name)
-                    .copied()
+                // Find PR number for this coworker, trying sources in priority order:
+                // 1. Explicit task.pr field (task !1151) - most authoritative
+                // 2. GitHub reviewer assignment (for review tasks)
+                // 3. PR title extraction (fallback)
+                let pr_number = task_id
+                    .and_then(|tid| task_pr_map.get(&tid).copied())
+                    .or_else(|| reviewer_pr_map.get(&cw.name).copied())
                     .or_else(|| task_id.and_then(|tid| prs_by_task_id.get(&tid).copied()));
 
                 // For display: prefer source task ID (from PR title) over internal task ID

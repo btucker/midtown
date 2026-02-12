@@ -62,23 +62,36 @@
             <div class="coworker-header">
               <span class="coworker-name">{cw.name}</span>
               <div class="badges">
-                <span
-                  class="status-badge"
-                  style="background: {getStatusColor(cw.status)}"
-                >
-                  {cw.status}
-                </span>
-                <span class="model-badge">{cw.model}</span>
+                {#if cw.health}
+                  <span
+                    class="health-badge"
+                    style="background: {cw.health === 'green' ? '#5faf5f' : cw.health === 'yellow' ? '#d7af5f' : '#af5f5f'}"
+                  >
+                    ●
+                  </span>
+                {/if}
+                <span class="model-badge">{cw.model || 'unknown'}</span>
               </div>
             </div>
-            {#if cw.current_task}
-              <div class="current-task">
-                <span class="task-label">Working on:</span>
-                <span class="task-text">{cw.current_task}</span>
-              </div>
-            {/if}
-            <div class="started-at">
-              Started: {formatDate(cw.started_at)}
+            <div class="coworker-details">
+              {#if cw.task_id}
+                <div class="detail-row">
+                  <span class="detail-label">Task:</span>
+                  <span class="detail-value">!{cw.task_id}</span>
+                </div>
+              {/if}
+              {#if cw.phase}
+                <div class="detail-row">
+                  <span class="detail-label">Phase:</span>
+                  <span class="detail-value">{cw.phase}</span>
+                </div>
+              {/if}
+              {#if cw.pr_number}
+                <div class="detail-row">
+                  <span class="detail-label">PR:</span>
+                  <span class="detail-value">#{cw.pr_number}</span>
+                </div>
+              {/if}
             </div>
           </div>
         {/each}
@@ -201,14 +214,19 @@
   .badges {
     display: flex;
     gap: 4px;
+    align-items: center;
   }
 
-  .status-badge {
-    font-size: 0.7rem;
-    padding: 2px 8px;
-    border-radius: 12px;
+  .health-badge {
+    font-size: 1rem;
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
     color: #1c1c1c;
-    text-transform: capitalize;
+    font-weight: bold;
   }
 
   .model-badge {
@@ -220,23 +238,27 @@
     text-transform: capitalize;
   }
 
-  .current-task {
-    font-size: 0.85rem;
-    margin-bottom: 4px;
+  .coworker-details {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-top: 8px;
   }
 
-  .task-label {
+  .detail-row {
+    display: flex;
+    gap: 8px;
+    font-size: 0.8rem;
+  }
+
+  .detail-label {
     color: #585858;
+    min-width: 50px;
   }
 
-  .task-text {
+  .detail-value {
     color: #a8a8a8;
-    font-size: 0.75rem;
-  }
-
-  .started-at {
-    font-size: 0.75rem;
-    color: #585858;
+    font-family: monospace;
   }
 
   .task-list {
