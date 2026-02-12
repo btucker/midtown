@@ -444,22 +444,3 @@ mod tests {
         // handle_auth_switch() must override this with the NEW provider
     }
 }
-
-/// Test helper to verify auth_profile_dir computation happens after config switch.
-///
-/// This is a compile-time assertion that ensures the provider_auth_dir variable
-/// is computed after the config save operations in handle_auth_switch.
-///
-/// The bug was: provider_auth_dir was computed at line 277, before the config
-/// was saved (lines 142-181). This test would fail to compile if provider_auth_dir
-/// is moved back to before the config switch.
-#[cfg(test)]
-#[allow(dead_code)]
-fn compile_time_order_check() {
-    // This function doesn't run, but the compiler enforces that these operations
-    // happen in sequence. If provider_auth_dir computation moves before the
-    // config switch, this function's logic would be invalid.
-    let _config_switched = (); // Represents lines 142-181
-    let _provider_auth_dir_computed = (); // Must happen AFTER config switch
-    let _coworkers_relaunched = (); // Uses the computed dir
-}
