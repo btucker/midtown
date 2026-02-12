@@ -194,28 +194,23 @@ pub(super) async fn handle_auth_switch(
     let shutdown_count = running_coworkers.len();
     for coworker in &running_coworkers {
         let name = &coworker.name;
-        let coworkers = state.coworkers.clone();
-        let name_owned = name.clone();
-        let shutdown_result =
-            tokio::task::spawn_blocking(move || coworkers.shutdown(&name_owned)).await;
 
-        match shutdown_result {
-            Ok(Ok(())) => {
-                state.record_coworker_stop_time(name);
-                // Only clear records on successful shutdown
-                {
-                    let mut records = state.coworker_records.write().await;
-                    records.remove(name);
-                }
-                state.broadcast_coworker_update(name, "stopped", None);
-            }
-            Ok(Err(e)) => {
-                warn!("Failed to shut down coworker {}: {}", name, e);
-            }
-            Err(e) => {
-                warn!("spawn_blocking panic while shutting down {}: {}", name, e);
-            }
+        // Shut down the headless session (async), then deregister from tracking (sync).
+        // This matches the correct shutdown sequence in rpc_coworker.rs (handle_coworker_break).
+        // Using the old coworkers.shutdown() would attempt to kill tmux windows instead of
+        // headless sessions, causing the sessions to remain alive with stale credentials.
+        if let Err(e) = state.session_manager.shutdown(name).await {
+            warn!("Failed to shut down headless session for {}: {}", name, e);
         }
+        state.coworkers.deregister(name);
+
+        state.record_coworker_stop_time(name);
+        // Only clear records on successful shutdown
+        {
+            let mut records = state.coworker_records.write().await;
+            records.remove(name);
+        }
+        state.broadcast_coworker_update(name, "stopped", None);
     }
 
     // Capture reviewer assignments before relaunch so reviewer coworkers can
@@ -273,6 +268,8 @@ pub(super) async fn handle_auth_switch(
     };
 
     // Re-launch all sessions for this provider using the updated auth profile.
+    // Get the new profile's directory (the config switch at lines 142-181 has
+    // already updated the active profile, so this reads the NEW profile's dir).
     let provider_auth_dir =
         crate::auth::active_profile_dir_for_project_with_provider(&state.repo_name, provider);
     let mut relaunch_count = 0usize;
@@ -287,6 +284,12 @@ pub(super) async fn handle_auth_switch(
             build_coworker_relaunch_config(coworker, &state.repo_name)
         };
         config.auth_profile_dir = Some(provider_auth_dir.clone());
+        // CRITICAL: Set the NEW provider on the launch config. Without this line,
+        // coworkers would restart with the wrong provider:
+        // - Reviewers get AuthProvider::Claude from LaunchConfig::reviewer() (line 280)
+        // - Non-reviewers get their old provider from build_coworker_relaunch_config() (line 285)
+        // Either way, they'd use the old provider's auth env var, causing credential failures.
+        config.auth_provider = provider;
 
         match state.spawn_coworker(&config).await {
             Ok(()) => relaunch_count += 1,
@@ -336,76 +339,6 @@ pub(super) async fn handle_auth_switch(
 // Tests
 // ============================================================================
 
+#[path = "rpc_auth_tests.rs"]
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_filter_coworkers_by_provider() {
-        let coworkers = vec![
-            crate::coworker::Coworker {
-                slot_id: "1".to_string(),
-                name: "lexington".to_string(),
-                status: crate::coworker::CoworkerStatus::Running,
-                working_dir: "/tmp/lexington".to_string(),
-                started_at: chrono::Utc::now(),
-                current_task: Some("Build auth".to_string()),
-                session_id: None,
-                model: "sonnet".to_string(),
-                provider: crate::auth::AuthProvider::Claude,
-                profile: "default".to_string(),
-            },
-            crate::coworker::Coworker {
-                slot_id: "2".to_string(),
-                name: "park".to_string(),
-                status: crate::coworker::CoworkerStatus::Running,
-                working_dir: "/tmp/park".to_string(),
-                started_at: chrono::Utc::now(),
-                current_task: Some("Review PR".to_string()),
-                session_id: None,
-                model: "gpt-5-codex".to_string(),
-                provider: crate::auth::AuthProvider::Codex,
-                profile: "default".to_string(),
-            },
-        ];
-
-        let claude = filter_coworkers_by_provider(&coworkers, crate::auth::AuthProvider::Claude);
-        let codex = filter_coworkers_by_provider(&coworkers, crate::auth::AuthProvider::Codex);
-
-        assert_eq!(claude.len(), 1);
-        assert_eq!(claude[0].name, "lexington");
-        assert_eq!(codex.len(), 1);
-        assert_eq!(codex[0].name, "park");
-    }
-
-    #[test]
-    fn test_build_coworker_relaunch_config_preserves_name_and_model() {
-        let coworker = crate::coworker::Coworker {
-            slot_id: "1".to_string(),
-            name: "madison".to_string(),
-            status: crate::coworker::CoworkerStatus::Running,
-            working_dir: "/tmp/madison".to_string(),
-            started_at: chrono::Utc::now(),
-            current_task: Some("Fix tests".to_string()),
-            session_id: None,
-            model: "opus".to_string(),
-            provider: crate::auth::AuthProvider::Claude,
-            profile: "default".to_string(),
-        };
-
-        let config = build_coworker_relaunch_config(&coworker, "midtown");
-        assert_eq!(config.name, "madison");
-        assert_eq!(config.model, "opus");
-        assert_eq!(config.session_mode, crate::launch::SessionMode::Resume);
-    }
-
-    #[test]
-    fn test_lead_relaunch_status_strings() {
-        assert_eq!(LeadRelaunchStatus::Relaunched.as_str(), "relaunched");
-        assert_eq!(LeadRelaunchStatus::Failed.as_str(), "failed");
-        assert_eq!(LeadRelaunchStatus::Unchanged.as_str(), "unchanged");
-        assert_eq!(LeadRelaunchStatus::Unchanged.summary(), "lead unchanged");
-        assert!(!LeadRelaunchStatus::Unchanged.attempted());
-        assert!(LeadRelaunchStatus::Relaunched.relaunched());
-    }
-}
+mod tests;
