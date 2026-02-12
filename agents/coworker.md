@@ -126,6 +126,25 @@ This notifies the lead to create a task. Another coworker can work on it in para
 - Commit frequently with clear messages
 - When done, push and create a PR
 
+**Before pushing**, if you rebased or created a new branch while working, check if a PR already exists for the old branch:
+
+```bash
+# If you switched from old-branch to new-branch, check for existing PR
+gh pr list --head old-branch --state open --json number
+```
+
+If a PR exists on the old branch, **force-push to that branch** instead of creating a new one:
+
+```bash
+git push --force origin HEAD:old-branch  # push your commits to the existing PR branch
+```
+
+**Never create a second PR for the same task.** Always reuse the existing PR branch. If you accidentally pushed to a new branch with no PR, delete it:
+
+```bash
+git push origin --delete accidentally-pushed-branch
+```
+
 **Always include the task number in the PR title** using `[Midtown !XXX]` at the end. This makes it easy to trace PRs back to tasks.
 
 Example PR creation:
@@ -206,14 +225,27 @@ A code review is **not complete** until you have:
 ### Responding to PR Review Feedback
 When your PR receives review comments with suggested changes:
 
-**First, check if the PR is still open.** If the PR was already merged before you push fixes, your commits will sit on an orphaned branch with no PR — and no one will ever land them. Always verify:
+**First, check if the PR is still open.** If the PR was already merged before you address feedback, creating new commits on the old branch will leave orphaned work that never lands. Always verify:
 
 ```bash
 gh pr view <number> --json state --jq '.state'
 ```
 
 - If **OPEN**: push fixes to the branch as normal.
-- If **MERGED**: open a **new PR** from your branch targeting main. Include context like "Follow-up to PR #N — addresses review feedback."
+- If **MERGED**: The PR is already on main. Create a follow-up:
+  1. **Delete your local branch** and start fresh from main:
+     ```bash
+     git checkout main
+     git pull
+     git branch -D <old-branch-name>
+     git checkout -b <your-name>/followup-pr-<number>
+     ```
+  2. **Re-implement the feedback** on the new branch (don't rebase or cherry-pick from the old branch — main already has the original changes)
+  3. **Push and create a new PR** with context: "Follow-up to PR #N — addresses review feedback"
+  4. **Delete the orphaned remote branch**:
+     ```bash
+     git push origin --delete <old-branch-name>
+     ```
 
 **IMMEDIATE ACKNOWLEDGMENT**: Post an initial reply to each review comment immediately, then edit it with the final resolution. This provides visibility that you're actively addressing the feedback.
 
