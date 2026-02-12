@@ -11,7 +11,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use tracing::{info, warn};
 
 use super::specialized::{SpecializedCoworker, SpecializedRole};
@@ -31,6 +31,8 @@ const CLUSTERER_SCHEMA: &str = include_str!("../clusterer_schema.json");
 /// Input data sent to the clusterer for each task.
 #[derive(Debug, Clone, Serialize)]
 pub struct ClustererRequest {
+    /// New task ID (e.g., "1234").
+    pub task_id: String,
     /// New task subject.
     pub task_subject: String,
     /// New task description.
@@ -61,34 +63,12 @@ pub struct CompletedTaskInfo {
     pub channel: Option<String>,
 }
 
-/// Clusterer's decision about channel assignment.
-#[derive(Debug, Clone, Deserialize)]
-pub struct ClustererResponse {
-    /// Channel to assign the task to.
-    pub channel: String,
-    /// Rationale for the assignment.
-    #[allow(dead_code)] // Logged but not currently used in logic
-    pub rationale: String,
-    /// Optional suggestions for channel maintenance.
-    #[allow(dead_code)] // Logged but not currently acted upon
-    #[serde(default)]
-    pub suggestions: Vec<ChannelSuggestion>,
-}
-
-/// A suggestion for channel maintenance (archive or merge).
-#[derive(Debug, Clone, Deserialize)]
-#[serde(tag = "action", rename_all = "lowercase")]
-pub enum ChannelSuggestion {
-    Archive {
-        channel: String,
-        reason: String,
-    },
-    Merge {
-        from: String,
-        into: String,
-        reason: String,
-    },
-}
+/// Clusterer's decision about channel operations.
+///
+/// Returns a full ClusteringDiff describing all channel operations to perform,
+/// not just a single task assignment. This allows the clusterer to create,
+/// archive, and merge channels as part of its decision.
+pub type ClustererResponse = crate::clustering::ClusteringDiff;
 
 /// Clusterer role implementation.
 struct ClustererRole;
@@ -168,8 +148,11 @@ pub async fn assign_channel(
         .map_err(|e| format!("Clusterer execution failed: {}", e))?;
 
     info!(
-        "Clusterer: assigned to '{}' (cost=${:.4}, duration={}ms, session_id={})",
-        result.response.channel,
+        "Clusterer: returned {} creates, {} archives, {} merges, {} assignments (cost=${:.4}, duration={}ms, session_id={})",
+        result.response.create_channels.len(),
+        result.response.archive_channels.len(),
+        result.response.merge_channels.len(),
+        result.response.assign_tasks.len(),
         result.cost_usd,
         result.duration_ms,
         result.session_id.as_deref().unwrap_or("unknown"),
@@ -177,21 +160,6 @@ pub async fn assign_channel(
 
     // Save the session ID for next time
     persistent_state.clusterer_session_id = result.session_id;
-
-    // Log any suggestions
-    for suggestion in &result.response.suggestions {
-        match suggestion {
-            ChannelSuggestion::Archive { channel, reason } => {
-                info!("Clusterer suggests archiving '{}': {}", channel, reason);
-            }
-            ChannelSuggestion::Merge { from, into, reason } => {
-                info!(
-                    "Clusterer suggests merging '{}' into '{}': {}",
-                    from, into, reason
-                );
-            }
-        }
-    }
 
     Ok(result.response)
 }
@@ -209,6 +177,7 @@ mod tests {
     #[test]
     fn test_clusterer_request_serialization() {
         let request = ClustererRequest {
+            task_id: "1234".to_string(),
             task_subject: "Add auth endpoint".to_string(),
             task_description: "Implement JWT authentication".to_string(),
             channels: vec![
@@ -236,19 +205,18 @@ mod tests {
     #[test]
     fn test_clusterer_response_deserialization() {
         let json = r#"{
-            "channel": "auth-refactor",
-            "rationale": "This task is related to authentication",
-            "suggestions": [
+            "create_channels": [],
+            "archive_channels": ["old-auth"],
+            "merge_channels": [
                 {
-                    "action": "archive",
-                    "channel": "old-auth",
-                    "reason": "All tasks completed"
-                },
-                {
-                    "action": "merge",
                     "from": "auth-v2",
-                    "into": "auth",
-                    "reason": "Same area of work"
+                    "into": "auth"
+                }
+            ],
+            "assign_tasks": [
+                {
+                    "task": "1234",
+                    "channel": "auth"
                 }
             ]
         }"#;
@@ -257,23 +225,31 @@ mod tests {
         assert!(response.is_ok());
 
         let response = response.unwrap();
-        assert_eq!(response.channel, "auth-refactor");
-        assert_eq!(response.suggestions.len(), 2);
+        assert_eq!(response.archive_channels.len(), 1);
+        assert_eq!(response.merge_channels.len(), 1);
+        assert_eq!(response.assign_tasks.len(), 1);
     }
 
     #[test]
     fn test_clusterer_response_minimal() {
         let json = r#"{
-            "channel": "midtown",
-            "rationale": "Meta work"
+            "create_channels": [],
+            "archive_channels": [],
+            "merge_channels": [],
+            "assign_tasks": [
+                {
+                    "task": "1234",
+                    "channel": "midtown"
+                }
+            ]
         }"#;
 
         let response: Result<ClustererResponse, _> = serde_json::from_str(json);
         assert!(response.is_ok());
 
         let response = response.unwrap();
-        assert_eq!(response.channel, "midtown");
-        assert!(response.suggestions.is_empty());
+        assert_eq!(response.assign_tasks.len(), 1);
+        assert_eq!(response.assign_tasks[0].channel, "midtown");
     }
 
     #[test]
@@ -287,6 +263,7 @@ mod tests {
         assert!(!role.allow_tools());
 
         let request = ClustererRequest {
+            task_id: "100".to_string(),
             task_subject: "Test task".to_string(),
             task_description: "Test description".to_string(),
             channels: vec![],
@@ -297,7 +274,12 @@ mod tests {
         assert!(formatted.contains("Test task"));
         assert!(formatted.contains("Test description"));
 
-        let valid_json = r#"{"channel": "test", "rationale": "because"}"#;
+        let valid_json = r#"{
+            "create_channels": [],
+            "archive_channels": [],
+            "merge_channels": [],
+            "assign_tasks": [{"task": "123", "channel": "test"}]
+        }"#;
         let response = role.parse_response(valid_json);
         assert!(response.is_ok());
 

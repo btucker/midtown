@@ -1375,6 +1375,20 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 if let Err(e) = ps.save_for_repo(&state.repo_name) {
                     warn!("Failed to save task_channel after assignment: {}", e);
                 }
+                // Also update the task file on disk so dispatch.rs reads the correct channel
+                // (dispatch reads task.channel from the file, not from persistent state)
+                if let Err(e) = crate::tasks::update_task_fields_for_repo(
+                    &task_id,
+                    &state.repo_name,
+                    None, // owner
+                    None, // status
+                    None, // description
+                    None, // blocked_by
+                    Some(&channel),
+                    None, // pr
+                ) {
+                    warn!("Failed to update task file channel for !{}: {}", task_id, e);
+                }
             }
             Effect::UnassignTask { task_id, repo_name } => {
                 if let Err(e) = crate::tasks::unassign_task_for_repo(&task_id, &repo_name) {

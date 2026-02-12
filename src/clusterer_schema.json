@@ -1,43 +1,69 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "type": "object",
-  "required": ["channel", "rationale"],
+  "required": ["create_channels", "archive_channels", "merge_channels", "assign_tasks"],
   "properties": {
-    "channel": {
-      "type": "string",
-      "description": "The channel name to assign the task to (kebab-case)",
-      "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$"
-    },
-    "rationale": {
-      "type": "string",
-      "description": "Brief explanation of why this channel was chosen"
-    },
-    "suggestions": {
+    "create_channels": {
       "type": "array",
-      "description": "Optional suggestions for channel maintenance",
+      "description": "New channels to create with initial task assignments",
       "items": {
         "type": "object",
-        "required": ["action"],
+        "required": ["name", "tasks"],
         "properties": {
-          "action": {
+          "name": {
             "type": "string",
-            "enum": ["archive", "merge"]
+            "description": "Channel name (kebab-case). Use #proj- prefix for project channels.",
+            "pattern": "^(#proj-)?[a-z0-9]+(-[a-z0-9]+)*$"
           },
-          "channel": {
-            "type": "string",
-            "description": "Channel to archive (for archive action)"
-          },
+          "tasks": {
+            "type": "array",
+            "description": "Task IDs to initially assign to this channel",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "archive_channels": {
+      "type": "array",
+      "description": "Channels to archive (rename to .archived.jsonl). Only for completed project channels.",
+      "items": {
+        "type": "string"
+      }
+    },
+    "merge_channels": {
+      "type": "array",
+      "description": "Channel merge operations (merge 'from' into 'into')",
+      "items": {
+        "type": "object",
+        "required": ["from", "into"],
+        "properties": {
           "from": {
             "type": "string",
-            "description": "Source channel (for merge action)"
+            "description": "Source channel to merge (will be archived after merge)"
           },
           "into": {
             "type": "string",
-            "description": "Destination channel (for merge action)"
-          },
-          "reason": {
+            "description": "Target channel to merge into"
+          }
+        }
+      }
+    },
+    "assign_tasks": {
+      "type": "array",
+      "description": "Task-to-channel assignments. Must include all pending tasks.",
+      "items": {
+        "type": "object",
+        "required": ["task", "channel"],
+        "properties": {
+          "task": {
             "type": "string",
-            "description": "Explanation for the suggestion"
+            "description": "Task ID (e.g., '1075')"
+          },
+          "channel": {
+            "type": "string",
+            "description": "Target channel name"
           }
         }
       }
