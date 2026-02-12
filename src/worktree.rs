@@ -830,6 +830,34 @@ impl WorktreeManager {
             let _ = std::fs::remove_dir_all(&worktree_path);
         }
 
+        // Check if the branch already exists (from a stale worktree).
+        // If so, delete it before attempting to create the worktree.
+        let branch_exists = Command::new("git")
+            .current_dir(&self.repo_root)
+            .args([
+                "rev-parse",
+                "--verify",
+                &format!("refs/heads/{}", worktree_id),
+            ])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+
+        if branch_exists {
+            tracing::warn!(
+                "Branch {} exists but worktree doesn't - likely stale, cleaning up",
+                worktree_id
+            );
+            // Prune stale worktree references first (in case the branch is linked to a deleted worktree)
+            let _ = self.prune();
+
+            // Delete the stale branch
+            let _ = Command::new("git")
+                .current_dir(&self.repo_root)
+                .args(["branch", "-D", worktree_id])
+                .output();
+        }
+
         if let Some(parent) = worktree_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -849,42 +877,49 @@ impl WorktreeManager {
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr).to_string();
 
-            // If the branch already exists, try detach + checkout
+            // If the branch already exists, delete it and retry
+            // This handles the case where a stale branch is left from a previous
+            // worktree that was deleted or moved
             if stderr.contains("already exists") {
-                let output = Command::new("git")
+                tracing::warn!(
+                    "Branch {} already exists, deleting stale branch and retrying",
+                    worktree_id
+                );
+
+                // Delete the stale branch (force delete since it may not be merged)
+                let delete_output = Command::new("git")
+                    .current_dir(&self.repo_root)
+                    .args(["branch", "-D", worktree_id])
+                    .output()?;
+
+                if !delete_output.status.success() {
+                    tracing::warn!(
+                        "Failed to delete stale branch {}: {}",
+                        worktree_id,
+                        String::from_utf8_lossy(&delete_output.stderr)
+                    );
+                }
+
+                // Prune stale worktree references in case the branch was linked
+                // to a deleted worktree
+                let _ = self.prune();
+
+                // Retry creating the worktree with the branch
+                let retry = Command::new("git")
                     .current_dir(&self.repo_root)
                     .args([
                         "worktree",
                         "add",
-                        worktree_path.to_str().unwrap(),
+                        "-b",
                         worktree_id,
+                        worktree_path.to_str().unwrap(),
                     ])
                     .output()?;
 
-                if !output.status.success() {
-                    // Prune and retry as last resort
-                    if !worktree_path.exists() {
-                        let _ = self.prune();
-                        let retry = Command::new("git")
-                            .current_dir(&self.repo_root)
-                            .args([
-                                "worktree",
-                                "add",
-                                "-b",
-                                worktree_id,
-                                worktree_path.to_str().unwrap(),
-                            ])
-                            .output()?;
-                        if !retry.status.success() {
-                            return Err(WorktreeError::GitError(
-                                String::from_utf8_lossy(&retry.stderr).to_string(),
-                            ));
-                        }
-                    } else {
-                        return Err(WorktreeError::GitError(
-                            String::from_utf8_lossy(&output.stderr).to_string(),
-                        ));
-                    }
+                if !retry.status.success() {
+                    return Err(WorktreeError::GitError(
+                        String::from_utf8_lossy(&retry.stderr).to_string(),
+                    ));
                 }
             } else if !worktree_path.exists() {
                 // Prune stale references and retry
@@ -2091,3 +2126,7 @@ branch refs/heads/bob/work
         );
     }
 }
+
+#[path = "worktree_stale_branch_tests.rs"]
+#[cfg(test)]
+mod stale_branch_tests;
