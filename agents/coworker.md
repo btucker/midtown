@@ -250,6 +250,12 @@ gh pr view <number> --json state --jq '.state'
        -f body="📋 Created follow-up task: [description]"
      ```
 
+**Before merging**, check for new comments that arrived after the review:
+```bash
+gh pr view <number> --comments --json comments --jq '.comments[-2:][] | "\(.author.login): \(.body[:120])"'
+```
+The user (repo owner) may leave additional requests after the reviewer posts. Merging without addressing these is a process failure.
+
 **After addressing all feedback**, enable auto-merge immediately:
 ```bash
 gh pr merge --auto --squash
