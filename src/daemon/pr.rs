@@ -23,15 +23,11 @@ use super::helpers::*;
 use super::snapshot::WorldSnapshot;
 use super::trackers::{PrIssueType, StuckConditionType};
 
-/// Get list of coworker names who have open PRs.
-///
-/// A coworker is considered to have an open PR if the PR's branch name
-/// starts with the coworker's name (e.g., "lexington/fix-auth").
-/// Coworkers with open PRs should NEVER be sent on a break.
 /// Get coworker names that have open PRs (branch name starts with coworker name).
 ///
 /// Uses cached data from the latest `poll_prs_for_issues` call when available,
-/// avoiding a separate `gh pr list` API call.
+/// avoiding a separate `gh pr list` API call. Coworkers with open PRs should
+/// NEVER be sent on a break.
 pub(super) fn get_coworkers_with_open_prs(state: &DaemonState) -> Vec<String> {
     let cache = state.pr_coworker_cache.read().unwrap();
     if !cache.open_pr_owners.is_empty() {
@@ -273,6 +269,42 @@ fn get_active_and_idle_coworkers(state: &DaemonState) -> (Vec<String>, Vec<Strin
     (active_coworkers, idle_coworkers)
 }
 
+/// Compute the set of running coworkers who own review worktrees and their session IDs.
+///
+/// Used by `poll_prs_for_issues` to pass into `cleanup_expired_preserving`, which
+/// removes timed-out reviewer assignments but preserves those for still-running
+/// reviewers. Excludes usage-limited coworkers (they can't complete reviews) and
+/// coworkers whose names were reused for dev work after restart.
+fn collect_running_reviewer_sets(snap: &WorldSnapshot) -> (HashSet<String>, HashSet<String>) {
+    let review_branch_owners: HashSet<String> = snap
+        .worktree_branch_owners
+        .iter()
+        .filter(|(branch, _)| branch.starts_with("review-pr-"))
+        .map(|(_, owner)| owner.to_lowercase())
+        .collect();
+
+    let is_active_reviewer = |name: &str| -> bool {
+        review_branch_owners.contains(&name.to_lowercase())
+            && !snap.usage_limited_coworkers.contains(&name.to_lowercase())
+    };
+
+    let names: HashSet<String> = snap
+        .running_coworkers
+        .iter()
+        .filter(|c| is_active_reviewer(&c.name))
+        .map(|c| c.name.clone())
+        .collect();
+
+    let session_ids: HashSet<String> = snap
+        .running_coworkers
+        .iter()
+        .filter(|c| is_active_reviewer(&c.name))
+        .filter_map(|c| c.session_id.clone())
+        .collect();
+
+    (names, session_ids)
+}
+
 /// Detect tasks linked to abandoned PRs (closed without merge) and return reset effects.
 ///
 /// Pure decision function that takes snapshot data and returns effects for tasks
@@ -315,6 +347,143 @@ pub(super) fn detect_abandoned_pr_tasks(
 }
 
 // ============================================================================
+// Cleanup and cache helpers (extracted from poll_prs_for_issues)
+// ============================================================================
+
+/// Run all periodic tracker and state cleanup tasks.
+///
+/// Cleans up expired entries in the PR issue tracker, persistent GitHub state,
+/// cooldown tracker, and RPC response cache. Preserves reviewer assignments
+/// for coworkers still actively reviewing.
+async fn cleanup_trackers(
+    snap: &WorldSnapshot,
+    state: &DaemonState,
+    running_coworker_names: &HashSet<String>,
+    running_reviewer_session_ids: &HashSet<String>,
+) {
+    {
+        let mut tracker = state.pr_issue_tracker.lock().await;
+        tracker.cleanup();
+    }
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.github
+            .cleanup_expired_preserving(running_coworker_names, Some(running_reviewer_session_ids));
+        // Backfill reviewer_session_id for assignments created before the session
+        // started (optimistic assignment pattern: assign before spawn completes).
+        let reviewer_session_map: HashMap<String, String> = snap
+            .running_coworkers
+            .iter()
+            .filter(|c| running_coworker_names.contains(&c.name))
+            .filter_map(|c| {
+                c.session_id
+                    .as_ref()
+                    .map(|sid| (c.name.clone(), sid.clone()))
+            })
+            .collect();
+        ps.github
+            .backfill_reviewer_session_ids(&reviewer_session_map);
+        ps.github.cleanup_stale_webhook_events();
+    }
+    {
+        let mut cooldowns = state.cooldowns.lock().unwrap();
+        cooldowns.cleanup(Duration::from_secs(7200)); // 2 hours
+    }
+    state.cleanup_rpc_response_cache().await;
+}
+
+/// Update all PR-related caches from freshly polled data.
+///
+/// Populates the `pr_coworker_cache` with:
+/// - Open PR owners (for `get_coworkers_with_open_prs`)
+/// - Formatted PR data (for RPC status responses)
+/// - CI-passed PR owners (for PR break decisions)
+///
+/// Also cleans up stale PR break sessions for closed/merged PRs.
+fn update_pr_caches(snap: &WorldSnapshot, state: &DaemonState, prs: &[serde_json::Value]) {
+    let branch_owners = Some(&snap.worktree_branch_owners);
+
+    // Cache open PR owners
+    {
+        let mut cache = state.pr_coworker_cache.write().unwrap();
+        cache.open_pr_owners = collect_pr_owners(prs, branch_owners);
+    }
+
+    // Cache formatted PR data for RPC responses
+    {
+        let task_map: HashMap<u64, String> = snap
+            .all_tasks
+            .iter()
+            .filter_map(|t| {
+                let id = t.id.parse::<u64>().ok()?;
+                Some((id, t.subject.clone()))
+            })
+            .collect();
+
+        let formatted_prs: Vec<serde_json::Value> = prs
+            .iter()
+            .map(|pr| {
+                let title = pr_title(pr);
+                let task_id = crate::tasks::extract_task_id_from_pr_title(title);
+                let task_name = task_id.and_then(|id| task_map.get(&id).cloned());
+                serde_json::json!({
+                    "number": pr_number(pr),
+                    "title": title,
+                    "author": pr.get("author").and_then(|a| a.get("login")).and_then(|l| l.as_str()).unwrap_or("unknown"),
+                    "status": format_pr_status_for_rpc(pr),
+                    "task_id": task_id,
+                    "task_name": task_name,
+                })
+            })
+            .collect();
+
+        let mut cache = state.pr_coworker_cache.write().unwrap();
+        cache.open_prs_data = formatted_prs;
+    }
+
+    // Cache CI-passed owners and mark poll as initialized
+    {
+        let ci_passed: HashSet<String> = prs
+            .iter()
+            .filter(|pr| all_ci_checks_passed(pr))
+            .filter_map(|pr| coworker_from_branch_with_map(pr_head_ref(pr), branch_owners))
+            .collect();
+        let mut cache = state.pr_coworker_cache.write().unwrap();
+        cache.ci_passed_pr_owners = ci_passed;
+        cache.pr_poll_initialized = true;
+    }
+
+    // Cleanup stale PR break sessions
+    {
+        let active_pr_coworkers = collect_pr_owners(prs, branch_owners);
+        let mut sessions = state.pr_break_sessions.write().unwrap();
+        let before = sessions.len();
+        sessions.retain(|name, _| active_pr_coworkers.contains(name));
+        let removed = before - sessions.len();
+        if removed > 0 {
+            info!(
+                "Cleaned up {} stale PR break session(s) (PR closed/merged)",
+                removed
+            );
+        }
+    }
+}
+
+/// Clean up persistent reviewer assignments for closed PRs and save state.
+async fn cleanup_closed_pr_assignments(
+    state: &DaemonState,
+    open_pr_numbers: &[u64],
+    running_coworker_names: &HashSet<String>,
+    running_reviewer_session_ids: &HashSet<String>,
+) {
+    let mut ps = state.persistent_state.lock().await;
+    ps.github.cleanup_closed_prs(open_pr_numbers);
+    ps.github
+        .cleanup_expired_preserving(running_coworker_names, Some(running_reviewer_session_ids));
+    if let Err(e) = ps.save_for_repo(&state.repo_name) {
+        warn!("Failed to save daemon-state.json after cleanup: {}", e);
+    }
+}
 
 /// Poll all open PRs and return effects for actionable issues.
 ///
@@ -338,44 +507,8 @@ pub(super) async fn poll_prs_for_issues(
         .map(|c| c.name.clone())
         .collect();
 
-    // Get running coworkers for cleanup_expired_preserving, which removes timed-out
-    // reviewer assignments but preserves those for still-running reviewers (i.e., reviews
-    // that are taking longer than the timeout but the reviewer is still actively working).
-    // Only include coworkers that own a review worktree branch — if a reviewer name was
-    // reused for dev work after restart, the stale assignment should expire naturally
-    // rather than being preserved by the dev coworker's presence.
-    // Also exclude usage-limited coworkers: they can't complete reviews.
-    // Normalize to lowercase for consistent matching — worktree_branch_owners
-    // comes from WorktreeAssignment.current_coworker (external input), while
-    // running_coworkers uses names from AVENUE_NAMES (always lowercase).
-    let review_branch_owners: HashSet<String> = snap
-        .worktree_branch_owners
-        .iter()
-        .filter(|(branch, _)| branch.starts_with("review-pr-"))
-        .map(|(_, owner)| owner.to_lowercase())
-        .collect();
-    let running_coworker_names: HashSet<String> = snap
-        .running_coworkers
-        .iter()
-        .map(|c| c.name.clone())
-        .filter(|name| {
-            review_branch_owners.contains(&name.to_lowercase())
-                && !snap.usage_limited_coworkers.contains(&name.to_lowercase())
-        })
-        .collect();
-    // Build session ID set for same reviewer-subset — enables session-based matching
-    // in cleanup_expired_preserving when assignments carry a reviewer_session_id.
-    let running_reviewer_session_ids: HashSet<String> = snap
-        .running_coworkers
-        .iter()
-        .filter(|c| {
-            review_branch_owners.contains(&c.name.to_lowercase())
-                && !snap
-                    .usage_limited_coworkers
-                    .contains(&c.name.to_lowercase())
-        })
-        .filter_map(|c| c.session_id.clone())
-        .collect();
+    let (running_coworker_names, running_reviewer_session_ids) =
+        collect_running_reviewer_sets(snap);
 
     // Get list of idle coworkers for handoff decisions
     let idle_coworkers: Vec<String> = {
@@ -436,41 +569,13 @@ pub(super) async fn poll_prs_for_issues(
 
     let prs: Vec<serde_json::Value> = serde_json::from_str(&stdout)?;
 
-    // Cleanup old tracking entries, but preserve assignments for RUNNING coworkers
-    // so reviewers don't lose their PR tracking while actively reviewing.
-    // Using running_coworkers (not active_coworkers) ensures that idle/stopped
-    // reviewers have their assignments cleaned up, freeing slots for new reviews.
-    {
-        let mut tracker = state.pr_issue_tracker.lock().await;
-        tracker.cleanup();
-    }
-    {
-        let mut ps = state.persistent_state.lock().await;
-        ps.github.cleanup_expired_preserving(
-            &running_coworker_names,
-            Some(&running_reviewer_session_ids),
-        );
-        // Backfill reviewer_session_id for assignments created before the session
-        // started (optimistic assignment pattern: assign before spawn completes).
-        let reviewer_session_map: HashMap<String, String> = snap
-            .running_coworkers
-            .iter()
-            .filter(|c| review_branch_owners.contains(&c.name.to_lowercase()))
-            .filter_map(|c| {
-                c.session_id
-                    .as_ref()
-                    .map(|sid| (c.name.clone(), sid.clone()))
-            })
-            .collect();
-        ps.github
-            .backfill_reviewer_session_ids(&reviewer_session_map);
-        ps.github.cleanup_stale_webhook_events();
-    }
-    {
-        let mut cooldowns = state.cooldowns.lock().unwrap();
-        cooldowns.cleanup(Duration::from_secs(7200)); // 2 hours
-    }
-    state.cleanup_rpc_response_cache().await;
+    cleanup_trackers(
+        snap,
+        state,
+        &running_coworker_names,
+        &running_reviewer_session_ids,
+    )
+    .await;
 
     // Filter to only open PRs (defense-in-depth: gh pr list --state open should only return
     // open PRs, but verify via the state field to guard against stale/cached results)
@@ -482,76 +587,7 @@ pub(super) async fn poll_prs_for_issues(
         })
         .collect();
 
-    // Cache open PR owners for reuse by get_coworkers_with_open_prs
-    {
-        let mut cache = state.pr_coworker_cache.write().unwrap();
-        cache.open_pr_owners = collect_pr_owners(&prs, Some(&snap.worktree_branch_owners));
-    }
-
-    // Cache full open PR data for RPC responses (avoids gh CLI calls in handle_status).
-    // Format the PR data similarly to get_open_prs() in rpc.rs, including task enrichment.
-    {
-        let tasks = &snap.all_tasks;
-        let task_map: std::collections::HashMap<u64, String> = tasks
-            .iter()
-            .filter_map(|t| {
-                let id = t.id.parse::<u64>().ok()?;
-                Some((id, t.subject.clone()))
-            })
-            .collect();
-
-        let formatted_prs: Vec<serde_json::Value> = prs
-            .iter()
-            .map(|pr| {
-                let title = pr_title(pr);
-                let task_id = crate::tasks::extract_task_id_from_pr_title(title);
-                let task_name = task_id.and_then(|id| task_map.get(&id).cloned());
-                serde_json::json!({
-                    "number": pr_number(pr),
-                    "title": title,
-                    "author": pr.get("author").and_then(|a| a.get("login")).and_then(|l| l.as_str()).unwrap_or("unknown"),
-                    "status": format_pr_status_for_rpc(pr),
-                    "task_id": task_id,
-                    "task_name": task_name,
-                })
-            })
-            .collect();
-
-        let mut cache = state.pr_coworker_cache.write().unwrap();
-        cache.open_prs_data = formatted_prs;
-    }
-
-    // Cache coworker names whose PRs have all CI checks passing (for PR break decisions)
-    {
-        let ci_passed: HashSet<String> = prs
-            .iter()
-            .filter(|pr| all_ci_checks_passed(pr))
-            .filter_map(|pr| {
-                coworker_from_branch_with_map(pr_head_ref(pr), Some(&snap.worktree_branch_owners))
-            })
-            .collect();
-        let mut cache = state.pr_coworker_cache.write().unwrap();
-        cache.ci_passed_pr_owners = ci_passed;
-        // Mark PR poll as initialized so orphan detection knows we have PR data.
-        // This prevents false positive orphan warnings during daemon startup when
-        // orphan checks run before the first PR poll completes.
-        cache.pr_poll_initialized = true;
-    }
-
-    // Cleanup saved PR break sessions for coworkers whose PRs are no longer open
-    {
-        let active_pr_coworkers = collect_pr_owners(&prs, Some(&snap.worktree_branch_owners));
-        let mut sessions = state.pr_break_sessions.write().unwrap();
-        let before = sessions.len();
-        sessions.retain(|name, _| active_pr_coworkers.contains(name));
-        let removed = before - sessions.len();
-        if removed > 0 {
-            info!(
-                "Cleaned up {} stale PR break session(s) (PR closed/merged)",
-                removed
-            );
-        }
-    }
+    update_pr_caches(snap, state, &prs);
 
     // Detect abandoned PRs (closed without merge) and reset associated tasks.
     // This uses pure decision logic that takes only snapshot data and returns effects.
@@ -560,17 +596,13 @@ pub(super) async fn poll_prs_for_issues(
     effects.extend(abandoned_pr_effects);
 
     // Clean up persistent reviewer assignments for PRs that are no longer open.
-    {
-        let mut ps = state.persistent_state.lock().await;
-        ps.github.cleanup_closed_prs(&open_pr_numbers);
-        ps.github.cleanup_expired_preserving(
-            &running_coworker_names,
-            Some(&running_reviewer_session_ids),
-        );
-        if let Err(e) = ps.save_for_repo(&state.repo_name) {
-            warn!("Failed to save daemon-state.json after cleanup: {}", e);
-        }
-    }
+    cleanup_closed_pr_assignments(
+        state,
+        &open_pr_numbers,
+        &running_coworker_names,
+        &running_reviewer_session_ids,
+    )
+    .await;
 
     for pr in &prs {
         let number = pr_number(pr);
@@ -2159,59 +2191,26 @@ pub(super) async fn handle_webhook_review_state_change(
     state: &DaemonState,
     change: crate::webhook::PrReviewStateChange,
 ) {
-    let pr_number = change.pr_number;
     let issue_type = match change.state {
         crate::webhook::ReviewState::Approved => PrIssueType::Approved,
         crate::webhook::ReviewState::ChangesRequested => PrIssueType::ChangesRequested,
     };
 
-    // Check cooldown — polling may have already nudged for this issue
-    {
-        let tracker = state.pr_issue_tracker.lock().await;
-        if !tracker.should_nudge(pr_number, issue_type) {
-            debug!(
-                "PR #{} {} nudge on cooldown (already handled), skipping webhook nudge",
-                pr_number, issue_type
-            );
-            return;
-        }
-    }
-
-    // Resolve owner: use webhook data if available, otherwise look up async
-    let owner = match change.owner_coworker {
-        Some(ref o) => Some(o.clone()),
-        None => get_pr_owner_coworker_async(pr_number).await,
-    };
-
-    let Some(owner) = owner else {
-        debug!(
-            "PR #{} has no coworker owner, skipping webhook {} nudge",
-            pr_number, issue_type
-        );
-        return;
-    };
-
     let nudge_msg = format!(
         "PR #{} — {}: {}",
-        pr_number,
+        change.pr_number,
         issue_type,
         get_issue_action(issue_type)
     );
 
-    let (active_coworkers, idle_coworkers) = get_active_and_idle_coworkers(state);
-    let session_context = get_pr_session_context(state, pr_number).await;
-
-    let action = crate::rules::decide_pr_issue_action_with_handoff(
-        &owner,
-        &active_coworkers,
-        &idle_coworkers,
-        state.is_at_dev_limit(),
-        session_context.as_ref(),
+    handle_webhook_pr_nudge(
+        state,
+        change.pr_number,
+        change.owner_coworker,
+        issue_type,
         &nudge_msg,
-    );
-
-    let effects = action_to_effects(action, pr_number, "", issue_type, state);
-    super::effects::execute_effects(effects, state).await;
+    )
+    .await;
 }
 
 /// Handle a CI check failure on a PR branch from a webhook.
@@ -2223,36 +2222,56 @@ pub(super) async fn handle_webhook_ci_failure(
     state: &DaemonState,
     failure: crate::webhook::PrCiFailure,
 ) {
-    let pr_number = failure.pr_number;
+    let nudge_msg = format!(
+        "PR #{} — CI check '{}' failed: please investigate",
+        failure.pr_number, failure.check_name
+    );
 
+    handle_webhook_pr_nudge(
+        state,
+        failure.pr_number,
+        failure.owner_coworker,
+        PrIssueType::CiFailed,
+        &nudge_msg,
+    )
+    .await;
+}
+
+/// Common webhook handler: check cooldown, resolve owner, decide action, execute.
+///
+/// Shared by `handle_webhook_review_state_change` and `handle_webhook_ci_failure`.
+/// The `PrIssueTracker` cooldown prevents duplicate nudges when both webhooks and
+/// polling detect the same issue.
+async fn handle_webhook_pr_nudge(
+    state: &DaemonState,
+    pr_number: u64,
+    owner_hint: Option<String>,
+    issue_type: PrIssueType,
+    nudge_msg: &str,
+) {
     {
         let tracker = state.pr_issue_tracker.lock().await;
-        if !tracker.should_nudge(pr_number, PrIssueType::CiFailed) {
+        if !tracker.should_nudge(pr_number, issue_type) {
             debug!(
-                "PR #{} CI failure nudge on cooldown, skipping webhook nudge",
-                pr_number
+                "PR #{} {} nudge on cooldown, skipping webhook nudge",
+                pr_number, issue_type
             );
             return;
         }
     }
 
-    let owner = match failure.owner_coworker {
-        Some(ref o) => Some(o.clone()),
+    let owner = match owner_hint {
+        Some(o) => Some(o),
         None => get_pr_owner_coworker_async(pr_number).await,
     };
 
     let Some(owner) = owner else {
         debug!(
-            "PR #{} has no coworker owner, skipping webhook CI failure nudge",
-            pr_number
+            "PR #{} has no coworker owner, skipping webhook {} nudge",
+            pr_number, issue_type
         );
         return;
     };
-
-    let nudge_msg = format!(
-        "PR #{} — CI check '{}' failed: please investigate",
-        pr_number, failure.check_name
-    );
 
     let (active_coworkers, idle_coworkers) = get_active_and_idle_coworkers(state);
     let session_context = get_pr_session_context(state, pr_number).await;
@@ -2263,10 +2282,10 @@ pub(super) async fn handle_webhook_ci_failure(
         &idle_coworkers,
         state.is_at_dev_limit(),
         session_context.as_ref(),
-        &nudge_msg,
+        nudge_msg,
     );
 
-    let effects = action_to_effects(action, pr_number, "", PrIssueType::CiFailed, state);
+    let effects = action_to_effects(action, pr_number, "", issue_type, state);
     super::effects::execute_effects(effects, state).await;
 }
 
