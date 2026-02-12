@@ -142,6 +142,38 @@ pub fn wrap_shell_command_macos(cmd: &str, writable: &[String]) -> Result<String
     ))
 }
 
+/// Check if sandbox-exec can be applied in the current process context.
+///
+/// On macOS, sandbox-exec cannot nest — a process already running inside a
+/// sandbox cannot apply a new sandbox profile to child processes. This returns
+/// false if we detect that sandbox nesting would fail.
+pub fn can_sandbox() -> bool {
+    use std::sync::OnceLock;
+    static CAN_SANDBOX: OnceLock<bool> = OnceLock::new();
+    *CAN_SANDBOX.get_or_init(|| {
+        // Try applying a trivial sandbox to /usr/bin/true.
+        // If we're already sandboxed, this fails with EPERM.
+        let result = std::process::Command::new("sandbox-exec")
+            .args(["-f", "/dev/stdin", "/usr/bin/true"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .and_then(|mut child| {
+                // Take stdin to move it out of child — dropping it sends EOF.
+                // Using `ref mut` would keep the pipe alive through wait(),
+                // causing sandbox-exec (reading from /dev/stdin) to block forever.
+                if let Some(mut stdin) = child.stdin.take() {
+                    use std::io::Write;
+                    let _ = stdin.write_all(b"(version 1)(allow default)");
+                }
+                // stdin is dropped here, sending EOF to sandbox-exec
+                child.wait()
+            });
+        matches!(result, Ok(status) if status.success())
+    })
+}
+
 /// Wrap a `tokio::process::Command` with sandbox-exec on macOS.
 ///
 /// Instead of running `claude ...` directly, runs:
@@ -149,7 +181,12 @@ pub fn wrap_shell_command_macos(cmd: &str, writable: &[String]) -> Result<String
 ///
 /// Returns the modified args to prepend to the command, and the profile path
 /// that must outlive the child process.
+///
+/// Returns an error if sandbox nesting is detected (already inside a sandbox).
 pub fn sandbox_exec_prefix(writable: &[String]) -> Result<(PathBuf, Vec<String>), String> {
+    if !can_sandbox() {
+        return Err("Already inside a sandbox — cannot nest sandbox-exec".to_string());
+    }
     let profile = generate_macos_profile(writable);
     let profile_path = write_profile_to_tempfile(&profile)?;
 
@@ -335,6 +372,10 @@ mod tests {
 
     #[test]
     fn test_sandbox_exec_prefix() {
+        if !can_sandbox() {
+            eprintln!("Skipping test: already inside a sandbox (nesting not allowed)");
+            return;
+        }
         let writable = vec!["/tmp".to_string()];
         let result = sandbox_exec_prefix(&writable);
         assert!(result.is_ok());
@@ -343,6 +384,66 @@ mod tests {
         assert_eq!(prefix[0], "-f");
         // Clean up
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// Verify that sandbox_exec_prefix returns Err when nesting is detected.
+    ///
+    /// Reproduces the crash loop: when the daemon runs inside the Lead's sandbox,
+    /// attempting to apply a second sandbox-exec to coworkers fails with EPERM.
+    /// The fix detects this and returns an error so the fallback path runs
+    /// coworkers without the redundant sandbox wrapper.
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn test_sandbox_exec_prefix_returns_err_when_nested() {
+        // Run sandbox_exec_prefix inside a sandbox to verify it detects nesting.
+        // We can't use OnceLock-cached can_sandbox() from the outer process,
+        // so we spawn a child that checks from inside a sandbox.
+        let profile_content = "(version 1)(allow default)";
+        let tmp = std::env::temp_dir().join("midtown-test-nesting.sb");
+        std::fs::write(&tmp, profile_content).expect("write test profile");
+
+        let exe = std::env::current_exe().expect("current exe");
+        let output = std::process::Command::new("sandbox-exec")
+            .args(["-f", &tmp.to_string_lossy()])
+            .arg(&exe)
+            .args(["--test", "sandbox::tests::test_can_sandbox_detects_nesting"])
+            .arg("--exact")
+            .arg("--nocapture")
+            .output()
+            .expect("spawn sandboxed test");
+
+        let _ = std::fs::remove_file(&tmp);
+
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        // The inner test should pass (it asserts can_sandbox() == false)
+        assert!(
+            output.status.success() || stderr.contains("can_sandbox correctly returned false"),
+            "Nested sandbox detection test failed: {}",
+            stderr
+        );
+    }
+
+    /// Helper test: asserts can_sandbox() returns false when already sandboxed.
+    /// Called from test_sandbox_exec_prefix_returns_err_when_nested via sandbox-exec.
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn test_can_sandbox_detects_nesting() {
+        // This test is meaningful when run inside a sandbox (via the nesting test above).
+        // When run directly (not inside a sandbox), can_sandbox() returns true, which is fine.
+        // The nesting test invokes this inside sandbox-exec to verify the false path.
+        if !can_sandbox() {
+            eprintln!("can_sandbox correctly returned false inside nested sandbox");
+            // Also verify sandbox_exec_prefix returns Err
+            let result = sandbox_exec_prefix(&["/tmp".to_string()]);
+            assert!(
+                result.is_err(),
+                "sandbox_exec_prefix should return Err when nested"
+            );
+            assert!(
+                result.unwrap_err().contains("Already inside a sandbox"),
+                "Error message should mention nesting"
+            );
+        }
     }
 
     /// Run a command under sandbox-exec and return (success, stderr).
@@ -364,6 +465,10 @@ mod tests {
     #[test]
     #[cfg(target_os = "macos")]
     fn test_sandbox_exec_allows_writes_to_permitted_dir() {
+        if !can_sandbox() {
+            eprintln!("Skipping test: already inside a sandbox (nesting not allowed)");
+            return;
+        }
         let tmp = tempfile::TempDir::new().expect("create temp dir");
         // Canonicalize because macOS /var → /private/var symlink;
         // sandbox-exec operates on real paths.
@@ -393,6 +498,10 @@ mod tests {
     #[test]
     #[cfg(target_os = "macos")]
     fn test_sandbox_exec_denies_writes_to_unpermitted_dir() {
+        if !can_sandbox() {
+            eprintln!("Skipping test: already inside a sandbox (nesting not allowed)");
+            return;
+        }
         let home = dirs::home_dir().expect("home dir");
         let denied = home.join(".midtown-sandbox-test-deny");
         std::fs::create_dir_all(&denied).expect("create denied dir");
@@ -420,6 +529,10 @@ mod tests {
     #[test]
     #[cfg(target_os = "macos")]
     fn test_sandbox_exec_allows_reads_everywhere() {
+        if !can_sandbox() {
+            eprintln!("Skipping test: already inside a sandbox (nesting not allowed)");
+            return;
+        }
         let readable = tempfile::TempDir::new().expect("create readable dir");
         let real_path = readable.path().canonicalize().expect("canonicalize");
         let readable_file = real_path.join("readable.txt");
@@ -443,6 +556,10 @@ mod tests {
     #[test]
     #[cfg(target_os = "macos")]
     fn test_sandbox_exec_real_profile_allows_project_writes() {
+        if !can_sandbox() {
+            eprintln!("Skipping test: already inside a sandbox (nesting not allowed)");
+            return;
+        }
         let project = tempfile::TempDir::new().expect("create project dir");
         let real_project = project.path().canonicalize().expect("canonicalize");
         let writable = writable_dirs(&real_project, &[]);

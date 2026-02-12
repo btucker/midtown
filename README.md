@@ -459,7 +459,7 @@ Midtown uses platform-native filesystem sandboxing to restrict write access for 
 - **Linux**: `bwrap` (bubblewrap) when available; falls back to unsandboxed execution if bwrap is not installed
 - **Zero overhead**: Same-host sandboxing — no Docker, no containers, same binaries and auth tokens
 
-**Fallback behavior:** If sandbox setup fails (e.g., missing `bwrap` on Linux, or profile creation errors on macOS), Midtown logs a warning and falls back to running without sandboxing. This ensures sessions aren't blocked by sandbox issues, but means write restrictions are not enforced in that case.
+**Fallback behavior:** If sandbox setup fails (e.g., missing `bwrap` on Linux, profile creation errors on macOS, or sandbox nesting detected after `midtown restart`), Midtown logs a warning and falls back to running without the extra sandbox wrapper. When nesting is detected, coworkers still inherit the Lead's sandbox through the process chain, so write restrictions remain in effect. This ensures sessions aren't blocked by sandbox issues.
 
 **How it works:**
 
