@@ -17,6 +17,10 @@ mod health;
 pub mod helpers;
 mod pr;
 mod rpc;
+mod rpc_channel;
+pub(crate) mod rpc_kanban;
+mod rpc_sessions;
+mod rpc_tasks;
 pub(crate) mod sessions;
 pub(crate) mod snapshot;
 mod specialized;
@@ -483,7 +487,7 @@ pub(crate) struct DaemonState {
     /// Stores the full kanban GraphQL response (PRs, merged PRs, repos) keyed by
     /// a hash of the repo paths. Integrated into DaemonState (rather than a global
     /// static) so the daemon can inspect and clean it up alongside other caches.
-    kanban_cache: rpc::KanbanCache,
+    kanban_cache: rpc_kanban::KanbanCache,
     /// Draining mode flag - when true, daemon stops assigning new tasks to coworkers.
     ///
     /// Set via `daemon.enter-drain` RPC when `midtown restart` is called without --force.
@@ -670,7 +674,7 @@ impl DaemonState {
             attached_coworkers: std::sync::Mutex::new(HashSet::new()),
             session_manager: sessions::SessionManager::new(session_manager_repo_name),
             rpc_response_cache: Mutex::new(HashMap::new()),
-            kanban_cache: rpc::KanbanCache::new(),
+            kanban_cache: rpc_kanban::KanbanCache::new(),
             draining: std::sync::atomic::AtomicBool::new(false),
         })
     }
@@ -2041,7 +2045,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
             } => {
                 let content = &mobile_post.content;
                 let sender = state.user_display_name.as_deref().unwrap_or("user");
-                rpc::handle_channel_post(
+                rpc_channel::handle_channel_post(
                     RequestId::Null,
                     sender,
                     content,
