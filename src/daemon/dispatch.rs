@@ -1868,7 +1868,7 @@ pub(super) fn reset_orphaned_tasks(snap: &snapshot::WorldSnapshot) -> Vec<Effect
         .map(|(name, _)| name.clone())
         .collect();
 
-    for (task_id, _subject, owner) in &snap.in_progress_tasks {
+    for (task_id, subject, owner) in &snap.in_progress_tasks {
         let owner_clean = owner.trim().trim_matches('"').to_lowercase();
         if owner_clean.is_empty() {
             continue;
@@ -1878,6 +1878,25 @@ pub(super) fn reset_orphaned_tasks(snap: &snapshot::WorldSnapshot) -> Vec<Effect
         // (tasks with PRs are handled by reconcile_tasks_in_review)
         if snap.tasks_with_open_prs.contains_key(task_id) {
             continue;
+        }
+
+        // Also protect tasks that REFERENCE an open PR in their subject
+        // (e.g., "Address review feedback on PR #1032") — these don't own
+        // the PR but shouldn't be reset while the PR is still open.
+        if let Some(pr_num_str) = crate::tasks::extract_pr_number(subject)
+            && let Ok(pr_num) = pr_num_str.parse::<u64>()
+        {
+            let pr_is_open = snap
+                .open_prs_data
+                .iter()
+                .any(|pr| pr.get("number").and_then(|n| n.as_u64()) == Some(pr_num));
+            if pr_is_open {
+                debug!(
+                    "Task !{} references open PR #{} — skipping orphan reset",
+                    task_id, pr_num
+                );
+                continue;
+            }
         }
 
         // Only reset if the owner is NOT active (already shut down / on break)
@@ -4226,6 +4245,60 @@ mod tests {
             effects.is_empty(),
             "Should not reset task with open PR (handled by reconcile_tasks_in_review)"
         );
+    }
+
+    #[test]
+    fn test_reset_orphaned_tasks_pr_reference_in_subject_protects() {
+        // Bug: "Address review feedback on PR #42" tasks reference an open PR
+        // but don't own it (not in tasks_with_open_prs). Without the PR-reference
+        // guard, this task would be reset when the owner goes inactive, causing
+        // duplicate feedback addressing by another coworker.
+        let in_progress = vec![(
+            "100".to_string(),
+            "Address review feedback on PR #42".to_string(),
+            "columbus".to_string(),
+        )];
+        let tasks_with_open_prs = HashMap::new(); // Task doesn't OWN the PR
+        let active_names = HashSet::new(); // columbus is NOT active
+
+        let mut snap = make_reconcile_snapshot(in_progress, tasks_with_open_prs, active_names);
+
+        // PR #42 is open (in open_prs_data but not tasks_with_open_prs)
+        snap.open_prs_data = vec![serde_json::json!({"number": 42})];
+
+        let effects = reset_orphaned_tasks(&snap);
+        assert!(
+            effects.is_empty(),
+            "Should not reset task referencing open PR #42 in subject"
+        );
+    }
+
+    #[test]
+    fn test_reset_orphaned_tasks_pr_reference_closed_pr_resets() {
+        // Same scenario but PR #42 is closed/merged — task should be reset
+        let in_progress = vec![(
+            "100".to_string(),
+            "Address review feedback on PR #42".to_string(),
+            "columbus".to_string(),
+        )];
+        let tasks_with_open_prs = HashMap::new();
+        let active_names = HashSet::new();
+
+        let mut snap = make_reconcile_snapshot(in_progress, tasks_with_open_prs, active_names);
+        snap.open_prs_data = vec![]; // PR #42 is NOT open
+
+        let effects = reset_orphaned_tasks(&snap);
+        assert_eq!(
+            effects.len(),
+            1,
+            "Should reset task when referenced PR is closed"
+        );
+        match &effects[0] {
+            Effect::ResetTaskToPending { task_id, .. } => {
+                assert_eq!(task_id, "100");
+            }
+            other => panic!("Expected ResetTaskToPending, got {:?}", other),
+        }
     }
 
     #[test]

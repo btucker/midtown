@@ -232,7 +232,11 @@ gh pr view <number> --json state --jq '.state'
        -f body="✅ Addressed in $(git rev-parse --short HEAD)"
      ```
 
-2. **Request a follow-up task** - If the suggestion is out of scope or would significantly expand the PR:
+2. **Unsure about a comment** - If you're not sure what the reviewer means or disagree:
+   - Post a **GitHub PR comment** as a follow-up question to the reviewer. The daemon detects the new comment via webhook and automatically resumes the reviewer's session.
+   - **Do NOT use @mentions in the GitHub comment** — GitHub sends email notifications to real accounts that share coworker names. Just post a plain reply; the daemon handles routing.
+
+3. **Request a follow-up task** - If the suggestion is out of scope or would significantly expand the PR:
    - Reply to the comment immediately with an acknowledgment:
      ```bash
      COMMENT_URL=$(gh api -X POST "/repos/{owner}/{repo}/issues/comments/{review_comment_id}/replies" \
@@ -245,6 +249,12 @@ gh pr view <number> --json state --jq '.state'
      gh api -X PATCH "/repos/{owner}/{repo}/issues/comments/$REPLY_ID" \
        -f body="📋 Created follow-up task: [description]"
      ```
+
+**After addressing all feedback**, enable auto-merge immediately:
+```bash
+gh pr merge --auto --squash
+```
+This prevents the window between "feedback addressed" and "PR merged" where the task could be re-dispatched to another coworker.
 
 **Never ignore review feedback.** Every suggestion must be either:
 - Addressed in the current PR, OR
@@ -268,7 +278,7 @@ We share a GitHub API rate limit across the daemon, lead, and all coworkers. **D
 - Don't run `gh pr list` to check PR status — read the channel instead
 - **NEVER merge before addressing review feedback.** Every review comment must be either addressed in the PR or deferred via `midtown task request` before merging.
 - Do NOT enable auto-merge when creating the PR — wait for review first
-- After all feedback is addressed/deferred and CI is green, merge using `gh pr merge --auto --squash` or `gh pr merge --squash`
+- After all feedback is addressed/deferred, enable auto-merge: `gh pr merge --auto --squash`
 
 **Using `gh` to investigate (after notification) is fine:**
 - `gh pr create` — creating your PR

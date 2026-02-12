@@ -2546,16 +2546,71 @@ pub(super) async fn handle_pr_comment_nudge(
         return;
     };
 
-    // Don't create tasks for self-comments
+    // Author posted a comment on their own PR — notify the reviewer
+    // (e.g., author is asking a follow-up question about review feedback)
     if activity
         .owner_coworker
         .as_ref()
         .is_some_and(|o| o == &activity.actor)
     {
         debug!(
-            "PR #{} comment is from owner {}, skipping self-nudge",
+            "PR #{} comment is from author {} — checking for reviewer to notify",
             pr_number, activity.actor
         );
+
+        // Look up the reviewer assignment from persistent state
+        let reviewer_info = {
+            let ps = state.persistent_state.lock().await;
+            ps.github.pr_reviewers.get(&pr_number).cloned()
+        };
+
+        let Some(assignment) = reviewer_info else {
+            debug!("PR #{} has no reviewer assignment, skipping", pr_number);
+            return;
+        };
+
+        let reviewer_name = assignment.reviewer;
+        let reviewer_session_id = assignment.reviewer_session_id;
+        let nudge_msg = format!(
+            "PR #{} author {} posted a follow-up comment. Please review and respond.",
+            pr_number, activity.actor
+        );
+
+        // Check if the reviewer is currently active
+        let is_active = state
+            .coworkers
+            .list()
+            .iter()
+            .any(|c| c.name == reviewer_name);
+
+        let effects = if is_active {
+            vec![Effect::NudgeCoworker {
+                name: reviewer_name.clone(),
+                message: nudge_msg,
+                session_id: reviewer_session_id,
+            }]
+        } else if let Some(session_id) = reviewer_session_id {
+            // Reviewer stopped — resume their session with the follow-up context
+            let config = crate::launch::LaunchConfig::coworker(
+                reviewer_name.clone(),
+                state.repo_name.clone(),
+                crate::launch::SessionMode::ResumeSession(session_id.clone()),
+                Some(nudge_msg),
+            );
+            vec![Effect::ResumeCoworker {
+                name: reviewer_name.clone(),
+                session_id,
+                config,
+            }]
+        } else {
+            debug!(
+                "PR #{} reviewer {} has no session ID and is inactive, cannot resume",
+                pr_number, reviewer_name
+            );
+            return;
+        };
+
+        super::effects::execute_effects(effects, state).await;
         return;
     }
 
