@@ -453,13 +453,8 @@ pub(super) async fn check_and_restart_stuck_coworkers(
         );
         config.channel = channel.clone();
 
-        // Preserve model preference from task_model mapping on restart.
-        // Extract just the model alias from "provider/model" format.
-        if let Some(full_model) = snap.task_model_map.get(&restart.task_id)
-            && let Some(model_alias) = full_model.split('/').nth(1)
-        {
-            config.model = model_alias.to_string();
-        }
+        // Apply task model if available (sets both provider and model)
+        config.apply_task_model(&snap.task_model_map, &restart.task_id);
 
         effects.push(Effect::ShutdownCoworker {
             name: restart.name.clone(),
@@ -972,13 +967,8 @@ pub(super) async fn check_and_respawn_dead_processes(
         );
         config.channel = channel.clone();
 
-        // Preserve model preference from task_model mapping on restart.
-        // Extract just the model alias from "provider/model" format.
-        if let Some(full_model) = snap.task_model_map.get(task_id)
-            && let Some(model_alias) = full_model.split('/').nth(1)
-        {
-            config.model = model_alias.to_string();
-        }
+        // Apply task model if available (sets both provider and model)
+        config.apply_task_model(&snap.task_model_map, task_id);
 
         effects.push(Effect::ShutdownCoworker {
             name: name.clone(),

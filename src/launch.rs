@@ -405,6 +405,37 @@ impl LaunchConfig {
             ..self.clone()
         }
     }
+
+    /// Apply task model from WorldSnapshot to this LaunchConfig.
+    ///
+    /// Extracts provider and model from "provider/model" format (e.g., "claude/opus")
+    /// and sets both `config.auth_provider` and `config.model`.
+    ///
+    /// This is used at all spawn sites to apply task-specific model preferences.
+    pub fn apply_task_model(
+        &mut self,
+        task_model_map: &std::collections::HashMap<String, String>,
+        task_id: &str,
+    ) {
+        if let Some(full_model) = task_model_map.get(task_id)
+            && let Some((provider, model_alias)) = parse_task_model(full_model)
+        {
+            self.model = model_alias.to_string();
+            self.auth_provider = provider;
+        }
+    }
+}
+
+/// Extract (auth_provider, model_alias) from "provider/model" format.
+///
+/// Valid examples: "claude/opus" → (Claude, "opus"), "codex/o3" → (Codex, "o3")
+/// Invalid: "claude-opus" (no slash), "claude/" (empty model), "/opus" (empty provider)
+///
+/// Returns None if the format is invalid or the provider is unsupported.
+fn parse_task_model(full_model: &str) -> Option<(crate::auth::AuthProvider, &str)> {
+    let (provider_str, model_alias) = full_model.split_once('/')?;
+    let provider = provider_str.parse::<crate::auth::AuthProvider>().ok()?;
+    Some((provider, model_alias))
 }
 
 #[cfg(test)]

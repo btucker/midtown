@@ -404,16 +404,10 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
     let pending_tasks_with_owners = crate::tasks::get_pending_tasks_with_owners();
     let pending_tasks_without_owners = crate::tasks::get_pending_tasks_without_owners();
 
-    // Task-to-channel mapping from persistent state
-    let task_channel: HashMap<String, String> = {
+    // Task-to-channel and task-to-model mappings from persistent state
+    let (task_channel, task_model_map) = {
         let ps = state.persistent_state.lock().await;
-        ps.task_channel.clone()
-    };
-
-    // Task-to-model mapping from persistent state
-    let task_model_map: HashMap<String, String> = {
-        let ps = state.persistent_state.lock().await;
-        ps.task_model.clone()
+        (ps.task_channel.clone(), ps.task_model.clone())
     };
 
     // ── PR / GitHub state ───────────────────────────────────────────────
