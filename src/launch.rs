@@ -85,6 +85,48 @@ pub struct LaunchCommand {
     pub session_id: Option<String>,
 }
 
+/// Read z.ai environment variables from profile directory.
+///
+/// Returns (ANTHROPIC_AUTH_TOKEN, ANTHROPIC_BASE_URL).
+/// Base URL defaults to https://api.z.ai/api/anthropic if not configured.
+fn zai_env_vars(profile_dir: &std::path::Path) -> std::io::Result<(String, String)> {
+    let api_key_file = profile_dir.join("api_key.txt");
+    let api_key = std::fs::read_to_string(&api_key_file)
+        .map_err(|e| {
+            std::io::Error::new(
+                e.kind(),
+                format!(
+                    "Failed to read z.ai API key from {}: {}",
+                    api_key_file.display(),
+                    e
+                ),
+            )
+        })?
+        .trim()
+        .to_string();
+
+    let base_url_file = profile_dir.join("base_url.txt");
+    let base_url = if base_url_file.exists() {
+        std::fs::read_to_string(&base_url_file)
+            .map_err(|e| {
+                std::io::Error::new(
+                    e.kind(),
+                    format!(
+                        "Failed to read z.ai base URL from {}: {}",
+                        base_url_file.display(),
+                        e
+                    ),
+                )
+            })?
+            .trim()
+            .to_string()
+    } else {
+        "https://api.z.ai/api/anthropic".to_string()
+    };
+
+    Ok((api_key, base_url))
+}
+
 impl LaunchConfig {
     /// Create a config for a standard coworker.
     ///
@@ -213,15 +255,38 @@ impl LaunchConfig {
         // Build env vars for the coworker process
         let mut env = std::collections::HashMap::new();
         env.insert("MIDTOWN_AGENT".to_string(), self.name.clone());
-        // Set Claude config directory from the resolved auth profile
+
+        // Set auth-provider-specific env vars
         let config_dir = self
             .auth_profile_dir
             .clone()
             .unwrap_or_else(|| crate::auth::current_profile_dir_for(self.auth_provider));
-        env.insert(
-            self.auth_provider.env_var().to_string(),
-            config_dir.to_string_lossy().to_string(),
-        );
+
+        match self.auth_provider {
+            crate::auth::AuthProvider::Zai => {
+                // z.ai uses API key + base URL, no config dir
+                match zai_env_vars(&config_dir) {
+                    Ok((api_key, base_url)) => {
+                        env.insert("ANTHROPIC_AUTH_TOKEN".to_string(), api_key);
+                        env.insert("ANTHROPIC_BASE_URL".to_string(), base_url);
+                    }
+                    Err(e) => {
+                        eprintln!("Warning: failed to load z.ai credentials: {}", e);
+                    }
+                }
+            }
+            _ => {
+                // Claude and Codex use config dir env var
+                let env_var = self.auth_provider.env_var();
+                if !env_var.is_empty() {
+                    env.insert(
+                        env_var.to_string(),
+                        config_dir.to_string_lossy().to_string(),
+                    );
+                }
+            }
+        }
+
         // Set default channel for routing coworker messages
         if let Some(ref ch) = self.channel {
             env.insert("MIDTOWN_CHANNEL".to_string(), ch.clone());
@@ -273,16 +338,35 @@ impl LaunchConfig {
             format!("MIDTOWN_AGENT='{}'", self.name),
             "DISABLE_AUTOUPDATER=1".to_string(),
         ];
-        // Set Claude config directory from the resolved auth profile
+
+        // Set auth-provider-specific env vars
         let config_dir = self
             .auth_profile_dir
             .clone()
             .unwrap_or_else(|| crate::auth::current_profile_dir_for(self.auth_provider));
-        env_parts.push(format!(
-            "{}='{}'",
-            self.auth_provider.env_var(),
-            config_dir.display()
-        ));
+
+        match self.auth_provider {
+            crate::auth::AuthProvider::Zai => {
+                // z.ai uses API key + base URL, no config dir
+                match zai_env_vars(&config_dir) {
+                    Ok((api_key, base_url)) => {
+                        env_parts.push(format!("ANTHROPIC_AUTH_TOKEN='{}'", api_key));
+                        env_parts.push(format!("ANTHROPIC_BASE_URL='{}'", base_url));
+                    }
+                    Err(e) => {
+                        eprintln!("Warning: failed to load z.ai credentials: {}", e);
+                    }
+                }
+            }
+            _ => {
+                // Claude and Codex use config dir env var
+                let env_var = self.auth_provider.env_var();
+                if !env_var.is_empty() {
+                    env_parts.push(format!("{}='{}'", env_var, config_dir.display()));
+                }
+            }
+        }
+
         // Must be a real shell env var — Claude Code blocklists this from settings.json
         if self.team_name.is_some() {
             env_parts.push("CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1".to_string());

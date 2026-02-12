@@ -1,6 +1,6 @@
 //! Auth profile management for midtown.
 //!
-//! Manages multiple authentication profiles across providers (Claude, Codex), allowing
+//! Manages multiple authentication profiles across providers (Claude, Codex, z.ai), allowing
 //! different accounts to be used for different purposes (e.g., separate accounts for E2E
 //! testing, development, production).
 //!
@@ -13,9 +13,14 @@
 //!     ├── <profile>/                 # Claude profile directories (CLAUDE_CONFIG_DIR)
 //!     │   └── .claude.json           # Claude auth tokens (managed by claude CLI)
 //!     └── providers/
-//!         └── codex/
+//!         ├── codex/
+//!         │   └── profiles/
+//!         │       └── <profile>/     # Codex profile directories (CODEX_HOME)
+//!         └── zai/
 //!             └── profiles/
-//!                 └── <profile>/     # Codex profile directories (CODEX_HOME)
+//!                 └── <profile>/     # z.ai profile directories
+//!                     ├── api_key.txt      # API key (chmod 600)
+//!                     └── base_url.txt     # Optional base URL override
 //! ```
 //!
 //! ## Environment Variables
@@ -23,6 +28,7 @@
 //! When spawning sessions, set the appropriate environment variable:
 //! - Claude: `CLAUDE_CONFIG_DIR` to the profile directory
 //! - Codex: `CODEX_HOME` to the profile directory
+//! - z.ai: `ANTHROPIC_AUTH_TOKEN` (API key) and `ANTHROPIC_BASE_URL`
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -42,11 +48,12 @@ pub enum AuthProvider {
     #[default]
     Claude,
     Codex,
+    Zai,
 }
 
 impl AuthProvider {
     /// Providers supported by this build, in display order.
-    pub const ALL: [Self; 2] = [Self::Claude, Self::Codex];
+    pub const ALL: [Self; 3] = [Self::Claude, Self::Codex, Self::Zai];
 
     /// Iterate all supported providers.
     pub const fn all() -> &'static [Self] {
@@ -58,6 +65,7 @@ impl AuthProvider {
         match self {
             Self::Claude => "claude",
             Self::Codex => "codex",
+            Self::Zai => "zai",
         }
     }
 
@@ -66,6 +74,7 @@ impl AuthProvider {
         match self {
             Self::Claude => "CLAUDE_CONFIG_DIR",
             Self::Codex => "CODEX_HOME",
+            Self::Zai => "", // z.ai uses multiple env vars (ANTHROPIC_AUTH_TOKEN, ANTHROPIC_BASE_URL)
         }
     }
 
@@ -74,6 +83,7 @@ impl AuthProvider {
         match self {
             Self::Claude => "claude",
             Self::Codex => "codex",
+            Self::Zai => "claude", // z.ai uses the claude CLI
         }
     }
 }
@@ -91,8 +101,9 @@ impl FromStr for AuthProvider {
         match s.trim().to_ascii_lowercase().as_str() {
             "claude" => Ok(Self::Claude),
             "codex" => Ok(Self::Codex),
+            "zai" => Ok(Self::Zai),
             other => Err(format!(
-                "Unsupported provider '{}'. Use one of: claude, codex.",
+                "Unsupported provider '{}'. Use one of: claude, codex, zai.",
                 other
             )),
         }
@@ -169,7 +180,9 @@ pub fn auth_base_dir() -> PathBuf {
 fn provider_root(provider: AuthProvider) -> PathBuf {
     match provider {
         AuthProvider::Claude => auth_base_dir(),
-        AuthProvider::Codex => auth_base_dir().join("providers").join(provider.as_str()),
+        AuthProvider::Codex | AuthProvider::Zai => {
+            auth_base_dir().join("providers").join(provider.as_str())
+        }
     }
 }
 
@@ -177,7 +190,7 @@ fn provider_root(provider: AuthProvider) -> PathBuf {
 fn provider_profiles_dir(provider: AuthProvider) -> PathBuf {
     match provider {
         AuthProvider::Claude => auth_base_dir(),
-        AuthProvider::Codex => provider_root(provider).join("profiles"),
+        AuthProvider::Codex | AuthProvider::Zai => provider_root(provider).join("profiles"),
     }
 }
 
@@ -242,8 +255,8 @@ pub fn current_profile_for(provider: AuthProvider) -> String {
 
             DEFAULT_PROFILE.to_string()
         }
-        AuthProvider::Codex => {
-            // Codex uses file-based storage (no config.toml integration yet)
+        AuthProvider::Codex | AuthProvider::Zai => {
+            // Codex and z.ai use file-based storage (no config.toml integration yet)
             std::fs::read_to_string(current_profile_file_for(provider))
                 .ok()
                 .map(|s| s.trim().to_string())
@@ -348,8 +361,8 @@ pub fn set_current_profile_for(provider: AuthProvider, name: &str) -> std::io::R
 
             Ok(())
         }
-        AuthProvider::Codex => {
-            // Codex uses file-based storage
+        AuthProvider::Codex | AuthProvider::Zai => {
+            // Codex and z.ai use file-based storage
             let current_file = current_profile_file_for(provider);
             std::fs::create_dir_all(current_file.parent().unwrap())?;
             std::fs::write(current_file, format!("{}\n", name))
@@ -480,6 +493,8 @@ fn has_credentials_for(provider: AuthProvider, dir: &Path) -> bool {
                 || dir.join("credentials.json").exists()
                 || dir.join("config.toml").exists()
         }
+        // z.ai stores credentials in api_key.txt
+        AuthProvider::Zai => dir.join("api_key.txt").exists(),
     }
 }
 
@@ -554,7 +569,10 @@ mod tests {
     #[test]
     fn test_auth_provider_all_contains_expected_providers() {
         let providers = AuthProvider::all();
-        assert_eq!(providers, &[AuthProvider::Claude, AuthProvider::Codex]);
+        assert_eq!(
+            providers,
+            &[AuthProvider::Claude, AuthProvider::Codex, AuthProvider::Zai]
+        );
     }
 
     #[test]
@@ -564,6 +582,38 @@ mod tests {
         assert!(s.contains(".midtown"));
         assert!(s.contains("auth"));
         assert!(s.contains("providers/codex/profiles/myprofile"));
+    }
+
+    #[test]
+    fn test_zai_profile_dir_is_provider_scoped() {
+        let dir = profile_dir_for(AuthProvider::Zai, "test@z.ai");
+        let s = dir.to_string_lossy();
+        assert!(s.contains(".midtown"));
+        assert!(s.contains("auth"));
+        assert!(s.contains("providers/zai/profiles/test@z.ai"));
+    }
+
+    #[test]
+    fn test_zai_provider_from_str() {
+        assert_eq!(AuthProvider::from_str("zai").unwrap(), AuthProvider::Zai);
+        assert_eq!(AuthProvider::from_str("ZAI").unwrap(), AuthProvider::Zai);
+        assert_eq!(AuthProvider::from_str(" zai ").unwrap(), AuthProvider::Zai);
+    }
+
+    #[test]
+    fn test_zai_provider_as_str() {
+        assert_eq!(AuthProvider::Zai.as_str(), "zai");
+    }
+
+    #[test]
+    fn test_zai_provider_env_var() {
+        // z.ai doesn't use a single env var for config dir
+        assert_eq!(AuthProvider::Zai.env_var(), "");
+    }
+
+    #[test]
+    fn test_zai_provider_cli_command() {
+        assert_eq!(AuthProvider::Zai.cli_command(), "claude");
     }
 
     #[test]

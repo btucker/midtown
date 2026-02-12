@@ -40,6 +40,7 @@ enum OutputFormat {
 enum AuthProviderArg {
     Claude,
     Codex,
+    Zai,
 }
 
 impl From<AuthProviderArg> for midtown::auth::AuthProvider {
@@ -47,6 +48,7 @@ impl From<AuthProviderArg> for midtown::auth::AuthProvider {
         match value {
             AuthProviderArg::Claude => midtown::auth::AuthProvider::Claude,
             AuthProviderArg::Codex => midtown::auth::AuthProvider::Codex,
+            AuthProviderArg::Zai => midtown::auth::AuthProvider::Zai,
         }
     }
 }

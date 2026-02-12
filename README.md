@@ -289,7 +289,7 @@ docker run -it --rm -v /path/to/repo:/repo -w /repo midtown start
 
 ## Authentication Profiles
 
-Midtown supports provider-scoped auth profiles (`claude`, `codex`) so you can keep separate personal/work accounts per provider and switch quickly.
+Midtown supports provider-scoped auth profiles (`claude`, `codex`, `zai`) so you can keep separate personal/work accounts per provider and switch quickly.
 
 ### Profile Names
 
@@ -304,13 +304,22 @@ Profiles are stored under `~/.midtown/auth/`:
 ├── current                             # Active Claude profile
 ├── <claude-profile>/                   # Claude profiles (legacy layout)
 └── providers/
-    └── codex/
-        ├── current                     # Active Codex profile
+    ├── codex/
+    │   ├── current                     # Active Codex profile
+    │   └── profiles/
+    │       └── <codex-profile>/        # Codex profiles
+    └── zai/
+        ├── current                     # Active z.ai profile
         └── profiles/
-            └── <codex-profile>/        # Codex profiles
+            └── <zai-profile>/          # z.ai profiles
+                ├── api_key.txt         # API key (chmod 600)
+                └── base_url.txt        # Optional base URL override
 ```
 
-When Midtown launches a session, it sets provider-specific env vars (`CLAUDE_CONFIG_DIR` for Claude, `CODEX_HOME` for Codex) to the active profile directory.
+When Midtown launches a session, it sets provider-specific env vars:
+- Claude: `CLAUDE_CONFIG_DIR` to the profile directory
+- Codex: `CODEX_HOME` to the profile directory
+- z.ai: `ANTHROPIC_AUTH_TOKEN` (API key) and `ANTHROPIC_BASE_URL` (defaults to `https://api.z.ai/api/anthropic`)
 
 ### Commands
 
@@ -320,17 +329,24 @@ When Midtown launches a session, it sets provider-specific env vars (`CLAUDE_CON
 | `midtown auth --provider codex list` | List profiles for a specific provider. |
 | `midtown auth --all-providers list` | Show profile status for all supported providers. |
 | `midtown auth --provider <provider> login <email>` | Create/re-authenticate a profile for a provider. |
+| `midtown auth --provider zai login <email> --key <api-key>` | Create z.ai profile non-interactively (for scripts/CI). |
 | `midtown auth --provider <provider> switch <profile> [--project]` | Switch active profile (global by default; use `--project` for current repo only). |
 | `midtown auth --provider <provider> remove <profile>` | Remove a profile for that provider. |
 
 ### Example Workflow
 
 ```bash
-# Create/login Claude work profile
+# Create/login Claude work profile (interactive OAuth flow)
 midtown auth --provider claude login work@example.com
 
-# Create/login Codex work profile
+# Create/login Codex work profile (interactive OAuth flow)
 midtown auth --provider codex login work@example.com
+
+# Create/login z.ai profile (interactive - prompts for API key)
+midtown auth --provider zai login work@example.com
+
+# Create/login z.ai profile (non-interactive - for scripts/CI)
+midtown auth --provider zai login work@example.com --key sk-ant-api03-...
 
 # Show both providers
 midtown auth --all-providers list

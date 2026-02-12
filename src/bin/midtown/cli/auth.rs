@@ -24,6 +24,9 @@ pub enum AuthCommand {
     Login {
         /// Email address for the profile (e.g., user@example.com)
         email: String,
+        /// API key for non-interactive login (z.ai only)
+        #[arg(long)]
+        key: Option<String>,
     },
     /// List all profiles and interactively switch
     List,
@@ -52,7 +55,7 @@ pub fn handle(
     provider: midtown::auth::AuthProvider,
 ) -> Result<Response, String> {
     match cmd {
-        AuthCommand::Login { email } => handle_login(email, provider),
+        AuthCommand::Login { email, key } => handle_login(email, key.as_deref(), provider),
         AuthCommand::List => handle_list(provider),
         AuthCommand::Switch {
             profile,
@@ -101,7 +104,11 @@ pub fn handle_list_all_providers() -> Result<Response, String> {
     })
 }
 
-fn handle_login(email: &str, provider: midtown::auth::AuthProvider) -> Result<Response, String> {
+fn handle_login(
+    email: &str,
+    api_key: Option<&str>,
+    provider: midtown::auth::AuthProvider,
+) -> Result<Response, String> {
     // Validate email format (must contain @)
     if !email.contains('@') {
         return Err(format!(
@@ -113,6 +120,109 @@ fn handle_login(email: &str, provider: midtown::auth::AuthProvider) -> Result<Re
     let profile_dir = midtown::auth::ensure_profile_dir_for(provider, email)
         .map_err(|e| format!("Failed to create profile directory: {}", e))?;
 
+    // Handle z.ai non-interactive login with API key
+    if provider == midtown::auth::AuthProvider::Zai {
+        if let Some(key) = api_key {
+            // Validate API key is not empty
+            if key.is_empty() {
+                return Err("API key cannot be empty".to_string());
+            }
+
+            // Non-interactive: write API key to file
+            let key_file = profile_dir.join("api_key.txt");
+            std::fs::write(&key_file, format!("{}\n", key))
+                .map_err(|e| format!("Failed to write API key: {}", e))?;
+
+            // Set file permissions to 600 (owner read/write only)
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&key_file, std::fs::Permissions::from_mode(0o600))
+                    .map_err(|e| format!("Failed to set key file permissions: {}", e))?;
+            }
+
+            // If this is the first profile, set it as current
+            let profiles = midtown::auth::list_profiles_for(provider).unwrap_or_default();
+            if profiles.len() == 1
+                && let Err(e) = midtown::auth::set_current_profile_for(provider, email)
+            {
+                eprintln!(
+                    "Warning: Could not set '{}' as current profile: {}",
+                    email, e
+                );
+            }
+
+            return Ok(Response::Message {
+                message: format!("Profile '{}' configured for z.ai.", email),
+            });
+        } else {
+            // Interactive: prompt for API key
+            println!("z.ai authentication setup for profile '{}'", email);
+            println!("Config dir: {}", profile_dir.display());
+            println!();
+            eprint!("Enter API key: ");
+            std::io::Write::flush(&mut std::io::stderr())
+                .map_err(|e| format!("Failed to flush stderr: {}", e))?;
+
+            let mut key_input = String::new();
+            std::io::stdin()
+                .read_line(&mut key_input)
+                .map_err(|e| format!("Failed to read API key: {}", e))?;
+            let key = key_input.trim();
+
+            if key.is_empty() {
+                return Err("API key cannot be empty".to_string());
+            }
+
+            // Write API key to file
+            let key_file = profile_dir.join("api_key.txt");
+            std::fs::write(&key_file, format!("{}\n", key))
+                .map_err(|e| format!("Failed to write API key: {}", e))?;
+
+            // Set file permissions to 600 (owner read/write only)
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&key_file, std::fs::Permissions::from_mode(0o600))
+                    .map_err(|e| format!("Failed to set key file permissions: {}", e))?;
+            }
+
+            // Optional: prompt for base URL
+            println!();
+            eprint!("Enter base URL (press Enter for default https://api.z.ai/api/anthropic): ");
+            std::io::Write::flush(&mut std::io::stderr())
+                .map_err(|e| format!("Failed to flush stderr: {}", e))?;
+
+            let mut base_url_input = String::new();
+            std::io::stdin()
+                .read_line(&mut base_url_input)
+                .map_err(|e| format!("Failed to read base URL: {}", e))?;
+            let base_url = base_url_input.trim();
+
+            if !base_url.is_empty() {
+                let base_url_file = profile_dir.join("base_url.txt");
+                std::fs::write(&base_url_file, format!("{}\n", base_url))
+                    .map_err(|e| format!("Failed to write base URL: {}", e))?;
+            }
+
+            // If this is the first profile, set it as current
+            let profiles = midtown::auth::list_profiles_for(provider).unwrap_or_default();
+            if profiles.len() == 1
+                && let Err(e) = midtown::auth::set_current_profile_for(provider, email)
+            {
+                eprintln!(
+                    "Warning: Could not set '{}' as current profile: {}",
+                    email, e
+                );
+            }
+
+            return Ok(Response::Message {
+                message: format!("Profile '{}' configured for z.ai.", email),
+            });
+        }
+    }
+
+    // Original logic for Claude and Codex
     println!(
         "Launching {} with profile '{}'...",
         provider.cli_command(),
@@ -452,7 +562,7 @@ fn prompt_add_account(provider: midtown::auth::AuthProvider) -> Result<Response,
             message: "Cancelled.".to_string(),
         });
     }
-    handle_login(email, provider)
+    handle_login(email, None, provider)
 }
 
 /// Format profiles as a static table string.
@@ -969,5 +1079,12 @@ mod tests {
             message: "Switched profile".to_string(),
         };
         assert!(!should_apply_global_already_on_fallback(true, &other));
+    }
+
+    #[test]
+    fn zai_login_rejects_empty_api_key() {
+        let result = handle_login("test@z.ai", Some(""), midtown::auth::AuthProvider::Zai);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "API key cannot be empty");
     }
 }
