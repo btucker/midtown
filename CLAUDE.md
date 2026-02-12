@@ -233,20 +233,23 @@ When the Lead notices the daemon doing something unexpected (wrong decisions, mi
 
 This ensures bugs get test coverage before fixes, preventing regressions. **Act immediately** — the daemon state changes quickly and valuable debug info is lost if not captured promptly.
 
-### Debug Logging
+### Daemon Log
 
-For detailed daemon debugging, run with increased log level:
+**Always check the daemon log when debugging.** The running daemon writes to:
 
 ```bash
-RUST_LOG=midtown=debug midtown daemon    # summary pane info per tick
-RUST_LOG=midtown=trace midtown daemon    # full pane content + WorldSnapshot JSON
+~/.midtown/projects/<repo>/logs/daemon.log
 ```
 
-The daemon logs:
-- **debug**: Pane summary (lines, has_output, has_input_text) per coworker
-- **trace**: Full pane content and serialized WorldSnapshot
+This log captures all daemon activity — task assignments, coworker spawns, RPC calls, PR events, effect execution. Check it *first* when investigating unexpected behavior, before reaching for snapshots or other debugging tools.
 
-This helps diagnose issues like incorrect stuck detection, nudge timing, or pane parsing bugs.
+```bash
+# View recent daemon activity
+tail -100 ~/.midtown/projects/midtown/logs/daemon.log
+
+# Follow live
+tail -f ~/.midtown/projects/midtown/logs/daemon.log
+```
 
 ### Creating Failing Test Cases
 
