@@ -29,14 +29,11 @@ pub(crate) struct CoworkerSnapshot {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Case-insensitive membership check for a name in a `HashSet<String>`.
-fn contains_icase(set: &HashSet<String>, name: &str) -> bool {
-    set.iter().any(|s| s.eq_ignore_ascii_case(name))
-}
-
-/// Case-insensitive membership check for a name in a `&[String]` slice.
-fn slice_contains_icase(slice: &[String], name: &str) -> bool {
-    slice.iter().any(|s| s.eq_ignore_ascii_case(name))
+/// Case-insensitive membership check for a name in any iterable of `String`.
+///
+/// Works with `&HashSet<String>`, `&[String]`, `&Vec<String>`, etc.
+fn contains_icase<'a>(items: impl IntoIterator<Item = &'a String>, name: &str) -> bool {
+    items.into_iter().any(|s| s.eq_ignore_ascii_case(name))
 }
 
 // ---------------------------------------------------------------------------
@@ -257,6 +254,24 @@ pub(crate) struct ShutdownDecision {
 // Lifecycle decision functions (pure — no async, no side effects)
 // ---------------------------------------------------------------------------
 
+/// Context for idle shutdown decisions — bundles the many HashSet parameters
+/// into a single struct to keep the function signature manageable.
+pub(crate) struct IdleShutdownContext<'a> {
+    pub coworkers: &'a [CoworkerSnapshot],
+    pub busy_coworkers: &'a HashSet<String>,
+    pub coworkers_with_open_prs: &'a HashSet<String>,
+    pub active_reviewers: &'a HashSet<String>,
+    pub coworkers_with_unblocked_deps: &'a HashSet<String>,
+    pub ci_passed_pr_coworkers: &'a HashSet<String>,
+    pub usage_limited_coworkers: &'a HashSet<String>,
+    pub api_error_coworkers: &'a HashSet<String>,
+    pub pending_task_owners: &'a HashSet<String>,
+    pub review_feedback_pr_coworkers: &'a HashSet<String>,
+    pub records: &'a HashMap<String, CoworkerRecord>,
+    pub now_utc: DateTime<Utc>,
+    pub minimum_lifetime: Duration,
+}
+
 /// Decide which coworkers should be shut down due to idleness.
 ///
 /// Takes pre-collected state snapshots and immutable coworker records.
@@ -280,33 +295,20 @@ pub(crate) struct ShutdownDecision {
 /// may have pane activity from daemon nudges, Claude Code UI updates, etc. The
 /// other flags (busy, reviewing, subagent) already cover all legitimate work
 /// scenarios, and `minimum_lifetime` protects freshly spawned coworkers.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn decide_idle_shutdowns(
-    coworkers: &[CoworkerSnapshot],
-    busy_coworkers: &HashSet<String>,
-    coworkers_with_open_prs: &HashSet<String>,
-    active_reviewers: &HashSet<String>,
-    coworkers_with_unblocked_deps: &HashSet<String>,
-    ci_passed_pr_coworkers: &HashSet<String>,
-    usage_limited_coworkers: &HashSet<String>,
-    api_error_coworkers: &HashSet<String>,
-    pending_task_owners: &HashSet<String>,
-    review_feedback_pr_coworkers: &HashSet<String>,
-    records: &HashMap<String, CoworkerRecord>,
-    now_utc: DateTime<Utc>,
-    minimum_lifetime: Duration,
+    ctx: &IdleShutdownContext<'_>,
 ) -> (Vec<ShutdownDecision>, Vec<HealthTransition>) {
     let mut to_shutdown = Vec::new();
     let mut transitions = Vec::new();
 
-    for cw in coworkers {
+    for cw in ctx.coworkers {
         let coworker = &cw.name;
 
         // Check minimum lifetime
-        let lifetime = now_utc.signed_duration_since(cw.started_at);
-        if lifetime < chrono::Duration::from_std(minimum_lifetime).unwrap_or_default() {
+        let lifetime = ctx.now_utc.signed_duration_since(cw.started_at);
+        if lifetime < chrono::Duration::from_std(ctx.minimum_lifetime).unwrap_or_default() {
             if matches!(
-                get_health(records, coworker),
+                get_health(ctx.records, coworker),
                 Some(SessionHealth::Idle { .. })
             ) {
                 transitions.push(HealthTransition::Clear {
@@ -316,15 +318,15 @@ pub(crate) fn decide_idle_shutdowns(
             continue;
         }
 
-        let is_busy = contains_icase(busy_coworkers, coworker);
-        let has_open_pr = contains_icase(coworkers_with_open_prs, coworker);
-        let is_reviewing = contains_icase(active_reviewers, coworker);
-        let has_unblocked_deps = contains_icase(coworkers_with_unblocked_deps, coworker);
-        let ci_passed = contains_icase(ci_passed_pr_coworkers, coworker);
-        let is_usage_limited = contains_icase(usage_limited_coworkers, coworker);
-        let has_api_error = contains_icase(api_error_coworkers, coworker);
-        let has_pending_task = contains_icase(pending_task_owners, coworker);
-        let has_review_feedback = contains_icase(review_feedback_pr_coworkers, coworker);
+        let is_busy = contains_icase(ctx.busy_coworkers, coworker);
+        let has_open_pr = contains_icase(ctx.coworkers_with_open_prs, coworker);
+        let is_reviewing = contains_icase(ctx.active_reviewers, coworker);
+        let has_unblocked_deps = contains_icase(ctx.coworkers_with_unblocked_deps, coworker);
+        let ci_passed = contains_icase(ctx.ci_passed_pr_coworkers, coworker);
+        let is_usage_limited = contains_icase(ctx.usage_limited_coworkers, coworker);
+        let has_api_error = contains_icase(ctx.api_error_coworkers, coworker);
+        let has_pending_task = contains_icase(ctx.pending_task_owners, coworker);
+        let has_review_feedback = contains_icase(ctx.review_feedback_pr_coworkers, coworker);
 
         // Coworkers with active/pending tasks, review assignments, unblocked deps,
         // usage limits, or API errors are never sent on break.
@@ -342,7 +344,7 @@ pub(crate) fn decide_idle_shutdowns(
             || has_api_error
         {
             if matches!(
-                get_health(records, coworker),
+                get_health(ctx.records, coworker),
                 Some(SessionHealth::Idle { .. })
             ) {
                 transitions.push(HealthTransition::Clear {
@@ -567,6 +569,16 @@ pub(crate) struct StuckCoworkerRestart {
     pub task_subject: String,
 }
 
+/// Coworker sets that are exempt from stuck detection.
+///
+/// Bundles the three HashSet parameters shared by `is_process_stuck`,
+/// `decide_stuck_coworker_restarts`, and `decide_stuck_reviewer_restarts`.
+pub(crate) struct StuckExemptions<'a> {
+    pub usage_limited: &'a HashSet<String>,
+    pub api_error: &'a HashSet<String>,
+    pub attached: &'a HashSet<String>,
+}
+
 /// Check if a process should be considered stuck.
 ///
 /// Returns `true` if the process is alive, not in any exempt state
@@ -575,9 +587,7 @@ pub(crate) struct StuckCoworkerRestart {
 fn is_process_stuck(
     name: &str,
     health: &crate::daemon::snapshot::ProcessHealth,
-    usage_limited_coworkers: &HashSet<String>,
-    api_error_coworkers: &HashSet<String>,
-    attached_coworkers: &HashSet<String>,
+    exemptions: &StuckExemptions<'_>,
     now_utc: DateTime<Utc>,
     stuck_threshold: chrono::Duration,
 ) -> bool {
@@ -585,9 +595,9 @@ fn is_process_stuck(
         return false;
     }
     let name_lower = name.to_lowercase();
-    if usage_limited_coworkers.contains(&name_lower)
-        || api_error_coworkers.contains(&name_lower)
-        || attached_coworkers.contains(&name_lower)
+    if exemptions.usage_limited.contains(&name_lower)
+        || exemptions.api_error.contains(&name_lower)
+        || exemptions.attached.contains(&name_lower)
     {
         return false;
     }
@@ -611,9 +621,7 @@ fn is_process_stuck(
 pub(crate) fn decide_stuck_coworker_restarts(
     process_health: &HashMap<String, crate::daemon::snapshot::ProcessHealth>,
     in_progress_tasks: &[(String, String, String)],
-    usage_limited_coworkers: &HashSet<String>,
-    api_error_coworkers: &HashSet<String>,
-    attached_coworkers: &HashSet<String>,
+    exemptions: &StuckExemptions<'_>,
     now_utc: DateTime<Utc>,
     stuck_duration: Duration,
 ) -> Vec<StuckCoworkerRestart> {
@@ -621,15 +629,7 @@ pub(crate) fn decide_stuck_coworker_restarts(
     let mut restarts = Vec::new();
 
     for (name, health) in process_health {
-        if !is_process_stuck(
-            name,
-            health,
-            usage_limited_coworkers,
-            api_error_coworkers,
-            attached_coworkers,
-            now_utc,
-            threshold,
-        ) {
+        if !is_process_stuck(name, health, exemptions, now_utc, threshold) {
             continue;
         }
 
@@ -666,14 +666,11 @@ pub(crate) struct StuckReviewerRestart {
 /// infinite restart loops for the same PR.
 ///
 /// Pure function: takes ProcessHealth data and returns restart decisions.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn decide_stuck_reviewer_restarts(
     process_health: &HashMap<String, crate::daemon::snapshot::ProcessHealth>,
     reviewer_pr_assignments: &HashMap<String, u64>,
     reviewer_restart_counts: &HashMap<u64, u32>,
-    usage_limited_coworkers: &HashSet<String>,
-    api_error_coworkers: &HashSet<String>,
-    attached_coworkers: &HashSet<String>,
+    exemptions: &StuckExemptions<'_>,
     now_utc: DateTime<Utc>,
     stuck_duration: Duration,
     max_restarts: u32,
@@ -687,15 +684,7 @@ pub(crate) fn decide_stuck_reviewer_restarts(
             None => continue,
         };
 
-        if !is_process_stuck(
-            name,
-            health,
-            usage_limited_coworkers,
-            api_error_coworkers,
-            attached_coworkers,
-            now_utc,
-            threshold,
-        ) {
+        if !is_process_stuck(name, health, exemptions, now_utc, threshold) {
             continue;
         }
 
@@ -794,7 +783,7 @@ pub fn decide_pr_issue_action(
     at_dev_limit: bool,
     message: &str,
 ) -> PrAction {
-    let is_active = slice_contains_icase(active_coworkers, owner);
+    let is_active = contains_icase(active_coworkers, owner);
 
     if is_active {
         PrAction::NudgeOwner {
@@ -854,8 +843,8 @@ fn resolve_pr_handoff(
     reason_label: &str,
     empty_owner_fallback: PrAction,
 ) -> PrAction {
-    let is_active = slice_contains_icase(active_coworkers, owner);
-    let is_idle = slice_contains_icase(idle_coworkers, owner);
+    let is_active = contains_icase(active_coworkers, owner);
+    let is_idle = contains_icase(idle_coworkers, owner);
 
     if is_active && is_idle {
         return PrAction::NudgeOwner {
@@ -1163,6 +1152,29 @@ pub(crate) struct OrphanRecovery {
     pub owner: String,
 }
 
+/// Check if a task owner should be skipped for orphan recovery.
+///
+/// Returns `true` if any of these conditions hold:
+/// - Owner is empty, "lead", or not a valid coworker name
+/// - Owner is active (running session)
+/// - Owner is attached (interactive tmux mode)
+/// - Owner recently stopped (within grace period — task may not be marked done yet)
+/// - Owner has an open PR awaiting review without feedback (recovery would loop)
+fn should_skip_orphan(
+    owner_lower: &str,
+    active_names: &HashSet<String>,
+    attached_coworkers: &HashSet<String>,
+    recently_stopped: &HashSet<String>,
+    coworkers_with_open_prs: &HashSet<String>,
+    review_feedback_pr_coworkers: &HashSet<String>,
+) -> bool {
+    active_names.contains(owner_lower)
+        || attached_coworkers.contains(owner_lower)
+        || recently_stopped.contains(owner_lower)
+        || (coworkers_with_open_prs.contains(owner_lower)
+            && !review_feedback_pr_coworkers.contains(owner_lower))
+}
+
 /// Decide which orphaned task (if any) to recover.
 ///
 /// An orphaned task is `in_progress` but its owner is not active.
@@ -1198,35 +1210,18 @@ pub(crate) fn decide_orphan_recovery(
         if owner_clean.is_empty() || owner_clean.eq_ignore_ascii_case("lead") {
             continue;
         }
-        // Skip invalid coworker names — can't spawn a coworker with this name
-        // Use lowercase to match how avenue names are stored
         let owner_lower = owner_clean.to_lowercase();
         if !crate::coworker::is_coworker_name(&owner_lower) {
             continue;
         }
-        if active_names.contains(&owner_lower) {
-            continue;
-        }
-        // Skip attached coworkers — they're in interactive tmux mode, not orphaned
-        if attached_coworkers.contains(&owner_lower) {
-            continue;
-        }
-        // Skip coworkers that recently stopped (within grace period).
-        // When a coworker completes work and goes idle → shutdown, the task may
-        // not yet be marked done. Without this grace period, orphan recovery
-        // would immediately respawn the coworker for a task they already finished.
-        if recently_stopped.contains(&owner_lower) {
-            continue;
-        }
-        // Skip coworkers with open PRs who are awaiting review (no review feedback yet).
-        // Even if the grace period has expired, recovering creates a loop:
-        // spawn → coworker sees PR exists → goes idle → shutdown → recovery fires again.
-        //
-        // However, if the coworker has review feedback, they need to be recovered to
-        // address it (handled by the PR pathway, but orphan recovery shouldn't block).
-        if coworkers_with_open_prs.contains(&owner_lower)
-            && !review_feedback_pr_coworkers.contains(&owner_lower)
-        {
+        if should_skip_orphan(
+            &owner_lower,
+            active_names,
+            attached_coworkers,
+            recently_stopped,
+            coworkers_with_open_prs,
+            review_feedback_pr_coworkers,
+        ) {
             continue;
         }
         // Found an orphan — return the first one (rate-limited)
@@ -1546,21 +1541,22 @@ mod tests {
         }
 
         fn run(&self) -> (Vec<ShutdownDecision>, Vec<HealthTransition>) {
-            decide_idle_shutdowns(
-                &self.coworkers,
-                &self.busy,
-                &self.open_prs,
-                &self.reviewers,
-                &self.unblocked_deps,
-                &self.ci_passed,
-                &self.usage_limited,
-                &self.api_error,
-                &self.pending_tasks,
-                &self.review_feedback,
-                &self.records,
-                Utc::now(),
-                self.minimum_lifetime,
-            )
+            let ctx = IdleShutdownContext {
+                coworkers: &self.coworkers,
+                busy_coworkers: &self.busy,
+                coworkers_with_open_prs: &self.open_prs,
+                active_reviewers: &self.reviewers,
+                coworkers_with_unblocked_deps: &self.unblocked_deps,
+                ci_passed_pr_coworkers: &self.ci_passed,
+                usage_limited_coworkers: &self.usage_limited,
+                api_error_coworkers: &self.api_error,
+                pending_task_owners: &self.pending_tasks,
+                review_feedback_pr_coworkers: &self.review_feedback,
+                records: &self.records,
+                now_utc: Utc::now(),
+                minimum_lifetime: self.minimum_lifetime,
+            };
+            decide_idle_shutdowns(&ctx)
         }
     }
 
@@ -3159,15 +3155,12 @@ mod tests {
         let mut map = HashMap::new();
         map.insert(name.to_string(), health);
         let tasks = vec![("42".to_string(), "Fix bug".to_string(), name.to_string())];
-        decide_stuck_coworker_restarts(
-            &map,
-            &tasks,
+        let exemptions = StuckExemptions {
             usage_limited,
             api_error,
             attached,
-            now,
-            Duration::from_secs(180),
-        )
+        };
+        decide_stuck_coworker_restarts(&map, &tasks, &exemptions, now, Duration::from_secs(180))
     }
 
     #[test]
@@ -3911,13 +3904,16 @@ API Error: 502 {"type":"error","error":{"type":"api_error","message":"Bad gatewa
         map.insert(name.to_string(), health);
         let mut assignments = HashMap::new();
         assignments.insert(name.to_string(), pr_number);
+        let exemptions = StuckExemptions {
+            usage_limited,
+            api_error: &HashSet::new(),
+            attached: &HashSet::new(),
+        };
         decide_stuck_reviewer_restarts(
             &map,
             &assignments,
             restart_counts,
-            usage_limited,
-            &HashSet::new(),
-            &HashSet::new(),
+            &exemptions,
             now,
             Duration::from_secs(300),
             2,
@@ -3995,13 +3991,16 @@ API Error: 502 {"type":"error","error":{"type":"api_error","message":"Bad gatewa
         let now = Utc::now();
         let mut map = HashMap::new();
         map.insert("madison".to_string(), stuck_health(now));
+        let exemptions = StuckExemptions {
+            usage_limited: &HashSet::new(),
+            api_error: &HashSet::new(),
+            attached: &HashSet::new(),
+        };
         let restarts = decide_stuck_reviewer_restarts(
             &map,
             &HashMap::new(), // no reviewer assignment
             &HashMap::new(),
-            &HashSet::new(),
-            &HashSet::new(),
-            &HashSet::new(),
+            &exemptions,
             now,
             Duration::from_secs(300),
             2,
