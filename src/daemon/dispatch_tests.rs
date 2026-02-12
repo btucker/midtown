@@ -2724,6 +2724,47 @@ fn test_should_recover_task_with_contextual_pr_mention_in_description() {
 }
 
 #[test]
+#[ignore] // Requires GitHub CLI and network access
+fn test_should_recover_task_with_github_pr_title_check() {
+    // Scenario: Task has an open PR but pr_author_sessions is stale/empty after restart.
+    // The GitHub title pattern check should prevent duplicate recovery.
+    use std::collections::{HashMap, HashSet};
+    use std::path::Path;
+
+    let merged_prs: HashSet<u64> = HashSet::new();
+    let tasks_with_open_prs: HashMap<String, u64> = HashMap::new(); // Empty after restart
+    let repo_path = Path::new(".");
+
+    // Task 1233 has no pr field set and no entry in tasks_with_open_prs,
+    // but there's an open PR #1084 with "[Midtown !1233]" in the title.
+    let task = crate::tasks::Task {
+        id: "1233".to_string(),
+        subject: "Prevent duplicate work after daemon restarts".to_string(),
+        description: "".to_string(),
+        status: crate::tasks::TaskStatus::InProgress,
+        owner: Some("york".to_string()),
+        blocked_by: vec![],
+        pr: None, // PR association not set yet
+        channel: None,
+    };
+
+    // Without the GitHub title check, this would return true (allow recovery).
+    // With the check, it should return false if PR #1084 exists with the pattern.
+    let should_recover = super::should_recover_task(
+        &task,
+        &merged_prs,
+        repo_path,
+        &tasks_with_open_prs,
+    );
+
+    // If a PR with "[Midtown !1233]" exists and is open, recovery should be skipped.
+    // This test will pass or fail depending on whether such a PR exists in the repo.
+    println!("should_recover for task with potential open PR: {}", should_recover);
+    // Not asserting here since it depends on actual GitHub state.
+    // This is more of an integration test to verify the function works with gh CLI.
+}
+
+#[test]
 fn test_should_recover_task_allows_active_in_progress_task() {
     use crate::tasks::{Task, TaskStatus};
 

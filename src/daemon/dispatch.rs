@@ -103,6 +103,65 @@ fn task_completed_effects(task_id: &str, repo_name: &str, channel_message: Strin
 // Orphan task recovery
 // ============================================================================
 
+/// Find an open PR for a task by searching GitHub for PRs with `[Midtown !{task_id}]` in the title.
+///
+/// This is a defense-in-depth check used after daemon restart to prevent spawning duplicate
+/// coworkers when pr_author_sessions is stale or incomplete. Returns the PR number if found,
+/// None otherwise.
+///
+/// Example: Task 1233 would match PR title "feat: Fix bug [Midtown !1233]"
+fn find_open_pr_for_task(task_id: &str, repo_path: &std::path::Path) -> Option<u64> {
+    // Search for open PRs with the task ID pattern in the title
+    // Format: gh pr list --state open --json number,title --jq '.[] | select(.title | contains("[Midtown !{task_id}]")) | .number'
+    let pattern = format!("[Midtown !{}]", task_id);
+
+    let output = std::process::Command::new("gh")
+        .current_dir(repo_path)
+        .args([
+            "pr",
+            "list",
+            "--state",
+            "open",
+            "--json",
+            "number,title",
+            "--jq",
+            &format!(r#".[] | select(.title | contains("{}")) | .number"#, pattern),
+        ])
+        .output();
+
+    match output {
+        Ok(output) if output.status.success() => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let pr_numbers: Vec<u64> = stdout
+                .lines()
+                .filter_map(|line| line.trim().parse().ok())
+                .collect();
+
+            if pr_numbers.len() > 1 {
+                warn!(
+                    "Multiple open PRs found for task !{}: {:?} — using first match",
+                    task_id, pr_numbers
+                );
+            }
+
+            pr_numbers.first().copied()
+        }
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            debug!(
+                "No open PR found for task !{} via GitHub query: {}",
+                task_id,
+                stderr.trim()
+            );
+            None
+        }
+        Err(e) => {
+            warn!("Failed to query GitHub for task !{} PR: {}", task_id, e);
+            None
+        }
+    }
+}
+
 /// Check if a specific PR is merged by querying GitHub directly.
 ///
 /// This bypasses the cached merged PR list to avoid race conditions where:
@@ -241,6 +300,23 @@ fn should_recover_task(
                 );
             }
         }
+    }
+
+    // Defense-in-depth: Check GitHub directly for open PRs with [Midtown !{task_id}] pattern.
+    // This catches cases where:
+    // 1. A PR was created but pr_author_sessions wasn't updated yet
+    // 2. Daemon restarted before the PR association was persisted
+    // 3. The task.pr field hasn't been set yet
+    //
+    // After restart, pr_author_sessions might be stale or incomplete, so we query
+    // GitHub directly to prevent spawning duplicate coworkers for tasks that already
+    // have open PRs.
+    if let Some(open_pr) = find_open_pr_for_task(&task.id, repo_path) {
+        info!(
+            "Skipping orphan recovery for task !{}: found open PR #{} via GitHub query (title pattern match)",
+            task.id, open_pr
+        );
+        return false;
     }
 
     // No associated PR found — this is a non-PR task (investigation, review, etc.)
