@@ -903,6 +903,18 @@ async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoRespo
             })
             .collect();
 
+        // Build reverse map: PR number -> source task ID (from PR titles)
+        // This ensures reviewers show the meaningful task ID, not their ephemeral internal ID
+        let task_id_by_pr: std::collections::HashMap<u64, u32> = pull_requests
+            .iter()
+            .filter_map(|pr| {
+                let pr_number = pr.get("number")?.as_u64()?;
+                let title = pr.get("title")?.as_str()?;
+                let task_id = extract_task_id_from_pr_title(title)?;
+                Some((pr_number, task_id as u32))
+            })
+            .collect();
+
         state
             .coworkers
             .as_ref()
@@ -916,7 +928,7 @@ async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoRespo
                         }
 
                         // Look up current task from task storage (case-insensitive)
-                        let (task_id, pr_number) = if let Some((tid, _)) =
+                        let (internal_task_id, pr_number) = if let Some((tid, _)) =
                             coworker_tasks.get(&cw.name.to_lowercase())
                         {
                             // Has a task — try to find associated PR number
@@ -944,11 +956,17 @@ async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoRespo
                             (None, None)
                         };
 
+                        // For display: prefer source task ID (from PR title) over internal task ID
+                        // This ensures reviewers show the meaningful task ID, not their ephemeral one
+                        let display_task_id = pr_number
+                            .and_then(|pr| task_id_by_pr.get(&pr).copied())
+                            .or(internal_task_id);
+
                         // Derive phase from status (best-effort — daemon has more detail)
                         // Fallback doesn't have WorkflowPhase, so use a simple heuristic
                         let phase = if pr_number.is_some() {
                             Some("PR") // Has a PR, likely in PR phase
-                        } else if task_id.is_some() {
+                        } else if display_task_id.is_some() {
                             Some("dev") // Has a task but no PR, likely developing
                         } else {
                             None
@@ -959,7 +977,7 @@ async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoRespo
 
                         Some(serde_json::json!({
                             "name": cw.name,
-                            "task_id": task_id,
+                            "task_id": display_task_id,
                             "phase": phase,
                             "pr_number": pr_number,
                             "health": health,
