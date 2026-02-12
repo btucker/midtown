@@ -15,6 +15,8 @@ import {
   activeProject,
   repoStatuses,
   authProfiles,
+  authProfilesByProvider,
+  selectedAuthProvider,
   authSwitching,
   usageData,
 } from './store.js'
@@ -478,12 +480,20 @@ export function sendWsMessage(msg) {
 }
 
 // Fetch auth profiles from the current project's daemon
-export async function fetchAuthProfiles() {
+// If provider is specified, fetches profiles for that provider only.
+// If provider is null/undefined, fetches profiles for the default provider (claude).
+export async function fetchAuthProfiles(provider = null) {
   try {
-    const res = await fetch(`${getApiBase()}/auth/profiles`)
+    const url = provider
+      ? `${getApiBase()}/auth/profiles?provider=${encodeURIComponent(provider)}`
+      : `${getApiBase()}/auth/profiles`
+    const res = await fetch(url)
     if (res.ok) {
       const data = await res.json()
-      authProfiles.set(data)
+      // Update the legacy store for backward compat
+      if (!provider || provider === 'claude') {
+        authProfiles.set(data)
+      }
       return data
     }
   } catch (err) {
@@ -492,18 +502,45 @@ export async function fetchAuthProfiles() {
   return []
 }
 
+// Fetch profiles for all providers and populate authProfilesByProvider.
+// Only includes providers that have at least one profile configured.
+export async function fetchAllAuthProfiles() {
+  const providers = ['claude', 'codex', 'zai']
+  const byProvider = {}
+
+  for (const provider of providers) {
+    const profiles = await fetchAuthProfiles(provider)
+    if (profiles.length > 0) {
+      byProvider[provider] = profiles
+    }
+  }
+
+  authProfilesByProvider.set(byProvider)
+
+  // Update legacy store with claude profiles if available
+  if (byProvider.claude) {
+    authProfiles.set(byProvider.claude)
+  }
+
+  return byProvider
+}
+
 // Switch to a different auth profile via the daemon RPC.
+// Parameters:
+//   - profile: Profile name to switch to (e.g., "work", "personal")
+//   - provider: Provider name ('claude', 'codex', or 'zai')
 // Returns { ok: true } on success, or { ok: false, error: string } on failure.
-export async function switchAuthProfile(profile) {
+export async function switchAuthProfile(profile, provider) {
   authSwitching.set(true)
   try {
     const res = await fetch(`${getApiBase()}/auth/switch`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ profile }),
+      body: JSON.stringify({ profile, provider }),
     })
     if (res.ok) {
-      await fetchAuthProfiles()
+      // Refresh all profiles after switching
+      await fetchAllAuthProfiles()
       return { ok: true }
     }
     let errorMsg = `Switch failed (${res.status})`
