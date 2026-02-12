@@ -2140,6 +2140,10 @@ fn fetch_repo_status(repo_full_name: Option<&str>) -> RepoStatus {
     status
 }
 
+#[path = "autocomplete_tests.rs"]
+#[cfg(test)]
+mod autocomplete_tests;
+
 #[cfg(test)]
 pub(super) mod tests {
     use super::*;
