@@ -1321,6 +1321,30 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 // Archive the channel by using Channel::archive()
                 let base_dir = crate::paths::projects_dir_for_repo(&state.repo_name);
 
+                // Check if the channel file exists before trying to archive.
+                // If it's already archived (or never existed), this is a no-op.
+                // This makes the effect idempotent: repeated ArchiveChannel effects
+                // for the same channel won't destroy archived data.
+                let channel_file_path = if name == "midtown" {
+                    // Midtown channel can be at legacy path or channels/midtown.jsonl
+                    let legacy = base_dir.join("channel.jsonl");
+                    if legacy.exists() {
+                        legacy
+                    } else {
+                        base_dir.join("channels").join("midtown.jsonl")
+                    }
+                } else {
+                    base_dir.join("channels").join(format!("{}.jsonl", name))
+                };
+
+                if !channel_file_path.exists() {
+                    debug!(
+                        "Skipping ArchiveChannel for '{}': file does not exist (already archived or never created)",
+                        name
+                    );
+                    continue;
+                }
+
                 match crate::channel::Channel::new(&base_dir, &name) {
                     Ok(channel) => {
                         if let Err(e) = channel.archive() {

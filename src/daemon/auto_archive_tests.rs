@@ -1,7 +1,6 @@
 //! Tests for auto-archiving channels when all tasks complete.
 
-use super::effects::Effect;
-use crate::clustering::ClusteringDiff;
+use super::super::effects::Effect;
 use crate::tasks::TaskStatus;
 
 /// Helper to create a minimal task list for testing.
@@ -29,7 +28,7 @@ fn test_channel_with_all_tasks_completed_gets_archived() {
     ];
 
     // When we check for channels to archive
-    let effects = super::auto_archive::collect_auto_archive_effects(&tasks, "test-repo");
+    let effects = super::collect_auto_archive_effects(&tasks, "test-repo");
 
     // Should produce an ArchiveChannel effect
     assert_eq!(effects.len(), 1);
@@ -51,7 +50,7 @@ fn test_channel_with_pending_tasks_not_archived() {
     ];
 
     // When we check for channels to archive
-    let effects = super::auto_archive::collect_auto_archive_effects(&tasks, "test-repo");
+    let effects = super::collect_auto_archive_effects(&tasks, "test-repo");
 
     // Should NOT produce any archive effects
     assert_eq!(effects.len(), 0);
@@ -65,7 +64,7 @@ fn test_channel_with_in_progress_tasks_not_archived() {
         mock_task("2", TaskStatus::InProgress, Some("refactor")),
     ];
 
-    let effects = super::auto_archive::collect_auto_archive_effects(&tasks, "test-repo");
+    let effects = super::collect_auto_archive_effects(&tasks, "test-repo");
     assert_eq!(effects.len(), 0);
 }
 
@@ -77,7 +76,7 @@ fn test_midtown_channel_never_archived() {
         mock_task("2", TaskStatus::Completed, Some("midtown")),
     ];
 
-    let effects = super::auto_archive::collect_auto_archive_effects(&tasks, "test-repo");
+    let effects = super::collect_auto_archive_effects(&tasks, "test-repo");
 
     // Midtown channel should never be archived, even if all tasks are complete
     assert_eq!(effects.len(), 0);
@@ -92,7 +91,7 @@ fn test_tasks_without_channel_ignored() {
         mock_task("3", TaskStatus::Pending, None),
     ];
 
-    let effects = super::auto_archive::collect_auto_archive_effects(&tasks, "test-repo");
+    let effects = super::collect_auto_archive_effects(&tasks, "test-repo");
 
     // Topic-a should be archived (only has 1 task, which is completed)
     assert_eq!(effects.len(), 1);
@@ -115,7 +114,7 @@ fn test_multiple_channels_archived_independently() {
         mock_task("5", TaskStatus::Completed, Some("channel-c")),
     ];
 
-    let effects = super::auto_archive::collect_auto_archive_effects(&tasks, "test-repo");
+    let effects = super::collect_auto_archive_effects(&tasks, "test-repo");
 
     // Should archive channel-a and channel-c, but not channel-b
     assert_eq!(effects.len(), 2);
@@ -136,6 +135,6 @@ fn test_multiple_channels_archived_independently() {
 #[test]
 fn test_empty_task_list_no_archive() {
     let tasks = vec![];
-    let effects = super::auto_archive::collect_auto_archive_effects(&tasks, "test-repo");
+    let effects = super::collect_auto_archive_effects(&tasks, "test-repo");
     assert_eq!(effects.len(), 0);
 }
