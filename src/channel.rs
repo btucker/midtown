@@ -161,8 +161,12 @@ impl Channel {
     ///
     /// Returns channel names (without .jsonl extension).
     /// Includes both legacy channel.jsonl (as "midtown") and channels/*.jsonl files.
-    /// Excludes archived channels (those ending in .archived.jsonl).
-    pub fn list(base_dir: impl Into<PathBuf>) -> Result<Vec<String>> {
+    ///
+    /// # Arguments
+    ///
+    /// * `base_dir` - Base directory to search for channels
+    /// * `include_archived` - If true, includes archived channels in the result
+    pub fn list(base_dir: impl Into<PathBuf>, include_archived: bool) -> Result<Vec<String>> {
         let base_dir = base_dir.into();
         let mut channels = Vec::new();
 
@@ -177,17 +181,30 @@ impl Channel {
             for entry in fs::read_dir(channels_dir)? {
                 let entry = entry?;
                 let path = entry.path();
-                // Filter for .jsonl files, excluding .archived.jsonl
+                // Filter for .jsonl files
                 // Note: path.extension() returns the part after the *last* dot, so
                 // "foo.archived.jsonl" has extension "jsonl". We need to check the
-                // file_stem to exclude ".archived" suffix.
+                // file_stem to determine if it's archived.
                 if path.extension().is_some_and(|e| e == "jsonl")
                     && let Some(stem) = path.file_stem().and_then(|s| s.to_str())
-                    && !stem.ends_with(".archived")
                 {
+                    let is_archived = stem.ends_with(".archived");
+
+                    // Skip archived channels unless include_archived is true
+                    if is_archived && !include_archived {
+                        continue;
+                    }
+
+                    // Extract the channel name (remove .archived suffix if present)
+                    let channel_name = if is_archived {
+                        stem.strip_suffix(".archived").unwrap()
+                    } else {
+                        stem
+                    };
+
                     // Don't duplicate "midtown" if we already found channel.jsonl
-                    if stem != "midtown" || !channels.contains(&"midtown".to_string()) {
-                        channels.push(stem.to_string());
+                    if channel_name != "midtown" || !channels.contains(&"midtown".to_string()) {
+                        channels.push(channel_name.to_string());
                     }
                 }
             }
@@ -1679,7 +1696,7 @@ mod tests {
         let _channel2 = Channel::new(temp_dir.path(), "test2").unwrap();
 
         // Both should appear in the list
-        let channels = Channel::list(temp_dir.path()).unwrap();
+        let channels = Channel::list(temp_dir.path(), false).unwrap();
         assert!(
             channels.contains(&"test1".to_string()),
             "test1 should be in the list"
@@ -1693,7 +1710,7 @@ mod tests {
         channel1.archive().unwrap();
 
         // Now only test2 should appear in the list
-        let channels = Channel::list(temp_dir.path()).unwrap();
+        let channels = Channel::list(temp_dir.path(), false).unwrap();
         assert!(
             !channels.contains(&"test1".to_string()),
             "Archived channel test1 should not be in the list"
@@ -1713,6 +1730,40 @@ mod tests {
             "Archived file should exist at {:?}",
             archived_path
         );
+    }
+
+    #[test]
+    fn test_list_with_include_archived() {
+        let temp_dir = TempDir::new().unwrap();
+
+        // Create three channels: "active1", "active2", and "to-archive"
+        let _channel1 = Channel::new(temp_dir.path(), "active1").unwrap();
+        let _channel2 = Channel::new(temp_dir.path(), "active2").unwrap();
+        let channel3 = Channel::new(temp_dir.path(), "to-archive").unwrap();
+
+        // All three should appear when include_archived=false (they're not archived yet)
+        let channels = Channel::list(temp_dir.path(), false).unwrap();
+        assert_eq!(channels.len(), 3);
+        assert!(channels.contains(&"active1".to_string()));
+        assert!(channels.contains(&"active2".to_string()));
+        assert!(channels.contains(&"to-archive".to_string()));
+
+        // Archive one channel
+        channel3.archive().unwrap();
+
+        // With include_archived=false, should only see 2 active channels
+        let channels_no_archived = Channel::list(temp_dir.path(), false).unwrap();
+        assert_eq!(channels_no_archived.len(), 2);
+        assert!(channels_no_archived.contains(&"active1".to_string()));
+        assert!(channels_no_archived.contains(&"active2".to_string()));
+        assert!(!channels_no_archived.contains(&"to-archive".to_string()));
+
+        // With include_archived=true, should see all 3 channels
+        let channels_with_archived = Channel::list(temp_dir.path(), true).unwrap();
+        assert_eq!(channels_with_archived.len(), 3);
+        assert!(channels_with_archived.contains(&"active1".to_string()));
+        assert!(channels_with_archived.contains(&"active2".to_string()));
+        assert!(channels_with_archived.contains(&"to-archive".to_string()));
     }
 
     #[test]

@@ -286,6 +286,8 @@ pub struct App {
     pub autocomplete: AutocompleteState,
     /// Channel switcher overlay state
     pub channel_switcher: ChannelSwitcherState,
+    /// Whether to show archived channels in the board panel
+    pub show_archived_channels: bool,
 }
 
 /// Autocomplete state for @mentions, #channels, and !task-ids
@@ -406,6 +408,7 @@ impl App {
             channel_unread_counts: HashMap::new(),
             autocomplete: AutocompleteState::default(),
             channel_switcher: ChannelSwitcherState::default(),
+            show_archived_channels: false,
         };
 
         // Initial load
@@ -786,7 +789,9 @@ impl App {
         let channel_repo =
             midtown::paths::detect_repo_name().unwrap_or_else(|| "default".to_string());
         let base_dir = midtown::paths::projects_dir_for_repo(&channel_repo);
-        let channels = midtown::Channel::list(&base_dir).unwrap_or_default();
+        // Show or hide archived channels based on user preference
+        let channels =
+            midtown::Channel::list(&base_dir, self.show_archived_channels).unwrap_or_default();
         let main_channel = channels.first().map(|s| s.as_str()).unwrap_or("midtown");
 
         // Group tasks by channel
@@ -1191,8 +1196,8 @@ impl App {
             None => return, // No channel, can't calculate unread counts
         };
 
-        // List all available channels
-        let channels = match Channel::list(&base_dir) {
+        // List all available channels (based on current filter setting)
+        let channels = match Channel::list(&base_dir, self.show_archived_channels) {
             Ok(list) => list,
             Err(_) => return, // Can't read channel list, skip
         };
@@ -1379,7 +1384,8 @@ impl App {
         // Get available channels from the channel system
         if let Some(ref channel) = self.channel {
             let base_dir = channel.base_dir();
-            if let Ok(channels) = Channel::list(base_dir) {
+            // For autocomplete, include archived channels so users can reference them
+            if let Ok(channels) = Channel::list(base_dir, true) {
                 for channel_name in channels {
                     if channel_name.to_lowercase().starts_with(query) {
                         items.push(AutocompleteItem {
@@ -2434,6 +2440,7 @@ pub(super) mod tests {
             channel_unread_counts: HashMap::new(),
             autocomplete: AutocompleteState::default(),
             channel_switcher: ChannelSwitcherState::default(),
+            show_archived_channels: false,
         }
     }
 

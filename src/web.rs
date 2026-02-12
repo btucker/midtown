@@ -437,12 +437,21 @@ async fn api_health() -> &'static str {
     "ok"
 }
 
+/// Query parameters for channel listing
+#[derive(Debug, Deserialize)]
+struct ChannelListQuery {
+    /// Include archived channels in the list (default: false)
+    #[serde(default)]
+    include_archived: bool,
+}
+
 /// List all available channels for the current repository
 async fn api_channels_list(
     State(state): State<Arc<WebState>>,
+    Query(query): Query<ChannelListQuery>,
 ) -> Result<impl IntoResponse, StatusCode> {
     let base_dir = crate::paths::projects_dir_for_repo(&state.config.repo);
-    let channels = Channel::list(base_dir).map_err(|e| {
+    let channels = Channel::list(base_dir, query.include_archived).map_err(|e| {
         error!("Failed to list channels: {}", e);
         StatusCode::INTERNAL_SERVER_ERROR
     })?;

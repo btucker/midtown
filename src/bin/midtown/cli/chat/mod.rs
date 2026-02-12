@@ -135,6 +135,9 @@ async fn run_app_async(
                             EventResult::ToggleMouseCapture => {
                                 toggle_mouse_capture(app, terminal.backend_mut());
                             }
+                            EventResult::ToggleArchivedChannels => {
+                                app.show_archived_channels = !app.show_archived_channels;
+                            }
                             EventResult::Continue => {}
                         }
 
@@ -152,6 +155,9 @@ async fn run_app_async(
                                 }
                                 EventResult::ToggleMouseCapture => {
                                     toggle_mouse_capture(app, terminal.backend_mut());
+                                }
+                                EventResult::ToggleArchivedChannels => {
+                                    app.show_archived_channels = !app.show_archived_channels;
                                 }
                                 EventResult::Continue => {}
                             }
@@ -324,6 +330,8 @@ enum EventResult {
     OpenDiagramInBrowser(usize),
     /// Toggle mouse capture (selection mode)
     ToggleMouseCapture,
+    /// Toggle showing archived channels
+    ToggleArchivedChannels,
 }
 
 /// Handle a terminal event, returns the result.
@@ -341,6 +349,7 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                         app.toggle_channel_switcher();
                         return EventResult::Continue;
                     }
+                    KeyCode::Char('a') => return EventResult::ToggleArchivedChannels,
                     _ => {}
                 }
             }
