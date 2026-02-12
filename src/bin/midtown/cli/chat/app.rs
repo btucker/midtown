@@ -47,6 +47,8 @@ struct KanbanData {
     repos: Vec<(String, String)>,
     /// Coworker status data from daemon
     coworkers: Vec<CoworkerInfo>,
+    /// Maximum number of coworkers from daemon config
+    max_coworkers: usize,
 }
 
 /// Coworker status information for the TUI board sidebar
@@ -210,6 +212,8 @@ pub struct App {
     pub merged_prs: Vec<MergedPr>,
     /// Active coworkers with their current status
     pub coworkers: Vec<CoworkerInfo>,
+    /// Maximum number of coworkers allowed
+    pub max_coworkers: usize,
     /// Repository name with owner (e.g., "btucker/midtown")
     /// Used for constructing GitHub PR URLs in kanban hyperlinks
     pub repo_name: String,
@@ -339,6 +343,7 @@ impl App {
             prs: Vec::new(),
             merged_prs: Vec::new(),
             coworkers: Vec::new(),
+            max_coworkers: 10, // Default, will be updated from daemon
             repo_name,
             kanban_last_refresh: Instant::now() - KANBAN_REFRESH_INTERVAL, // Force initial refresh
             kanban_receiver: None,
@@ -425,6 +430,7 @@ impl App {
                     self.prs = data.prs;
                     self.merged_prs = data.merged_prs;
                     self.coworkers = data.coworkers;
+                    self.max_coworkers = data.max_coworkers;
                     // Update repo info from daemon if available
                     if !data.repos.is_empty() {
                         let new_repos: Vec<RepoInfo> = data
@@ -554,14 +560,15 @@ impl App {
         self.kanban_receiver = Some(rx);
 
         thread::spawn(move || {
-            let (prs, merged_prs, repos, coworkers) = fetch_kanban_data_via_rpc()
-                .unwrap_or_else(|| (fetch_prs(), fetch_merged_prs(), Vec::new(), Vec::new()));
+            let (prs, merged_prs, repos, coworkers, max_coworkers) = fetch_kanban_data_via_rpc()
+                .unwrap_or_else(|| (fetch_prs(), fetch_merged_prs(), Vec::new(), Vec::new(), 10));
             // Ignore send error if receiver dropped (app closed)
             let _ = tx.send(KanbanData {
                 prs,
                 merged_prs,
                 repos,
                 coworkers,
+                max_coworkers,
             });
         });
     }
@@ -1739,6 +1746,7 @@ fn fetch_kanban_data_via_rpc() -> Option<(
     Vec<MergedPr>,
     Vec<(String, String)>,
     Vec<CoworkerInfo>,
+    usize,
 )> {
     use crate::client::DaemonClient;
 
@@ -1767,6 +1775,13 @@ fn fetch_kanban_data_via_rpc() -> Option<(
                 .collect()
         })
         .unwrap_or_default();
+
+    // Extract max_coworkers from daemon config
+    let max_coworkers = data
+        .get("max_coworkers")
+        .and_then(|v| v.as_u64())
+        .map(|n| n as usize)
+        .unwrap_or(10); // Default fallback
 
     let prs: Vec<KanbanPr> = prs_json
         .iter()
@@ -1901,7 +1916,7 @@ fn fetch_kanban_data_via_rpc() -> Option<(
         })
         .unwrap_or_default();
 
-    Some((prs, merged_prs, repos, coworkers))
+    Some((prs, merged_prs, repos, coworkers, max_coworkers))
 }
 
 /// Cache for default branch names, keyed by repo full name (or empty string for current repo).
@@ -2126,6 +2141,7 @@ pub(super) mod tests {
             prs: Vec::new(),
             merged_prs: Vec::new(),
             coworkers: Vec::new(),
+            max_coworkers: 10, // Test default
             repo_name: "test".to_string(),
             kanban_last_refresh: Instant::now(),
             kanban_receiver: None,

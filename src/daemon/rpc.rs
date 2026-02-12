@@ -2928,6 +2928,7 @@ async fn handle_kanban_data(id: RequestId, state: &DaemonState) -> Response {
         "merged_prs": merged_prs,
         "repos": repos,
         "coworkers": coworkers_data,
+        "max_coworkers": state.max_coworkers,
     });
 
     state.kanban_cache.set(response_data.clone(), repo_hash);
