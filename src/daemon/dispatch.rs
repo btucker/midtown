@@ -322,15 +322,16 @@ pub(super) fn check_and_recover_orphans(
         .collect();
 
     // Decide which orphan (if any) to recover using pure decision function
-    let recovery = crate::rules::decide_orphan_recovery(
-        &in_progress_tasks_active,
-        &snap.active_names,
-        snap.is_at_dev_limit,
-        &snap.coworkers_with_open_prs,
-        &snap.review_feedback_pr_coworkers,
-        &recently_stopped,
-        &snap.attached_coworkers,
-    );
+    let orphan_ctx = crate::rules::OrphanRecoveryContext {
+        in_progress: &in_progress_tasks_active,
+        active_names: &snap.active_names,
+        at_dev_limit: snap.is_at_dev_limit,
+        coworkers_with_open_prs: &snap.coworkers_with_open_prs,
+        review_feedback_pr_coworkers: &snap.review_feedback_pr_coworkers,
+        recently_stopped: &recently_stopped,
+        attached_coworkers: &snap.attached_coworkers,
+    };
+    let recovery = crate::rules::decide_orphan_recovery(&orphan_ctx);
 
     let Some(recovery) = recovery else {
         return vec![];
