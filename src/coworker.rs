@@ -2363,6 +2363,7 @@ mod tests {
                         .to_string(),
                 ),
                 provider: Some(crate::auth::AuthProvider::Claude),
+                profile: None,
             },
         );
         persistent_sessions.insert(
@@ -2383,6 +2384,7 @@ mod tests {
                         .to_string(),
                 ),
                 provider: Some(crate::auth::AuthProvider::Claude),
+                profile: None,
             },
         );
 

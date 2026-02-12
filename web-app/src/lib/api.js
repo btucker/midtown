@@ -113,7 +113,7 @@ export function switchProject(projectName, webhookPort) {
     releaseTag: null,
     releaseTime: null,
   })
-  usageData.set(null)
+  usageData.set([])
   connected.set(false)
 
   // Set the new active project
@@ -231,12 +231,13 @@ export async function fetchUsage() {
     if (res.status === 204) {
       // 204 No Content means no credentials available — clear the store
       // so the UI shows the loading/empty state instead of stale data.
-      usageData.set(null)
+      usageData.set([])
       return
     }
     if (res.ok) {
       const data = await res.json()
-      usageData.set(data)
+      // Extract usage array from response (backend provides both array and flat fields for backwards compat)
+      usageData.set(data.usage || [])
     }
   } catch (err) {
     // Retain last-known-good data on transient network errors so the

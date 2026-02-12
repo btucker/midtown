@@ -3,36 +3,47 @@
   import { estimateTimeToFull, formatResetTime, usageColor } from './usage-utils.js'
 </script>
 
-{#if $usageData}
+{#if $usageData && $usageData.length > 0}
   <div class="usage-container">
-    <div class="usage-header">
-      Usage{$usageData.account_email ? ` (${$usageData.account_email})` : ''}
-    </div>
+    {#each $usageData as account, index}
+      {@const label = account.account_email
+        ? `${account.provider.toUpperCase()} (${account.account_email})`
+        : `${account.provider.toUpperCase()} (${account.profile})`
+      }
 
-    {#each [
-      { label: 'Session', util: $usageData.session_util, resets: $usageData.session_resets, isSession: true },
-      { label: 'Week', util: $usageData.week_util, resets: $usageData.week_resets, isSession: false },
-    ] as bar}
-      {@const pct = Math.round(bar.util)}
-      {@const color = usageColor(bar.util)}
-      {@const estimate = estimateTimeToFull(bar.util, bar.resets, bar.isSession)}
-      {@const resetText = formatResetTime(bar.resets, bar.isSession)}
+      <div class="account-section" class:not-first={index > 0}>
+        <div class="usage-header">{label}</div>
 
-      <div class="usage-row">
-        <span class="usage-label">{bar.label}</span>
-        <div class="bar-track">
-          <div
-            class="bar-fill"
-            style="width: {Math.min(bar.util, 100)}%; background: {color}"
-          ></div>
-        </div>
-        <span class="usage-pct" style="color: {color}">{pct}%</span>
-      </div>
-      <div class="usage-detail">
-        {#if estimate}
-          <span class="usage-estimate">{estimate}</span>
+        {#if account.session_resets || account.week_resets}
+          {#each [
+            { label: 'Session', util: account.session_util, resets: account.session_resets, isSession: true },
+            { label: 'Week', util: account.week_util, resets: account.week_resets, isSession: false },
+          ] as bar}
+            {@const pct = Math.round(bar.util)}
+            {@const color = usageColor(bar.util)}
+            {@const estimate = estimateTimeToFull(bar.util, bar.resets, bar.isSession)}
+            {@const resetText = formatResetTime(bar.resets, bar.isSession)}
+
+            <div class="usage-row">
+              <span class="usage-label">{bar.label}</span>
+              <div class="bar-track">
+                <div
+                  class="bar-fill"
+                  style="width: {Math.min(bar.util, 100)}%; background: {color}"
+                ></div>
+              </div>
+              <span class="usage-pct" style="color: {color}">{pct}%</span>
+            </div>
+            <div class="usage-detail">
+              {#if estimate}
+                <span class="usage-estimate">{estimate}</span>
+              {/if}
+              <span class="usage-reset">resets {resetText}</span>
+            </div>
+          {/each}
+        {:else}
+          <div class="no-usage">No usage data available</div>
         {/if}
-        <span class="usage-reset">resets {resetText}</span>
       </div>
     {/each}
   </div>
@@ -49,12 +60,20 @@
     border-top: 1px solid #3a3a3a;
   }
 
+  .account-section {
+    margin-bottom: 0;
+  }
+
+  .account-section.not-first {
+    margin-top: 12px;
+    padding-top: 12px;
+    border-top: 1px solid #2a2a2a;
+  }
+
   .usage-header {
     font-size: 0.7rem;
-    color: #585858;
+    color: #7ec4cf;
     margin-bottom: 8px;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -104,6 +123,12 @@
 
   .usage-estimate {
     color: #585858;
+  }
+
+  .no-usage {
+    font-size: 0.7rem;
+    color: #484848;
+    padding: 4px 0;
   }
 
   .usage-placeholder {

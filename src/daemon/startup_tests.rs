@@ -17,6 +17,7 @@ fn test_session_info(
         pr_number: None,
         working_dir: Some("/tmp/test".to_string()),
         provider: None,
+        profile: None,
     }
 }
 
