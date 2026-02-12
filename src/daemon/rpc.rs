@@ -22,6 +22,66 @@ use super::snapshot::ProcessHealth;
 use super::{DaemonState, effects, snapshot};
 
 // ============================================================================
+// Param extraction helpers
+// ============================================================================
+
+/// Extract a required string parameter from an RPC request, returning
+/// `Response::error(id, invalid_params())` on missing values.
+///
+/// Usage: `require_str!(params, "name", id)` expands to a `let name = ...;`
+/// binding or an early return with an invalid-params error.
+macro_rules! require_str {
+    ($params:expr, $key:literal, $id:expr) => {
+        match $params.and_then(|p| p.get($key)).and_then(|v| v.as_str()) {
+            Some(v) => v,
+            None => return Response::error($id, RpcError::invalid_params()),
+        }
+    };
+}
+
+/// Extension trait for ergonomic RPC parameter extraction.
+///
+/// Reduces the common `params.and_then(|p| p.get("key")).and_then(|v| v.as_str())`
+/// chain to `params.str_param("key")`.
+trait ParamExt {
+    fn str_param(&self, key: &str) -> Option<&str>;
+    fn bool_or(&self, key: &str, default: bool) -> bool;
+    fn str_or<'a>(&'a self, key: &str, default: &'a str) -> &'a str;
+    fn u64_param(&self, key: &str) -> Option<u64>;
+    fn str_array_param(&self, key: &str) -> Option<Vec<String>>;
+}
+
+impl ParamExt for Option<&serde_json::Value> {
+    fn str_param(&self, key: &str) -> Option<&str> {
+        self.and_then(|p| p.get(key)).and_then(|v| v.as_str())
+    }
+
+    fn bool_or(&self, key: &str, default: bool) -> bool {
+        self.and_then(|p| p.get(key))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(default)
+    }
+
+    fn str_or<'a>(&'a self, key: &str, default: &'a str) -> &'a str {
+        self.str_param(key).unwrap_or(default)
+    }
+
+    fn u64_param(&self, key: &str) -> Option<u64> {
+        self.and_then(|p| p.get(key)).and_then(|v| v.as_u64())
+    }
+
+    fn str_array_param(&self, key: &str) -> Option<Vec<String>> {
+        self.and_then(|p| p.get(key))
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+    }
+}
+
+// ============================================================================
 // Helper functions
 // ============================================================================
 
@@ -32,25 +92,18 @@ use super::{DaemonState, effects, snapshot};
 /// the task ID from the PR title's "[Midtown !XXX]" marker and stores it in
 /// persistent state.
 ///
+/// Presence in `pr_author_sessions` implies the PR is still open — closed PRs
+/// are cleaned up by `cleanup_closed_pr_state`.
+///
 /// Used to decide whether to auto-complete a task when a coworker reports
 /// WorkflowPhase::Completed. Tasks with open PRs should complete on merge,
 /// not on phase transition.
 async fn task_has_open_pr(task_id: &str, state: &DaemonState) -> bool {
     let ps = state.persistent_state.lock().await;
-
-    // Check all PR author sessions to see if any have this task_id
-    for (_pr_number, session) in ps.github.pr_author_sessions.iter() {
-        if let Some(ref stored_task_id) = session.task_id
-            && stored_task_id == task_id
-        {
-            // Found a PR associated with this task
-            // The PR is still in pr_author_sessions, which means it's open
-            // (closed PRs are cleaned up by cleanup_closed_pr_state)
-            return true;
-        }
-    }
-
-    false
+    ps.github
+        .pr_author_sessions
+        .values()
+        .any(|session| session.task_id.as_deref() == Some(task_id))
 }
 
 /// Parse an optional auth provider from RPC params.
@@ -59,14 +112,13 @@ async fn task_has_open_pr(task_id: &str, state: &DaemonState) -> bool {
 fn parse_provider_param(
     params: Option<&serde_json::Value>,
 ) -> Result<crate::auth::AuthProvider, String> {
-    let provider = params
+    params
         .and_then(|p| p.get("provider"))
         .and_then(|v| v.as_str())
         .map(str::parse::<crate::auth::AuthProvider>)
         .transpose()
-        .map_err(|e| e.to_string())?
-        .unwrap_or_default();
-    Ok(provider)
+        .map(|opt| opt.unwrap_or_default())
+        .map_err(|e| e.to_string())
 }
 
 // ============================================================================
@@ -197,27 +249,10 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
             Response::success(request.id, serde_json::json!({"status": "draining"}))
         }
 
-        "daemon.exec-restart" => {
-            info!("Exec-restart requested via RPC — daemon will re-exec after shutdown");
-            state
-                .restart_requested
-                .store(true, std::sync::atomic::Ordering::SeqCst);
-            // Trigger the shutdown broadcast so the main event loop exits.
-            // The run() function checks restart_requested and returns ExecRestart.
-            let _ = state.shutdown_tx.send(());
-            Response::success(request.id, serde_json::json!({"status": "restarting"}))
-        }
-
         "coworker.spawn" => {
             let params = request.params.as_ref();
-            let resume = params
-                .and_then(|p| p.get("resume"))
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-            let prompt = params
-                .and_then(|p| p.get("prompt"))
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
+            let resume = params.bool_or("resume", false);
+            let prompt = params.str_param("prompt").map(|s| s.to_string());
             let provider = match parse_provider_param(params) {
                 Ok(provider) => provider,
                 Err(msg) => return Response::error(request.id, RpcError::new(-32602, msg)),
@@ -226,82 +261,38 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
         }
 
         "coworker.break" => {
-            let name = request
-                .params
-                .as_ref()
-                .and_then(|p| p.get("name"))
-                .and_then(|v| v.as_str());
-
-            match name {
-                Some(name) => handle_coworker_break(request.id, name, state).await,
-                None => Response::error(request.id, RpcError::invalid_params()),
-            }
+            let name = require_str!(request.params.as_ref(), "name", request.id);
+            handle_coworker_break(request.id, name, state).await
         }
 
         "coworker.list" => handle_coworker_list(request.id, state),
 
         "coworker.view" => {
-            let name = request
-                .params
-                .as_ref()
-                .and_then(|p| p.get("name"))
-                .and_then(|v| v.as_str());
-
-            match name {
-                Some(name) => handle_coworker_view(request.id, name, state).await,
-                None => Response::error(request.id, RpcError::invalid_params()),
-            }
+            let name = require_str!(request.params.as_ref(), "name", request.id);
+            handle_coworker_view(request.id, name, state).await
         }
 
         "coworker.report-state" => {
             let params = request.params.as_ref();
-            let name = params.and_then(|p| p.get("name")).and_then(|v| v.as_str());
-            let phase = params.and_then(|p| p.get("phase")).and_then(|v| v.as_str());
-            let task_id = params
-                .and_then(|p| p.get("task_id"))
-                .and_then(|v| v.as_u64())
-                .map(|v| v as u32);
-
-            match (name, phase) {
-                (Some(name), Some(phase)) => {
-                    handle_coworker_report_state(request.id, name, phase, task_id, state).await
-                }
-                _ => Response::error(request.id, RpcError::invalid_params()),
-            }
+            let name = require_str!(params, "name", request.id);
+            let phase = require_str!(params, "phase", request.id);
+            let task_id = params.u64_param("task_id").map(|v| v as u32);
+            handle_coworker_report_state(request.id, name, phase, task_id, state).await
         }
 
         "coworker.nudge" => {
             let params = request.params.as_ref();
-            let name = params.and_then(|p| p.get("name")).and_then(|v| v.as_str());
-            let message = params
-                .and_then(|p| p.get("message"))
-                .and_then(|v| v.as_str());
-            let from = params
-                .and_then(|p| p.get("from"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("lead");
-
-            match (name, message) {
-                (Some(name), Some(message)) => {
-                    handle_coworker_nudge(request.id, from, name, message, state).await
-                }
-                _ => Response::error(request.id, RpcError::invalid_params()),
-            }
+            let name = require_str!(params, "name", request.id);
+            let message = require_str!(params, "message", request.id);
+            let from = params.str_or("from", "lead");
+            handle_coworker_nudge(request.id, from, name, message, state).await
         }
 
         "coworker.asking" => {
             let params = request.params.as_ref();
-            let name = params.and_then(|p| p.get("name")).and_then(|v| v.as_str());
-            let question = params
-                .and_then(|p| p.get("question"))
-                .and_then(|v| v.as_str());
-
-            match (name, question) {
-                (Some(name), Some(question)) => {
-                    handle_coworker_asking(request.id, name, question, state).await
-                }
-                _ => Response::error(request.id, RpcError::invalid_params()),
-            }
+            let name = require_str!(params, "name", request.id);
+            let question = require_str!(params, "question", request.id);
+            handle_coworker_asking(request.id, name, question, state).await
         }
 
         "status" => handle_status(request.id, state).await,
@@ -310,63 +301,33 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
 
         "channel.post" => {
             let params = request.params.as_ref();
-            let message = params
-                .and_then(|p| p.get("message"))
-                .and_then(|v| v.as_str());
-            let from = params
-                .and_then(|p| p.get("from"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("lead");
-            let channel = params
-                .and_then(|p| p.get("channel"))
-                .and_then(|v| v.as_str());
-
-            match message {
-                Some(msg) => handle_channel_post(request.id, from, msg, channel, state).await,
-                None => Response::error(request.id, RpcError::invalid_params()),
-            }
+            let message = require_str!(params, "message", request.id);
+            let from = params.str_or("from", "lead");
+            let channel = params.str_param("channel");
+            handle_channel_post(request.id, from, message, channel, state).await
         }
 
         "channel.read" => {
-            let all = request
-                .params
-                .as_ref()
-                .and_then(|p| p.get("all"))
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
+            let all = request.params.as_ref().bool_or("all", false);
             handle_channel_read(request.id, all, state)
         }
 
         "reminder.create" => {
             let params = request.params.as_ref();
-            let trigger = params
-                .and_then(|p| p.get("trigger"))
-                .and_then(|v| v.as_str());
-            let message = params
-                .and_then(|p| p.get("message"))
-                .and_then(|v| v.as_str());
-
-            match (trigger, message) {
-                (Some("all-work-merged"), Some(msg)) => {
-                    handle_reminder_create(request.id, msg, state).await
-                }
-                _ => Response::error(request.id, RpcError::invalid_params()),
+            let trigger = require_str!(params, "trigger", request.id);
+            let message = require_str!(params, "message", request.id);
+            if trigger != "all-work-merged" {
+                Response::error(request.id, RpcError::invalid_params())
+            } else {
+                handle_reminder_create(request.id, message, state).await
             }
         }
 
         "reminder.list" => handle_reminder_list(request.id, state).await,
 
         "reminder.cancel" => {
-            let id = request
-                .params
-                .as_ref()
-                .and_then(|p| p.get("id"))
-                .and_then(|v| v.as_str());
-
-            match id {
-                Some(id) => handle_reminder_cancel(request.id, id, state).await,
-                None => Response::error(request.id, RpcError::invalid_params()),
-            }
+            let reminder_id = require_str!(request.params.as_ref(), "id", request.id);
+            handle_reminder_cancel(request.id, reminder_id, state).await
         }
 
         "daemon.check-pending" => {
@@ -383,158 +344,88 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
 
         "task.create" => {
             let params = request.params.as_ref();
-            let subject = params
-                .and_then(|p| p.get("subject"))
-                .and_then(|v| v.as_str());
-            let description = params
-                .and_then(|p| p.get("description"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let blocked_by: Option<Vec<String>> = params
-                .and_then(|p| p.get("blocked_by"))
-                .and_then(|v| v.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|v| v.as_str().map(String::from))
-                        .collect()
-                });
-            let channel = params
-                .and_then(|p| p.get("channel"))
-                .and_then(|v| v.as_str());
-            let model = params.and_then(|p| p.get("model")).and_then(|v| v.as_str());
-            let pr = params.and_then(|p| p.get("pr")).and_then(|v| v.as_u64());
-
-            match subject {
-                Some(subject) => {
-                    handle_task_create(
-                        request.id,
-                        subject,
-                        description,
-                        blocked_by.as_deref(),
-                        channel,
-                        model,
-                        pr,
-                        state,
-                    )
-                    .await
-                }
-                None => Response::error(request.id, RpcError::invalid_params()),
-            }
+            let subject = require_str!(params, "subject", request.id);
+            let description = params.str_or("description", "");
+            let blocked_by = params.str_array_param("blocked_by");
+            let channel = params.str_param("channel");
+            let model = params.str_param("model");
+            let pr = params.u64_param("pr");
+            handle_task_create(
+                request.id,
+                subject,
+                description,
+                blocked_by.as_deref(),
+                channel,
+                model,
+                pr,
+                state,
+            )
+            .await
         }
 
         "task.update" => {
             let params = request.params.as_ref();
-            let id = params.and_then(|p| p.get("id")).and_then(|v| v.as_str());
-
-            match id {
-                Some(id) => {
-                    let owner = params.and_then(|p| p.get("owner")).and_then(|v| v.as_str());
-                    let status = params
-                        .and_then(|p| p.get("status"))
-                        .and_then(|v| v.as_str());
-                    let description = params
-                        .and_then(|p| p.get("description"))
-                        .and_then(|v| v.as_str());
-                    let blocked_by: Option<Vec<String>> = params
-                        .and_then(|p| p.get("blocked_by"))
-                        .and_then(|v| v.as_array())
-                        .map(|arr| {
-                            arr.iter()
-                                .filter_map(|v| v.as_str().map(String::from))
-                                .collect()
-                        });
-                    let channel = params
-                        .and_then(|p| p.get("channel"))
-                        .and_then(|v| v.as_str());
-                    let model = params.and_then(|p| p.get("model")).and_then(|v| v.as_str());
-                    let pr = params.and_then(|p| p.get("pr")).and_then(|v| v.as_u64());
-
-                    handle_task_update(
-                        request.id,
-                        id,
-                        owner,
-                        status,
-                        description,
-                        blocked_by.as_deref(),
-                        channel,
-                        model,
-                        pr,
-                        state,
-                    )
-                    .await
-                }
-                None => Response::error(request.id, RpcError::invalid_params()),
-            }
+            let task_id = require_str!(params, "id", request.id);
+            let owner = params.str_param("owner");
+            let status = params.str_param("status");
+            let description = params.str_param("description");
+            let blocked_by = params.str_array_param("blocked_by");
+            let channel = params.str_param("channel");
+            let model = params.str_param("model");
+            let pr = params.u64_param("pr");
+            handle_task_update(
+                request.id,
+                task_id,
+                owner,
+                status,
+                description,
+                blocked_by.as_deref(),
+                channel,
+                model,
+                pr,
+                state,
+            )
+            .await
         }
 
         "task.done" => {
-            let params = request.params.as_ref();
-            let id = params.and_then(|p| p.get("id")).and_then(|v| v.as_str());
-
-            match id {
-                Some(id) => handle_task_done(request.id, id, state).await,
-                None => Response::error(request.id, RpcError::invalid_params()),
-            }
+            let task_id = require_str!(request.params.as_ref(), "id", request.id);
+            handle_task_done(request.id, task_id, state)
         }
 
         "task.metadata" => {
-            let params = request.params.as_ref();
-            let id = params.and_then(|p| p.get("id")).and_then(|v| v.as_str());
-
-            match id {
-                Some(id) => handle_task_metadata(request.id, id, state).await,
-                None => Response::error(request.id, RpcError::invalid_params()),
-            }
+            let task_id = require_str!(request.params.as_ref(), "id", request.id);
+            handle_task_metadata(request.id, task_id, state)
         }
 
         "task.request" => {
             let params = request.params.as_ref();
-            let message = params
-                .and_then(|p| p.get("message"))
-                .and_then(|v| v.as_str());
-            let from = params
-                .and_then(|p| p.get("from"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown");
-
-            match message {
-                Some(msg) => handle_task_request(request.id, from, msg, state).await,
-                None => Response::error(request.id, RpcError::invalid_params()),
-            }
+            let message = require_str!(params, "message", request.id);
+            let from = params.str_or("from", "unknown");
+            handle_task_request(request.id, from, message, state).await
         }
 
         "task.claim" => {
             let params = request.params.as_ref();
-            let id = params.and_then(|p| p.get("id")).and_then(|v| v.as_str());
-            let from = params
-                .and_then(|p| p.get("from"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown");
-            match id {
-                Some(id) => handle_task_claim(request.id, id, from, state),
-                None => Response::error(request.id, RpcError::invalid_params()),
-            }
+            let task_id = require_str!(params, "id", request.id);
+            let from = params.str_or("from", "unknown");
+            handle_task_claim(request.id, task_id, from, state)
         }
 
         "auth.switch" => {
             let params = request.params.as_ref();
-            let profile = params
-                .and_then(|p| p.get("profile"))
-                .and_then(|v| v.as_str());
-            let all = params
-                .and_then(|p| p.get("all"))
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
+            let profile = params.str_param("profile");
+            let all = params.bool_or("all", false);
             let provider = params
-                .and_then(|p| p.get("provider"))
-                .and_then(|v| v.as_str())
+                .str_param("provider")
                 .map(str::parse::<crate::auth::AuthProvider>)
                 .transpose();
 
             match (profile, provider) {
                 (Some(name), Ok(provider)) => {
                     let provider = provider.unwrap_or_default();
-                    handle_auth_switch(request.id, name, all, provider, state).await
+                    super::rpc_auth::handle_auth_switch(request.id, name, all, provider, state)
+                        .await
                 }
                 (_, Err(e)) => Response::error(request.id, RpcError::new(-32602, e)),
                 (None, Ok(_)) => Response::error(request.id, RpcError::invalid_params()),
@@ -543,68 +434,39 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
 
         "insight.report" => {
             let params = request.params.as_ref();
-            let agent = params.and_then(|p| p.get("agent")).and_then(|v| v.as_str());
-            let insight = params
-                .and_then(|p| p.get("insight"))
-                .and_then(|v| v.as_str());
-            let channel = params
-                .and_then(|p| p.get("channel"))
-                .and_then(|v| v.as_str());
-
-            match (agent, insight) {
-                (Some(agent), Some(insight)) => {
-                    handle_insight_report(request.id, agent, insight, channel, state).await
-                }
-                _ => Response::error(request.id, RpcError::invalid_params()),
-            }
+            let agent = require_str!(params, "agent", request.id);
+            let insight = require_str!(params, "insight", request.id);
+            let channel = params.str_param("channel");
+            handle_insight_report(request.id, agent, insight, channel, state).await
         }
 
         "headless.execute" => {
             let params = request.params.as_ref();
-            let prompt = params
-                .and_then(|p| p.get("prompt"))
-                .and_then(|v| v.as_str());
-
-            match prompt {
-                Some(prompt) => {
-                    let config = crate::headless::HeadlessConfig {
-                        model: params
-                            .and_then(|p| p.get("model"))
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("sonnet")
-                            .to_string(),
-                        system_prompt: params
-                            .and_then(|p| p.get("system_prompt"))
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string(),
-                        json_schema: params.and_then(|p| p.get("json_schema")).cloned(),
-                        max_budget_usd: params
-                            .and_then(|p| p.get("max_budget_usd"))
-                            .and_then(|v| v.as_f64()),
-                        allow_tools: params
-                            .and_then(|p| p.get("allow_tools"))
-                            .and_then(|v| v.as_bool())
-                            .unwrap_or(false),
-                        cwd: state
-                            .all_repo_paths
-                            .first()
-                            .map(|p| p.to_string_lossy().to_string()),
-                        persist_session: false,
-                        resume_session_id: None,
-                        inactivity_timeout: None,
-                        team_name: None,
-                        agent_id: None,
-                        agent_name: None,
-                        settings_path: None,
-                        setting_sources: None,
-                        auth_provider: crate::auth::AuthProvider::Claude,
-                        env: std::collections::HashMap::new(),
-                    };
-                    handle_headless_execute(request.id, prompt, &config).await
-                }
-                None => Response::error(request.id, RpcError::invalid_params()),
-            }
+            let prompt = require_str!(params, "prompt", request.id);
+            let config = crate::headless::HeadlessConfig {
+                model: params.str_or("model", "sonnet").to_string(),
+                system_prompt: params.str_or("system_prompt", "").to_string(),
+                json_schema: params.and_then(|p| p.get("json_schema")).cloned(),
+                max_budget_usd: params
+                    .and_then(|p| p.get("max_budget_usd"))
+                    .and_then(|v| v.as_f64()),
+                allow_tools: params.bool_or("allow_tools", false),
+                cwd: state
+                    .all_repo_paths
+                    .first()
+                    .map(|p| p.to_string_lossy().to_string()),
+                persist_session: false,
+                resume_session_id: None,
+                inactivity_timeout: None,
+                team_name: None,
+                agent_id: None,
+                agent_name: None,
+                settings_path: None,
+                setting_sources: None,
+                auth_provider: crate::auth::AuthProvider::Claude,
+                env: std::collections::HashMap::new(),
+            };
+            handle_headless_execute(request.id, prompt, &config).await
         }
 
         "snapshot" => {
@@ -631,29 +493,13 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
         }
 
         "session.attach" => {
-            let target = request
-                .params
-                .as_ref()
-                .and_then(|p| p.get("target"))
-                .and_then(|v| v.as_str());
-
-            match target {
-                Some(target) => handle_session_attach(request.id, target, state).await,
-                None => Response::error(request.id, RpcError::invalid_params()),
-            }
+            let target = require_str!(request.params.as_ref(), "target", request.id);
+            handle_session_attach(request.id, target, state).await
         }
 
         "session.detach" => {
-            let name = request
-                .params
-                .as_ref()
-                .and_then(|p| p.get("name"))
-                .and_then(|v| v.as_str());
-
-            match name {
-                Some(name) => handle_session_detach(request.id, name, state).await,
-                None => Response::error(request.id, RpcError::invalid_params()),
-            }
+            let name = require_str!(request.params.as_ref(), "name", request.id);
+            handle_session_detach(request.id, name, state).await
         }
 
         "session.list" => handle_session_list(request.id, state).await,
@@ -816,314 +662,6 @@ async fn handle_coworker_break(id: RequestId, name: &str, state: &DaemonState) -
     )
 }
 
-fn filter_coworkers_by_provider(
-    coworkers: &[crate::coworker::Coworker],
-    provider: crate::auth::AuthProvider,
-) -> Vec<crate::coworker::Coworker> {
-    coworkers
-        .iter()
-        .filter(|cw| cw.provider == provider)
-        .cloned()
-        .collect()
-}
-
-fn build_coworker_relaunch_config(
-    coworker: &crate::coworker::Coworker,
-    repo_name: &str,
-) -> crate::launch::LaunchConfig {
-    let mut config = crate::launch::LaunchConfig::coworker(
-        coworker.name.clone(),
-        repo_name.to_string(),
-        crate::launch::SessionMode::Resume,
-        None,
-    );
-    config.model = coworker.model.clone();
-    config.auth_provider = coworker.provider;
-    config
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum LeadRelaunchStatus {
-    Relaunched,
-    Failed,
-    Unchanged,
-}
-
-impl LeadRelaunchStatus {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Relaunched => "relaunched",
-            Self::Failed => "failed",
-            Self::Unchanged => "unchanged",
-        }
-    }
-
-    fn summary(self) -> &'static str {
-        match self {
-            Self::Relaunched => "re-launched lead",
-            Self::Failed => "lead re-launch failed",
-            Self::Unchanged => "lead unchanged",
-        }
-    }
-
-    fn relaunched(self) -> bool {
-        matches!(self, Self::Relaunched)
-    }
-
-    fn attempted(self) -> bool {
-        !matches!(self, Self::Unchanged)
-    }
-}
-
-/// Handle auth.switch RPC method.
-///
-/// Switches the active auth profile.
-///
-/// For Claude, also re-launches active sessions:
-/// 1. Validates and switches the profile on disk (project or global)
-/// 2. Shuts down all running coworkers (daemon will re-spawn for pending tasks)
-/// 3. Re-launches the lead window with the new credentials
-async fn handle_auth_switch(
-    id: RequestId,
-    profile: &str,
-    all: bool,
-    provider: crate::auth::AuthProvider,
-    state: &DaemonState,
-) -> Response {
-    // Validate the profile name format (defense-in-depth — CLI also validates)
-    if let Err(e) = crate::auth::validate_profile_name(profile) {
-        return Response::error(
-            id,
-            RpcError::new(-32602, format!("Invalid profile name: {}", e)),
-        );
-    }
-
-    // Validate the profile exists
-    if !crate::auth::profile_exists_for(provider, profile) {
-        return Response::error(
-            id,
-            RpcError::new(
-                -32602,
-                format!(
-                    "Profile '{}' does not exist for {}. Create it with: midtown auth --provider {} login {}",
-                    profile, provider, provider, profile
-                ),
-            ),
-        );
-    }
-
-    // Check if already on this profile
-    if !all {
-        // For per-project switch, check the project config's auth_profile (not the effective profile)
-        let path = crate::config::project_config_path(&state.repo_name);
-        if let Some(config) = crate::config::FullProjectConfig::load_from(&path)
-            && crate::auth::project_profile_override(&config.project, provider) == Some(profile)
-        {
-            return Response::success(
-                id,
-                serde_json::json!({
-                    "success": true,
-                    "message": format!("Already on {} profile '{}'", provider, profile),
-                    "switched": false,
-                }),
-            );
-        }
-    }
-
-    // Switch the profile on disk
-    if all {
-        // Global switch: update global current profile and clear per-project overrides.
-        // Even when the global profile already matches, we must still clear overrides
-        // so projects stop shadowing the global setting.
-        let current = crate::auth::current_profile_for(provider);
-        let cleared = crate::config::clear_all_project_auth_profiles_for(provider);
-        if current != profile
-            && let Err(e) = crate::auth::set_current_profile_for(provider, profile)
-        {
-            return Response::error(
-                id,
-                RpcError::new(-32603, format!("Failed to switch profile: {}", e)),
-            );
-        }
-        if current == profile && cleared == 0 {
-            return Response::success(
-                id,
-                serde_json::json!({
-                    "success": true,
-                    "message": format!("Already on {} profile '{}'", provider, profile),
-                    "switched": false,
-                }),
-            );
-        }
-    } else {
-        // Per-project switch: update this project's config
-        let path = crate::config::project_config_path(&state.repo_name);
-        let mut config = crate::config::FullProjectConfig::load_from(&path).unwrap_or_default();
-        crate::auth::set_project_profile_override(
-            &mut config.project,
-            provider,
-            profile.to_string(),
-        );
-        if let Err(e) = config.save_to(&path) {
-            return Response::error(
-                id,
-                RpcError::new(-32603, format!("Failed to save project config: {}", e)),
-            );
-        }
-    }
-
-    info!(
-        "Auth profile switched to '{}' for {} ({})",
-        profile,
-        provider,
-        if all { "global" } else { "project" }
-    );
-
-    // Shut down all running coworkers for this provider
-    let running_coworkers: Vec<crate::coworker::Coworker> =
-        filter_coworkers_by_provider(&state.coworkers.list(), provider);
-
-    let shutdown_count = running_coworkers.len();
-    for coworker in &running_coworkers {
-        let name = &coworker.name;
-        let coworkers = state.coworkers.clone();
-        let name_owned = name.clone();
-        let shutdown_result =
-            tokio::task::spawn_blocking(move || coworkers.shutdown(&name_owned)).await;
-
-        match shutdown_result {
-            Ok(Ok(())) => {
-                state.record_coworker_stop_time(name);
-                // Only clear records on successful shutdown
-                {
-                    let mut records = state.coworker_records.write().await;
-                    records.remove(name);
-                }
-                state.broadcast_coworker_update(name, "stopped", None);
-            }
-            Ok(Err(e)) => {
-                warn!("Failed to shut down coworker {}: {}", name, e);
-            }
-            Err(e) => {
-                warn!("spawn_blocking panic while shutting down {}: {}", name, e);
-            }
-        }
-    }
-
-    // Capture reviewer assignments before relaunch so reviewer coworkers can
-    // be re-spawned with the reviewer role/prompt.
-    let reviewer_pr_by_name: HashMap<String, u64> = {
-        let persistent = state.persistent_state.lock().await;
-        running_coworkers
-            .iter()
-            .filter_map(|cw| {
-                persistent
-                    .github
-                    .pr_for_reviewer(&cw.name)
-                    .map(|pr| (cw.name.clone(), pr))
-            })
-            .collect()
-    };
-
-    // Re-launch lead only when switching the provider backing the interactive
-    // lead session. Today lead is Claude-backed; other providers leave lead
-    // untouched instead of reporting a relaunch failure.
-    let lead_relaunch_status = if provider == crate::auth::AuthProvider::Claude {
-        let session = state.coworkers.session_name().to_string();
-        let workdir = state
-            .all_repo_paths
-            .first()
-            .cloned()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .to_string();
-        let project_name = state.repo_name.clone();
-        let additional_dirs: Vec<std::path::PathBuf> =
-            state.all_repo_paths.iter().skip(1).cloned().collect();
-
-        let lead_result = tokio::task::spawn_blocking(move || {
-            crate::tmux::spawn_lead(&session, &workdir, &project_name, &additional_dirs)
-        })
-        .await;
-
-        match lead_result {
-            Ok(Ok(())) => {
-                info!("Re-launched lead with auth profile '{}'", profile);
-                LeadRelaunchStatus::Relaunched
-            }
-            Ok(Err(e)) => {
-                warn!("Failed to re-launch lead: {}", e);
-                LeadRelaunchStatus::Failed
-            }
-            Err(e) => {
-                warn!("spawn_blocking panic while re-launching lead: {}", e);
-                LeadRelaunchStatus::Failed
-            }
-        }
-    } else {
-        LeadRelaunchStatus::Unchanged
-    };
-
-    // Re-launch all sessions for this provider using the updated auth profile.
-    let provider_auth_dir =
-        crate::auth::active_profile_dir_for_project_with_provider(&state.repo_name, provider);
-    let mut relaunch_count = 0usize;
-    for coworker in &running_coworkers {
-        let mut config = if let Some(pr_number) = reviewer_pr_by_name.get(&coworker.name).copied() {
-            let mut reviewer =
-                crate::launch::LaunchConfig::reviewer(coworker.name.clone(), pr_number);
-            reviewer.session_mode = crate::launch::SessionMode::Resume;
-            reviewer.model = coworker.model.clone();
-            reviewer
-        } else {
-            build_coworker_relaunch_config(coworker, &state.repo_name)
-        };
-        config.auth_profile_dir = Some(provider_auth_dir.clone());
-
-        match state.spawn_coworker(&config).await {
-            Ok(()) => relaunch_count += 1,
-            Err(e) => warn!(
-                "Failed to relaunch coworker '{}' after {} auth switch: {}",
-                coworker.name, provider, e
-            ),
-        }
-    }
-
-    // Post to channel
-    let msg = Message::system(format!(
-        "Switched to {} auth profile '{}' - restarted {}/{} coworker(s), {}",
-        provider,
-        profile,
-        relaunch_count,
-        shutdown_count,
-        lead_relaunch_status.summary()
-    ));
-    if let Err(e) = state.send_and_broadcast_async(&msg).await {
-        warn!("Failed to post auth switch message: {}", e);
-    }
-
-    Response::success(
-        id,
-        serde_json::json!({
-            "success": true,
-            "message": format!(
-                "Switched to {} profile '{}'. Restarted {}/{} coworker(s), {}.",
-                provider,
-                profile,
-                relaunch_count,
-                shutdown_count,
-                lead_relaunch_status.summary()
-            ),
-            "switched": true,
-            "coworkers_shutdown": shutdown_count,
-            "coworkers_relaunched": relaunch_count,
-            "lead_relaunched": lead_relaunch_status.relaunched(),
-            "lead_relaunch_attempted": lead_relaunch_status.attempted(),
-            "lead_relaunch_status": lead_relaunch_status.as_str(),
-        }),
-    )
-}
-
 /// Handle headless.execute RPC method.
 ///
 /// Spawns a headless Claude Code session and runs a one-shot prompt. Returns
@@ -1264,9 +802,6 @@ async fn handle_insight_report(
 /// Normalizes text (trim, collapse whitespace, lowercase) before hashing
 /// to prevent duplicates from minor formatting variations.
 fn hash_insight(insight: &str) -> u64 {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-
     let normalized: String = insight
         .split_whitespace()
         .collect::<Vec<_>>()
@@ -1375,22 +910,10 @@ async fn handle_coworker_report_state(
     task_id: Option<u32>,
     state: &DaemonState,
 ) -> Response {
-    // Parse the phase string into a WorkflowPhase enum
-    let phase = match phase_str {
-        "claiming" => crate::coworker_state::WorkflowPhase::Claiming,
-        "developing" => crate::coworker_state::WorkflowPhase::Developing,
-        "testing" => crate::coworker_state::WorkflowPhase::Testing,
-        "pull_request" | "pull-request" => crate::coworker_state::WorkflowPhase::PullRequest,
-        "reviewing" => crate::coworker_state::WorkflowPhase::Reviewing,
-        "debugging" => crate::coworker_state::WorkflowPhase::Debugging,
-        "completed" => crate::coworker_state::WorkflowPhase::Completed,
-        "idle" => crate::coworker_state::WorkflowPhase::Idle,
-        _ => {
-            return Response::error(
-                id,
-                RpcError::new(-32602, format!("Unknown phase: {}", phase_str)),
-            );
-        }
+    // Parse the phase string via FromStr (implemented in coworker_state.rs)
+    let phase: crate::coworker_state::WorkflowPhase = match phase_str.parse() {
+        Ok(p) => p,
+        Err(e) => return Response::error(id, RpcError::new(-32602, e)),
     };
 
     // For Idle phase, immediately send the coworker on break.
@@ -1598,29 +1121,8 @@ async fn handle_coworker_asking(
     question: &str,
     state: &DaemonState,
 ) -> Response {
-    // Post question to channel - route based on coworker's current task
-    let task_channel = {
-        let records = state.coworker_records.read().await;
-        let task_id = records.get(name).and_then(|r| r.task_id);
-        if let Some(tid) = task_id {
-            let ps = state.persistent_state.lock().await;
-            ps.task_channel.get(&tid.to_string()).cloned()
-        } else {
-            None
-        }
-    };
-
-    let msg = if let Some(ch) = task_channel {
-        Message::for_channel(
-            &ch,
-            name,
-            format!("Question for Lead: {}", question),
-            MessageType::Text,
-        )
-    } else {
-        Message::text(name, format!("Question for Lead: {}", question))
-    };
-
+    // Post question to channel
+    let msg = Message::text(name, format!("Question for Lead: {}", question));
     if let Err(e) = state.send_and_broadcast_async(&msg).await {
         error!("Failed to post question to channel: {}", e);
     }
@@ -1664,23 +1166,7 @@ async fn handle_task_request(
 ) -> Response {
     let channel_message = format!("@lead [Task Request] from {}: \"{}\"", from, message);
 
-    // Route based on requester's current task channel
-    let task_channel = {
-        let records = state.coworker_records.read().await;
-        let task_id = records.get(from).and_then(|r| r.task_id);
-        if let Some(tid) = task_id {
-            let ps = state.persistent_state.lock().await;
-            ps.task_channel.get(&tid.to_string()).cloned()
-        } else {
-            None
-        }
-    };
-
-    let msg = if let Some(ch) = task_channel {
-        Message::for_channel(&ch, from, channel_message.clone(), MessageType::Text)
-    } else {
-        Message::text(from, channel_message.clone())
-    };
+    let msg = Message::new("midtown", channel_message.clone(), MessageType::Text);
 
     if let Err(e) = state.send_and_broadcast_async(&msg).await {
         warn!("Failed to post task request to channel: {}", e);
@@ -1797,23 +1283,8 @@ async fn handle_task_create(
         }
     }
 
-    // Post to channel so team is aware - use the task's assigned channel
-    let assigned_channel = {
-        let ps = state.persistent_state.lock().await;
-        ps.task_channel.get(&task_id.to_string()).cloned()
-    };
-
-    let msg = if let Some(ch) = assigned_channel {
-        Message::for_channel(
-            &ch,
-            "lead",
-            format!("created task: {}", subject),
-            MessageType::Text,
-        )
-    } else {
-        Message::text("lead", format!("created task: {}", subject))
-    };
-
+    // Post to channel so team is aware
+    let msg = Message::text("lead", format!("created task: {}", subject));
     if let Err(e) = state.send_and_broadcast_async(&msg).await {
         warn!("Failed to post task creation to channel: {}", e);
     }
@@ -2071,7 +1542,7 @@ async fn handle_task_update(
 }
 
 /// Handle task.done RPC — mark a task as completed directly.
-async fn handle_task_done(id: RequestId, task_id: &str, state: &DaemonState) -> Response {
+fn handle_task_done(id: RequestId, task_id: &str, state: &DaemonState) -> Response {
     let repo_name = state.repo_name.clone();
 
     if let Err(e) = crate::tasks::complete_task_for_repo(task_id, &repo_name) {
@@ -2083,7 +1554,7 @@ async fn handle_task_done(id: RequestId, task_id: &str, state: &DaemonState) -> 
 
     // Mark worktree as completed (for time-based cleanup)
     {
-        let mut ps = state.persistent_state.lock().await;
+        let mut ps = state.persistent_state.blocking_lock();
         if let Some(wt_id) = ps.worktree_registry.find_worktree_by_task(task_id) {
             ps.worktree_registry
                 .mark_completed(&wt_id, chrono::Utc::now());
@@ -2115,8 +1586,8 @@ async fn handle_task_done(id: RequestId, task_id: &str, state: &DaemonState) -> 
 ///
 /// Returns channel and model mappings stored in DaemonPersistentState.
 /// These are stored separately from Claude Code's native task storage.
-async fn handle_task_metadata(id: RequestId, task_id: &str, state: &DaemonState) -> Response {
-    let ps = state.persistent_state.lock().await;
+fn handle_task_metadata(id: RequestId, task_id: &str, state: &DaemonState) -> Response {
+    let ps = state.persistent_state.blocking_lock();
     let channel = ps.task_channel.get(task_id).cloned();
     let model = ps.task_model.get(task_id).cloned();
 
@@ -2231,12 +1702,8 @@ fn unescape_shell_artifacts(s: &str) -> String {
 ///
 /// Also detects feedback requests from coworkers and nudges the Lead.
 ///
-/// Posts a message to the appropriate channel based on routing rules:
-/// 1. If `channel` parameter is explicitly provided, use that
-/// 2. If content requires main channel routing (cross-cutting concerns like
-///    @user mentions, task lifecycle, errors, escalations), use main channel
-/// 3. If sender is a coworker with a task assignment, use the task's channel
-/// 4. Otherwise, use the default main channel
+/// Accepts an optional `channel` parameter to post to topic channels.
+/// If not provided, defaults to the main channel.
 pub(super) async fn handle_channel_post(
     id: RequestId,
     from: &str,
@@ -2284,48 +1751,9 @@ pub(super) async fn handle_channel_post(
         tracker.insert(key, now);
     }
 
-    // Determine target channel:
-    // 1. If explicitly provided via RPC parameter, use that
-    // 2. If content requires main channel routing (cross-cutting concerns), use main
-    // 3. If coworker has a task assigned, look up the task's channel in task_channel mapping
-    // 4. Otherwise default to main channel
-    let channel_name = if let Some(ch) = channel {
-        ch.to_string()
-    } else if should_route_to_main_channel(&content) {
-        // Content-based filtering: @user mentions, task lifecycle, errors, escalations
-        // always go to main channel for visibility, even when sender has a task channel
-        state.channel_router.default_channel_name().to_string()
-    } else if is_coworker_sender(from) {
-        // Look up coworker's current task and its assigned channel
-        let task_id = {
-            let records = state.coworker_records.read().await;
-            records.get(from).and_then(|r| r.task_id)
-        };
-
-        if let Some(tid) = task_id {
-            let task_channel = {
-                let persistent = state.persistent_state.lock().await;
-                persistent.task_channel.get(&tid.to_string()).cloned()
-            };
-
-            match task_channel {
-                Some(ch) => ch,
-                None => {
-                    debug!(
-                        "channel.post: task {} has no channel assignment, using default",
-                        tid
-                    );
-                    state.channel_router.default_channel_name().to_string()
-                }
-            }
-        } else {
-            state.channel_router.default_channel_name().to_string()
-        }
-    } else {
-        state.channel_router.default_channel_name().to_string()
-    };
-
-    let msg = Message::for_channel(&channel_name, from, content.clone(), msg_type.clone());
+    // Use provided channel or default to main channel
+    let channel_name = channel.unwrap_or_else(|| state.channel_router.default_channel_name());
+    let msg = Message::for_channel(channel_name, from, content.clone(), msg_type.clone());
 
     // Use async version to avoid blocking the runtime during file lock acquisition
     if let Err(e) = state.send_and_broadcast_async(&msg).await {
@@ -3970,92 +3398,6 @@ mod tests {
     }
 
     #[test]
-    fn test_filter_coworkers_by_provider() {
-        let coworkers = vec![
-            crate::coworker::Coworker {
-                slot_id: "1".to_string(),
-                name: "lexington".to_string(),
-                status: crate::coworker::CoworkerStatus::Running,
-                working_dir: "/tmp/lexington".to_string(),
-                started_at: chrono::Utc::now(),
-                current_task: Some("Build auth".to_string()),
-                session_id: None,
-                model: "sonnet".to_string(),
-                provider: crate::auth::AuthProvider::Claude,
-            },
-            crate::coworker::Coworker {
-                slot_id: "2".to_string(),
-                name: "park".to_string(),
-                status: crate::coworker::CoworkerStatus::Running,
-                working_dir: "/tmp/park".to_string(),
-                started_at: chrono::Utc::now(),
-                current_task: Some("Review PR".to_string()),
-                session_id: None,
-                model: "gpt-5-codex".to_string(),
-                provider: crate::auth::AuthProvider::Codex,
-            },
-        ];
-
-        let claude = filter_coworkers_by_provider(&coworkers, crate::auth::AuthProvider::Claude);
-        let codex = filter_coworkers_by_provider(&coworkers, crate::auth::AuthProvider::Codex);
-
-        assert_eq!(claude.len(), 1);
-        assert_eq!(claude[0].name, "lexington");
-        assert_eq!(codex.len(), 1);
-        assert_eq!(codex[0].name, "park");
-    }
-
-    #[test]
-    fn test_parse_provider_param_defaults_to_claude() {
-        let provider = parse_provider_param(None).expect("should parse default provider");
-        assert_eq!(provider, crate::auth::AuthProvider::Claude);
-    }
-
-    #[test]
-    fn test_parse_provider_param_parses_codex() {
-        let params = serde_json::json!({ "provider": "codex" });
-        let provider = parse_provider_param(Some(&params)).expect("should parse codex");
-        assert_eq!(provider, crate::auth::AuthProvider::Codex);
-    }
-
-    #[test]
-    fn test_parse_provider_param_rejects_unknown_provider() {
-        let params = serde_json::json!({ "provider": "unknown" });
-        let err = parse_provider_param(Some(&params)).expect_err("provider should be rejected");
-        assert!(err.contains("Unsupported provider"));
-    }
-
-    #[test]
-    fn test_build_coworker_relaunch_config_preserves_name_and_model() {
-        let coworker = crate::coworker::Coworker {
-            slot_id: "1".to_string(),
-            name: "madison".to_string(),
-            status: crate::coworker::CoworkerStatus::Running,
-            working_dir: "/tmp/madison".to_string(),
-            started_at: chrono::Utc::now(),
-            current_task: Some("Fix tests".to_string()),
-            session_id: None,
-            model: "opus".to_string(),
-            provider: crate::auth::AuthProvider::Claude,
-        };
-
-        let config = build_coworker_relaunch_config(&coworker, "midtown");
-        assert_eq!(config.name, "madison");
-        assert_eq!(config.model, "opus");
-        assert_eq!(config.session_mode, crate::launch::SessionMode::Resume);
-    }
-
-    #[test]
-    fn test_lead_relaunch_status_strings() {
-        assert_eq!(LeadRelaunchStatus::Relaunched.as_str(), "relaunched");
-        assert_eq!(LeadRelaunchStatus::Failed.as_str(), "failed");
-        assert_eq!(LeadRelaunchStatus::Unchanged.as_str(), "unchanged");
-        assert_eq!(LeadRelaunchStatus::Unchanged.summary(), "lead unchanged");
-        assert!(!LeadRelaunchStatus::Unchanged.attempted());
-        assert!(LeadRelaunchStatus::Relaunched.relaunched());
-    }
-
-    #[test]
     fn test_hash_insight_normalizes_whitespace() {
         let hash1 = hash_insight("This is an insight");
         let hash2 = hash_insight("  This  is   an   insight  ");
@@ -4580,251 +3922,6 @@ mod tests {
             display_task_id,
             Some(reviewer_internal_task_id),
             "Should NOT display reviewer's internal task ID"
-        );
-    }
-
-    /// Verify handle_task_metadata uses async .lock().await (not blocking_lock()).
-    ///
-    /// Before the fix, handle_task_metadata used blocking_lock() on a tokio::Mutex
-    /// inside an async context, causing "Cannot block the current thread" panics.
-    /// This test confirms the function works correctly in a tokio runtime.
-    #[tokio::test]
-    async fn test_handle_task_metadata_uses_async_lock() {
-        use crate::daemon::DaemonState;
-        use tempfile::TempDir;
-
-        let temp_dir = TempDir::new().expect("temp dir");
-        std::process::Command::new("git")
-            .args(["init"])
-            .current_dir(temp_dir.path())
-            .output()
-            .expect("git init");
-        std::process::Command::new("git")
-            .args(["config", "user.email", "test@example.com"])
-            .current_dir(temp_dir.path())
-            .output()
-            .expect("git config");
-        std::process::Command::new("git")
-            .args(["config", "user.name", "Test"])
-            .current_dir(temp_dir.path())
-            .output()
-            .expect("git config");
-        std::process::Command::new("git")
-            .args(["commit", "--allow-empty", "-m", "init"])
-            .current_dir(temp_dir.path())
-            .output()
-            .expect("git commit");
-
-        let base_dir = temp_dir.path().to_path_buf();
-        let wm = crate::worktree::WorktreeManager::new(base_dir.clone()).expect("worktree manager");
-        let cm = crate::coworker::CoworkerManager::new("test-session", wm);
-        let channel_router = crate::ChannelRouter::new(&base_dir, "midtown");
-        std::mem::forget(temp_dir);
-
-        let (shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(1);
-        let state = DaemonState::new(
-            "/tmp/test-metadata.sock".into(),
-            cm,
-            "test-repo".to_string(),
-            vec![base_dir],
-            channel_router,
-            None,
-            10,
-            None,
-            "main".to_string(),
-            shutdown_tx,
-        )
-        .expect("daemon state");
-
-        // This would panic with "Cannot block the current thread from within
-        // a runtime" if handle_task_metadata still used blocking_lock().
-        let response = handle_task_metadata(RequestId::Number(1), "nonexistent-task", &state).await;
-
-        // Should return success with null channel/model for nonexistent task
-        assert!(response.error.is_none(), "Expected success response");
-        let result = response.result.expect("Expected result in response");
-        assert!(result["channel"].is_null());
-        assert!(result["model"].is_null());
-    }
-
-    /// Verify handle_task_done uses async .lock().await (not blocking_lock()).
-    ///
-    /// Before the fix, handle_task_done used blocking_lock() on a tokio::Mutex
-    /// inside an async context, causing deadlocks when persistent_state was held
-    /// by collect_world_snapshot() on the same tokio runtime.
-    #[tokio::test]
-    async fn test_handle_task_done_uses_async_lock() {
-        use crate::daemon::DaemonState;
-        use tempfile::TempDir;
-
-        let temp_dir = TempDir::new().expect("temp dir");
-        std::process::Command::new("git")
-            .args(["init"])
-            .current_dir(temp_dir.path())
-            .output()
-            .expect("git init");
-        std::process::Command::new("git")
-            .args(["config", "user.email", "test@example.com"])
-            .current_dir(temp_dir.path())
-            .output()
-            .expect("git config");
-        std::process::Command::new("git")
-            .args(["config", "user.name", "Test"])
-            .current_dir(temp_dir.path())
-            .output()
-            .expect("git config");
-        std::process::Command::new("git")
-            .args(["commit", "--allow-empty", "-m", "init"])
-            .current_dir(temp_dir.path())
-            .output()
-            .expect("git commit");
-
-        let base_dir = temp_dir.path().to_path_buf();
-        let wm = crate::worktree::WorktreeManager::new(base_dir.clone()).expect("worktree manager");
-        let cm = crate::coworker::CoworkerManager::new("test-session", wm);
-        let channel_router = crate::ChannelRouter::new(&base_dir, "midtown");
-        std::mem::forget(temp_dir);
-
-        let (shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(1);
-        let state = DaemonState::new(
-            "/tmp/test-task-done.sock".into(),
-            cm,
-            "test-repo".to_string(),
-            vec![base_dir],
-            channel_router,
-            None,
-            10,
-            None,
-            "main".to_string(),
-            shutdown_tx,
-        )
-        .expect("daemon state");
-
-        // This would deadlock if handle_task_done still used blocking_lock()
-        // on the tokio::Mutex, since the single-threaded tokio test runtime
-        // can't make progress when a thread is blocked.
-        let response = handle_task_done(RequestId::Number(1), "nonexistent-task", &state).await;
-
-        // Should return error for nonexistent task (task file doesn't exist)
-        assert!(
-            response.error.is_some(),
-            "Expected error for nonexistent task"
-        );
-    }
-
-    /// Reproduce the bug: `blocking_lock()` on a `tokio::Mutex` inside an async
-    /// context panics with "Cannot block the current thread from within a runtime."
-    ///
-    /// In production, this manifested as daemon crashes when `collect_world_snapshot`
-    /// and RPC handlers (handle_task_done, pr_action_to_effects, etc.) contended
-    /// for `persistent_state`. The fix replaces all `blocking_lock()` calls with
-    /// `.lock().await`.
-    ///
-    /// Part 1 proves `blocking_lock()` panics in async context (the bug).
-    /// Part 2 proves `.lock().await` works under the same contention (the fix).
-    #[tokio::test(flavor = "current_thread")]
-    async fn test_blocking_lock_deadlock_reproduction() {
-        use std::sync::Arc;
-
-        let mutex = Arc::new(tokio::sync::Mutex::new(42u32));
-
-        // === Part 1: blocking_lock() panics in async context ===
-        // On a current_thread runtime, tokio detects the illegal blocking call
-        // and panics. On a multi_thread runtime with contention, it deadlocks
-        // instead. Either way, blocking_lock() is wrong in async code.
-
-        let m1 = Arc::clone(&mutex);
-        let blocker = tokio::spawn(async move {
-            let _guard = m1.blocking_lock();
-        });
-
-        let blocker_result = blocker.await;
-        assert!(
-            blocker_result.is_err(),
-            "Expected blocking_lock() to panic inside tokio runtime, but it succeeded"
-        );
-        let panic_msg = format!("{:?}", blocker_result.unwrap_err());
-        assert!(
-            panic_msg.contains("block the current thread"),
-            "Expected 'Cannot block the current thread' panic, got: {}",
-            panic_msg
-        );
-
-        // === Part 2: .lock().await works under contention (the fix) ===
-
-        let m2 = Arc::clone(&mutex);
-        let holder = tokio::spawn(async move {
-            let _guard = m2.lock().await;
-            // Simulate collect_world_snapshot doing work while holding the lock.
-            tokio::task::yield_now().await;
-        });
-
-        let m3 = Arc::clone(&mutex);
-        let awaiter = tokio::spawn(async move {
-            // .lock().await yields cooperatively — holder completes and releases
-            // the lock, then awaiter acquires it. No deadlock.
-            let _guard = m3.lock().await;
-        });
-
-        let ok_result = tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            holder.await.expect("holder panicked");
-            awaiter.await.expect("awaiter panicked");
-        })
-        .await;
-
-        assert!(
-            ok_result.is_ok(),
-            "Expected .lock().await to resolve without deadlock"
-        );
-    }
-
-    /// Ensure no daemon code uses blocking_lock() on tokio::Mutex.
-    ///
-    /// blocking_lock() in async context causes deadlocks when the tokio runtime
-    /// can't schedule the lock holder. This has caused daemon crashes multiple times
-    /// (PR #1045 fixed handle_task_metadata, this PR fixed handle_task_done + pr.rs).
-    /// This test prevents regression by scanning the daemon source files.
-    #[test]
-    fn no_blocking_lock_in_daemon_code() {
-        let daemon_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/daemon");
-        let mut violations = Vec::new();
-
-        for entry in std::fs::read_dir(&daemon_dir).expect("read daemon dir") {
-            let entry = entry.expect("dir entry");
-            let path = entry.path();
-            if path.extension().is_some_and(|e| e == "rs") {
-                let content = std::fs::read_to_string(&path).expect("read file");
-                let mut in_test_module = false;
-                for (line_num, line) in content.lines().enumerate() {
-                    // Skip comments
-                    if line.trim_start().starts_with("//") || line.trim_start().starts_with("///") {
-                        continue;
-                    }
-                    // Track #[cfg(test)] module boundaries
-                    if line.contains("#[cfg(test)]") {
-                        in_test_module = true;
-                        continue;
-                    }
-                    if in_test_module {
-                        continue;
-                    }
-                    let needle = format!(".{}()", "blocking_lock");
-                    if line.contains(&needle) {
-                        violations.push(format!(
-                            "{}:{}: {}",
-                            path.file_name().unwrap().to_string_lossy(),
-                            line_num + 1,
-                            line.trim()
-                        ));
-                    }
-                }
-            }
-        }
-
-        assert!(
-            violations.is_empty(),
-            "Found blocking_lock() calls in daemon code (use .lock().await instead):\n{}",
-            violations.join("\n")
         );
     }
 }
