@@ -627,7 +627,17 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 message,
                 channel,
             } => {
-                let msg = if let Some(ch) = channel {
+                // Resolve the target channel:
+                // 1. Use explicit channel if provided
+                // 2. Otherwise, try to extract task ID from message and look up its channel
+                // 3. Fall back to default channel if no task mentioned
+                let channel_name = if let Some(ch) = channel {
+                    Some(ch)
+                } else {
+                    state.resolve_message_channel(&message).await
+                };
+
+                let msg = if let Some(ch) = channel_name {
                     Message::for_channel(&ch, &sender, &message, crate::message::MessageType::Text)
                 } else {
                     Message::text(&sender, &message)
