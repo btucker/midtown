@@ -109,17 +109,15 @@
 
     const rect = textareaElement.getBoundingClientRect()
 
-    // Position the dropdown at the top of the textarea.
-    // The dropdown's CSS uses transform: translateY(calc(-100% - 8px)) to:
-    // 1. Shift up by its own height (-100%)
-    // 2. Add an 8px gap (-8px)
-    // This places the dropdown just above the textarea with proper spacing.
+    // Mobile keyboard positioning fix:
+    // Position at rect.bottom (bottom of textarea), then CSS transform
+    // translateY(calc(-100% - 8px)) shifts the dropdown up by its height + 8px gap.
+    // This positions the dropdown directly above the textarea with proper spacing.
     //
-    // Note: No visualViewport offset needed. getBoundingClientRect() returns
-    // coordinates relative to the viewport, and position: fixed uses the same
-    // coordinate system, so they work correctly together even with mobile keyboards.
+    // No visualViewport offset needed — getBoundingClientRect() and position: fixed
+    // use the same coordinate system, so they work correctly with mobile keyboards.
     return {
-      top: rect.top,
+      top: rect.bottom,
       left: rect.left,
       width: rect.width
     }
