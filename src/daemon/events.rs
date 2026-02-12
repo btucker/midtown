@@ -81,7 +81,7 @@ pub async fn evaluate_tick(
             // Auto-archive channels when all tasks are completed
             effects.extend(super::auto_archive::collect_auto_archive_effects(
                 &snap.all_tasks,
-                &state.repo_name,
+                &snap.archived_channels,
             ));
             dedup_spawn_effects(effects)
         }

@@ -199,32 +199,30 @@ impl Channel {
 
     /// List all archived channels in the base directory
     ///
-    /// Returns channel names (without .archived.jsonl extension) for channels
-    /// that have been archived. These channels are excluded from the regular list().
+    /// Returns channel names (without `.archived.jsonl` extension).
+    /// Scans the `channels/` directory for files matching `*.archived.jsonl`.
     pub fn list_archived(base_dir: impl Into<PathBuf>) -> Result<Vec<String>> {
         let base_dir = base_dir.into();
-        let mut archived_channels = Vec::new();
+        let mut archived = Vec::new();
 
-        // Check channels/ directory for .archived.jsonl files
         let channels_dir = base_dir.join("channels");
         if channels_dir.exists() {
             for entry in fs::read_dir(channels_dir)? {
                 let entry = entry?;
                 let path = entry.path();
-                // Filter for .archived.jsonl files
                 if path.extension().is_some_and(|e| e == "jsonl")
                     && let Some(stem) = path.file_stem().and_then(|s| s.to_str())
                     && stem.ends_with(".archived")
                 {
-                    // Remove the ".archived" suffix to get the original channel name
-                    let channel_name = stem.strip_suffix(".archived").unwrap();
-                    archived_channels.push(channel_name.to_string());
+                    // Strip the ".archived" suffix to get the channel name
+                    let name = stem.trim_end_matches(".archived");
+                    archived.push(name.to_string());
                 }
             }
         }
 
-        archived_channels.sort();
-        Ok(archived_channels)
+        archived.sort();
+        Ok(archived)
     }
 
     /// Create a new channel

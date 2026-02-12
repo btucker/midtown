@@ -1,8 +1,8 @@
 //! Tests for auto-archiving channels when all tasks complete.
 
-use super::effects::Effect;
-use crate::clustering::ClusteringDiff;
+use crate::daemon::effects::Effect;
 use crate::tasks::TaskStatus;
+use std::collections::HashSet;
 
 /// Helper to create a minimal task list for testing.
 fn mock_task(id: &str, status: TaskStatus, channel: Option<&str>) -> crate::tasks::Task {
@@ -21,17 +21,14 @@ fn mock_task(id: &str, status: TaskStatus, channel: Option<&str>) -> crate::task
 
 #[test]
 fn test_channel_with_all_tasks_completed_gets_archived() {
-    // Setup: A topic channel with 3 tasks, all completed
     let tasks = vec![
         mock_task("1", TaskStatus::Completed, Some("auth-feature")),
         mock_task("2", TaskStatus::Completed, Some("auth-feature")),
         mock_task("3", TaskStatus::Completed, Some("auth-feature")),
     ];
 
-    // When we check for channels to archive
-    let effects = super::auto_archive::collect_auto_archive_effects(&tasks, "test-repo");
+    let effects = super::collect_auto_archive_effects(&tasks, &HashSet::new());
 
-    // Should produce an ArchiveChannel effect
     assert_eq!(effects.len(), 1);
     match &effects[0] {
         Effect::ArchiveChannel { name } => {
@@ -43,58 +40,48 @@ fn test_channel_with_all_tasks_completed_gets_archived() {
 
 #[test]
 fn test_channel_with_pending_tasks_not_archived() {
-    // Setup: A topic channel with 2 completed tasks and 1 pending
     let tasks = vec![
         mock_task("1", TaskStatus::Completed, Some("feature-x")),
         mock_task("2", TaskStatus::Pending, Some("feature-x")),
         mock_task("3", TaskStatus::Completed, Some("feature-x")),
     ];
 
-    // When we check for channels to archive
-    let effects = super::auto_archive::collect_auto_archive_effects(&tasks, "test-repo");
-
-    // Should NOT produce any archive effects
+    let effects = super::collect_auto_archive_effects(&tasks, &HashSet::new());
     assert_eq!(effects.len(), 0);
 }
 
 #[test]
 fn test_channel_with_in_progress_tasks_not_archived() {
-    // Setup: A topic channel with completed and in-progress tasks
     let tasks = vec![
         mock_task("1", TaskStatus::Completed, Some("refactor")),
         mock_task("2", TaskStatus::InProgress, Some("refactor")),
     ];
 
-    let effects = super::auto_archive::collect_auto_archive_effects(&tasks, "test-repo");
+    let effects = super::collect_auto_archive_effects(&tasks, &HashSet::new());
     assert_eq!(effects.len(), 0);
 }
 
 #[test]
 fn test_midtown_channel_never_archived() {
-    // Setup: Tasks in the main "midtown" channel, all completed
     let tasks = vec![
         mock_task("1", TaskStatus::Completed, Some("midtown")),
         mock_task("2", TaskStatus::Completed, Some("midtown")),
     ];
 
-    let effects = super::auto_archive::collect_auto_archive_effects(&tasks, "test-repo");
-
-    // Midtown channel should never be archived, even if all tasks are complete
+    let effects = super::collect_auto_archive_effects(&tasks, &HashSet::new());
     assert_eq!(effects.len(), 0);
 }
 
 #[test]
 fn test_tasks_without_channel_ignored() {
-    // Setup: Mix of tasks with and without channels
     let tasks = vec![
         mock_task("1", TaskStatus::Completed, None),
         mock_task("2", TaskStatus::Completed, Some("topic-a")),
         mock_task("3", TaskStatus::Pending, None),
     ];
 
-    let effects = super::auto_archive::collect_auto_archive_effects(&tasks, "test-repo");
+    let effects = super::collect_auto_archive_effects(&tasks, &HashSet::new());
 
-    // Topic-a should be archived (only has 1 task, which is completed)
     assert_eq!(effects.len(), 1);
     match &effects[0] {
         Effect::ArchiveChannel { name } => {
@@ -106,7 +93,6 @@ fn test_tasks_without_channel_ignored() {
 
 #[test]
 fn test_multiple_channels_archived_independently() {
-    // Setup: Two topic channels, one complete, one not
     let tasks = vec![
         mock_task("1", TaskStatus::Completed, Some("channel-a")),
         mock_task("2", TaskStatus::Completed, Some("channel-a")),
@@ -115,9 +101,8 @@ fn test_multiple_channels_archived_independently() {
         mock_task("5", TaskStatus::Completed, Some("channel-c")),
     ];
 
-    let effects = super::auto_archive::collect_auto_archive_effects(&tasks, "test-repo");
+    let effects = super::collect_auto_archive_effects(&tasks, &HashSet::new());
 
-    // Should archive channel-a and channel-c, but not channel-b
     assert_eq!(effects.len(), 2);
 
     let archived: Vec<String> = effects
@@ -136,6 +121,50 @@ fn test_multiple_channels_archived_independently() {
 #[test]
 fn test_empty_task_list_no_archive() {
     let tasks = vec![];
-    let effects = super::auto_archive::collect_auto_archive_effects(&tasks, "test-repo");
+    let effects = super::collect_auto_archive_effects(&tasks, &HashSet::new());
     assert_eq!(effects.len(), 0);
+}
+
+#[test]
+fn test_already_archived_channel_skipped() {
+    // All tasks completed for "auth-feature", but it's already archived
+    let tasks = vec![
+        mock_task("1", TaskStatus::Completed, Some("auth-feature")),
+        mock_task("2", TaskStatus::Completed, Some("auth-feature")),
+        mock_task("3", TaskStatus::Completed, Some("fresh-channel")),
+    ];
+
+    let archived = HashSet::from(["auth-feature".to_string()]);
+    let effects = super::collect_auto_archive_effects(&tasks, &archived);
+
+    // Only "fresh-channel" should be archived; "auth-feature" is already archived
+    assert_eq!(effects.len(), 1);
+    match &effects[0] {
+        Effect::ArchiveChannel { name } => {
+            assert_eq!(name, "fresh-channel");
+        }
+        _ => panic!("Expected ArchiveChannel effect for fresh-channel"),
+    }
+}
+
+#[test]
+fn test_second_call_with_archived_produces_no_effects() {
+    // Simulate: first tick archives "auth-feature", second tick should skip it
+    let tasks = vec![
+        mock_task("1", TaskStatus::Completed, Some("auth-feature")),
+        mock_task("2", TaskStatus::Completed, Some("auth-feature")),
+    ];
+
+    // First call: no archived channels yet
+    let effects = super::collect_auto_archive_effects(&tasks, &HashSet::new());
+    assert_eq!(effects.len(), 1);
+
+    // Second call: "auth-feature" is now in the archived set
+    let archived = HashSet::from(["auth-feature".to_string()]);
+    let effects = super::collect_auto_archive_effects(&tasks, &archived);
+    assert_eq!(
+        effects.len(),
+        0,
+        "Should not re-archive an already-archived channel"
+    );
 }
