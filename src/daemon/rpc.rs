@@ -2233,8 +2233,10 @@ fn unescape_shell_artifacts(s: &str) -> String {
 ///
 /// Posts a message to the appropriate channel based on routing rules:
 /// 1. If `channel` parameter is explicitly provided, use that
-/// 2. If sender is a coworker with a task assignment, use the task's channel
-/// 3. Otherwise, use the default main channel
+/// 2. If content requires main channel routing (cross-cutting concerns like
+///    @user mentions, task lifecycle, errors, escalations), use main channel
+/// 3. If sender is a coworker with a task assignment, use the task's channel
+/// 4. Otherwise, use the default main channel
 pub(super) async fn handle_channel_post(
     id: RequestId,
     from: &str,
