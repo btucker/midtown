@@ -1,6 +1,5 @@
 <script>
   import { kanbanData } from './store.js'
-  import { matchesChannel } from './channelUtils.js'
 
   let { channelName = '' } = $props()
 
@@ -59,18 +58,21 @@
   }
 
   /**
-   * Filter tasks by channel name (whole word match in subject/description).
+   * Filter tasks by channel field.
    * For 'midtown' channel, return all tasks.
+   * For topic channels, only return tasks explicitly assigned to that channel.
+   *
+   * This matches the TUI implementation in src/bin/midtown/cli/chat/ui/board.rs
+   * which groups tasks by `task.channel.as_deref().unwrap_or(main_channel)`.
    */
   function filterTasksByChannel(tasks, channel) {
     if (channel === 'midtown') {
+      // Main channel shows all tasks, including those with no explicit channel assignment
       return tasks
     }
 
-    return tasks.filter(task =>
-      matchesChannel(task.subject, channel) ||
-      matchesChannel(task.description, channel)
-    )
+    // Topic channels only show tasks explicitly assigned to that channel via the channel field
+    return tasks.filter(task => task.channel === channel)
   }
 
   // Derived: tasks for this channel

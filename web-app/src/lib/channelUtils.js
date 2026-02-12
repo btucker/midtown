@@ -17,26 +17,32 @@ export function matchesChannel(text, channelName) {
 }
 
 /**
- * Get task count for a channel, filtering by channel name as whole word in task description.
- * Main channel shows all tasks, topic channels filter by channel name.
+ * Get task count for a channel, filtering by the task's channel field.
+ * Main channel shows all tasks, topic channels filter by channel field.
+ *
+ * This matches the TUI implementation which groups tasks by task.channel.
  */
 export function getChannelTaskCount(channelName, kanban) {
   if (channelName === 'midtown') {
-    // Main channel shows all tasks
+    // Main channel shows all tasks, including those with no explicit channel assignment
     return {
       inProgress: kanban.inProgress.length,
       pending: kanban.backlog.length,
       review: kanban.review.length,
     }
   }
-  // Topic channels filter by channel name as whole word in task description
-  const filter = (list) => list.filter((item) =>
-    matchesChannel(item.title || item.task_name || '', channelName)
-  )
+
+  // Topic channels filter by the task's channel field
+  const filterTasks = (list) => list.filter((task) => task.channel === channelName)
+
+  // For PRs (review column), look up the task's channel via task_name matching
+  // since PRs reference tasks but don't have a direct channel field
+  const filterPrs = (list) => list.filter((pr) => matchesChannel(pr.task_name || '', channelName))
+
   return {
-    inProgress: filter(kanban.inProgress).length,
-    pending: filter(kanban.backlog).length,
-    review: filter(kanban.review).length,
+    inProgress: filterTasks(kanban.inProgress).length,
+    pending: filterTasks(kanban.backlog).length,
+    review: filterPrs(kanban.review).length,
   }
 }
 

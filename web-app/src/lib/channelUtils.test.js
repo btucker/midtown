@@ -37,15 +37,17 @@ describe('matchesChannel', () => {
 
 describe('getChannelTaskCount', () => {
   const mockKanban = {
+    // Tasks now use explicit `channel` field matching the backend structure
     inProgress: [
-      { title: 'auth-refactor: Add JWT' },
-      { title: 'ui-improvements: Dark mode' },
-      { title: 'Other task' },
+      { title: 'Add JWT', channel: 'auth-refactor' },
+      { title: 'Dark mode', channel: 'ui-improvements' },
+      { title: 'Other task', channel: null }, // No explicit channel = midtown default
     ],
     backlog: [
-      { title: 'auth-refactor: Update tests' },
-      { title: 'Unrelated pending task' },
+      { title: 'Update tests', channel: 'auth-refactor' },
+      { title: 'Unrelated pending task', channel: null },
     ],
+    // PRs still match by task_name since they don't have direct channel field
     review: [
       { task_name: 'auth-refactor: Add JWT' },
     ],
@@ -60,7 +62,7 @@ describe('getChannelTaskCount', () => {
     })
   })
 
-  it('filters tasks by channel name for topic channels', () => {
+  it('filters tasks by channel field for topic channels', () => {
     const counts = getChannelTaskCount('auth-refactor', mockKanban)
     expect(counts).toEqual({
       inProgress: 1,
