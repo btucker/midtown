@@ -136,6 +136,11 @@ pub(super) const USAGE_LIMIT_NUDGE_BUFFER: Duration = Duration::from_secs(30);
 /// at any moment, so periodic nudging is more appropriate.
 pub(super) const API_ERROR_NUDGE_COOLDOWN: Duration = Duration::from_secs(90);
 
+/// Auth errors (expired OAuth tokens) require user intervention and won't resolve
+/// with retries. This cooldown prevents repeatedly shutting down the same coworker
+/// and spamming notifications. Set to 5 minutes to allow time for the user to re-auth.
+pub(super) const AUTH_ERROR_SHUTDOWN_COOLDOWN: Duration = Duration::from_secs(300);
+
 /// Number of coworker slots reserved for reviewers.
 pub(super) const REVIEW_HEADROOM: usize = 2;
 

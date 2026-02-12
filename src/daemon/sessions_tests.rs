@@ -1,5 +1,35 @@
 use super::*;
 
+#[test]
+fn test_is_auth_error_detects_oauth_expired() {
+    let msg = "Error: OAuth token has expired";
+    assert!(is_auth_error(msg));
+}
+
+#[test]
+fn test_is_auth_error_detects_authentication_error() {
+    let msg = "authentication_error: Invalid credentials";
+    assert!(is_auth_error(msg));
+}
+
+#[test]
+fn test_is_auth_error_detects_401_unauthorized() {
+    let msg = "HTTP 401 unauthorized";
+    assert!(is_auth_error(msg));
+}
+
+#[test]
+fn test_is_auth_error_ignores_usage_limit() {
+    let msg = "You've hit your usage limit";
+    assert!(!is_auth_error(msg));
+}
+
+#[test]
+fn test_is_auth_error_ignores_generic_api_error() {
+    let msg = "API error: Rate limit exceeded";
+    assert!(!is_auth_error(msg));
+}
+
 /// Insert a fake session entry for testing (no real process).
 async fn insert_test_session(sm: &SessionManager, name: &str, status: SessionStatus) {
     let mut sessions = sm.sessions.write().await;
@@ -18,6 +48,7 @@ async fn insert_test_session(sm: &SessionManager, name: &str, status: SessionSta
             has_usage_limit: false,
             usage_limit_reset_at: None,
             has_api_error: false,
+            has_auth_error: false,
             has_running_subagent: false,
             has_pending_tool: false,
             has_tool_name_conflict: false,
@@ -188,6 +219,7 @@ async fn test_spawn_with_session_id_sets_session_id_immediately() {
                 has_usage_limit: false,
                 usage_limit_reset_at: None,
                 has_api_error: false,
+                has_auth_error: false,
                 has_running_subagent: false,
                 has_pending_tool: false,
                 has_tool_name_conflict: false,

@@ -208,6 +208,7 @@ pub(super) fn determine_lead_working(
 /// - They have unblocked dependent tasks
 /// - They are usage-limited (waiting for usage limit reset)
 /// - They have API errors (will be nudged to retry instead)
+/// - They have auth errors (waiting for re-authentication)
 ///
 /// Also enforces a minimum lifetime check - coworkers must be alive for at least
 /// 5 minutes before they can be sent on a break. This prevents spawn storms where
@@ -253,6 +254,7 @@ pub(super) fn check_and_shutdown_idle_coworkers(snap: &snapshot::WorldSnapshot) 
             ci_passed_pr_coworkers: &snap.ci_passed_pr_coworkers,
             usage_limited_coworkers: &snap.usage_limited_coworkers,
             api_error_coworkers: &snap.api_error_coworkers,
+            auth_error_coworkers: &snap.auth_error_coworkers,
             pending_task_owners: &snap.pending_task_owners,
             review_feedback_pr_coworkers: &snap.review_feedback_pr_coworkers,
             now_utc: snap.now_utc,
@@ -408,6 +410,7 @@ pub(super) async fn check_and_restart_stuck_coworkers(
     let exemptions = crate::rules::StuckExemptions {
         usage_limited: &snap.usage_limited_coworkers,
         api_error: &snap.api_error_coworkers,
+        auth_error: &snap.auth_error_coworkers,
         attached: &snap.attached_coworkers,
     };
     let restarts = crate::rules::decide_stuck_coworker_restarts(
@@ -489,6 +492,7 @@ pub(super) fn check_and_restart_stuck_reviewers(snap: &snapshot::WorldSnapshot) 
     let exemptions = crate::rules::StuckExemptions {
         usage_limited: &snap.usage_limited_coworkers,
         api_error: &snap.api_error_coworkers,
+        auth_error: &snap.auth_error_coworkers,
         attached: &snap.attached_coworkers,
     };
     let restarts = crate::rules::decide_stuck_reviewer_restarts(
@@ -766,6 +770,85 @@ pub(super) fn maybe_nudge_usage_limit_expiry(snap: &snapshot::WorldSnapshot) -> 
             message: "continue".to_string(),
             session_id: None,
         });
+    }
+
+    effects
+}
+
+/// Check for coworkers experiencing authentication errors and notify the user.
+///
+/// Unlike usage limits (which reset automatically) and API errors (which may clear on
+/// retry), auth errors require user intervention to re-authenticate. When detected:
+/// 1. Shut down the affected coworker (no point retrying with an expired token)
+/// 2. Post a clear message to the channel with re-auth instructions
+/// 3. Nudge the lead so the user sees the notification immediately
+///
+/// Uses a cooldown to prevent spamming when multiple coworkers hit the same auth error.
+pub(super) fn check_and_handle_auth_errors(
+    snap: &snapshot::WorldSnapshot,
+    state: &DaemonState,
+) -> Vec<Effect> {
+    if snap.auth_error_coworkers.is_empty() {
+        return vec![];
+    }
+
+    let mut effects = Vec::new();
+    let mut newly_detected = Vec::new();
+
+    for name in &snap.auth_error_coworkers {
+        // Check cooldown - only act if we haven't already handled this coworker
+        let should_handle = {
+            let cooldowns = state.cooldowns.lock().unwrap();
+            cooldowns.check("auth_error_shutdown", name, AUTH_ERROR_SHUTDOWN_COOLDOWN)
+        };
+
+        if !should_handle {
+            debug!("Auth error shutdown cooldown active for {}", name);
+            continue;
+        }
+
+        newly_detected.push(name.clone());
+
+        info!(
+            "Coworker {} hit auth error (OAuth token expired) — shutting down",
+            name
+        );
+
+        // Shut down the coworker - no point retrying with expired token
+        effects.push(Effect::ShutdownCoworker {
+            name: name.clone(),
+            message: String::new(),
+            session_id: None,
+        });
+
+        // Record the cooldown so we don't repeatedly shut down the same coworker
+        effects.push(Effect::RecordCooldown {
+            category: "auth_error_shutdown".to_string(),
+            key: name.clone(),
+        });
+    }
+
+    // Post a channel message and nudge the lead on first detection
+    if !newly_detected.is_empty() {
+        let names_str = newly_detected.join(", ");
+
+        let message = format!(
+            "🔐 OAuth token expired — coworkers {} shut down. Re-authenticate with: midtown auth login\n\
+             Coworkers with pending tasks will be respawned after re-authentication.",
+            names_str
+        );
+
+        effects.insert(
+            0,
+            Effect::PostToChannel {
+                sender: "system".to_string(),
+                message: message.clone(),
+                channel: None,
+            },
+        );
+
+        // Nudge the lead so the user sees this immediately
+        effects.push(Effect::NudgeLead { message });
     }
 
     effects

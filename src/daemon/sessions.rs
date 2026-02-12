@@ -18,6 +18,22 @@ use tracing::{debug, info, warn};
 use crate::daemon::state::HeadlessSessionInfo;
 use crate::headless::{HeadlessConfig, HeadlessSession, StreamEvent};
 
+/// Check if an error message indicates an OAuth token expiry.
+///
+/// OAuth token expiry errors typically contain:
+/// - "OAuth token has expired"
+/// - "authentication_error" with HTTP 401
+/// - "Invalid authentication credentials"
+///
+/// Returns true if the error is an auth error that requires re-authentication.
+pub(super) fn is_auth_error(error_msg: &str) -> bool {
+    let lowercase = error_msg.to_lowercase();
+    lowercase.contains("oauth") && lowercase.contains("expired")
+        || lowercase.contains("authentication_error")
+        || lowercase.contains("invalid authentication")
+        || (lowercase.contains("401") && lowercase.contains("unauthorized"))
+}
+
 /// Parse usage limit messages to extract reset time.
 ///
 /// Claude Code usage limit messages typically contain text like:
@@ -111,6 +127,8 @@ pub struct CoworkerSession {
     pub usage_limit_reset_at: Option<DateTime<Utc>>,
     /// Whether the session has an API error.
     pub has_api_error: bool,
+    /// Whether the session has an authentication error (OAuth token expired).
+    pub has_auth_error: bool,
     /// Whether the session has a running subagent.
     pub has_running_subagent: bool,
     /// Whether the session has a pending tool execution (tool_use seen, no tool_result yet).
@@ -162,6 +180,7 @@ impl CoworkerSession {
             has_usage_limit: false,
             usage_limit_reset_at: None,
             has_api_error: false,
+            has_auth_error: false,
             has_running_subagent: false,
             has_pending_tool: false,
             has_tool_name_conflict: false,
@@ -453,12 +472,22 @@ impl SessionManager {
                                     cs.cost_usd = *cost;
                                 }
                                 if *is_error {
-                                    // Check if this is a usage limit error
+                                    // Check error type in priority order:
+                                    // 1. Auth errors (require user intervention)
+                                    // 2. Usage limits (have a reset time)
+                                    // 3. Generic API errors (transient)
                                     let error_msg = result.as_deref().unwrap_or("");
                                     let extra_str = extra.to_string();
                                     let combined = format!("{} {}", error_msg, extra_str);
 
-                                    if let Some(reset_time) =
+                                    if is_auth_error(&combined) {
+                                        // OAuth token expired - requires user re-authentication
+                                        cs.has_auth_error = true;
+                                        warn!(
+                                            "Session '{}' hit auth error (OAuth token expired)",
+                                            name
+                                        );
+                                    } else if let Some(reset_time) =
                                         parse_usage_limit_reset_time(&combined)
                                     {
                                         cs.has_usage_limit = true;
@@ -468,7 +497,7 @@ impl SessionManager {
                                             name, reset_time
                                         );
                                     } else {
-                                        // Generic API error (not usage limit)
+                                        // Generic API error (not usage limit or auth)
                                         cs.has_api_error = true;
                                     }
                                 }
@@ -661,6 +690,7 @@ impl SessionManager {
                     has_usage_limit: cs.has_usage_limit,
                     usage_limit_reset_at: cs.usage_limit_reset_at,
                     has_api_error: cs.has_api_error,
+                    has_auth_error: cs.has_auth_error,
                     has_running_subagent: cs.has_running_subagent,
                     has_pending_tool: cs.has_pending_tool,
                     has_tool_name_conflict: cs.has_tool_name_conflict,
