@@ -435,20 +435,36 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                         app.focused_pane = FocusedPane::InputBar;
                         EventResult::Continue
                     } else if !app.input_text.is_empty() {
-                        // Post message to the selected channel
                         let message = app.input_text.clone();
-                        let channel_name = app.selected_channel.clone();
 
-                        // Post via daemon RPC with fallback to direct channel write
-                        let posted = app.post_message(&message, "user", Some(&channel_name));
+                        // Check for /channel create <name> command
+                        if message.starts_with("/channel create ") {
+                            let channel_name =
+                                message.trim_start_matches("/channel create ").trim();
+                            if !channel_name.is_empty() {
+                                // Create the channel and switch to it
+                                if app.create_channel(channel_name) {
+                                    app.input_text.clear();
+                                    app.input_cursor = 0;
+                                }
+                                // TODO: Show error if creation failed
+                            }
+                            EventResult::Continue
+                        } else {
+                            // Post message to the selected channel
+                            let channel_name = app.selected_channel.clone();
 
-                        // Only clear input if message was successfully posted
-                        if posted {
-                            app.input_text.clear();
-                            app.input_cursor = 0;
+                            // Post via daemon RPC with fallback to direct channel write
+                            let posted = app.post_message(&message, "user", Some(&channel_name));
+
+                            // Only clear input if message was successfully posted
+                            if posted {
+                                app.input_text.clear();
+                                app.input_cursor = 0;
+                            }
+                            // TODO: When error display is implemented, show error here if !posted
+                            EventResult::Continue
                         }
-                        // TODO: When error display is implemented, show error here if !posted
-                        EventResult::Continue
                     } else {
                         EventResult::Continue
                     }
@@ -1255,5 +1271,75 @@ mod tests {
             Some("custom-channel".to_string()),
             "post_message should use selected_channel, not hardcoded 'midtown'"
         );
+    }
+
+    #[test]
+    fn test_channel_create_command_clears_input() {
+        use app::FocusedPane;
+        let mut app = test_app();
+        app.focused_pane = FocusedPane::InputBar;
+        app.input_text = "/channel create test-channel".to_string();
+        app.input_cursor = app.input_text.len();
+
+        // Press Enter to execute the command
+        let event = key_press(KeyCode::Enter);
+        let result = handle_event(&mut app, event);
+
+        assert!(matches!(result, EventResult::Continue));
+        // Input should be cleared after successful channel creation
+        assert_eq!(app.input_text, "");
+        assert_eq!(app.input_cursor, 0);
+    }
+
+    #[test]
+    fn test_channel_create_command_switches_channel() {
+        use app::FocusedPane;
+        let mut app = test_app();
+        app.focused_pane = FocusedPane::InputBar;
+        app.input_text = "/channel create new-channel".to_string();
+        app.selected_channel = "midtown".to_string();
+
+        // Press Enter to execute the command
+        let event = key_press(KeyCode::Enter);
+        let result = handle_event(&mut app, event);
+
+        assert!(matches!(result, EventResult::Continue));
+        // Should switch to the newly created channel
+        assert_eq!(app.selected_channel, "new-channel");
+    }
+
+    #[test]
+    fn test_channel_create_command_with_empty_name_does_nothing() {
+        use app::FocusedPane;
+        let mut app = test_app();
+        app.focused_pane = FocusedPane::InputBar;
+        app.input_text = "/channel create   ".to_string();
+        let original_channel = app.selected_channel.clone();
+
+        // Press Enter to execute the command
+        let event = key_press(KeyCode::Enter);
+        let result = handle_event(&mut app, event);
+
+        assert!(matches!(result, EventResult::Continue));
+        // Should not create a channel or clear input with empty name
+        assert_eq!(app.selected_channel, original_channel);
+    }
+
+    #[test]
+    fn test_regular_message_not_treated_as_command() {
+        use app::FocusedPane;
+        let mut app = test_app();
+        app.focused_pane = FocusedPane::InputBar;
+        app.input_text = "Let's /channel create a test later".to_string();
+
+        // Press Enter to post the message
+        let event = key_press(KeyCode::Enter);
+        let result = handle_event(&mut app, event);
+
+        assert!(matches!(result, EventResult::Continue));
+        // Should NOT be treated as a channel create command
+        // because /channel create is not at the start
+        #[cfg(test)]
+        assert_eq!(app.last_posted_channel, Some("midtown".to_string()));
     }
 }

@@ -1018,6 +1018,27 @@ impl App {
         }
     }
 
+    /// Create a new channel and switch to it
+    ///
+    /// Returns `true` if the channel was successfully created (or already exists),
+    /// `false` on error.
+    pub fn create_channel(&mut self, channel_name: &str) -> bool {
+        let channel_repo =
+            midtown::paths::detect_repo_name().unwrap_or_else(|| "default".to_string());
+        let base_dir = midtown::paths::projects_dir_for_repo(&channel_repo);
+
+        // Create the channel (this is idempotent - Channel::new creates the file if it doesn't exist)
+        match midtown::Channel::new(&base_dir, channel_name) {
+            Ok(_) => {
+                // Switch to the newly created channel and load its messages
+                self.selected_channel = channel_name.to_string();
+                self.load_channel_messages();
+                true
+            }
+            Err(_) => false,
+        }
+    }
+
     /// Get messages visible in the current scroll position
     pub fn visible_messages(&mut self) -> &[Message] {
         let total = self.messages.len();
