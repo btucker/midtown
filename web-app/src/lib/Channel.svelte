@@ -109,24 +109,24 @@
 
     const rect = textareaElement.getBoundingClientRect()
 
-    // On mobile browsers with virtual keyboards, position: fixed elements
-    // can have viewport coordinate mismatches. Use visual viewport offset
-    // if available to ensure accurate positioning.
-    const visualViewportOffset = window.visualViewport
-      ? { top: window.visualViewport.offsetTop, left: window.visualViewport.offsetLeft }
-      : { top: 0, left: 0 }
-
-    // Position the dropdown directly above the textarea.
-    // rect.top is relative to the visual viewport, but position: fixed
-    // is relative to the layout viewport. On mobile, these can differ
-    // when the keyboard is open. Add visualViewport offset to correct this.
+    // getBoundingClientRect() returns coordinates relative to the visual viewport
+    // (the currently visible area on screen). For position: fixed elements,
+    // coordinates are also relative to the visual viewport in modern browsers.
+    // This means we can use rect.top and rect.left directly without adjustment.
+    //
+    // Previous code tried to add visualViewport.offsetTop/Left, but this is incorrect:
+    // - When the mobile keyboard opens, visualViewport.offsetTop becomes NEGATIVE
+    // - Adding a negative offset makes the position too small (moves dropdown up)
+    // - This caused the bug where the dropdown appeared much higher than the textarea
     //
     // The dropdown's CSS applies transform: translateY(calc(-100% - 8px)) which:
     // 1. Shifts up by the dropdown's own height (-100%)
     // 2. Adds an 8px gap between dropdown and textarea
+    //
+    // This positions the dropdown directly above the textarea, which is what we want.
     return {
-      top: rect.top + visualViewportOffset.top,
-      left: rect.left + visualViewportOffset.left,
+      top: rect.top,
+      left: rect.left,
       width: rect.width
     }
   }
