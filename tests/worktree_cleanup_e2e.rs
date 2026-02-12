@@ -34,10 +34,10 @@ fn check_for_stale_worktrees_test(
         };
 
         // Skip if actively in use
-        if let Some(ref coworker) = assignment.current_coworker {
-            if active_coworkers.contains(coworker) {
-                continue;
-            }
+        if let Some(ref coworker) = assignment.current_coworker
+            && active_coworkers.contains(coworker)
+        {
+            continue;
         }
 
         // This worktree should be cleaned up
