@@ -368,6 +368,10 @@ mod tests {
 
     #[test]
     fn test_sandbox_exec_prefix() {
+        if !can_sandbox() {
+            eprintln!("Skipping test: already inside a sandbox (nesting not allowed)");
+            return;
+        }
         let writable = vec!["/tmp".to_string()];
         let result = sandbox_exec_prefix(&writable);
         assert!(result.is_ok());
@@ -397,6 +401,10 @@ mod tests {
     #[test]
     #[cfg(target_os = "macos")]
     fn test_sandbox_exec_allows_writes_to_permitted_dir() {
+        if !can_sandbox() {
+            eprintln!("Skipping test: already inside a sandbox (nesting not allowed)");
+            return;
+        }
         let tmp = tempfile::TempDir::new().expect("create temp dir");
         // Canonicalize because macOS /var → /private/var symlink;
         // sandbox-exec operates on real paths.
@@ -426,6 +434,10 @@ mod tests {
     #[test]
     #[cfg(target_os = "macos")]
     fn test_sandbox_exec_denies_writes_to_unpermitted_dir() {
+        if !can_sandbox() {
+            eprintln!("Skipping test: already inside a sandbox (nesting not allowed)");
+            return;
+        }
         let home = dirs::home_dir().expect("home dir");
         let denied = home.join(".midtown-sandbox-test-deny");
         std::fs::create_dir_all(&denied).expect("create denied dir");
@@ -453,6 +465,10 @@ mod tests {
     #[test]
     #[cfg(target_os = "macos")]
     fn test_sandbox_exec_allows_reads_everywhere() {
+        if !can_sandbox() {
+            eprintln!("Skipping test: already inside a sandbox (nesting not allowed)");
+            return;
+        }
         let readable = tempfile::TempDir::new().expect("create readable dir");
         let real_path = readable.path().canonicalize().expect("canonicalize");
         let readable_file = real_path.join("readable.txt");
@@ -476,6 +492,10 @@ mod tests {
     #[test]
     #[cfg(target_os = "macos")]
     fn test_sandbox_exec_real_profile_allows_project_writes() {
+        if !can_sandbox() {
+            eprintln!("Skipping test: already inside a sandbox (nesting not allowed)");
+            return;
+        }
         let project = tempfile::TempDir::new().expect("create project dir");
         let real_project = project.path().canonicalize().expect("canonicalize");
         let writable = writable_dirs(&real_project, &[]);
