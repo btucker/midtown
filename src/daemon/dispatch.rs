@@ -17,6 +17,89 @@ use super::helpers::format_task_prompt;
 use super::{DaemonState, snapshot};
 
 // ============================================================================
+// Worktree setup helpers
+// ============================================================================
+
+/// Pre-spawn effects for setting up a worktree for a task.
+struct WorktreeSetup {
+    worktree_id: String,
+    path: std::path::PathBuf,
+    /// Effects to run before spawning (EnsureWorktree, optional RegisterWorktreeAssignment).
+    pre_spawn_effects: Vec<Effect>,
+}
+
+/// Resolve and prepare a worktree for a task, reusing an existing one if registered.
+///
+/// Returns pre-spawn effects (EnsureWorktree + optional RegisterWorktreeAssignment)
+/// and the resolved worktree path for use in LaunchConfig.working_dir.
+fn prepare_task_worktree(
+    task_id: &str,
+    task_subject: &str,
+    repo_name: &str,
+    snap: &snapshot::WorldSnapshot,
+) -> WorktreeSetup {
+    let (worktree_id, needs_registration) =
+        if let Some(existing_wt_id) = snap.task_worktree_map.get(task_id) {
+            (existing_wt_id.clone(), false)
+        } else {
+            (
+                crate::worktree_registry::branch_slug_for_task(task_id, task_subject),
+                true,
+            )
+        };
+
+    let path = crate::paths::worktrees_dir_for_repo(repo_name).join(&worktree_id);
+
+    let mut pre_spawn_effects = vec![Effect::EnsureWorktree {
+        worktree_id: worktree_id.clone(),
+        path: path.clone(),
+    }];
+
+    if needs_registration {
+        pre_spawn_effects.push(Effect::RegisterWorktreeAssignment {
+            assignment: crate::worktree_registry::WorktreeAssignment {
+                worktree_id: worktree_id.clone(),
+                branch_name: worktree_id.clone(),
+                task_id: Some(task_id.to_string()),
+                current_coworker: None,
+                pr_number: None,
+                created_at: chrono::Utc::now(),
+                completed_at: None,
+            },
+        });
+    }
+
+    WorktreeSetup {
+        worktree_id,
+        path,
+        pre_spawn_effects,
+    }
+}
+
+// ============================================================================
+// Task completion helpers
+// ============================================================================
+
+/// Build the standard triple of effects for completing a task: CompleteTask + ClearBlockedBy + PostToChannel.
+fn task_completed_effects(task_id: &str, repo_name: &str, channel_message: String) -> Vec<Effect> {
+    vec![
+        Effect::CompleteTask {
+            task_id: task_id.to_string(),
+            repo_name: repo_name.to_string(),
+        },
+        Effect::ClearBlockedBy {
+            completed_task_id: task_id.to_string(),
+            repo_name: repo_name.to_string(),
+        },
+        Effect::PostToChannel {
+            sender: "midtown".to_string(),
+            message: channel_message,
+            channel: None,
+        },
+    ]
+}
+
+// ============================================================================
 // Orphan task recovery
 // ============================================================================
 
@@ -278,15 +361,21 @@ pub(super) fn check_and_recover_orphans(
         ),
     );
 
-    // Look up existing task worktree from the registry (via snapshot).
-    // If the task already has a worktree, reuse it — this preserves build cache
-    // and partial work even when a different coworker is assigned.
+    // Prepare worktree (reuse existing or create new)
+    let wt = prepare_task_worktree(
+        &recovery.task_id,
+        &recovery.task_subject,
+        &state.repo_name,
+        snap,
+    );
+
     let mut config = crate::launch::LaunchConfig::coworker(
         recovery.owner.clone(),
         state.repo_name.clone(),
         crate::launch::SessionMode::Fresh,
         Some(prompt),
     );
+    config.working_dir = Some(wt.path);
 
     // Set channel from task if available
     let channel = snap
@@ -299,48 +388,13 @@ pub(super) fn check_and_recover_orphans(
     // Apply task model if available (sets both provider and model)
     config.apply_task_model(&snap.task_model_map, &recovery.task_id);
 
-    // Reuse existing worktree if one is registered for this task (reassignment case).
-    // Otherwise, compute a new worktree_id from the task subject.
-    let (worktree_id, needs_registration) =
-        if let Some(existing_wt_id) = snap.task_worktree_map.get(&recovery.task_id) {
-            (existing_wt_id.clone(), false)
-        } else {
-            (
-                crate::worktree_registry::branch_slug_for_task(
-                    &recovery.task_id,
-                    &recovery.task_subject,
-                ),
-                true,
-            )
-        };
-    let wt_path = crate::paths::worktrees_dir_for_repo(&state.repo_name).join(&worktree_id);
-    config.working_dir = Some(wt_path.clone());
-
     // Pre-spawn effects: create worktree and register assignment BEFORE spawning.
-    // prepare_spawn() validates working_dir exists, so the worktree must exist first.
-    let mut pre_spawn = vec![Effect::EnsureWorktree {
-        worktree_id: worktree_id.clone(),
-        path: wt_path.clone(),
-    }];
-
-    if needs_registration {
-        pre_spawn.push(Effect::RegisterWorktreeAssignment {
-            assignment: crate::worktree_registry::WorktreeAssignment {
-                worktree_id: worktree_id.clone(),
-                branch_name: worktree_id.clone(),
-                task_id: Some(recovery.task_id.clone()),
-                current_coworker: None,
-                pr_number: None,
-                created_at: chrono::Utc::now(),
-                completed_at: None,
-            },
-        });
-    }
+    let mut pre_spawn = wt.pre_spawn_effects;
 
     // Post-spawn success effects
     let on_success = vec![
         Effect::BindCoworkerToWorktree {
-            worktree_id: worktree_id.clone(),
+            worktree_id: wt.worktree_id,
             coworker: recovery.owner.clone(),
         },
         Effect::BroadcastCoworkerUpdate {
@@ -1175,19 +1229,7 @@ pub(super) fn spawn_for_pending_tasks(
                     &format!("You've been assigned task !{}: {}. Get started!", tid, subj),
                 );
 
-                // Reuse existing worktree if one is registered for this task (reassignment case).
-                // Otherwise, compute a new worktree_id from the task subject.
-                let (worktree_id, needs_registration) =
-                    if let Some(existing_wt_id) = snap.task_worktree_map.get(tid.as_str()) {
-                        (existing_wt_id.clone(), false)
-                    } else {
-                        (
-                            crate::worktree_registry::branch_slug_for_task(tid, subj),
-                            true,
-                        )
-                    };
-                let wt_path =
-                    crate::paths::worktrees_dir_for_repo(&state.repo_name).join(&worktree_id);
+                let wt = prepare_task_worktree(tid, subj, &state.repo_name, snap);
 
                 let mut config = crate::launch::LaunchConfig::coworker(
                     o.clone(),
@@ -1195,31 +1237,13 @@ pub(super) fn spawn_for_pending_tasks(
                     crate::launch::SessionMode::Resume,
                     Some(prompt),
                 );
-                config.working_dir = Some(wt_path.clone());
+                config.working_dir = Some(wt.path);
 
                 // Apply task model if available (sets both provider and model)
                 config.apply_task_model(&snap.task_model_map, tid);
 
-                // Pre-spawn: create worktree and register assignment BEFORE spawning.
-                // prepare_spawn() validates working_dir exists, so the worktree must exist first.
-                effects.push(Effect::EnsureWorktree {
-                    worktree_id: worktree_id.clone(),
-                    path: wt_path.clone(),
-                });
-
-                if needs_registration {
-                    effects.push(Effect::RegisterWorktreeAssignment {
-                        assignment: crate::worktree_registry::WorktreeAssignment {
-                            worktree_id: worktree_id.clone(),
-                            branch_name: worktree_id.clone(),
-                            task_id: Some(tid.clone()),
-                            current_coworker: None,
-                            pr_number: None,
-                            created_at: chrono::Utc::now(),
-                            completed_at: None,
-                        },
-                    });
-                }
+                // Pre-spawn effects: create worktree and register assignment BEFORE spawning.
+                effects.extend(wt.pre_spawn_effects);
 
                 // Post-spawn success effects
                 // Include RecordTaskAssignment so mark_in_flight_spawns_from_effects()
@@ -1231,7 +1255,7 @@ pub(super) fn spawn_for_pending_tasks(
                         task_id: tid.clone(),
                     },
                     Effect::BindCoworkerToWorktree {
-                        worktree_id: worktree_id.clone(),
+                        worktree_id: wt.worktree_id,
                         coworker: o.clone(),
                     },
                     Effect::BroadcastCoworkerUpdate {
@@ -1556,18 +1580,7 @@ pub(super) fn spawn_for_pending_tasks(
             });
         } else {
             // Step 2b: Spawn a new coworker — assign ownership atomically with spawn
-            // Reuse existing worktree if one is registered for this task (reassignment case).
-            // Otherwise, compute a new worktree_id from the task subject.
-            let (worktree_id, needs_registration) =
-                if let Some(existing_wt_id) = snap.task_worktree_map.get(&task.id) {
-                    (existing_wt_id.clone(), false)
-                } else {
-                    (
-                        crate::worktree_registry::branch_slug_for_task(&task.id, &task.subject),
-                        true,
-                    )
-                };
-            let wt_path = crate::paths::worktrees_dir_for_repo(&state.repo_name).join(&worktree_id);
+            let wt = prepare_task_worktree(&task.id, &task.subject, &state.repo_name, snap);
 
             let mut config = crate::launch::LaunchConfig::coworker(
                 coworker_name.clone(),
@@ -1575,7 +1588,7 @@ pub(super) fn spawn_for_pending_tasks(
                 crate::launch::SessionMode::Fresh,
                 Some(prompt.clone()),
             );
-            config.working_dir = Some(wt_path.clone());
+            config.working_dir = Some(wt.path);
             config.channel = task.channel.clone();
 
             // Apply task model if available (sets both provider and model)
@@ -1588,31 +1601,13 @@ pub(super) fn spawn_for_pending_tasks(
                 config::get_personality(),
             );
 
-            // Pre-spawn: create worktree and register assignment BEFORE spawning.
-            // prepare_spawn() validates working_dir exists, so the worktree must exist first.
-            effects.push(Effect::EnsureWorktree {
-                worktree_id: worktree_id.clone(),
-                path: wt_path.clone(),
-            });
-
-            if needs_registration {
-                effects.push(Effect::RegisterWorktreeAssignment {
-                    assignment: crate::worktree_registry::WorktreeAssignment {
-                        worktree_id: worktree_id.clone(),
-                        branch_name: worktree_id.clone(),
-                        task_id: Some(task.id.clone()),
-                        current_coworker: None,
-                        pr_number: None,
-                        created_at: chrono::Utc::now(),
-                        completed_at: None,
-                    },
-                });
-            }
+            // Pre-spawn effects: create worktree and register assignment BEFORE spawning.
+            effects.extend(wt.pre_spawn_effects);
 
             // Post-spawn success effects
             let on_success = vec![
                 Effect::BindCoworkerToWorktree {
-                    worktree_id: worktree_id.clone(),
+                    worktree_id: wt.worktree_id,
                     coworker: coworker_name.clone(),
                 },
                 Effect::BroadcastCoworkerUpdate {
@@ -1665,25 +1660,14 @@ pub(super) fn build_task_completion_effects(
         return vec![];
     };
 
-    let task_id_str = task_id.to_string();
-    vec![
-        Effect::CompleteTask {
-            task_id: task_id_str.clone(),
-            repo_name: repo_name.to_string(),
-        },
-        Effect::ClearBlockedBy {
-            completed_task_id: task_id_str.clone(),
-            repo_name: repo_name.to_string(),
-        },
-        Effect::PostToChannel {
-            sender: "midtown".to_string(),
-            message: format!(
-                "✅ Auto-completed task !{} (PR #{} merged)",
-                task_id, pr_number
-            ),
-            channel: None,
-        },
-    ]
+    task_completed_effects(
+        &task_id.to_string(),
+        repo_name,
+        format!(
+            "✅ Auto-completed task !{} (PR #{} merged)",
+            task_id, pr_number
+        ),
+    )
 }
 
 /// Build effects to auto-complete tasks when all PRs referenced in their description are merged.
@@ -1716,23 +1700,14 @@ pub(super) fn build_description_based_completion_effects(
             // Path 1: Task has explicit PR association
             // This prevents false positives (e.g., task mentions "PR #940 fix insufficient" as context)
             if snap.merged_pr_numbers.contains(&pr_number) {
-                let task_id_str = task.id.clone();
-                effects.push(Effect::CompleteTask {
-                    task_id: task_id_str.clone(),
-                    repo_name: snap.repo_name.clone(),
-                });
-                effects.push(Effect::ClearBlockedBy {
-                    completed_task_id: task_id_str.clone(),
-                    repo_name: snap.repo_name.clone(),
-                });
-                effects.push(Effect::PostToChannel {
-                    sender: "midtown".to_string(),
-                    message: format!(
+                effects.extend(task_completed_effects(
+                    &task.id,
+                    &snap.repo_name,
+                    format!(
                         "✅ Auto-completed task !{} (PR #{} merged)",
                         task.id, pr_number
                     ),
-                    channel: None,
-                });
+                ));
             }
         } else {
             // Path 2: No explicit PR field - fall back to text extraction
@@ -1756,28 +1731,19 @@ pub(super) fn build_description_based_completion_effects(
                 .all(|pr_num| snap.merged_pr_numbers.contains(pr_num));
 
             if all_merged {
-                let task_id_str = task.id.clone();
-                effects.push(Effect::CompleteTask {
-                    task_id: task_id_str.clone(),
-                    repo_name: snap.repo_name.clone(),
-                });
-                effects.push(Effect::ClearBlockedBy {
-                    completed_task_id: task_id_str.clone(),
-                    repo_name: snap.repo_name.clone(),
-                });
-                effects.push(Effect::PostToChannel {
-                    sender: "midtown".to_string(),
-                    message: format!(
+                let pr_list = pr_numbers
+                    .iter()
+                    .map(|n| format!("#{}", n))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                effects.extend(task_completed_effects(
+                    &task.id,
+                    &snap.repo_name,
+                    format!(
                         "✅ Auto-completed task !{} (all referenced PRs merged: {})",
-                        task.id,
-                        pr_numbers
-                            .iter()
-                            .map(|n| format!("#{}", n))
-                            .collect::<Vec<_>>()
-                            .join(", ")
+                        task.id, pr_list
                     ),
-                    channel: None,
-                });
+                ));
             }
         }
     }
@@ -2884,57 +2850,7 @@ mod tests {
                 pr: None,
                 created_at: Some(SystemTime::now()),
             }],
-            tasks_with_worktrees: HashSet::new(), // Task not in registry yet
-            task_worktree_map: HashMap::new(),
-            worktree_branch_owners: HashMap::new(),
-            worktree_registry: crate::worktree_registry::WorktreeRegistry::default(),
-            merged_pr_branches: HashMap::new(),
-            is_at_dev_limit: false,
-            active_names: HashSet::new(),
-            active_session_ids: HashSet::new(),
-            running_coworkers: vec![],
-            active_coworkers: vec![],
-            coworker_snapshots: vec![],
-            session_name: "midtown-test".to_string(),
-            coworker_start_times: HashMap::new(),
-            coworker_stop_times: HashMap::new(),
-            headless_process_health: HashMap::new(),
-            attached_coworkers: HashSet::new(),
-            in_progress_tasks: vec![],
-            busy_coworkers: HashSet::new(),
-            coworker_task_assignments: HashMap::new(),
-            all_tasks: vec![],
-            pending_tasks_with_owners: vec![],
-            task_channel: HashMap::new(),
-            task_model_map: HashMap::new(),
-            coworkers_with_open_prs: HashSet::new(),
-            coworkers_with_merged_prs: HashSet::new(),
-            merged_pr_numbers: HashSet::new(),
-            ci_passed_pr_coworkers: HashSet::new(),
-            review_feedback_pr_coworkers: HashSet::new(),
-            open_prs_data: vec![],
-            pending_task_owners: HashSet::new(),
-            tasks_with_open_prs: HashMap::new(),
-            pr_task_associations: HashMap::new(),
-            active_reviewers: HashSet::new(),
-            reviewer_pr_assignments: HashMap::new(),
-            reviewed_prs: HashSet::new(),
-            prs_needing_review: 0,
-            reviewer_restart_counts: HashMap::new(),
-            reviewer_escalations_posted: HashSet::new(),
-            coworkers_with_unblocked_deps: HashSet::new(),
-            usage_limit_nudge_scheduled: false,
-            usage_limit_nudge_at: None,
-            usage_limited_coworkers: HashSet::new(),
-            api_error_coworkers: HashSet::new(),
-            tool_name_conflict_coworkers: HashSet::new(),
-            channel_messages: vec![],
-            daemon_logs: vec![],
-            is_at_coworker_limit: false,
-            now_utc: chrono::Utc::now(),
-            repo_name: "test-repo".to_string(),
-            github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
-            freshly_fetched_rate_limit: None,
+            ..snapshot::minimal_snapshot_for_test()
         };
 
         let state = make_test_state();
@@ -2995,10 +2911,6 @@ mod tests {
             bind_count, 1,
             "Should have BindCoworkerToWorktree in on_success"
         );
-        assert_eq!(
-            bind_count, 1,
-            "Should have BindCoworkerToWorktree in on_success"
-        );
 
         // Verify the top-level RegisterWorktreeAssignment has correct fields
         let register_effect = effects
@@ -3026,59 +2938,11 @@ mod tests {
                 "Add auth endpoint".to_string(),
                 "lexington".to_string(),
             )],
-            tasks_with_worktrees: ["42".to_string()].into_iter().collect(), // Task already has worktree
+            tasks_with_worktrees: ["42".to_string()].into_iter().collect(),
             task_worktree_map: [("42".to_string(), "task-42-add-auth-endpoint".to_string())]
                 .into_iter()
                 .collect(),
-            worktree_registry: crate::worktree_registry::WorktreeRegistry::default(),
-            worktree_branch_owners: HashMap::new(),
-            merged_pr_branches: HashMap::new(),
-            is_at_dev_limit: false,
-            active_names: HashSet::new(),
-            active_session_ids: HashSet::new(),
-            active_reviewers: HashSet::new(),
-            busy_coworkers: HashSet::new(),
-            coworker_task_assignments: HashMap::new(),
-            merged_pr_numbers: HashSet::new(),
-            running_coworkers: vec![],
-            active_coworkers: vec![],
-            coworker_snapshots: vec![],
-            session_name: "midtown-test".to_string(),
-            coworker_start_times: HashMap::new(),
-            coworker_stop_times: HashMap::new(),
-            headless_process_health: HashMap::new(),
-            attached_coworkers: HashSet::new(),
-            in_progress_tasks: vec![],
-            all_tasks: vec![],
-            pending_tasks_without_owners: vec![],
-            task_channel: HashMap::new(),
-            task_model_map: HashMap::new(),
-            coworkers_with_open_prs: HashSet::new(),
-            coworkers_with_merged_prs: HashSet::new(),
-            ci_passed_pr_coworkers: HashSet::new(),
-            review_feedback_pr_coworkers: HashSet::new(),
-            open_prs_data: vec![],
-            pending_task_owners: HashSet::new(),
-            tasks_with_open_prs: HashMap::new(),
-            pr_task_associations: HashMap::new(),
-            reviewer_pr_assignments: HashMap::new(),
-            reviewed_prs: HashSet::new(),
-            prs_needing_review: 0,
-            reviewer_restart_counts: HashMap::new(),
-            reviewer_escalations_posted: HashSet::new(),
-            coworkers_with_unblocked_deps: HashSet::new(),
-            usage_limit_nudge_scheduled: false,
-            usage_limit_nudge_at: None,
-            usage_limited_coworkers: HashSet::new(),
-            api_error_coworkers: HashSet::new(),
-            tool_name_conflict_coworkers: HashSet::new(),
-            channel_messages: vec![],
-            daemon_logs: vec![],
-            is_at_coworker_limit: false,
-            now_utc: chrono::Utc::now(),
-            repo_name: "test-repo".to_string(),
-            github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
-            freshly_fetched_rate_limit: None,
+            ..snapshot::minimal_snapshot_for_test()
         };
 
         let state = make_test_state();
@@ -3145,59 +3009,7 @@ mod tests {
                     "broadway".to_string(),
                 ),
             ],
-            // broadway is NOT active (spawn failed or hasn't completed yet)
-            active_names: HashSet::new(),
-            active_session_ids: HashSet::new(),
-            // broadway has NO in_progress tasks (both are still pending)
-            busy_coworkers: HashSet::new(),
-            coworker_task_assignments: HashMap::new(),
-            in_progress_tasks: vec![],
-            tasks_with_worktrees: HashSet::new(),
-            task_worktree_map: HashMap::new(),
-            worktree_branch_owners: HashMap::new(),
-            worktree_registry: crate::worktree_registry::WorktreeRegistry::default(),
-            merged_pr_branches: HashMap::new(),
-            merged_pr_numbers: HashSet::new(),
-            running_coworkers: vec![],
-            active_coworkers: vec![],
-            coworker_snapshots: vec![],
-            session_name: "midtown-test".to_string(),
-            coworker_start_times: HashMap::new(),
-            coworker_stop_times: HashMap::new(),
-            headless_process_health: HashMap::new(),
-            all_tasks: vec![],
-            pending_tasks_without_owners: vec![],
-            task_channel: HashMap::new(),
-            task_model_map: HashMap::new(),
-            coworkers_with_open_prs: HashSet::new(),
-            coworkers_with_merged_prs: HashSet::new(),
-            ci_passed_pr_coworkers: HashSet::new(),
-            review_feedback_pr_coworkers: HashSet::new(),
-            open_prs_data: vec![],
-            pending_task_owners: HashSet::new(),
-            tasks_with_open_prs: HashMap::new(),
-            pr_task_associations: HashMap::new(),
-            active_reviewers: HashSet::new(),
-            reviewer_pr_assignments: HashMap::new(),
-            reviewed_prs: HashSet::new(),
-            prs_needing_review: 0,
-            reviewer_restart_counts: HashMap::new(),
-            reviewer_escalations_posted: HashSet::new(),
-            coworkers_with_unblocked_deps: HashSet::new(),
-            attached_coworkers: HashSet::new(),
-            usage_limit_nudge_scheduled: false,
-            usage_limit_nudge_at: None,
-            usage_limited_coworkers: HashSet::new(),
-            api_error_coworkers: HashSet::new(),
-            tool_name_conflict_coworkers: HashSet::new(),
-            channel_messages: vec![],
-            daemon_logs: vec![],
-            is_at_coworker_limit: false,
-            is_at_dev_limit: false,
-            now_utc: chrono::Utc::now(),
-            repo_name: "test-repo".to_string(),
-            github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
-            freshly_fetched_rate_limit: None,
+            ..snapshot::minimal_snapshot_for_test()
         };
 
         let state = make_test_state();
@@ -3236,57 +3048,7 @@ mod tests {
                 "Add auth endpoint".to_string(),
                 "broadway".to_string(),
             )],
-            active_names: HashSet::new(),
-            active_session_ids: HashSet::new(),
-            busy_coworkers: HashSet::new(),
-            coworker_task_assignments: HashMap::new(),
-            in_progress_tasks: vec![],
-            tasks_with_worktrees: HashSet::new(),
-            task_worktree_map: HashMap::new(),
-            worktree_branch_owners: HashMap::new(),
-            worktree_registry: crate::worktree_registry::WorktreeRegistry::default(),
-            merged_pr_branches: HashMap::new(),
-            merged_pr_numbers: HashSet::new(),
-            running_coworkers: vec![],
-            active_coworkers: vec![],
-            coworker_snapshots: vec![],
-            session_name: "midtown-test".to_string(),
-            coworker_start_times: HashMap::new(),
-            coworker_stop_times: HashMap::new(),
-            headless_process_health: HashMap::new(),
-            all_tasks: vec![],
-            pending_tasks_without_owners: vec![],
-            task_channel: HashMap::new(),
-            task_model_map: HashMap::new(),
-            coworkers_with_open_prs: HashSet::new(),
-            coworkers_with_merged_prs: HashSet::new(),
-            ci_passed_pr_coworkers: HashSet::new(),
-            review_feedback_pr_coworkers: HashSet::new(),
-            open_prs_data: vec![],
-            pending_task_owners: HashSet::new(),
-            tasks_with_open_prs: HashMap::new(),
-            pr_task_associations: HashMap::new(),
-            active_reviewers: HashSet::new(),
-            reviewer_pr_assignments: HashMap::new(),
-            reviewed_prs: HashSet::new(),
-            prs_needing_review: 0,
-            reviewer_restart_counts: HashMap::new(),
-            reviewer_escalations_posted: HashSet::new(),
-            coworkers_with_unblocked_deps: HashSet::new(),
-            attached_coworkers: HashSet::new(),
-            usage_limit_nudge_scheduled: false,
-            usage_limit_nudge_at: None,
-            usage_limited_coworkers: HashSet::new(),
-            api_error_coworkers: HashSet::new(),
-            tool_name_conflict_coworkers: HashSet::new(),
-            channel_messages: vec![],
-            daemon_logs: vec![],
-            is_at_coworker_limit: false,
-            is_at_dev_limit: false,
-            now_utc: chrono::Utc::now(),
-            repo_name: "test-repo".to_string(),
-            github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
-            freshly_fetched_rate_limit: None,
+            ..snapshot::minimal_snapshot_for_test()
         };
 
         let state = make_test_state();
@@ -3329,57 +3091,7 @@ mod tests {
                 "Add auth endpoint".to_string(),
                 "broadway".to_string(),
             )],
-            active_names: HashSet::new(),
-            active_session_ids: HashSet::new(),
-            busy_coworkers: HashSet::new(),
-            coworker_task_assignments: HashMap::new(),
-            in_progress_tasks: vec![],
-            tasks_with_worktrees: HashSet::new(),
-            task_worktree_map: HashMap::new(),
-            worktree_branch_owners: HashMap::new(),
-            worktree_registry: crate::worktree_registry::WorktreeRegistry::default(),
-            merged_pr_branches: HashMap::new(),
-            merged_pr_numbers: HashSet::new(),
-            running_coworkers: vec![],
-            active_coworkers: vec![],
-            coworker_snapshots: vec![],
-            session_name: "midtown-test".to_string(),
-            coworker_start_times: HashMap::new(),
-            coworker_stop_times: HashMap::new(),
-            headless_process_health: HashMap::new(),
-            all_tasks: vec![],
-            pending_tasks_without_owners: vec![],
-            task_channel: HashMap::new(),
-            task_model_map: HashMap::new(),
-            coworkers_with_open_prs: HashSet::new(),
-            coworkers_with_merged_prs: HashSet::new(),
-            ci_passed_pr_coworkers: HashSet::new(),
-            review_feedback_pr_coworkers: HashSet::new(),
-            open_prs_data: vec![],
-            pending_task_owners: HashSet::new(),
-            tasks_with_open_prs: HashMap::new(),
-            pr_task_associations: HashMap::new(),
-            active_reviewers: HashSet::new(),
-            reviewer_pr_assignments: HashMap::new(),
-            reviewed_prs: HashSet::new(),
-            prs_needing_review: 0,
-            reviewer_restart_counts: HashMap::new(),
-            reviewer_escalations_posted: HashSet::new(),
-            coworkers_with_unblocked_deps: HashSet::new(),
-            attached_coworkers: HashSet::new(),
-            usage_limit_nudge_scheduled: false,
-            usage_limit_nudge_at: None,
-            usage_limited_coworkers: HashSet::new(),
-            api_error_coworkers: HashSet::new(),
-            tool_name_conflict_coworkers: HashSet::new(),
-            channel_messages: vec![],
-            daemon_logs: vec![],
-            is_at_coworker_limit: false,
-            is_at_dev_limit: false,
-            now_utc: chrono::Utc::now(),
-            repo_name: "test-repo".to_string(),
-            github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
-            freshly_fetched_rate_limit: None,
+            ..snapshot::minimal_snapshot_for_test()
         };
 
         let state = make_test_state();
@@ -3416,13 +3128,11 @@ mod tests {
         use crate::tasks::Task;
 
         let snap = snapshot::WorldSnapshot {
-            // Case 1: broadway has a pending owned task
             pending_tasks_with_owners: vec![(
                 "42".to_string(),
                 "Add auth endpoint".to_string(),
                 "broadway".to_string(),
             )],
-            // Case 2: unowned task referencing PR #100
             pending_tasks_without_owners: vec![Task {
                 id: "43".to_string(),
                 subject: "Review feedback on PR #100 [Midtown !43]".to_string(),
@@ -3434,19 +3144,11 @@ mod tests {
                 pr: None,
                 created_at: None,
             }],
-            // broadway is NOT running (will be spawned by Case 1)
-            active_names: HashSet::new(),
-            active_session_ids: HashSet::new(),
-            busy_coworkers: HashSet::new(),
-            coworker_task_assignments: HashMap::new(),
-            in_progress_tasks: vec![
-                // Existing in-progress task for broadway on PR #100 (so Case 2 groups to broadway)
-                (
-                    "40".to_string(),
-                    "Implement feature [Midtown !40] PR #100".to_string(),
-                    "broadway".to_string(),
-                ),
-            ],
+            in_progress_tasks: vec![(
+                "40".to_string(),
+                "Implement feature [Midtown !40] PR #100".to_string(),
+                "broadway".to_string(),
+            )],
             all_tasks: vec![Task {
                 id: "40".to_string(),
                 subject: "Implement feature [Midtown !40] PR #100".to_string(),
@@ -3458,50 +3160,7 @@ mod tests {
                 pr: None,
                 created_at: None,
             }],
-            task_channel: HashMap::new(),
-            task_model_map: HashMap::new(),
-            tasks_with_worktrees: HashSet::new(),
-            task_worktree_map: HashMap::new(),
-            worktree_branch_owners: HashMap::new(),
-            worktree_registry: crate::worktree_registry::WorktreeRegistry::default(),
-            merged_pr_branches: HashMap::new(),
-            merged_pr_numbers: HashSet::new(),
-            running_coworkers: vec![],
-            active_coworkers: vec![],
-            coworker_snapshots: vec![],
-            session_name: "midtown-test".to_string(),
-            coworker_start_times: HashMap::new(),
-            coworker_stop_times: HashMap::new(),
-            headless_process_health: HashMap::new(),
-            coworkers_with_open_prs: HashSet::new(),
-            coworkers_with_merged_prs: HashSet::new(),
-            ci_passed_pr_coworkers: HashSet::new(),
-            review_feedback_pr_coworkers: HashSet::new(),
-            open_prs_data: vec![],
-            pending_task_owners: HashSet::new(),
-            tasks_with_open_prs: HashMap::new(),
-            pr_task_associations: HashMap::new(),
-            active_reviewers: HashSet::new(),
-            reviewer_pr_assignments: HashMap::new(),
-            reviewed_prs: HashSet::new(),
-            prs_needing_review: 0,
-            reviewer_restart_counts: HashMap::new(),
-            reviewer_escalations_posted: HashSet::new(),
-            coworkers_with_unblocked_deps: HashSet::new(),
-            attached_coworkers: HashSet::new(),
-            usage_limit_nudge_scheduled: false,
-            usage_limit_nudge_at: None,
-            usage_limited_coworkers: HashSet::new(),
-            api_error_coworkers: HashSet::new(),
-            tool_name_conflict_coworkers: HashSet::new(),
-            channel_messages: vec![],
-            daemon_logs: vec![],
-            is_at_coworker_limit: false,
-            is_at_dev_limit: false,
-            now_utc: chrono::Utc::now(),
-            repo_name: "test-repo".to_string(),
-            github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
-            freshly_fetched_rate_limit: None,
+            ..snapshot::minimal_snapshot_for_test()
         };
 
         let state = make_test_state();
@@ -3536,12 +3195,6 @@ mod tests {
         // Test the pure decision pattern: verify that spawn_for_pending_tasks
         // correctly skips a task when coworker_task_assignments (in WorldSnapshot)
         // shows the owner is already assigned to that specific task.
-        // This test verifies the refactored code uses the snapshot data
-        // (pure decision) rather than calling state.is_coworker_assigned_to_task()
-        // (impure decision with .lock()).
-
-        let mut assignments = HashMap::new();
-        assignments.insert("broadway".to_string(), "42".to_string());
 
         let snap = snapshot::WorldSnapshot {
             pending_tasks_with_owners: vec![(
@@ -3549,58 +3202,11 @@ mod tests {
                 "Add auth endpoint".to_string(),
                 "broadway".to_string(),
             )],
-            active_names: HashSet::new(),
-            active_session_ids: HashSet::new(),
-            busy_coworkers: HashSet::new(),
             // KEY: broadway is already assigned to task !42 in the snapshot
-            coworker_task_assignments: assignments,
-            in_progress_tasks: vec![],
-            tasks_with_worktrees: HashSet::new(),
-            task_worktree_map: HashMap::new(),
-            worktree_branch_owners: HashMap::new(),
-            worktree_registry: crate::worktree_registry::WorktreeRegistry::default(),
-            merged_pr_branches: HashMap::new(),
-            merged_pr_numbers: HashSet::new(),
-            running_coworkers: vec![],
-            active_coworkers: vec![],
-            coworker_snapshots: vec![],
-            session_name: "midtown-test".to_string(),
-            coworker_start_times: HashMap::new(),
-            coworker_stop_times: HashMap::new(),
-            headless_process_health: HashMap::new(),
-            all_tasks: vec![],
-            pending_tasks_without_owners: vec![],
-            task_channel: HashMap::new(),
-            task_model_map: HashMap::new(),
-            coworkers_with_open_prs: HashSet::new(),
-            coworkers_with_merged_prs: HashSet::new(),
-            ci_passed_pr_coworkers: HashSet::new(),
-            review_feedback_pr_coworkers: HashSet::new(),
-            open_prs_data: vec![],
-            pending_task_owners: HashSet::new(),
-            tasks_with_open_prs: HashMap::new(),
-            pr_task_associations: HashMap::new(),
-            active_reviewers: HashSet::new(),
-            reviewer_pr_assignments: HashMap::new(),
-            reviewed_prs: HashSet::new(),
-            prs_needing_review: 0,
-            reviewer_restart_counts: HashMap::new(),
-            reviewer_escalations_posted: HashSet::new(),
-            coworkers_with_unblocked_deps: HashSet::new(),
-            attached_coworkers: HashSet::new(),
-            usage_limit_nudge_scheduled: false,
-            usage_limit_nudge_at: None,
-            usage_limited_coworkers: HashSet::new(),
-            api_error_coworkers: HashSet::new(),
-            tool_name_conflict_coworkers: HashSet::new(),
-            channel_messages: vec![],
-            daemon_logs: vec![],
-            is_at_coworker_limit: false,
-            is_at_dev_limit: false,
-            now_utc: chrono::Utc::now(),
-            repo_name: "test-repo".to_string(),
-            github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
-            freshly_fetched_rate_limit: None,
+            coworker_task_assignments: [("broadway".to_string(), "42".to_string())]
+                .into_iter()
+                .collect(),
+            ..snapshot::minimal_snapshot_for_test()
         };
 
         let state = make_test_state();
@@ -3622,67 +3228,18 @@ mod tests {
     #[test]
     fn test_orphan_recovery_reuses_existing_task_worktree() {
         // Scenario: Task !42 was owned by "lexington" who died. The task has
-        // an existing worktree "task-42-add-auth-endpoint" registered. When
-        // recovering, the spawn should reuse that worktree and bind the coworker.
+        // an existing worktree "task-42-add-auth-endpoint" registered.
         let snap = snapshot::WorldSnapshot {
             in_progress_tasks: vec![(
                 "42".to_string(),
                 "Add auth endpoint".to_string(),
                 "lexington".to_string(),
             )],
-            active_names: HashSet::new(), // lexington is NOT active (orphaned)
-            active_session_ids: HashSet::new(),
-            coworkers_with_open_prs: HashSet::new(),
-            review_feedback_pr_coworkers: HashSet::new(),
-            open_prs_data: vec![],
-            coworker_stop_times: HashMap::new(),
-            attached_coworkers: HashSet::new(),
             tasks_with_worktrees: ["42".to_string()].into_iter().collect(),
             task_worktree_map: [("42".to_string(), "task-42-add-auth-endpoint".to_string())]
                 .into_iter()
                 .collect(),
-            worktree_registry: crate::worktree_registry::WorktreeRegistry::default(),
-            worktree_branch_owners: HashMap::new(),
-            merged_pr_branches: HashMap::new(),
-            running_coworkers: vec![],
-            active_coworkers: vec![],
-            coworker_snapshots: vec![],
-            session_name: "midtown-test".to_string(),
-            coworker_start_times: HashMap::new(),
-            headless_process_health: HashMap::new(),
-            busy_coworkers: HashSet::new(),
-            coworker_task_assignments: HashMap::new(),
-            all_tasks: vec![],
-            pending_tasks_with_owners: vec![],
-            pending_tasks_without_owners: vec![],
-            task_channel: HashMap::new(),
-            task_model_map: HashMap::new(),
-            coworkers_with_merged_prs: HashSet::new(),
-            merged_pr_numbers: HashSet::new(),
-            ci_passed_pr_coworkers: HashSet::new(),
-            pending_task_owners: HashSet::new(),
-            tasks_with_open_prs: HashMap::new(),
-            pr_task_associations: HashMap::new(),
-            active_reviewers: HashSet::new(),
-            reviewer_pr_assignments: HashMap::new(),
-            reviewed_prs: HashSet::new(),
-            prs_needing_review: 0,
-            reviewer_restart_counts: HashMap::new(),
-            reviewer_escalations_posted: HashSet::new(),
-            coworkers_with_unblocked_deps: HashSet::new(),
-            usage_limit_nudge_scheduled: false,
-            usage_limit_nudge_at: None,
-            usage_limited_coworkers: HashSet::new(),
-            api_error_coworkers: HashSet::new(),
-            tool_name_conflict_coworkers: HashSet::new(),
-            channel_messages: vec![],
-            daemon_logs: vec![],
-            is_at_coworker_limit: false,
-            is_at_dev_limit: false,
-            now_utc: chrono::Utc::now(),
-            repo_name: "test-repo".to_string(),
-            github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
-            freshly_fetched_rate_limit: None,
+            ..snapshot::minimal_snapshot_for_test()
         };
 
         let state = make_test_state();
@@ -3753,66 +3310,14 @@ mod tests {
     #[test]
     fn test_orphan_recovery_creates_new_worktree_when_none_exists() {
         // Scenario: Task !42 was owned by "lexington" who died, but the task
-        // has NO worktree registered (legacy/pre-registry task). The spawn
-        // should compute a new worktree_id, set working_dir, and emit
-        // EnsureWorktree + RegisterWorktreeAssignment + BindCoworkerToWorktree.
+        // has NO worktree registered (legacy/pre-registry task).
         let snap = snapshot::WorldSnapshot {
             in_progress_tasks: vec![(
                 "42".to_string(),
                 "Add auth endpoint".to_string(),
                 "lexington".to_string(),
             )],
-            active_names: HashSet::new(),
-            active_session_ids: HashSet::new(),
-            coworkers_with_open_prs: HashSet::new(),
-            review_feedback_pr_coworkers: HashSet::new(),
-            open_prs_data: vec![],
-            coworker_stop_times: HashMap::new(),
-            attached_coworkers: HashSet::new(),
-            tasks_with_worktrees: HashSet::new(), // No worktree registered
-            task_worktree_map: HashMap::new(),
-            worktree_branch_owners: HashMap::new(),
-            worktree_registry: crate::worktree_registry::WorktreeRegistry::default(),
-            merged_pr_branches: HashMap::new(),
-            running_coworkers: vec![],
-            active_coworkers: vec![],
-            coworker_snapshots: vec![],
-            session_name: "midtown-test".to_string(),
-            coworker_start_times: HashMap::new(),
-            headless_process_health: HashMap::new(),
-            busy_coworkers: HashSet::new(),
-            coworker_task_assignments: HashMap::new(),
-            all_tasks: vec![],
-            pending_tasks_with_owners: vec![],
-            pending_tasks_without_owners: vec![],
-            task_channel: HashMap::new(),
-            task_model_map: HashMap::new(),
-            coworkers_with_merged_prs: HashSet::new(),
-            merged_pr_numbers: HashSet::new(),
-            ci_passed_pr_coworkers: HashSet::new(),
-            pending_task_owners: HashSet::new(),
-            tasks_with_open_prs: HashMap::new(),
-            pr_task_associations: HashMap::new(),
-            active_reviewers: HashSet::new(),
-            reviewer_pr_assignments: HashMap::new(),
-            reviewed_prs: HashSet::new(),
-            prs_needing_review: 0,
-            reviewer_restart_counts: HashMap::new(),
-            reviewer_escalations_posted: HashSet::new(),
-            coworkers_with_unblocked_deps: HashSet::new(),
-            usage_limit_nudge_scheduled: false,
-            usage_limit_nudge_at: None,
-            usage_limited_coworkers: HashSet::new(),
-            api_error_coworkers: HashSet::new(),
-            tool_name_conflict_coworkers: HashSet::new(),
-            channel_messages: vec![],
-            daemon_logs: vec![],
-            is_at_coworker_limit: false,
-            is_at_dev_limit: false,
-            now_utc: chrono::Utc::now(),
-            repo_name: "test-repo".to_string(),
-            github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
-            freshly_fetched_rate_limit: None,
+            ..snapshot::minimal_snapshot_for_test()
         };
 
         let state = make_test_state();
@@ -3917,55 +3422,7 @@ mod tests {
             task_worktree_map: [("42".to_string(), "task-42-add-auth-endpoint".to_string())]
                 .into_iter()
                 .collect(),
-            worktree_registry: crate::worktree_registry::WorktreeRegistry::default(),
-            worktree_branch_owners: HashMap::new(),
-            merged_pr_branches: HashMap::new(),
-            is_at_dev_limit: false,
-            active_names: HashSet::new(),
-            active_session_ids: HashSet::new(),
-            running_coworkers: vec![],
-            active_coworkers: vec![],
-            coworker_snapshots: vec![],
-            session_name: "midtown-test".to_string(),
-            coworker_start_times: HashMap::new(),
-            coworker_stop_times: HashMap::new(),
-            headless_process_health: HashMap::new(),
-            attached_coworkers: HashSet::new(),
-            in_progress_tasks: vec![],
-            busy_coworkers: HashSet::new(),
-            coworker_task_assignments: HashMap::new(),
-            all_tasks: vec![],
-            pending_tasks_with_owners: vec![],
-            task_channel: HashMap::new(),
-            task_model_map: HashMap::new(),
-            coworkers_with_open_prs: HashSet::new(),
-            coworkers_with_merged_prs: HashSet::new(),
-            merged_pr_numbers: HashSet::new(),
-            ci_passed_pr_coworkers: HashSet::new(),
-            review_feedback_pr_coworkers: HashSet::new(),
-            open_prs_data: vec![],
-            pending_task_owners: HashSet::new(),
-            tasks_with_open_prs: HashMap::new(),
-            pr_task_associations: HashMap::new(),
-            active_reviewers: HashSet::new(),
-            reviewer_pr_assignments: HashMap::new(),
-            reviewed_prs: HashSet::new(),
-            prs_needing_review: 0,
-            reviewer_restart_counts: HashMap::new(),
-            reviewer_escalations_posted: HashSet::new(),
-            coworkers_with_unblocked_deps: HashSet::new(),
-            usage_limit_nudge_scheduled: false,
-            usage_limit_nudge_at: None,
-            usage_limited_coworkers: HashSet::new(),
-            api_error_coworkers: HashSet::new(),
-            tool_name_conflict_coworkers: HashSet::new(),
-            channel_messages: vec![],
-            daemon_logs: vec![],
-            is_at_coworker_limit: false,
-            now_utc: chrono::Utc::now(),
-            repo_name: "test-repo".to_string(),
-            github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
-            freshly_fetched_rate_limit: None,
+            ..snapshot::minimal_snapshot_for_test()
         };
 
         let state = make_test_state();
@@ -4058,58 +3515,10 @@ mod tests {
         active_names: HashSet<String>,
     ) -> snapshot::WorldSnapshot {
         snapshot::WorldSnapshot {
-            active_coworkers: vec![],
-            running_coworkers: vec![],
-            coworker_snapshots: vec![],
             active_names,
-            active_session_ids: HashSet::new(),
-            session_name: "midtown-test".to_string(),
-            coworker_start_times: HashMap::new(),
-            coworker_stop_times: HashMap::new(),
-            headless_process_health: HashMap::new(),
-            attached_coworkers: HashSet::new(),
             in_progress_tasks,
-            busy_coworkers: HashSet::new(),
-            coworker_task_assignments: HashMap::new(),
-            all_tasks: vec![],
-            pending_tasks_with_owners: vec![],
-            pending_tasks_without_owners: vec![],
-            task_channel: HashMap::new(),
-            task_model_map: HashMap::new(),
-            coworkers_with_open_prs: HashSet::new(),
-            coworkers_with_merged_prs: HashSet::new(),
-            merged_pr_numbers: HashSet::new(),
-            ci_passed_pr_coworkers: HashSet::new(),
-            review_feedback_pr_coworkers: HashSet::new(),
-            open_prs_data: vec![],
-            pending_task_owners: HashSet::new(),
             tasks_with_open_prs,
-            pr_task_associations: HashMap::new(),
-            active_reviewers: HashSet::new(),
-            reviewer_pr_assignments: HashMap::new(),
-            reviewed_prs: HashSet::new(),
-            prs_needing_review: 0,
-            reviewer_restart_counts: HashMap::new(),
-            reviewer_escalations_posted: HashSet::new(),
-            coworkers_with_unblocked_deps: HashSet::new(),
-            usage_limit_nudge_scheduled: false,
-            usage_limit_nudge_at: None,
-            usage_limited_coworkers: HashSet::new(),
-            api_error_coworkers: HashSet::new(),
-            tool_name_conflict_coworkers: HashSet::new(),
-            channel_messages: vec![],
-            daemon_logs: vec![],
-            tasks_with_worktrees: HashSet::new(),
-            task_worktree_map: HashMap::new(),
-            worktree_branch_owners: HashMap::new(),
-            worktree_registry: crate::worktree_registry::WorktreeRegistry::default(),
-            merged_pr_branches: HashMap::new(),
-            is_at_coworker_limit: false,
-            is_at_dev_limit: false,
-            now_utc: chrono::Utc::now(),
-            repo_name: "test-repo".to_string(),
-            github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
-            freshly_fetched_rate_limit: None,
+            ..snapshot::minimal_snapshot_for_test()
         }
     }
 
@@ -4888,10 +4297,6 @@ mod tests {
         use crate::tasks::{Task, TaskStatus};
         use std::time::SystemTime;
 
-        // Setup: task with model "claude/opus" in task_model_map
-        let mut task_model_map = HashMap::new();
-        task_model_map.insert("42".to_string(), "claude/opus".to_string());
-
         let snap = snapshot::WorldSnapshot {
             pending_tasks_without_owners: vec![Task {
                 id: "42".to_string(),
@@ -4904,57 +4309,10 @@ mod tests {
                 pr: None,
                 created_at: Some(SystemTime::now()),
             }],
-            tasks_with_worktrees: HashSet::new(),
-            task_worktree_map: HashMap::new(),
-            worktree_branch_owners: HashMap::new(),
-            worktree_registry: crate::worktree_registry::WorktreeRegistry::default(),
-            merged_pr_branches: HashMap::new(),
-            is_at_dev_limit: false,
-            active_names: HashSet::new(),
-            active_session_ids: HashSet::new(),
-            running_coworkers: vec![],
-            active_coworkers: vec![],
-            coworker_snapshots: vec![],
-            session_name: "midtown-test".to_string(),
-            coworker_start_times: HashMap::new(),
-            coworker_stop_times: HashMap::new(),
-            headless_process_health: HashMap::new(),
-            attached_coworkers: HashSet::new(),
-            in_progress_tasks: vec![],
-            busy_coworkers: HashSet::new(),
-            coworker_task_assignments: HashMap::new(),
-            all_tasks: vec![],
-            pending_tasks_with_owners: vec![],
-            task_channel: HashMap::new(),
-            task_model_map,
-            coworkers_with_open_prs: HashSet::new(),
-            coworkers_with_merged_prs: HashSet::new(),
-            merged_pr_numbers: HashSet::new(),
-            ci_passed_pr_coworkers: HashSet::new(),
-            review_feedback_pr_coworkers: HashSet::new(),
-            open_prs_data: vec![],
-            pending_task_owners: HashSet::new(),
-            tasks_with_open_prs: HashMap::new(),
-            pr_task_associations: HashMap::new(),
-            active_reviewers: HashSet::new(),
-            reviewer_pr_assignments: HashMap::new(),
-            reviewed_prs: HashSet::new(),
-            prs_needing_review: 0,
-            reviewer_restart_counts: HashMap::new(),
-            reviewer_escalations_posted: HashSet::new(),
-            coworkers_with_unblocked_deps: HashSet::new(),
-            usage_limit_nudge_scheduled: false,
-            usage_limit_nudge_at: None,
-            usage_limited_coworkers: HashSet::new(),
-            api_error_coworkers: HashSet::new(),
-            tool_name_conflict_coworkers: HashSet::new(),
-            channel_messages: vec![],
-            daemon_logs: vec![],
-            is_at_coworker_limit: false,
-            now_utc: chrono::Utc::now(),
-            repo_name: "test-repo".to_string(),
-            github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
-            freshly_fetched_rate_limit: None,
+            task_model_map: [("42".to_string(), "claude/opus".to_string())]
+                .into_iter()
+                .collect(),
+            ..snapshot::minimal_snapshot_for_test()
         };
 
         let state = make_test_state();
