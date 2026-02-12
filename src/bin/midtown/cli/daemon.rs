@@ -1080,8 +1080,6 @@ fn kill_orphaned_webhook_forwarders(messages: &mut Vec<String>) {
 fn wait_for_coworkers_to_drain(timeout_secs: u64) -> Result<(), String> {
     use std::collections::HashMap;
 
-    eprintln!("Waiting for coworkers to finish...");
-
     let socket_path = socket_path();
     if !socket_path.exists() {
         // Daemon not running, nothing to drain
@@ -1105,6 +1103,7 @@ fn wait_for_coworkers_to_drain(timeout_secs: u64) -> Result<(), String> {
     let start = std::time::Instant::now();
     let timeout = std::time::Duration::from_secs(timeout_secs);
     let mut last_status: HashMap<String, String> = HashMap::new();
+    let mut first_iteration = true;
 
     loop {
         // Check timeout
@@ -1143,6 +1142,20 @@ fn wait_for_coworkers_to_drain(timeout_secs: u64) -> Result<(), String> {
             }
         };
 
+        // If no coworkers exist, we're done immediately
+        if coworkers.is_empty() {
+            if first_iteration {
+                eprintln!("No coworkers running.");
+            }
+            return Ok(());
+        }
+
+        // Print header on first iteration
+        if first_iteration {
+            eprintln!("Waiting for coworkers to finish...");
+            first_iteration = false;
+        }
+
         // Check if all coworkers are stopped or stopping
         let mut all_done = true;
         let mut current_status: HashMap<String, String> = HashMap::new();
@@ -1153,27 +1166,33 @@ fn wait_for_coworkers_to_drain(timeout_secs: u64) -> Result<(), String> {
 
             // Consider "stopped", "stopping" as done (CoworkerStatus lifecycle states)
             // "starting", "running" are still working
-            if status != "stopped" && status != "stopping" {
+            let is_done = status == "stopped" || status == "stopping";
+
+            if !is_done {
                 all_done = false;
 
-                // Print status update if changed
+                // Print status update if changed or first time seeing this coworker
                 if last_status.get(&coworker.name) != Some(&status) {
                     let task_info = coworker
                         .current_task
                         .as_ref()
-                        .map(|t| format!(" (working on !{})", t))
+                        .map(|t| format!(" (task !{})", t))
                         .unwrap_or_default();
                     eprintln!("  {}: {}{}", coworker.name, status, task_info);
                 }
+            } else if last_status.get(&coworker.name) != Some(&status) {
+                // Transitioned to stopped/stopping - mark with checkmark
+                eprintln!("  {}: {} ✓", coworker.name, status);
             }
         }
 
-        // Update tracked status
-        for (name, status) in &current_status {
-            if last_status.get(name) != Some(status) && status == "stopped" {
+        // Report stopped coworkers (removed from the list)
+        for name in last_status.keys() {
+            if !current_status.contains_key(name) {
                 eprintln!("  {} stopped. ✓", name);
             }
         }
+
         last_status = current_status;
 
         if all_done {
