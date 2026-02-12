@@ -1082,7 +1082,7 @@ impl DaemonState {
 
         // Create cross-posted message with source_channel attribution
         let mut cross_post = Message::for_channel(
-            &self.repo_name,
+            self.channel_router.default_channel_name(),
             &original.from,
             &formatted_content,
             original.message_type.clone(),
