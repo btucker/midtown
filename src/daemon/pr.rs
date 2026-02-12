@@ -817,7 +817,7 @@ async fn collect_green_with_feedback_effects(
 
 /// Convert a `PrAction` decision into a list of `Effect`s to execute.
 ///
-/// Translates the pure decision from `rules::decide_pr_issue_action` (or similar)
+/// Translates the pure decision from `rules::decide_pr_issue_action_with_handoff` (or similar)
 /// into concrete effects. Uses `SpawnCoworkerWithCallbacks` for spawn actions so
 /// that follow-up effects (broadcast update, channel message, session cleanup)
 /// only happen on success, with a fallback message on failure.
