@@ -1,19 +1,26 @@
 //! RPC request handlers for the daemon's Unix socket protocol.
 //!
-//! Each `handle_*` function processes a specific JSON-RPC method and returns
-//! a `Response`. The entry point is `handle_connection`, which reads requests
-//! from a Unix stream and dispatches them via `handle_request`.
+//! This module is the entry point for JSON-RPC dispatch. It routes requests to
+//! domain-specific handler modules:
+//!
+//! - `rpc_auth` — authentication switching
+//! - `rpc_channel` — channel post/read
+//! - `rpc_kanban` — kanban board data
+//! - `rpc_session` — session attach/detach/list
+//! - `rpc_status` — daemon status overview
+//! - `rpc_task` — task CRUD operations
+//!
+//! Handlers that are small or tightly coupled to the dispatch layer (coworker
+//! lifecycle, insight reporting, reminders, headless execute) remain here.
 
-use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
-use std::time::{Duration, Instant};
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::broadcast;
 use tracing::{debug, error, info, warn};
 
-use crate::message::{Message, MessageType};
+use crate::message::Message;
 use crate::rpc::{Request, RequestId, Response, RpcError};
 
 use super::constants::*;
@@ -224,7 +231,33 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
     }
 
     // Dispatch based on method
-    let response = match request.method.as_str() {
+    let response = dispatch_request(request, state).await;
+
+    // Cache only successful responses for idempotency (60 second TTL).
+    // Error responses are NOT cached so that clients can retry after transient
+    // failures (e.g., invalid params due to race conditions) without getting
+    // a stale cached error.
+    // Methods with domain-specific caching (e.g., kanban.data) are excluded.
+    if !skip_rpc_cache && !response.is_error() {
+        let mut cache = state.rpc_response_cache.lock().await;
+        cache.insert(
+            request_id_for_cache,
+            (response.clone(), std::time::Instant::now()),
+        );
+    }
+
+    response
+}
+
+/// Route a parsed request to the appropriate handler.
+///
+/// This is the central dispatch table. Each RPC method maps to a handler
+/// function, most of which live in dedicated `rpc_*` modules.
+async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
+    let params = request.params.as_ref();
+
+    match request.method.as_str() {
+        // ---- Simple / inline handlers ----
         "ping" => Response::success(request.id, serde_json::json!("pong")),
 
         "version" => Response::success(
@@ -248,8 +281,30 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
             Response::success(request.id, serde_json::json!({"status": "draining"}))
         }
 
+        "daemon.check-pending" => {
+            info!("Check-pending triggered via RPC");
+            let snap = snapshot::collect_world_snapshot(state).await;
+            let pending_effects = super::dispatch::spawn_for_pending_tasks(&snap, state);
+            state.mark_in_flight_spawns_from_effects(&pending_effects);
+            effects::execute_effects(pending_effects, state).await;
+            Response::success(request.id, serde_json::json!({"status": "ok"}))
+        }
+
+        "daemon.exec-restart" => {
+            info!("Exec-restart requested via RPC — daemon will re-exec after shutdown");
+            state
+                .restart_requested
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            // Trigger the shutdown broadcast so the main event loop exits.
+            // The run() function checks restart_requested and returns ExecRestart.
+            let _ = state.shutdown_tx.send(());
+            Response::success(request.id, serde_json::json!({"status": "restarting"}))
+        }
+
+        "snapshot" => handle_snapshot(request.id, state).await,
+
+        // ---- Coworker lifecycle ----
         "coworker.spawn" => {
-            let params = request.params.as_ref();
             let resume = params.bool_or("resume", false);
             let prompt = params.str_param("prompt").map(|s| s.to_string());
             let provider = match parse_provider_param(params) {
@@ -260,19 +315,18 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
         }
 
         "coworker.break" => {
-            let name = require_str!(request.params.as_ref(), "name", request.id);
+            let name = require_str!(params, "name", request.id);
             handle_coworker_break(request.id, name, state).await
         }
 
         "coworker.list" => handle_coworker_list(request.id, state),
 
         "coworker.view" => {
-            let name = require_str!(request.params.as_ref(), "name", request.id);
+            let name = require_str!(params, "name", request.id);
             handle_coworker_view(request.id, name, state).await
         }
 
         "coworker.report-state" => {
-            let params = request.params.as_ref();
             let name = require_str!(params, "name", request.id);
             let phase = require_str!(params, "phase", request.id);
             let task_id = params.u64_param("task_id").map(|v| v as u32);
@@ -280,7 +334,6 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
         }
 
         "coworker.nudge" => {
-            let params = request.params.as_ref();
             let name = require_str!(params, "name", request.id);
             let message = require_str!(params, "message", request.id);
             let from = params.str_or("from", "lead");
@@ -288,68 +341,38 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
         }
 
         "coworker.asking" => {
-            let params = request.params.as_ref();
             let name = require_str!(params, "name", request.id);
             let question = require_str!(params, "question", request.id);
             handle_coworker_asking(request.id, name, question, state).await
         }
 
-        "status" => handle_status(request.id, state).await,
+        // ---- Status / kanban ----
+        "status" => super::rpc_status::handle_status(request.id, state).await,
 
         "kanban.data" => super::rpc_kanban::handle_kanban_data(request.id, state).await,
 
+        // ---- Channel ----
         "channel.post" => {
-            let params = request.params.as_ref();
             let message = require_str!(params, "message", request.id);
             let from = params.str_or("from", "lead");
             let channel = params.str_param("channel");
-            handle_channel_post(request.id, from, message, channel, state).await
+            super::rpc_channel::handle_channel_post(request.id, from, message, channel, state).await
         }
 
         "channel.read" => {
-            let all = request.params.as_ref().bool_or("all", false);
-            handle_channel_read(request.id, all, state)
+            let all = params.bool_or("all", false);
+            super::rpc_channel::handle_channel_read(request.id, all, state)
         }
 
-        "reminder.create" => {
-            let params = request.params.as_ref();
-            let trigger = require_str!(params, "trigger", request.id);
-            let message = require_str!(params, "message", request.id);
-            if trigger != "all-work-merged" {
-                Response::error(request.id, RpcError::invalid_params())
-            } else {
-                handle_reminder_create(request.id, message, state).await
-            }
-        }
-
-        "reminder.list" => handle_reminder_list(request.id, state).await,
-
-        "reminder.cancel" => {
-            let reminder_id = require_str!(request.params.as_ref(), "id", request.id);
-            handle_reminder_cancel(request.id, reminder_id, state).await
-        }
-
-        "daemon.check-pending" => {
-            info!("Check-pending triggered via RPC");
-            let snap = snapshot::collect_world_snapshot(state).await;
-            let pending_effects = super::dispatch::spawn_for_pending_tasks(&snap, state);
-            // Mark in-flight tasks BEFORE executing effects to prevent race conditions.
-            // Without this, a TaskDispatchTick firing while effects execute would see
-            // the task as still pending and generate a duplicate AssignAndSpawn.
-            state.mark_in_flight_spawns_from_effects(&pending_effects);
-            effects::execute_effects(pending_effects, state).await;
-            Response::success(request.id, serde_json::json!({"status": "ok"}))
-        }
-
+        // ---- Tasks ----
         "task.create" => {
-            let params = request.params.as_ref();
             let subject = require_str!(params, "subject", request.id);
             let description = params.str_or("description", "");
             let blocked_by = params.str_array_param("blocked_by");
             let channel = params.str_param("channel");
             let model = params.str_param("model");
             let pr = params.u64_param("pr");
-            handle_task_create(
+            super::rpc_task::handle_task_create(
                 request.id,
                 subject,
                 description,
@@ -363,7 +386,6 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
         }
 
         "task.update" => {
-            let params = request.params.as_ref();
             let task_id = require_str!(params, "id", request.id);
             let owner = params.str_param("owner");
             let status = params.str_param("status");
@@ -372,7 +394,7 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
             let channel = params.str_param("channel");
             let model = params.str_param("model");
             let pr = params.u64_param("pr");
-            handle_task_update(
+            super::rpc_task::handle_task_update(
                 request.id,
                 task_id,
                 owner,
@@ -388,31 +410,47 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
         }
 
         "task.done" => {
-            let task_id = require_str!(request.params.as_ref(), "id", request.id);
-            handle_task_done(request.id, task_id, state)
+            let task_id = require_str!(params, "id", request.id);
+            super::rpc_task::handle_task_done(request.id, task_id, state)
         }
 
         "task.metadata" => {
-            let task_id = require_str!(request.params.as_ref(), "id", request.id);
-            handle_task_metadata(request.id, task_id, state)
+            let task_id = require_str!(params, "id", request.id);
+            super::rpc_task::handle_task_metadata(request.id, task_id, state)
         }
 
         "task.request" => {
-            let params = request.params.as_ref();
             let message = require_str!(params, "message", request.id);
             let from = params.str_or("from", "unknown");
-            handle_task_request(request.id, from, message, state).await
+            super::rpc_task::handle_task_request(request.id, from, message, state).await
         }
 
         "task.claim" => {
-            let params = request.params.as_ref();
             let task_id = require_str!(params, "id", request.id);
             let from = params.str_or("from", "unknown");
-            handle_task_claim(request.id, task_id, from, state)
+            super::rpc_task::handle_task_claim(request.id, task_id, from, state)
         }
 
+        // ---- Reminders ----
+        "reminder.create" => {
+            let trigger = require_str!(params, "trigger", request.id);
+            let message = require_str!(params, "message", request.id);
+            if trigger != "all-work-merged" {
+                Response::error(request.id, RpcError::invalid_params())
+            } else {
+                handle_reminder_create(request.id, message, state).await
+            }
+        }
+
+        "reminder.list" => handle_reminder_list(request.id, state).await,
+
+        "reminder.cancel" => {
+            let reminder_id = require_str!(params, "id", request.id);
+            handle_reminder_cancel(request.id, reminder_id, state).await
+        }
+
+        // ---- Auth ----
         "auth.switch" => {
-            let params = request.params.as_ref();
             let profile = params.str_param("profile");
             let all = params.bool_or("all", false);
             let provider = params
@@ -431,16 +469,16 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
             }
         }
 
+        // ---- Insight ----
         "insight.report" => {
-            let params = request.params.as_ref();
             let agent = require_str!(params, "agent", request.id);
             let insight = require_str!(params, "insight", request.id);
             let channel = params.str_param("channel");
             handle_insight_report(request.id, agent, insight, channel, state).await
         }
 
+        // ---- Headless ----
         "headless.execute" => {
-            let params = request.params.as_ref();
             let prompt = require_str!(params, "prompt", request.id);
             let config = crate::headless::HeadlessConfig {
                 model: params.str_or("model", "sonnet").to_string(),
@@ -468,65 +506,28 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
             handle_headless_execute(request.id, prompt, &config).await
         }
 
-        "snapshot" => {
-            // Collect and return the full WorldSnapshot for debugging/testing.
-            // Debug context (channel messages, daemon logs) is only populated here,
-            // not during normal tick collection, to avoid I/O overhead on the hot path.
-            let default_channel = match state.channel_router.default_channel() {
-                Ok(ch) => ch,
-                Err(e) => {
-                    error!("Failed to get default channel for snapshot: {}", e);
-                    return Response::error(request.id, RpcError::new(-32603, e.to_string()));
-                }
-            };
-            let snapshot = super::snapshot::collect_world_snapshot(state)
-                .await
-                .with_debug_context(&default_channel);
-            match serde_json::to_value(&snapshot) {
-                Ok(value) => Response::success(request.id, value),
-                Err(e) => Response::error(
-                    request.id,
-                    RpcError::new(-32603, format!("Failed to serialize snapshot: {}", e)),
-                ),
-            }
-        }
-
+        // ---- Sessions ----
         "session.attach" => {
-            let target = require_str!(request.params.as_ref(), "target", request.id);
-            handle_session_attach(request.id, target, state).await
+            let target = require_str!(params, "target", request.id);
+            super::rpc_session::handle_session_attach(request.id, target, state).await
         }
 
         "session.detach" => {
-            let name = require_str!(request.params.as_ref(), "name", request.id);
-            handle_session_detach(request.id, name, state).await
+            let name = require_str!(params, "name", request.id);
+            super::rpc_session::handle_session_detach(request.id, name, state).await
         }
 
-        "session.list" => handle_session_list(request.id, state).await,
+        "session.list" => super::rpc_session::handle_session_list(request.id, state).await,
 
         _ => {
             warn!("Unknown method: {}", request.method);
             Response::error(request.id, RpcError::method_not_found())
         }
-    };
-
-    // Cache only successful responses for idempotency (60 second TTL).
-    // Error responses are NOT cached so that clients can retry after transient
-    // failures (e.g., invalid params due to race conditions) without getting
-    // a stale cached error.
-    // Methods with domain-specific caching (e.g., kanban.data) are excluded.
-    if !skip_rpc_cache && !response.is_error() {
-        let mut cache = state.rpc_response_cache.lock().await;
-        cache.insert(
-            request_id_for_cache,
-            (response.clone(), std::time::Instant::now()),
-        );
     }
-
-    response
 }
 
 // ============================================================================
-// Individual RPC handlers
+// Coworker handlers (tightly coupled to dispatch)
 // ============================================================================
 
 /// Handle coworker.spawn RPC method.
@@ -622,9 +623,6 @@ async fn handle_coworker_break(id: RequestId, name: &str, state: &DaemonState) -
     // the coworker is not tracked (already deregistered, crashed, or broken twice)
     // but still has an active reviewer assignment. Otherwise the daemon would
     // respawn them on the next tick.
-    //
-    // Uses the Effect-based architecture to stay consistent with other RPC handlers
-    // and avoid duplicating cleanup logic.
     let cleanup_effects = vec![effects::Effect::ClearOrphanedReviewerAssignments {
         orphaned_coworkers: vec![name.to_string()],
     }];
@@ -661,180 +659,10 @@ async fn handle_coworker_break(id: RequestId, name: &str, state: &DaemonState) -
     )
 }
 
-/// Handle headless.execute RPC method.
-///
-/// Spawns a headless Claude Code session and runs a one-shot prompt. Returns
-/// the final result with cost and duration. The session uses JSON streaming
-/// internally but this RPC endpoint blocks until the result is available.
-async fn handle_headless_execute(
-    id: RequestId,
-    prompt: &str,
-    config: &crate::headless::HeadlessConfig,
-) -> Response {
-    info!(
-        "Headless execute: model={}, prompt_len={}, has_schema={}",
-        config.model,
-        prompt.len(),
-        config.json_schema.is_some()
-    );
-
-    // Default timeout of 5 minutes for RPC-invoked headless sessions
-    let timeout = std::time::Duration::from_secs(300);
-
-    match crate::headless::execute(config, prompt, timeout).await {
-        Ok(result) => {
-            info!(
-                "Headless execute complete: cost=${:.4}, duration={}ms, error={}",
-                result.cost_usd.unwrap_or(0.0),
-                result.duration_ms.unwrap_or(0),
-                result.is_error,
-            );
-            Response::success(
-                id,
-                serde_json::json!({
-                    "success": !result.is_error,
-                    "result": result.result,
-                    "cost_usd": result.cost_usd,
-                    "duration_ms": result.duration_ms,
-                    "session_id": result.session_id,
-                }),
-            )
-        }
-        Err(e) => {
-            warn!("Headless execute failed: {}", e);
-            Response::error(
-                id,
-                RpcError::new(-32603, format!("Headless execution failed: {}", e)),
-            )
-        }
-    }
-}
-
-/// Handle insight.report RPC method.
-///
-/// Called by the insight PostToolUse hook when a coworker or lead generates
-/// an insight block. Deduplicates via in-memory hash set, posts the insight
-/// to the channel, and spawns a headless architect session to optionally
-/// generate a Mermaid diagram.
-///
-/// The optional `channel` parameter specifies which channel to post the insight to.
-/// If None, defaults to the main channel. Architect diagrams are only posted when
-/// `channel` is Some (topic channel) — diagrams are skipped for the main channel
-/// to avoid noise.
-async fn handle_insight_report(
-    id: RequestId,
-    agent: &str,
-    insight: &str,
-    channel: Option<&str>,
-    state: &DaemonState,
-) -> Response {
-    // Deduplicate: normalize and hash the insight content
-    let hash = hash_insight(insight);
-    {
-        let mut hashes = state.insight_hashes.lock().unwrap();
-        if !hashes.insert(hash) {
-            debug!("insight.report: duplicate insight from {}, skipping", agent);
-            return Response::success(
-                id,
-                serde_json::json!({
-                    "posted": false,
-                    "reason": "duplicate",
-                }),
-            );
-        }
-    }
-
-    // Post insight to specified channel (or main if None)
-    let channel_name = channel.unwrap_or_else(|| state.channel_router.default_channel_name());
-    let msg = Message::for_channel(
-        channel_name,
-        agent,
-        format!("💡 {}", insight),
-        crate::message::MessageType::Text,
-    );
-    if let Err(e) = state.send_and_broadcast_async(&msg).await {
-        warn!("insight.report: failed to post to channel: {}", e);
-        return Response::error(
-            id,
-            RpcError::new(-32603, format!("Failed to post insight: {}", e)),
-        );
-    }
-
-    info!(
-        "insight.report: posted insight from {} to channel '{}'",
-        agent, channel_name
-    );
-
-    // Determine working directory for the architect session.
-    // For coworkers, use their worktree; for lead, use the main repo dir.
-    let cwd = if is_coworker_sender(agent) {
-        let worktree = crate::paths::coworkers_dir_for_repo(&state.repo_name).join(agent);
-        if worktree.exists() {
-            worktree
-        } else {
-            // Worktree gone — fall back to main repo dir
-            state.all_repo_paths.first().cloned().unwrap_or_default()
-        }
-    } else {
-        state.all_repo_paths.first().cloned().unwrap_or_default()
-    };
-
-    // Spawn the architect task asynchronously - pass channel so diagram routes to same channel as insight
-    let repo_name = state.repo_name.clone();
-    let insight_owned = insight.to_string();
-    let channel_owned = channel.map(|s| s.to_string());
-    tokio::spawn(async move {
-        super::architect::generate_insight_diagram(insight_owned, cwd, repo_name, channel_owned)
-            .await;
-    });
-
-    Response::success(
-        id,
-        serde_json::json!({
-            "posted": true,
-        }),
-    )
-}
-
-/// Hash insight content for deduplication.
-///
-/// Normalizes text (trim, collapse whitespace, lowercase) before hashing
-/// to prevent duplicates from minor formatting variations.
-fn hash_insight(insight: &str) -> u64 {
-    let normalized: String = insight
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .to_lowercase();
-
-    let mut hasher = DefaultHasher::new();
-    normalized.hash(&mut hasher);
-    hasher.finish()
-}
-
-/// Extract PR number from a `[Review Note] PR #123: ...` message.
-///
-/// Returns `Some(pr_number)` if the message contains the review note pattern,
-/// `None` otherwise. Used for per-reviewer per-PR deduplication.
-fn extract_review_note_pr(message: &str) -> Option<u64> {
-    // Match "[Review Note]" followed by "PR #" and a number
-    let review_note_idx = message.find("[Review Note]")?;
-    let after = &message[review_note_idx..];
-    let pr_hash_idx = after.find("PR #").or_else(|| after.find("pr #"))?;
-    let after_hash = &after[pr_hash_idx + 4..];
-    let num_str: String = after_hash
-        .chars()
-        .take_while(|c| c.is_ascii_digit())
-        .collect();
-    num_str.parse().ok()
-}
-
-/// Build a JSON array of active coworkers with their current tasks.
-///
-/// Shared by `handle_coworker_list` and `handle_status` — both need the same
-/// coworker-name → task-subject mapping from Claude Code's task storage.
-fn collect_coworker_list(state: &DaemonState) -> Vec<serde_json::Value> {
-    let coworker_tasks: HashMap<String, String> =
+/// Handle coworker.list RPC method.
+fn handle_coworker_list(id: RequestId, state: &DaemonState) -> Response {
+    // Build a map of coworker name -> task subject from in_progress tasks
+    let coworker_tasks: std::collections::HashMap<String, String> =
         crate::tasks::get_in_progress_tasks_with_subjects()
             .into_iter()
             .filter_map(|(_task_id, subject, owner)| {
@@ -846,11 +674,12 @@ fn collect_coworker_list(state: &DaemonState) -> Vec<serde_json::Value> {
             })
             .collect();
 
-    state
+    let coworkers: Vec<serde_json::Value> = state
         .coworkers
         .list()
         .iter()
         .map(|cw| {
+            // Look up current task from task storage (case-insensitive)
             let current_task = coworker_tasks.get(&cw.name.to_lowercase()).cloned();
             serde_json::json!({
                 "name": cw.name,
@@ -859,12 +688,8 @@ fn collect_coworker_list(state: &DaemonState) -> Vec<serde_json::Value> {
                 "started_at": cw.started_at.to_rfc3339(),
             })
         })
-        .collect()
-}
+        .collect();
 
-/// Handle coworker.list RPC method.
-fn handle_coworker_list(id: RequestId, state: &DaemonState) -> Response {
-    let coworkers = collect_coworker_list(state);
     Response::success(
         id,
         serde_json::json!({
@@ -877,8 +702,7 @@ fn handle_coworker_list(id: RequestId, state: &DaemonState) -> Response {
 /// Handle coworker.view RPC method.
 ///
 /// Returns the recent output from a headless coworker session by reading
-/// the JSONL log file. This enables `midtown coworker view` to work with
-/// headless coworkers.
+/// the JSONL log file.
 async fn handle_coworker_view(id: RequestId, name: &str, state: &DaemonState) -> Response {
     match state.session_manager.get_output(name).await {
         Some(output) => Response::success(
@@ -901,12 +725,8 @@ async fn handle_coworker_view(id: RequestId, name: &str, state: &DaemonState) ->
 /// Handle coworker.report-state RPC method.
 ///
 /// Stores the coworker's workflow phase in daemon memory and updates the
-/// tmux tab display. The daemon is the single authority for coworker state.
-///
-/// When a coworker reports `Idle`, they are immediately sent on break.
-/// This eliminates the race between idle detection (daemon tick) and stuck
-/// detection (pane unchanged), which could cause idle coworkers to be
-/// incorrectly restarted as "stuck".
+/// tmux tab display. When a coworker reports `Idle`, they are immediately
+/// sent on break. When they report `Completed`, task cleanup is handled.
 async fn handle_coworker_report_state(
     id: RequestId,
     name: &str,
@@ -921,76 +741,50 @@ async fn handle_coworker_report_state(
     };
 
     // For Idle phase, immediately send the coworker on break.
-    // This prevents the race condition where stuck detection fires before
-    // the daemon's periodic idle check.
-    if phase == crate::coworker_state::WorkflowPhase::Idle {
-        // Check if coworker is tracked (should be, since they're reporting state)
-        if state.coworkers.get(name).is_some() {
-            // Build shutdown effect with conditional follow-up effects.
-            // The channel message and WebSocket broadcast only execute if shutdown succeeds.
-            // This ensures all cleanup steps (cooldowns, pending nudges, worktree unbinding)
-            // stay in sync with Effect::ShutdownCoworker in effects.rs.
-            let shutdown_effects = vec![effects::Effect::ShutdownCoworkerWithCallbacks {
-                name: name.to_string(),
-                message: String::new(), // No goodbye message needed for idle shutdown
-                session_id: None,
-                on_success: vec![
-                    effects::Effect::PostSystemMessage {
-                        message: format!("☕ {} reported idle, taking a break", name),
-                    },
-                    effects::Effect::BroadcastCoworkerUpdate {
-                        name: name.to_string(),
-                        status: "stopped".to_string(),
-                        current_task: None,
-                    },
-                ],
-            }];
+    if phase == crate::coworker_state::WorkflowPhase::Idle && state.coworkers.get(name).is_some() {
+        let shutdown_effects = vec![effects::Effect::ShutdownCoworkerWithCallbacks {
+            name: name.to_string(),
+            message: String::new(),
+            session_id: None,
+            on_success: vec![
+                effects::Effect::PostSystemMessage {
+                    message: format!("☕ {} reported idle, taking a break", name),
+                },
+                effects::Effect::BroadcastCoworkerUpdate {
+                    name: name.to_string(),
+                    status: "stopped".to_string(),
+                    current_task: None,
+                },
+            ],
+        }];
 
-            effects::execute_effects(shutdown_effects, state).await;
+        effects::execute_effects(shutdown_effects, state).await;
 
-            // Immediately trigger task dispatch so pending tasks get picked up
-            // without waiting for the next TaskDispatchTick (up to 5 seconds).
-            // This is the same pattern as daemon.check-pending RPC.
-            let snap = snapshot::collect_world_snapshot(state).await;
-            let pending_effects = super::dispatch::spawn_for_pending_tasks(&snap, state);
-            if !pending_effects.is_empty() {
-                info!(
-                    "Immediate dispatch after {} idle: {} effect(s)",
-                    name,
-                    pending_effects.len()
-                );
-                state.mark_in_flight_spawns_from_effects(&pending_effects);
-                effects::execute_effects(pending_effects, state).await;
-            }
-
-            info!("Coworker {} went on break after reporting idle", name);
-            return Response::success(
-                id,
-                serde_json::json!({
-                    "success": true,
-                    "message": format!("{} → break (idle)", name),
-                }),
+        // Immediately trigger task dispatch so pending tasks get picked up
+        let snap = snapshot::collect_world_snapshot(state).await;
+        let pending_effects = super::dispatch::spawn_for_pending_tasks(&snap, state);
+        if !pending_effects.is_empty() {
+            info!(
+                "Immediate dispatch after {} idle: {} effect(s)",
+                name,
+                pending_effects.len()
             );
+            state.mark_in_flight_spawns_from_effects(&pending_effects);
+            effects::execute_effects(pending_effects, state).await;
         }
+
+        info!("Coworker {} went on break after reporting idle", name);
+        return Response::success(
+            id,
+            serde_json::json!({
+                "success": true,
+                "message": format!("{} → break (idle)", name),
+            }),
+        );
     }
 
-    // For Completed phase, sync the shared task list so the daemon stops
-    // reassigning the task. Coworker completions write to their isolated list,
-    // not the shared list the daemon reads. This closes the loop by updating the
-    // shared list when a coworker reports completion via RPC.
-    //
-    // IMPORTANT: Tasks that produce PRs complete on MERGE, not on coworker phase
-    // transition. Only auto-complete tasks that DON'T have associated open PRs.
-    // This keeps coworkers alive through the review cycle so feedback can be
-    // delivered to the same session (tier 1 routing).
-    //
-    // Uses the existing Effect::CompleteTask and Effect::ClearBlockedBy variants
-    // to stay consistent with the effect-based architecture and avoid duplicating
-    // cleanup logic (e.g., clear_task_assignment_by_task is handled by the effect
-    // executor in effects.rs).
+    // For Completed phase, handle task cleanup.
     if phase == crate::coworker_state::WorkflowPhase::Completed {
-        // Determine the task to complete: use the explicitly provided task_id,
-        // or fall back to the task tracked in the daemon's in-memory assignment map.
         let effective_task_id: Option<String> = task_id.map(|id| id.to_string()).or_else(|| {
             let assignments = state.coworker_task_assignments.lock().unwrap();
             assignments
@@ -999,8 +793,6 @@ async fn handle_coworker_report_state(
         });
 
         if let Some(ref tid) = effective_task_id {
-            // Check if the task has an associated open PR. If it does, defer
-            // completion to the PR merge path (dispatch.rs).
             let has_open_pr = task_has_open_pr(tid, state).await;
 
             if has_open_pr {
@@ -1009,14 +801,6 @@ async fn handle_coworker_report_state(
                     tid
                 );
             } else {
-                // No open PR — the coworker reported Completed prematurely
-                // (before opening a PR). Don't complete the task; nudge the
-                // coworker to open a PR and go idle. The daemon will complete
-                // the task when the PR merges.
-                //
-                // Non-PR tasks (reviews, investigations) should use
-                // `midtown task done <id>` directly instead of reporting
-                // WorkflowPhase::Completed.
                 warn!(
                     "Task !{} reported completed by {} but has no PR — nudging to open PR",
                     tid, name
@@ -1076,9 +860,6 @@ async fn handle_coworker_report_state(
 }
 
 /// Handle coworker.nudge RPC method.
-///
-/// Sends the nudge directly to the coworker's tmux window without posting to the channel,
-/// to avoid the chat monitor seeing the @mention and creating a duplicate nudge.
 async fn handle_coworker_nudge(
     id: RequestId,
     _from: &str,
@@ -1086,7 +867,6 @@ async fn handle_coworker_nudge(
     message: &str,
     state: &DaemonState,
 ) -> Response {
-    // Run blocking tmux operation in spawn_blocking to avoid blocking async runtime
     let coworkers = state.coworkers.clone();
     let name_owned = name.to_string();
     let message_owned = message.to_string();
@@ -1114,11 +894,6 @@ async fn handle_coworker_nudge(
 }
 
 /// Handle coworker.asking RPC method.
-///
-/// Called when a coworker uses AskUserQuestion tool. This:
-/// 1. Posts the question to the channel
-/// 2. Nudges the Lead with the question
-/// 3. Marks the coworker as waiting for feedback
 async fn handle_coworker_asking(
     id: RequestId,
     name: &str,
@@ -1132,17 +907,14 @@ async fn handle_coworker_asking(
     }
 
     // Mark the coworker as waiting for feedback in tmux tab and nudge the Lead.
-    // Run blocking tmux operations in spawn_blocking to avoid blocking async runtime.
     let coworkers = state.coworkers.clone();
     let name_owned = name.to_string();
     let nudge_message = format!("{} is asking: {}", name, question);
 
     tokio::task::spawn_blocking(move || {
-        // Update tmux tab status
         if let Err(e) = coworkers.update_status_display(&name_owned, Some("waiting for feedback")) {
             debug!("Failed to update tmux tab for {}: {}", name_owned, e);
         }
-        // Nudge the Lead with the question
         if let Err(e) = coworkers.nudge("Lead", &nudge_message) {
             debug!("Failed to nudge Lead: {}", e);
         }
@@ -1158,805 +930,151 @@ async fn handle_coworker_asking(
     )
 }
 
-/// Handle task.request RPC — a coworker surfaces work that should be a separate task.
+// ============================================================================
+// Insight handler
+// ============================================================================
+
+/// Handle insight.report RPC method.
 ///
-/// Posts a formatted message to the channel so the lead can see the request
-/// and decide whether to create a task for it.
-async fn handle_task_request(
+/// Deduplicates via in-memory hash set, posts the insight to the channel,
+/// and spawns a headless architect session to optionally generate a diagram.
+async fn handle_insight_report(
     id: RequestId,
-    from: &str,
-    message: &str,
-    state: &DaemonState,
-) -> Response {
-    let channel_message = format!("@lead [Task Request] from {}: \"{}\"", from, message);
-
-    let msg = Message::new("midtown", channel_message.clone(), MessageType::Text);
-
-    if let Err(e) = state.send_and_broadcast_async(&msg).await {
-        warn!("Failed to post task request to channel: {}", e);
-        return Response::error(id, RpcError::new(-32603, format!("Failed to post: {}", e)));
-    }
-
-    info!("Task request from {}: {}", from, message);
-    Response::success(
-        id,
-        serde_json::json!({
-            "posted": true,
-            "from": from,
-        }),
-    )
-}
-
-/// Handle task.create RPC — daemon creates a task directly in shared storage.
-///
-/// Creates the task first with a provisional channel ("midtown" or user-specified),
-/// then invokes the clusterer to get channel assignments. The clusterer may create
-/// new channels, archive old ones, or reassign tasks. Dispatch for the new task
-/// happens on the next `TaskDispatchTick` via the canonical event loop pipeline.
-#[allow(clippy::too_many_arguments)]
-async fn handle_task_create(
-    id: RequestId,
-    subject: &str,
-    description: &str,
-    blocked_by: Option<&[String]>,
-    channel: Option<&str>,
-    model: Option<&str>,
-    pr: Option<u64>,
-    state: &DaemonState,
-) -> Response {
-    let repo_name = state.repo_name.clone();
-
-    // Generate active_form (present continuous) from subject for task UI spinner
-    let active_form = generate_active_form(subject);
-
-    // Create the task with provisional channel (user-specified or "midtown")
-    // We need the task ID before invoking the clusterer
-    let provisional_channel = channel.unwrap_or("midtown");
-
-    let task_id = match crate::tasks::create_task_for_repo(
-        subject,
-        description,
-        &active_form,
-        "",
-        &repo_name,
-        blocked_by,
-        Some(provisional_channel),
-        pr,
-    ) {
-        Ok(id) => id,
-        Err(e) => {
-            return Response::error(
-                id,
-                RpcError::new(-32603, format!("Failed to create task: {}", e)),
-            );
-        }
-    };
-
-    // If no explicit channel was provided, invoke clusterer to get assignments
-    if channel.is_none() {
-        match invoke_clusterer_for_task(&task_id.to_string(), subject, description, state).await {
-            Ok(diff) => {
-                // Validate the diff
-                if let Err(e) = diff.validate() {
-                    warn!(
-                        "Clusterer returned invalid diff: {} — keeping provisional channel",
-                        e
-                    );
-                } else {
-                    // Apply the clustering diff via effects pipeline
-                    info!(
-                        "Clusterer returned diff: {} creates, {} archives, {} merges, {} assignments",
-                        diff.create_channels.len(),
-                        diff.archive_channels.len(),
-                        diff.merge_channels.len(),
-                        diff.assign_tasks.len()
-                    );
-
-                    // Convert clustering diff to effects and execute them
-                    let effects = super::clustering::apply_clustering_diff(diff);
-                    effects::execute_effects(effects, state).await;
-                }
-            }
-            Err(e) => {
-                warn!("Clusterer failed: {} — keeping provisional channel", e);
-            }
-        }
-    } else {
-        // User specified a channel explicitly — persist to task_channel mapping
-        let mut ps = state.persistent_state.lock().await;
-        if apply_task_channel_mapping(&mut ps.task_channel, &task_id, channel, false)
-            && let Err(e) = ps.save_for_repo(&repo_name)
-        {
-            warn!("Failed to save task channel mapping: {}", e);
-        }
-    }
-
-    // Apply model mapping if provided
-    {
-        let mut ps = state.persistent_state.lock().await;
-        match apply_task_model_mapping(&mut ps.task_model, &task_id, model, false) {
-            Ok(changed) => {
-                if changed && let Err(e) = ps.save_for_repo(&repo_name) {
-                    warn!("Failed to save task model mapping: {}", e);
-                }
-            }
-            Err(e) => {
-                // Model format validation failed - return error
-                return Response::error(id, RpcError::new(-32602, e));
-            }
-        }
-    }
-
-    // Post to channel so team is aware
-    let msg = Message::text("lead", format!("created task: {}", subject));
-    if let Err(e) = state.send_and_broadcast_async(&msg).await {
-        warn!("Failed to post task creation to channel: {}", e);
-    }
-
-    info!("Created task !{}: {}", task_id, subject);
-    Response::success(
-        id,
-        serde_json::json!({
-            "type": "message",
-            "message": format!("Task !{} created: {}", task_id, subject),
-        }),
-    )
-}
-
-/// Generate a present-continuous `activeForm` from a task subject.
-///
-/// Converts imperative subjects like "Fix auth bug" → "Fixing auth bug".
-/// Falls back to "Working on: <subject>" for unrecognized patterns.
-fn generate_active_form(subject: &str) -> String {
-    let trimmed = subject.trim();
-    let first_word = trimmed.split_whitespace().next().unwrap_or("");
-    let rest = trimmed.strip_prefix(first_word).unwrap_or("").trim_start();
-
-    // Common imperative verbs → present continuous
-    let continuous = match first_word.to_lowercase().as_str() {
-        "add" => "Adding",
-        "fix" => "Fixing",
-        "update" => "Updating",
-        "remove" => "Removing",
-        "implement" => "Implementing",
-        "refactor" => "Refactoring",
-        "create" => "Creating",
-        "build" => "Building",
-        "review" => "Reviewing",
-        "address" => "Addressing",
-        "debug" => "Debugging",
-        "test" => "Testing",
-        "move" => "Moving",
-        "rename" => "Renaming",
-        "delete" => "Deleting",
-        "replace" => "Replacing",
-        "revert" => "Reverting",
-        "migrate" => "Migrating",
-        "upgrade" => "Upgrading",
-        "clean" => "Cleaning",
-        "configure" => "Configuring",
-        "enable" => "Enabling",
-        "disable" => "Disabling",
-        _ => return format!("Working on: {}", trimmed),
-    };
-
-    if rest.is_empty() {
-        continuous.to_string()
-    } else {
-        format!("{} {}", continuous, rest)
-    }
-}
-
-/// Validate model format: must be "provider/model" with exactly one slash
-/// and a supported provider.
-///
-/// Valid examples: "claude/opus", "claude/sonnet", "codex/o3", "codex/o4-mini"
-/// Invalid: "claude-opus" (no slash), "claude/opus/extra" (multiple slashes),
-///          "/opus" (empty provider), "claude/" (empty model),
-///          "unknown/opus" (unsupported provider)
-fn validate_model_format(model: &str) -> Result<(), String> {
-    let parts: Vec<&str> = model.split('/').collect();
-    if parts.len() != 2 {
-        return Err(format!(
-            "Invalid model format '{}': must be '<provider>/<model>' (e.g., claude/opus)",
-            model
-        ));
-    }
-    if parts[0].is_empty() {
-        return Err(format!(
-            "Invalid model format '{}': provider cannot be empty",
-            model
-        ));
-    }
-    if parts[1].is_empty() {
-        return Err(format!(
-            "Invalid model format '{}': model cannot be empty",
-            model
-        ));
-    }
-    // Reject whitespace in provider or model
-    if parts[0] != parts[0].trim() || parts[1] != parts[1].trim() {
-        return Err(format!(
-            "Invalid model format '{}': provider and model must not contain leading/trailing whitespace",
-            model
-        ));
-    }
-
-    // Validate provider is supported
-    use std::str::FromStr;
-    crate::auth::AuthProvider::from_str(parts[0])
-        .map_err(|e| format!("Invalid model format '{}': {}", model, e))?;
-
-    Ok(())
-}
-
-/// Apply a task-to-model mapping update to persistent state.
-///
-/// On `task.create`: pass `model` from the RPC params. Valid non-empty values are stored;
-/// `None` or empty strings are ignored. Invalid formats return an error.
-///
-/// On `task.update`: pass `model` from the RPC params. Valid non-empty values set/overwrite
-/// the mapping; an empty string clears it; `None` means no change.
-///
-/// Returns `Ok(true)` if the mapping was modified (caller should save persistent state).
-/// Returns `Ok(false)` if no change was made.
-/// Returns `Err` if the model format is invalid.
-fn apply_task_model_mapping(
-    task_model: &mut HashMap<String, String>,
-    task_id: &str,
-    model: Option<&str>,
-    allow_clear: bool,
-) -> Result<bool, String> {
-    match model {
-        Some(m) if m.is_empty() && allow_clear => {
-            // Empty string means clear the mapping (only on update, not create)
-            // Returns true only if a mapping was actually removed
-            Ok(task_model.remove(task_id).is_some())
-        }
-        Some(m) if !m.is_empty() => {
-            // Validate format before storing
-            validate_model_format(m)?;
-            task_model.insert(task_id.to_string(), m.to_string());
-            Ok(true)
-        }
-        _ => Ok(false),
-    }
-}
-
-/// Apply a task-to-channel mapping update to persistent state.
-///
-/// On `task.create`: pass `channel` from the RPC params. Non-empty values are stored;
-/// `None` or empty strings are ignored.
-///
-/// On `task.update`: pass `channel` from the RPC params. Non-empty values set/overwrite
-/// the mapping; an empty string clears it; `None` means no change.
-///
-/// Returns `true` if the mapping was modified (caller should save persistent state).
-fn apply_task_channel_mapping(
-    task_channel: &mut HashMap<String, String>,
-    task_id: &str,
-    channel: Option<&str>,
-    allow_clear: bool,
-) -> bool {
-    match channel {
-        Some(ch) if ch.is_empty() && allow_clear => {
-            // Empty string means clear the mapping (only on update, not create)
-            // Returns true only if a mapping was actually removed
-            task_channel.remove(task_id).is_some()
-        }
-        Some(ch) if !ch.is_empty() => {
-            task_channel.insert(task_id.to_string(), ch.to_string());
-            true
-        }
-        _ => false,
-    }
-}
-
-/// Handle task.update RPC — update specific fields on a task directly.
-#[allow(clippy::too_many_arguments)]
-async fn handle_task_update(
-    id: RequestId,
-    task_id: &str,
-    owner: Option<&str>,
-    status: Option<&str>,
-    description: Option<&str>,
-    blocked_by: Option<&[String]>,
-    channel: Option<&str>,
-    model: Option<&str>,
-    pr: Option<u64>,
-    state: &DaemonState,
-) -> Response {
-    // Validate status if provided
-    if let Some(s) = status
-        && !["pending", "in_progress", "completed"].contains(&s)
-    {
-        return Response::error(id, RpcError::new(-32602, format!("Invalid status: {}", s)));
-    }
-
-    let repo_name = state.repo_name.clone();
-
-    if let Err(e) = crate::tasks::update_task_fields_for_repo(
-        task_id,
-        &repo_name,
-        owner,
-        status,
-        description,
-        blocked_by,
-        channel,
-        pr,
-    ) {
-        return Response::error(
-            id,
-            RpcError::new(-32603, format!("Failed to update task: {}", e)),
-        );
-    }
-
-    // Update in-memory assignment tracking
-    if let Some(new_owner) = owner {
-        // Clear old assignment before recording new one (prevents stale entries
-        // when a task is reassigned from coworker A to coworker B)
-        state.clear_task_assignment_by_task(task_id);
-        state.record_task_assignment(new_owner, task_id);
-    }
-
-    // Clear assignment when task is completed or reset to pending
-    if matches!(status, Some("completed") | Some("pending")) {
-        state.clear_task_assignment_by_task(task_id);
-    }
-
-    // Update daemon-side task-to-channel and task-to-model mappings
-    {
-        let mut ps = state.persistent_state.lock().await;
-        let mut needs_save = false;
-
-        // Apply channel mapping
-        if apply_task_channel_mapping(&mut ps.task_channel, task_id, channel, true) {
-            needs_save = true;
-        }
-
-        // Apply model mapping
-        match apply_task_model_mapping(&mut ps.task_model, task_id, model, true) {
-            Ok(changed) => {
-                if changed {
-                    needs_save = true;
-                }
-            }
-            Err(e) => {
-                // Model format validation failed - return error
-                return Response::error(id, RpcError::new(-32602, e));
-            }
-        }
-
-        // Save if any mapping changed
-        if needs_save && let Err(e) = ps.save_for_repo(&repo_name) {
-            warn!("Failed to save task mappings: {}", e);
-        }
-    }
-
-    info!("Updated task !{}", task_id);
-    let response = Response::success(
-        id,
-        serde_json::json!({
-            "type": "message",
-            "message": format!("Task !{} updated", task_id),
-        }),
-    );
-    debug!("Returning response: {:?}", response);
-    response
-}
-
-/// Handle task.done RPC — mark a task as completed directly.
-fn handle_task_done(id: RequestId, task_id: &str, state: &DaemonState) -> Response {
-    let repo_name = state.repo_name.clone();
-
-    if let Err(e) = crate::tasks::complete_task_for_repo(task_id, &repo_name) {
-        return Response::error(
-            id,
-            RpcError::new(-32603, format!("Failed to complete task: {}", e)),
-        );
-    }
-
-    // Mark worktree as completed (for time-based cleanup)
-    {
-        let mut ps = state.persistent_state.blocking_lock();
-        if let Some(wt_id) = ps.worktree_registry.find_worktree_by_task(task_id) {
-            ps.worktree_registry
-                .mark_completed(&wt_id, chrono::Utc::now());
-            if let Err(e) = ps.save_for_repo(&repo_name) {
-                warn!("Failed to save worktree completion timestamp: {}", e);
-            }
-        }
-    }
-
-    // Clear in-memory tracking
-    state.clear_task_assignment_by_task(task_id);
-
-    // Unblock dependent tasks
-    if let Err(e) = crate::tasks::clear_blocked_by_for_repo(task_id, &repo_name) {
-        warn!("Failed to clear blockedBy for task !{}: {}", task_id, e);
-    }
-
-    info!("Completed task !{}", task_id);
-    Response::success(
-        id,
-        serde_json::json!({
-            "type": "message",
-            "message": format!("Task !{} completed", task_id),
-        }),
-    )
-}
-
-/// Handle task.metadata RPC — return daemon-side metadata for a task.
-///
-/// Returns channel and model mappings stored in DaemonPersistentState.
-/// These are stored separately from Claude Code's native task storage.
-fn handle_task_metadata(id: RequestId, task_id: &str, state: &DaemonState) -> Response {
-    let ps = state.persistent_state.blocking_lock();
-    let channel = ps.task_channel.get(task_id).cloned();
-    let model = ps.task_model.get(task_id).cloned();
-
-    Response::success(
-        id,
-        serde_json::json!({
-            "channel": channel,
-            "model": model,
-        }),
-    )
-}
-
-/// Handle task.claim RPC — a coworker claims a task by writing directly to disk.
-///
-/// Validates the task exists and is pending, then sets owner and status to in_progress
-/// directly. No Lead proxy needed.
-fn handle_task_claim(id: RequestId, task_id: &str, from: &str, state: &DaemonState) -> Response {
-    let tasks = crate::tasks::read_tasks();
-    let task = tasks.iter().find(|t| t.id == task_id);
-
-    let Some(task) = task else {
-        return Response::error(
-            id,
-            RpcError::new(-32602, format!("Task !{} not found", task_id)),
-        );
-    };
-
-    if task.status != crate::tasks::TaskStatus::Pending {
-        return Response::error(
-            id,
-            RpcError::new(
-                -32602,
-                format!(
-                    "Task !{} is not pending (status: {:?})",
-                    task_id, task.status
-                ),
-            ),
-        );
-    }
-
-    let repo_name = state.repo_name.clone();
-
-    // Write owner and status directly to disk (with retry on transient failures).
-    // Disk write happens BEFORE in-memory recording so that a failure leaves
-    // no stale in-memory state. Without reconcile_stale_claims, consistency
-    // depends on this ordering.
-    let mut last_err = None;
-    for attempt in 0..3 {
-        match crate::tasks::update_task_fields_for_repo(
-            task_id,
-            &repo_name,
-            Some(from),
-            Some("in_progress"),
-            None,
-            None,
-            None,
-            None,
-        ) {
-            Ok(()) => {
-                last_err = None;
-                break;
-            }
-            Err(e) => {
-                warn!(
-                    "Task claim disk write attempt {} failed for task !{}: {}",
-                    attempt + 1,
-                    task_id,
-                    e
-                );
-                last_err = Some(e);
-                std::thread::sleep(std::time::Duration::from_millis(100));
-            }
-        }
-    }
-
-    if let Some(e) = last_err {
-        return Response::error(
-            id,
-            RpcError::new(-32603, format!("Failed to claim task after retries: {}", e)),
-        );
-    }
-
-    // Record in-memory assignment for busy tracking (only after disk write succeeds)
-    state.record_task_assignment(from, task_id);
-
-    info!("Task claim: {} claimed task !{} directly", from, task_id);
-
-    Response::success(
-        id,
-        serde_json::json!({
-            "success": true,
-            "message": format!("Claimed task !{}", task_id),
-        }),
-    )
-}
-
-/// Remove shell escaping artifacts from channel messages.
-///
-/// When Claude Code posts messages via its Bash tool, the LLM often escapes `!`
-/// as `\!` (to avoid bash history expansion). Since the Bash tool runs in
-/// non-interactive mode where history expansion is disabled, the backslash passes
-/// through literally. This function cleans up such artifacts.
-fn unescape_shell_artifacts(s: &str) -> String {
-    s.replace("\\!", "!")
-}
-
-/// Handle channel.post RPC method.
-///
-/// Supports IRC-style `/me` actions. If the message starts with `/me `,
-/// the prefix is stripped and the message is stored as an Action type.
-/// For coworkers, the action text is also reflected in their tmux tab name.
-///
-/// Also detects feedback requests from coworkers and nudges the Lead.
-///
-/// Accepts an optional `channel` parameter to post to topic channels.
-/// If not provided, defaults to the main channel.
-pub(super) async fn handle_channel_post(
-    id: RequestId,
-    from: &str,
-    message: &str,
+    agent: &str,
+    insight: &str,
     channel: Option<&str>,
     state: &DaemonState,
 ) -> Response {
-    // Clean up shell escaping artifacts (e.g. "\!" from bash history expansion escaping)
-    let message = unescape_shell_artifacts(message);
-
-    // Check for /me prefix (IRC-style action)
-    let (content, msg_type) = if let Some(action) = message.strip_prefix("/me ") {
-        (action.to_string(), MessageType::Action)
-    } else {
-        (message.to_string(), MessageType::Text)
-    };
-
-    // Deduplicate [Review Note] messages: suppress rapid-fire notes from the same
-    // reviewer for the same PR (within 60s cooldown). Notes after the cooldown
-    // (e.g., corrections or follow-ups) are allowed through.
-    if let Some(pr_num) = extract_review_note_pr(&content) {
-        let key = (from.to_lowercase(), pr_num);
-        let now = std::time::Instant::now();
-        let cooldown = std::time::Duration::from_secs(60);
-        let mut tracker = state.review_note_tracker.lock().unwrap();
-        if tracker
-            .get(&key)
-            .is_some_and(|first_seen| now.duration_since(*first_seen) < cooldown)
-        {
-            debug!(
-                "channel.post: suppressing duplicate [Review Note] from {} for PR #{} (within {}s cooldown)",
-                from,
-                pr_num,
-                cooldown.as_secs()
-            );
+    // Deduplicate: normalize and hash the insight content
+    let hash = hash_insight(insight);
+    {
+        let mut hashes = state.insight_hashes.lock().unwrap();
+        if !hashes.insert(hash) {
+            debug!("insight.report: duplicate insight from {}, skipping", agent);
             return Response::success(
                 id,
                 serde_json::json!({
                     "posted": false,
-                    "reason": "duplicate_review_note",
+                    "reason": "duplicate",
                 }),
             );
         }
-        // Record or refresh the timestamp
-        tracker.insert(key, now);
     }
 
-    // Use provided channel or default to main channel
+    // Post insight to specified channel (or main if None)
     let channel_name = channel.unwrap_or_else(|| state.channel_router.default_channel_name());
-    let msg = Message::for_channel(channel_name, from, content.clone(), msg_type.clone());
-
-    // Use async version to avoid blocking the runtime during file lock acquisition
+    let msg = Message::for_channel(
+        channel_name,
+        agent,
+        format!("💡 {}", insight),
+        crate::message::MessageType::Text,
+    );
     if let Err(e) = state.send_and_broadcast_async(&msg).await {
-        error!("Failed to write to channel: {}", e);
-        return Response::error(id, RpcError::new(-32603, e.to_string()));
+        warn!("insight.report: failed to post to channel: {}", e);
+        return Response::error(
+            id,
+            RpcError::new(-32603, format!("Failed to post insight: {}", e)),
+        );
     }
 
-    info!("Channel post from {}: {}", from, message);
+    info!(
+        "insight.report: posted insight from {} to channel '{}'",
+        agent, channel_name
+    );
 
-    // Track last activity time for coworker (used for silent coworker detection)
-    if is_coworker_sender(from) {
-        let mut records = state.coworker_records.write().await;
-        records
-            .entry(from.to_string())
-            .or_insert_with(crate::rules::CoworkerRecord::new_spawn)
-            .last_activity = Some(Instant::now());
-        drop(records); // Release write lock before acquiring read lock
-    }
-
-    // Update tmux tab for coworkers when they post /me actions.
-    // Prefer structured state from daemon memory (reported via RPC) over
-    // parsing the freeform /me message text with keyword matching.
-    //
-    // Run tmux operations in spawn_blocking to avoid blocking the async
-    // runtime. This prevents RPC timeouts when tmux commands are slow.
-    if msg_type == MessageType::Action {
-        let display_status = {
-            let records = state.coworker_records.read().await;
-            records.get(from).and_then(|record| record.display_status())
-        };
-
-        let coworkers = state.coworkers.clone();
-        let from_clone = from.to_string();
-        let content_clone = content.clone();
-
-        tokio::task::spawn_blocking(move || {
-            if let Some(display) = display_status {
-                if let Err(e) = coworkers.update_status_formatted(&from_clone, &display) {
-                    debug!("Failed to update tmux tab for {}: {}", from_clone, e);
-                }
-            } else {
-                // Fallback: parse /me message text with keyword matching
-                if let Err(e) = coworkers.update_status_display(&from_clone, Some(&content_clone)) {
-                    debug!("Failed to update tmux tab for {}: {}", from_clone, e);
-                }
-            }
-        });
-    }
-
-    // Nudge lead when user messages arrive (from web UI or TUI input)
-    if state.is_user_sender(from) {
-        // Check if user is @mentioning specific coworkers or @all
-        let has_coworker_mentions =
-            !extract_mentions(&content).is_empty() || contains_at_all(&content);
-        let has_lead_mention = content.to_lowercase().contains("@lead");
-
-        // Route @mentions in user messages directly to coworkers
-        super::chat::route_mentions(state, &msg).await;
-
-        // Only nudge lead if there are no coworker @mentions (regular
-        // message for the lead) or if the user also @mentioned the lead.
-        // This lets users talk directly to coworkers without the lead
-        // acting as a middleman.
-        if !has_coworker_mentions || has_lead_mention {
-            let nudge_msg = format!("user: {}", content);
-            info!("Nudging Lead about user message");
-            // Run in spawn_blocking to avoid blocking the async runtime
-            let coworkers = state.coworkers.clone();
-            tokio::task::spawn_blocking(move || {
-                if let Err(e) = coworkers.nudge_lead(&nudge_msg) {
-                    warn!("Failed to nudge Lead about user message: {}", e);
-                }
-            });
+    // Determine working directory for the architect session.
+    let cwd = if is_coworker_sender(agent) {
+        let worktree = crate::paths::coworkers_dir_for_repo(&state.repo_name).join(agent);
+        if worktree.exists() {
+            worktree
         } else {
-            info!("Skipping Lead nudge — user message routed directly to mentioned coworker(s)");
-        }
-    }
-
-    // Nudge the Lead when a coworker explicitly mentions @lead
-    let content_lower = content.to_lowercase();
-    if is_coworker_sender(from) && content_lower.contains("@lead") {
-        // Use CooldownTracker to avoid duplicate nudges (expires after 1 hour)
-        let should_nudge = {
-            let cooldowns = state.cooldowns.lock().unwrap();
-            cooldowns.check("lead_mention", &msg.id, Duration::from_secs(3600))
-        };
-
-        if should_nudge {
-            // Record that we're nudging for this message
-            {
-                let mut cooldowns = state.cooldowns.lock().unwrap();
-                cooldowns.record("lead_mention", &msg.id);
-            }
-
-            // Truncate message for nudge (max 100 chars)
-            let summary = truncate_str(&content, 100);
-
-            let nudge_msg = format!("{} mentioned @lead: {}", from, summary);
-            info!("Nudging Lead about @lead mention from {}", from);
-
-            // Nudge the Lead window (spawn_blocking to avoid blocking async runtime)
-            let coworkers = state.coworkers.clone();
-            tokio::task::spawn_blocking(move || {
-                if let Err(e) = coworkers.nudge_lead(&nudge_msg) {
-                    warn!("Failed to nudge Lead about @lead mention: {}", e);
-                }
-            });
-
-            // Send push notification to mobile PWA
-            state.send_push_notification(&format!("@lead from {}", from), &summary, "mention");
-        }
-    }
-
-    // Send bell notification and push notification for @user mentions
-    // Also recognize @<display_name> if configured (e.g., @Ben)
-    let has_user_mention = content_lower.contains("@user")
-        || state
-            .user_display_name
-            .as_ref()
-            .is_some_and(|dn| content_lower.contains(&format!("@{}", dn.to_lowercase())));
-    if has_user_mention && !state.is_user_sender(from) {
-        info!("Bell notification: @user mentioned by {}", from);
-        // Run in spawn_blocking to avoid blocking the async runtime
-        let coworkers = state.coworkers.clone();
-        tokio::task::spawn_blocking(move || {
-            if let Err(e) = coworkers.notify_user() {
-                warn!("Failed to send bell notification for @user mention: {}", e);
-            }
-        });
-        let display = state.user_display_name.as_deref().unwrap_or("user");
-        let summary = truncate_str(&content, 100);
-        state.send_push_notification(&format!("@{} from {}", display, from), &summary, "mention");
-    }
-
-    Response::success(
-        id,
-        serde_json::json!({
-            "success": true,
-            "message": "Message posted to channel",
-        }),
-    )
-}
-
-/// Handle channel.read RPC method.
-fn handle_channel_read(id: RequestId, all: bool, state: &DaemonState) -> Response {
-    // Read from the default (main) channel
-    let default_channel = match state.channel_router.default_channel() {
-        Ok(ch) => ch,
-        Err(e) => {
-            error!("Failed to get default channel: {}", e);
-            return Response::error(id, RpcError::new(-32603, e.to_string()));
-        }
-    };
-
-    let messages = if all {
-        // Read all messages
-        match default_channel.read_all() {
-            Ok(msgs) => msgs,
-            Err(e) => {
-                error!("Failed to read channel: {}", e);
-                return Response::error(id, RpcError::new(-32603, e.to_string()));
-            }
+            state.all_repo_paths.first().cloned().unwrap_or_default()
         }
     } else {
-        // Read recent messages (last 20)
-        match default_channel.read_all() {
-            Ok(msgs) => {
-                let total = msgs.len();
-                if total > 20 {
-                    msgs.into_iter().skip(total - 20).collect()
-                } else {
-                    msgs
-                }
-            }
-            Err(e) => {
-                error!("Failed to read channel: {}", e);
-                return Response::error(id, RpcError::new(-32603, e.to_string()));
-            }
-        }
+        state.all_repo_paths.first().cloned().unwrap_or_default()
     };
 
-    let messages_json: Vec<serde_json::Value> = messages
-        .iter()
-        .map(|m| {
-            serde_json::json!({
-                "from": m.from,
-                "message": m.content,
-                "timestamp": m.timestamp.to_rfc3339(),
-            })
-        })
-        .collect();
+    // Spawn the architect task asynchronously
+    let repo_name = state.repo_name.clone();
+    let insight_owned = insight.to_string();
+    let channel_owned = channel.map(|s| s.to_string());
+    tokio::spawn(async move {
+        super::architect::generate_insight_diagram(insight_owned, cwd, repo_name, channel_owned)
+            .await;
+    });
 
     Response::success(
         id,
         serde_json::json!({
-            "messages": messages_json,
+            "posted": true,
         }),
     )
 }
+
+/// Hash insight content for deduplication.
+fn hash_insight(insight: &str) -> u64 {
+    let normalized: String = insight
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase();
+
+    let mut hasher = DefaultHasher::new();
+    normalized.hash(&mut hasher);
+    hasher.finish()
+}
+
+// ============================================================================
+// Headless handler
+// ============================================================================
+
+/// Handle headless.execute RPC method.
+async fn handle_headless_execute(
+    id: RequestId,
+    prompt: &str,
+    config: &crate::headless::HeadlessConfig,
+) -> Response {
+    info!(
+        "Headless execute: model={}, prompt_len={}, has_schema={}",
+        config.model,
+        prompt.len(),
+        config.json_schema.is_some()
+    );
+
+    let timeout = std::time::Duration::from_secs(300);
+
+    match crate::headless::execute(config, prompt, timeout).await {
+        Ok(result) => {
+            info!(
+                "Headless execute complete: cost=${:.4}, duration={}ms, error={}",
+                result.cost_usd.unwrap_or(0.0),
+                result.duration_ms.unwrap_or(0),
+                result.is_error,
+            );
+            Response::success(
+                id,
+                serde_json::json!({
+                    "success": !result.is_error,
+                    "result": result.result,
+                    "cost_usd": result.cost_usd,
+                    "duration_ms": result.duration_ms,
+                    "session_id": result.session_id,
+                }),
+            )
+        }
+        Err(e) => {
+            warn!("Headless execute failed: {}", e);
+            Response::error(
+                id,
+                RpcError::new(-32603, format!("Headless execution failed: {}", e)),
+            )
+        }
+    }
+}
+
+// ============================================================================
+// Reminder handlers
+// ============================================================================
 
 /// Handle reminder.create RPC method.
 async fn handle_reminder_create(id: RequestId, message: &str, state: &DaemonState) -> Response {
@@ -2023,618 +1141,28 @@ async fn handle_reminder_cancel(id: RequestId, reminder_id: &str, state: &Daemon
 }
 
 // ============================================================================
-// Status & Kanban handlers
+// Snapshot handler
 // ============================================================================
 
-/// Handle status RPC method.
-///
-/// This handler runs blocking operations (gh CLI, file I/O) in spawn_blocking
-/// to avoid blocking the async runtime and causing RPC timeouts.
-async fn handle_status(id: RequestId, state: &DaemonState) -> Response {
-    let coworkers = collect_coworker_list(state);
-
-    // Get cached PR data from the daemon's periodic polling (every 30s for open PRs,
-    // every 5 minutes for merged PRs). This avoids synchronous gh CLI calls that can
-    // timeout under GitHub API rate limiting.
-    //
-    // During daemon startup (before the first PR poll completes), return empty arrays
-    // rather than stale data. The first open PR poll completes within ~5 seconds, so
-    // this window is brief.
-    let (pull_requests, merged_prs) = {
-        let cache = state.pr_coworker_cache.read().unwrap();
-        if cache.pr_poll_initialized {
-            (cache.open_prs_data.clone(), cache.merged_prs_data.clone())
-        } else {
-            // PR poll hasn't completed yet - return empty arrays during startup
-            (Vec::new(), Vec::new())
-        }
-    };
-
-    // Run blocking file I/O operations in spawn_blocking.
-    // Note: get_all_tasks reads from Claude Code task storage (local filesystem),
-    // not GitHub API, so it's fast and doesn't cause rate limit timeouts.
-    let (tasks, recent_activity) = match tokio::task::spawn_blocking(move || {
-        let tasks = get_all_tasks();
-        let recent_activity = get_recent_channel_activity();
-        (tasks, recent_activity)
-    })
-    .await
-    {
-        Ok(result) => result,
+/// Handle snapshot RPC method — collect and return the full WorldSnapshot.
+async fn handle_snapshot(id: RequestId, state: &DaemonState) -> Response {
+    let default_channel = match state.channel_router.default_channel() {
+        Ok(ch) => ch,
         Err(e) => {
-            error!("spawn_blocking panic in status handler: {}", e);
-            return Response::error(id, RpcError::new(-32603, "Internal error".to_string()));
+            error!("Failed to get default channel for snapshot: {}", e);
+            return Response::error(id, RpcError::new(-32603, e.to_string()));
         }
     };
-
-    let pending_count = tasks
-        .iter()
-        .filter(|t| t.get("status").and_then(|s| s.as_str()) == Some("pending"))
-        .count();
-
-    // Get GitHub API rate limit state
-    let rate_limit = {
-        let ps = state.persistent_state.lock().await;
-        ps.github.rate_limit.clone()
-    };
-
-    Response::success(
-        id,
-        serde_json::json!({
-            "success": true,
-            "daemon_running": true,
-            "active_coworkers": state.coworkers.count(),
-            "max_coworkers": state.max_coworkers,
-            "max_dev_coworkers": state.max_coworkers.saturating_sub(REVIEW_HEADROOM).max(1),
-            "pending_tasks": pending_count,
-            "socket_path": state.socket_path.to_string_lossy(),
-            "coworkers": coworkers,
-            "tasks": tasks,
-            "pull_requests": pull_requests,
-            "merged_prs": merged_prs,
-            "recent_activity": recent_activity,
-            "github_rate_limit": {
-                "graphql": {
-                    "remaining": rate_limit.graphql.remaining,
-                    "limit": rate_limit.graphql.limit,
-                    "used": rate_limit.graphql.used,
-                    "reset": rate_limit.graphql.reset,
-                    "remaining_pct": (rate_limit.graphql.remaining_pct() * 100.0) as u32,
-                },
-                "rest": {
-                    "remaining": rate_limit.core.remaining,
-                    "limit": rate_limit.core.limit,
-                    "used": rate_limit.core.used,
-                    "reset": rate_limit.core.reset,
-                    "remaining_pct": (rate_limit.core.remaining_pct() * 100.0) as u32,
-                },
-                "summary": rate_limit.summary(),
-            },
-        }),
-    )
-}
-
-// REMOVED: get_open_prs() and format_pr_status()
-// These functions made synchronous gh CLI calls on every RPC, causing timeouts under
-// GitHub API rate limiting. Now handle_status uses cached PR data from the daemon's
-// periodic polling (see pr_coworker_cache in daemon/mod.rs and poll_prs_for_issues in
-// daemon/pr.rs). The formatting logic moved to format_pr_status_for_rpc() in pr.rs.
-
-/// Get all tasks from Claude Code task storage with their status.
-fn get_all_tasks() -> Vec<serde_json::Value> {
-    crate::tasks::read_tasks()
-        .into_iter()
-        .map(|task| {
-            let status = match task.status {
-                crate::tasks::TaskStatus::Pending => "pending",
-                crate::tasks::TaskStatus::InProgress => "in_progress",
-                crate::tasks::TaskStatus::Completed => "completed",
-            };
-            serde_json::json!({
-                "id": task.id,
-                "subject": task.subject,
-                "status": status,
-                "assignee": task.owner,
-            })
-        })
-        .collect()
-}
-
-/// Get recent channel activity.
-fn get_recent_channel_activity() -> Vec<serde_json::Value> {
-    // Try to read from the default channel location
-    let channel_file = crate::paths::channel_file_for_repo("default");
-
-    if !channel_file.exists() {
-        return Vec::new();
-    }
-
-    // Read the last few messages from the channel
-    match std::fs::read_to_string(&channel_file) {
-        Ok(content) => {
-            let messages: Vec<serde_json::Value> = content
-                .lines()
-                .filter_map(|line| serde_json::from_str(line).ok())
-                .collect();
-
-            // Get the last 5 messages, most recent last
-            messages
-                .into_iter()
-                .rev()
-                .take(5)
-                .map(|msg| {
-                    serde_json::json!({
-                        "timestamp": msg.get("timestamp")
-                            .and_then(|t| t.as_str())
-                            .map(|t| {
-                                // Format timestamp for display (just time portion)
-                                if t.len() > 11 {
-                                    t[11..16].to_string()
-                                } else {
-                                    t.to_string()
-                                }
-                            })
-                            .unwrap_or_default(),
-                        "from": msg.get("from").and_then(|f| f.as_str()).unwrap_or("unknown"),
-                        "summary": truncate_message(
-                            msg.get("content").and_then(|c| c.as_str()).unwrap_or(""),
-                            60
-                        ),
-                    })
-                })
-                .collect()
-        }
-        Err(_) => Vec::new(),
-    }
-}
-
-// ============================================================================
-// Session attach/detach handlers
-// ============================================================================
-
-/// Parsed attach target from a "type:value" string.
-#[derive(Debug, PartialEq)]
-enum AttachTarget {
-    Name(String),
-    Task(u32),
-    Pr(u64),
-}
-
-/// Parse an attach target string into a typed enum.
-///
-/// Pure function — no state access. Validates format and types.
-fn parse_attach_target(target: &str) -> Result<AttachTarget, String> {
-    if let Some(name) = target.strip_prefix("name:") {
-        if name.is_empty() {
-            return Err("Coworker name cannot be empty".to_string());
-        }
-        return Ok(AttachTarget::Name(name.to_lowercase()));
-    }
-
-    if let Some(id_str) = target.strip_prefix("task:") {
-        let id: u32 = id_str
-            .parse()
-            .map_err(|_| format!("Invalid task ID: {}", id_str))?;
-        return Ok(AttachTarget::Task(id));
-    }
-
-    if let Some(pr_str) = target.strip_prefix("pr:") {
-        let pr_num: u64 = pr_str
-            .parse()
-            .map_err(|_| format!("Invalid PR number: {}", pr_str))?;
-        return Ok(AttachTarget::Pr(pr_num));
-    }
-
-    Err(format!(
-        "Invalid target format: '{}'. Use name:<name>, task:<id>, or pr:<number>",
-        target
-    ))
-}
-
-/// Resolve an attach target to a coworker name using daemon state.
-async fn resolve_attach_target(target: &str, state: &DaemonState) -> Result<String, String> {
-    let parsed = parse_attach_target(target)?;
-
-    match parsed {
-        AttachTarget::Name(name) => Ok(name),
-        AttachTarget::Task(id) => {
-            let id_str = id.to_string();
-            let assignments = state.coworker_task_assignments.lock().unwrap();
-            for (coworker, assignment) in assignments.iter() {
-                if assignment.task_id == id_str {
-                    return Ok(coworker.clone());
-                }
-            }
-            Err(format!("No coworker is assigned to task !{}", id))
-        }
-        AttachTarget::Pr(pr_num) => {
-            // Check reviewer assignments
-            let persistent = state.persistent_state.lock().await;
-            if let Some(reviewer) = persistent.github.get_reviewer(pr_num) {
-                return Ok(reviewer.to_lowercase());
-            }
-            drop(persistent);
-            // Fall back to branch-name-based mapping via coworker list
-            let coworkers = state.coworkers.list();
-            for cw in &coworkers {
-                if cw
-                    .current_task
-                    .as_ref()
-                    .is_some_and(|t| t.contains(&format!("PR #{}", pr_num)))
-                {
-                    return Ok(cw.name.to_lowercase());
-                }
-            }
-            Err(format!("No coworker is working on PR #{}", pr_num))
-        }
-    }
-}
-
-/// Handle session.attach RPC method.
-///
-/// Pauses the headless coworker process and returns session info so the CLI
-/// can create a tmux window with `claude --resume <session-id>`.
-async fn handle_session_attach(id: RequestId, target: &str, state: &DaemonState) -> Response {
-    let name = match resolve_attach_target(target, state).await {
-        Ok(n) => n,
-        Err(e) => return Response::error(id, RpcError::new(-32602, e)),
-    };
-
-    // Verify the coworker is running
-    if state.coworkers.get(&name).is_none() {
-        return Response::error(
+    let snapshot = super::snapshot::collect_world_snapshot(state)
+        .await
+        .with_debug_context(&default_channel);
+    match serde_json::to_value(&snapshot) {
+        Ok(value) => Response::success(id, value),
+        Err(e) => Response::error(
             id,
-            RpcError::new(-32602, format!("Coworker '{}' is not running", name)),
-        );
+            RpcError::new(-32603, format!("Failed to serialize snapshot: {}", e)),
+        ),
     }
-
-    // Guard against double-attach
-    {
-        let attached = state.attached_coworkers.lock().unwrap();
-        if attached.contains(&name.to_lowercase()) {
-            return Response::error(
-                id,
-                RpcError::new(-32602, format!("Coworker '{}' is already attached", name)),
-            );
-        }
-    }
-
-    // Get the session ID from persistent state
-    let session_id = {
-        let persistent = state.persistent_state.lock().await;
-        persistent
-            .headless_sessions
-            .get(&name)
-            .map(|info| info.session_id.clone())
-    };
-
-    let session_id = match session_id {
-        Some(sid) => sid,
-        None => {
-            return Response::error(
-                id,
-                RpcError::new(
-                    -32603,
-                    format!(
-                        "No session ID found for coworker '{}'. \
-                         They may not be running in headless mode.",
-                        name
-                    ),
-                ),
-            );
-        }
-    };
-
-    // Get working directory before shutting down
-    let cwd = state
-        .coworkers
-        .get(&name)
-        .map(|cw| cw.working_dir.clone())
-        .unwrap_or_default();
-
-    // Shut down the headless coworker (kills the process but session persists on disk)
-    state.broadcast_coworker_update(&name, "attaching", None);
-    if let Err(e) = state.coworkers.shutdown(&name) {
-        return Response::error(
-            id,
-            RpcError::new(
-                -32603,
-                format!("Failed to pause coworker '{}': {}", name, e),
-            ),
-        );
-    }
-    // Record stop time to prevent false orphan recovery during the grace period
-    // (see #874). The attached_coworkers set provides the long-term exemption.
-    state.record_coworker_stop_time(&name);
-
-    // Mark as attached so stuck detection and orphan recovery skip this coworker
-    {
-        let mut attached = state.attached_coworkers.lock().unwrap();
-        attached.insert(name.to_lowercase());
-    }
-
-    info!(
-        "Paused headless coworker '{}' for attach (session={})",
-        name, session_id
-    );
-
-    // Post to channel
-    let _ = state
-        .send_and_broadcast_async(&Message::system(format!(
-            "Attached to {} — headless paused, interactive tmux session active",
-            name
-        )))
-        .await;
-
-    Response::success(
-        id,
-        serde_json::json!({
-            "session_id": session_id,
-            "cwd": cwd,
-            "name": name,
-        }),
-    )
-}
-
-/// Handle session.detach RPC method.
-///
-/// Resumes headless execution for a coworker that was previously attached.
-/// Idempotent: if the coworker is already running (e.g., a previous detach
-/// succeeded), returns success without spawning a duplicate.
-async fn handle_session_detach(id: RequestId, name: &str, state: &DaemonState) -> Response {
-    let name = name.to_lowercase();
-
-    // Clear attached state first (idempotent — safe to call even if not attached)
-    {
-        let mut attached = state.attached_coworkers.lock().unwrap();
-        attached.remove(&name);
-    }
-
-    // Idempotency guard: if the coworker is already running, skip re-spawn.
-    // This prevents the race between manual detach and background auto-detach
-    // from spawning duplicate processes.
-    if state.coworkers.get(&name).is_some() {
-        info!("Coworker '{}' already running — detach is a no-op", name);
-        return Response::success(
-            id,
-            serde_json::json!({
-                "success": true,
-                "message": format!("Coworker {} is already running", name),
-            }),
-        );
-    }
-
-    // Get session ID from persistent state
-    let session_id = {
-        let persistent = state.persistent_state.lock().await;
-        persistent
-            .headless_sessions
-            .get(&name)
-            .map(|info| info.session_id.clone())
-    };
-
-    let session_id = match session_id {
-        Some(sid) => sid,
-        None => {
-            return Response::error(
-                id,
-                RpcError::new(
-                    -32603,
-                    format!("No session ID found for coworker '{}' to resume", name),
-                ),
-            );
-        }
-    };
-
-    // Re-spawn the coworker with the resumed session
-    let config = crate::launch::LaunchConfig::coworker(
-        &name,
-        &state.repo_name,
-        crate::launch::SessionMode::ResumeSession(session_id.clone()),
-        Some("You were previously running headless. The Lead attached to your session interactively and has now detached. Continue where you left off — read the channel for any updates.".to_string()),
-    );
-
-    match state.spawn_coworker(&config).await {
-        Ok(()) => {
-            info!(
-                "Resumed headless coworker '{}' after detach (session={})",
-                name, session_id
-            );
-
-            let _ = state
-                .send_and_broadcast_async(&Message::system(format!(
-                    "Detached from {} — headless session resumed",
-                    name
-                )))
-                .await;
-
-            state.broadcast_coworker_update(&name, "running", None);
-
-            Response::success(
-                id,
-                serde_json::json!({
-                    "success": true,
-                    "message": format!("Resumed headless session for {}", name),
-                }),
-            )
-        }
-        Err(e) => {
-            warn!("Failed to resume coworker '{}' after detach: {}", name, e);
-            Response::error(
-                id,
-                RpcError::new(
-                    -32603,
-                    format!("Failed to resume headless session for '{}': {}", name, e),
-                ),
-            )
-        }
-    }
-}
-
-/// Handle session.list RPC method.
-///
-/// Returns a list of headless sessions with their status.
-async fn handle_session_list(id: RequestId, state: &DaemonState) -> Response {
-    let persistent = state.persistent_state.lock().await;
-    let running_coworkers: std::collections::HashSet<String> = state
-        .coworkers
-        .list()
-        .iter()
-        .map(|cw| cw.name.to_lowercase())
-        .collect();
-    let attached = state.attached_coworkers.lock().unwrap().clone();
-
-    let sessions: Vec<serde_json::Value> = persistent
-        .headless_sessions
-        .iter()
-        .map(|(name, info)| {
-            let status = if attached.contains(&name.to_lowercase()) {
-                "attached"
-            } else if running_coworkers.contains(&name.to_lowercase()) {
-                "running"
-            } else {
-                "paused"
-            };
-
-            // Look up task assignment
-            let task = {
-                let assignments = state.coworker_task_assignments.lock().unwrap();
-                assignments.get(name).map(|a| a.task_id.clone())
-            };
-
-            serde_json::json!({
-                "name": name,
-                "session_id": info.session_id,
-                "status": status,
-                "purpose": info.purpose,
-                "last_active": info.last_active.to_rfc3339(),
-                "task": task,
-            })
-        })
-        .collect();
-
-    Response::success(
-        id,
-        serde_json::json!({
-            "success": true,
-            "sessions": sessions,
-        }),
-    )
-}
-
-/// Invoke the clusterer to produce a ClusteringDiff for a new task.
-///
-/// Builds a ClustererRequest with the task ID, subject, description, and current
-/// channel state, then invokes the clusterer headless session. The clusterer
-/// returns a full ClusteringDiff describing channel operations (create, archive,
-/// merge, assign). The clusterer accumulates context across invocations via
-/// session resume.
-///
-/// Returns the ClusteringDiff or an error.
-async fn invoke_clusterer_for_task(
-    task_id: &str,
-    subject: &str,
-    description: &str,
-    state: &DaemonState,
-) -> Result<crate::clustering::ClusteringDiff, String> {
-    use crate::daemon::clusterer::{
-        ChannelInfo, ClustererRequest, CompletedTaskInfo, assign_channel,
-    };
-    use crate::tasks::TaskStatus;
-
-    // Collect channel information: list all channels and their active task counts
-    let base_dir = crate::paths::projects_dir_for_repo(&state.repo_name);
-    let channel_names = crate::channel::Channel::list(&base_dir).unwrap_or_else(|e| {
-        warn!("Failed to list channels for clusterer: {}", e);
-        vec!["midtown".to_string()]
-    });
-
-    // Read all tasks to compute per-channel stats and recent completions
-    let all_tasks = crate::tasks::read_tasks_for_repo(Some(&state.repo_name));
-
-    // Build map of task_id -> channel from persistent state
-    let task_channel_map = {
-        let ps = state.persistent_state.lock().await;
-        ps.task_channel.clone()
-    };
-
-    // Group tasks by channel and collect stats
-    let mut channel_info_map: std::collections::HashMap<String, ChannelInfo> = channel_names
-        .iter()
-        .map(|name| {
-            (
-                name.clone(),
-                ChannelInfo {
-                    name: name.clone(),
-                    active_task_count: 0,
-                    recent_tasks: vec![],
-                },
-            )
-        })
-        .collect();
-
-    // Track recently completed tasks (last 10)
-    let mut recent_completions = vec![];
-
-    for task in &all_tasks {
-        let task_channel = task
-            .channel
-            .as_ref()
-            .or_else(|| task_channel_map.get(&task.id))
-            .map(|s| s.as_str())
-            .unwrap_or("midtown");
-
-        match task.status {
-            TaskStatus::Completed => {
-                // Collect completed tasks for context
-                if recent_completions.len() < 10 {
-                    recent_completions.push(CompletedTaskInfo {
-                        subject: task.subject.clone(),
-                        channel: Some(task_channel.to_string()),
-                    });
-                }
-            }
-            TaskStatus::InProgress | TaskStatus::Pending => {
-                // Count active tasks per channel and track recent subjects
-                if let Some(info) = channel_info_map.get_mut(task_channel) {
-                    info.active_task_count += 1;
-                    if info.recent_tasks.len() < 3 {
-                        info.recent_tasks.push(task.subject.clone());
-                    }
-                }
-            }
-        }
-    }
-
-    let channels: Vec<ChannelInfo> = channel_info_map.into_values().collect();
-
-    let request = ClustererRequest {
-        task_id: task_id.to_string(),
-        task_subject: subject.to_string(),
-        task_description: description.to_string(),
-        channels,
-        recent_completions,
-    };
-
-    // Get working directory (use primary repo path)
-    let cwd = state
-        .all_repo_paths
-        .first()
-        .ok_or("No repo paths configured")?
-        .clone();
-
-    // Lock persistent state to pass to clusterer
-    let mut ps = state.persistent_state.lock().await;
-
-    // Invoke clusterer
-    let diff = assign_channel(request, cwd, &mut ps).await?;
-
-    // Save persistent state with updated session ID
-    if let Err(e) = ps.save_for_repo(&state.repo_name) {
-        warn!("Failed to save clusterer session ID: {}", e);
-    }
-
-    Ok(diff)
 }
 
 // ============================================================================
@@ -2644,38 +1172,8 @@ async fn invoke_clusterer_for_task(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_unescape_shell_artifacts_exclamation() {
-        assert_eq!(
-            unescape_shell_artifacts("Game time\\! Let's go"),
-            "Game time! Let's go"
-        );
-    }
-
-    #[test]
-    fn test_unescape_shell_artifacts_multiple_exclamations() {
-        assert_eq!(
-            unescape_shell_artifacts("Wow\\! Amazing\\! Done\\!"),
-            "Wow! Amazing! Done!"
-        );
-    }
-
-    #[test]
-    fn test_unescape_shell_artifacts_no_escapes() {
-        assert_eq!(
-            unescape_shell_artifacts("Normal message with ! marks"),
-            "Normal message with ! marks"
-        );
-    }
-
-    #[test]
-    fn test_unescape_shell_artifacts_preserves_other_backslashes() {
-        assert_eq!(
-            unescape_shell_artifacts("path\\to\\file and \\!"),
-            "path\\to\\file and !"
-        );
-    }
+    use std::collections::HashMap;
+    use std::time::{Duration, Instant};
 
     #[test]
     fn test_hash_insight_deterministic() {
@@ -2703,92 +1201,8 @@ mod tests {
         assert_eq!(hash1, hash4, "case should be normalized");
     }
 
-    #[test]
-    fn test_extract_review_note_pr_standard_format() {
-        let msg = "@lead [Review Note] PR #708: The new is_ui_chrome() pattern for ctrl+ key hints is heuristic. Please determine if this warrants a follow-up task.";
-        assert_eq!(extract_review_note_pr(msg), Some(708));
-    }
-
-    #[test]
-    fn test_extract_review_note_pr_no_match() {
-        assert_eq!(extract_review_note_pr("@lead some regular message"), None);
-        assert_eq!(extract_review_note_pr("fixed PR #42"), None);
-        assert_eq!(extract_review_note_pr("[Review Note] no PR ref"), None);
-    }
-
-    #[test]
-    fn test_extract_review_note_pr_various_numbers() {
-        assert_eq!(
-            extract_review_note_pr("@lead [Review Note] PR #1: minor issue"),
-            Some(1)
-        );
-        assert_eq!(
-            extract_review_note_pr("@lead [Review Note] PR #9999: edge case"),
-            Some(9999)
-        );
-    }
-
-    // ---- Session attach target parsing tests ----
-
-    #[test]
-    fn test_parse_attach_target_name() {
-        assert_eq!(
-            parse_attach_target("name:park").unwrap(),
-            AttachTarget::Name("park".to_string())
-        );
-        // Names are lowercased
-        assert_eq!(
-            parse_attach_target("name:Park").unwrap(),
-            AttachTarget::Name("park".to_string())
-        );
-    }
-
-    #[test]
-    fn test_parse_attach_target_name_empty() {
-        assert!(parse_attach_target("name:").is_err());
-    }
-
-    #[test]
-    fn test_parse_attach_target_task() {
-        assert_eq!(
-            parse_attach_target("task:42").unwrap(),
-            AttachTarget::Task(42)
-        );
-    }
-
-    #[test]
-    fn test_parse_attach_target_task_invalid() {
-        assert!(parse_attach_target("task:abc").is_err());
-        assert!(parse_attach_target("task:-1").is_err());
-    }
-
-    #[test]
-    fn test_parse_attach_target_pr() {
-        assert_eq!(
-            parse_attach_target("pr:123").unwrap(),
-            AttachTarget::Pr(123)
-        );
-    }
-
-    #[test]
-    fn test_parse_attach_target_pr_invalid() {
-        assert!(parse_attach_target("pr:abc").is_err());
-    }
-
-    #[test]
-    fn test_parse_attach_target_invalid_format() {
-        assert!(parse_attach_target("invalid").is_err());
-        assert!(parse_attach_target("unknown:value").is_err());
-        assert!(parse_attach_target("").is_err());
-    }
-
     // ---- RPC idempotency cache tests ----
 
-    /// Verify that the cache lookup logic correctly skips expired entries.
-    ///
-    /// The cache in `handle_request` checks `now.duration_since(timestamp) < 60s`.
-    /// An entry older than 60 seconds should be treated as a cache miss, allowing
-    /// the request to re-execute (important for retries after transient failures).
     #[test]
     fn test_rpc_cache_ttl_expiration() {
         use crate::rpc::{RequestId, Response};
@@ -2798,11 +1212,9 @@ mod tests {
         let cached_response =
             Response::success(request_id.clone(), serde_json::json!({"task_id": 42}));
 
-        // Insert entry with a timestamp 61 seconds in the past
         let old_timestamp = Instant::now() - Duration::from_secs(61);
         cache.insert(request_id.clone(), (cached_response, old_timestamp));
 
-        // Simulate the cache lookup from handle_request (lines 104-116)
         let now = Instant::now();
         let cache_hit = cache
             .get(&request_id)
@@ -2814,7 +1226,6 @@ mod tests {
         );
     }
 
-    /// Verify that cache entries within TTL are returned as hits.
     #[test]
     fn test_rpc_cache_within_ttl() {
         use crate::rpc::{RequestId, Response};
@@ -2824,7 +1235,6 @@ mod tests {
         let cached_response =
             Response::success(request_id.clone(), serde_json::json!({"task_id": 99}));
 
-        // Insert entry with current timestamp (within TTL)
         cache.insert(request_id.clone(), (cached_response, Instant::now()));
 
         let now = Instant::now();
@@ -2835,15 +1245,12 @@ mod tests {
         assert!(cache_hit.is_some(), "Recent entry should be a cache hit");
     }
 
-    /// Verify that cleanup_rpc_response_cache retains fresh entries and
-    /// removes expired ones — preventing unbounded memory growth.
     #[test]
     fn test_rpc_cache_cleanup_removes_expired_entries() {
         use crate::rpc::{RequestId, Response};
 
         let mut cache: HashMap<RequestId, (Response, Instant)> = HashMap::new();
 
-        // Add 100 expired entries
         let old_timestamp = Instant::now() - Duration::from_secs(120);
         for i in 0..100 {
             let id = RequestId::String(format!("expired-{}", i));
@@ -2851,7 +1258,6 @@ mod tests {
             cache.insert(id, (resp, old_timestamp));
         }
 
-        // Add 3 fresh entries
         let fresh_timestamp = Instant::now();
         for i in 0..3 {
             let id = RequestId::String(format!("fresh-{}", i));
@@ -2861,7 +1267,6 @@ mod tests {
 
         assert_eq!(cache.len(), 103);
 
-        // Simulate the cleanup logic from DaemonState::cleanup_rpc_response_cache
         let now = Instant::now();
         cache.retain(|_, (_, timestamp)| now.duration_since(*timestamp).as_secs() < 60);
 
@@ -2871,7 +1276,6 @@ mod tests {
             "Cleanup should remove all 100 expired entries, keeping 3 fresh ones"
         );
 
-        // Verify only fresh entries remain
         for i in 0..3 {
             let id = RequestId::String(format!("fresh-{}", i));
             assert!(
@@ -2882,11 +1286,6 @@ mod tests {
         }
     }
 
-    /// Verify that only successful responses are cached (error responses are excluded).
-    ///
-    /// This is important because caching errors would prevent retry-on-failure:
-    /// if a request fails due to a transient issue, retrying with the same request ID
-    /// should re-attempt the operation, not return the cached error.
     #[test]
     fn test_rpc_cache_only_caches_success_responses() {
         use crate::rpc::{RequestId, Response, RpcError};
@@ -2900,16 +1299,13 @@ mod tests {
             RpcError::invalid_params(),
         );
 
-        // Reproduce the cache-insertion guard from handle_request (line 547)
         assert!(!success.is_error(), "Success response should not be error");
         assert!(error.is_error(), "Error response should be error");
 
-        // Simulate: only cache non-error responses
         let mut cache: HashMap<RequestId, (Response, Instant)> = HashMap::new();
         let responses = vec![success, error];
 
         for resp in &responses {
-            // This mirrors the guard: `if !response.is_error()`
             if !resp.is_error() {
                 cache.insert(
                     RequestId::String("test".to_string()),
@@ -2921,19 +1317,12 @@ mod tests {
         assert_eq!(cache.len(), 1, "Only success response should be cached");
     }
 
-    /// Verify that sequential numeric request IDs (as generated by the CLI)
-    /// would collide in the cache when coming from separate processes.
-    ///
-    /// This is the regression test for the bug where `midtown task create`
-    /// called twice in quick succession returned the first task's response
-    /// both times, because both CLI processes sent `id: 1`.
     #[test]
     fn test_rpc_cache_numeric_id_collision() {
         use crate::rpc::{RequestId, Response};
 
         let mut cache: HashMap<RequestId, (Response, Instant)> = HashMap::new();
 
-        // First CLI invocation sends id: 1, creates task !100
         let id_from_process_a = RequestId::Number(1);
         let response_a = Response::success(
             id_from_process_a.clone(),
@@ -2941,25 +1330,20 @@ mod tests {
         );
         cache.insert(id_from_process_a.clone(), (response_a, Instant::now()));
 
-        // Second CLI invocation also sends id: 1 (different process, counter restarted)
         let id_from_process_b = RequestId::Number(1);
 
-        // This demonstrates the bug: same numeric ID = cache hit, wrong response
         let now = Instant::now();
         let cache_hit = cache
             .get(&id_from_process_b)
             .filter(|(_, timestamp)| now.duration_since(*timestamp).as_secs() < 60);
 
-        // With numeric IDs, this DOES hit — which is the bug.
-        // The fix is to use unique string IDs (pid-counter) so this can't happen.
         assert!(
             cache_hit.is_some(),
             "Numeric ID collision: same id=1 from different processes hits cache (this is the bug)"
         );
 
-        // After fix: string IDs with PID prefix won't collide
         let id_with_pid_a = RequestId::String("12345-1".to_string());
-        let id_with_pid_b = RequestId::String("12346-1".to_string()); // different PID
+        let id_with_pid_b = RequestId::String("12346-1".to_string());
 
         let response_a2 =
             Response::success(id_with_pid_a.clone(), serde_json::json!({"task_id": 100}));
@@ -2973,174 +1357,5 @@ mod tests {
             cache_hit.is_none(),
             "PID-prefixed string IDs from different processes should NOT collide"
         );
-    }
-
-    #[test]
-    fn test_apply_task_channel_mapping_sets_channel() {
-        let mut map = HashMap::new();
-        let changed = apply_task_channel_mapping(&mut map, "42", Some("auth"), false);
-        assert!(changed);
-        assert_eq!(map.get("42"), Some(&"auth".to_string()));
-    }
-
-    #[test]
-    fn test_apply_task_channel_mapping_overwrites_existing() {
-        let mut map = HashMap::new();
-        map.insert("42".to_string(), "old-channel".to_string());
-        let changed = apply_task_channel_mapping(&mut map, "42", Some("new-channel"), false);
-        assert!(changed);
-        assert_eq!(map.get("42"), Some(&"new-channel".to_string()));
-    }
-
-    #[test]
-    fn test_apply_task_channel_mapping_ignores_none() {
-        let mut map = HashMap::new();
-        map.insert("42".to_string(), "auth".to_string());
-        let changed = apply_task_channel_mapping(&mut map, "42", None, false);
-        assert!(!changed);
-        assert_eq!(map.get("42"), Some(&"auth".to_string()));
-    }
-
-    #[test]
-    fn test_apply_task_channel_mapping_ignores_empty_without_clear() {
-        let mut map = HashMap::new();
-        map.insert("42".to_string(), "auth".to_string());
-        // On create (allow_clear=false), empty string is ignored
-        let changed = apply_task_channel_mapping(&mut map, "42", Some(""), false);
-        assert!(!changed);
-        assert_eq!(map.get("42"), Some(&"auth".to_string()));
-    }
-
-    #[test]
-    fn test_apply_task_channel_mapping_clears_with_empty_on_update() {
-        let mut map = HashMap::new();
-        map.insert("42".to_string(), "auth".to_string());
-        // On update (allow_clear=true), empty string clears the mapping
-        let changed = apply_task_channel_mapping(&mut map, "42", Some(""), true);
-        assert!(changed);
-        assert!(!map.contains_key("42"));
-    }
-
-    #[test]
-    fn test_apply_task_channel_mapping_clear_nonexistent_is_noop() {
-        let mut map = HashMap::new();
-        // Clearing a mapping that doesn't exist returns false (no state modification)
-        let changed = apply_task_channel_mapping(&mut map, "99", Some(""), true);
-        assert!(!changed);
-        assert!(map.is_empty());
-    }
-
-    #[test]
-    fn test_apply_task_channel_mapping_none_on_empty_map() {
-        let mut map: HashMap<String, String> = HashMap::new();
-        let changed = apply_task_channel_mapping(&mut map, "42", None, true);
-        assert!(!changed);
-        assert!(map.is_empty());
-    }
-
-    #[test]
-    fn test_validate_model_format_valid() {
-        assert!(validate_model_format("claude/opus").is_ok());
-        assert!(validate_model_format("claude/sonnet").is_ok());
-        assert!(validate_model_format("claude/haiku").is_ok());
-        assert!(validate_model_format("codex/o3").is_ok());
-        assert!(validate_model_format("codex/o4-mini").is_ok());
-    }
-
-    #[test]
-    fn test_validate_model_format_invalid() {
-        // Missing slash
-        assert!(validate_model_format("claude-opus").is_err());
-        // Multiple slashes
-        assert!(validate_model_format("claude/opus/extra").is_err());
-        // Empty string
-        assert!(validate_model_format("").is_err());
-        // Only slash
-        assert!(validate_model_format("/").is_err());
-        // Empty provider
-        assert!(validate_model_format("/opus").is_err());
-        // Empty model
-        assert!(validate_model_format("claude/").is_err());
-        // Unsupported provider
-        assert!(validate_model_format("unknown/opus").is_err());
-        assert!(validate_model_format("openai/gpt4").is_err());
-        // Whitespace in model or provider
-        assert!(validate_model_format("claude/ opus").is_err());
-        assert!(validate_model_format("claude /opus").is_err());
-        assert!(validate_model_format(" claude/opus").is_err());
-        assert!(validate_model_format("claude/opus ").is_err());
-    }
-
-    #[test]
-    fn test_apply_task_model_mapping_sets_model() {
-        let mut map = HashMap::new();
-        let changed = apply_task_model_mapping(&mut map, "42", Some("claude/opus"), false);
-        assert!(changed.is_ok());
-        assert!(changed.unwrap());
-        assert_eq!(map.get("42"), Some(&"claude/opus".to_string()));
-    }
-
-    #[test]
-    fn test_apply_task_model_mapping_rejects_invalid_format() {
-        let mut map = HashMap::new();
-        let result = apply_task_model_mapping(&mut map, "42", Some("invalid-format"), false);
-        assert!(result.is_err());
-        assert!(map.is_empty());
-    }
-
-    #[test]
-    fn test_apply_task_model_mapping_overwrites_existing() {
-        let mut map = HashMap::new();
-        map.insert("42".to_string(), "claude/opus".to_string());
-        let changed =
-            apply_task_model_mapping(&mut map, "42", Some("claude/sonnet"), false).unwrap();
-        assert!(changed);
-        assert_eq!(map.get("42"), Some(&"claude/sonnet".to_string()));
-    }
-
-    #[test]
-    fn test_apply_task_model_mapping_ignores_none() {
-        let mut map = HashMap::new();
-        map.insert("42".to_string(), "claude/opus".to_string());
-        let changed = apply_task_model_mapping(&mut map, "42", None, false).unwrap();
-        assert!(!changed);
-        assert_eq!(map.get("42"), Some(&"claude/opus".to_string()));
-    }
-
-    #[test]
-    fn test_apply_task_model_mapping_ignores_empty_without_clear() {
-        let mut map = HashMap::new();
-        map.insert("42".to_string(), "claude/opus".to_string());
-        // On create (allow_clear=false), empty string is ignored
-        let changed = apply_task_model_mapping(&mut map, "42", Some(""), false).unwrap();
-        assert!(!changed);
-        assert_eq!(map.get("42"), Some(&"claude/opus".to_string()));
-    }
-
-    #[test]
-    fn test_apply_task_model_mapping_clears_with_empty_on_update() {
-        let mut map = HashMap::new();
-        map.insert("42".to_string(), "claude/opus".to_string());
-        // On update (allow_clear=true), empty string clears the mapping
-        let changed = apply_task_model_mapping(&mut map, "42", Some(""), true).unwrap();
-        assert!(changed);
-        assert!(!map.contains_key("42"));
-    }
-
-    #[test]
-    fn test_apply_task_model_mapping_clear_nonexistent_is_noop() {
-        let mut map = HashMap::new();
-        // Clearing a mapping that doesn't exist returns false (no state modification)
-        let changed = apply_task_model_mapping(&mut map, "99", Some(""), true).unwrap();
-        assert!(!changed);
-        assert!(map.is_empty());
-    }
-
-    #[test]
-    fn test_apply_task_model_mapping_none_on_empty_map() {
-        let mut map: HashMap<String, String> = HashMap::new();
-        let changed = apply_task_model_mapping(&mut map, "42", None, true).unwrap();
-        assert!(!changed);
-        assert!(map.is_empty());
     }
 }

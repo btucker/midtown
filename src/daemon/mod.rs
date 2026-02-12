@@ -18,7 +18,11 @@ pub mod helpers;
 mod pr;
 mod rpc;
 mod rpc_auth;
+mod rpc_channel;
 mod rpc_kanban;
+mod rpc_session;
+mod rpc_status;
+mod rpc_task;
 pub(crate) mod sessions;
 pub(crate) mod snapshot;
 mod specialized;
@@ -2093,7 +2097,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
             } => {
                 let content = &mobile_post.content;
                 let sender = state.user_display_name.as_deref().unwrap_or("user");
-                rpc::handle_channel_post(
+                rpc_channel::handle_channel_post(
                     RequestId::Null,
                     sender,
                     content,
