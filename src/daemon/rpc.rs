@@ -4786,9 +4786,18 @@ mod tests {
             let path = entry.path();
             if path.extension().is_some_and(|e| e == "rs") {
                 let content = std::fs::read_to_string(&path).expect("read file");
+                let mut in_test_module = false;
                 for (line_num, line) in content.lines().enumerate() {
-                    // Skip comments and test code
+                    // Skip comments
                     if line.trim_start().starts_with("//") || line.trim_start().starts_with("///") {
+                        continue;
+                    }
+                    // Track #[cfg(test)] module boundaries
+                    if line.contains("#[cfg(test)]") {
+                        in_test_module = true;
+                        continue;
+                    }
+                    if in_test_module {
                         continue;
                     }
                     let needle = format!(".{}()", "blocking_lock");
