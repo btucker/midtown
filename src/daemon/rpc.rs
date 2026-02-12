@@ -255,6 +255,17 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
             Response::success(request.id, serde_json::json!({"status": "draining"}))
         }
 
+        "daemon.exec-restart" => {
+            info!("Exec-restart requested via RPC — daemon will re-exec after shutdown");
+            state
+                .restart_requested
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            // Trigger the shutdown broadcast so the main event loop exits.
+            // The run() function checks restart_requested and returns ExecRestart.
+            let _ = state.shutdown_tx.send(());
+            Response::success(request.id, serde_json::json!({"status": "restarting"}))
+        }
+
         "daemon.check-pending" => {
             info!("Check-pending triggered via RPC");
             let snap = snapshot::collect_world_snapshot(state).await;
