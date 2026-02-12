@@ -1102,10 +1102,26 @@ pub(super) fn check_for_stale_worktrees(
             age.num_hours()
         );
 
-        // Schedule cleanup
+        // Schedule cleanup with channel notification
+        let message = if let Some(ref task_id) = assignment.task_id {
+            format!(
+                "🧹 Cleaned up stale worktree {} (task !{}, completed {}h ago)",
+                assignment.worktree_id,
+                task_id,
+                age.num_hours()
+            )
+        } else {
+            format!(
+                "🧹 Cleaned up stale worktree {} (completed {}h ago)",
+                assignment.worktree_id,
+                age.num_hours()
+            )
+        };
+
         effects.push(Effect::CleanupStaleWorktree {
             worktree_id: assignment.worktree_id.clone(),
         });
+        effects.push(Effect::PostSystemMessage { message });
     }
 
     if !effects.is_empty() {
@@ -1501,5 +1517,56 @@ mod tests {
 
         // Should not schedule another nudge
         assert!(effects.is_empty(), "Should not schedule duplicate nudge");
+    }
+
+    #[test]
+    fn check_for_stale_worktrees_generates_cleanup_and_channel_message() {
+        use std::collections::HashSet;
+
+        let mut registry = crate::worktree_registry::WorktreeRegistry::new();
+        // Stale worktree with task ID, completed 48 hours ago
+        registry
+            .assign_worktree(crate::worktree_registry::WorktreeAssignment {
+                worktree_id: "task-99-fix-bug".to_string(),
+                branch_name: "task-99-fix-bug".to_string(),
+                task_id: Some("99".to_string()),
+                current_coworker: None,
+                pr_number: Some(200),
+                created_at: chrono::Utc::now() - chrono::Duration::hours(72),
+                completed_at: Some(chrono::Utc::now() - chrono::Duration::hours(48)),
+            })
+            .unwrap();
+        // Non-stale worktree (within retention period)
+        registry
+            .assign_worktree(crate::worktree_registry::WorktreeAssignment {
+                worktree_id: "task-100-add-test".to_string(),
+                branch_name: "task-100-add-test".to_string(),
+                task_id: Some("100".to_string()),
+                current_coworker: None,
+                pr_number: None,
+                created_at: chrono::Utc::now() - chrono::Duration::hours(2),
+                completed_at: Some(chrono::Utc::now() - chrono::Duration::hours(1)),
+            })
+            .unwrap();
+
+        let active_coworkers = HashSet::new();
+        let retention = chrono::Duration::hours(24);
+
+        let effects = check_for_stale_worktrees(&registry, &active_coworkers, retention);
+
+        // Only the 48h-old worktree should be cleaned up (2 effects: cleanup + message)
+        assert_eq!(
+            effects.len(),
+            2,
+            "should generate 1 cleanup + 1 channel message effect"
+        );
+        assert!(
+            matches!(&effects[0], Effect::CleanupStaleWorktree { worktree_id } if worktree_id == "task-99-fix-bug"),
+            "first effect should be CleanupStaleWorktree"
+        );
+        assert!(
+            matches!(&effects[1], Effect::PostSystemMessage { message } if message.contains("task-99-fix-bug") && message.contains("task !99") && message.contains('🧹')),
+            "second effect should be PostSystemMessage with task ID"
+        );
     }
 }

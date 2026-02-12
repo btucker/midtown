@@ -2992,10 +2992,23 @@ pub(super) fn collect_merged_pr_cleanup_effects(snap: &WorldSnapshot) -> Vec<Eff
                 "PR #{} merged, scheduling worktree cleanup for branch {}",
                 pr_num, branch
             );
+
+            // Build a descriptive channel message with task ID when available
+            let assignment = snap.worktree_registry.get_by_pr(pr_num);
+            let message = if let Some(task_id) = assignment.and_then(|a| a.task_id.as_deref()) {
+                format!(
+                    "🧹 Cleaned up worktree for PR #{} (task !{})",
+                    pr_num, task_id
+                )
+            } else {
+                format!("🧹 Cleaned up worktree for PR #{}", pr_num)
+            };
+
             effects.push(Effect::CleanupMergedWorktree {
                 pr_number: pr_num,
                 branch: branch.clone(),
             });
+            effects.push(Effect::PostSystemMessage { message });
         }
     }
 
@@ -4079,7 +4092,7 @@ mod tests {
     }
 
     #[test]
-    fn collect_merged_pr_cleanup_effects_generates_cleanup_for_merged_prs() {
+    fn collect_merged_pr_cleanup_effects_generates_cleanup_and_channel_message() {
         use std::collections::{HashMap, HashSet};
 
         // Build a minimal snapshot with merged PRs and their branch mappings
@@ -4088,9 +4101,36 @@ mod tests {
         merged_pr_branches.insert(42, "task-42-fix-auth".to_string());
         merged_pr_branches.insert(123, "review-pr-123".to_string());
 
+        // Register worktrees so the PostSystemMessage can include task IDs
+        let mut worktree_registry = crate::worktree_registry::WorktreeRegistry::new();
+        worktree_registry
+            .assign_worktree(crate::worktree_registry::WorktreeAssignment {
+                worktree_id: "task-42-fix-auth".to_string(),
+                branch_name: "task-42-fix-auth".to_string(),
+                task_id: Some("42".to_string()),
+                current_coworker: None,
+                pr_number: Some(42),
+                created_at: chrono::Utc::now(),
+                completed_at: None,
+            })
+            .unwrap();
+        // PR #123 has no task_id (e.g., a review worktree)
+        worktree_registry
+            .assign_worktree(crate::worktree_registry::WorktreeAssignment {
+                worktree_id: "review-pr-123".to_string(),
+                branch_name: "review-pr-123".to_string(),
+                task_id: None,
+                current_coworker: None,
+                pr_number: Some(123),
+                created_at: chrono::Utc::now(),
+                completed_at: None,
+            })
+            .unwrap();
+
         let snap = crate::daemon::snapshot::WorldSnapshot {
             merged_pr_numbers,
             merged_pr_branches,
+            worktree_registry,
             // All other fields use defaults from test helpers
             active_coworkers: vec![],
             running_coworkers: vec![],
@@ -4136,7 +4176,6 @@ mod tests {
             tasks_with_worktrees: HashSet::new(),
             task_worktree_map: HashMap::new(),
             worktree_branch_owners: HashMap::new(),
-            worktree_registry: crate::worktree_registry::WorktreeRegistry::default(),
             is_at_coworker_limit: false,
             is_at_dev_limit: false,
             now_utc: chrono::Utc::now(),
@@ -4146,8 +4185,14 @@ mod tests {
 
         let effects = collect_merged_pr_cleanup_effects(&snap);
 
-        // Should generate cleanup effects for both merged PRs
-        assert_eq!(effects.len(), 2, "should generate 2 cleanup effects");
+        // Each merged PR should generate a CleanupMergedWorktree + PostSystemMessage pair
+        assert_eq!(
+            effects.len(),
+            4,
+            "should generate 2 cleanup + 2 channel effects"
+        );
+
+        // Verify cleanup effects
         assert!(
             effects.iter().any(|e| {
                 if let Effect::CleanupMergedWorktree { pr_number, branch } = e {
@@ -4167,6 +4212,34 @@ mod tests {
                 }
             }),
             "should cleanup PR #123"
+        );
+
+        // Verify channel notification effects
+        // PR #42 has a task_id, so message should include it
+        assert!(
+            effects.iter().any(|e| {
+                if let Effect::PostSystemMessage { message } = e {
+                    message.contains("PR #42")
+                        && message.contains("task !42")
+                        && message.contains('🧹')
+                } else {
+                    false
+                }
+            }),
+            "should post channel message for PR #42 with task ID"
+        );
+        // PR #123 has no task_id
+        assert!(
+            effects.iter().any(|e| {
+                if let Effect::PostSystemMessage { message } = e {
+                    message.contains("PR #123")
+                        && !message.contains("task !")
+                        && message.contains('🧹')
+                } else {
+                    false
+                }
+            }),
+            "should post channel message for PR #123 without task ID"
         );
     }
 
