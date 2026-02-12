@@ -10,7 +10,7 @@
   let isCreating = false
 
   // Track which channels have their task lists expanded (default: collapsed)
-  let expandedChannels = new Set()
+  let expandedChannels = $state(new Set())
 
   async function selectChannel(channelName) {
     activeChannel.set(channelName)
@@ -105,8 +105,6 @@
     } else {
       expandedChannels.add(channelName)
     }
-    // Trigger reactivity
-    expandedChannels = expandedChannels
   }
 </script>
 
