@@ -170,7 +170,10 @@ PR_BRANCH=$(gh pr view <number> --json headRefName --jq '.headRefName')
 # Delete your accidentally created branch (if you pushed it)
 git push origin --delete accidentally-created-branch
 
-# Force-push your work to the correct PR branch
+# Verify your HEAD contains the PR's work before force-pushing
+git merge-base --is-ancestor origin/$PR_BRANCH HEAD && echo "✓ Safe to force-push" || echo "⚠️  WARNING: branches are unrelated!"
+
+# Only if safe — force-push your work to the correct PR branch
 git push --force origin HEAD:$PR_BRANCH
 ```
 
@@ -256,7 +259,7 @@ A code review is **not complete** until you have:
 ### Responding to PR Review Feedback
 When your PR receives review comments with suggested changes:
 
-**CRITICAL: ALWAYS use the existing PR branch. NEVER create a new branch.**
+**IMPORTANT: ALWAYS use the existing PR branch. NEVER create a new branch.**
 
 Creating a new branch when a PR already exists leaves orphaned remote branches that confuse the daemon and waste GitHub resources. When addressing review feedback:
 
@@ -272,7 +275,10 @@ Creating a new branch when a PR already exists leaves orphaned remote branches t
      # Get the PR's branch name first
      PR_BRANCH=$(gh pr view <number> --json headRefName --jq '.headRefName')
 
-     # Push to that branch (force-push if you rebased)
+     # Verify your HEAD contains the PR's work before force-pushing
+     git merge-base --is-ancestor origin/$PR_BRANCH HEAD && echo "✓ Safe to force-push" || echo "⚠️  WARNING: branches are unrelated!"
+
+     # Only if safe — push to that branch (force-push if you rebased)
      git push --force origin HEAD:$PR_BRANCH
      ```
    - **NEVER** run `git checkout -b` to create a new branch when a PR exists
@@ -294,7 +300,7 @@ Creating a new branch when a PR already exists leaves orphaned remote branches t
      ```
   3. **Re-implement the feedback** on the new branch (don't rebase or cherry-pick from the old branch — main already has the original changes)
   4. **Push and create a new PR** with context: "Follow-up to PR #N — addresses review feedback"
-  5. **Delete the orphaned remote branch**:
+  5. **Delete the old remote branch** (it's no longer needed since the PR was merged):
      ```bash
      git push origin --delete <old-branch-name>
      ```
