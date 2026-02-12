@@ -1287,6 +1287,13 @@ pub fn handle_restart(force: bool) -> Result<Response, String> {
         std::thread::sleep(poll_interval);
     }
 
+    // Guard: if Phase 1 timed out without the daemon going down, the exec-restart
+    // failed silently. Without this check, Phase 2 would immediately succeed
+    // (daemon_is_running() returns true) and we'd report false success.
+    if daemon_is_running() {
+        return Err("Restart failed: daemon did not shut down after exec-restart RPC".to_string());
+    }
+
     // Phase 2: Wait for daemon to come back up (socket becomes available)
     let up_timeout = std::time::Duration::from_secs(15);
     let up_start = std::time::Instant::now();

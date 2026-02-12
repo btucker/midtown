@@ -4574,4 +4574,68 @@ mod tests {
             "Should NOT display reviewer's internal task ID"
         );
     }
+
+    /// Verify handle_task_metadata uses async .lock().await (not blocking_lock()).
+    ///
+    /// Before the fix, handle_task_metadata used blocking_lock() on a tokio::Mutex
+    /// inside an async context, causing "Cannot block the current thread" panics.
+    /// This test confirms the function works correctly in a tokio runtime.
+    #[tokio::test]
+    async fn test_handle_task_metadata_uses_async_lock() {
+        use crate::daemon::DaemonState;
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().expect("temp dir");
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(temp_dir.path())
+            .output()
+            .expect("git init");
+        std::process::Command::new("git")
+            .args(["config", "user.email", "test@example.com"])
+            .current_dir(temp_dir.path())
+            .output()
+            .expect("git config");
+        std::process::Command::new("git")
+            .args(["config", "user.name", "Test"])
+            .current_dir(temp_dir.path())
+            .output()
+            .expect("git config");
+        std::process::Command::new("git")
+            .args(["commit", "--allow-empty", "-m", "init"])
+            .current_dir(temp_dir.path())
+            .output()
+            .expect("git commit");
+
+        let base_dir = temp_dir.path().to_path_buf();
+        let wm = crate::worktree::WorktreeManager::new(base_dir.clone()).expect("worktree manager");
+        let cm = crate::coworker::CoworkerManager::new("test-session", wm);
+        let channel_router = crate::ChannelRouter::new(&base_dir, "midtown");
+        std::mem::forget(temp_dir);
+
+        let (shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(1);
+        let state = DaemonState::new(
+            "/tmp/test-metadata.sock".into(),
+            cm,
+            "test-repo".to_string(),
+            vec![base_dir],
+            channel_router,
+            None,
+            10,
+            None,
+            "main".to_string(),
+            shutdown_tx,
+        )
+        .expect("daemon state");
+
+        // This would panic with "Cannot block the current thread from within
+        // a runtime" if handle_task_metadata still used blocking_lock().
+        let response = handle_task_metadata(RequestId::Number(1), "nonexistent-task", &state).await;
+
+        // Should return success with null channel/model for nonexistent task
+        assert!(response.error.is_none(), "Expected success response");
+        let result = response.result.expect("Expected result in response");
+        assert!(result["channel"].is_null());
+        assert!(result["model"].is_null());
+    }
 }
