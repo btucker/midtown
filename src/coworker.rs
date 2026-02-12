@@ -102,6 +102,10 @@ pub struct Coworker {
     /// Auth provider backing this coworker session.
     #[serde(default = "default_provider")]
     pub provider: AuthProvider,
+    /// Auth profile name for this coworker session.
+    /// Used for multi-account usage tracking.
+    #[serde(default = "default_profile")]
+    pub profile: String,
 }
 
 fn default_slot_id() -> String {
@@ -114,6 +118,10 @@ fn default_model() -> String {
 
 fn default_provider() -> AuthProvider {
     AuthProvider::Claude
+}
+
+fn default_profile() -> String {
+    crate::auth::DEFAULT_PROFILE.to_string()
 }
 
 impl Coworker {
@@ -143,6 +151,7 @@ impl Coworker {
             session_id: None,               // Will be set when coworker registers
             model: default_model(),         // Default to sonnet for recovered sessions
             provider: default_provider(),
+            profile: default_profile(),
         }
     }
 }
@@ -1185,6 +1194,7 @@ impl CoworkerManager {
     ///
     /// Returns an error if the name was taken by a concurrent spawn (an entry
     /// exists with a non-None session_id).
+    #[allow(clippy::too_many_arguments)] // All params are necessary for coworker registration
     pub fn register(
         &self,
         slot_id: &str,
@@ -1193,6 +1203,7 @@ impl CoworkerManager {
         session_id: Option<String>,
         model: String,
         provider: AuthProvider,
+        profile: String,
     ) -> crate::Result<()> {
         let mut coworkers = self.coworkers.write().unwrap();
 
@@ -1230,6 +1241,7 @@ impl CoworkerManager {
             session_id,
             model,
             provider,
+            profile,
         };
         coworkers.insert(slot_id.to_string(), coworker);
 
@@ -1257,6 +1269,15 @@ impl CoworkerManager {
 
         let slot_id = uuid::Uuid::new_v4().to_string();
 
+        // Extract profile name from auth_profile_dir
+        let profile = config
+            .auth_profile_dir
+            .as_ref()
+            .and_then(|p| p.file_name())
+            .and_then(|n| n.to_str())
+            .unwrap_or(crate::auth::DEFAULT_PROFILE)
+            .to_string();
+
         // Register with TOCTTOU race check
         if let Err(e) = self.register(
             &slot_id,
@@ -1264,7 +1285,8 @@ impl CoworkerManager {
             working_dir,
             Some(session_id),
             config.model.clone(),
-            AuthProvider::Claude,
+            config.auth_provider,
+            profile,
         ) {
             // Race condition: another spawn beat us to it. Clean up the tmux
             // window we just created and return an error.
@@ -1413,6 +1435,7 @@ impl CoworkerManager {
                 session_id: None,               // PROVISIONAL - signals register() can update
                 model: default_model(),         // PROVISIONAL - unknown for recovered sessions
                 provider: default_provider(),
+                profile: default_profile(),
             };
             coworkers.insert(slot_id, coworker);
             tracing::info!(
@@ -1589,6 +1612,7 @@ mod tests {
                     session_id: None,
                     model: "sonnet".to_string(),
                     provider: default_provider(),
+                    profile: default_profile(),
                 },
             );
         }
@@ -1623,6 +1647,7 @@ mod tests {
                         session_id: None,
                         model: "sonnet".to_string(),
                         provider: default_provider(),
+                        profile: default_profile(),
                     },
                 );
             }
@@ -1655,6 +1680,7 @@ mod tests {
                         session_id: None,
                         model: "sonnet".to_string(),
                         provider: default_provider(),
+                        profile: default_profile(),
                     },
                 );
             }
@@ -1705,6 +1731,7 @@ mod tests {
                     session_id: None,
                     model: "sonnet".to_string(),
                     provider: default_provider(),
+                    profile: default_profile(),
                 },
             );
         }
@@ -1982,6 +2009,7 @@ mod tests {
                     session_id: None,
                     model: "sonnet".to_string(),
                     provider: default_provider(),
+                    profile: default_profile(),
                 },
             );
             let slot_id = uuid::Uuid::new_v4().to_string();
@@ -1997,6 +2025,7 @@ mod tests {
                     session_id: None,
                     model: "sonnet".to_string(),
                     provider: default_provider(),
+                    profile: default_profile(),
                 },
             );
             let slot_id = uuid::Uuid::new_v4().to_string();
@@ -2012,6 +2041,7 @@ mod tests {
                     session_id: None,
                     model: "sonnet".to_string(),
                     provider: default_provider(),
+                    profile: default_profile(),
                 },
             );
         }
@@ -2048,6 +2078,7 @@ mod tests {
                     session_id: None,
                     model: "sonnet".to_string(),
                     provider: default_provider(),
+                    profile: default_profile(),
                 },
             );
         }
@@ -2100,6 +2131,7 @@ mod tests {
                     session_id: None,
                     model: "sonnet".to_string(),
                     provider: default_provider(),
+                    profile: default_profile(),
                 },
             );
         }
@@ -2214,6 +2246,7 @@ mod tests {
                     session_id: None,
                     model: "sonnet".to_string(),
                     provider: default_provider(),
+                    profile: default_profile(),
                 },
             );
         }
@@ -2278,6 +2311,7 @@ mod tests {
             Some("session-id-123".to_string()),
             "sonnet".to_string(),
             default_provider(),
+            default_profile(),
         );
 
         assert!(
@@ -2329,6 +2363,7 @@ mod tests {
                         .to_string(),
                 ),
                 provider: Some(crate::auth::AuthProvider::Claude),
+                profile: None,
             },
         );
         persistent_sessions.insert(
@@ -2349,6 +2384,7 @@ mod tests {
                         .to_string(),
                 ),
                 provider: Some(crate::auth::AuthProvider::Claude),
+                profile: None,
             },
         );
 

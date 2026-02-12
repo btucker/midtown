@@ -7,6 +7,8 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use crate::auth::AuthProvider;
+
 /// Usage data from the Anthropic API.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UsageData {
@@ -20,6 +22,16 @@ pub struct UsageData {
     pub week_resets: Option<DateTime<Utc>>,
     /// Account email from OAuth credentials (if available)
     pub account_email: Option<String>,
+    /// Auth provider for this usage data
+    #[serde(default)]
+    pub provider: AuthProvider,
+    /// Profile name for this usage data
+    #[serde(default = "default_profile_name")]
+    pub profile_name: String,
+}
+
+fn default_profile_name() -> String {
+    crate::auth::DEFAULT_PROFILE.to_string()
 }
 
 /// Raw API response shape.
@@ -114,7 +126,12 @@ pub fn get_oauth_credentials() -> Option<OAuthCredentials> {
 }
 
 /// Fetch usage data from the Anthropic API.
-pub fn fetch_usage(token: &str, account_email: Option<String>) -> Option<UsageData> {
+pub fn fetch_usage(
+    token: &str,
+    account_email: Option<String>,
+    provider: AuthProvider,
+    profile_name: String,
+) -> Option<UsageData> {
     // Use blocking reqwest since this runs on a blocking thread pool
     let client = reqwest::blocking::Client::new();
     let resp = client
@@ -161,6 +178,8 @@ pub fn fetch_usage(token: &str, account_email: Option<String>) -> Option<UsageDa
         week_util,
         week_resets,
         account_email,
+        provider,
+        profile_name,
     })
 }
 
@@ -196,12 +215,12 @@ fn write_usage_cache(profile: &str, data: &UsageData) {
 ///
 /// Returns cached data if fresh, otherwise fetches from the Anthropic API
 /// and updates the cache.
-pub fn fetch_usage_for_profile(profile: &str) -> Option<UsageData> {
+pub fn fetch_usage_for_profile(profile: &str, provider: AuthProvider) -> Option<UsageData> {
     if let Some(cached) = read_usage_cache(profile) {
         return Some(cached);
     }
     let creds = get_oauth_credentials_for_profile(profile)?;
-    let data = fetch_usage(&creds.token, creds.email)?;
+    let data = fetch_usage(&creds.token, creds.email, provider, profile.to_string())?;
     write_usage_cache(profile, &data);
     Some(data)
 }
@@ -212,7 +231,29 @@ pub fn fetch_usage_for_profile(profile: &str) -> Option<UsageData> {
 /// Returns `None` if credentials are unavailable or the API call fails.
 pub fn fetch_usage_with_credentials() -> Option<UsageData> {
     let creds = get_oauth_credentials()?;
-    fetch_usage(&creds.token, creds.email)
+    let current = crate::auth::current_profile();
+    fetch_usage(&creds.token, creds.email, AuthProvider::Claude, current)
+}
+
+/// Fetch usage data for multiple provider/profile combinations.
+///
+/// Each entry in the input is (provider, profile_name). Returns a Vec of
+/// UsageData, one per profile that successfully fetched. Profiles without
+/// credentials or with API failures are skipped (no entry in the result).
+///
+/// For non-Claude providers (e.g., z.ai), this currently returns None since
+/// they don't have usage APIs yet.
+pub fn fetch_multi_usage(profiles: &[(AuthProvider, String)]) -> Vec<UsageData> {
+    profiles
+        .iter()
+        .filter_map(|(provider, profile)| {
+            // Only Claude supports usage API currently
+            if *provider != AuthProvider::Claude {
+                return None;
+            }
+            fetch_usage_for_profile(profile, *provider)
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -235,12 +276,16 @@ mod tests {
                     .with_timezone(&Utc),
             ),
             account_email: Some("test@example.com".to_string()),
+            provider: AuthProvider::Claude,
+            profile_name: "test-profile".to_string(),
         };
 
         let json = serde_json::to_string(&data).unwrap();
         assert!(json.contains("43.2"));
         assert!(json.contains("52.1"));
         assert!(json.contains("test@example.com"));
+        assert!(json.contains("claude"));
+        assert!(json.contains("test-profile"));
     }
 
     /// Test that fetch_usage correctly parses API responses where resets_at is null.
@@ -322,6 +367,8 @@ mod tests {
                     .with_timezone(&Utc),
             ),
             account_email: Some("test@example.com".to_string()),
+            provider: AuthProvider::Claude,
+            profile_name: "test-profile".to_string(),
         };
 
         let json = serde_json::to_string(&data).unwrap();
@@ -331,5 +378,7 @@ mod tests {
         assert!(roundtrip.session_resets.is_none());
         assert_eq!(roundtrip.week_util, 12.5);
         assert!(roundtrip.week_resets.is_some());
+        assert_eq!(roundtrip.provider, AuthProvider::Claude);
+        assert_eq!(roundtrip.profile_name, "test-profile");
     }
 }

@@ -264,6 +264,12 @@ pub async fn recover_headless_sessions(
             config.auth_provider = provider;
         }
 
+        // Restore auth profile directory if persisted
+        if let Some(ref profile) = session_info.profile {
+            config.auth_profile_dir =
+                Some(crate::auth::profile_dir_for(config.auth_provider, profile));
+        }
+
         // Create resume effect
         effects.push(Effect::ResumeCoworker {
             name: name.clone(),

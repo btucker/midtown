@@ -353,6 +353,7 @@ mod tests {
                 session_id: None,
                 model: "sonnet".to_string(),
                 provider: crate::auth::AuthProvider::Claude,
+                profile: "default".to_string(),
             },
             crate::coworker::Coworker {
                 slot_id: "2".to_string(),
@@ -364,6 +365,7 @@ mod tests {
                 session_id: None,
                 model: "gpt-5-codex".to_string(),
                 provider: crate::auth::AuthProvider::Codex,
+                profile: "default".to_string(),
             },
         ];
 
@@ -388,6 +390,7 @@ mod tests {
             session_id: None,
             model: "opus".to_string(),
             provider: crate::auth::AuthProvider::Claude,
+            profile: "default".to_string(),
         };
 
         let config = build_coworker_relaunch_config(&coworker, "midtown");

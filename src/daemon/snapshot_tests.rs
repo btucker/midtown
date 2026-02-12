@@ -284,6 +284,7 @@ fn test_sessions_for_name() {
                 session_id: Some("session-aaa".to_string()),
                 model: "sonnet".to_string(),
                 provider: crate::auth::AuthProvider::Claude,
+                profile: crate::auth::DEFAULT_PROFILE.to_string(),
             },
             Coworker {
                 slot_id: uuid::Uuid::new_v4().to_string(),
@@ -295,6 +296,7 @@ fn test_sessions_for_name() {
                 session_id: Some("session-bbb".to_string()),
                 model: "sonnet".to_string(),
                 provider: crate::auth::AuthProvider::Claude,
+                profile: crate::auth::DEFAULT_PROFILE.to_string(),
             },
             Coworker {
                 slot_id: uuid::Uuid::new_v4().to_string(),
@@ -306,6 +308,7 @@ fn test_sessions_for_name() {
                 session_id: Some("session-ccc".to_string()),
                 model: "sonnet".to_string(),
                 provider: crate::auth::AuthProvider::Claude,
+                profile: crate::auth::DEFAULT_PROFILE.to_string(),
             },
         ],
         running_coworkers: vec![],

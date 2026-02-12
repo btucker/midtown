@@ -251,10 +251,10 @@ pub struct App {
     /// Mermaid diagram sources visible in the current render pass (indexed from 1 in the UI).
     /// Populated during each draw call; used to look up which diagram to open fullscreen.
     pub diagram_sources: Vec<String>,
-    /// Current usage data (session + weekly utilization)
-    pub usage_data: Option<UsageData>,
+    /// Current usage data (session + weekly utilization) for all active accounts
+    pub usage_data: Vec<UsageData>,
     /// Receiver for async usage data from background thread
-    usage_receiver: Option<Receiver<Option<UsageData>>>,
+    usage_receiver: Option<Receiver<Vec<UsageData>>>,
     /// Last time usage data was refreshed
     usage_last_refresh: Instant,
     /// Which pane currently has focus
@@ -358,7 +358,7 @@ impl App {
             mouse_scroll_accumulator: 0,
             mermaid_cache: MermaidCache::new(),
             diagram_sources: Vec::new(),
-            usage_data: None,
+            usage_data: Vec::new(),
             usage_receiver: None,
             usage_last_refresh: Instant::now() - USAGE_REFRESH_INTERVAL, // Force initial refresh
             focused_pane: FocusedPane::Board,
@@ -510,7 +510,7 @@ impl App {
         if let Some(ref receiver) = self.usage_receiver {
             match receiver.try_recv() {
                 Ok(data) => {
-                    if data.is_some() {
+                    if !data.is_empty() {
                         self.usage_data = data;
                         // Only advance refresh timer on success
                         self.usage_last_refresh = Instant::now();
@@ -537,8 +537,11 @@ impl App {
             let (tx, rx) = mpsc::channel();
             self.usage_receiver = Some(rx);
             thread::spawn(move || {
-                let result = usage::get_oauth_credentials()
-                    .and_then(|creds| usage::fetch_usage(&creds.token, creds.email));
+                // For now, just fetch for the current profile
+                // TODO: Integrate with daemon RPC to get active profiles
+                let result = usage::fetch_usage_with_credentials()
+                    .map(|data| vec![data])
+                    .unwrap_or_default();
                 let _ = tx.send(result);
             });
         }
@@ -2156,7 +2159,7 @@ pub(super) mod tests {
             mouse_scroll_accumulator: 0,
             mermaid_cache: MermaidCache::new(),
             diagram_sources: Vec::new(),
-            usage_data: None,
+            usage_data: Vec::new(),
             usage_receiver: None,
             usage_last_refresh: Instant::now(),
             focused_pane: FocusedPane::Board,
