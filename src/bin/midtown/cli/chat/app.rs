@@ -110,6 +110,8 @@ pub struct KanbanTask {
     pub modified_at: Option<DateTime<Utc>>,
     /// Optional channel assignment for routing coworker messages
     pub channel: Option<String>,
+    /// Task IDs this task is blocked by
+    pub blocked_by: Vec<String>,
 }
 
 /// Task status for kanban columns
@@ -1388,6 +1390,17 @@ fn fetch_tasks() -> Vec<KanbanTask> {
                 .and_then(|v| v.as_str())
                 .map(String::from);
 
+            // Read blocked_by array
+            let blocked_by = task_data
+                .get("blockedBy")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default();
+
             if !id.is_empty() {
                 tasks.push(KanbanTask {
                     id,
@@ -1396,6 +1409,7 @@ fn fetch_tasks() -> Vec<KanbanTask> {
                     status,
                     modified_at,
                     channel,
+                    blocked_by,
                 });
             }
         }
@@ -2230,6 +2244,7 @@ pub(super) mod tests {
             status: TaskStatus::InProgress,
             modified_at: None,
             channel: None,
+            blocked_by: vec![],
         };
         let cloned = task.clone();
         assert_eq!(cloned.id, "1");
@@ -2249,6 +2264,7 @@ pub(super) mod tests {
                     status: TaskStatus::Pending,
                     modified_at: None,
                     channel: None,
+                    blocked_by: vec![],
                 },
                 KanbanTask {
                     id: "2".to_string(),
@@ -2257,6 +2273,7 @@ pub(super) mod tests {
                     status: TaskStatus::InProgress,
                     modified_at: None,
                     channel: None,
+                    blocked_by: vec![],
                 },
                 KanbanTask {
                     id: "3".to_string(),
@@ -2265,6 +2282,7 @@ pub(super) mod tests {
                     status: TaskStatus::Completed,
                     modified_at: None,
                     channel: None,
+                    blocked_by: vec![],
                 },
             ],
             ..test_app()
@@ -2812,6 +2830,7 @@ pub(super) mod tests {
                     status: TaskStatus::Pending,
                     modified_at: None,
                     channel: Some("midtown".to_string()),
+                    blocked_by: vec![],
                 },
                 KanbanTask {
                     id: "2".to_string(),
@@ -2820,6 +2839,7 @@ pub(super) mod tests {
                     status: TaskStatus::InProgress,
                     modified_at: None,
                     channel: Some("midtown".to_string()),
+                    blocked_by: vec![],
                 },
                 KanbanTask {
                     id: "3".to_string(),
@@ -2828,6 +2848,7 @@ pub(super) mod tests {
                     status: TaskStatus::Pending,
                     modified_at: None,
                     channel: Some("features".to_string()),
+                    blocked_by: vec![],
                 },
             ],
             ..test_app()
@@ -2878,6 +2899,7 @@ pub(super) mod tests {
                     status: TaskStatus::Pending,
                     modified_at: None,
                     channel: Some("midtown".to_string()),
+                    blocked_by: vec![],
                 },
                 KanbanTask {
                     id: "2".to_string(),
@@ -2886,6 +2908,7 @@ pub(super) mod tests {
                     status: TaskStatus::Pending,
                     modified_at: None,
                     channel: Some("features".to_string()),
+                    blocked_by: vec![],
                 },
             ],
             ..test_app()
