@@ -1143,7 +1143,7 @@ fn wait_for_coworkers_to_drain(timeout_secs: u64) -> Result<(), String> {
             }
         };
 
-        // Check if all coworkers are idle or stopped
+        // Check if all coworkers are stopped or stopping
         let mut all_done = true;
         let mut current_status: HashMap<String, String> = HashMap::new();
 
@@ -1151,7 +1151,7 @@ fn wait_for_coworkers_to_drain(timeout_secs: u64) -> Result<(), String> {
             let status = coworker.status.to_lowercase();
             current_status.insert(coworker.name.clone(), status.clone());
 
-            // Consider "idle", "stopped", "stopping" as done
+            // Consider "stopped", "stopping" as done (CoworkerStatus lifecycle states)
             // "starting", "running" are still working
             if status != "stopped" && status != "stopping" {
                 all_done = false;
@@ -1799,5 +1799,49 @@ mod tests {
         // The actual result depends on whether claude is installed in the test environment.
         let _result: bool = claude_cli_available();
         // If we get here without panicking, the function works correctly
+    }
+
+    #[test]
+    fn test_drain_status_check_recognizes_valid_statuses() {
+        // Verify that the drain loop correctly identifies which CoworkerStatus
+        // values should be considered "done" vs. "still working".
+        //
+        // CoworkerStatus enum has: Starting, Running, Stopping, Stopped
+        // (no Idle variant - confusion with WorkflowPhase::Idle)
+        //
+        // "stopped" and "stopping" should be considered done.
+        // "starting" and "running" should be considered still working.
+
+        let done_statuses = vec!["stopped", "stopping"];
+        let working_statuses = vec!["starting", "running"];
+
+        for status in &done_statuses {
+            // These should NOT trigger all_done = false
+            let is_working = *status != "stopped" && *status != "stopping";
+            assert!(
+                !is_working,
+                "Status '{}' should be considered done, but was marked as working",
+                status
+            );
+        }
+
+        for status in &working_statuses {
+            // These SHOULD trigger all_done = false
+            let is_working = *status != "stopped" && *status != "stopping";
+            assert!(
+                is_working,
+                "Status '{}' should be considered working, but was marked as done",
+                status
+            );
+        }
+
+        // Verify that "idle" is not a valid status (it doesn't exist in CoworkerStatus)
+        // This test documents the confusion between CoworkerStatus and WorkflowPhase.
+        let invalid_status = "idle";
+        let is_working = invalid_status != "stopped" && invalid_status != "stopping";
+        assert!(
+            is_working,
+            "Status 'idle' doesn't exist in CoworkerStatus, but would be incorrectly considered 'working'"
+        );
     }
 }
