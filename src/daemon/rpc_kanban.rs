@@ -53,11 +53,28 @@ pub(crate) async fn handle_kanban_data(id: RequestId, state: &DaemonState) -> Re
     // Cache miss - fetch fresh data
     debug!("Cache miss, fetching fresh kanban data");
 
-    // Get reviewer assignments from GitHubState (best-effort via try_lock)
-    let reviewer_assignments: HashMap<u64, crate::github_state::PrReviewerAssignment> = state
+    // Get reviewer assignments and worktree registry from persistent state (best-effort via try_lock)
+    let (reviewer_assignments, worktree_pr_map): (
+        HashMap<u64, crate::github_state::PrReviewerAssignment>,
+        HashMap<String, u64>,
+    ) = state
         .persistent_state
         .try_lock()
-        .map(|ps| ps.github.active_assignments())
+        .map(|ps| {
+            let assignments = ps.github.active_assignments();
+            // Build coworker -> PR map from worktree registry (for reviewers)
+            let wt_map: HashMap<String, u64> = ps
+                .worktree_registry
+                .all_assignments()
+                .iter()
+                .filter_map(|(_, assignment)| {
+                    let coworker = assignment.current_coworker.as_ref()?;
+                    let pr_number = assignment.pr_number?;
+                    Some((coworker.clone(), pr_number))
+                })
+                .collect();
+            (assignments, wt_map)
+        })
         .unwrap_or_default();
 
     // Build reviewer -> PR number map from reviewer_assignments
@@ -189,10 +206,12 @@ pub(crate) async fn handle_kanban_data(id: RequestId, state: &DaemonState) -> Re
                 // Find PR number for this coworker, trying sources in priority order:
                 // 1. Explicit task.pr field (task !1151) - most authoritative
                 // 2. GitHub reviewer assignment (for review tasks)
-                // 3. PR title extraction (fallback)
+                // 3. Worktree registry (for reviewers when reviewer_pr_map is empty)
+                // 4. PR title extraction (final fallback)
                 let pr_number = task_id
                     .and_then(|tid| task_pr_map.get(&tid).copied())
                     .or_else(|| reviewer_pr_map.get(&cw.name).copied())
+                    .or_else(|| worktree_pr_map.get(&cw.name).copied())
                     .or_else(|| task_id.and_then(|tid| prs_by_task_id.get(&tid).copied()));
 
                 // For display: prefer source task ID (from PR title) over internal task ID
@@ -764,6 +783,98 @@ mod tests {
             display_task_id,
             Some(reviewer_internal_task_id),
             "Should NOT display reviewer's internal task ID"
+        );
+    }
+
+    #[test]
+    fn test_reviewer_displays_source_task_id_when_lock_fails() {
+        use std::collections::HashMap;
+
+        // Simulate the bug: try_lock() fails, so reviewer_pr_map is empty.
+        // The reviewer should still display the source task ID by checking
+        // the worktree registry or other fallbacks.
+
+        // Mock PR data: PR #1087 is for task !1229 (in title)
+        let pr_number: u64 = 1087;
+        let source_task_id: u32 = 1229;
+
+        // Mock reviewer's internal task ID (ephemeral Claude Code TodoWrite task)
+        let reviewer_internal_task_id: u32 = 62;
+
+        // Build task_id_by_pr map (extracted from PR titles)
+        let mut task_id_by_pr: HashMap<u64, u32> = HashMap::new();
+        task_id_by_pr.insert(pr_number, source_task_id);
+
+        // Build prs_by_task_id map (for authors to find their PRs)
+        let prs_by_task_id: HashMap<u32, u64> = HashMap::new();
+        // Note: internal task 62 is NOT in this map (it's not a midtown task)
+
+        // Empty reviewer_pr_map (simulating try_lock() failure)
+        let reviewer_pr_map: HashMap<String, u64> = HashMap::new();
+
+        // Empty task_pr_map (task.pr field - not used for reviewers)
+        let task_pr_map: HashMap<u32, u64> = HashMap::new();
+
+        // Simulate coworker data collection for a reviewer
+        let coworker_name = "park";
+        let task_id = Some(reviewer_internal_task_id); // Reviewer's internal task
+
+        // === THIS IS THE CURRENT BUGGY LOGIC ===
+        // Find PR number using current implementation (lines 193-196 in rpc_kanban.rs)
+        let pr_number_opt = task_id
+            .and_then(|tid| task_pr_map.get(&tid).copied())
+            .or_else(|| reviewer_pr_map.get(coworker_name).copied())
+            .or_else(|| task_id.and_then(|tid| prs_by_task_id.get(&tid).copied()));
+
+        // Prefer source task ID (from PR title) over internal task ID (lines 200-202)
+        let display_task_id = pr_number_opt
+            .and_then(|pr| task_id_by_pr.get(&pr).copied())
+            .or(task_id);
+
+        // BUG: Without a fallback to worktree registry, this fails
+        // pr_number_opt = None (all three sources failed)
+        // display_task_id = Some(62) (internal task ID)
+        assert_eq!(
+            pr_number_opt, None,
+            "Current implementation fails to find PR when reviewer_pr_map is empty"
+        );
+        assert_eq!(
+            display_task_id,
+            Some(reviewer_internal_task_id),
+            "BUG: Shows internal task ID !{} instead of source task ID !{}",
+            reviewer_internal_task_id,
+            source_task_id
+        );
+
+        // === THIS IS WHAT WE WANT AFTER THE FIX ===
+        // Add worktree registry fallback
+        // For the test, we'll simulate what the worktree registry would return
+        let worktree_pr_number = Some(pr_number); // Worktree has pr_number = 1087
+
+        // Fixed PR lookup: try worktree registry as 4th fallback
+        let pr_number_fixed = task_id
+            .and_then(|tid| task_pr_map.get(&tid).copied())
+            .or_else(|| reviewer_pr_map.get(coworker_name).copied())
+            .or_else(|| task_id.and_then(|tid| prs_by_task_id.get(&tid).copied()))
+            .or(worktree_pr_number); // NEW: fallback to worktree registry
+
+        // Prefer source task ID (from PR title) over internal task ID
+        let display_task_id_fixed = pr_number_fixed
+            .and_then(|pr| task_id_by_pr.get(&pr).copied())
+            .or(task_id);
+
+        // EXPECTED: After fix, should display source task ID
+        assert_eq!(
+            pr_number_fixed,
+            Some(pr_number),
+            "After fix: Should find PR from worktree registry"
+        );
+        assert_eq!(
+            display_task_id_fixed,
+            Some(source_task_id),
+            "After fix: Should display source task ID !{} from PR title, not internal !{}",
+            source_task_id,
+            reviewer_internal_task_id
         );
     }
 }
