@@ -252,39 +252,31 @@ pub(super) fn detect_abandoned_pr_tasks(
                 // This prevents resetting tasks when a duplicate PR is closed but a sibling
                 // PR for the same task was already merged.
                 let work_already_landed = {
-                    // 1. Check if task status is completed
-                    let task_completed = snap
-                        .all_tasks
-                        .iter()
-                        .find(|t| t.id == *task_id)
+                    // Find the task once and reuse it
+                    let task = snap.all_tasks.iter().find(|t| t.id == *task_id);
+
+                    // Check if task status is completed
+                    let task_completed = task
                         .map(|t| matches!(t.status, crate::tasks::TaskStatus::Completed))
                         .unwrap_or(false);
 
-                    if task_completed {
-                        true
-                    } else {
-                        // 2. Check if any other PR associated with this task was merged
-                        let has_merged_sibling =
-                            snap.pr_task_associations
-                                .iter()
-                                .any(|(other_pr, other_task_id)| {
-                                    other_task_id == task_id
-                                        && other_pr != pr_number
-                                        && snap.merged_pr_numbers.contains(other_pr)
-                                });
+                    // Check if any other PR associated with this task was merged
+                    let has_merged_sibling =
+                        snap.pr_task_associations
+                            .iter()
+                            .any(|(other_pr, other_task_id)| {
+                                other_task_id == task_id
+                                    && other_pr != pr_number
+                                    && snap.merged_pr_numbers.contains(other_pr)
+                            });
 
-                        if has_merged_sibling {
-                            true
-                        } else {
-                            // 3. Check if task.pr field points to a merged PR
-                            snap.all_tasks
-                                .iter()
-                                .find(|t| t.id == *task_id)
-                                .and_then(|t| t.pr)
-                                .map(|pr| snap.merged_pr_numbers.contains(&pr))
-                                .unwrap_or(false)
-                        }
-                    }
+                    // Check if task.pr field points to a merged PR
+                    let task_pr_merged = task
+                        .and_then(|t| t.pr)
+                        .map(|pr| snap.merged_pr_numbers.contains(&pr))
+                        .unwrap_or(false);
+
+                    task_completed || has_merged_sibling || task_pr_merged
                 };
 
                 if !work_already_landed {
@@ -4758,7 +4750,7 @@ mod tests {
             repo_name: "test-repo".to_string(),
         };
 
-        // Only PR #968 is open (merged), PR #999 is closed
+        // Both PRs are closed (PR #968 is merged, PR #999 is closed without merge)
         let open_pr_numbers = vec![];
 
         let effects = detect_abandoned_pr_tasks(&snap, &open_pr_numbers, "test-repo");
