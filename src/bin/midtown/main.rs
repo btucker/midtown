@@ -565,12 +565,7 @@ fn main() {
         let cmd = command.clone().unwrap_or(AuthCommand::List);
         let result = if let Some(provider_arg) = provider {
             // Explicit provider specified: use single-provider handling
-            if !matches!(cmd, AuthCommand::List) {
-                cli::handle_auth(&cmd, (*provider_arg).into())
-            } else {
-                // For list command with explicit provider, show just that provider
-                cli::handle_auth(&cmd, (*provider_arg).into())
-            }
+            cli::handle_auth(&cmd, (*provider_arg).into())
         } else {
             // No provider specified
             match cmd {
@@ -583,8 +578,8 @@ fn main() {
                     cli::handle_auth_login_with_prompt(&cmd)
                 }
                 _ => {
-                    // Other commands require explicit --provider
-                    Err("The --provider flag is required for this command. Use --provider claude, --provider codex, or --provider zai.".to_string())
+                    // For switch/remove, default to "claude" for backward compatibility
+                    cli::handle_auth(&cmd, AuthProviderArg::Claude.into())
                 }
             }
         };

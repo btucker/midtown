@@ -325,17 +325,22 @@ When Midtown launches a session, it sets provider-specific env vars:
 
 | Command | Description |
 |---------|-------------|
-| `midtown auth list` | List profiles for the default provider (`claude`). |
-| `midtown auth --provider codex list` | List profiles for a specific provider. |
-| `midtown auth --all-providers list` | Show profile status for all supported providers. |
-| `midtown auth --provider <provider> login <email>` | Create/re-authenticate a profile for a provider. |
+| `midtown auth list` | Show profile status for all supported providers (default behavior). |
+| `midtown auth --provider <provider> list` | List profiles for a specific provider. |
+| `midtown auth login <email>` | Create/re-authenticate a profile (prompts for provider selection). |
+| `midtown auth --provider <provider> login <email>` | Create/re-authenticate a profile for a specific provider. |
 | `midtown auth --provider zai login <email> --key <api-key>` | Create z.ai profile non-interactively (for scripts/CI). |
-| `midtown auth --provider <provider> switch <profile> [--project]` | Switch active profile (global by default; use `--project` for current repo only). |
-| `midtown auth --provider <provider> remove <profile>` | Remove a profile for that provider. |
+| `midtown auth switch <profile> [--project]` | Switch active claude profile (global by default; use `--project` for current repo only). |
+| `midtown auth --provider <provider> switch <profile> [--project]` | Switch active profile for a specific provider. |
+| `midtown auth remove <profile>` | Remove a claude profile (defaults to claude provider). |
+| `midtown auth --provider <provider> remove <profile>` | Remove a profile for a specific provider. |
 
 ### Example Workflow
 
 ```bash
+# Create/login profile (prompts for provider selection)
+midtown auth login work@example.com
+
 # Create/login Claude work profile (interactive OAuth flow)
 midtown auth --provider claude login work@example.com
 
@@ -348,17 +353,20 @@ midtown auth --provider zai login work@example.com
 # Create/login z.ai profile (non-interactive - for scripts/CI)
 midtown auth --provider zai login work@example.com --key sk-ant-api03-...
 
-# Show both providers
-midtown auth --all-providers list
-
-# List only Claude profiles
+# Show all providers (default behavior)
 midtown auth list
 
-# Switch Claude profile globally (default)
-midtown auth --provider claude switch work@example.com
+# List only Claude profiles
+midtown auth --provider claude list
 
-# Switch Codex profile for current project only
-midtown auth --provider codex switch work@example.com --project
+# Switch Claude profile globally (default)
+midtown auth switch work@example.com
+
+# Switch Claude profile for current project only
+midtown auth switch work@example.com --project
+
+# Switch Codex profile globally
+midtown auth --provider codex switch work@example.com
 ```
 
 ## How It Works

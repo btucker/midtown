@@ -145,7 +145,7 @@ pub fn handle_auth(
     auth::handle(cmd, provider)
 }
 
-/// Handle `midtown auth list --all-providers`.
+/// Handle `midtown auth list` (default behavior shows all providers).
 pub fn handle_auth_list_all_providers() -> Result<Response, String> {
     auth::handle_list_all_providers()
 }
