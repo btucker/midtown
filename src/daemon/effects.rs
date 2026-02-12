@@ -1318,23 +1318,28 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 }
             }
             Effect::ArchiveChannel { name } => {
-                // Archive the channel by renaming to .archived.jsonl
+                // Archive the channel by using Channel::archive()
                 let base_dir = crate::paths::projects_dir_for_repo(&state.repo_name);
-                let channel_path = base_dir.join(format!("{}.jsonl", name));
-                let archived_path = base_dir.join(format!("{}.archived.jsonl", name));
 
-                if let Err(e) = std::fs::rename(&channel_path, &archived_path) {
-                    warn!("Failed to archive channel '{}': {}", name, e);
-                } else {
-                    info!("Archived channel '{}'", name);
+                match crate::channel::Channel::new(&base_dir, &name) {
+                    Ok(channel) => {
+                        if let Err(e) = channel.archive() {
+                            warn!("Failed to archive channel '{}': {}", name, e);
+                        } else {
+                            info!("Archived channel '{}'", name);
 
-                    // Post archive message to main channel
-                    let msg = Message::text(
-                        "midtown",
-                        format!("📦 Archived channel '{}' (work complete)", name),
-                    );
-                    if let Err(e) = state.send_and_broadcast_async(&msg).await {
-                        warn!("Failed to post archive message: {}", e);
+                            // Post archive message to main channel
+                            let msg = Message::text(
+                                "midtown",
+                                format!("📦 Archived channel '{}' (work complete)", name),
+                            );
+                            if let Err(e) = state.send_and_broadcast_async(&msg).await {
+                                warn!("Failed to post archive message: {}", e);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        warn!("Failed to open channel '{}' for archiving: {}", name, e);
                     }
                 }
             }
@@ -1398,10 +1403,8 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     warn!("Failed to post merge notice: {}", e);
                 }
 
-                // Archive the source channel
-                let from_path = base_dir.join(format!("{}.jsonl", from));
-                let archived_path = base_dir.join(format!("{}.archived.jsonl", from));
-                if let Err(e) = std::fs::rename(&from_path, &archived_path) {
+                // Archive the source channel using Channel::archive()
+                if let Err(e) = from_channel.archive() {
                     warn!(
                         "Failed to archive source channel '{}' after merge: {}",
                         from, e
