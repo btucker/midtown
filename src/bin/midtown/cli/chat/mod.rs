@@ -1162,4 +1162,59 @@ mod tests {
         assert_eq!(app.autocomplete.trigger_type, Some('@'));
         assert_eq!(app.autocomplete.trigger_start_pos, 0);
     }
+
+    #[test]
+    fn test_autocomplete_maintains_dropdown_when_typing_more_chars() {
+        use app::{CoworkerInfo, FocusedPane};
+        let mut app = test_app();
+        app.focused_pane = FocusedPane::InputBar;
+
+        // Populate test coworkers including "madison"
+        app.coworkers = vec![
+            CoworkerInfo {
+                name: "madison".to_string(),
+                task_id: Some(42),
+                phase: Some("dev".to_string()),
+                pr_number: None,
+                health: "green".to_string(),
+            },
+            CoworkerInfo {
+                name: "park".to_string(),
+                task_id: Some(43),
+                phase: Some("PR".to_string()),
+                pr_number: Some(123),
+                health: "green".to_string(),
+            },
+        ];
+
+        // Type "@m" - autocomplete should appear
+        for ch in "@m".chars() {
+            auto_focus_and_insert_char(&mut app, ch);
+            app.detect_autocomplete_trigger();
+        }
+        assert!(
+            app.autocomplete.show,
+            "Autocomplete should show after typing '@m'"
+        );
+        assert_eq!(app.autocomplete.trigger_type, Some('@'));
+        assert_eq!(app.autocomplete.query, "m");
+
+        // Type "a" to make it "@ma" - autocomplete should still be visible
+        auto_focus_and_insert_char(&mut app, 'a');
+        app.detect_autocomplete_trigger();
+        assert!(
+            app.autocomplete.show,
+            "Autocomplete should still show after typing '@ma'"
+        );
+        assert_eq!(app.autocomplete.query, "ma");
+
+        // Type "d" to make it "@mad" - autocomplete should STILL be visible
+        auto_focus_and_insert_char(&mut app, 'd');
+        app.detect_autocomplete_trigger();
+        assert!(
+            app.autocomplete.show,
+            "Autocomplete should still show after typing '@mad' (this was the bug)"
+        );
+        assert_eq!(app.autocomplete.query, "mad");
+    }
 }

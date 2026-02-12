@@ -1200,9 +1200,6 @@ impl App {
 
     /// Get @mention autocomplete items (coworkers + lead)
     fn get_mention_items(&self, query: &str) -> Vec<AutocompleteItem> {
-        use crate::cli::response::Response;
-        use crate::client::DaemonClient;
-
         let mut items = Vec::new();
 
         // Add "lead" first
@@ -1217,25 +1214,30 @@ impl App {
         if self.test_mode {
             for cw in &self.coworkers {
                 if cw.name.to_lowercase().contains(query) {
+                    // Look up current task from the tasks cache
+                    let current_task = self
+                        .current_tasks_cache
+                        .get(&cw.name.to_lowercase())
+                        .cloned();
                     items.push(AutocompleteItem {
                         value: format!("@{}", cw.name),
-                        description: None,
+                        description: current_task,
                     });
                 }
             }
         } else {
-            // Try to get coworkers from daemon
-            if let Ok(client) = DaemonClient::connect()
-                && let Ok(Response::Status(status)) = client.status()
-                && let Some(ref full_status) = status.full_status
-            {
-                for cw in &full_status.coworkers {
-                    if cw.name.to_lowercase().contains(query) {
-                        items.push(AutocompleteItem {
-                            value: format!("@{}", cw.name),
-                            description: cw.current_task.clone(),
-                        });
-                    }
+            // Add coworkers from cached list (populated from daemon status)
+            for cw in &self.coworkers {
+                if cw.name.to_lowercase().contains(query) {
+                    // Look up current task from the tasks cache
+                    let current_task = self
+                        .current_tasks_cache
+                        .get(&cw.name.to_lowercase())
+                        .cloned();
+                    items.push(AutocompleteItem {
+                        value: format!("@{}", cw.name),
+                        description: current_task,
+                    });
                 }
             }
         }
