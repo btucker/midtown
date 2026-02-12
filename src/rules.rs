@@ -1925,6 +1925,14 @@ mod tests {
     }
 
     impl OrphanCtx {
+        /// Start with a single task owned by `owner`.
+        fn task(id: &str, subject: &str, owner: &str) -> Self {
+            Self {
+                tasks: vec![(id.to_string(), subject.to_string(), owner.to_string())],
+                ..Default::default()
+            }
+        }
+
         fn tasks(mut self, tasks: Vec<(String, String, String)>) -> Self {
             self.tasks = tasks;
             self
@@ -1977,8 +1985,7 @@ mod tests {
 
     #[test]
     fn orphan_recovery_finds_orphan() {
-        let result = OrphanCtx::default()
-            .tasks(vec![task("1", "Fix bug", "york")])
+        let result = OrphanCtx::task("1", "Fix bug", "york")
             .active(&["amsterdam"])
             .run();
         assert_eq!(
@@ -1993,8 +2000,7 @@ mod tests {
 
     #[test]
     fn orphan_recovery_skips_active_owner() {
-        let result = OrphanCtx::default()
-            .tasks(vec![task("1", "Fix bug", "york")])
+        let result = OrphanCtx::task("1", "Fix bug", "york")
             .active(&["york"])
             .run();
         assert!(result.is_none());
@@ -2002,8 +2008,7 @@ mod tests {
 
     #[test]
     fn orphan_recovery_skips_at_dev_limit() {
-        let result = OrphanCtx::default()
-            .tasks(vec![task("1", "Fix bug", "york")])
+        let result = OrphanCtx::task("1", "Fix bug", "york")
             .active(&["amsterdam"])
             .at_dev_limit()
             .run();
@@ -2012,8 +2017,7 @@ mod tests {
 
     #[test]
     fn orphan_recovery_skips_lead_owner() {
-        let result = OrphanCtx::default()
-            .tasks(vec![task("1", "Fix bug", "lead")])
+        let result = OrphanCtx::task("1", "Fix bug", "lead")
             .active(&["amsterdam"])
             .run();
         assert!(result.is_none());
@@ -2034,8 +2038,7 @@ mod tests {
     #[test]
     fn orphan_recovery_skips_invalid_coworker_name() {
         // Bug: task with invalid owner "fix" (not an avenue name) should be skipped
-        let result = OrphanCtx::default()
-            .tasks(vec![task("42", "Fix bug", "fix")])
+        let result = OrphanCtx::task("42", "Fix bug", "fix")
             .active(&["amsterdam"])
             .run();
         assert!(result.is_none());
@@ -2043,8 +2046,7 @@ mod tests {
 
     #[test]
     fn orphan_recovery_handles_uppercase_owner() {
-        let result = OrphanCtx::default()
-            .tasks(vec![task("1", "Fix bug", "YORK")])
+        let result = OrphanCtx::task("1", "Fix bug", "YORK")
             .active(&["amsterdam"])
             .run();
         assert!(result.is_some());
@@ -2054,8 +2056,7 @@ mod tests {
     #[test]
     fn orphan_recovery_skips_coworker_awaiting_review() {
         // Bug: coworker opened a PR with green CI and is awaiting review.
-        let result = OrphanCtx::default()
-            .tasks(vec![task("789", "Add usage bars", "amsterdam")])
+        let result = OrphanCtx::task("789", "Add usage bars", "amsterdam")
             .open_prs(&["amsterdam"])
             .recently_stopped(&["amsterdam"])
             .run();
@@ -2067,8 +2068,7 @@ mod tests {
 
     #[test]
     fn orphan_recovery_recovers_coworker_with_review_feedback() {
-        let result = OrphanCtx::default()
-            .tasks(vec![task("789", "Add usage bars", "amsterdam")])
+        let result = OrphanCtx::task("789", "Add usage bars", "amsterdam")
             .open_prs(&["amsterdam"])
             .review_feedback(&["amsterdam"])
             .run();
@@ -2079,8 +2079,7 @@ mod tests {
     #[test]
     fn orphan_recovery_skips_coworker_with_failed_ci_and_open_pr() {
         // CI failures are handled by webhook/PR poll, not orphan recovery.
-        let result = OrphanCtx::default()
-            .tasks(vec![task("789", "Add usage bars", "amsterdam")])
+        let result = OrphanCtx::task("789", "Add usage bars", "amsterdam")
             .open_prs(&["amsterdam"])
             .recently_stopped(&["amsterdam"])
             .run();
@@ -2092,9 +2091,7 @@ mod tests {
 
     #[test]
     fn orphan_recovery_recovers_coworker_without_pr() {
-        let result = OrphanCtx::default()
-            .tasks(vec![task("789", "Add usage bars", "amsterdam")])
-            .run();
+        let result = OrphanCtx::task("789", "Add usage bars", "amsterdam").run();
         assert!(result.is_some());
         assert_eq!(result.unwrap().task_id, "789");
     }
@@ -2103,8 +2100,7 @@ mod tests {
     fn orphan_recovery_skips_coworker_with_open_pr_before_ci_cached() {
         // Bug: lexington recovery loop (task !810) — orphan check fires before
         // PR poll has cached CI status.
-        let result = OrphanCtx::default()
-            .tasks(vec![task("810", "Fix auth endpoint", "lexington")])
+        let result = OrphanCtx::task("810", "Fix auth endpoint", "lexington")
             .open_prs(&["lexington"])
             .recently_stopped(&["lexington"])
             .run();
@@ -2135,8 +2131,7 @@ mod tests {
     fn orphan_recovery_skips_recently_stopped_coworker() {
         // Bug: coworker completes work, goes idle, gets shut down. Task still
         // in_progress. Grace period prevents false recovery.
-        let result = OrphanCtx::default()
-            .tasks(vec![task("832", "Review feedback", "york")])
+        let result = OrphanCtx::task("832", "Review feedback", "york")
             .recently_stopped(&["york"])
             .run();
         assert!(
@@ -2147,9 +2142,7 @@ mod tests {
 
     #[test]
     fn orphan_recovery_recovers_after_grace_period() {
-        let result = OrphanCtx::default()
-            .tasks(vec![task("832", "Review feedback", "york")])
-            .run();
+        let result = OrphanCtx::task("832", "Review feedback", "york").run();
         assert!(
             result.is_some(),
             "Should recover coworker after grace period expires"
@@ -2160,8 +2153,7 @@ mod tests {
     /// Regression test for #874: RPC idle handler false orphan recovery.
     #[test]
     fn orphan_recovery_skips_coworker_that_just_reported_idle() {
-        let result = OrphanCtx::default()
-            .tasks(vec![task("861", "Review PR #705", "madison")])
+        let result = OrphanCtx::task("861", "Review PR #705", "madison")
             .recently_stopped(&["madison"])
             .run();
         assert!(
@@ -2173,9 +2165,7 @@ mod tests {
     /// Regression test for #874: verify false recovery WOULD occur without stop time.
     #[test]
     fn orphan_recovery_false_positive_without_stop_time() {
-        let result = OrphanCtx::default()
-            .tasks(vec![task("861", "Review PR #705", "madison")])
-            .run();
+        let result = OrphanCtx::task("861", "Review PR #705", "madison").run();
         assert!(
             result.is_some(),
             "Without stop time recording, orphan recovery falsely triggers (the bug)"
@@ -2548,8 +2538,7 @@ mod tests {
 
     #[test]
     fn orphan_recovery_skips_attached_coworkers() {
-        let result = OrphanCtx::default()
-            .tasks(vec![task("1", "Fix bug", "york")])
+        let result = OrphanCtx::task("1", "Fix bug", "york")
             .active(&["amsterdam"])
             .attached(&["york"])
             .run();
@@ -2563,8 +2552,7 @@ mod tests {
     fn orphan_recovery_skips_killed_coworker_with_open_pr() {
         // Killed coworker with open PR — work is done, task should be auto-completed
         // by PR management pathway, not orphan recovery.
-        let result = OrphanCtx::default()
-            .tasks(vec![task("952", "Fix PR handling", "broadway")])
+        let result = OrphanCtx::task("952", "Fix PR handling", "broadway")
             .open_prs(&["broadway"])
             .run();
         assert!(
@@ -2575,8 +2563,7 @@ mod tests {
 
     #[test]
     fn orphan_recovery_skips_recently_stopped_coworker_awaiting_review() {
-        let result = OrphanCtx::default()
-            .tasks(vec![task("952", "Fix PR handling", "broadway")])
+        let result = OrphanCtx::task("952", "Fix PR handling", "broadway")
             .open_prs(&["broadway"])
             .recently_stopped(&["broadway"])
             .run();
@@ -2591,12 +2578,7 @@ mod tests {
         // Regression test for task !1011: amsterdam opens PR #810, goes idle,
         // grace period expires → no longer in recently_stopped. Without the
         // open-PR check, orphan recovery fires → infinite loop.
-        let result = OrphanCtx::default()
-            .tasks(vec![task(
-                "1008",
-                "Add web UI channel switching",
-                "amsterdam",
-            )])
+        let result = OrphanCtx::task("1008", "Add web UI channel switching", "amsterdam")
             .open_prs(&["amsterdam"])
             .run();
         assert!(

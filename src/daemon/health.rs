@@ -212,9 +212,7 @@ pub(super) fn determine_lead_working(
 /// Also enforces a minimum lifetime check - coworkers must be alive for at least
 /// 5 minutes before they can be sent on a break. This prevents spawn storms where
 /// coworkers are rapidly sent on breaks.
-pub(super) async fn check_and_shutdown_idle_coworkers(
-    snap: &snapshot::WorldSnapshot,
-) -> Vec<Effect> {
+pub(super) fn check_and_shutdown_idle_coworkers(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
     if snap.active_coworkers.is_empty() {
         return vec![];
     }
