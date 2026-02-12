@@ -2,7 +2,7 @@
 import { test, expect } from '@playwright/test'
 import { MOCK_STATUS, mockAllRoutes } from './helpers.js'
 
-/** Custom status with madison coworker for autocomplete testing. */
+/** Custom status with madison and mercer coworkers for prefix-based autocomplete testing. */
 const AUTOCOMPLETE_STATUS = {
   ...MOCK_STATUS,
   coworkers: [
@@ -12,6 +12,12 @@ const AUTOCOMPLETE_STATUS = {
       status: 'active',
       current_task: 'Fix autocomplete bug',
       started_at: '2025-01-15T09:15:00Z',
+    },
+    {
+      name: 'mercer',
+      status: 'active',
+      current_task: 'Review PR #42',
+      started_at: '2025-01-15T10:00:00Z',
     },
   ],
 }
@@ -60,15 +66,15 @@ test.describe('Autocomplete', () => {
     const textarea = page.locator('textarea[placeholder*="Message to"]')
     await textarea.click()
 
-    // Type '@m' - should show multiple results (madison, amsterdam, etc.)
+    // Type '@m' - with prefix matching, should show madison and mercer (both start with 'm')
     await textarea.type('@m', { delay: 50 })
     await page.waitForSelector('.autocomplete-dropdown', { timeout: 1000 })
 
     let items = page.locator('.autocomplete-item')
     const initialCount = await items.count()
-    expect(initialCount).toBeGreaterThanOrEqual(2) // At least madison and amsterdam
+    expect(initialCount).toBeGreaterThanOrEqual(2) // At least madison and mercer
 
-    // Type 'ad' to make it '@mad' - should show only madison
+    // Type 'ad' to make it '@mad' - should show only madison (prefix matching)
     await textarea.type('ad', { delay: 50 })
 
     items = page.locator('.autocomplete-item')
