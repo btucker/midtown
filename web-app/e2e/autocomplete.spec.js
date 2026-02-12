@@ -1,10 +1,25 @@
+// @ts-check
 import { test, expect } from '@playwright/test'
-import { mockAllRoutes } from './helpers.js'
+import { MOCK_STATUS, mockAllRoutes } from './helpers.js'
+
+/** Custom status with madison coworker for autocomplete testing. */
+const AUTOCOMPLETE_STATUS = {
+  ...MOCK_STATUS,
+  coworkers: [
+    ...MOCK_STATUS.coworkers,
+    {
+      name: 'madison',
+      status: 'active',
+      current_task: 'Fix autocomplete bug',
+      started_at: '2025-01-15T09:15:00Z',
+    },
+  ],
+}
 
 test.describe('Autocomplete', () => {
   test.beforeEach(async ({ page }) => {
-    // Set up mocked API routes
-    await mockAllRoutes(page)
+    // Set up mocked API routes with custom status including madison
+    await mockAllRoutes(page, { status: AUTOCOMPLETE_STATUS })
     // Navigate to the web UI
     await page.goto('/')
     // Wait for the channel container to load
