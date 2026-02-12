@@ -269,13 +269,25 @@ fn get_active_and_idle_coworkers(state: &DaemonState) -> (Vec<String>, Vec<Strin
     (active_coworkers, idle_coworkers)
 }
 
-/// Compute the set of running coworkers who own review worktrees and their session IDs.
+/// Compute running reviewer sets for cleanup and backfill operations.
 ///
-/// Used by `poll_prs_for_issues` to pass into `cleanup_expired_preserving`, which
-/// removes timed-out reviewer assignments but preserves those for still-running
-/// reviewers. Excludes usage-limited coworkers (they can't complete reviews) and
-/// coworkers whose names were reused for dev work after restart.
-fn collect_running_reviewer_sets(snap: &WorldSnapshot) -> (HashSet<String>, HashSet<String>) {
+/// Returns three sets:
+/// - `running_coworker_names`: Running coworkers with review branches, *excluding*
+///   usage-limited coworkers. Used by `cleanup_expired_preserving` to preserve
+///   assignments for reviewers who can actually complete their reviews.
+/// - `running_reviewer_session_ids`: Session IDs for the same subset, enabling
+///   session-based matching in `cleanup_expired_preserving`.
+/// - `review_branch_owners`: *All* coworkers owning review branches (including
+///   usage-limited). Used by `backfill_reviewer_session_ids` — a usage-limited
+///   reviewer may still need its session ID backfilled so the assignment can be
+///   cleaned up correctly once it expires.
+///
+/// Normalizes to lowercase for consistent matching — `worktree_branch_owners`
+/// comes from `WorktreeAssignment.current_coworker` (external input), while
+/// `running_coworkers` uses names from `AVENUE_NAMES` (always lowercase).
+fn collect_running_reviewer_sets(
+    snap: &WorldSnapshot,
+) -> (HashSet<String>, HashSet<String>, HashSet<String>) {
     let review_branch_owners: HashSet<String> = snap
         .worktree_branch_owners
         .iter()
@@ -302,7 +314,7 @@ fn collect_running_reviewer_sets(snap: &WorldSnapshot) -> (HashSet<String>, Hash
         .filter_map(|c| c.session_id.clone())
         .collect();
 
-    (names, session_ids)
+    (names, session_ids, review_branch_owners)
 }
 
 /// Detect tasks linked to abandoned PRs (closed without merge) and return reset effects.
@@ -354,12 +366,19 @@ pub(super) fn detect_abandoned_pr_tasks(
 ///
 /// Cleans up expired entries in the PR issue tracker, persistent GitHub state,
 /// cooldown tracker, and RPC response cache. Preserves reviewer assignments
-/// for coworkers still actively reviewing.
+/// for coworkers still actively reviewing (using `running_coworkers` rather than
+/// `active_coworkers` to ensure idle/stopped reviewers have their assignments
+/// cleaned up, freeing slots for new reviews).
+///
+/// `review_branch_owners` is the full set of coworkers owning review branches
+/// (including usage-limited), used for backfill — a usage-limited reviewer still
+/// needs its session ID backfilled so the assignment can be cleaned up correctly.
 async fn cleanup_trackers(
     snap: &WorldSnapshot,
     state: &DaemonState,
     running_coworker_names: &HashSet<String>,
     running_reviewer_session_ids: &HashSet<String>,
+    review_branch_owners: &HashSet<String>,
 ) {
     {
         let mut tracker = state.pr_issue_tracker.lock().await;
@@ -371,10 +390,12 @@ async fn cleanup_trackers(
             .cleanup_expired_preserving(running_coworker_names, Some(running_reviewer_session_ids));
         // Backfill reviewer_session_id for assignments created before the session
         // started (optimistic assignment pattern: assign before spawn completes).
+        // Uses review_branch_owners (not running_coworker_names) so usage-limited
+        // reviewers still get their session IDs backfilled.
         let reviewer_session_map: HashMap<String, String> = snap
             .running_coworkers
             .iter()
-            .filter(|c| running_coworker_names.contains(&c.name))
+            .filter(|c| review_branch_owners.contains(&c.name.to_lowercase()))
             .filter_map(|c| {
                 c.session_id
                     .as_ref()
@@ -441,7 +462,9 @@ fn update_pr_caches(snap: &WorldSnapshot, state: &DaemonState, prs: &[serde_json
         cache.open_prs_data = formatted_prs;
     }
 
-    // Cache CI-passed owners and mark poll as initialized
+    // Cache CI-passed owners and mark poll as initialized.
+    // pr_poll_initialized prevents false positive orphan warnings during daemon
+    // startup when orphan checks run before the first PR poll completes.
     {
         let ci_passed: HashSet<String> = prs
             .iter()
@@ -507,7 +530,7 @@ pub(super) async fn poll_prs_for_issues(
         .map(|c| c.name.clone())
         .collect();
 
-    let (running_coworker_names, running_reviewer_session_ids) =
+    let (running_coworker_names, running_reviewer_session_ids, review_branch_owners) =
         collect_running_reviewer_sets(snap);
 
     // Get list of idle coworkers for handoff decisions
@@ -574,6 +597,7 @@ pub(super) async fn poll_prs_for_issues(
         state,
         &running_coworker_names,
         &running_reviewer_session_ids,
+        &review_branch_owners,
     )
     .await;
 
