@@ -116,6 +116,16 @@ fn handle_run(mode: &E2eMode, extra_args: &[String]) -> Result<(), String> {
     cmd.arg(mode_arg);
     cmd.args(extra_args);
 
+    // Pass the current auth profile dir so the container script doesn't have to
+    // guess which profile to mount.  Only set if the caller hasn't already
+    // provided an explicit override.
+    if std::env::var("CLAUDE_AUTH_DIR").is_err() {
+        let profile_dir = midtown::auth::current_profile_dir();
+        if profile_dir.exists() {
+            cmd.env("CLAUDE_AUTH_DIR", &profile_dir);
+        }
+    }
+
     // Inherit stdio so the user sees build/test output
     cmd.stdin(std::process::Stdio::inherit());
     cmd.stdout(std::process::Stdio::inherit());

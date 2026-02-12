@@ -104,6 +104,21 @@ pub async fn evaluate_tick(
             // Always run merged PR cleanup (pure function, no API calls)
             effects.extend(super::pr::collect_merged_pr_cleanup_effects(snap));
 
+            // Clean up stale worktrees (completed tasks older than retention period)
+            {
+                let daemon_config = crate::config::get_project_daemon_config(&state.repo_name);
+                let retention_hours = daemon_config.worktree_cleanup_retention_hours.unwrap_or(24);
+                // Skip cleanup if retention is set to 0
+                if retention_hours > 0 {
+                    let retention_period = chrono::Duration::hours(retention_hours as i64);
+                    effects.extend(super::health::check_for_stale_worktrees(
+                        &snap.worktree_registry,
+                        &snap.active_names,
+                        retention_period,
+                    ));
+                }
+            }
+
             // Reconcile orphaned PRs: create tasks for reviewed + CI green PRs with no active task
             effects.extend(super::pr::reconcile_orphaned_prs(snap));
 
@@ -502,6 +517,7 @@ mod tests {
                     current_coworker: None,
                     pr_number: None,
                     created_at: chrono::Utc::now(),
+                    completed_at: None,
                 },
             }],
             on_failure: vec![],
@@ -521,6 +537,7 @@ mod tests {
                     current_coworker: None,
                     pr_number: None,
                     created_at: chrono::Utc::now(),
+                    completed_at: None,
                 },
             }],
             on_failure: vec![],

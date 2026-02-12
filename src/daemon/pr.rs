@@ -1891,6 +1891,7 @@ async fn collect_reviewer_effects_with_source(
                     current_coworker: None,           // Will be set by BindCoworkerToWorktree
                     pr_number: Some(pr_number),
                     created_at: chrono::Utc::now(),
+                    completed_at: None, // Will be set when PR is reviewed and merged
                 },
             },
             // Bind the reviewer to the worktree
@@ -4135,6 +4136,7 @@ mod tests {
             tasks_with_worktrees: HashSet::new(),
             task_worktree_map: HashMap::new(),
             worktree_branch_owners: HashMap::new(),
+            worktree_registry: crate::worktree_registry::WorktreeRegistry::default(),
             is_at_coworker_limit: false,
             is_at_dev_limit: false,
             now_utc: chrono::Utc::now(),
@@ -4440,6 +4442,7 @@ mod tests {
             tasks_with_worktrees: HashSet::new(),
             task_worktree_map: HashMap::new(),
             worktree_branch_owners: HashMap::new(),
+            worktree_registry: crate::worktree_registry::WorktreeRegistry::default(),
             merged_pr_branches: HashMap::new(),
             is_at_coworker_limit: false,
             is_at_dev_limit: false,
@@ -4525,6 +4528,7 @@ mod tests {
             tasks_with_worktrees: HashSet::new(),
             task_worktree_map: HashMap::new(),
             worktree_branch_owners: HashMap::new(),
+            worktree_registry: crate::worktree_registry::WorktreeRegistry::default(),
             merged_pr_branches: HashMap::new(),
             is_at_coworker_limit: false,
             is_at_dev_limit: false,
@@ -4601,6 +4605,7 @@ mod tests {
             tasks_with_worktrees: HashSet::new(),
             task_worktree_map: HashMap::new(),
             worktree_branch_owners: HashMap::new(),
+            worktree_registry: crate::worktree_registry::WorktreeRegistry::default(),
             merged_pr_branches: HashMap::new(),
             is_at_coworker_limit: false,
             is_at_dev_limit: false,

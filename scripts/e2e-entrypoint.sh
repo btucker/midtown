@@ -7,6 +7,11 @@
 #   full                   — Runs coordination tests first, then full_stack_e2e
 #                            tests that exercise real Claude Code integration.
 #                            Requires ANTHROPIC_API_KEY or CLAUDE_CONFIG_DIR.
+#
+# Test suites run in parallel where safe. Each suite uses unique resources
+# (PID-based names, unique sockets, dynamic ports) so different suites don't
+# conflict. Suites that use tmux need --test-threads=1 within themselves
+# but can still run concurrently with other suites.
 set -euo pipefail
 
 MODE="${1:-coordination}"
@@ -27,44 +32,100 @@ git config --global init.defaultBranch main
 tmux start-server
 echo "tmux server started"
 
+# --- Parallel job management ---
+# Track background PIDs and their labels for error reporting.
+declare -a PIDS=()
+declare -a LABELS=()
+FAILED=0
+
+# Launch a test suite in the background, capturing output to a temp file.
+run_bg() {
+    local label="$1"; shift
+    local logfile
+    logfile=$(mktemp "/tmp/e2e-${label}-XXXXXX.log")
+    echo "[parallel] starting: ${label}"
+    (
+        echo "=== ${label} ===" >> "${logfile}"
+        "$@" >> "${logfile}" 2>&1
+    ) &
+    PIDS+=($!)
+    LABELS+=("${label}:${logfile}")
+}
+
+# Wait for all background jobs. Print output for failures.
+wait_all() {
+    local i=0
+    for pid in "${PIDS[@]}"; do
+        local entry="${LABELS[$i]}"
+        local label="${entry%%:*}"
+        local logfile="${entry#*:}"
+        if wait "${pid}"; then
+            echo "[parallel] passed:  ${label}"
+        else
+            echo ""
+            echo "[parallel] FAILED:  ${label}"
+            echo "--- output from ${label} ---"
+            cat "${logfile}"
+            echo "--- end ${label} ---"
+            echo ""
+            FAILED=1
+        fi
+        rm -f "${logfile}"
+        i=$((i + 1))
+    done
+    PIDS=()
+    LABELS=()
+}
+
 # --- Coordination tests (no auth required) ---
 run_coordination_tests() {
     echo ""
-    echo "=== Running coordination E2E tests ==="
+    echo "=== Running coordination E2E tests (parallel) ==="
 
     local test_args=("$@")
 
-    echo "--- daemon_e2e ---"
-    cargo test --release --test daemon_e2e -- --ignored --test-threads=1 "${test_args[@]}"
+    # Wave 1: Independent suites run concurrently.
+    # Each suite uses unique PID-based resource names so they don't conflict.
+    # Suites with tmux need --test-threads=1 *within* themselves but can
+    # overlap with other suites safely.
 
-    echo "--- tmux_e2e ---"
-    # Skip tests that depend on host terminal dimensions (pane width/count
-    # assertions fail in Docker where the default terminal size differs)
-    cargo test --release --test tmux_e2e -- --ignored --test-threads=1 \
-        --skip test_lead_pane_width_stable_across_reinits \
-        --skip test_setup_chat_pane_is_idempotent \
-        --skip test_spawn_claude_with_initial_prompt_renders_tui \
-        "${test_args[@]}"
+    run_bg "daemon_e2e" \
+        cargo test --release --test daemon_e2e -- --ignored --test-threads=1 \
+            --skip test_daemon_installs_required_plugins \
+            "${test_args[@]}"
 
-    echo "--- nudge_delivery_e2e ---"
-    cargo test --release --test nudge_delivery_e2e -- --ignored "${test_args[@]}"
+    run_bg "tmux_e2e" \
+        cargo test --release --test tmux_e2e -- --ignored --test-threads=1 \
+            --skip test_lead_pane_width_stable_across_reinits \
+            --skip test_setup_chat_pane_is_idempotent \
+            --skip test_spawn_claude_with_initial_prompt_renders_tui \
+            "${test_args[@]}"
 
-    echo "--- chat_e2e ---"
-    cargo test --release --test chat_e2e -- --ignored "${test_args[@]}"
+    run_bg "nudge_delivery_e2e" \
+        cargo test --release --test nudge_delivery_e2e -- --ignored "${test_args[@]}"
 
-    echo "--- task_sharing ---"
-    cargo test --release --test task_sharing -- "${test_args[@]}"
+    run_bg "chat_e2e" \
+        cargo test --release --test chat_e2e -- --ignored "${test_args[@]}"
 
-    echo "--- mailbox_e2e (coordination) ---"
-    # Run non-ignored mailbox tests (concurrent writes, inbox format validation)
-    cargo test --release --test mailbox_e2e -- "${test_args[@]}"
+    run_bg "task_sharing" \
+        cargo test --release --test task_sharing -- "${test_args[@]}"
 
-    echo "--- mailbox_e2e (daemon) ---"
-    # Run ignored mailbox tests that need the daemon but not real Claude
-    cargo test --release --test mailbox_e2e -- --ignored --test-threads=1 \
-        --skip test_real_claude \
-        --skip test_mailbox_fallback \
-        "${test_args[@]}"
+    run_bg "mailbox_e2e" \
+        cargo test --release --test mailbox_e2e -- "${test_args[@]}"
+
+    run_bg "mailbox_e2e_daemon" \
+        cargo test --release --test mailbox_e2e -- --ignored --test-threads=1 \
+            --skip test_real_claude \
+            --skip test_mailbox_fallback \
+            "${test_args[@]}"
+
+    wait_all
+
+    if [ "${FAILED}" -ne 0 ]; then
+        echo ""
+        echo "=== Coordination tests FAILED ==="
+        exit 1
+    fi
 
     echo ""
     echo "=== Coordination tests complete ==="
@@ -89,15 +150,23 @@ run_full_tests() {
 
     local test_args=("$@")
 
-    echo "--- full_stack_e2e ---"
-    cargo test --release --test full_stack_e2e -- --ignored --test-threads=1 "${test_args[@]}"
+    # Full-stack tests run in parallel with each other.
+    run_bg "full_stack_e2e" \
+        cargo test --release --test full_stack_e2e -- --ignored --test-threads=1 "${test_args[@]}"
 
-    echo "--- mailbox_e2e (real Claude) ---"
-    # Skip daemon-only tests already run in coordination suite
-    cargo test --release --test mailbox_e2e -- --ignored --test-threads=1 \
-        --skip test_spawn_creates \
-        --skip test_daemon_delivers \
-        "${test_args[@]}"
+    run_bg "mailbox_e2e_claude" \
+        cargo test --release --test mailbox_e2e -- --ignored --test-threads=1 \
+            --skip test_spawn_creates \
+            --skip test_daemon_delivers \
+            "${test_args[@]}"
+
+    wait_all
+
+    if [ "${FAILED}" -ne 0 ]; then
+        echo ""
+        echo "=== Full E2E tests FAILED ==="
+        exit 1
+    fi
 
     echo ""
     echo "=== Full E2E tests complete ==="

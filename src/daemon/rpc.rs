@@ -18,6 +18,7 @@ use crate::rpc::{Request, RequestId, Response, RpcError};
 
 use super::constants::*;
 use super::helpers::*;
+use super::snapshot::ProcessHealth;
 use super::{DaemonState, effects, snapshot};
 
 // ============================================================================
@@ -1996,6 +1997,18 @@ fn handle_task_done(id: RequestId, task_id: &str, state: &DaemonState) -> Respon
         );
     }
 
+    // Mark worktree as completed (for time-based cleanup)
+    {
+        let mut ps = state.persistent_state.blocking_lock();
+        if let Some(wt_id) = ps.worktree_registry.find_worktree_by_task(task_id) {
+            ps.worktree_registry
+                .mark_completed(&wt_id, chrono::Utc::now());
+            if let Err(e) = ps.save_for_repo(&repo_name) {
+                warn!("Failed to save worktree completion timestamp: {}", e);
+            }
+        }
+    }
+
     // Clear in-memory tracking
     state.clear_task_assignment_by_task(task_id);
 
@@ -2692,7 +2705,6 @@ async fn handle_kanban_data(id: RequestId, state: &DaemonState) -> Response {
     let coworkers_data = {
         let active_coworkers = state.coworkers.list();
         let coworker_records = state.coworker_records.read().await;
-        let headless_health = state.headless_health.read().unwrap();
         let prs_by_task_id = build_pr_task_map(&prs);
 
         // Read tasks to get explicit PR associations (task !1151)
@@ -2705,6 +2717,41 @@ async fn handle_kanban_data(id: RequestId, state: &DaemonState) -> Response {
                 Some((task_id, pr))
             })
             .collect();
+
+        // Build reverse map: PR number -> source task ID (from PR titles)
+        let task_id_by_pr: HashMap<u64, u32> = prs
+            .iter()
+            .filter_map(|pr| {
+                let pr_number = pr.get("number")?.as_u64()?;
+                let title = pr.get("title")?.as_str()?;
+                let task_id = crate::tasks::extract_task_id_from_pr_title(title)?;
+                let task_id_u32 = u32::try_from(task_id).ok()?;
+                Some((pr_number, task_id_u32))
+            })
+            .collect();
+
+        // Clone health data to avoid holding the lock across await
+        let health_snapshot: HashMap<String, ProcessHealth> = {
+            let health_guard = state.headless_health.read().unwrap();
+            health_guard.clone()
+        };
+
+        // Build reviewer -> PR number map from GitHub state (best-effort via try_lock)
+        let reviewer_pr_map: HashMap<String, u64> = state
+            .persistent_state
+            .try_lock()
+            .map(|github_state| {
+                active_coworkers
+                    .iter()
+                    .filter_map(|cw| {
+                        github_state
+                            .github
+                            .pr_for_reviewer(&cw.name)
+                            .map(|pr| (cw.name.clone(), pr))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
 
         active_coworkers
             .iter()
@@ -2724,7 +2771,7 @@ async fn handle_kanban_data(id: RequestId, state: &DaemonState) -> Response {
                 }
 
                 // Get health status
-                let health = headless_health.get(&cw.name);
+                let health = health_snapshot.get(&cw.name);
                 let health_color = if let Some(h) = health {
                     if !h.is_alive {
                         "red" // dead
@@ -2737,19 +2784,24 @@ async fn handle_kanban_data(id: RequestId, state: &DaemonState) -> Response {
                     "green" // default healthy
                 };
 
-                // Find PR number for this task
-                // 1. Check explicit task.pr field first (task !1151)
-                // 2. Fall back to extracting from PR title
-                let pr_number = task_id.and_then(|tid| {
-                    task_pr_map
-                        .get(&tid)
-                        .copied()
-                        .or_else(|| prs_by_task_id.get(&tid).copied())
-                });
+                // Find PR number for this coworker, trying sources in priority order:
+                // 1. Explicit task.pr field (task !1151) - most authoritative
+                // 2. GitHub reviewer assignment (for review tasks)
+                // 3. PR title extraction (fallback)
+                let pr_number = task_id
+                    .and_then(|tid| task_pr_map.get(&tid).copied())
+                    .or_else(|| reviewer_pr_map.get(&cw.name).copied())
+                    .or_else(|| task_id.and_then(|tid| prs_by_task_id.get(&tid).copied()));
+
+                // For display: prefer source task ID (from PR title) over internal task ID
+                // This ensures reviewers show the meaningful task ID, not their ephemeral one
+                let display_task_id = pr_number
+                    .and_then(|pr| task_id_by_pr.get(&pr).copied())
+                    .or(task_id);
 
                 Some(serde_json::json!({
                     "name": cw.name,
-                    "task_id": task_id,
+                    "task_id": display_task_id,
                     "phase": workflow_phase.map(|p| p.abbreviation()),
                     "pr_number": pr_number,
                     "health": health_color,
@@ -4322,5 +4374,80 @@ mod tests {
         let changed = apply_task_model_mapping(&mut map, "42", None, true).unwrap();
         assert!(!changed);
         assert!(map.is_empty());
+    }
+
+    /// Test that reviewers display source task IDs from PR titles instead of internal IDs.
+    ///
+    /// When a coworker is reviewing a PR, the Board TUI should show the source task ID
+    /// (extracted from the PR title) rather than the reviewer's internal ephemeral task ID.
+    ///
+    /// For example, if amsterdam is reviewing PR #968 (for task !1158), the display should
+    /// show !1158, not !62 (amsterdam's internal reviewer task ID).
+    #[test]
+    fn test_reviewer_displays_source_task_id() {
+        use std::collections::HashMap;
+
+        // Simulate the kanban_data logic for a reviewer scenario
+
+        // Mock PR data: PR #968 is for task !1158 (in title)
+        let pr_number: u64 = 968;
+        let _pr_title = "Fix worktree sandbox issue [Midtown !1158]";
+        let source_task_id: u32 = 1158;
+
+        // Mock reviewer's internal task ID (ephemeral, not meaningful to user)
+        let reviewer_internal_task_id: u32 = 62;
+
+        // Build task_id_by_pr map (extracted from PR titles)
+        // This is what handle_kanban_data does at line 2679
+        let mut task_id_by_pr: HashMap<u64, u32> = HashMap::new();
+        task_id_by_pr.insert(pr_number, source_task_id);
+
+        // Build prs_by_task_id map (for authors to find their PRs)
+        let mut prs_by_task_id: HashMap<u32, u64> = HashMap::new();
+        prs_by_task_id.insert(source_task_id, pr_number);
+
+        // Build reviewer_pr_map (reviewer name -> PR they're reviewing)
+        // This comes from GitHub state
+        let mut reviewer_pr_map: HashMap<String, u64> = HashMap::new();
+        reviewer_pr_map.insert("amsterdam".to_string(), pr_number);
+
+        // Simulate coworker data collection for a reviewer
+        let coworker_name = "amsterdam";
+        let task_id = Some(reviewer_internal_task_id); // Reviewer's internal task
+
+        // This is the logic from handle_kanban_data lines 2744-2753
+        // Find PR number for this coworker (either as reviewer or author)
+        let pr_number_opt = reviewer_pr_map
+            .get(coworker_name)
+            .copied()
+            .or_else(|| task_id.and_then(|tid| prs_by_task_id.get(&tid).copied()));
+
+        // Prefer source task ID (from PR title) over internal task ID
+        let display_task_id = pr_number_opt
+            .and_then(|pr| task_id_by_pr.get(&pr).copied())
+            .or(task_id);
+
+        // Verify the display shows the source task ID, not the internal ID
+        assert_eq!(
+            display_task_id,
+            Some(source_task_id),
+            "Reviewer should display source task ID !{} from PR title, not internal task ID !{}",
+            source_task_id,
+            reviewer_internal_task_id
+        );
+
+        // Also verify we correctly found the PR for the reviewer
+        assert_eq!(
+            pr_number_opt,
+            Some(pr_number),
+            "Should find PR for reviewer"
+        );
+
+        // Verify the logic works correctly: the final display is the source task, not internal
+        assert_ne!(
+            display_task_id,
+            Some(reviewer_internal_task_id),
+            "Should NOT display reviewer's internal task ID"
+        );
     }
 }

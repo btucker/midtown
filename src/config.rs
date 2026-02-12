@@ -395,6 +395,11 @@ pub struct DaemonSection {
     /// This is faster and more reliable than `gh auth switch` (no global state races).
     #[serde(default)]
     pub github_user: Option<String>,
+
+    /// Hours to retain completed worktrees before cleanup (default: 24).
+    /// Set to 0 to disable time-based cleanup (only PR-merge cleanup will run).
+    #[serde(default)]
+    pub worktree_cleanup_retention_hours: Option<u64>,
 }
 
 impl DaemonSection {
@@ -415,6 +420,9 @@ impl DaemonSection {
                 .github_user
                 .clone()
                 .or_else(|| self.github_user.clone()),
+            worktree_cleanup_retention_hours: other
+                .worktree_cleanup_retention_hours
+                .or(self.worktree_cleanup_retention_hours),
         }
     }
 }
@@ -1534,6 +1542,7 @@ name = "solo"
             pr_poll_interval_secs: Some(60),
             chat_monitor_enabled: Some(true),
             github_user: Some("global-user".to_string()),
+            worktree_cleanup_retention_hours: None,
         };
 
         let project = DaemonSection {
@@ -1543,6 +1552,7 @@ name = "solo"
             pr_poll_interval_secs: Some(120),
             chat_monitor_enabled: None,
             github_user: None,
+            worktree_cleanup_retention_hours: None,
         };
 
         let merged = global.merge(&project);
@@ -1563,6 +1573,7 @@ name = "solo"
             pr_poll_interval_secs: None,
             chat_monitor_enabled: None,
             github_user: None,
+            worktree_cleanup_retention_hours: None,
         };
 
         let empty = DaemonSection::default();

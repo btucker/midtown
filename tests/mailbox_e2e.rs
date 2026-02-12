@@ -264,22 +264,18 @@ impl MailboxFixture {
     }
 
     fn start_daemon(&mut self) -> bool {
-        let build_result = Command::new("cargo")
-            .args(["build", "--release"])
-            .current_dir(env!("CARGO_MANIFEST_DIR"))
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
-
-        if build_result.map(|s| !s.success()).unwrap_or(true) {
-            eprintln!("Failed to build daemon binary");
-            return false;
-        }
-
         let binary_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("target")
             .join("release")
             .join("midtown");
+
+        if !binary_path.exists() {
+            eprintln!(
+                "Release binary not found at {:?}. Run `cargo build --release` first.",
+                binary_path
+            );
+            return false;
+        }
 
         let _ = fs::remove_file(&self.socket_path);
         let _ = fs::remove_file(&self.pid_path);
@@ -316,22 +312,18 @@ impl MailboxFixture {
 
     /// Start daemon using `midtown start` (creates tmux session + lead window).
     fn start_daemon_with_tmux(&mut self) -> bool {
-        let build_result = Command::new("cargo")
-            .args(["build", "--release"])
-            .current_dir(env!("CARGO_MANIFEST_DIR"))
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
-
-        if build_result.map(|s| !s.success()).unwrap_or(true) {
-            eprintln!("Failed to build daemon binary");
-            return false;
-        }
-
         let binary_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("target")
             .join("release")
             .join("midtown");
+
+        if !binary_path.exists() {
+            eprintln!(
+                "Release binary not found at {:?}. Run `cargo build --release` first.",
+                binary_path
+            );
+            return false;
+        }
 
         let _ = fs::remove_file(&self.socket_path);
         let _ = fs::remove_file(&self.pid_path);

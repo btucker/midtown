@@ -240,6 +240,11 @@ pub struct WorldSnapshot {
     /// Used by dispatch to reuse existing worktrees when reassigning tasks to
     /// different coworkers (preserves build cache and partial work).
     pub task_worktree_map: HashMap<String, String>,
+    /// Complete worktree registry for stale worktree cleanup.
+    /// Contains all worktree assignments with completion timestamps.
+    /// Extracted from persistent state during snapshot collection for pure decision functions.
+    #[serde(default)]
+    pub worktree_registry: crate::worktree_registry::WorktreeRegistry,
     /// Branch name → coworker name mapping from the worktree registry.
     /// Used by `coworker_from_branch()` to look up task-based branches (task-*, review-pr-*).
     pub worktree_branch_owners: HashMap<String, String>,
@@ -548,11 +553,18 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
 
     // ── Worktree registry ────────────────────────────────────────────────
     #[allow(clippy::type_complexity)]
-    let (tasks_with_worktrees, task_worktree_map, worktree_branch_owners, merged_pr_branches): (
+    let (
+        tasks_with_worktrees,
+        task_worktree_map,
+        worktree_branch_owners,
+        merged_pr_branches,
+        worktree_registry,
+    ): (
         HashSet<String>,
         HashMap<String, String>,
         HashMap<String, String>,
         HashMap<u64, String>,
+        crate::worktree_registry::WorktreeRegistry,
     ) = {
         let ps = state.persistent_state.lock().await;
         let mut task_ids = HashSet::new();
@@ -578,7 +590,15 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
             }
         }
 
-        (task_ids, wt_map, branch_owners, pr_branches)
+        let worktree_registry = ps.worktree_registry.clone();
+
+        (
+            task_ids,
+            wt_map,
+            branch_owners,
+            pr_branches,
+            worktree_registry,
+        )
     };
 
     // ── Limits & timing ─────────────────────────────────────────────────
@@ -633,6 +653,7 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
         daemon_logs,
         tasks_with_worktrees,
         task_worktree_map,
+        worktree_registry,
         worktree_branch_owners,
         merged_pr_branches,
         is_at_coworker_limit,
@@ -700,6 +721,7 @@ pub(super) fn minimal_snapshot_for_test() -> WorldSnapshot {
         tasks_with_worktrees: HashSet::new(),
         task_worktree_map: HashMap::new(),
         worktree_branch_owners: HashMap::new(),
+        worktree_registry: crate::worktree_registry::WorktreeRegistry::default(),
         merged_pr_branches: HashMap::new(),
         is_at_coworker_limit: false,
         is_at_dev_limit: false,
@@ -803,6 +825,7 @@ mod tests {
             tasks_with_worktrees: HashSet::new(),
             task_worktree_map: HashMap::new(),
             worktree_branch_owners: HashMap::new(),
+            worktree_registry: crate::worktree_registry::WorktreeRegistry::default(),
             merged_pr_branches: HashMap::new(),
             is_at_coworker_limit: false,
             is_at_dev_limit: false,
@@ -896,6 +919,7 @@ mod tests {
             tasks_with_worktrees: HashSet::new(),
             task_worktree_map: HashMap::new(),
             worktree_branch_owners: HashMap::new(),
+            worktree_registry: crate::worktree_registry::WorktreeRegistry::default(),
             merged_pr_branches: HashMap::new(),
             is_at_coworker_limit: false,
             is_at_dev_limit: false,
@@ -1063,6 +1087,7 @@ mod tests {
             tasks_with_worktrees: HashSet::new(),
             task_worktree_map: HashMap::new(),
             worktree_branch_owners: HashMap::new(),
+            worktree_registry: crate::worktree_registry::WorktreeRegistry::default(),
             merged_pr_branches: HashMap::new(),
             is_at_coworker_limit: false,
             is_at_dev_limit: false,
@@ -1140,6 +1165,7 @@ mod tests {
             tasks_with_worktrees: HashSet::new(),
             task_worktree_map: HashMap::new(),
             worktree_branch_owners: HashMap::new(),
+            worktree_registry: crate::worktree_registry::WorktreeRegistry::default(),
             merged_pr_branches: HashMap::new(),
             is_at_coworker_limit: false,
             is_at_dev_limit: false,

@@ -220,6 +220,79 @@ fn format_relative_time(time: DateTime<Utc>) -> String {
 }
 
 /// Draw the board panel (left side) with channel swimlanes
+/// Compute indentation level for each task based on dependency structure.
+/// Returns a HashMap mapping task ID to indentation level (0 = no indent, 1 = indent one level, etc.)
+fn compute_task_indentation(tasks: &[&super::app::KanbanTask]) -> HashMap<String, usize> {
+    use std::collections::{HashMap, HashSet};
+
+    let mut indentation: HashMap<String, usize> = HashMap::new();
+    let mut processed: HashSet<String> = HashSet::new();
+
+    // Build a map of task IDs for quick lookup
+    let task_map: HashMap<String, &super::app::KanbanTask> =
+        tasks.iter().map(|t| (t.id.clone(), *t)).collect();
+
+    // Process tasks in order (sorted by ID), computing indentation recursively
+    for task in tasks {
+        compute_indentation_recursive(&task.id, &task_map, &mut indentation, &mut processed);
+    }
+
+    indentation
+}
+
+/// Recursive helper to compute indentation level for a task
+fn compute_indentation_recursive(
+    task_id: &str,
+    task_map: &HashMap<String, &super::app::KanbanTask>,
+    indentation: &mut HashMap<String, usize>,
+    processed: &mut std::collections::HashSet<String>,
+) -> usize {
+    // If already computed, return cached value
+    if let Some(&level) = indentation.get(task_id) {
+        return level;
+    }
+
+    // Guard against cycles
+    if processed.contains(task_id) {
+        return 0;
+    }
+    processed.insert(task_id.to_string());
+
+    let task = match task_map.get(task_id) {
+        Some(t) => t,
+        None => {
+            indentation.insert(task_id.to_string(), 0);
+            return 0;
+        }
+    };
+
+    // If no dependencies, no indentation
+    if task.blocked_by.is_empty() {
+        indentation.insert(task_id.to_string(), 0);
+        return 0;
+    }
+
+    // Find the first unresolved dependency in the current task list
+    // (Dependencies are "unresolved" if they exist in this task list)
+    let first_blocker = task
+        .blocked_by
+        .iter()
+        .find(|blocker_id| task_map.contains_key(blocker_id.as_str()));
+
+    let level = if let Some(blocker_id) = first_blocker {
+        // Indent one level more than the blocker
+        let blocker_level =
+            compute_indentation_recursive(blocker_id, task_map, indentation, processed);
+        blocker_level + 1
+    } else {
+        // All blockers are resolved or not in this list - no indentation
+        0
+    };
+
+    indentation.insert(task_id.to_string(), level);
+    level
+}
+
 fn draw_board_panel(f: &mut Frame, app: &mut App, area: Rect) -> Vec<Hyperlink> {
     use ratatui::layout::{Constraint, Direction, Layout};
     use std::collections::{BTreeMap, HashMap};
@@ -348,25 +421,25 @@ fn draw_board_panel(f: &mut Frame, app: &mut App, area: Rect) -> Vec<Hyperlink> 
         lines.push(Line::from(vec![Span::styled(channel_header, style)]));
         lines.push(Line::from("")); // Blank line after header
 
+        // Compute indentation levels for tasks based on dependencies
+        let task_indentation = compute_task_indentation(tasks);
+
         // Render tasks for this channel
         for task in tasks {
+            // Get indentation level for this task (each level = 2 spaces)
+            let indent_level = task_indentation.get(&task.id).copied().unwrap_or(0);
+            let task_indent = "  ".repeat(indent_level);
             let status_marker = if task.status == super::app::TaskStatus::InProgress {
                 "● "
             } else {
                 "○ "
             };
 
-            let owner_text = if let Some(ref owner) = task.owner {
-                format!(" [{}]", owner)
-            } else {
-                String::new()
-            };
-
             // Build prefix so continuation lines can align with subject text
-            let prefix = format!("{} !{} ", status_marker, task.id);
+            let prefix = format!("{}{} !{} ", task_indent, status_marker, task.id);
             let prefix_width = prefix.len();
 
-            let task_line = format!("{}{}{}", prefix, task.subject, owner_text);
+            let task_line = format!("{}{}", prefix, task.subject);
 
             // Check if this task is selected
             let is_task_selected = app.board_selection.as_ref().is_some_and(|sel| match sel {
@@ -380,12 +453,13 @@ fn draw_board_panel(f: &mut Frame, app: &mut App, area: Rect) -> Vec<Hyperlink> 
                 let text = if i == 0 {
                     wrapped.to_string()
                 } else {
-                    // Continuation lines: indent to align with subject text
+                    // Continuation lines: indent to align with subject text (reduced by 2 spaces)
+                    let indent_width = prefix_width.saturating_sub(2);
                     format!(
                         "{:width$}{}",
                         "",
                         wrapped.trim_start(),
-                        width = prefix_width
+                        width = indent_width
                     )
                 };
 
@@ -4137,5 +4211,141 @@ mod tests {
         let height = calculate_input_bar_height(text, 80);
         // wrap_content splits on '\n' first, giving 3 lines + 2 borders = 5
         assert_eq!(height, 5, "3 content lines + 2 border lines = 5");
+    }
+
+    // Helper to build a KanbanTask for indentation tests
+    use super::super::app::{KanbanTask, TaskStatus};
+
+    fn make_task(id: &str, blocked_by: Vec<&str>) -> KanbanTask {
+        KanbanTask {
+            id: id.to_string(),
+            subject: format!("Task {id}"),
+            owner: None,
+            status: TaskStatus::Pending,
+            modified_at: None,
+            channel: None,
+            blocked_by: blocked_by.into_iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn test_indentation_no_dependencies() {
+        let tasks = [
+            make_task("1", vec![]),
+            make_task("2", vec![]),
+            make_task("3", vec![]),
+        ];
+        let task_refs: Vec<&KanbanTask> = tasks.iter().collect();
+        let indent = compute_task_indentation(&task_refs);
+
+        assert_eq!(indent.get("1"), Some(&0));
+        assert_eq!(indent.get("2"), Some(&0));
+        assert_eq!(indent.get("3"), Some(&0));
+    }
+
+    #[test]
+    fn test_indentation_linear_chain() {
+        // A blocks B blocks C → B indented 1, C indented 2
+        let tasks = [
+            make_task("A", vec![]),
+            make_task("B", vec!["A"]),
+            make_task("C", vec!["B"]),
+        ];
+        let task_refs: Vec<&KanbanTask> = tasks.iter().collect();
+        let indent = compute_task_indentation(&task_refs);
+
+        assert_eq!(indent.get("A"), Some(&0));
+        assert_eq!(indent.get("B"), Some(&1));
+        assert_eq!(indent.get("C"), Some(&2));
+    }
+
+    #[test]
+    fn test_indentation_cycle() {
+        // A blocks B, B blocks A — cycle should not panic, both get 0 or 1
+        let tasks = [make_task("A", vec!["B"]), make_task("B", vec!["A"])];
+        let task_refs: Vec<&KanbanTask> = tasks.iter().collect();
+        let indent = compute_task_indentation(&task_refs);
+
+        // With cycle detection, processed guard returns 0 for the cycle-back reference.
+        // A is processed first: looks up B → B looks up A → A is in processed → returns 0 → B = 1.
+        // Then A continues: B is now cached as 1, so A = B_level + 1 = 2? No —
+        // Let's trace: A processed first, blocked_by=["B"].
+        // A enters processed set. Recurse into B.
+        // B enters processed set. B blocked_by=["A"]. A is in processed → return 0.
+        // B = 0 + 1 = 1. B cached.
+        // Back to A: blocker B returned 1. A = 1 + 1 = 2. A cached.
+        // Actually: wait, re-read the code. A calls into B before A itself is cached.
+        // The cycle guard returns 0 for A (when B tries to recurse into A).
+        // So B = 0 + 1 = 1, A = 1 + 1 = 2.
+        // This is fine — the key property is no infinite loop.
+        assert!(indent.contains_key("A"));
+        assert!(indent.contains_key("B"));
+        // No panic/infinite loop is the main assertion. Values are deterministic:
+        assert_eq!(indent.get("B"), Some(&1));
+        assert_eq!(indent.get("A"), Some(&2));
+    }
+
+    #[test]
+    fn test_indentation_missing_blocker() {
+        // Task blocked by a task not in the list → treated as resolved, no indentation
+        let tasks = [make_task("A", vec!["Z"])];
+        let task_refs: Vec<&KanbanTask> = tasks.iter().collect();
+        let indent = compute_task_indentation(&task_refs);
+
+        assert_eq!(indent.get("A"), Some(&0));
+    }
+
+    #[test]
+    fn test_indentation_diamond_dependency() {
+        // Diamond: A blocks B, A blocks C, both B and C block D
+        //   A
+        //  / \
+        // B   C
+        //  \ /
+        //   D
+        let tasks = [
+            make_task("A", vec![]),
+            make_task("B", vec!["A"]),
+            make_task("C", vec!["A"]),
+            make_task("D", vec!["B", "C"]),
+        ];
+        let task_refs: Vec<&KanbanTask> = tasks.iter().collect();
+        let indent = compute_task_indentation(&task_refs);
+
+        assert_eq!(indent.get("A"), Some(&0));
+        assert_eq!(indent.get("B"), Some(&1));
+        assert_eq!(indent.get("C"), Some(&1));
+        // D is blocked by B (first in list, present in task_map) → indent = B_level + 1 = 2
+        assert_eq!(indent.get("D"), Some(&2));
+    }
+
+    #[test]
+    fn test_indentation_partial_blockers() {
+        // B is blocked by both A (in list) and Z (not in list)
+        // First unresolved dependency in task_map is A → indent relative to A
+        let tasks = [make_task("A", vec![]), make_task("B", vec!["Z", "A"])];
+        let task_refs: Vec<&KanbanTask> = tasks.iter().collect();
+        let indent = compute_task_indentation(&task_refs);
+
+        assert_eq!(indent.get("A"), Some(&0));
+        // Z is not in the list, so first matching blocker is A
+        assert_eq!(indent.get("B"), Some(&1));
+    }
+
+    #[test]
+    fn test_indentation_three_node_cycle() {
+        // A → B → C → A (triangular cycle)
+        let tasks = [
+            make_task("A", vec!["C"]),
+            make_task("B", vec!["A"]),
+            make_task("C", vec!["B"]),
+        ];
+        let task_refs: Vec<&KanbanTask> = tasks.iter().collect();
+        let indent = compute_task_indentation(&task_refs);
+
+        // Should not panic or loop. All tasks should have entries.
+        assert!(indent.contains_key("A"));
+        assert!(indent.contains_key("B"));
+        assert!(indent.contains_key("C"));
     }
 }

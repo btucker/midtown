@@ -94,13 +94,34 @@ fn handle_attach(target: &Option<AttachTarget>, client: &DaemonClient) -> Result
 
     // Build the claude command for interactive use in tmux.
     // Uses --resume to pick up the exact session state.
+    // Wrap with sandbox-exec on macOS for filesystem write restrictions.
     let config_dir = midtown::auth::active_profile_dir_for_project(&repo_name);
+    let writable = midtown::sandbox::writable_dirs(std::path::Path::new(cwd), &[]);
+    let claude_part = if cfg!(target_os = "macos") {
+        match midtown::sandbox::sandbox_exec_prefix(&writable) {
+            Ok((_profile_path, prefix)) => {
+                let sb_args = prefix.join(" ");
+                format!(
+                    "sandbox-exec {} claude --resume {} --dangerously-skip-permissions",
+                    sb_args, session_id
+                )
+            }
+            Err(_) => format!(
+                "claude --resume {} --dangerously-skip-permissions",
+                session_id
+            ),
+        }
+    } else {
+        format!(
+            "claude --resume {} --dangerously-skip-permissions",
+            session_id
+        )
+    };
     let cmd = format!(
-        "export CLAUDE_CONFIG_DIR='{}' MIDTOWN_AGENT='{}' DISABLE_AUTOUPDATER=1; \
-         exec claude --resume {} --dangerously-skip-permissions",
+        "export CLAUDE_CONFIG_DIR='{}' MIDTOWN_AGENT='{}' DISABLE_AUTOUPDATER=1; exec {}",
         config_dir.display(),
         name,
-        session_id
+        claude_part
     );
 
     midtown::tmux::create_window(&tmux_session, &window_name, cwd, Some(&cmd)).map_err(|e| {

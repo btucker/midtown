@@ -7,8 +7,6 @@ use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use serde::{Deserialize, Serialize};
-
 use crate::cli::Response;
 
 /// Validate that a project name contains only safe characters.
@@ -92,16 +90,29 @@ fn claude_cli_available() -> bool {
 /// The official Claude plugins marketplace on GitHub.
 const OFFICIAL_MARKETPLACE: &str = "anthropics/claude-plugins-official";
 const OFFICIAL_MARKETPLACE_NAME: &str = "claude-plugins-official";
-const SANDBOX_ENTRY_ENV: &str = "MIDTOWN_IN_SANDBOX_CONTAINER";
-const SANDBOX_IMAGE_ENV: &str = "MIDTOWN_SANDBOX_IMAGE";
-const DEFAULT_SANDBOX_IMAGE: &str = "ghcr.io/btucker/midtown:latest";
-const COMMAND_TIMEOUT_POLL_INTERVAL_MS: u64 = 100;
-const APPLE_CONTAINER_PROBE_TIMEOUT_SECS: u64 = 5;
-const APPLE_CONTAINER_START_TIMEOUT_SECS: u64 = 45;
-const DOCKER_INFO_TIMEOUT_SECS: u64 = 5;
-const SANDBOX_CONTAINER_OP_TIMEOUT_SECS: u64 = 20;
+
+/// Track whether a progress line is currently displayed (needs clearing before other output).
+static PROGRESS_LINE_ACTIVE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Clear the in-progress gauge line so subsequent output (errors, warnings) doesn't overlap it.
+fn clear_startup_progress() {
+    use std::io::IsTerminal;
+    use std::io::Write;
+
+    if PROGRESS_LINE_ACTIVE.swap(false, std::sync::atomic::Ordering::SeqCst)
+        && std::io::stderr().is_terminal()
+    {
+        let mut stderr = std::io::stderr().lock();
+        let _ = write!(stderr, "\r\x1b[K");
+        let _ = stderr.flush();
+    }
+}
 
 fn emit_startup_progress(percent: u16, message: &str) {
+    use crossterm::style::{
+        Attribute, ResetColor, SetAttribute, SetBackgroundColor, SetForegroundColor,
+    };
     use crossterm::terminal;
     use ratatui::{
         buffer::Buffer,
@@ -127,618 +138,80 @@ fn emit_startup_progress(percent: u16, message: &str) {
             .label(label)
             .render(area, &mut buffer);
 
-        let mut line = String::with_capacity(width as usize * 2);
+        // Render buffer cells with ANSI colors so the gauge looks correct.
+        let mut line = String::with_capacity(width as usize * 4);
+        let mut prev_fg: Option<Color> = None;
+        let mut prev_bg: Option<Color> = None;
         for x in 0..width {
-            line.push_str(buffer[(x, 0)].symbol());
+            let cell = &buffer[(x, 0)];
+            let fg = cell.fg;
+            let bg = cell.bg;
+            if prev_fg != Some(fg) || prev_bg != Some(bg) {
+                if let Some(ct_fg) = ratatui_to_crossterm_color(fg) {
+                    line.push_str(&format!("{}", SetForegroundColor(ct_fg)));
+                }
+                if let Some(ct_bg) = ratatui_to_crossterm_color(bg) {
+                    line.push_str(&format!("{}", SetBackgroundColor(ct_bg)));
+                }
+                // Bold text on the filled portion for better readability
+                if fg == Color::DarkGray {
+                    line.push_str(&format!("{}", SetAttribute(Attribute::Bold)));
+                } else {
+                    line.push_str(&format!("{}", SetAttribute(Attribute::NormalIntensity)));
+                }
+                prev_fg = Some(fg);
+                prev_bg = Some(bg);
+            }
+            line.push_str(cell.symbol());
         }
+        line.push_str(&format!("{}", ResetColor));
 
         let mut stderr = std::io::stderr().lock();
-        let _ = writeln!(stderr, "{}", line);
-    }
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-enum SandboxEngine {
-    AppleContainer,
-    Docker,
-}
-
-impl SandboxEngine {
-    fn binary(self) -> &'static str {
-        match self {
-            SandboxEngine::AppleContainer => "container",
-            SandboxEngine::Docker => "docker",
+        // Overwrite the current line (\r) and clear to end of line (\x1b[K)
+        let _ = write!(stderr, "\r{}\x1b[K", line);
+        if percent >= 100 {
+            let _ = writeln!(stderr);
+            PROGRESS_LINE_ACTIVE.store(false, std::sync::atomic::Ordering::SeqCst);
+        } else {
+            PROGRESS_LINE_ACTIVE.store(true, std::sync::atomic::Ordering::SeqCst);
         }
-    }
-
-    fn display_name(self) -> &'static str {
-        match self {
-            SandboxEngine::AppleContainer => "Apple container",
-            SandboxEngine::Docker => "Docker",
-        }
+        let _ = stderr.flush();
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-struct SandboxRuntimeState {
-    engine: SandboxEngine,
-    container_name: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    docker_context: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum ContainerOverride {
-    Apple,
-    Docker { context: Option<String> },
-}
-
-fn parse_container_override(value: Option<&str>) -> Result<Option<ContainerOverride>, String> {
-    let Some(raw) = value else {
-        return Ok(None);
-    };
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return Err(
-            "Invalid --container value: expected 'apple', 'docker', or 'docker:<context>'"
-                .to_string(),
-        );
+fn ratatui_to_crossterm_color(color: ratatui::style::Color) -> Option<crossterm::style::Color> {
+    use crossterm::style::Color as CtColor;
+    use ratatui::style::Color as RaColor;
+    #[allow(unreachable_patterns)]
+    match color {
+        RaColor::Reset => Some(CtColor::Reset),
+        RaColor::Black => Some(CtColor::Black),
+        RaColor::Red => Some(CtColor::DarkRed),
+        RaColor::Green => Some(CtColor::DarkGreen),
+        RaColor::Yellow => Some(CtColor::DarkYellow),
+        RaColor::Blue => Some(CtColor::DarkBlue),
+        RaColor::Magenta => Some(CtColor::DarkMagenta),
+        RaColor::Cyan => Some(CtColor::DarkCyan),
+        RaColor::Gray => Some(CtColor::Grey),
+        RaColor::DarkGray => Some(CtColor::DarkGrey),
+        RaColor::LightRed => Some(CtColor::Red),
+        RaColor::LightGreen => Some(CtColor::Green),
+        RaColor::LightYellow => Some(CtColor::Yellow),
+        RaColor::LightBlue => Some(CtColor::Blue),
+        RaColor::LightMagenta => Some(CtColor::Magenta),
+        RaColor::LightCyan => Some(CtColor::Cyan),
+        RaColor::White => Some(CtColor::White),
+        RaColor::Rgb(r, g, b) => Some(CtColor::Rgb { r, g, b }),
+        RaColor::Indexed(i) => Some(CtColor::AnsiValue(i)),
+        _ => None,
     }
-
-    if trimmed.eq_ignore_ascii_case("apple") {
-        return Ok(Some(ContainerOverride::Apple));
-    }
-    if trimmed.eq_ignore_ascii_case("docker") {
-        return Ok(Some(ContainerOverride::Docker { context: None }));
-    }
-
-    let lower = trimmed.to_ascii_lowercase();
-    if let Some((prefix, _rest)) = lower.split_once(':') {
-        if prefix == "docker" {
-            let context = trimmed
-                .split_once(':')
-                .map(|(_, right)| right.trim())
-                .unwrap_or_default();
-            if context.is_empty() {
-                return Err("Invalid --container value: docker context cannot be empty".to_string());
-            }
-            return Ok(Some(ContainerOverride::Docker {
-                context: Some(context.to_string()),
-            }));
-        }
-        return Err(format!(
-            "Invalid --container value '{}': expected 'apple', 'docker', or 'docker:<context>'",
-            trimmed
-        ));
-    }
-
-    // Treat any other value as an explicit Docker context name.
-    Ok(Some(ContainerOverride::Docker {
-        context: Some(trimmed.to_string()),
-    }))
-}
-
-fn running_inside_sandbox() -> bool {
-    std::env::var(SANDBOX_ENTRY_ENV).ok().as_deref() == Some("1")
-}
-
-fn sandbox_runtime_file_for_repo(repo: &str) -> PathBuf {
-    midtown::paths::projects_dir_for_repo(repo).join("sandbox-runtime.json")
-}
-
-fn write_sandbox_runtime_state(repo: &str, state: &SandboxRuntimeState) {
-    let path = sandbox_runtime_file_for_repo(repo);
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    if let Ok(json) = serde_json::to_string_pretty(state) {
-        let _ = std::fs::write(path, json);
-    }
-}
-
-fn clear_sandbox_runtime_state(repo: &str) {
-    let _ = std::fs::remove_file(sandbox_runtime_file_for_repo(repo));
-}
-
-fn load_sandbox_runtime_state_for_current_repo() -> Option<SandboxRuntimeState> {
-    let repo = midtown::paths::detect_repo_name()?;
-    let path = sandbox_runtime_file_for_repo(&repo);
-    let data = std::fs::read_to_string(path).ok()?;
-    serde_json::from_str::<SandboxRuntimeState>(&data).ok()
-}
-
-fn command_in_path(command: &str) -> bool {
-    std::env::var_os("PATH")
-        .map(|path| {
-            std::env::split_paths(&path).any(|dir| {
-                let candidate = dir.join(command);
-                candidate.is_file()
-            })
-        })
-        .unwrap_or(false)
-}
-
-fn wait_for_command_with_timeout(
-    child: &mut std::process::Child,
-    timeout: std::time::Duration,
-) -> Result<std::process::ExitStatus, String> {
-    let poll_interval = std::time::Duration::from_millis(COMMAND_TIMEOUT_POLL_INTERVAL_MS);
-    let start = std::time::Instant::now();
-
-    loop {
-        let maybe_status = child
-            .try_wait()
-            .map_err(|e| format!("Failed while waiting for process: {}", e))?;
-        if let Some(status) = maybe_status {
-            return Ok(status);
-        }
-        if start.elapsed() >= timeout {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(format!("Timed out after {}s", timeout.as_secs()));
-        }
-        std::thread::sleep(poll_interval);
-    }
-}
-
-fn command_status_with_timeout(
-    mut cmd: Command,
-    timeout: std::time::Duration,
-) -> Result<std::process::ExitStatus, String> {
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| format!("Failed to spawn command: {}", e))?;
-    wait_for_command_with_timeout(&mut child, timeout)
-}
-
-fn command_output_with_timeout(
-    mut cmd: Command,
-    timeout: std::time::Duration,
-) -> Result<std::process::Output, String> {
-    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| format!("Failed to spawn command: {}", e))?;
-    wait_for_command_with_timeout(&mut child, timeout)?;
-    child
-        .wait_with_output()
-        .map_err(|e| format!("Failed to collect command output: {}", e))
-}
-
-fn apple_container_is_running() -> bool {
-    // Check if Apple container system is already running without starting it
-    let mut cmd = Command::new("container");
-    cmd.args(["list"])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    command_status_with_timeout(
-        cmd,
-        std::time::Duration::from_secs(APPLE_CONTAINER_PROBE_TIMEOUT_SECS),
-    )
-    .map(|s| s.success())
-    .unwrap_or(false)
-}
-
-fn ensure_apple_container_system_started() -> Result<(), String> {
-    let mut cmd = Command::new("container");
-    cmd.args(["system", "start"]);
-    let status = command_status_with_timeout(
-        cmd,
-        std::time::Duration::from_secs(APPLE_CONTAINER_START_TIMEOUT_SECS),
-    )
-    .map_err(|e| format!("Failed to run 'container system start': {}", e))?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(
-            "'container system start' failed. Install and initialize Apple container runtime."
-                .to_string(),
-        )
-    }
-}
-
-fn docker_command_with_context(docker_context: Option<&str>) -> Command {
-    let mut cmd = Command::new("docker");
-    if let Some(context) = docker_context
-        && !context.trim().is_empty()
-    {
-        cmd.args(["--context", context]);
-    }
-    cmd
-}
-
-fn docker_contexts_by_preference() -> Vec<String> {
-    let mut contexts = Vec::new();
-
-    if let Ok(output) = Command::new("docker").args(["context", "show"]).output()
-        && output.status.success()
-    {
-        let current = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if !current.is_empty() {
-            contexts.push(current);
-        }
-    }
-
-    if let Ok(output) = Command::new("docker")
-        .args(["context", "ls", "--format", "{{.Name}}"])
-        .output()
-        && output.status.success()
-    {
-        for line in String::from_utf8_lossy(&output.stdout).lines() {
-            let context = line.trim();
-            if !context.is_empty() && !contexts.iter().any(|c| c == context) {
-                contexts.push(context.to_string());
-            }
-        }
-    }
-
-    contexts
-}
-
-fn summarize_docker_context_error(context: &str, stderr: &str) -> String {
-    let trimmed = stderr.trim();
-    if trimmed.is_empty() {
-        return format!("'{}': no error details from docker", context);
-    }
-    if trimmed.contains("permission denied while trying to connect to the docker API") {
-        return format!("'{}': permission denied on Docker socket", context);
-    }
-    let mut first_line = trimmed.lines().next().unwrap_or(trimmed).trim().to_string();
-    if first_line.len() > 120 {
-        first_line.truncate(120);
-        first_line.push_str("...");
-    }
-    format!("'{}': {}", context, first_line)
-}
-
-fn docker_context_is_usable(context: &str) -> Result<(), String> {
-    if !command_in_path("docker") {
-        return Err("docker command not found".to_string());
-    }
-    let mut cmd = docker_command_with_context(Some(context));
-    cmd.arg("info");
-    let output = command_output_with_timeout(
-        cmd,
-        std::time::Duration::from_secs(DOCKER_INFO_TIMEOUT_SECS),
-    )
-    .map_err(|e| format!("'{}': {}", context, e))?;
-    if output.status.success() {
-        Ok(())
-    } else {
-        Err(summarize_docker_context_error(
-            context,
-            &String::from_utf8_lossy(&output.stderr),
-        ))
-    }
-}
-
-fn detect_usable_docker_context() -> Result<String, String> {
-    if !command_in_path("docker") {
-        return Err("docker command not found".to_string());
-    }
-
-    let contexts = docker_contexts_by_preference();
-    if contexts.is_empty() {
-        return Err(
-            "No Docker contexts were found. Configure Docker or run `docker context ls`."
-                .to_string(),
-        );
-    }
-
-    let mut errors = Vec::new();
-    for context in contexts {
-        match docker_context_is_usable(&context) {
-            Ok(()) => return Ok(context),
-            Err(e) => {
-                errors.push(e);
-            }
-        }
-    }
-
-    Err(format!(
-        "No usable Docker context found. Tried: {}",
-        errors.join("; ")
-    ))
-}
-
-fn docker_is_running() -> bool {
-    detect_usable_docker_context().is_ok()
-}
-
-fn docker_is_usable() -> Result<String, String> {
-    detect_usable_docker_context()
-}
-
-fn sanitize_container_name(name: &str) -> String {
-    let mut out: String = name
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
-                c.to_ascii_lowercase()
-            } else {
-                '-'
-            }
-        })
-        .collect();
-    while out.contains("--") {
-        out = out.replace("--", "-");
-    }
-    out.trim_matches('-').to_string()
-}
-
-fn sandbox_container_name(project_name: &str) -> String {
-    let slug = sanitize_container_name(project_name);
-    if slug.is_empty() {
-        "midtown-sandbox-default".to_string()
-    } else {
-        format!("midtown-sandbox-{}", slug)
-    }
-}
-
-fn sandbox_image_name() -> String {
-    std::env::var(SANDBOX_IMAGE_ENV).unwrap_or_else(|_| DEFAULT_SANDBOX_IMAGE.to_string())
-}
-
-fn host_uid_gid() -> Option<(String, String)> {
-    let uid = Command::new("id").arg("-u").output().ok()?;
-    let gid = Command::new("id").arg("-g").output().ok()?;
-    if !uid.status.success() || !gid.status.success() {
-        return None;
-    }
-    Some((
-        String::from_utf8_lossy(&uid.stdout).trim().to_string(),
-        String::from_utf8_lossy(&gid.stdout).trim().to_string(),
-    ))
-}
-
-fn collect_mounts(home: &Path, primary_repo: &Path, repos: &[PathBuf]) -> Vec<String> {
-    let mut mounts = vec![home.to_string_lossy().to_string()];
-    let mut add_mount = |path: &Path| {
-        let s = path.to_string_lossy().to_string();
-        if !mounts.contains(&s) {
-            mounts.push(s);
-        }
-    };
-    add_mount(primary_repo);
-    for repo in repos {
-        add_mount(repo);
-    }
-    mounts
-}
-
-fn engine_command(engine: SandboxEngine, docker_context: Option<&str>) -> Command {
-    if matches!(engine, SandboxEngine::Docker) {
-        docker_command_with_context(docker_context)
-    } else {
-        Command::new(engine.binary())
-    }
-}
-
-fn engine_exec_success(
-    engine: SandboxEngine,
-    docker_context: Option<&str>,
-    container_name: &str,
-    command: &str,
-) -> bool {
-    let mut cmd = engine_command(engine, docker_context);
-    cmd.args(["exec", container_name, "sh", "-lc", command])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    command_status_with_timeout(
-        cmd,
-        std::time::Duration::from_secs(SANDBOX_CONTAINER_OP_TIMEOUT_SECS),
-    )
-    .map(|s| s.success())
-    .unwrap_or(false)
-}
-
-fn engine_start_container(
-    engine: SandboxEngine,
-    docker_context: Option<&str>,
-    container_name: &str,
-) -> bool {
-    let mut cmd = engine_command(engine, docker_context);
-    cmd.args(["start", container_name])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    command_status_with_timeout(
-        cmd,
-        std::time::Duration::from_secs(SANDBOX_CONTAINER_OP_TIMEOUT_SECS),
-    )
-    .map(|s| s.success())
-    .unwrap_or(false)
-}
-
-fn engine_remove_container(
-    engine: SandboxEngine,
-    docker_context: Option<&str>,
-    container_name: &str,
-) {
-    let _ = engine_command(engine, docker_context)
-        .args(["rm", "-f", container_name])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
-}
-
-fn engine_run_sandbox_container(
-    engine: SandboxEngine,
-    docker_context: Option<&str>,
-    container_name: &str,
-    image: &str,
-    working_dir: &Path,
-    mounts: &[String],
-    home: &Path,
-) -> Result<(), String> {
-    let mut args: Vec<String> = vec![
-        "run".to_string(),
-        "-d".to_string(),
-        "--name".to_string(),
-        container_name.to_string(),
-        "-w".to_string(),
-        working_dir.to_string_lossy().to_string(),
-        "-e".to_string(),
-        format!("HOME={}", home.display()),
-        "-e".to_string(),
-        format!("XDG_STATE_HOME={}", home.join(".local/state").display()),
-        "-e".to_string(),
-        "MIDTOWN_SANDBOX_CONTAINER=1".to_string(),
-    ];
-
-    if matches!(engine, SandboxEngine::Docker)
-        && let Some((uid, gid)) = host_uid_gid()
-    {
-        args.push("--user".to_string());
-        args.push(format!("{}:{}", uid, gid));
-    }
-
-    for mount in mounts {
-        args.push("-v".to_string());
-        args.push(format!("{}:{}", mount, mount));
-    }
-
-    args.push(image.to_string());
-    args.push("sleep".to_string());
-    args.push("infinity".to_string());
-
-    let mut cmd = engine_command(engine, docker_context);
-    let output = cmd
-        .args(args)
-        .output()
-        .map_err(|e| format!("Failed to run {} container: {}", engine.display_name(), e))?;
-
-    if output.status.success() {
-        return Ok(());
-    }
-
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    Err(format!(
-        "{} run failed: {} {}",
-        engine.display_name(),
-        stderr.trim(),
-        stdout.trim()
-    ))
-}
-
-fn ensure_sandbox_container_running(
-    engine: SandboxEngine,
-    docker_context: Option<&str>,
-    container_name: &str,
-    image: &str,
-    working_dir: &Path,
-    mounts: &[String],
-    home: &Path,
-) -> Result<(), String> {
-    if engine_exec_success(engine, docker_context, container_name, "true") {
-        return Ok(());
-    }
-
-    if engine_start_container(engine, docker_context, container_name)
-        && engine_exec_success(engine, docker_context, container_name, "true")
-    {
-        return Ok(());
-    }
-
-    match engine_run_sandbox_container(
-        engine,
-        docker_context,
-        container_name,
-        image,
-        working_dir,
-        mounts,
-        home,
-    ) {
-        Ok(()) => Ok(()),
-        Err(first_err) => {
-            engine_remove_container(engine, docker_context, container_name);
-            engine_run_sandbox_container(
-                engine,
-                docker_context,
-                container_name,
-                image,
-                working_dir,
-                mounts,
-                home,
-            )
-            .map_err(|second_err| format!("{}; {}", first_err, second_err))
-        }
-    }
-}
-
-fn run_midtown_command_in_sandbox(
-    runtime: &SandboxRuntimeState,
-    working_dir: &Path,
-    args: &[String],
-) -> Result<Response, String> {
-    let mut cmd_args: Vec<String> = vec![
-        "exec".to_string(),
-        "-e".to_string(),
-        format!("{}=1", SANDBOX_ENTRY_ENV),
-        "-w".to_string(),
-        working_dir.to_string_lossy().to_string(),
-        runtime.container_name.clone(),
-        "midtown".to_string(),
-    ];
-    cmd_args.extend(args.to_vec());
-
-    let mut cmd = engine_command(runtime.engine, runtime.docker_context.as_deref());
-    let output = cmd.args(&cmd_args).output().map_err(|e| {
-        format!(
-            "Failed to execute midtown inside {} sandbox: {}",
-            runtime.engine.display_name(),
-            e
-        )
-    })?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        return Err(format!(
-            "Sandbox command failed ({}): {} {}",
-            runtime.engine.display_name(),
-            stderr.trim(),
-            stdout.trim()
-        ));
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    match serde_json::from_str::<Response>(stdout.trim()) {
-        Ok(response) => Ok(response),
-        Err(_) => Ok(Response::Message {
-            message: stdout.trim().to_string(),
-        }),
-    }
-}
-
-fn exec_midtown_command_in_sandbox(
-    runtime: &SandboxRuntimeState,
-    working_dir: &Path,
-    args: &[String],
-) -> Result<Response, String> {
-    let mut cmd = engine_command(runtime.engine, runtime.docker_context.as_deref());
-    cmd.arg("exec")
-        .arg("-it")
-        .arg("-e")
-        .arg(format!("{}=1", SANDBOX_ENTRY_ENV))
-        .arg("-w")
-        .arg(working_dir.to_string_lossy().to_string())
-        .arg(&runtime.container_name)
-        .arg("midtown");
-    for arg in args {
-        cmd.arg(arg);
-    }
-
-    let err = cmd.exec();
-    Err(format!(
-        "Failed to exec into {} sandbox: {}",
-        runtime.engine.display_name(),
-        err
-    ))
 }
 
 /// Ensure the official marketplace is configured and required plugins are installed.
+///
+/// Plugin setup is best-effort — failures are logged but don't block startup.
+/// The Claude CLI may not be authenticated yet (e.g. fresh container), in which
+/// case plugin commands will fail gracefully.
 fn ensure_plugins_installed() -> Result<(), String> {
     use midtown::daemon::REQUIRED_PLUGINS;
 
@@ -747,10 +220,19 @@ fn ensure_plugins_installed() -> Result<(), String> {
     }
 
     // First ensure marketplace is configured
-    ensure_marketplace_configured()?;
+    if let Err(e) = ensure_marketplace_configured() {
+        eprintln!("Warning: Could not configure plugin marketplace: {}", e);
+        return Ok(());
+    }
 
     // Get list of installed plugins
-    let installed = get_installed_plugins()?;
+    let installed = match get_installed_plugins() {
+        Ok(list) => list,
+        Err(e) => {
+            eprintln!("Warning: Could not list plugins: {}", e);
+            return Ok(());
+        }
+    };
 
     // Find missing plugins
     let missing: Vec<_> = REQUIRED_PLUGINS
@@ -818,9 +300,15 @@ fn get_installed_plugins() -> Result<std::collections::HashSet<String>, String> 
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
+    let trimmed = stdout.trim();
+
+    // Empty output means no plugins installed (e.g. fresh container)
+    if trimmed.is_empty() {
+        return Ok(std::collections::HashSet::new());
+    }
 
     // Parse JSON output - it's an array of objects with "id" field
-    let plugins: Vec<serde_json::Value> = serde_json::from_str(&stdout)
+    let plugins: Vec<serde_json::Value> = serde_json::from_str(trimmed)
         .map_err(|e| format!("Failed to parse plugin list JSON: {}", e))?;
 
     let ids: std::collections::HashSet<String> = plugins
@@ -1075,18 +563,19 @@ fn update_project_config(
 /// 1. Starts the daemon (if not running)
 /// 2. Creates tmux session for the project
 /// 3. Launches Claude Code with Lead config in that session
+///
+/// Claude Code processes run inside a lightweight filesystem sandbox
+/// (sandbox-exec on macOS, bwrap on Linux) that restricts writes to
+/// the project directory, ~/.midtown, ~/.claude, and temp directories.
 pub fn handle_start(
     daemon_only: bool,
-    dangerously_run_without_sandbox: bool,
     project: Option<String>,
-    container: Option<String>,
     repos: Vec<PathBuf>,
 ) -> Result<Response, String> {
     // Validate explicit project name if provided
     if let Some(ref name) = project {
         validate_project_name(name)?;
     }
-    let container_override = parse_container_override(container.as_deref())?;
 
     // Verify we're in a git repo first
     let primary_repo = repo_root()?;
@@ -1096,10 +585,6 @@ pub fn handle_start(
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_else(|| "default".to_string())
     });
-    let repo_name = primary_repo
-        .file_name()
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_else(|| "default".to_string());
     let additional_repos = resolve_repos(&repos, &project_name);
     let session = session_name_for(&Some(project_name.clone()))?;
     emit_startup_progress(
@@ -1111,204 +596,9 @@ pub fn handle_start(
         ),
     );
 
-    // On macOS, require sandboxed start by default unless we're already inside
-    // the sandbox container or the user explicitly opts out.
-    if cfg!(target_os = "macos") && !running_inside_sandbox() {
-        emit_startup_progress(12, "checking container runtimes");
-        let home = dirs::home_dir().ok_or("Failed to determine home directory")?;
-        let image = sandbox_image_name();
-        let container_name = sandbox_container_name(&project_name);
-        let mounts = collect_mounts(&home, &primary_repo, &repos);
-        let build_start_args = || {
-            let mut start_args = vec!["--format".to_string(), "json".to_string()];
-            start_args.push("start".to_string());
-            if daemon_only {
-                start_args.push("--daemon-only".to_string());
-            }
-            if let Some(ref p) = project {
-                start_args.push("--project".to_string());
-                start_args.push(p.clone());
-            }
-            if let Some(ref c) = container {
-                start_args.push("--container".to_string());
-                start_args.push(c.clone());
-            }
-            for repo in &repos {
-                start_args.push("--add-repo".to_string());
-                start_args.push(repo.to_string_lossy().to_string());
-            }
-            start_args
-        };
-
-        // Determine which container runtimes to try and in what order.
-        // Prefer whichever is already running to avoid unnecessary starts.
-        let forced_docker_context = match &container_override {
-            Some(ContainerOverride::Docker { context }) => context.clone(),
-            _ => None,
-        };
-        let engines_to_try: Vec<SandboxEngine> = if let Some(ref override_value) =
-            container_override
-        {
-            let desc = match override_value {
-                ContainerOverride::Apple => "apple".to_string(),
-                ContainerOverride::Docker { context: Some(ctx) } => {
-                    format!("docker context '{}'", ctx)
-                }
-                ContainerOverride::Docker { context: None } => "docker (auto context)".to_string(),
-            };
-            emit_startup_progress(16, &format!("container override: {}", desc));
-            match override_value {
-                ContainerOverride::Apple => vec![SandboxEngine::AppleContainer],
-                ContainerOverride::Docker { .. } => vec![SandboxEngine::Docker],
-            }
-        } else {
-            let docker_running = docker_is_running();
-            let apple_running = command_in_path("container") && apple_container_is_running();
-            if docker_running && !apple_running {
-                // Docker is running, try it first
-                vec![SandboxEngine::Docker, SandboxEngine::AppleContainer]
-            } else if apple_running && !docker_running {
-                // Apple container is running, try it first
-                vec![SandboxEngine::AppleContainer, SandboxEngine::Docker]
-            } else {
-                // Either both are running or neither is running - use default preference order
-                vec![SandboxEngine::AppleContainer, SandboxEngine::Docker]
-            }
-        };
-
-        let mut errors = Vec::new();
-        for engine in engines_to_try {
-            let mut runtime = SandboxRuntimeState {
-                engine,
-                container_name: container_name.clone(),
-                docker_context: None,
-            };
-            emit_startup_progress(
-                20,
-                &format!("trying {} runtime", runtime.engine.display_name()),
-            );
-
-            let result = match engine {
-                SandboxEngine::AppleContainer => {
-                    if !command_in_path("container") {
-                        Err("container command not found".to_string())
-                    } else {
-                        emit_startup_progress(28, "starting Apple container system");
-                        ensure_apple_container_system_started().and_then(|_| {
-                            ensure_sandbox_container_running(
-                                runtime.engine,
-                                runtime.docker_context.as_deref(),
-                                &runtime.container_name,
-                                &image,
-                                &primary_repo,
-                                &mounts,
-                                &home,
-                            )
-                        })
-                    }
-                }
-                SandboxEngine::Docker => {
-                    if !command_in_path("docker") {
-                        Err("docker command not found".to_string())
-                    } else {
-                        emit_startup_progress(28, "checking Docker daemon");
-                        let context_result = if let Some(context) = forced_docker_context.clone() {
-                            docker_context_is_usable(&context).map(|_| context)
-                        } else {
-                            docker_is_usable()
-                        };
-                        context_result.and_then(|context| {
-                            runtime.docker_context = Some(context.clone());
-                            emit_startup_progress(
-                                31,
-                                &format!("using Docker context '{}'", context),
-                            );
-                            ensure_sandbox_container_running(
-                                runtime.engine,
-                                runtime.docker_context.as_deref(),
-                                &runtime.container_name,
-                                &image,
-                                &primary_repo,
-                                &mounts,
-                                &home,
-                            )
-                        })
-                    }
-                }
-            };
-
-            match result {
-                Ok(()) => {
-                    emit_startup_progress(
-                        35,
-                        &format!(
-                            "launching in {} sandbox '{}'",
-                            runtime.engine.display_name(),
-                            runtime.container_name
-                        ),
-                    );
-                    let start_args = build_start_args();
-                    let inner =
-                        run_midtown_command_in_sandbox(&runtime, &primary_repo, &start_args)?;
-                    write_sandbox_runtime_state(&repo_name, &runtime);
-                    let sandbox_details = match runtime.docker_context.as_deref() {
-                        Some(context) if runtime.engine == SandboxEngine::Docker => format!(
-                            "{} ({}, context={})",
-                            runtime.engine.display_name(),
-                            runtime.container_name,
-                            context
-                        ),
-                        _ => format!(
-                            "{} ({})",
-                            runtime.engine.display_name(),
-                            runtime.container_name
-                        ),
-                    };
-                    return Ok(match inner {
-                        Response::Message { message } => Response::Message {
-                            message: format!("{}. Sandbox: {}", message, sandbox_details),
-                        },
-                        other => other,
-                    });
-                }
-                Err(e) => errors.push((engine, e)),
-            }
-        }
-
-        let apple_error = errors
-            .iter()
-            .find(|(e, _)| *e == SandboxEngine::AppleContainer)
-            .map(|(_, err)| err.clone())
-            .unwrap_or_else(|| "not attempted".to_string());
-
-        let docker_error = errors
-            .iter()
-            .find(|(e, _)| *e == SandboxEngine::Docker)
-            .map(|(_, err)| err.clone())
-            .unwrap_or_else(|| "not attempted".to_string());
-
-        if dangerously_run_without_sandbox {
-            clear_sandbox_runtime_state(&repo_name);
-            eprintln!(
-                "Warning: Starting without sandbox because no container runtime was usable.\n\
-                 Apple container: {}\n\
-                 Docker: {}",
-                apple_error, docker_error
-            );
-        } else {
-            return Err(format!(
-                "No usable container runtime found on macOS.\n\
-                 Apple container: {}\n\
-                 Docker: {}\n\
-                 Install Apple container (https://github.com/apple/container) or Docker, \
-                 or rerun with --dangerously-run-without-sandbox.",
-                apple_error, docker_error
-            ));
-        }
-    }
-
     // Verify Claude CLI is installed (unless using a stub command or daemon-only mode)
     if !daemon_only && std::env::var("MIDTOWN_LEAD_COMMAND").is_err() && !claude_cli_available() {
+        clear_startup_progress();
         return Err(
             "Claude CLI is not installed. Install it with: curl -fsSL https://claude.ai/install.sh | bash"
                 .to_string(),
@@ -1316,7 +606,7 @@ pub fn handle_start(
     }
 
     // Ensure required plugins are installed (unless using a stub command)
-    if !daemon_only && std::env::var("MIDTOWN_LEAD_COMMAND").is_err() {
+    if std::env::var("MIDTOWN_LEAD_COMMAND").is_err() {
         emit_startup_progress(55, "checking required Claude plugins");
         ensure_plugins_installed()?;
     }
@@ -1366,6 +656,7 @@ pub fn handle_start(
             messages.push("Started daemon".to_string());
             emit_startup_progress(82, "daemon is ready");
         } else {
+            clear_startup_progress();
             return Err("Daemon failed to start".to_string());
         }
     }
@@ -1396,6 +687,7 @@ pub fn handle_start(
             .map_err(|e| format!("Failed to create session: {}", e))?;
 
         if !status.success() {
+            clear_startup_progress();
             return Err(format!("Failed to create session '{}'", session));
         }
 
@@ -1619,22 +911,6 @@ pub fn handle_webserver_restart() -> Result<Response, String> {
 /// Stops the daemon, webserver, and optionally the tmux session.
 /// Also cleans up any orphaned `gh webhook forward` processes.
 pub fn handle_stop(keep_session: bool) -> Result<Response, String> {
-    if !running_inside_sandbox()
-        && let Some(runtime) = load_sandbox_runtime_state_for_current_repo()
-    {
-        let cwd = std::env::current_dir()
-            .map_err(|e| format!("Failed to get current directory: {}", e))?;
-        let mut args = vec![
-            "--format".to_string(),
-            "json".to_string(),
-            "stop".to_string(),
-        ];
-        if keep_session {
-            args.push("--keep-session".to_string());
-        }
-        return run_midtown_command_in_sandbox(&runtime, &cwd, &args);
-    }
-
     let mut messages = Vec::new();
 
     // Get session name (if in a git repo)
@@ -1926,22 +1202,6 @@ fn wait_for_coworkers_to_drain(timeout_secs: u64) -> Result<(), String> {
 ///
 /// For a full fresh start, use `midtown stop && midtown start`.
 pub fn handle_restart(force: bool) -> Result<Response, String> {
-    if !running_inside_sandbox()
-        && let Some(runtime) = load_sandbox_runtime_state_for_current_repo()
-    {
-        let cwd = std::env::current_dir()
-            .map_err(|e| format!("Failed to get current directory: {}", e))?;
-        let mut args = vec![
-            "--format".to_string(),
-            "json".to_string(),
-            "restart".to_string(),
-        ];
-        if force {
-            args.push("--force".to_string());
-        }
-        return run_midtown_command_in_sandbox(&runtime, &cwd, &args);
-    }
-
     // If not forcing, wait for coworkers to drain gracefully
     if !force {
         // Timeout after 5 minutes (300 seconds)
@@ -1976,7 +1236,7 @@ pub fn handle_restart(force: bool) -> Result<Response, String> {
     // already exist (we kept them above). Passing daemon_only=true prevents
     // handle_start from entering the session-creation path, which could
     // race with check_and_respawn_lead to create duplicate lead windows.
-    let result = handle_start(true, false, None, None, vec![])?;
+    let result = handle_start(true, None, vec![])?;
 
     // Restart the chat pane to pick up code changes.
     // Use respawn-pane -k to atomically kill the old process and start a new
@@ -2022,18 +1282,6 @@ fn clear_stale_lead_session(repo: &Path) {
 /// If the session doesn't exist, it is automatically created first.
 /// If the session exists but Lead wasn't started with midtown settings, reinitialize it.
 pub fn handle_attach(project: Option<&str>) -> Result<Response, String> {
-    if !running_inside_sandbox()
-        && let Some(runtime) = load_sandbox_runtime_state_for_current_repo()
-    {
-        let cwd = std::env::current_dir()
-            .map_err(|e| format!("Failed to get current directory: {}", e))?;
-        let mut args = vec!["attach".to_string()];
-        if let Some(name) = project {
-            args.push(name.to_string());
-        }
-        return exec_midtown_command_in_sandbox(&runtime, &cwd, &args);
-    }
-
     let session = match project {
         // Explicit project name: construct session name directly
         Some(name) => format!("midtown-{}", name),
@@ -2066,7 +1314,7 @@ pub fn handle_attach(project: Option<&str>) -> Result<Response, String> {
         }
 
         // Start midtown (daemon + tmux session)
-        handle_start(false, false, None, None, vec![])?;
+        handle_start(false, None, vec![])?;
 
         // Wait briefly for the session to be ready
         std::thread::sleep(std::time::Duration::from_millis(200));
@@ -2551,72 +1799,5 @@ mod tests {
         // The actual result depends on whether claude is installed in the test environment.
         let _result: bool = claude_cli_available();
         // If we get here without panicking, the function works correctly
-    }
-
-    #[test]
-    fn test_sanitize_container_name() {
-        assert_eq!(
-            sanitize_container_name("My Project.Name"),
-            "my-project-name"
-        );
-        assert_eq!(sanitize_container_name("___"), "___");
-        assert_eq!(sanitize_container_name(""), "");
-    }
-
-    #[test]
-    fn test_parse_container_override_valid() {
-        assert_eq!(
-            parse_container_override(Some("apple")).unwrap(),
-            Some(ContainerOverride::Apple)
-        );
-        assert_eq!(
-            parse_container_override(Some("docker")).unwrap(),
-            Some(ContainerOverride::Docker { context: None })
-        );
-        assert_eq!(
-            parse_container_override(Some("docker:default")).unwrap(),
-            Some(ContainerOverride::Docker {
-                context: Some("default".to_string()),
-            })
-        );
-        assert_eq!(
-            parse_container_override(Some("orbstack")).unwrap(),
-            Some(ContainerOverride::Docker {
-                context: Some("orbstack".to_string()),
-            })
-        );
-    }
-
-    #[test]
-    fn test_parse_container_override_invalid() {
-        assert!(parse_container_override(Some("")).is_err());
-        assert!(parse_container_override(Some("docker:")).is_err());
-        assert!(parse_container_override(Some("podman:machine")).is_err());
-    }
-
-    #[test]
-    fn test_sandbox_runtime_state_roundtrip() {
-        let state = SandboxRuntimeState {
-            engine: SandboxEngine::Docker,
-            container_name: "midtown-sandbox-test".to_string(),
-            docker_context: Some("default".to_string()),
-        };
-        let json = serde_json::to_string(&state).unwrap();
-        let loaded: SandboxRuntimeState = serde_json::from_str(&json).unwrap();
-        assert_eq!(loaded, state);
-    }
-
-    #[test]
-    fn test_sandbox_runtime_state_legacy_json_without_context() {
-        let legacy = r#"{"engine":"docker","container_name":"midtown-sandbox-test"}"#;
-        let loaded: SandboxRuntimeState = serde_json::from_str(legacy).unwrap();
-        assert_eq!(
-            loaded,
-            SandboxRuntimeState {
-                engine: SandboxEngine::Docker,
-                container_name: "midtown-sandbox-test".to_string(),
-                docker_context: None,
-            }
-        );
     }
 }

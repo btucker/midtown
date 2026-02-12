@@ -86,18 +86,9 @@ enum Commands {
         #[arg(long)]
         daemon_only: bool,
 
-        /// Allow starting outside a container sandbox when none is available
-        #[arg(long)]
-        dangerously_run_without_sandbox: bool,
-
         /// Project name (overrides auto-detection)
         #[arg(long)]
         project: Option<String>,
-
-        /// Container runtime override.
-        /// Use `apple`, `docker`, or `docker:<context>` (for example: `docker:default`).
-        #[arg(long)]
-        container: Option<String>,
 
         /// Additional repository paths to include
         #[arg(long = "add-repo")]
@@ -327,9 +318,7 @@ fn main() {
     // Default to Start if no command provided
     let command = cli.command.unwrap_or(Commands::Start {
         daemon_only: false,
-        dangerously_run_without_sandbox: false,
         project: None,
-        container: None,
         repos: vec![],
     });
 
@@ -456,19 +445,11 @@ fn main() {
     // Start command (starts daemon, doesn't need existing connection)
     if let Commands::Start {
         daemon_only,
-        dangerously_run_without_sandbox,
         project,
-        container,
         repos,
     } = &command
     {
-        let result = cli::handle_start(
-            *daemon_only,
-            *dangerously_run_without_sandbox,
-            project.clone(),
-            container.clone(),
-            repos.clone(),
-        );
+        let result = cli::handle_start(*daemon_only, project.clone(), repos.clone());
         handle_result(format, result);
         return;
     }
