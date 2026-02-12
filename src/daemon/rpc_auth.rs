@@ -194,28 +194,23 @@ pub(super) async fn handle_auth_switch(
     let shutdown_count = running_coworkers.len();
     for coworker in &running_coworkers {
         let name = &coworker.name;
-        let coworkers = state.coworkers.clone();
-        let name_owned = name.clone();
-        let shutdown_result =
-            tokio::task::spawn_blocking(move || coworkers.shutdown(&name_owned)).await;
 
-        match shutdown_result {
-            Ok(Ok(())) => {
-                state.record_coworker_stop_time(name);
-                // Only clear records on successful shutdown
-                {
-                    let mut records = state.coworker_records.write().await;
-                    records.remove(name);
-                }
-                state.broadcast_coworker_update(name, "stopped", None);
-            }
-            Ok(Err(e)) => {
-                warn!("Failed to shut down coworker {}: {}", name, e);
-            }
-            Err(e) => {
-                warn!("spawn_blocking panic while shutting down {}: {}", name, e);
-            }
+        // Shut down the headless session (async), then deregister from tracking (sync).
+        // This matches the correct shutdown sequence in rpc_coworker.rs (handle_coworker_break).
+        // Using the old coworkers.shutdown() would attempt to kill tmux windows instead of
+        // headless sessions, causing the sessions to remain alive with stale credentials.
+        if let Err(e) = state.session_manager.shutdown(name).await {
+            warn!("Failed to shut down headless session for {}: {}", name, e);
         }
+        state.coworkers.deregister(name);
+
+        state.record_coworker_stop_time(name);
+        // Only clear records on successful shutdown
+        {
+            let mut records = state.coworker_records.write().await;
+            records.remove(name);
+        }
+        state.broadcast_coworker_update(name, "stopped", None);
     }
 
     // Capture reviewer assignments before relaunch so reviewer coworkers can
