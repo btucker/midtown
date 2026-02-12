@@ -1300,12 +1300,23 @@ pub(super) fn spawn_for_pending_tasks(
     // This handles the case where next_available_name() returns the same name for
     // two unrelated tasks because the first spawn hasn't executed yet.
     let mut names_assigned_this_tick: HashSet<String> = HashSet::new();
+    // Track the number of NEW spawns queued in this tick (for dev limit enforcement).
+    // Spawns to already-running coworkers (grouped tasks) don't count — only fresh spawns
+    // that will create new coworker processes.
+    let mut spawns_queued_this_tick: usize = 0;
+    // Dev cap: max_coworkers - REVIEW_HEADROOM, but always allow at least 1 dev.
+    // With max=8 and REVIEW_HEADROOM=2, dev cap is 6.
+    let dev_cap = state.max_coworkers.saturating_sub(REVIEW_HEADROOM).max(1);
+    let current_coworker_count = state.coworkers.list().len();
+
     for task in pending_unowned.iter() {
-        // Check dev coworkers limit before spawning (reserve slots for reviewers)
-        if snap.is_at_dev_limit {
+        // Re-check dev limit after each spawn decision, accounting for spawns queued this tick.
+        // This prevents spawning beyond the dev cap when multiple tasks are processed in one tick.
+        let effective_count = current_coworker_count + spawns_queued_this_tick;
+        if effective_count >= dev_cap {
             debug!(
-                "Dev coworkers limit reached, deferring unowned task !{}",
-                task.id
+                "Dev coworkers limit reached ({}+{} >= {}), deferring unowned task !{}",
+                current_coworker_count, spawns_queued_this_tick, dev_cap, task.id
             );
             break;
         }
@@ -1624,6 +1635,8 @@ pub(super) fn spawn_for_pending_tasks(
                 on_success,
                 on_failure: vec![],
             });
+            // Increment spawn counter to enforce dev limit within this tick
+            spawns_queued_this_tick += 1;
         }
     }
 
@@ -1927,6 +1940,10 @@ pub(super) fn reset_orphaned_tasks(snap: &snapshot::WorldSnapshot) -> Vec<Effect
 
     effects
 }
+
+#[path = "dispatch_dev_limit_tests.rs"]
+#[cfg(test)]
+mod dispatch_dev_limit_tests;
 
 #[cfg(test)]
 mod tests {
