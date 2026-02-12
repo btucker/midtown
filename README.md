@@ -450,6 +450,39 @@ midtown lead remind cancel <id>
 
 Reminders are stored in `~/.midtown/projects/<repo>/reminders.json` and evaluated by the daemon each tick.
 
+### Sandboxing
+
+Midtown uses platform-native filesystem sandboxing to restrict Claude Code's write access while preserving full read access:
+
+- **macOS**: `sandbox-exec` with SBPL profiles
+- **Linux**: `bwrap` (bubblewrap) when available
+- **Zero overhead**: Same-host sandboxing — no Docker, no containers, same binaries and auth tokens
+
+**How it works:**
+
+The sandbox allows reads from anywhere but restricts writes to explicitly permitted directories:
+
+- Project repositories (primary + additional repos in multi-repo projects)
+- `~/.midtown` (daemon state, channel logs, worktrees)
+- `~/.claude` (Claude Code config, sessions, tasks)
+- `~/.codex` (Codex config)
+- `~/.local/state/midtown` (daemon socket, runtime state)
+- `/tmp` and platform-specific temp directories
+
+**Git worktree support:** When the primary repo is a git worktree, Midtown detects this and automatically adds the main repository's `.git/` directory to the writable list, ensuring git operations (commits, refs, objects) work correctly.
+
+**macOS SBPL profile structure:**
+```scheme
+(allow default)                          ; Allow all operations by default
+(deny file-write* (subpath "$HOME"))    ; Block writes under home directory
+(allow file-write*                       ; Re-allow writes to specific paths
+  (subpath "/path/to/project")
+  (subpath "~/.midtown")
+  ...)
+```
+
+This approach means Claude Code can access any file for context (reading documentation, analyzing dependencies) but can only modify files within the project workspace and configuration directories.
+
 ## License
 
 MIT
