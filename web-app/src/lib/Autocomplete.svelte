@@ -6,7 +6,7 @@
     items = [],          // Array of items to filter and display
     show = $bindable(false),     // Whether dropdown is visible
     selectedIndex = $bindable(0), // Currently highlighted item index
-    position = {},       // { top, left } positioning for dropdown
+    position = {},       // { top, left, width } positioning for dropdown
     getLabel = (item) => String(item),      // Function to get display label
     getValue = (item) => String(item),      // Function to get inserted value
     getDescription = (item) => null,        // Function to get optional description
@@ -39,6 +39,7 @@
     bind:this={dropdownElement}
     style:top="{position.top}px"
     style:left="{position.left}px"
+    style:width="{position.width ? position.width + 'px' : 'auto'}"
   >
     {#each items as item, i}
       <button
@@ -66,8 +67,6 @@
     max-height: 280px;
     overflow-y: auto;
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
-    min-width: 200px;
-    max-width: 400px;
     /* Position above the trigger point by shifting up by own height + gap */
     transform: translateY(calc(-100% - 8px));
   }

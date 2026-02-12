@@ -110,24 +110,17 @@
     const rect = textareaElement.getBoundingClientRect()
 
     // Mobile keyboard positioning fix:
-    // On mobile PWAs, when the keyboard opens, getBoundingClientRect() returns coordinates
-    // relative to the layout viewport (full page), but position: fixed elements are positioned
-    // relative to the visual viewport (visible area). We need to adjust for this difference.
+    // On mobile PWAs, when the keyboard opens, both getBoundingClientRect() and
+    // position: fixed elements are positioned relative to the visual viewport (the
+    // visible area after the keyboard opens), so they should align correctly.
     //
-    // visualViewport.offsetTop gives us how much the visual viewport has shifted up when
-    // the keyboard opens. We subtract this offset to convert from layout to visual coordinates.
-    const visualOffsetTop = window.visualViewport?.offsetTop || 0
-
     // Position the dropdown at the top of the textarea.
     // The dropdown's CSS uses transform: translateY(calc(-100% - 8px)) to:
     // 1. Shift up by its own height (-100%)
     // 2. Add an 8px gap (-8px)
     // This places the dropdown just above the textarea with proper spacing.
-    //
-    // By subtracting visualOffsetTop, the dropdown appears correctly positioned relative to
-    // the textarea regardless of keyboard state on mobile.
     return {
-      top: rect.top - visualOffsetTop,
+      top: rect.top,
       left: rect.left,
       width: rect.width
     }
