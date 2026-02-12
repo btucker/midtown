@@ -208,6 +208,7 @@ pub(super) fn determine_lead_working(
 /// - They have unblocked dependent tasks
 /// - They are usage-limited (waiting for usage limit reset)
 /// - They have API errors (will be nudged to retry instead)
+/// - They have auth errors (waiting for re-authentication)
 ///
 /// Also enforces a minimum lifetime check - coworkers must be alive for at least
 /// 5 minutes before they can be sent on a break. This prevents spawn storms where
@@ -833,7 +834,7 @@ pub(super) fn check_and_handle_auth_errors(
 
         let message = format!(
             "🔐 OAuth token expired — coworkers {} shut down. Re-authenticate with: midtown auth login\n\
-             Affected coworkers will restart automatically after re-authentication.",
+             Coworkers with pending tasks will be respawned after re-authentication.",
             names_str
         );
 
