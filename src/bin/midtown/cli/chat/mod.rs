@@ -430,13 +430,12 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                         app.focused_pane = FocusedPane::InputBar;
                         EventResult::Continue
                     } else if !app.input_text.is_empty() {
-                        // Post message to the main midtown channel
-                        // TODO: Once PR #901 (channel selection) is merged, use app.selected_channel instead
+                        // Post message to the selected channel
                         let message = app.input_text.clone();
-                        let channel_name = Some("midtown");
+                        let channel_name = app.selected_channel.clone();
 
                         // Post via daemon RPC with fallback to direct channel write
-                        let posted = app.post_message(&message, "user", channel_name);
+                        let posted = app.post_message(&message, "user", Some(&channel_name));
 
                         // Only clear input if message was successfully posted
                         if posted {
@@ -1224,5 +1223,32 @@ mod tests {
             "Autocomplete should still show after typing '@mad' (this was the bug)"
         );
         assert_eq!(app.autocomplete.query, "mad");
+    }
+
+    #[test]
+    fn test_enter_key_uses_selected_channel_not_hardcoded_midtown() {
+        // This test verifies that messages are posted to app.selected_channel,
+        // not hardcoded "midtown"
+
+        let mut app = test_app();
+        app.selected_channel = "custom-channel".to_string();
+        app.input_text = "Test message".to_string();
+        app.focused_pane = app::FocusedPane::InputBar;
+
+        // Verify selected channel is not "midtown"
+        assert_eq!(app.selected_channel, "custom-channel");
+
+        // Press Enter to post the message
+        let event = key_press(KeyCode::Enter);
+        let result = handle_event(&mut app, event);
+
+        assert!(matches!(result, EventResult::Continue));
+
+        // Verify that post_message was called with "custom-channel", not "midtown"
+        assert_eq!(
+            app.last_posted_channel,
+            Some("custom-channel".to_string()),
+            "post_message should use selected_channel, not hardcoded 'midtown'"
+        );
     }
 }
