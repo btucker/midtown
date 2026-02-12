@@ -287,6 +287,107 @@ fn draw_autocomplete_dropdown(f: &mut Frame, app: &App, input_area: Rect) {
     f.render_widget(paragraph, dropdown_area);
 }
 
+/// Draw the channel switcher overlay (Ctrl+K quick switcher)
+pub fn draw_channel_switcher_overlay(f: &mut Frame, app: &App, area: Rect) {
+    if !app.channel_switcher.show {
+        return;
+    }
+
+    // Calculate centered popup size
+    let popup_width = 50u16.min(area.width.saturating_sub(4));
+    let max_visible_items = 10;
+    let item_count = app
+        .channel_switcher
+        .filtered_channels
+        .len()
+        .min(max_visible_items);
+    // 1 line for input + 1 separator + N channel lines + 2 borders
+    let popup_height = (3 + item_count as u16).min(area.height.saturating_sub(4));
+
+    // Center the popup
+    let popup_x = (area.width.saturating_sub(popup_width)) / 2;
+    let popup_y = (area.height.saturating_sub(popup_height)) / 2;
+
+    let popup_area = Rect {
+        x: popup_x,
+        y: popup_y,
+        width: popup_width,
+        height: popup_height,
+    };
+
+    // Clear the area first to ensure background is rendered properly
+    f.render_widget(Clear, popup_area);
+
+    // Build the content
+    let mut lines = Vec::new();
+
+    // Input line with prompt
+    let input_line = format!("🔍 {}", app.channel_switcher.input);
+    lines.push(Line::from(Span::styled(
+        input_line,
+        Style::default()
+            .fg(Color::White)
+            .add_modifier(Modifier::BOLD),
+    )));
+
+    // Separator line
+    lines.push(Line::from(Span::styled(
+        "─".repeat(popup_width.saturating_sub(2) as usize),
+        Style::default().fg(Color::DarkGray),
+    )));
+
+    // Channel list
+    if app.channel_switcher.filtered_channels.is_empty() {
+        lines.push(Line::from(Span::styled(
+            " No matching channels",
+            Style::default().fg(Color::DarkGray),
+        )));
+    } else {
+        for (i, channel) in app
+            .channel_switcher
+            .filtered_channels
+            .iter()
+            .enumerate()
+            .take(max_visible_items)
+        {
+            let is_selected = i == app.channel_switcher.selected_index;
+
+            // Format: "#channel-name (N)" where N is unread count if > 0
+            let unread_suffix = if channel.unread_count > 0 {
+                format!(" ({})", channel.unread_count)
+            } else {
+                String::new()
+            };
+            let channel_text = format!(" #{}{}", channel.name, unread_suffix);
+
+            let style = if is_selected {
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::White)
+            };
+
+            lines.push(Line::from(Span::styled(channel_text, style)));
+        }
+    }
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan))
+        .title(" Quick Channel Switcher (Ctrl+K) ")
+        .title_style(
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )
+        .style(Style::default().bg(Color::Black));
+
+    let paragraph = Paragraph::new(lines).block(block);
+    f.render_widget(paragraph, popup_area);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

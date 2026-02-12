@@ -284,6 +284,8 @@ pub struct App {
     pub channel_unread_counts: HashMap<String, usize>,
     /// Autocomplete state
     pub autocomplete: AutocompleteState,
+    /// Channel switcher overlay state
+    pub channel_switcher: ChannelSwitcherState,
 }
 
 /// Autocomplete state for @mentions, #channels, and !task-ids
@@ -310,6 +312,28 @@ pub struct AutocompleteItem {
     pub value: String,
     /// Optional description (e.g., coworker's current task, channel purpose, task subject)
     pub description: Option<String>,
+}
+
+/// Channel switcher overlay state (Ctrl+K quick switcher)
+#[derive(Debug, Clone, Default)]
+pub struct ChannelSwitcherState {
+    /// Whether the channel switcher overlay is shown
+    pub show: bool,
+    /// Input text for filtering channels
+    pub input: String,
+    /// Filtered channel list to display
+    pub filtered_channels: Vec<ChannelSwitcherItem>,
+    /// Selected index in the filtered list
+    pub selected_index: usize,
+}
+
+/// A channel item in the channel switcher
+#[derive(Debug, Clone)]
+pub struct ChannelSwitcherItem {
+    /// Channel name
+    pub name: String,
+    /// Unread count for this channel (0 if none)
+    pub unread_count: usize,
 }
 
 /// Interval between kanban data refreshes (30 seconds)
@@ -381,6 +405,7 @@ impl App {
             message_render_cache: None,
             channel_unread_counts: HashMap::new(),
             autocomplete: AutocompleteState::default(),
+            channel_switcher: ChannelSwitcherState::default(),
         };
 
         // Initial load
@@ -1440,6 +1465,130 @@ impl App {
     pub fn dismiss_autocomplete(&mut self) {
         self.autocomplete.show = false;
     }
+
+    /// Toggle the channel switcher overlay (Ctrl+K)
+    pub fn toggle_channel_switcher(&mut self) {
+        if self.channel_switcher.show {
+            // Hide it
+            self.channel_switcher.show = false;
+            self.channel_switcher.input.clear();
+            self.channel_switcher.filtered_channels.clear();
+            self.channel_switcher.selected_index = 0;
+        } else {
+            // Show it and populate with all channels
+            self.channel_switcher.show = true;
+            self.channel_switcher.input.clear();
+            self.channel_switcher.selected_index = 0;
+            self.update_channel_switcher_filter();
+        }
+    }
+
+    /// Update the channel switcher input and filter
+    pub fn channel_switcher_input(&mut self, c: char) {
+        if !self.channel_switcher.show {
+            return;
+        }
+        self.channel_switcher.input.push(c);
+        self.update_channel_switcher_filter();
+    }
+
+    /// Backspace in the channel switcher input
+    pub fn channel_switcher_backspace(&mut self) {
+        if !self.channel_switcher.show {
+            return;
+        }
+        self.channel_switcher.input.pop();
+        self.update_channel_switcher_filter();
+    }
+
+    /// Update the filtered channel list based on current input
+    fn update_channel_switcher_filter(&mut self) {
+        let query = self.channel_switcher.input.to_lowercase();
+
+        // Get all available channels from board selections
+        let selections = self.build_board_selections();
+        let mut channels = Vec::new();
+
+        for selection in selections {
+            if let BoardSelection::Channel(name) = selection {
+                channels.push(name);
+            }
+        }
+
+        // Filter channels by prefix match
+        let filtered: Vec<ChannelSwitcherItem> = channels
+            .into_iter()
+            .filter(|name| query.is_empty() || name.to_lowercase().starts_with(&query))
+            .map(|name| {
+                let unread_count = self.channel_unread_counts.get(&name).copied().unwrap_or(0);
+                ChannelSwitcherItem { name, unread_count }
+            })
+            .collect();
+
+        self.channel_switcher.filtered_channels = filtered;
+
+        // Reset selection if out of bounds
+        if self.channel_switcher.selected_index >= self.channel_switcher.filtered_channels.len() {
+            self.channel_switcher.selected_index = 0;
+        }
+    }
+
+    /// Navigate channel switcher selection up
+    pub fn channel_switcher_select_prev(&mut self) {
+        if !self.channel_switcher.show || self.channel_switcher.filtered_channels.is_empty() {
+            return;
+        }
+        if self.channel_switcher.selected_index == 0 {
+            self.channel_switcher.selected_index =
+                self.channel_switcher.filtered_channels.len() - 1;
+        } else {
+            self.channel_switcher.selected_index -= 1;
+        }
+    }
+
+    /// Navigate channel switcher selection down
+    pub fn channel_switcher_select_next(&mut self) {
+        if !self.channel_switcher.show || self.channel_switcher.filtered_channels.is_empty() {
+            return;
+        }
+        self.channel_switcher.selected_index = (self.channel_switcher.selected_index + 1)
+            % self.channel_switcher.filtered_channels.len();
+    }
+
+    /// Select the currently highlighted channel and close the switcher
+    pub fn channel_switcher_select(&mut self) {
+        if !self.channel_switcher.show || self.channel_switcher.filtered_channels.is_empty() {
+            return;
+        }
+
+        let selected_channel = self.channel_switcher.filtered_channels
+            [self.channel_switcher.selected_index]
+            .name
+            .clone();
+
+        // Switch to the selected channel
+        self.selected_channel = selected_channel.clone();
+
+        // Update board selection to the selected channel
+        self.board_selection = Some(BoardSelection::Channel(selected_channel));
+
+        // Close the switcher
+        self.channel_switcher.show = false;
+        self.channel_switcher.input.clear();
+        self.channel_switcher.filtered_channels.clear();
+        self.channel_switcher.selected_index = 0;
+
+        // Scroll to bottom when switching channels
+        self.scroll_to_bottom();
+    }
+
+    /// Dismiss the channel switcher without selecting
+    pub fn dismiss_channel_switcher(&mut self) {
+        self.channel_switcher.show = false;
+        self.channel_switcher.input.clear();
+        self.channel_switcher.filtered_channels.clear();
+        self.channel_switcher.selected_index = 0;
+    }
 }
 
 /// Fetch tasks from Claude Code's task storage.
@@ -2284,6 +2433,7 @@ pub(super) mod tests {
             message_render_cache: None,
             channel_unread_counts: HashMap::new(),
             autocomplete: AutocompleteState::default(),
+            channel_switcher: ChannelSwitcherState::default(),
         }
     }
 

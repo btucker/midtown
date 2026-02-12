@@ -99,6 +99,11 @@ pub fn draw(f: &mut Frame, app: &mut App) -> Vec<Hyperlink> {
         usage::draw_usage_bars(f, app, vertical_chunks[2]);
     }
 
+    // Draw channel switcher overlay last so it appears on top
+    if app.channel_switcher.show {
+        chat::draw_channel_switcher_overlay(f, app, f.area());
+    }
+
     hyperlinks
 }
 
