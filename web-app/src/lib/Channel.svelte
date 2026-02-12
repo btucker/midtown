@@ -112,23 +112,12 @@
     // The dropdown will use transform: translateY(-100%) to shift up by its own height
     const gap = 8
 
-    // On mobile, account for safe-area-inset-bottom which affects the input area positioning.
-    // We need to extract the computed safe-area value to adjust the dropdown position.
-    // Use getComputedStyle to read the actual resolved padding-bottom value.
-    const inputArea = textareaElement.closest('.input-area')
-    let safeAreaBottom = 0
-    if (inputArea) {
-      const computedPadding = window.getComputedStyle(inputArea).paddingBottom
-      const inputAreaPaddingBottom = parseFloat(computedPadding)
-      // The base padding is 12px, so anything above that is safe-area-inset-bottom
-      const basePadding = 12
-      if (inputAreaPaddingBottom > basePadding) {
-        safeAreaBottom = inputAreaPaddingBottom - basePadding
-      }
-    }
-
+    // getBoundingClientRect() returns viewport-relative coordinates that already
+    // account for the textarea's actual position. We don't need to adjust for
+    // safe-area-inset-bottom here — that only affects the input-area's padding,
+    // not the dropdown's absolute positioning.
     return {
-      top: rect.top - gap - safeAreaBottom,
+      top: rect.top - gap,
       left: rect.left
     }
   }
