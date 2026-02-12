@@ -1526,10 +1526,6 @@ mod tests {
             self.review_feedback = set(names);
             self
         }
-        fn records(mut self, records: HashMap<String, CoworkerRecord>) -> Self {
-            self.records = records;
-            self
-        }
         fn with_idle_record(mut self, name: &str) -> Self {
             self.records = lifecycle_with(
                 name,
