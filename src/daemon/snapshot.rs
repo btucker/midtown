@@ -222,7 +222,12 @@ pub struct WorldSnapshot {
     #[serde(default)]
     pub tool_name_conflict_coworkers: HashSet<String>,
 
-    // ── Channel messages ─────────────────────────────────────────────────
+    // ── Channel state ──────────────────────────────────────────────────
+    /// Channels that have already been archived (`.archived.jsonl` exists).
+    /// Used by auto-archive to skip channels that are already archived,
+    /// preventing redundant `ArchiveChannel` effects on every tick.
+    #[serde(default)]
+    pub archived_channels: HashSet<String>,
     /// Recent channel messages for debugging context.
     /// Includes the last N messages from the channel log.
     pub channel_messages: Vec<Message>,
@@ -538,7 +543,15 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
         .map(|(name, _)| name.to_lowercase())
         .collect();
 
-    // ── Channel messages & daemon logs ─────────────────────────────────
+    // ── Channel state ──────────────────────────────────────────────────
+    let archived_channels: HashSet<String> = {
+        let base_dir = crate::paths::projects_dir_for_repo(&state.repo_name);
+        crate::channel::Channel::list_archived(&base_dir)
+            .unwrap_or_default()
+            .into_iter()
+            .collect()
+    };
+
     // These debug fields are NOT populated during tick collection (hot path).
     // They are only populated on-demand via `with_debug_context()` when
     // capturing a snapshot for debugging (e.g., `midtown e2e capture`).
@@ -643,6 +656,7 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
         usage_limited_coworkers,
         api_error_coworkers,
         tool_name_conflict_coworkers,
+        archived_channels,
         channel_messages,
         daemon_logs,
         tasks_with_worktrees,
@@ -710,6 +724,7 @@ pub(super) fn minimal_snapshot_for_test() -> WorldSnapshot {
         usage_limited_coworkers: HashSet::new(),
         api_error_coworkers: HashSet::new(),
         tool_name_conflict_coworkers: HashSet::new(),
+        archived_channels: HashSet::new(),
         channel_messages: vec![],
         daemon_logs: vec![],
         tasks_with_worktrees: HashSet::new(),

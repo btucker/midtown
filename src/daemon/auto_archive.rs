@@ -5,7 +5,7 @@
 
 use super::effects::Effect;
 use crate::tasks::{Task, TaskStatus};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Collect auto-archive effects for channels where all tasks are completed.
 ///
@@ -15,9 +15,13 @@ use std::collections::HashMap;
 /// Rules:
 /// - Only archives topic channels (never "midtown")
 /// - Archives when ALL tasks in a channel are Completed
+/// - Skips channels that are already archived
 /// - Ignores tasks without a channel assignment
 /// - Returns empty vec if no channels should be archived
-pub fn collect_auto_archive_effects(tasks: &[Task], _repo_name: &str) -> Vec<Effect> {
+pub fn collect_auto_archive_effects(
+    tasks: &[Task],
+    archived_channels: &HashSet<String>,
+) -> Vec<Effect> {
     // Group tasks by channel
     let mut channel_tasks: HashMap<String, Vec<&Task>> = HashMap::new();
 
@@ -33,6 +37,11 @@ pub fn collect_auto_archive_effects(tasks: &[Task], _repo_name: &str) -> Vec<Eff
     for (channel_name, channel_task_list) in channel_tasks {
         // Never archive the main "midtown" channel
         if channel_name == "midtown" {
+            continue;
+        }
+
+        // Skip channels that are already archived
+        if archived_channels.contains(&channel_name) {
             continue;
         }
 
