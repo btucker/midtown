@@ -1723,13 +1723,20 @@ async fn handle_task_create(
                 warn!("Clusterer failed: {} — keeping provisional channel", e);
             }
         }
+    } else {
+        // User specified a channel explicitly — persist to task_channel mapping
+        let mut ps = state.persistent_state.lock().await;
+        if apply_task_channel_mapping(&mut ps.task_channel, &task_id, channel, false)
+            && let Err(e) = ps.save_for_repo(&repo_name)
+        {
+            warn!("Failed to save task channel mapping: {}", e);
+        }
     }
 
     // Apply model mapping if provided
     {
         let mut ps = state.persistent_state.lock().await;
-        let task_id_str = task_id.to_string();
-        match apply_task_model_mapping(&mut ps.task_model, &task_id_str, model, false) {
+        match apply_task_model_mapping(&mut ps.task_model, &task_id, model, false) {
             Ok(changed) => {
                 if changed && let Err(e) = ps.save_for_repo(&repo_name) {
                     warn!("Failed to save task model mapping: {}", e);
