@@ -1,13 +1,6 @@
 <script>
   import { activeChannel, kanbanData } from './store.js'
-  import Kanban from './Kanban.svelte'
   import { getChannelTaskCount, getChannelPrs } from './channelUtils.js'
-
-  let kanbanExpanded = $state(true)
-
-  function toggleKanban() {
-    kanbanExpanded = !kanbanExpanded
-  }
 
   let channelCounts = $derived(getChannelTaskCount($activeChannel, $kanbanData))
   let channelPrs = $derived(getChannelPrs($activeChannel, $kanbanData))
@@ -41,15 +34,7 @@
         </div>
       {/if}
     </div>
-    <button class="kanban-toggle" onclick={toggleKanban} title={kanbanExpanded ? 'Hide kanban' : 'Show kanban'}>
-      {kanbanExpanded ? '\u25BC' : '\u25B6'}
-    </button>
   </div>
-  {#if kanbanExpanded}
-    <div class="kanban-strip">
-      <Kanban />
-    </div>
-  {/if}
 </div>
 
 <style>
@@ -121,28 +106,6 @@
   .pending-badge {
     background: #3a3a2a;
     color: #af5faf;
-  }
-
-  .kanban-toggle {
-    background: transparent;
-    border: 1px solid #2a2a2a;
-    color: #606060;
-    font-size: 0.75rem;
-    cursor: pointer;
-    padding: 4px 8px;
-    border-radius: 4px;
-    transition: all 0.15s;
-    flex-shrink: 0;
-  }
-
-  .kanban-toggle:hover {
-    background: #252525;
-    border-color: #5faf5f;
-    color: #5faf5f;
-  }
-
-  .kanban-strip {
-    border-top: 1px solid #2a2a2a;
   }
 
   /* Hide on mobile */

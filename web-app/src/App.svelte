@@ -7,7 +7,6 @@
   import DetailPanel from './lib/DetailPanel.svelte'
   import Status from './lib/Status.svelte'
   import Tmux from './lib/Tmux.svelte'
-  import Kanban from './lib/Kanban.svelte'
   import CoworkerStatus from './lib/CoworkerStatus.svelte'
   import UsageBars from './lib/UsageBars.svelte'
   import AuthSwitcher from './lib/AuthSwitcher.svelte'
@@ -224,7 +223,6 @@
               ✕
             </button>
             <div class="sidebar-scroll">
-              <Kanban />
               <ChannelList />
             </div>
             <div class="sidebar-bottom">
