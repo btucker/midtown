@@ -1255,7 +1255,7 @@ impl App {
         let mut items = Vec::new();
 
         // Add "lead" first
-        if "lead".contains(query) {
+        if "lead".starts_with(query) {
             items.push(AutocompleteItem {
                 value: "@lead".to_string(),
                 description: None,
@@ -1265,7 +1265,7 @@ impl App {
         // In test mode, use self.coworkers instead of daemon
         if self.test_mode {
             for cw in &self.coworkers {
-                if cw.name.to_lowercase().contains(query) {
+                if cw.name.to_lowercase().starts_with(query) {
                     // Look up current task from the tasks cache
                     let current_task = self
                         .current_tasks_cache
@@ -1280,7 +1280,7 @@ impl App {
         } else {
             // Add coworkers from cached list (populated from daemon status)
             for cw in &self.coworkers {
-                if cw.name.to_lowercase().contains(query) {
+                if cw.name.to_lowercase().starts_with(query) {
                     // Look up current task from the tasks cache
                     let current_task = self
                         .current_tasks_cache
@@ -1306,7 +1306,7 @@ impl App {
             let base_dir = channel.base_dir();
             if let Ok(channels) = Channel::list(base_dir) {
                 for channel_name in channels {
-                    if channel_name.to_lowercase().contains(query) {
+                    if channel_name.to_lowercase().starts_with(query) {
                         items.push(AutocompleteItem {
                             value: format!("#{}", channel_name),
                             description: None,
@@ -1323,7 +1323,9 @@ impl App {
     fn get_task_items(&self, query: &str) -> Vec<AutocompleteItem> {
         self.tasks
             .iter()
-            .filter(|task| task.id.contains(query) || task.subject.to_lowercase().contains(query))
+            .filter(|task| {
+                task.id.starts_with(query) || task.subject.to_lowercase().starts_with(query)
+            })
             .map(|task| AutocompleteItem {
                 value: format!("!{}", task.id),
                 description: Some(task.subject.clone()),
@@ -2139,6 +2141,10 @@ fn fetch_repo_status(repo_full_name: Option<&str>) -> RepoStatus {
 
     status
 }
+
+#[path = "autocomplete_tests.rs"]
+#[cfg(test)]
+mod autocomplete_tests;
 
 #[cfg(test)]
 pub(super) mod tests {

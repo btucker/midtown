@@ -246,7 +246,7 @@ fn draw_autocomplete_dropdown(f: &mut Frame, app: &App, input_area: Rect) {
                 .bg(Color::Yellow)
                 .add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(Color::White)
+            Style::default().fg(Color::White).bg(Color::Black)
         };
 
         lines.push(Line::from(vec![Span::styled(
@@ -263,11 +263,14 @@ fn draw_autocomplete_dropdown(f: &mut Frame, app: &App, input_area: Rect) {
             let desc_style = if is_selected {
                 Style::default().fg(Color::Black).bg(Color::Yellow)
             } else {
-                Style::default().fg(Color::DarkGray)
+                Style::default().fg(Color::DarkGray).bg(Color::Black)
             };
             lines.push(Line::from(vec![Span::styled(desc_text, desc_style)]));
         } else {
-            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                "",
+                Style::default().bg(Color::Black),
+            )));
         }
     }
 
