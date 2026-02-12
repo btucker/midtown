@@ -426,7 +426,7 @@ function handleUpdate(update) {
       coworkers.update((list) => {
         const idx = list.findIndex((c) => c.name === update.data.name)
         if (idx >= 0) {
-          list[idx] = update.data
+          list[idx] = { ...list[idx], ...update.data }
           return [...list]
         }
         return [...list, update.data]
