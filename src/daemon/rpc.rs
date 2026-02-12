@@ -2217,9 +2217,34 @@ pub(super) async fn handle_channel_post(
         tracker.insert(key, now);
     }
 
-    // Use provided channel or default to main channel
-    let channel_name = channel.unwrap_or_else(|| state.channel_router.default_channel_name());
-    let msg = Message::for_channel(channel_name, from, content.clone(), msg_type.clone());
+    // Determine target channel:
+    // 1. If explicitly provided via RPC parameter, use that
+    // 2. If coworker has a task assigned, look up the task's channel in task_channel mapping
+    // 3. Otherwise default to main channel
+    let channel_name = if let Some(ch) = channel {
+        ch.to_string()
+    } else if is_coworker_sender(from) {
+        // Look up coworker's current task and its assigned channel
+        let task_id = {
+            let records = state.coworker_records.read().await;
+            records.get(from).and_then(|r| r.task_id)
+        };
+
+        if let Some(tid) = task_id {
+            let persistent = state.persistent_state.lock().await;
+            persistent
+                .task_channel
+                .get(&tid.to_string())
+                .cloned()
+                .unwrap_or_else(|| state.channel_router.default_channel_name().to_string())
+        } else {
+            state.channel_router.default_channel_name().to_string()
+        }
+    } else {
+        state.channel_router.default_channel_name().to_string()
+    };
+
+    let msg = Message::for_channel(&channel_name, from, content.clone(), msg_type.clone());
 
     // Use async version to avoid blocking the runtime during file lock acquisition
     if let Err(e) = state.send_and_broadcast_async(&msg).await {
