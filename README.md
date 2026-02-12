@@ -364,6 +364,7 @@ Each coworker runs as:
 
 - A headless Claude Code process (`claude -p --output-format stream-json`) managed by the daemon's `SessionManager`
 - In an isolated git worktree (no merge conflicts during development)
+- In a [filesystem sandbox](#sandboxing) restricting write access to project directories
 - With `--add-dir` worktrees for additional repos in multi-repo projects
 - Nudges are delivered via stdin JSON, and health is monitored via stdout stream events
 
@@ -452,11 +453,13 @@ Reminders are stored in `~/.midtown/projects/<repo>/reminders.json` and evaluate
 
 ### Sandboxing
 
-Midtown uses platform-native filesystem sandboxing to restrict Claude Code's write access while preserving full read access:
+Midtown uses platform-native filesystem sandboxing to restrict write access for both the Lead session and all Coworkers, while preserving full read access:
 
 - **macOS**: `sandbox-exec` with SBPL profiles
-- **Linux**: `bwrap` (bubblewrap) when available
+- **Linux**: `bwrap` (bubblewrap) when available; falls back to unsandboxed execution if bwrap is not installed
 - **Zero overhead**: Same-host sandboxing — no Docker, no containers, same binaries and auth tokens
+
+**Fallback behavior:** If sandbox setup fails (e.g., missing `bwrap` on Linux, or profile creation errors on macOS), Midtown logs a warning and falls back to running without sandboxing. This ensures sessions aren't blocked by sandbox issues, but means write restrictions are not enforced in that case.
 
 **How it works:**
 
