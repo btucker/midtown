@@ -3100,3 +3100,214 @@ fn test_daemon_rpc_task_claim_marks_coworker_busy() {
     let result = &status_response["result"];
     assert!(result.is_object(), "Status should return an object");
 }
+
+/// Test that task.create rejects invalid model formats.
+///
+/// Verifies that the daemon validates the model parameter and returns
+/// an appropriate error when given invalid formats (e.g., "claude-opus"
+/// instead of "claude/opus").
+#[test]
+#[ignore]
+fn test_daemon_rejects_invalid_model_format_on_create() {
+    let mut fixture = match DaemonFixture::new() {
+        Some(f) => f,
+        None => {
+            eprintln!("Skipping: Failed to create test fixture");
+            return;
+        }
+    };
+
+    if !fixture.start_daemon() {
+        eprintln!("Skipping: Failed to start daemon");
+        return;
+    }
+
+    // Test various invalid model formats
+    // Note: Empty string is not included because it's intentionally ignored on create
+    // (it only acts as "clear" on update when allow_clear=true)
+    let invalid_formats = [
+        "claude-opus",       // Missing slash
+        "claude/opus/extra", // Multiple slashes
+        "/",                 // Only slash
+        "/opus",             // Empty provider
+        "claude/",           // Empty model
+        "invalid",           // No slash at all
+    ];
+
+    for invalid_model in invalid_formats {
+        let params = serde_json::json!({
+            "subject": "Test task",
+            "description": "Testing invalid model format",
+            "model": invalid_model
+        });
+
+        let response = fixture.rpc_call("task.create", Some(params));
+        assert!(
+            response.is_some(),
+            "Should receive response for model '{}'",
+            invalid_model
+        );
+
+        let response = response.unwrap();
+        assert!(
+            !response["error"].is_null(),
+            "Should return error for invalid model '{}', got: {:?}",
+            invalid_model,
+            response
+        );
+
+        // Verify error code is -32602 (Invalid params)
+        let error_code = response["error"]["code"].as_i64();
+        assert_eq!(
+            error_code,
+            Some(-32602),
+            "Error code should be -32602 for invalid model '{}', got: {:?}",
+            invalid_model,
+            response["error"]
+        );
+
+        // Verify error message mentions the invalid format
+        let error_message = response["error"]["message"].as_str().unwrap_or("");
+        assert!(
+            error_message.contains("Invalid model format") || error_message.contains(invalid_model),
+            "Error message should mention invalid format for model '{}', got: '{}'",
+            invalid_model,
+            error_message
+        );
+    }
+}
+
+/// Test that task.update rejects invalid model formats.
+///
+/// Verifies that the daemon validates the model parameter on task updates
+/// and returns an appropriate error when given invalid formats.
+#[test]
+#[ignore]
+fn test_daemon_rejects_invalid_model_format_on_update() {
+    let mut fixture = match DaemonFixture::new() {
+        Some(f) => f,
+        None => {
+            eprintln!("Skipping: Failed to create test fixture");
+            return;
+        }
+    };
+
+    if !fixture.start_daemon() {
+        eprintln!("Skipping: Failed to start daemon");
+        return;
+    }
+
+    // First create a valid task
+    fixture.create_task("42", "Test task", "pending", None);
+
+    // Test various invalid model formats on update
+    let invalid_formats = [
+        "claude-opus",       // Missing slash
+        "claude/opus/extra", // Multiple slashes
+        "/opus",             // Empty provider
+        "claude/",           // Empty model
+    ];
+
+    for invalid_model in invalid_formats {
+        let params = serde_json::json!({
+            "id": "42",
+            "model": invalid_model
+        });
+
+        let response = fixture.rpc_call("task.update", Some(params));
+        assert!(
+            response.is_some(),
+            "Should receive response for model '{}'",
+            invalid_model
+        );
+
+        let response = response.unwrap();
+        assert!(
+            !response["error"].is_null(),
+            "Should return error for invalid model '{}', got: {:?}",
+            invalid_model,
+            response
+        );
+
+        // Verify error code is -32602 (Invalid params)
+        let error_code = response["error"]["code"].as_i64();
+        assert_eq!(
+            error_code,
+            Some(-32602),
+            "Error code should be -32602 for invalid model '{}', got: {:?}",
+            invalid_model,
+            response["error"]
+        );
+
+        // Verify error message mentions the invalid format
+        let error_message = response["error"]["message"].as_str().unwrap_or("");
+        assert!(
+            error_message.contains("Invalid model format") || error_message.contains(invalid_model),
+            "Error message should mention invalid format for model '{}', got: '{}'",
+            invalid_model,
+            error_message
+        );
+    }
+}
+
+/// Test that task.create accepts valid model formats.
+///
+/// Verifies that valid model formats like "claude/opus", "claude/sonnet"
+/// are accepted and stored correctly.
+#[test]
+#[ignore]
+fn test_daemon_accepts_valid_model_format_on_create() {
+    let mut fixture = match DaemonFixture::new() {
+        Some(f) => f,
+        None => {
+            eprintln!("Skipping: Failed to create test fixture");
+            return;
+        }
+    };
+
+    if !fixture.start_daemon() {
+        eprintln!("Skipping: Failed to start daemon");
+        return;
+    }
+
+    // Test valid model formats
+    let valid_formats = [
+        "claude/opus",
+        "claude/sonnet",
+        "claude/haiku",
+        "codex/o3",
+        "codex/o4-mini",
+    ];
+
+    for (idx, valid_model) in valid_formats.iter().enumerate() {
+        let params = serde_json::json!({
+            "subject": format!("Test task {}", idx),
+            "description": "Testing valid model format",
+            "model": valid_model
+        });
+
+        let response = fixture.rpc_call("task.create", Some(params));
+        assert!(
+            response.is_some(),
+            "Should receive response for model '{}'",
+            valid_model
+        );
+
+        let response = response.unwrap();
+        assert!(
+            response["error"].is_null(),
+            "Should not return error for valid model '{}', got: {:?}",
+            valid_model,
+            response["error"]
+        );
+
+        // Verify success response
+        let result = &response["result"];
+        assert!(
+            result["message"].as_str().unwrap_or("").contains("created"),
+            "Should confirm task creation for model '{}', got: {:?}",
+            valid_model,
+            result
+        );
+    }
+}
