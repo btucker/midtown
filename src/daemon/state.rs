@@ -49,6 +49,10 @@ pub struct HeadlessSessionInfo {
     /// Provider (Claude or Codex) for this session.
     #[serde(default)]
     pub provider: Option<crate::auth::AuthProvider>,
+    /// Auth profile name for this session (e.g., "ben@example.com").
+    /// Used to restore the correct auth profile directory on daemon restart.
+    #[serde(default)]
+    pub profile: Option<String>,
 }
 
 /// All persistent daemon state in one struct.

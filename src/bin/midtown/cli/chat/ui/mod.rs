@@ -59,7 +59,22 @@ fn repo_status_height(app: &App) -> u16 {
 /// bypassing ratatui's buffer system (which doesn't support hyperlinks).
 pub fn draw(f: &mut Frame, app: &mut App) -> Vec<Hyperlink> {
     let status_height = repo_status_height(app);
-    let usage_height = if app.usage_data.is_some() { 4 } else { 0 };
+    // Calculate height dynamically: 4 lines per account with data, 2 lines per account without
+    let usage_height = if !app.usage_data.is_empty() {
+        app.usage_data
+            .iter()
+            .map(|u| {
+                if u.session_resets.is_some() || u.week_resets.is_some() {
+                    4 // label + session + week + blank
+                } else {
+                    2 // label + "no data"
+                }
+            })
+            .sum::<u16>()
+            + 2 // border
+    } else {
+        0
+    };
 
     let vertical_chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -80,7 +95,7 @@ pub fn draw(f: &mut Frame, app: &mut App) -> Vec<Hyperlink> {
     let hyperlinks = board::draw_board_panel(f, app, horizontal_chunks[0]);
     chat::draw_chat_panel(f, app, horizontal_chunks[1]);
 
-    if app.usage_data.is_some() {
+    if !app.usage_data.is_empty() {
         usage::draw_usage_bars(f, app, vertical_chunks[2]);
     }
 

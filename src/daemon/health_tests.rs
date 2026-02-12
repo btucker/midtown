@@ -75,6 +75,7 @@ fn test_usage_limit_nudge_only_targets_running_coworkers() {
         session_id: None,
         model: "sonnet".to_string(),
         provider: crate::auth::AuthProvider::Claude,
+        profile: crate::auth::DEFAULT_PROFILE.to_string(),
     };
     let stopping = Coworker {
         slot_id: uuid::Uuid::new_v4().to_string(),
@@ -86,6 +87,7 @@ fn test_usage_limit_nudge_only_targets_running_coworkers() {
         session_id: None,
         model: "sonnet".to_string(),
         provider: crate::auth::AuthProvider::Claude,
+        profile: crate::auth::DEFAULT_PROFILE.to_string(),
     };
 
     // Build a snapshot where the nudge should fire
@@ -242,6 +244,7 @@ fn test_check_for_usage_limits_with_reset_time() {
         session_id: None,
         model: "sonnet".to_string(),
         provider: crate::auth::AuthProvider::Claude,
+        profile: crate::auth::DEFAULT_PROFILE.to_string(),
     };
 
     // Create a minimal snapshot

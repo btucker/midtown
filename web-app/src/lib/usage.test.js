@@ -9,8 +9,8 @@ describe('fetchUsage', () => {
 
   beforeEach(() => {
     originalFetch = globalThis.fetch
-    // Reset store to null before each test
-    usageData.set(null)
+    // Reset store to empty array before each test
+    usageData.set([])
   })
 
   afterEach(() => {
@@ -18,7 +18,19 @@ describe('fetchUsage', () => {
   })
 
   it('populates usageData on successful fetch', async () => {
-    const mockData = {
+    const mockResponse = {
+      usage: [
+        {
+          provider: 'claude',
+          profile: 'default',
+          session_util: 42.5,
+          session_resets: '2026-02-08T22:00:00Z',
+          week_util: 15.3,
+          week_resets: '2026-02-15T00:00:00Z',
+          account_email: 'test@example.com',
+        }
+      ],
+      // Backwards compatibility flat fields (not used by new frontend)
       session_util: 42.5,
       session_resets: '2026-02-08T22:00:00Z',
       week_util: 15.3,
@@ -29,38 +41,46 @@ describe('fetchUsage', () => {
     globalThis.fetch = vi.fn().mockResolvedValue({
       ok: true,
       status: 200,
-      json: () => Promise.resolve(mockData),
+      json: () => Promise.resolve(mockResponse),
     })
 
     await fetchUsage()
-    expect(get(usageData)).toEqual(mockData)
+    expect(get(usageData)).toEqual(mockResponse.usage)
   })
 
   it('retains last-known data on network error', async () => {
-    const previousData = {
-      session_util: 30.0,
-      session_resets: '2026-02-08T20:00:00Z',
-      week_util: 10.0,
-      week_resets: '2026-02-14T00:00:00Z',
-      account_email: 'test@example.com',
-    }
+    const previousData = [
+      {
+        provider: 'claude',
+        profile: 'default',
+        session_util: 30.0,
+        session_resets: '2026-02-08T20:00:00Z',
+        week_util: 10.0,
+        week_resets: '2026-02-14T00:00:00Z',
+        account_email: 'test@example.com',
+      }
+    ]
     usageData.set(previousData)
 
     globalThis.fetch = vi.fn().mockRejectedValue(new Error('Network error'))
 
     await fetchUsage()
-    // Store should retain previous data, not be cleared to null
+    // Store should retain previous data, not be cleared to empty array
     expect(get(usageData)).toEqual(previousData)
   })
 
   it('retains last-known data on non-ok response', async () => {
-    const previousData = {
-      session_util: 50.0,
-      session_resets: '2026-02-08T21:00:00Z',
-      week_util: 20.0,
-      week_resets: '2026-02-14T00:00:00Z',
-      account_email: 'test@example.com',
-    }
+    const previousData = [
+      {
+        provider: 'claude',
+        profile: 'default',
+        session_util: 50.0,
+        session_resets: '2026-02-08T21:00:00Z',
+        week_util: 20.0,
+        week_resets: '2026-02-14T00:00:00Z',
+        account_email: 'test@example.com',
+      }
+    ]
     usageData.set(previousData)
 
     globalThis.fetch = vi.fn().mockResolvedValue({
@@ -83,17 +103,21 @@ describe('fetchUsage', () => {
     })
 
     await fetchUsage()
-    expect(get(usageData)).toBeNull()
+    expect(get(usageData)).toEqual([])
   })
 
   it('clears cached data on 204 No Content when store has previous data', async () => {
-    const previousData = {
-      session_util: 50.0,
-      session_resets: '2026-02-08T21:00:00Z',
-      week_util: 20.0,
-      week_resets: '2026-02-14T00:00:00Z',
-      account_email: 'test@example.com',
-    }
+    const previousData = [
+      {
+        provider: 'claude',
+        profile: 'default',
+        session_util: 50.0,
+        session_resets: '2026-02-08T21:00:00Z',
+        week_util: 20.0,
+        week_resets: '2026-02-14T00:00:00Z',
+        account_email: 'test@example.com',
+      }
+    ]
     usageData.set(previousData)
 
     // 204 means credentials are gone — must clear the store, not retain stale data
@@ -104,7 +128,48 @@ describe('fetchUsage', () => {
     })
 
     await fetchUsage()
-    expect(get(usageData)).toBeNull()
+    expect(get(usageData)).toEqual([])
+  })
+
+  it('handles multiple accounts in usage array', async () => {
+    const mockResponse = {
+      usage: [
+        {
+          provider: 'claude',
+          profile: 'default',
+          session_util: 42.5,
+          session_resets: '2026-02-08T22:00:00Z',
+          week_util: 15.3,
+          week_resets: '2026-02-15T00:00:00Z',
+          account_email: 'user1@example.com',
+        },
+        {
+          provider: 'claude',
+          profile: 'work',
+          session_util: 60.0,
+          session_resets: '2026-02-08T23:00:00Z',
+          week_util: 30.0,
+          week_resets: '2026-02-15T00:00:00Z',
+          account_email: 'user2@example.com',
+        }
+      ],
+      // Backwards compatibility flat fields for primary account
+      session_util: 42.5,
+      session_resets: '2026-02-08T22:00:00Z',
+      week_util: 15.3,
+      week_resets: '2026-02-15T00:00:00Z',
+      account_email: 'user1@example.com',
+    }
+
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve(mockResponse),
+    })
+
+    await fetchUsage()
+    expect(get(usageData)).toEqual(mockResponse.usage)
+    expect(get(usageData)).toHaveLength(2)
   })
 })
 

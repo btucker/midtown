@@ -338,7 +338,7 @@ fn fetch_sorted_profiles(
                     .map(|name| {
                         let name = name.clone();
                         s.spawn(move || {
-                            let usage = midtown::fetch_usage_for_profile(&name);
+                            let usage = midtown::fetch_usage_for_profile(&name, provider);
                             (name, usage)
                         })
                     })
