@@ -525,7 +525,11 @@ pub(super) async fn handle_task_update(
 }
 
 /// Handle task.done RPC — mark a task as completed directly.
-pub(super) fn handle_task_done(id: RequestId, task_id: &str, state: &DaemonState) -> Response {
+pub(super) async fn handle_task_done(
+    id: RequestId,
+    task_id: &str,
+    state: &DaemonState,
+) -> Response {
     let repo_name = state.repo_name.clone();
 
     if let Err(e) = crate::tasks::complete_task_for_repo(task_id, &repo_name) {
@@ -537,7 +541,7 @@ pub(super) fn handle_task_done(id: RequestId, task_id: &str, state: &DaemonState
 
     // Mark worktree as completed (for time-based cleanup)
     {
-        let mut ps = state.persistent_state.blocking_lock();
+        let mut ps = state.persistent_state.lock().await;
         if let Some(wt_id) = ps.worktree_registry.find_worktree_by_task(task_id) {
             ps.worktree_registry
                 .mark_completed(&wt_id, chrono::Utc::now());
@@ -569,8 +573,12 @@ pub(super) fn handle_task_done(id: RequestId, task_id: &str, state: &DaemonState
 ///
 /// Returns channel and model mappings stored in DaemonPersistentState.
 /// These are stored separately from Claude Code's native task storage.
-pub(super) fn handle_task_metadata(id: RequestId, task_id: &str, state: &DaemonState) -> Response {
-    let ps = state.persistent_state.blocking_lock();
+pub(super) async fn handle_task_metadata(
+    id: RequestId,
+    task_id: &str,
+    state: &DaemonState,
+) -> Response {
+    let ps = state.persistent_state.lock().await;
     let channel = ps.task_channel.get(task_id).cloned();
     let model = ps.task_model.get(task_id).cloned();
 
