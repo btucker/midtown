@@ -2168,8 +2168,10 @@ fn unescape_shell_artifacts(s: &str) -> String {
 ///
 /// Also detects feedback requests from coworkers and nudges the Lead.
 ///
-/// Accepts an optional `channel` parameter to post to topic channels.
-/// If not provided, defaults to the main channel.
+/// Posts a message to the appropriate channel based on routing rules:
+/// 1. If `channel` parameter is explicitly provided, use that
+/// 2. If sender is a coworker with a task assignment, use the task's channel
+/// 3. Otherwise, use the default main channel
 pub(super) async fn handle_channel_post(
     id: RequestId,
     from: &str,
@@ -2231,12 +2233,21 @@ pub(super) async fn handle_channel_post(
         };
 
         if let Some(tid) = task_id {
-            let persistent = state.persistent_state.lock().await;
-            persistent
-                .task_channel
-                .get(&tid.to_string())
-                .cloned()
-                .unwrap_or_else(|| state.channel_router.default_channel_name().to_string())
+            let task_channel = {
+                let persistent = state.persistent_state.lock().await;
+                persistent.task_channel.get(&tid.to_string()).cloned()
+            };
+
+            match task_channel {
+                Some(ch) => ch,
+                None => {
+                    debug!(
+                        "channel.post: task {} has no channel assignment, using default",
+                        tid
+                    );
+                    state.channel_router.default_channel_name().to_string()
+                }
+            }
         } else {
             state.channel_router.default_channel_name().to_string()
         }
