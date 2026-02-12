@@ -248,11 +248,52 @@ pub(super) fn detect_abandoned_pr_tasks(
                 .any(|(tid, _, _)| tid == task_id);
 
             if is_in_progress {
-                effects.push(Effect::ResetAbandonedTask {
-                    task_id: task_id.clone(),
-                    pr_number: *pr_number,
-                    repo_name: repo_name.to_string(),
-                });
+                // Before resetting, check if the work was already completed by a DIFFERENT PR.
+                // This prevents resetting tasks when a duplicate PR is closed but a sibling
+                // PR for the same task was already merged.
+                let work_already_landed = {
+                    // 1. Check if task status is completed
+                    let task_completed = snap
+                        .all_tasks
+                        .iter()
+                        .find(|t| t.id == *task_id)
+                        .map(|t| matches!(t.status, crate::tasks::TaskStatus::Completed))
+                        .unwrap_or(false);
+
+                    if task_completed {
+                        true
+                    } else {
+                        // 2. Check if any other PR associated with this task was merged
+                        let has_merged_sibling =
+                            snap.pr_task_associations
+                                .iter()
+                                .any(|(other_pr, other_task_id)| {
+                                    other_task_id == task_id
+                                        && other_pr != pr_number
+                                        && snap.merged_pr_numbers.contains(other_pr)
+                                });
+
+                        if has_merged_sibling {
+                            true
+                        } else {
+                            // 3. Check if task.pr field points to a merged PR
+                            snap.all_tasks
+                                .iter()
+                                .find(|t| t.id == *task_id)
+                                .and_then(|t| t.pr)
+                                .map(|pr| snap.merged_pr_numbers.contains(&pr))
+                                .unwrap_or(false)
+                        }
+                    }
+                };
+
+                if !work_already_landed {
+                    effects.push(Effect::ResetAbandonedTask {
+                        task_id: task_id.clone(),
+                        pr_number: *pr_number,
+                        repo_name: repo_name.to_string(),
+                    });
+                }
             }
         }
     }
@@ -4617,6 +4658,118 @@ mod tests {
 
         // Should emit no effects since PR is still open
         assert!(effects.is_empty(), "Should not reset task for open PR");
+    }
+
+    /// Test that detect_abandoned_pr_tasks doesn't reset a task when a duplicate
+    /// PR is closed if the same task has a sibling PR that was already merged.
+    ///
+    /// Scenario: Task !1158 has two PRs:
+    /// - PR #968 (merged)
+    /// - PR #999 (closed without merge - duplicate)
+    ///
+    /// When PR #999 is detected as abandoned, the task should NOT be reset because
+    /// the work was already landed via PR #968.
+    #[test]
+    fn test_detect_abandoned_pr_tasks_checks_for_merged_siblings() {
+        use super::super::snapshot::WorldSnapshot;
+        use crate::tasks::{Task, TaskStatus};
+
+        // Task !1158 is "in progress" (completed, but still in_progress_tasks for this test)
+        let in_progress_tasks = vec![(
+            "1158".to_string(),
+            "Fix bug".to_string(),
+            "york".to_string(),
+        )];
+
+        // Full task object showing it's completed and has pr field pointing to merged PR
+        let task = Task {
+            id: "1158".to_string(),
+            subject: "Fix bug".to_string(),
+            status: TaskStatus::Completed,
+            owner: Some("york".to_string()),
+            description: None,
+            blocked_by: vec![],
+            channel: None,
+            pr: Some(968), // Task.pr points to merged PR #968
+            created_at: None,
+        };
+
+        // PR associations: both PRs are associated with the same task
+        let mut pr_task_associations = HashMap::new();
+        pr_task_associations.insert(968u64, "1158".to_string()); // merged PR
+        pr_task_associations.insert(999u64, "1158".to_string()); // duplicate PR (closed)
+
+        // PR #968 is merged, PR #999 is NOT merged
+        let mut merged_pr_numbers = HashSet::new();
+        merged_pr_numbers.insert(968u64);
+
+        let snap = WorldSnapshot {
+            active_coworkers: vec![],
+            running_coworkers: vec![],
+            coworker_snapshots: vec![],
+            active_names: HashSet::new(),
+            active_session_ids: HashSet::new(),
+            session_name: "midtown-test".to_string(),
+            coworker_start_times: HashMap::new(),
+            coworker_stop_times: HashMap::new(),
+            headless_process_health: HashMap::new(),
+            attached_coworkers: HashSet::new(),
+            in_progress_tasks,
+            busy_coworkers: HashSet::new(),
+            coworker_task_assignments: HashMap::new(),
+            all_tasks: vec![task],
+            pending_tasks_with_owners: vec![],
+            pending_tasks_without_owners: vec![],
+            task_channel: HashMap::new(),
+            task_model_map: HashMap::new(),
+            coworkers_with_open_prs: HashSet::new(),
+            coworkers_with_merged_prs: HashSet::new(),
+            merged_pr_numbers,
+            ci_passed_pr_coworkers: HashSet::new(),
+            review_feedback_pr_coworkers: HashSet::new(),
+            open_prs_data: vec![],
+            pending_task_owners: HashSet::new(),
+            tasks_with_open_prs: HashMap::new(),
+            pr_task_associations,
+            active_reviewers: HashSet::new(),
+            reviewer_pr_assignments: HashMap::new(),
+            reviewed_prs: HashSet::new(),
+            prs_needing_review: 0,
+            reviewer_restart_counts: HashMap::new(),
+            reviewer_escalations_posted: HashSet::new(),
+            coworkers_with_unblocked_deps: HashSet::new(),
+            usage_limit_nudge_scheduled: false,
+            usage_limit_nudge_at: None,
+            usage_limited_coworkers: HashSet::new(),
+            api_error_coworkers: HashSet::new(),
+            tool_name_conflict_coworkers: HashSet::new(),
+            channel_messages: vec![],
+            daemon_logs: vec![],
+            tasks_with_worktrees: HashSet::new(),
+            task_worktree_map: HashMap::new(),
+            worktree_registry: Default::default(),
+            worktree_branch_owners: HashMap::new(),
+            merged_pr_branches: HashMap::new(),
+            is_at_coworker_limit: false,
+            is_at_dev_limit: false,
+            github_rate_limit: Default::default(),
+            freshly_fetched_rate_limit: None,
+            now_utc: chrono::Utc::now(),
+            repo_name: "test-repo".to_string(),
+        };
+
+        // Only PR #968 is open (merged), PR #999 is closed
+        let open_pr_numbers = vec![];
+
+        let effects = detect_abandoned_pr_tasks(&snap, &open_pr_numbers, "test-repo");
+
+        // Should NOT reset task !1158 because PR #968 (a sibling PR for the same task) was merged
+        assert_eq!(
+            effects.len(),
+            0,
+            "Expected no reset effects because a sibling PR was merged, but got: {:?}",
+            effects
+        );
     }
 
     /// Test that detect_abandoned_pr_tasks skips merged PRs.
