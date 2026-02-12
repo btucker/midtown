@@ -599,6 +599,9 @@ pub(super) async fn poll_prs_for_issues(
                 continue;
             }
 
+            // Author-driven merge decisions: Instead of auto-merging approved PRs,
+            // nudge the author so THEY can decide to merge. This keeps merge decisions
+            // with the agent who has full context of the PR and review feedback.
             let message = format!(
                 "PR #{} ({}) - {}: {}",
                 number,
@@ -3671,7 +3674,7 @@ mod tests {
     // NOTE: Reviewer spawn registry effects are tested via code inspection and
     // integration tests rather than unit tests. The collect_reviewer_effects function
     // has complex async dependencies (persistent state, PR review tracking) that make
-    // unit testing difficult. The implementation at lines 1651-1665 clearly shows
+    // unit testing difficult. The implementation at lines 1706-1717 clearly shows
     // RegisterWorktreeAssignment and BindCoworkerToWorktree are generated in the
     // on_success callbacks of SpawnCoworkerWithCallbacks, matching the dispatch path.
 
