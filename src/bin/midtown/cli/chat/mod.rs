@@ -1110,12 +1110,20 @@ mod tests {
         auto_focus_and_insert_char(&mut app, 'm');
         // The key assertion: autocomplete detection didn't crash or fail due to
         // cursor being ahead of text (the web UI bug pattern)
+        assert!(
+            app.autocomplete.show,
+            "Autocomplete should remain visible after 'm'"
+        );
         assert_eq!(app.autocomplete.query, "m");
         assert_eq!(app.input_text, "@m");
         assert_eq!(app.input_cursor, 2);
 
         // Type 'a'
         auto_focus_and_insert_char(&mut app, 'a');
+        assert!(
+            app.autocomplete.show,
+            "Autocomplete should remain visible after 'a'"
+        );
         assert_eq!(app.autocomplete.query, "ma");
         assert_eq!(app.input_text, "@ma");
         assert_eq!(app.input_cursor, 3);
@@ -1124,6 +1132,10 @@ mod tests {
         // (cursor at 4, text still "@m" length 2 → out of bounds)
         // In TUI, both are updated synchronously before detection
         auto_focus_and_insert_char(&mut app, 'd');
+        assert!(
+            app.autocomplete.show,
+            "Autocomplete should remain visible after 'd'"
+        );
         assert_eq!(app.autocomplete.query, "mad");
         assert_eq!(app.input_text, "@mad");
         assert_eq!(app.input_cursor, 4);
