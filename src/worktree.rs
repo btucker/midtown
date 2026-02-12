@@ -852,10 +852,24 @@ impl WorktreeManager {
             let _ = self.prune();
 
             // Delete the stale branch
-            let _ = Command::new("git")
+            let delete_output = Command::new("git")
                 .current_dir(&self.repo_root)
                 .args(["branch", "-D", worktree_id])
                 .output();
+
+            match delete_output {
+                Ok(output) if !output.status.success() => {
+                    tracing::warn!(
+                        "Failed to delete stale branch {}: {}",
+                        worktree_id,
+                        String::from_utf8_lossy(&output.stderr)
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to run git branch -D {}: {}", worktree_id, e);
+                }
+                _ => {}
+            }
         }
 
         if let Some(parent) = worktree_path.parent() {
