@@ -1650,10 +1650,10 @@ async fn handle_task_request(
 
 /// Handle task.create RPC — daemon creates a task directly in shared storage.
 ///
-/// Only performs I/O (write task, post to channel). Dispatch for the new task
+/// Creates the task first with a provisional channel ("midtown" or user-specified),
+/// then invokes the clusterer to get channel assignments. The clusterer may create
+/// new channels, archive old ones, or reassign tasks. Dispatch for the new task
 /// happens on the next `TaskDispatchTick` via the canonical event loop pipeline.
-///
-/// If no channel is provided, invokes the clusterer to assign one automatically.
 #[allow(clippy::too_many_arguments)]
 async fn handle_task_create(
     id: RequestId,
@@ -1670,92 +1670,106 @@ async fn handle_task_create(
     // Generate active_form (present continuous) from subject for task UI spinner
     let active_form = generate_active_form(subject);
 
-    // If no channel was provided, invoke clusterer to assign one
-    let assigned_channel = if channel.is_none() {
-        match invoke_clusterer_for_task(subject, description, state).await {
-            Ok(ch) => Some(ch),
-            Err(e) => {
-                warn!(
-                    "Clusterer failed to assign channel: {} — using 'midtown' as fallback",
-                    e
-                );
-                Some("midtown".to_string())
-            }
-        }
-    } else {
-        channel.map(String::from)
-    };
+    // Create the task with provisional channel (user-specified or "midtown")
+    // We need the task ID before invoking the clusterer
+    let provisional_channel = channel.unwrap_or("midtown");
 
-    match crate::tasks::create_task_for_repo(
+    let task_id = match crate::tasks::create_task_for_repo(
         subject,
         description,
         &active_form,
         "",
         &repo_name,
         blocked_by,
-        assigned_channel.as_deref(),
+        Some(provisional_channel),
         pr,
     ) {
-        Ok(task_id) => {
-            // Update daemon-side task-to-channel and task-to-model mappings if provided
-            {
-                let mut ps = state.persistent_state.lock().await;
-                let mut needs_save = false;
-
-                // Apply channel mapping
-                if apply_task_channel_mapping(
-                    &mut ps.task_channel,
-                    &task_id.to_string(),
-                    channel,
-                    false,
-                ) {
-                    needs_save = true;
-                }
-
-                // Apply model mapping
-                match apply_task_model_mapping(
-                    &mut ps.task_model,
-                    &task_id.to_string(),
-                    model,
-                    false,
-                ) {
-                    Ok(changed) => {
-                        if changed {
-                            needs_save = true;
-                        }
-                    }
-                    Err(e) => {
-                        // Model format validation failed - return error
-                        return Response::error(id, RpcError::new(-32602, e));
-                    }
-                }
-
-                // Save if any mapping changed
-                if needs_save && let Err(e) = ps.save_for_repo(&repo_name) {
-                    warn!("Failed to save task mappings: {}", e);
-                }
-            }
-
-            // Post to channel so team is aware
-            let msg = Message::text("lead", format!("created task: {}", subject));
-            if let Err(e) = state.send_and_broadcast_async(&msg).await {
-                warn!("Failed to post task creation to channel: {}", e);
-            }
-
-            info!("Created task !{}: {}", task_id, subject);
-            Response::success(
+        Ok(id) => id,
+        Err(e) => {
+            return Response::error(
                 id,
-                serde_json::json!({
-                    "type": "message",
-                    "message": format!("Task !{} created: {}", task_id, subject),
-                }),
+                RpcError::new(-32603, format!("Failed to create task: {}", e)),
             )
         }
-        Err(e) => Response::error(
-            id,
-            RpcError::new(-32603, format!("Failed to create task: {}", e)),
-        ),
+    };
+
+    // If no explicit channel was provided, invoke clusterer to get assignments
+    if channel.is_none() {
+        match invoke_clusterer_for_task(&task_id.to_string(), subject, description, state).await {
+            Ok(diff) => {
+                // Validate the diff
+                if let Err(e) = diff.validate() {
+                    warn!("Clusterer returned invalid diff: {} — keeping provisional channel", e);
+                } else {
+                    // Apply the clustering diff via effects
+                    // TODO: Wire this into the effects pipeline. For now, just log.
+                    info!(
+                        "Clusterer returned diff: {} creates, {} archives, {} merges, {} assignments",
+                        diff.create_channels.len(),
+                        diff.archive_channels.len(),
+                        diff.merge_channels.len(),
+                        diff.assign_tasks.len()
+                    );
+
+                    // Extract channel assignment for this specific task
+                    if let Some(assignment) = diff
+                        .assign_tasks
+                        .iter()
+                        .find(|a| a.task == task_id.to_string())
+                    {
+                        // Update task channel in persistent state
+                        let mut ps = state.persistent_state.lock().await;
+                        if apply_task_channel_mapping(
+                            &mut ps.task_channel,
+                            &task_id.to_string(),
+                            Some(&assignment.channel),
+                            false,
+                        ) {
+                            if let Err(e) = ps.save_for_repo(&repo_name) {
+                                warn!("Failed to save task channel mapping: {}", e);
+                            }
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                warn!("Clusterer failed: {} — keeping provisional channel", e);
+            }
+        }
     }
+
+    // Apply model mapping if provided
+    {
+        let mut ps = state.persistent_state.lock().await;
+        match apply_task_model_mapping(&mut ps.task_model, &task_id.to_string(), model, false) {
+            Ok(changed) => {
+                if changed {
+                    if let Err(e) = ps.save_for_repo(&repo_name) {
+                        warn!("Failed to save task model mapping: {}", e);
+                    }
+                }
+            }
+            Err(e) => {
+                // Model format validation failed - return error
+                return Response::error(id, RpcError::new(-32602, e));
+            }
+        }
+    }
+
+    // Post to channel so team is aware
+    let msg = Message::text("lead", format!("created task: {}", subject));
+    if let Err(e) = state.send_and_broadcast_async(&msg).await {
+        warn!("Failed to post task creation to channel: {}", e);
+    }
+
+    info!("Created task !{}: {}", task_id, subject);
+    Response::success(
+        id,
+        serde_json::json!({
+            "type": "message",
+            "message": format!("Task !{} created: {}", task_id, subject),
+        }),
+    )
 }
 
 /// Generate a present-continuous `activeForm` from a task subject.
@@ -3554,18 +3568,21 @@ async fn handle_session_list(id: RequestId, state: &DaemonState) -> Response {
     )
 }
 
-/// Invoke the clusterer to assign a channel for a new task.
+/// Invoke the clusterer to produce a ClusteringDiff for a new task.
 ///
-/// Builds a ClustererRequest with minimal information (for MVP) and invokes
-/// the clusterer headless session. The clusterer accumulates context across
-/// invocations via session resume.
+/// Builds a ClustererRequest with the task ID, subject, description, and current
+/// channel state, then invokes the clusterer headless session. The clusterer
+/// returns a full ClusteringDiff describing channel operations (create, archive,
+/// merge, assign). The clusterer accumulates context across invocations via
+/// session resume.
 ///
-/// Returns the assigned channel name or an error.
+/// Returns the ClusteringDiff or an error.
 async fn invoke_clusterer_for_task(
+    task_id: &str,
     subject: &str,
     description: &str,
     state: &DaemonState,
-) -> Result<String, String> {
+) -> Result<crate::clustering::ClusteringDiff, String> {
     use crate::daemon::clusterer::{
         ChannelInfo, ClustererRequest, CompletedTaskInfo, assign_channel,
     };
@@ -3638,6 +3655,7 @@ async fn invoke_clusterer_for_task(
     let channels: Vec<ChannelInfo> = channel_info_map.into_values().collect();
 
     let request = ClustererRequest {
+        task_id: task_id.to_string(),
         task_subject: subject.to_string(),
         task_description: description.to_string(),
         channels,
@@ -3655,14 +3673,14 @@ async fn invoke_clusterer_for_task(
     let mut ps = state.persistent_state.lock().await;
 
     // Invoke clusterer
-    let response = assign_channel(request, cwd, &mut ps).await?;
+    let diff = assign_channel(request, cwd, &mut ps).await?;
 
     // Save persistent state with updated session ID
     if let Err(e) = ps.save_for_repo(&state.repo_name) {
         warn!("Failed to save clusterer session ID: {}", e);
     }
 
-    Ok(response.channel)
+    Ok(diff)
 }
 
 // ============================================================================
