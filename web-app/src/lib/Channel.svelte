@@ -36,7 +36,7 @@
         { name: 'lead', type: 'lead' },
         ...$coworkers.map(cw => ({ name: cw.name, type: 'coworker', task: cw.current_task }))
       ]
-      return people.filter(p => p.name.toLowerCase().includes(lowerQuery))
+      return people.filter(p => p.name.toLowerCase().startsWith(lowerQuery))
     }
 
     if (type === '!') {
@@ -44,8 +44,8 @@
       const tasks = $daemonStatus?.tasks || []
       return tasks
         .filter(t => {
-          const idMatch = String(t.id).includes(query)
-          const subjectMatch = t.subject?.toLowerCase().includes(lowerQuery)
+          const idMatch = String(t.id).startsWith(query)
+          const subjectMatch = t.subject?.toLowerCase().startsWith(lowerQuery)
           return idMatch || subjectMatch
         })
         .slice(0, 10) // Limit to 10 results
@@ -66,9 +66,9 @@
       const combined = [...prs, ...channelList]
       return combined.filter(item => {
         if (item.type === 'pr') {
-          return String(item.number).includes(query) || item.title?.toLowerCase().includes(lowerQuery)
+          return String(item.number).startsWith(query) || item.title?.toLowerCase().startsWith(lowerQuery)
         }
-        return item.name.toLowerCase().includes(lowerQuery)
+        return item.name.toLowerCase().startsWith(lowerQuery)
       }).slice(0, 10)
     }
 
