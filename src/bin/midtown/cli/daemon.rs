@@ -1164,9 +1164,13 @@ fn wait_for_coworkers_to_drain(timeout_secs: u64) -> Result<(), String> {
             let status = coworker.status.to_lowercase();
             current_status.insert(coworker.name.clone(), status.clone());
 
-            // Consider "stopped", "stopping" as done (CoworkerStatus lifecycle states)
-            // "starting", "running" are still working
-            let is_done = status == "stopped" || status == "stopping";
+            // Consider stopped/stopping as done, and also treat running coworkers
+            // with no current task as done (they're idle, waiting to be shut down).
+            // CoworkerStatus has no Idle variant — idle state is inferred from
+            // status == "running" with current_task == None.
+            let is_done = status == "stopped"
+                || status == "stopping"
+                || (status == "running" && coworker.current_task.is_none());
 
             if !is_done {
                 all_done = false;
@@ -1181,7 +1185,7 @@ fn wait_for_coworkers_to_drain(timeout_secs: u64) -> Result<(), String> {
                     eprintln!("  {}: {}{}", coworker.name, status, task_info);
                 }
             } else if last_status.get(&coworker.name) != Some(&status) {
-                // Transitioned to stopped/stopping - mark with checkmark
+                // Transitioned to done state - mark with checkmark
                 eprintln!("  {}: {} ✓", coworker.name, status);
             }
         }
