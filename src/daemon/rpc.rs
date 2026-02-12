@@ -1803,11 +1803,13 @@ fn generate_active_form(subject: &str) -> String {
     }
 }
 
-/// Validate model format: must be "provider/model" with exactly one slash.
+/// Validate model format: must be "provider/model" with exactly one slash
+/// and a supported provider.
 ///
 /// Valid examples: "claude/opus", "claude/sonnet", "codex/o3", "codex/o4-mini"
 /// Invalid: "claude-opus" (no slash), "claude/opus/extra" (multiple slashes),
-///          "/opus" (empty provider), "claude/" (empty model)
+///          "/opus" (empty provider), "claude/" (empty model),
+///          "unknown/opus" (unsupported provider)
 fn validate_model_format(model: &str) -> Result<(), String> {
     let parts: Vec<&str> = model.split('/').collect();
     if parts.len() != 2 {
@@ -1828,6 +1830,12 @@ fn validate_model_format(model: &str) -> Result<(), String> {
             model
         ));
     }
+
+    // Validate provider is supported
+    use std::str::FromStr;
+    crate::auth::AuthProvider::from_str(parts[0])
+        .map_err(|e| format!("Invalid model format '{}': {}", model, e))?;
+
     Ok(())
 }
 
@@ -4293,6 +4301,9 @@ mod tests {
         assert!(validate_model_format("/opus").is_err());
         // Empty model
         assert!(validate_model_format("claude/").is_err());
+        // Unsupported provider
+        assert!(validate_model_format("unknown/opus").is_err());
+        assert!(validate_model_format("openai/gpt4").is_err());
     }
 
     #[test]

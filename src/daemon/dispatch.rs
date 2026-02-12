@@ -267,14 +267,8 @@ pub(super) fn check_and_recover_orphans(
         .and_then(|t| t.channel.clone());
     config.channel = channel.clone();
 
-    // Set model from task_model mapping if available.
-    // task_model_map stores "provider/model" (e.g., "claude/opus") but
-    // LaunchConfig.model expects just the model alias (e.g., "opus").
-    if let Some(full_model) = snap.task_model_map.get(&recovery.task_id)
-        && let Some(model_alias) = full_model.split('/').nth(1)
-    {
-        config.model = model_alias.to_string();
-    }
+    // Apply task model if available (sets both provider and model)
+    config.apply_task_model(&snap.task_model_map, &recovery.task_id);
 
     // Reuse existing worktree if one is registered for this task (reassignment case).
     // Otherwise, compute a new worktree_id from the task subject.
@@ -1174,13 +1168,8 @@ pub(super) fn spawn_for_pending_tasks(
                 );
                 config.working_dir = Some(wt_path.clone());
 
-                // Set model from task_model mapping if available.
-                // Extract just the model alias from "provider/model" format.
-                if let Some(full_model) = snap.task_model_map.get(tid)
-                    && let Some(model_alias) = full_model.split('/').nth(1)
-                {
-                    config.model = model_alias.to_string();
-                }
+                // Apply task model if available (sets both provider and model)
+                config.apply_task_model(&snap.task_model_map, tid);
 
                 // Pre-spawn: create worktree and register assignment BEFORE spawning.
                 // prepare_spawn() validates working_dir exists, so the worktree must exist first.
@@ -1549,13 +1538,8 @@ pub(super) fn spawn_for_pending_tasks(
             config.working_dir = Some(wt_path.clone());
             config.channel = task.channel.clone();
 
-            // Set model from task_model mapping if available.
-            // Extract just the model alias from "provider/model" format.
-            if let Some(full_model) = snap.task_model_map.get(&task.id)
-                && let Some(model_alias) = full_model.split('/').nth(1)
-            {
-                config.model = model_alias.to_string();
-            }
+            // Apply task model if available (sets both provider and model)
+            config.apply_task_model(&snap.task_model_map, &task.id);
 
             let channel_msg = daemon_messages::called_in_assigned_task(
                 &coworker_name,
@@ -4828,6 +4812,12 @@ mod tests {
         assert_eq!(
             spawn_config.model, "opus",
             "LaunchConfig.model should be just the model alias 'opus', not the full 'claude/opus'"
+        );
+        // LaunchConfig.auth_provider should be extracted from "claude" portion
+        assert_eq!(
+            spawn_config.auth_provider,
+            crate::auth::AuthProvider::Claude,
+            "LaunchConfig.auth_provider should be Claude"
         );
     }
 }
