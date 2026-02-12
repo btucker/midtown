@@ -932,6 +932,13 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                                 warn!("Failed to save worktree completion timestamp: {}", e);
                             }
                         }
+                        // Clean up pr_author_sessions for this task to prevent stale state
+                        ps.github
+                            .pr_author_sessions
+                            .retain(|_, session| session.task_id.as_deref() != Some(&task_id));
+                        if let Err(e) = ps.save_for_repo(&repo_name) {
+                            warn!("Failed to save pr_author_sessions cleanup: {}", e);
+                        }
                     }
                     // Clear task assignment tracking (coworker is now free)
                     state.clear_task_assignment_by_task(&task_id);
