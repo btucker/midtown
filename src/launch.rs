@@ -434,6 +434,12 @@ impl LaunchConfig {
 /// Returns None if the format is invalid or the provider is unsupported.
 fn parse_task_model(full_model: &str) -> Option<(crate::auth::AuthProvider, &str)> {
     let (provider_str, model_alias) = full_model.split_once('/')?;
+
+    // Reject empty provider or empty model
+    if provider_str.is_empty() || model_alias.is_empty() {
+        return None;
+    }
+
     let provider = provider_str.parse::<crate::auth::AuthProvider>().ok()?;
     Some((provider, model_alias))
 }
@@ -688,6 +694,125 @@ mod tests {
         assert!(
             !headless.env.contains_key("CLAUDE_CONFIG_DIR"),
             "Codex provider should not inject CLAUDE_CONFIG_DIR"
+        );
+    }
+
+    // Tests for parse_task_model function
+    #[test]
+    fn test_parse_task_model_valid_claude() {
+        let result = parse_task_model("claude/opus");
+        assert_eq!(result, Some((crate::auth::AuthProvider::Claude, "opus")));
+    }
+
+    #[test]
+    fn test_parse_task_model_valid_codex() {
+        let result = parse_task_model("codex/o3");
+        assert_eq!(result, Some((crate::auth::AuthProvider::Codex, "o3")));
+    }
+
+    #[test]
+    fn test_parse_task_model_empty_model_returns_none() {
+        // Bug fix: "claude/" should return None, not Some((Claude, ""))
+        let result = parse_task_model("claude/");
+        assert_eq!(result, None, "Empty model string should be rejected");
+    }
+
+    #[test]
+    fn test_parse_task_model_empty_provider_returns_none() {
+        let result = parse_task_model("/opus");
+        assert_eq!(result, None, "Empty provider should be rejected");
+    }
+
+    #[test]
+    fn test_parse_task_model_no_slash_returns_none() {
+        let result = parse_task_model("claude-opus");
+        assert_eq!(result, None, "Format without slash should be rejected");
+    }
+
+    #[test]
+    fn test_parse_task_model_unknown_provider_returns_none() {
+        let result = parse_task_model("unknown/opus");
+        assert_eq!(result, None, "Unknown provider should be rejected");
+    }
+
+    #[test]
+    fn test_parse_task_model_whitespace_in_model() {
+        let result = parse_task_model("claude/ opus");
+        // Should return Some but with whitespace in model (validation happens elsewhere)
+        assert_eq!(result, Some((crate::auth::AuthProvider::Claude, " opus")));
+    }
+
+    // Tests for apply_task_model method
+    #[test]
+    fn test_apply_task_model_sets_both_model_and_provider() {
+        let mut config = LaunchConfig::coworker("park", "myrepo", SessionMode::Fresh, None);
+        let mut map = std::collections::HashMap::new();
+        map.insert("42".to_string(), "codex/o3".to_string());
+
+        config.apply_task_model(&map, "42");
+
+        assert_eq!(config.model, "o3", "Model alias should be extracted");
+        assert_eq!(
+            config.auth_provider,
+            crate::auth::AuthProvider::Codex,
+            "Auth provider should be set to Codex"
+        );
+    }
+
+    #[test]
+    fn test_apply_task_model_no_change_when_task_not_in_map() {
+        let mut config = LaunchConfig::coworker("park", "myrepo", SessionMode::Fresh, None);
+        let original_model = config.model.clone();
+        let original_provider = config.auth_provider;
+        let map = std::collections::HashMap::new();
+
+        config.apply_task_model(&map, "42");
+
+        assert_eq!(config.model, original_model, "Model should be unchanged");
+        assert_eq!(
+            config.auth_provider, original_provider,
+            "Auth provider should be unchanged"
+        );
+    }
+
+    #[test]
+    fn test_apply_task_model_no_change_on_invalid_format() {
+        let mut config = LaunchConfig::coworker("park", "myrepo", SessionMode::Fresh, None);
+        let original_model = config.model.clone();
+        let original_provider = config.auth_provider;
+        let mut map = std::collections::HashMap::new();
+        map.insert("42".to_string(), "invalid-format".to_string());
+
+        config.apply_task_model(&map, "42");
+
+        assert_eq!(
+            config.model, original_model,
+            "Model should be unchanged when format is invalid"
+        );
+        assert_eq!(
+            config.auth_provider, original_provider,
+            "Auth provider should be unchanged when format is invalid"
+        );
+    }
+
+    #[test]
+    fn test_apply_task_model_no_change_on_empty_model_string() {
+        // Bug fix test: "claude/" should not update config
+        let mut config = LaunchConfig::coworker("park", "myrepo", SessionMode::Fresh, None);
+        let original_model = config.model.clone();
+        let original_provider = config.auth_provider;
+        let mut map = std::collections::HashMap::new();
+        map.insert("42".to_string(), "claude/".to_string());
+
+        config.apply_task_model(&map, "42");
+
+        assert_eq!(
+            config.model, original_model,
+            "Model should be unchanged when model string is empty"
+        );
+        assert_eq!(
+            config.auth_provider, original_provider,
+            "Auth provider should be unchanged when model string is empty"
         );
     }
 }

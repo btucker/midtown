@@ -1836,6 +1836,13 @@ fn validate_model_format(model: &str) -> Result<(), String> {
             model
         ));
     }
+    // Reject whitespace in provider or model
+    if parts[0] != parts[0].trim() || parts[1] != parts[1].trim() {
+        return Err(format!(
+            "Invalid model format '{}': provider and model must not contain leading/trailing whitespace",
+            model
+        ));
+    }
 
     // Validate provider is supported
     use std::str::FromStr;
@@ -4314,6 +4321,11 @@ mod tests {
         // Unsupported provider
         assert!(validate_model_format("unknown/opus").is_err());
         assert!(validate_model_format("openai/gpt4").is_err());
+        // Whitespace in model or provider
+        assert!(validate_model_format("claude/ opus").is_err());
+        assert!(validate_model_format("claude /opus").is_err());
+        assert!(validate_model_format(" claude/opus").is_err());
+        assert!(validate_model_format("claude/opus ").is_err());
     }
 
     #[test]
