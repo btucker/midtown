@@ -154,10 +154,24 @@ gh pr list --search "Midtown !XXX" --state open --json number,headRefName
 
 **If no PR exists**, push and create a new PR (see "Example PR creation" below).
 
-**If you accidentally pushed a branch without creating a PR**, delete it immediately:
+**If you accidentally pushed a branch without creating a PR**, delete it immediately to avoid orphaned branches:
 
 ```bash
+# Delete the orphaned remote branch
 git push origin --delete accidentally-pushed-branch
+```
+
+**If you accidentally created a new branch when a PR already existed**, clean up both branches:
+
+```bash
+# Get the PR's actual branch name
+PR_BRANCH=$(gh pr view <number> --json headRefName --jq '.headRefName')
+
+# Delete your accidentally created branch (if you pushed it)
+git push origin --delete accidentally-created-branch
+
+# Force-push your work to the correct PR branch
+git push --force origin HEAD:$PR_BRANCH
 ```
 
 **When done**, push and create a PR.
@@ -242,14 +256,29 @@ A code review is **not complete** until you have:
 ### Responding to PR Review Feedback
 When your PR receives review comments with suggested changes:
 
-**First, check if the PR is still open.** If the PR was already merged before you address feedback, pushing to the old branch (or creating a new branch) will leave orphaned work that never lands. Always verify:
+**CRITICAL: ALWAYS use the existing PR branch. NEVER create a new branch.**
 
-```bash
-gh pr view <number> --json state --jq '.state'
-```
+Creating a new branch when a PR already exists leaves orphaned remote branches that confuse the daemon and waste GitHub resources. When addressing review feedback:
 
-- If **OPEN**: Address feedback by pushing fixes to the PR's existing branch (force-push if you rebased).
-- If **MERGED**: **Do NOT push to the old branch or create a new branch from your current work.** The PR is already on main. Create a follow-up:
+1. **First, check if the PR is still open**:
+   ```bash
+   gh pr view <number> --json state --jq '.state'
+   ```
+
+2. **If OPEN**: Address feedback by pushing to the PR's existing branch:
+   - Make your changes (including rebases, force-pushes, etc.)
+   - **Always push to the same branch** the PR is tracking:
+     ```bash
+     # Get the PR's branch name first
+     PR_BRANCH=$(gh pr view <number> --json headRefName --jq '.headRefName')
+
+     # Push to that branch (force-push if you rebased)
+     git push --force origin HEAD:$PR_BRANCH
+     ```
+   - **NEVER** run `git checkout -b` to create a new branch when a PR exists
+   - **NEVER** push to a different branch name
+
+3. **If MERGED**: **Do NOT push to the old branch or create a new branch from your current work.** The PR is already on main. Create a follow-up:
   1. **Acknowledge the original feedback** by replying on the merged PR:
      ```bash
      gh pr comment <merged-pr-number> --body "<!-- midtown: {name} -->
