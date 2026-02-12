@@ -84,7 +84,7 @@ fn test_should_not_recover_task_with_explicit_pr_field_and_pr_task_associations(
 #[test]
 fn test_should_recover_task_when_pr_is_merged() {
     // Scenario: Task !42 had PR #1000, but it's now merged
-    // The task should be recovered (to be auto-completed)
+    // The task should NOT be recovered (explicit PR merged → skip recovery)
     let task = create_test_task("42", "Add auth endpoint", Some(1000));
 
     let mut merged_pr_numbers = HashSet::new();
@@ -129,5 +129,35 @@ fn test_should_recover_task_with_no_pr_anywhere() {
     assert!(
         result,
         "should_recover_task should return true for tasks with no PR association"
+    );
+}
+
+#[test]
+fn test_should_recover_task_when_pr_task_associations_stale_but_pr_merged() {
+    // Scenario: Task !42 is in pr_task_associations (pointing to PR #1000),
+    // BUT PR #1000 is actually merged. This can happen if pr_author_sessions
+    // cleanup is async and hasn't run yet, leaving a stale entry.
+    // Expected: Recovery SHOULD proceed (the PR is merged, just not cleaned up yet)
+    let task = create_test_task("42", "Add auth endpoint", None);
+
+    let mut merged_pr_numbers = HashSet::new();
+    merged_pr_numbers.insert(1000); // PR #1000 is MERGED
+
+    let mut tasks_with_open_prs = HashMap::new();
+    tasks_with_open_prs.insert("42".to_string(), 1000u64); // Stale entry
+
+    let repo_path = PathBuf::from("/fake/repo");
+
+    // Expected: Should recover (PR is merged, stale association doesn't block)
+    let result = midtown::daemon::should_recover_task_test_helper(
+        &task,
+        &merged_pr_numbers,
+        &repo_path,
+        &tasks_with_open_prs,
+    );
+
+    assert!(
+        result,
+        "should_recover_task should return true when pr_task_associations is stale (PR merged)"
     );
 }

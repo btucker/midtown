@@ -97,13 +97,22 @@ fn should_recover_task(
     // Check if this task has an open PR tracked via pr_task_associations.
     // This prevents duplicate coworkers from being spawned when a task already
     // has an open PR but the task.pr field isn't set yet.
-    if tasks_with_open_prs.contains_key(&task.id) {
-        debug!(
-            "Skipping orphan recovery for task !{}: has open PR via pr_task_associations (PR #{})",
-            task.id,
-            tasks_with_open_prs.get(&task.id).unwrap()
-        );
-        return false;
+    // IMPORTANT: Only skip recovery if the PR is NOT merged. pr_author_sessions
+    // cleanup is async, so stale entries for merged PRs can linger. We must
+    // cross-reference merged_pr_numbers to avoid incorrectly skipping tasks.
+    if let Some(&pr_number) = tasks_with_open_prs.get(&task.id) {
+        if !merged_pr_numbers.contains(&pr_number) {
+            debug!(
+                "Skipping orphan recovery for task !{}: has open PR via pr_task_associations (PR #{})",
+                task.id, pr_number
+            );
+            return false;
+        } else {
+            debug!(
+                "Task !{} is in pr_task_associations but PR #{} is merged, allowing recovery for auto-completion",
+                task.id, pr_number
+            );
+        }
     }
 
     // Check if this task has an explicit PR association that's already merged.
@@ -187,11 +196,12 @@ pub(super) fn check_and_recover_orphans(
         .first()
         .expect("daemon state must have at least one repo path");
 
-    // Filter out in_progress tasks whose PRs have already been merged or that
-    // are already completed. These tasks are stale and will be auto-completed
-    // by the PR merge cleanup path. Attempting orphan recovery on them creates
-    // a loop: spawn → coworker sees task done → goes idle → grace period
-    // expires → spawn again.
+    // Filter out in_progress tasks whose PRs have already been merged, that
+    // have open PRs (via pr_task_associations), or that are already completed.
+    // These tasks are stale and will be auto-completed by the PR merge cleanup
+    // path (merged/completed) or already have active work (open PR). Attempting
+    // orphan recovery creates a loop: spawn → coworker sees task done → goes
+    // idle → grace period expires → spawn again.
     let in_progress_tasks_active: Vec<(String, String, String)> = snap
         .in_progress_tasks
         .iter()
