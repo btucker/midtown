@@ -97,8 +97,15 @@ export const activeProject = writable(null)
 // Whether the app is running in multi-project mode (always true — served from shared webserver)
 export const multiProjectMode = writable(true)
 
-// Auth profiles: [{name, is_current, has_credentials}]
+// Auth profiles: Map of provider -> [{name, is_current, has_credentials}]
+// Example: { 'claude': [...], 'codex': [...], 'zai': [...] }
+export const authProfilesByProvider = writable({})
+
+// Legacy: single flat array for backward compatibility
 export const authProfiles = writable([])
+
+// Currently selected auth provider ('claude', 'codex', 'zai')
+export const selectedAuthProvider = writable('claude')
 
 // Whether an auth switch is in progress
 export const authSwitching = writable(false)

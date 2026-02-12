@@ -1,13 +1,13 @@
 <script>
-  import { authProfiles, authSwitching } from './store.js'
-  import { fetchAuthProfiles, switchAuthProfile } from './api.js'
+  import { authProfilesByProvider, selectedAuthProvider, authSwitching } from './store.js'
+  import { fetchAllAuthProfiles, switchAuthProfile } from './api.js'
   import { onMount } from 'svelte'
 
   let open = $state(false)
   let error = $state(null)
 
   onMount(() => {
-    fetchAuthProfiles()
+    fetchAllAuthProfiles()
   })
 
   function toggle() {
@@ -17,15 +17,22 @@
     }
   }
 
-  async function select(profile) {
+  async function selectProfile(profile, provider) {
     if (profile.is_current || $authSwitching) return
     open = false
     error = null
-    const result = await switchAuthProfile(profile.name)
+    const result = await switchAuthProfile(profile.name, provider)
     if (!result.ok) {
       error = result.error
       setTimeout(() => { error = null }, 5000)
+    } else {
+      // Refresh all profiles after switching
+      await fetchAllAuthProfiles()
     }
+  }
+
+  function selectProvider(provider) {
+    $selectedAuthProvider = provider
   }
 
   function handleClickOutside(event) {
@@ -41,10 +48,32 @@
     }
   })
 
-  const currentProfile = $derived($authProfiles.find((p) => p.is_current))
+  // Get profiles for the currently selected provider
+  const currentProviderProfiles = $derived($authProfilesByProvider[$selectedAuthProvider] || [])
+
+  // Find the current profile across all providers
+  const currentProfile = $derived(() => {
+    for (const [provider, profiles] of Object.entries($authProfilesByProvider)) {
+      const current = profiles.find((p) => p.is_current)
+      if (current) {
+        return { ...current, provider }
+      }
+    }
+    return null
+  })()
+
+  // Get list of available providers (only those with profiles)
+  const availableProviders = $derived(Object.keys($authProfilesByProvider))
+
+  // Provider display names
+  const providerNames = {
+    'claude': 'Claude',
+    'codex': 'Codex',
+    'zai': 'z.ai'
+  }
 </script>
 
-{#if $authProfiles.length > 0}
+{#if availableProviders.length > 0}
   <div class="auth-switcher">
     <button
       class="auth-trigger"
@@ -58,6 +87,8 @@
       {:else}
         <span class="profile-icon"></span>
       {/if}
+      <span class="profile-provider">{providerNames[currentProfile?.provider] || '...'}</span>
+      <span class="profile-separator">/</span>
       <span class="profile-name">{currentProfile?.name || '...'}</span>
     </button>
 
@@ -67,22 +98,38 @@
 
     {#if open}
       <div class="auth-dropdown">
-        {#each $authProfiles as profile}
-          <button
-            class="auth-option"
-            class:current={profile.is_current}
-            class:no-creds={!profile.has_credentials}
-            onclick={() => select(profile)}
-            disabled={profile.is_current}
-            title={!profile.has_credentials ? 'No credentials — run midtown auth login' : ''}
-          >
-            <span class="option-indicator">{profile.is_current ? '\u25CF' : '\u25CB'}</span>
-            <span class="option-name">{profile.name}</span>
-            {#if !profile.has_credentials}
-              <span class="option-badge">no auth</span>
-            {/if}
-          </button>
-        {/each}
+        {#if availableProviders.length > 1}
+          <div class="provider-tabs">
+            {#each availableProviders as provider}
+              <button
+                class="provider-tab"
+                class:active={provider === $selectedAuthProvider}
+                onclick={() => selectProvider(provider)}
+              >
+                {providerNames[provider]}
+              </button>
+            {/each}
+          </div>
+        {/if}
+
+        <div class="profile-list">
+          {#each currentProviderProfiles as profile}
+            <button
+              class="auth-option"
+              class:current={profile.is_current}
+              class:no-creds={!profile.has_credentials}
+              onclick={() => selectProfile(profile, $selectedAuthProvider)}
+              disabled={profile.is_current}
+              title={!profile.has_credentials ? 'No credentials — run midtown auth login' : ''}
+            >
+              <span class="option-indicator">{profile.is_current ? '\u25CF' : '\u25CB'}</span>
+              <span class="option-name">{profile.name}</span>
+              {#if !profile.has_credentials}
+                <span class="option-badge">no auth</span>
+              {/if}
+            </button>
+          {/each}
+        </div>
       </div>
     {/if}
   </div>
@@ -123,8 +170,19 @@
     font-size: 0.7rem;
   }
 
+  .profile-provider {
+    color: #808080;
+    flex-shrink: 0;
+  }
+
+  .profile-separator {
+    color: #585858;
+    margin: 0 2px;
+    flex-shrink: 0;
+  }
+
   .profile-name {
-    max-width: 80px;
+    max-width: 60px;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -152,10 +210,40 @@
     background: #262626;
     border: 1px solid #3a3a3a;
     border-radius: 6px;
-    min-width: 160px;
+    min-width: 180px;
     z-index: 100;
-    overflow: hidden;
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  }
+
+  .provider-tabs {
+    display: flex;
+    border-bottom: 1px solid #3a3a3a;
+    padding: 4px 4px 0;
+  }
+
+  .provider-tab {
+    flex: 1;
+    padding: 4px 8px;
+    border: none;
+    background: transparent;
+    color: #808080;
+    font-size: 0.7rem;
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    transition: all 0.15s;
+  }
+
+  .provider-tab:hover {
+    color: #d0d0d0;
+  }
+
+  .provider-tab.active {
+    color: #5fafaf;
+    border-bottom-color: #5fafaf;
+  }
+
+  .profile-list {
+    overflow: hidden;
   }
 
   .auth-option {
