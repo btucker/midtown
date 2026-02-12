@@ -78,6 +78,11 @@ pub async fn evaluate_tick(
             effects.extend(super::dispatch::spawn_for_pending_tasks(snap, state));
             effects.extend(super::health::check_and_respawn_dead_processes(snap, state).await);
             effects.extend(super::health::check_and_fire_reminders(snap, state).await);
+            // Auto-archive channels when all tasks are completed
+            effects.extend(super::auto_archive::collect_auto_archive_effects(
+                &snap.all_tasks,
+                &state.repo_name,
+            ));
             dedup_spawn_effects(effects)
         }
         DaemonEvent::PrPollTick => {

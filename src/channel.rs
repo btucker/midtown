@@ -161,6 +161,7 @@ impl Channel {
     ///
     /// Returns channel names (without .jsonl extension).
     /// Includes both legacy channel.jsonl (as "midtown") and channels/*.jsonl files.
+    /// Excludes archived channels (those ending in .archived.jsonl).
     pub fn list(base_dir: impl Into<PathBuf>) -> Result<Vec<String>> {
         let base_dir = base_dir.into();
         let mut channels = Vec::new();
@@ -196,12 +197,75 @@ impl Channel {
         Ok(channels)
     }
 
+    /// List all archived channels in the base directory
+    ///
+    /// Returns channel names (without .archived.jsonl extension) for channels
+    /// that have been archived. These channels are excluded from the regular list().
+    pub fn list_archived(base_dir: impl Into<PathBuf>) -> Result<Vec<String>> {
+        let base_dir = base_dir.into();
+        let mut archived_channels = Vec::new();
+
+        // Check channels/ directory for .archived.jsonl files
+        let channels_dir = base_dir.join("channels");
+        if channels_dir.exists() {
+            for entry in fs::read_dir(channels_dir)? {
+                let entry = entry?;
+                let path = entry.path();
+                // Filter for .archived.jsonl files
+                if path.extension().is_some_and(|e| e == "jsonl")
+                    && let Some(stem) = path.file_stem().and_then(|s| s.to_str())
+                    && stem.ends_with(".archived")
+                {
+                    // Remove the ".archived" suffix to get the original channel name
+                    let channel_name = stem.strip_suffix(".archived").unwrap();
+                    archived_channels.push(channel_name.to_string());
+                }
+            }
+        }
+
+        archived_channels.sort();
+        Ok(archived_channels)
+    }
+
     /// Create a new channel
     ///
     /// This is a convenience method that creates the channel and returns it.
     /// If the channel already exists, this just opens it.
     pub fn create(base_dir: impl Into<PathBuf>, channel_name: impl Into<String>) -> Result<Self> {
         Self::new(base_dir, channel_name)
+    }
+
+    /// Open an archived channel for reading
+    ///
+    /// Opens a channel that has been archived (renamed to .archived.jsonl).
+    /// The returned Channel instance can read messages but should not be used for sending
+    /// (though technically possible, it would write to the archived file).
+    pub fn open_archived(
+        base_dir: impl Into<PathBuf>,
+        channel_name: impl Into<String>,
+    ) -> Result<Self> {
+        let base_dir = base_dir.into();
+        let channel_name = channel_name.into();
+
+        // Construct the path to the archived channel file
+        let archived_path = base_dir
+            .join("channels")
+            .join(format!("{}.archived.jsonl", channel_name));
+
+        if !archived_path.exists() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("Archived channel '{}' not found", channel_name),
+            )
+            .into());
+        }
+
+        // Create a Channel instance pointing to the archived file
+        Ok(Self {
+            base_dir,
+            channel_name,
+            channel_file: archived_path,
+        })
     }
 
     /// Mark a channel as archived
