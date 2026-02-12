@@ -522,6 +522,7 @@ pub(crate) struct DaemonState {
     /// The main event loop subscribes to this channel. When an RPC handler
     /// (e.g., `daemon.exec-restart`) needs to trigger shutdown, it sends on
     /// this channel to break the main loop.
+    #[allow(dead_code)] // Used in rpc.rs via state.shutdown_tx.send()
     shutdown_tx: broadcast::Sender<()>,
 }
 

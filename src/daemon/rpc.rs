@@ -275,17 +275,6 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
             Response::success(request.id, serde_json::json!({"status": "ok"}))
         }
 
-        "daemon.exec-restart" => {
-            info!("Exec-restart requested via RPC — daemon will re-exec after shutdown");
-            state
-                .restart_requested
-                .store(true, std::sync::atomic::Ordering::SeqCst);
-            // Trigger the shutdown broadcast so the main event loop exits.
-            // The run() function checks restart_requested and returns ExecRestart.
-            let _ = state.shutdown_tx.send(());
-            Response::success(request.id, serde_json::json!({"status": "restarting"}))
-        }
-
         // ---- Snapshot / headless ----
         "snapshot" => super::rpc_headless::handle_snapshot(request.id, state).await,
 
@@ -316,7 +305,6 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
             };
             super::rpc_headless::handle_headless_execute(request.id, prompt, &config).await
         }
-
 
         // ---- Coworker lifecycle ----
         "coworker.spawn" => {
