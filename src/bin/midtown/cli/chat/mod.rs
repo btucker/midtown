@@ -432,10 +432,10 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                     } else if !app.input_text.is_empty() {
                         // Post message to the selected channel
                         let message = app.input_text.clone();
-                        let channel_name = Some(app.selected_channel.as_str());
+                        let channel_name = app.selected_channel.clone();
 
                         // Post via daemon RPC with fallback to direct channel write
-                        let posted = app.post_message(&message, "user", channel_name);
+                        let posted = app.post_message(&message, "user", Some(&channel_name));
 
                         // Only clear input if message was successfully posted
                         if posted {
@@ -1219,8 +1219,8 @@ mod tests {
 
     #[test]
     fn test_enter_key_uses_selected_channel_not_hardcoded_midtown() {
-        // This test verifies that the TODO on line 434 is fixed:
-        // Messages should be posted to app.selected_channel, not hardcoded "midtown"
+        // This test verifies that messages are posted to app.selected_channel,
+        // not hardcoded "midtown"
 
         let mut app = test_app();
         app.selected_channel = "custom-channel".to_string();
@@ -1236,9 +1236,11 @@ mod tests {
 
         assert!(matches!(result, EventResult::Continue));
 
-        // The test verifies that the logic passes app.selected_channel to post_message,
-        // not the hardcoded "midtown" string. This is a regression test for the fix.
-        // Since we can't directly inspect the post_message call arguments in this test,
-        // we verify that the selected_channel field is correctly set and used by the handler.
+        // Verify that post_message was called with "custom-channel", not "midtown"
+        assert_eq!(
+            app.last_posted_channel,
+            Some("custom-channel".to_string()),
+            "post_message should use selected_channel, not hardcoded 'midtown'"
+        );
     }
 }

@@ -204,6 +204,9 @@ pub struct App {
     history_fully_loaded: bool,
     /// Test mode: when true, skip daemon communication to avoid side effects
     test_mode: bool,
+    /// Test-only: captures the channel argument from the last post_message call
+    #[cfg(test)]
+    pub last_posted_channel: Option<String>,
     /// Tasks for the kanban board
     pub tasks: Vec<KanbanTask>,
     /// Open PRs for the kanban board (Review column)
@@ -339,6 +342,8 @@ impl App {
             history_start_position: 0,
             history_fully_loaded: false,
             test_mode: false,
+            #[cfg(test)]
+            last_posted_channel: None,
             tasks: Vec::new(),
             prs: Vec::new(),
             merged_prs: Vec::new(),
@@ -937,12 +942,23 @@ impl App {
     /// In test mode, skips daemon RPC to avoid side effects on the live system.
     ///
     /// Returns `true` if the message was successfully posted via either path.
-    pub fn post_message(&self, message: &str, sender: &str, channel_name: Option<&str>) -> bool {
+    pub fn post_message(
+        &mut self,
+        message: &str,
+        sender: &str,
+        channel_name: Option<&str>,
+    ) -> bool {
         use crate::client::DaemonClient;
         use midtown::{Message, MessageType};
 
         // In test mode, skip daemon communication to avoid side effects
         if self.test_mode {
+            // Capture the channel argument for test verification
+            #[cfg(test)]
+            {
+                self.last_posted_channel = channel_name.map(|s| s.to_string());
+            }
+
             // Test mode: only try channel write if channel is available
             if let Some(ref channel) = self.channel {
                 let mut msg = Message::new(sender, message, MessageType::Text);
@@ -2140,6 +2156,8 @@ pub(super) mod tests {
             history_start_position: 0,
             history_fully_loaded: true,
             test_mode: true, // Prevent daemon communication in tests
+            #[cfg(test)]
+            last_posted_channel: None,
             tasks: Vec::new(),
             prs: Vec::new(),
             merged_prs: Vec::new(),
