@@ -504,15 +504,32 @@ export async function fetchAuthProfiles(provider = null) {
 
 // Fetch profiles for all providers and populate authProfilesByProvider.
 // Only includes providers that have at least one profile configured.
+// Returns { ok: true, data: {...} } on success (even if all providers return empty),
+// or { ok: false, error: string } if all provider fetches fail due to network/daemon errors.
 export async function fetchAllAuthProfiles() {
   const providers = ['claude', 'codex', 'zai']
   const byProvider = {}
+  let anySuccess = false
 
   for (const provider of providers) {
-    const profiles = await fetchAuthProfiles(provider)
-    if (profiles.length > 0) {
-      byProvider[provider] = profiles
+    try {
+      const url = `${getApiBase()}/auth/profiles?provider=${encodeURIComponent(provider)}`
+      const res = await fetch(url)
+      if (res.ok) {
+        const data = await res.json()
+        if (data.length > 0) {
+          byProvider[provider] = data
+        }
+        anySuccess = true
+      }
+    } catch (err) {
+      console.error(`Failed to fetch ${provider} profiles:`, err)
     }
+  }
+
+  // If all providers failed to fetch, return error
+  if (!anySuccess) {
+    return { ok: false, error: 'Unable to connect to daemon. Check that midtown daemon is running.' }
   }
 
   authProfilesByProvider.set(byProvider)
@@ -522,7 +539,7 @@ export async function fetchAllAuthProfiles() {
     authProfiles.set(byProvider.claude)
   }
 
-  return byProvider
+  return { ok: true, data: byProvider }
 }
 
 // Switch to a different auth profile via the daemon RPC.

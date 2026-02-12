@@ -5,9 +5,13 @@
 
   let open = $state(false)
   let error = $state(null)
+  let fetchError = $state(null)
 
-  onMount(() => {
-    fetchAllAuthProfiles()
+  onMount(async () => {
+    const result = await fetchAllAuthProfiles()
+    if (result && !result.ok) {
+      fetchError = result.error
+    }
   })
 
   function toggle() {
@@ -25,10 +29,8 @@
     if (!result.ok) {
       error = result.error
       setTimeout(() => { error = null }, 5000)
-    } else {
-      // Refresh all profiles after switching
-      await fetchAllAuthProfiles()
     }
+    // Note: switchAuthProfile already calls fetchAllAuthProfiles() on success
   }
 
   function selectProvider(provider) {
@@ -73,7 +75,14 @@
   }
 </script>
 
-{#if availableProviders.length > 0}
+{#if fetchError}
+  <div class="auth-switcher">
+    <div class="auth-error fetch-error">
+      <span class="error-icon">⚠️</span>
+      <span class="error-message">{fetchError}</span>
+    </div>
+  </div>
+{:else if availableProviders.length > 0}
   <div class="auth-switcher">
     <button
       class="auth-trigger"
@@ -309,5 +318,25 @@
     font-size: 0.7rem;
     white-space: nowrap;
     z-index: 100;
+  }
+
+  .fetch-error {
+    position: static;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 12px;
+    white-space: normal;
+    max-width: 100%;
+  }
+
+  .error-icon {
+    flex-shrink: 0;
+  }
+
+  .error-message {
+    flex: 1;
+    font-size: 0.75rem;
+    line-height: 1.3;
   }
 </style>
