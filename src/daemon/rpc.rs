@@ -22,7 +22,7 @@ use super::snapshot::ProcessHealth;
 use super::{DaemonState, effects, snapshot};
 
 // ============================================================================
-// Param extraction macro
+// Param extraction helpers
 // ============================================================================
 
 /// Extract a required string parameter from an RPC request, returning
@@ -37,6 +37,48 @@ macro_rules! require_str {
             None => return Response::error($id, RpcError::invalid_params()),
         }
     };
+}
+
+/// Extension trait for ergonomic RPC parameter extraction.
+///
+/// Reduces the common `params.and_then(|p| p.get("key")).and_then(|v| v.as_str())`
+/// chain to `params.str_param("key")`.
+trait ParamExt {
+    fn str_param(&self, key: &str) -> Option<&str>;
+    fn bool_or(&self, key: &str, default: bool) -> bool;
+    fn str_or<'a>(&'a self, key: &str, default: &'a str) -> &'a str;
+    fn u64_param(&self, key: &str) -> Option<u64>;
+    fn str_array_param(&self, key: &str) -> Option<Vec<String>>;
+}
+
+impl ParamExt for Option<&serde_json::Value> {
+    fn str_param(&self, key: &str) -> Option<&str> {
+        self.and_then(|p| p.get(key)).and_then(|v| v.as_str())
+    }
+
+    fn bool_or(&self, key: &str, default: bool) -> bool {
+        self.and_then(|p| p.get(key))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(default)
+    }
+
+    fn str_or<'a>(&'a self, key: &str, default: &'a str) -> &'a str {
+        self.str_param(key).unwrap_or(default)
+    }
+
+    fn u64_param(&self, key: &str) -> Option<u64> {
+        self.and_then(|p| p.get(key)).and_then(|v| v.as_u64())
+    }
+
+    fn str_array_param(&self, key: &str) -> Option<Vec<String>> {
+        self.and_then(|p| p.get(key))
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+    }
 }
 
 // ============================================================================
@@ -220,14 +262,8 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
 
         "coworker.spawn" => {
             let params = request.params.as_ref();
-            let resume = params
-                .and_then(|p| p.get("resume"))
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-            let prompt = params
-                .and_then(|p| p.get("prompt"))
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
+            let resume = params.bool_or("resume", false);
+            let prompt = params.str_param("prompt").map(|s| s.to_string());
             let provider = match parse_provider_param(params) {
                 Ok(provider) => provider,
                 Err(msg) => return Response::error(request.id, RpcError::new(-32602, msg)),
@@ -251,10 +287,7 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
             let params = request.params.as_ref();
             let name = require_str!(params, "name", request.id);
             let phase = require_str!(params, "phase", request.id);
-            let task_id = params
-                .and_then(|p| p.get("task_id"))
-                .and_then(|v| v.as_u64())
-                .map(|v| v as u32);
+            let task_id = params.u64_param("task_id").map(|v| v as u32);
             handle_coworker_report_state(request.id, name, phase, task_id, state).await
         }
 
@@ -262,10 +295,7 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
             let params = request.params.as_ref();
             let name = require_str!(params, "name", request.id);
             let message = require_str!(params, "message", request.id);
-            let from = params
-                .and_then(|p| p.get("from"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("lead");
+            let from = params.str_or("from", "lead");
             handle_coworker_nudge(request.id, from, name, message, state).await
         }
 
@@ -283,23 +313,13 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
         "channel.post" => {
             let params = request.params.as_ref();
             let message = require_str!(params, "message", request.id);
-            let from = params
-                .and_then(|p| p.get("from"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("lead");
-            let channel = params
-                .and_then(|p| p.get("channel"))
-                .and_then(|v| v.as_str());
+            let from = params.str_or("from", "lead");
+            let channel = params.str_param("channel");
             handle_channel_post(request.id, from, message, channel, state).await
         }
 
         "channel.read" => {
-            let all = request
-                .params
-                .as_ref()
-                .and_then(|p| p.get("all"))
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
+            let all = request.params.as_ref().bool_or("all", false);
             handle_channel_read(request.id, all, state)
         }
 
@@ -336,23 +356,11 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
         "task.create" => {
             let params = request.params.as_ref();
             let subject = require_str!(params, "subject", request.id);
-            let description = params
-                .and_then(|p| p.get("description"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let blocked_by: Option<Vec<String>> = params
-                .and_then(|p| p.get("blocked_by"))
-                .and_then(|v| v.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|v| v.as_str().map(String::from))
-                        .collect()
-                });
-            let channel = params
-                .and_then(|p| p.get("channel"))
-                .and_then(|v| v.as_str());
-            let model = params.and_then(|p| p.get("model")).and_then(|v| v.as_str());
-            let pr = params.and_then(|p| p.get("pr")).and_then(|v| v.as_u64());
+            let description = params.str_or("description", "");
+            let blocked_by = params.str_array_param("blocked_by");
+            let channel = params.str_param("channel");
+            let model = params.str_param("model");
+            let pr = params.u64_param("pr");
             handle_task_create(
                 request.id,
                 subject,
@@ -369,26 +377,13 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
         "task.update" => {
             let params = request.params.as_ref();
             let task_id = require_str!(params, "id", request.id);
-            let owner = params.and_then(|p| p.get("owner")).and_then(|v| v.as_str());
-            let status = params
-                .and_then(|p| p.get("status"))
-                .and_then(|v| v.as_str());
-            let description = params
-                .and_then(|p| p.get("description"))
-                .and_then(|v| v.as_str());
-            let blocked_by: Option<Vec<String>> = params
-                .and_then(|p| p.get("blocked_by"))
-                .and_then(|v| v.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|v| v.as_str().map(String::from))
-                        .collect()
-                });
-            let channel = params
-                .and_then(|p| p.get("channel"))
-                .and_then(|v| v.as_str());
-            let model = params.and_then(|p| p.get("model")).and_then(|v| v.as_str());
-            let pr = params.and_then(|p| p.get("pr")).and_then(|v| v.as_u64());
+            let owner = params.str_param("owner");
+            let status = params.str_param("status");
+            let description = params.str_param("description");
+            let blocked_by = params.str_array_param("blocked_by");
+            let channel = params.str_param("channel");
+            let model = params.str_param("model");
+            let pr = params.u64_param("pr");
             handle_task_update(
                 request.id,
                 task_id,
@@ -417,35 +412,23 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
         "task.request" => {
             let params = request.params.as_ref();
             let message = require_str!(params, "message", request.id);
-            let from = params
-                .and_then(|p| p.get("from"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown");
+            let from = params.str_or("from", "unknown");
             handle_task_request(request.id, from, message, state).await
         }
 
         "task.claim" => {
             let params = request.params.as_ref();
             let task_id = require_str!(params, "id", request.id);
-            let from = params
-                .and_then(|p| p.get("from"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown");
+            let from = params.str_or("from", "unknown");
             handle_task_claim(request.id, task_id, from, state)
         }
 
         "auth.switch" => {
             let params = request.params.as_ref();
-            let profile = params
-                .and_then(|p| p.get("profile"))
-                .and_then(|v| v.as_str());
-            let all = params
-                .and_then(|p| p.get("all"))
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
+            let profile = params.str_param("profile");
+            let all = params.bool_or("all", false);
             let provider = params
-                .and_then(|p| p.get("provider"))
-                .and_then(|v| v.as_str())
+                .str_param("provider")
                 .map(str::parse::<crate::auth::AuthProvider>)
                 .transpose();
 
@@ -464,52 +447,37 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
             let params = request.params.as_ref();
             let agent = require_str!(params, "agent", request.id);
             let insight = require_str!(params, "insight", request.id);
-            let channel = params
-                .and_then(|p| p.get("channel"))
-                .and_then(|v| v.as_str());
+            let channel = params.str_param("channel");
             handle_insight_report(request.id, agent, insight, channel, state).await
         }
 
         "headless.execute" => {
             let params = request.params.as_ref();
             let prompt = require_str!(params, "prompt", request.id);
-            {
-                let config = crate::headless::HeadlessConfig {
-                    model: params
-                        .and_then(|p| p.get("model"))
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("sonnet")
-                        .to_string(),
-                    system_prompt: params
-                        .and_then(|p| p.get("system_prompt"))
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string(),
-                    json_schema: params.and_then(|p| p.get("json_schema")).cloned(),
-                    max_budget_usd: params
-                        .and_then(|p| p.get("max_budget_usd"))
-                        .and_then(|v| v.as_f64()),
-                    allow_tools: params
-                        .and_then(|p| p.get("allow_tools"))
-                        .and_then(|v| v.as_bool())
-                        .unwrap_or(false),
-                    cwd: state
-                        .all_repo_paths
-                        .first()
-                        .map(|p| p.to_string_lossy().to_string()),
-                    persist_session: false,
-                    resume_session_id: None,
-                    inactivity_timeout: None,
-                    team_name: None,
-                    agent_id: None,
-                    agent_name: None,
-                    settings_path: None,
-                    setting_sources: None,
-                    auth_provider: crate::auth::AuthProvider::Claude,
-                    env: std::collections::HashMap::new(),
-                };
-                handle_headless_execute(request.id, prompt, &config).await
-            }
+            let config = crate::headless::HeadlessConfig {
+                model: params.str_or("model", "sonnet").to_string(),
+                system_prompt: params.str_or("system_prompt", "").to_string(),
+                json_schema: params.and_then(|p| p.get("json_schema")).cloned(),
+                max_budget_usd: params
+                    .and_then(|p| p.get("max_budget_usd"))
+                    .and_then(|v| v.as_f64()),
+                allow_tools: params.bool_or("allow_tools", false),
+                cwd: state
+                    .all_repo_paths
+                    .first()
+                    .map(|p| p.to_string_lossy().to_string()),
+                persist_session: false,
+                resume_session_id: None,
+                inactivity_timeout: None,
+                team_name: None,
+                agent_id: None,
+                agent_name: None,
+                settings_path: None,
+                setting_sources: None,
+                auth_provider: crate::auth::AuthProvider::Claude,
+                env: std::collections::HashMap::new(),
+            };
+            handle_headless_execute(request.id, prompt, &config).await
         }
 
         "snapshot" => {
