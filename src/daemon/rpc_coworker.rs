@@ -175,6 +175,8 @@ pub(super) fn handle_coworker_list(id: RequestId, state: &DaemonState) -> Respon
                 "status": cw.status.to_string(),
                 "current_task": current_task,
                 "started_at": cw.started_at.to_rfc3339(),
+                "provider": cw.provider.as_str(),
+                "profile": cw.profile,
             })
         })
         .collect();

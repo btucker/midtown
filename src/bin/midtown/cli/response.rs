@@ -221,11 +221,19 @@ impl Response {
                 }
                 let mut out = String::from("Coworkers\n─────────────────────────────\n");
                 for cw in coworkers {
+                    // Format provider:profile (e.g., "claude: ben@quotably.com")
+                    let auth_info = match (&cw.provider, &cw.profile) {
+                        (Some(provider), Some(profile)) => {
+                            format!(" ({}: {})", provider, profile)
+                        }
+                        _ => String::new(),
+                    };
                     out.push_str(&format!(
-                        "{:<12} {:8} {}\n",
+                        "{:<12} {:8} {}{}\n",
                         cw.name,
                         cw.status,
-                        cw.current_task.as_deref().unwrap_or("-")
+                        cw.current_task.as_deref().unwrap_or("-"),
+                        auth_info
                     ));
                 }
                 out.trim_end().to_string()
@@ -359,6 +367,58 @@ mod tests {
             }
             other => panic!("Expected Coworkers, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn test_coworkers_response_includes_provider_and_profile() {
+        // Test that coworker list includes provider and profile fields
+        let json = r#"{"success": true, "coworkers": [
+            {"name": "lexington", "status": "running", "current_task": null, "started_at": "2026-01-26T20:52:06.779326+00:00", "provider": "claude", "profile": "ben@quotably.com"},
+            {"name": "park", "status": "running", "current_task": "reviewing PR", "started_at": "2026-01-26T20:52:06.779326+00:00", "provider": "zai", "profile": "ben@btucker.net"}
+        ]}"#;
+        let response: Response = serde_json::from_str(json).expect("Should parse");
+
+        match response {
+            Response::Coworkers { coworkers } => {
+                assert_eq!(coworkers.len(), 2);
+                assert_eq!(coworkers[0].provider, Some("claude".to_string()));
+                assert_eq!(coworkers[0].profile, Some("ben@quotably.com".to_string()));
+                assert_eq!(coworkers[1].provider, Some("zai".to_string()));
+                assert_eq!(coworkers[1].profile, Some("ben@btucker.net".to_string()));
+            }
+            other => panic!("Expected Coworkers, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_coworkers_response_display_includes_provider_and_profile() {
+        // Test that the pretty-print format includes provider:profile
+        let response = Response::Coworkers {
+            coworkers: vec![
+                CoworkerInfo {
+                    name: "lexington".to_string(),
+                    status: "running".to_string(),
+                    current_task: Some("implementing auth".to_string()),
+                    started_at: None,
+                    provider: Some("claude".to_string()),
+                    profile: Some("ben@quotably.com".to_string()),
+                },
+                CoworkerInfo {
+                    name: "park".to_string(),
+                    status: "running".to_string(),
+                    current_task: None,
+                    started_at: None,
+                    provider: Some("zai".to_string()),
+                    profile: Some("ben@btucker.net".to_string()),
+                },
+            ],
+        };
+
+        let pretty = response.to_pretty();
+        assert!(pretty.contains("lexington"));
+        assert!(pretty.contains("(claude: ben@quotably.com)"));
+        assert!(pretty.contains("park"));
+        assert!(pretty.contains("(zai: ben@btucker.net)"));
     }
 
     #[test]
