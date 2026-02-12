@@ -69,6 +69,10 @@ pub struct CoworkerInfo {
     pub status: String,
     pub current_task: Option<String>,
     pub started_at: Option<String>,
+    #[serde(default)]
+    pub provider: Option<String>,
+    #[serde(default)]
+    pub profile: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -127,7 +131,14 @@ impl Response {
                             Some(task) => format!("working on: {}", task),
                             None => "idle".to_string(),
                         };
-                        out.push_str(&format!("  {} - {}\n", cw.name, task_desc));
+                        // Format provider:profile (e.g., "claude: ben@quotably.com")
+                        let auth_info = match (&cw.provider, &cw.profile) {
+                            (Some(provider), Some(profile)) => {
+                                format!(" ({}: {})", provider, profile)
+                            }
+                            _ => String::new(),
+                        };
+                        out.push_str(&format!("  {} - {}{}\n", cw.name, task_desc, auth_info));
                     }
 
                     // Tasks section
@@ -274,8 +285,8 @@ mod tests {
             "pending_tasks": 1,
             "socket_path": "/tmp/midtown.sock",
             "coworkers": [
-                {"name": "lex", "status": "running", "current_task": "implement auth", "started_at": "2024-01-01T00:00:00Z"},
-                {"name": "park", "status": "running", "current_task": null, "started_at": "2024-01-01T00:00:00Z"}
+                {"name": "lex", "status": "running", "current_task": "implement auth", "started_at": "2024-01-01T00:00:00Z", "provider": "claude", "profile": "ben@quotably.com"},
+                {"name": "park", "status": "running", "current_task": null, "started_at": "2024-01-01T00:00:00Z", "provider": "zai", "profile": "ben@btucker.net"}
             ],
             "tasks": [
                 {"id": "t1", "subject": "implement auth endpoint", "status": "in_progress", "assignee": "lex"}
@@ -301,7 +312,17 @@ mod tests {
                     full.coworkers[0].current_task,
                     Some("implement auth".to_string())
                 );
+                assert_eq!(full.coworkers[0].provider, Some("claude".to_string()));
+                assert_eq!(
+                    full.coworkers[0].profile,
+                    Some("ben@quotably.com".to_string())
+                );
                 assert_eq!(full.coworkers[1].current_task, None);
+                assert_eq!(full.coworkers[1].provider, Some("zai".to_string()));
+                assert_eq!(
+                    full.coworkers[1].profile,
+                    Some("ben@btucker.net".to_string())
+                );
                 assert_eq!(full.tasks.len(), 1);
                 assert_eq!(full.pull_requests.len(), 1);
             }
@@ -441,12 +462,16 @@ mod tests {
                         status: "running".to_string(),
                         current_task: Some("implement auth endpoint".to_string()),
                         started_at: None,
+                        provider: Some("claude".to_string()),
+                        profile: Some("ben@quotably.com".to_string()),
                     },
                     CoworkerInfo {
                         name: "park".to_string(),
                         status: "running".to_string(),
                         current_task: None,
                         started_at: None,
+                        provider: Some("zai".to_string()),
+                        profile: Some("ben@btucker.net".to_string()),
                     },
                 ],
                 tasks: vec![TaskInfo {
@@ -469,8 +494,10 @@ mod tests {
         let pretty = response.to_pretty();
 
         assert!(pretty.contains("Coworkers: 2/16 active"));
-        assert!(pretty.contains("lex - working on: implement auth endpoint"));
-        assert!(pretty.contains("park - idle"));
+        assert!(
+            pretty.contains("lex - working on: implement auth endpoint (claude: ben@quotably.com)")
+        );
+        assert!(pretty.contains("park - idle (zai: ben@btucker.net)"));
         assert!(pretty.contains("Tasks: 1 open"));
         assert!(pretty.contains("[in_progress] implement auth endpoint (lex)"));
         assert!(pretty.contains("PRs: 1 open"));
