@@ -244,7 +244,7 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
 
         "shutdown" => {
             info!("Shutdown requested via RPC");
-            Response::success(request.id, serde_json::json!({"status": "shutting_down"}))
+            Response::success(request.id, serde_json::json!({"message": "shutting_down"}))
         }
 
         "daemon.enter-drain" => {
@@ -252,7 +252,7 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
             state
                 .draining
                 .store(true, std::sync::atomic::Ordering::SeqCst);
-            Response::success(request.id, serde_json::json!({"status": "draining"}))
+            Response::success(request.id, serde_json::json!({"message": "draining"}))
         }
 
         "daemon.exec-restart" => {
@@ -263,7 +263,7 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
             // Trigger the shutdown broadcast so the main event loop exits.
             // The run() function checks restart_requested and returns ExecRestart.
             let _ = state.shutdown_tx.send(());
-            Response::success(request.id, serde_json::json!({"status": "restarting"}))
+            Response::success(request.id, serde_json::json!({"message": "restarting"}))
         }
 
         "daemon.check-pending" => {
@@ -272,7 +272,7 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
             let pending_effects = super::dispatch::spawn_for_pending_tasks(&snap, state);
             state.mark_in_flight_spawns_from_effects(&pending_effects);
             effects::execute_effects(pending_effects, state).await;
-            Response::success(request.id, serde_json::json!({"status": "ok"}))
+            Response::success(request.id, serde_json::json!({"message": "ok"}))
         }
 
         // ---- Snapshot / headless ----
@@ -664,3 +664,7 @@ mod tests {
         );
     }
 }
+
+#[path = "rpc_tests.rs"]
+#[cfg(test)]
+mod rpc_tests;
