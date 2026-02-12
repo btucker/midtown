@@ -1,4 +1,5 @@
 <script>
+  import { SvelteSet } from 'svelte/reactivity'
   import { channels, activeChannel, kanbanData, activeProject, messagesByChannel } from './store.js'
   import { fetchHistory, fetchChannels, getApiBase } from './api.js'
   import { getChannelTaskCount, getChannelCiStatus } from './channelUtils.js'
@@ -10,7 +11,8 @@
   let isCreating = false
 
   // Track which channels have their task lists expanded (default: collapsed)
-  let expandedChannels = $state(new Set())
+  // Using SvelteSet for reactivity — plain Set mutations don't trigger re-renders in Svelte 5
+  let expandedChannels = new SvelteSet()
 
   async function selectChannel(channelName) {
     activeChannel.set(channelName)

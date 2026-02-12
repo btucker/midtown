@@ -1,19 +1,41 @@
 // Shared utilities for channel filtering and task counting
 
 /**
- * Match channel name as a whole word in task text (avoids "auth" matching "authentication").
- * Uses lookahead/lookbehind to ensure the channel name is not part of a hyphenated word.
- * For example, "pr" won't match "pr-42", but "pr-42" will match "pr-42".
+ * Build a map of task_id → channel from the kanban task lists.
+ * Used to look up a PR's channel via its associated task.
  */
-export function matchesChannel(text, channelName) {
-  if (!text) return false
-  // Escape special regex characters (excluding hyphen since it's handled in the pattern)
-  const escaped = channelName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  // Match only at boundaries that are NOT adjacent to word characters or hyphens
-  // (?<![\w-]) - negative lookbehind: not preceded by word char or hyphen
-  // (?![\w-]) - negative lookahead: not followed by word char or hyphen
-  const pattern = new RegExp(`(?<![\\w-])${escaped}(?![\\w-])`, 'i')
-  return pattern.test(text)
+function buildTaskChannelMap(kanban) {
+  const map = new Map()
+  for (const task of kanban.inProgress) {
+    if (task.id != null && task.channel) {
+      map.set(String(task.id), task.channel)
+    }
+  }
+  for (const task of kanban.backlog) {
+    if (task.id != null && task.channel) {
+      map.set(String(task.id), task.channel)
+    }
+  }
+  return map
+}
+
+/**
+ * Get the channel for a PR by looking up its task_id in the task channel map.
+ * Returns the channel name or null if the PR has no associated task/channel.
+ */
+function getPrChannel(pr, taskChannelMap) {
+  if (pr.task_id != null) {
+    return taskChannelMap.get(String(pr.task_id)) || null
+  }
+  return null
+}
+
+/**
+ * Filter PRs by channel, using task_id → channel lookup.
+ * PRs without a task or without a channel assignment only appear in the main channel.
+ */
+function filterPrsByChannel(prs, channelName, taskChannelMap) {
+  return prs.filter((pr) => getPrChannel(pr, taskChannelMap) === channelName)
 }
 
 /**
@@ -35,14 +57,13 @@ export function getChannelTaskCount(channelName, kanban) {
   // Topic channels filter by the task's channel field
   const filterTasks = (list) => list.filter((task) => task.channel === channelName)
 
-  // For PRs (review column), look up the task's channel via task_name matching
-  // since PRs reference tasks but don't have a direct channel field
-  const filterPrs = (list) => list.filter((pr) => matchesChannel(pr.task_name || '', channelName))
+  // For PRs, look up channel via task_id → channel map (consistent with task filtering)
+  const taskChannelMap = buildTaskChannelMap(kanban)
 
   return {
     inProgress: filterTasks(kanban.inProgress).length,
     pending: filterTasks(kanban.backlog).length,
-    review: filterPrs(kanban.review).length,
+    review: filterPrsByChannel(kanban.review, channelName, taskChannelMap).length,
   }
 }
 
@@ -51,7 +72,17 @@ export function getChannelTaskCount(channelName, kanban) {
  * Returns 'failed', 'pending', 'passed', or null.
  */
 export function getChannelCiStatus(channelName, kanban) {
-  const channelPrs = kanban.review.filter((pr) => matchesChannel(pr.task_name, channelName))
+  if (channelName === 'midtown') {
+    // Main channel considers all PRs
+    if (kanban.review.length === 0) return null
+    if (kanban.review.some((pr) => pr.status === 'ci_failed')) return 'failed'
+    if (kanban.review.some((pr) => pr.status === 'ci_pending')) return 'pending'
+    if (kanban.review.every((pr) => pr.status === 'ci_passed' || pr.status === 'approved')) return 'passed'
+    return null
+  }
+
+  const taskChannelMap = buildTaskChannelMap(kanban)
+  const channelPrs = filterPrsByChannel(kanban.review, channelName, taskChannelMap)
   if (channelPrs.length === 0) return null
 
   // Check if any PR has failing CI
@@ -62,12 +93,13 @@ export function getChannelCiStatus(channelName, kanban) {
 }
 
 /**
- * Get active PRs for a channel, filtering by channel name in task description.
- * Main channel shows all PRs, topic channels filter by channel name.
+ * Get active PRs for a channel, using task_id → channel lookup.
+ * Main channel shows all PRs, topic channels filter by task channel.
  */
 export function getChannelPrs(channelName, kanban) {
   if (channelName === 'midtown') {
     return kanban.review
   }
-  return kanban.review.filter((pr) => matchesChannel(pr.task_name, channelName))
+  const taskChannelMap = buildTaskChannelMap(kanban)
+  return filterPrsByChannel(kanban.review, channelName, taskChannelMap)
 }
