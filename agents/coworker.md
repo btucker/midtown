@@ -124,7 +124,43 @@ This notifies the lead to create a task. Another coworker can work on it in para
 - First thing: create a feature branch for your task: `git checkout -b {name}/<task-description>`
 - **NEVER checkout main** - your worktree is isolated and checking out main can cause conflicts with the lead's session
 - Commit frequently with clear messages
-- When done, push and create a PR
+
+**Before pushing or creating a PR**, check if a PR already exists for your task:
+
+```bash
+# Check if a PR exists for this task number (replace XXX with your task number)
+gh pr list --search "Midtown !XXX" --state open --json number,headRefName
+```
+
+**If a PR already exists for your task:**
+
+1. **Never create a new branch or new PR.** Always update the existing PR by force-pushing to its branch.
+
+2. **Verify your current HEAD contains the PR's work** before force-pushing:
+   ```bash
+   # Replace 'existing-pr-branch' with the headRefName from above
+   git merge-base --is-ancestor origin/existing-pr-branch HEAD && echo "✓ Safe to force-push" || echo "⚠️  WARNING: branches are unrelated!"
+   ```
+
+3. **If safe, force-push to the existing PR branch:**
+   ```bash
+   git push --force origin HEAD:existing-pr-branch
+   ```
+
+4. **If unsafe (branches are unrelated)**, you likely checked out the wrong commit. Post to the channel:
+   ```bash
+   midtown channel post "@lead PR already exists for task XXX but my branch diverged - need help"
+   ```
+
+**If no PR exists**, push and create a new PR (see "Example PR creation" below).
+
+**If you accidentally pushed a branch without creating a PR**, delete it immediately:
+
+```bash
+git push origin --delete accidentally-pushed-branch
+```
+
+**When done**, push and create a PR.
 
 **Always include the task number in the PR title** using `[Midtown !XXX]` at the end. This makes it easy to trace PRs back to tasks.
 
@@ -206,14 +242,33 @@ A code review is **not complete** until you have:
 ### Responding to PR Review Feedback
 When your PR receives review comments with suggested changes:
 
-**First, check if the PR is still open.** If the PR was already merged before you push fixes, your commits will sit on an orphaned branch with no PR — and no one will ever land them. Always verify:
+**First, check if the PR is still open.** If the PR was already merged before you address feedback, pushing to the old branch (or creating a new branch) will leave orphaned work that never lands. Always verify:
 
 ```bash
 gh pr view <number> --json state --jq '.state'
 ```
 
-- If **OPEN**: push fixes to the branch as normal.
-- If **MERGED**: open a **new PR** from your branch targeting main. Include context like "Follow-up to PR #N — addresses review feedback."
+- If **OPEN**: Address feedback by pushing fixes to the PR's existing branch (force-push if you rebased).
+- If **MERGED**: **Do NOT push to the old branch or create a new branch from your current work.** The PR is already on main. Create a follow-up:
+  1. **Acknowledge the original feedback** by replying on the merged PR:
+     ```bash
+     gh pr comment <merged-pr-number> --body "<!-- midtown: {name} -->
+
+     Creating follow-up PR to address these review comments.
+
+     🌃 Co-built with [Midtown](https://github.com/btucker/midtown)"
+     ```
+  2. **Start a new branch from origin/main** (never checkout main in your worktree):
+     ```bash
+     git fetch origin main
+     git checkout -b <your-name>/followup-pr-<number> origin/main
+     ```
+  3. **Re-implement the feedback** on the new branch (don't rebase or cherry-pick from the old branch — main already has the original changes)
+  4. **Push and create a new PR** with context: "Follow-up to PR #N — addresses review feedback"
+  5. **Delete the orphaned remote branch**:
+     ```bash
+     git push origin --delete <old-branch-name>
+     ```
 
 **IMMEDIATE ACKNOWLEDGMENT**: Post an initial reply to each review comment immediately, then edit it with the final resolution. This provides visibility that you're actively addressing the feedback.
 

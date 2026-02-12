@@ -834,4 +834,47 @@ mod tests {
             "Clusterer prompt should explain main channel behavior"
         );
     }
+
+    #[test]
+    fn test_coworker_prompt_prevents_orphaned_branches() {
+        // Task !1213: Prevent coworkers from pushing orphaned branches without PRs
+        // Coworkers should check for existing PRs before creating new branches
+        let prompt = coworker_system_prompt("park");
+
+        // Should warn to check for existing PRs before pushing
+        assert!(
+            prompt.contains("Before pushing"),
+            "Coworker prompt should contain 'Before pushing' section"
+        );
+        assert!(
+            prompt.contains("gh pr list --search"),
+            "Coworker prompt should instruct to check for existing PRs by task number"
+        );
+        assert!(
+            prompt.contains("force-push to the existing PR branch"),
+            "Coworker prompt should instruct to force-push to existing PR branch"
+        );
+        assert!(
+            prompt.contains("Never create a new branch or new PR"),
+            "Coworker prompt should warn against creating duplicate PRs"
+        );
+
+        // Should instruct how to handle merged PRs when responding to feedback
+        assert!(
+            prompt.contains("First, check if the PR is still open"),
+            "Coworker prompt should instruct to check PR state before addressing feedback"
+        );
+        assert!(
+            prompt.contains("gh pr view <number> --json state"),
+            "Coworker prompt should show command to check PR state"
+        );
+        assert!(
+            prompt.contains("Delete the orphaned remote branch"),
+            "Coworker prompt should instruct to clean up orphaned branches"
+        );
+        assert!(
+            prompt.contains("git push origin --delete"),
+            "Coworker prompt should show command to delete remote branches"
+        );
+    }
 }
