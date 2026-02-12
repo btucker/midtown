@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use crate::cli::Response;
+use crate::client::DaemonClient;
 
 /// Validate that a project name contains only safe characters.
 ///
@@ -1231,37 +1232,96 @@ pub fn handle_restart(force: bool) -> Result<Response, String> {
         wait_for_coworkers_to_drain(300)?;
     }
 
-    // Stop daemon and webserver, keep the tmux session running.
-    // handle_stop also cleans up orphaned gh webhook forwarders.
-    // Both daemon and webserver stop functions now poll until processes exit,
-    // ensuring clean shutdown before restart.
-    handle_stop(true)?;
+    // Send exec-restart RPC to the daemon. The daemon will:
+    // 1. Gracefully shut down (persist sessions, detach coworkers)
+    // 2. Re-exec itself with --foreground, preserving its original process
+    //    context. This is critical on macOS: the daemon was initially launched
+    //    from an unsandboxed CLI, so re-exec preserves that unsandboxed state.
+    //    If instead we stopped and re-spawned from the Lead's sandboxed tmux
+    //    pane, the new daemon would inherit the sandbox, causing sandbox-exec
+    //    nesting failures when spawning coworkers.
+    let client =
+        DaemonClient::connect().map_err(|e| format!("Failed to connect to daemon: {}", e))?;
 
-    // Final verification that both daemon and webserver are stopped.
-    // This guards against race conditions where the processes are still
-    // cleaning up even after handle_stop returned.
-    let poll_interval = std::time::Duration::from_millis(50);
-    let timeout = std::time::Duration::from_secs(2);
-    let start = std::time::Instant::now();
-    while (daemon_is_running() || webserver_is_running()) && start.elapsed() < timeout {
+    // Stop the webserver first (it runs independently of the daemon)
+    let _ = stop_webserver();
+
+    // Tell the daemon to exec-restart
+    if let Err(e) = client.exec_restart() {
+        // Fallback: if RPC fails (e.g., old daemon without exec-restart support),
+        // use the legacy stop+start path.
+        eprintln!(
+            "Warning: exec-restart RPC failed ({}), falling back to stop+start",
+            e
+        );
+        drop(client);
+        handle_stop(true)?;
+
+        let poll_interval = std::time::Duration::from_millis(50);
+        let timeout = std::time::Duration::from_secs(2);
+        let start = std::time::Instant::now();
+        while daemon_is_running() && start.elapsed() < timeout {
+            std::thread::sleep(poll_interval);
+        }
+
+        let result = handle_start(true, None, vec![])?;
+        restart_chat_pane();
+        return match result {
+            Response::Message { message } => Ok(Response::Message {
+                message: format!("{} (legacy restart). Attach with: midtown attach", message),
+            }),
+            other => Ok(other),
+        };
+    }
+
+    // Drop the client connection before waiting — the daemon is shutting down
+    drop(client);
+
+    // Wait for the daemon to come back up (exec-restart: socket disappears then reappears)
+    let poll_interval = std::time::Duration::from_millis(100);
+
+    // Phase 1: Wait for daemon to go down (socket becomes unavailable)
+    let down_timeout = std::time::Duration::from_secs(10);
+    let down_start = std::time::Instant::now();
+    while daemon_is_running() && down_start.elapsed() < down_timeout {
         std::thread::sleep(poll_interval);
     }
 
-    // Fail if processes are still running after timeout
+    // Guard: if Phase 1 timed out without the daemon going down, the exec-restart
+    // failed silently. Without this check, Phase 2 would immediately succeed
+    // (daemon_is_running() returns true) and we'd report false success.
     if daemon_is_running() {
-        return Err("Restart failed: daemon did not stop within timeout".to_string());
-    }
-    if webserver_is_running() {
-        return Err("Restart failed: webserver did not stop within timeout".to_string());
+        return Err("Restart failed: daemon did not shut down after exec-restart RPC".to_string());
     }
 
-    // Start daemon and webserver only — the tmux session and lead window
-    // already exist (we kept them above). Passing daemon_only=true prevents
-    // handle_start from entering the session-creation path, which could
-    // race with check_and_respawn_lead to create duplicate lead windows.
-    let result = handle_start(true, None, vec![])?;
+    // Phase 2: Wait for daemon to come back up (socket becomes available)
+    let up_timeout = std::time::Duration::from_secs(15);
+    let up_start = std::time::Instant::now();
+    while !daemon_is_running() && up_start.elapsed() < up_timeout {
+        std::thread::sleep(poll_interval);
+    }
 
-    // Restart the chat pane to pick up code changes.
+    if !daemon_is_running() {
+        return Err("Restart failed: daemon did not come back up after exec-restart".to_string());
+    }
+
+    // Restart the webserver
+    launch_webserver().map_err(|e| format!("Failed to restart webserver: {}", e))?;
+
+    // Restart the chat pane to pick up code changes
+    restart_chat_pane();
+
+    let session = session_name().unwrap_or_else(|_| "midtown".to_string());
+    Ok(Response::Message {
+        message: format!(
+            "Daemon exec-restarted. Resumed Lead session in '{}'. Attach with: midtown attach",
+            session
+        ),
+    })
+}
+
+/// Restart the chat TUI pane in the tmux session.
+fn restart_chat_pane() {
     // Use respawn-pane -k to atomically kill the old process and start a new
     // one, avoiding a race where send-keys characters (like 'i' in "midtown")
     // are intercepted by the still-running TUI's input mode handler.
@@ -1272,18 +1332,6 @@ pub fn handle_restart(force: bool) -> Result<Response, String> {
         let _ = Command::new("tmux")
             .args(["respawn-pane", "-k", "-t", &chat_pane, &chat_cmd])
             .status();
-    }
-
-    // Enhance the message to clarify graceful restart
-    match result {
-        Response::Message { message } => Ok(Response::Message {
-            message: format!(
-                "{}. Resumed Lead session in '{}'. Attach with: midtown attach",
-                message,
-                session_name().unwrap_or_else(|_| "midtown".to_string())
-            ),
-        }),
-        other => Ok(other),
     }
 }
 

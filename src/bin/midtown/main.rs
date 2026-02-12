@@ -433,13 +433,54 @@ fn main() {
             }
         }
 
-        // Run the daemon (this blocks until shutdown)
+        // Run the daemon (this blocks until shutdown or exec-restart)
         let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
-        if let Err(e) = rt.block_on(midtown::daemon::run(config)) {
-            eprintln!("Daemon error: {}", e);
-            std::process::exit(1);
+        match rt.block_on(midtown::daemon::run(config)) {
+            Ok(midtown::daemon::DaemonExitStatus::Shutdown) => {
+                // Normal shutdown — exit cleanly
+                return;
+            }
+            Ok(midtown::daemon::DaemonExitStatus::ExecRestart {
+                workdir,
+                project_name,
+            }) => {
+                // Drop the tokio runtime before exec to release resources
+                drop(rt);
+
+                // Re-exec the daemon binary with --foreground to avoid re-daemonizing.
+                // This preserves the original process context (PID, sandbox state),
+                // which is critical: if the original daemon was launched from an
+                // unsandboxed context, the re-exec'd daemon stays unsandboxed and
+                // can properly sandbox coworkers with sandbox-exec.
+                let exe = std::env::current_exe().unwrap_or_else(|e| {
+                    eprintln!("Failed to get current executable for exec-restart: {}", e);
+                    std::process::exit(1);
+                });
+
+                use std::os::unix::process::CommandExt;
+                let mut cmd = std::process::Command::new(&exe);
+                cmd.arg("daemon");
+                cmd.arg("--foreground");
+                cmd.arg("--workdir").arg(&workdir);
+                if let Some(ref project) = project_name {
+                    cmd.arg("--project").arg(project);
+                }
+
+                eprintln!(
+                    "\n=== Daemon exec-restart at {} ===",
+                    chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
+                );
+
+                // exec() replaces this process — this line never returns on success
+                let err = cmd.exec();
+                eprintln!("Failed to exec daemon: {}", err);
+                std::process::exit(1);
+            }
+            Err(e) => {
+                eprintln!("Daemon error: {}", e);
+                std::process::exit(1);
+            }
         }
-        return;
     }
 
     // Start command (starts daemon, doesn't need existing connection)

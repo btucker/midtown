@@ -197,6 +197,17 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
             Response::success(request.id, serde_json::json!({"status": "draining"}))
         }
 
+        "daemon.exec-restart" => {
+            info!("Exec-restart requested via RPC — daemon will re-exec after shutdown");
+            state
+                .restart_requested
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            // Trigger the shutdown broadcast so the main event loop exits.
+            // The run() function checks restart_requested and returns ExecRestart.
+            let _ = state.shutdown_tx.send(());
+            Response::success(request.id, serde_json::json!({"status": "restarting"}))
+        }
+
         "coworker.spawn" => {
             let params = request.params.as_ref();
             let resume = params
@@ -471,7 +482,7 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
             let id = params.and_then(|p| p.get("id")).and_then(|v| v.as_str());
 
             match id {
-                Some(id) => handle_task_metadata(request.id, id, state),
+                Some(id) => handle_task_metadata(request.id, id, state).await,
                 None => Response::error(request.id, RpcError::invalid_params()),
             }
         }
@@ -2104,8 +2115,8 @@ fn handle_task_done(id: RequestId, task_id: &str, state: &DaemonState) -> Respon
 ///
 /// Returns channel and model mappings stored in DaemonPersistentState.
 /// These are stored separately from Claude Code's native task storage.
-fn handle_task_metadata(id: RequestId, task_id: &str, state: &DaemonState) -> Response {
-    let ps = state.persistent_state.blocking_lock();
+async fn handle_task_metadata(id: RequestId, task_id: &str, state: &DaemonState) -> Response {
+    let ps = state.persistent_state.lock().await;
     let channel = ps.task_channel.get(task_id).cloned();
     let model = ps.task_model.get(task_id).cloned();
 
@@ -4562,5 +4573,69 @@ mod tests {
             Some(reviewer_internal_task_id),
             "Should NOT display reviewer's internal task ID"
         );
+    }
+
+    /// Verify handle_task_metadata uses async .lock().await (not blocking_lock()).
+    ///
+    /// Before the fix, handle_task_metadata used blocking_lock() on a tokio::Mutex
+    /// inside an async context, causing "Cannot block the current thread" panics.
+    /// This test confirms the function works correctly in a tokio runtime.
+    #[tokio::test]
+    async fn test_handle_task_metadata_uses_async_lock() {
+        use crate::daemon::DaemonState;
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().expect("temp dir");
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(temp_dir.path())
+            .output()
+            .expect("git init");
+        std::process::Command::new("git")
+            .args(["config", "user.email", "test@example.com"])
+            .current_dir(temp_dir.path())
+            .output()
+            .expect("git config");
+        std::process::Command::new("git")
+            .args(["config", "user.name", "Test"])
+            .current_dir(temp_dir.path())
+            .output()
+            .expect("git config");
+        std::process::Command::new("git")
+            .args(["commit", "--allow-empty", "-m", "init"])
+            .current_dir(temp_dir.path())
+            .output()
+            .expect("git commit");
+
+        let base_dir = temp_dir.path().to_path_buf();
+        let wm = crate::worktree::WorktreeManager::new(base_dir.clone()).expect("worktree manager");
+        let cm = crate::coworker::CoworkerManager::new("test-session", wm);
+        let channel_router = crate::ChannelRouter::new(&base_dir, "midtown");
+        std::mem::forget(temp_dir);
+
+        let (shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(1);
+        let state = DaemonState::new(
+            "/tmp/test-metadata.sock".into(),
+            cm,
+            "test-repo".to_string(),
+            vec![base_dir],
+            channel_router,
+            None,
+            10,
+            None,
+            "main".to_string(),
+            shutdown_tx,
+        )
+        .expect("daemon state");
+
+        // This would panic with "Cannot block the current thread from within
+        // a runtime" if handle_task_metadata still used blocking_lock().
+        let response = handle_task_metadata(RequestId::Number(1), "nonexistent-task", &state).await;
+
+        // Should return success with null channel/model for nonexistent task
+        assert!(response.error.is_none(), "Expected success response");
+        let result = response.result.expect("Expected result in response");
+        assert!(result["channel"].is_null());
+        assert!(result["model"].is_null());
     }
 }

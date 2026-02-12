@@ -4458,6 +4458,7 @@ mod tests {
 
         let channel_router = crate::ChannelRouter::new(&base_dir, "midtown");
 
+        let (shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(1);
         DaemonState::new(
             "/tmp/test.sock".into(),
             cm,
@@ -4468,6 +4469,7 @@ mod tests {
             10,
             None,
             "main".to_string(),
+            shutdown_tx,
         )
         .expect("daemon state")
     }
