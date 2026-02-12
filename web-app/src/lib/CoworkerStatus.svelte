@@ -1,5 +1,5 @@
 <script>
-  import { coworkers, maxCoworkers } from './store.js'
+  import { coworkers, maxCoworkers, kanbanData, detailPanelData } from './store.js'
 
   // Filter to only active coworkers (matching TUI logic - skip idle/completed)
   let activeCoworkers = $derived(
@@ -25,6 +25,16 @@
         return '#5faf5f' // default to green
     }
   }
+
+  function openTaskDetail(taskId, event) {
+    event.stopPropagation()
+    // Find the task in kanbanData
+    const allTasks = [...$kanbanData.backlog, ...$kanbanData.inProgress]
+    const task = allTasks.find((t) => t.id.toString() === taskId.toString())
+    if (task) {
+      detailPanelData.set({ type: 'task', data: task })
+    }
+  }
 </script>
 
 {#if activeCoworkers.length > 0}
@@ -38,7 +48,9 @@
           <span class="health-dot" style="color: {getHealthColor(cw.health)}">●</span>
           <span class="coworker-name">{cw.name}</span>
           {#if cw.task_id}
-            <span class="task-id">!{cw.task_id}</span>
+            <button class="task-id" onclick={(e) => openTaskDetail(cw.task_id, e)}>
+              !{cw.task_id}
+            </button>
           {/if}
           {#if cw.phase}
             <span class="phase">{cw.phase}</span>
@@ -101,6 +113,18 @@
   .task-id {
     color: #d7af5f;
     font-weight: 600;
+    background: none;
+    border: none;
+    padding: 0;
+    font-family: inherit;
+    font-size: inherit;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+
+  .task-id:hover {
+    color: #fbbf24;
+    text-decoration: underline;
   }
 
   .phase {
