@@ -1571,7 +1571,7 @@ mod tests {
             self.on_cooldown = true;
             self
         }
-        fn is_reviewer(mut self) -> Self {
+        fn as_reviewer(mut self) -> Self {
             self.is_reviewer = true;
             self
         }
@@ -3279,7 +3279,7 @@ Now implementing the fix.
         let action = PendingTaskCtx::new("madison")
             .task("6", "Prevent coworkers from checking out default branch")
             .active(&["madison"])
-            .is_reviewer()
+            .as_reviewer()
             .run();
         assert!(
             matches!(action, PendingTaskAction::Skip { .. }),
@@ -3322,7 +3322,7 @@ Now implementing the fix.
         // Reviewer check fires before active check — still skip even if inactive.
         let action = PendingTaskCtx::new("madison")
             .task("6", "Prevent coworkers from checking out default branch")
-            .is_reviewer()
+            .as_reviewer()
             .run();
         assert!(
             matches!(action, PendingTaskAction::Skip { .. }),
