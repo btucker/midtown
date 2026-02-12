@@ -381,7 +381,7 @@ impl HeadlessSession {
     pub fn spawn(config: &HeadlessConfig) -> std::io::Result<Self> {
         let is_resume = config.resume_session_id.is_some();
         let mut cmd = match config.auth_provider {
-            crate::auth::AuthProvider::Claude => {
+            crate::auth::AuthProvider::Claude | crate::auth::AuthProvider::Zai => {
                 // Compute sandbox writable dirs from cwd (project working directory).
                 let primary_repo = config
                     .cwd
@@ -579,7 +579,9 @@ impl HeadlessSession {
         let stderr_reader = BufReader::new(stderr);
 
         let protocol = match config.auth_provider {
-            crate::auth::AuthProvider::Claude => SessionProtocol::Claude,
+            crate::auth::AuthProvider::Claude | crate::auth::AuthProvider::Zai => {
+                SessionProtocol::Claude
+            }
             crate::auth::AuthProvider::Codex => {
                 SessionProtocol::Codex(Box::new(CodexProtocolState {
                     initialized: false,
