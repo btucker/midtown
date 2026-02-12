@@ -214,7 +214,6 @@ pub(super) fn determine_lead_working(
 /// coworkers are rapidly sent on breaks.
 pub(super) async fn check_and_shutdown_idle_coworkers(
     snap: &snapshot::WorldSnapshot,
-    state: &DaemonState,
 ) -> Vec<Effect> {
     if snap.active_coworkers.is_empty() {
         return vec![];
@@ -247,24 +246,21 @@ pub(super) async fn check_and_shutdown_idle_coworkers(
 
     // Pure decision: who should be shut down?
     let to_shutdown = {
-        let mut records = state.coworker_records.write().await;
-        let (decisions, transitions) = crate::rules::decide_idle_shutdowns(
-            &snap.coworker_snapshots,
-            &snap.busy_coworkers,
-            &snap.coworkers_with_open_prs,
-            &snap.active_reviewers,
-            &snap.coworkers_with_unblocked_deps,
-            &snap.ci_passed_pr_coworkers,
-            &snap.usage_limited_coworkers,
-            &snap.api_error_coworkers,
-            &snap.pending_task_owners,
-            &snap.review_feedback_pr_coworkers,
-            &records,
-            snap.now_utc,
-            MINIMUM_COWORKER_LIFETIME,
-        );
-        crate::rules::apply_health_transitions(&mut records, transitions);
-        decisions
+        let idle_ctx = crate::rules::IdleShutdownContext {
+            coworkers: &snap.coworker_snapshots,
+            busy_coworkers: &snap.busy_coworkers,
+            coworkers_with_open_prs: &snap.coworkers_with_open_prs,
+            active_reviewers: &snap.active_reviewers,
+            coworkers_with_unblocked_deps: &snap.coworkers_with_unblocked_deps,
+            ci_passed_pr_coworkers: &snap.ci_passed_pr_coworkers,
+            usage_limited_coworkers: &snap.usage_limited_coworkers,
+            api_error_coworkers: &snap.api_error_coworkers,
+            pending_task_owners: &snap.pending_task_owners,
+            review_feedback_pr_coworkers: &snap.review_feedback_pr_coworkers,
+            now_utc: snap.now_utc,
+            minimum_lifetime: MINIMUM_COWORKER_LIFETIME,
+        };
+        crate::rules::decide_idle_shutdowns(&idle_ctx)
     };
 
     // Log all shutdown decisions for debugging the mass-shutdown issue
@@ -411,12 +407,15 @@ pub(super) async fn check_and_restart_stuck_coworkers(
         return vec![];
     }
 
+    let exemptions = crate::rules::StuckExemptions {
+        usage_limited: &snap.usage_limited_coworkers,
+        api_error: &snap.api_error_coworkers,
+        attached: &snap.attached_coworkers,
+    };
     let restarts = crate::rules::decide_stuck_coworker_restarts(
         &snap.headless_process_health,
         &snap.in_progress_tasks,
-        &snap.usage_limited_coworkers,
-        &snap.api_error_coworkers,
-        &snap.attached_coworkers,
+        &exemptions,
         snap.now_utc,
         COWORKER_STUCK_DURATION,
     );
@@ -489,13 +488,16 @@ pub(super) fn check_and_restart_stuck_reviewers(snap: &snapshot::WorldSnapshot) 
         return vec![];
     }
 
+    let exemptions = crate::rules::StuckExemptions {
+        usage_limited: &snap.usage_limited_coworkers,
+        api_error: &snap.api_error_coworkers,
+        attached: &snap.attached_coworkers,
+    };
     let restarts = crate::rules::decide_stuck_reviewer_restarts(
         &snap.headless_process_health,
         &snap.reviewer_pr_assignments,
         &snap.reviewer_restart_counts,
-        &snap.usage_limited_coworkers,
-        &snap.api_error_coworkers,
-        &snap.attached_coworkers,
+        &exemptions,
         snap.now_utc,
         REVIEWER_STUCK_DURATION,
         MAX_REVIEWER_RESTARTS,
