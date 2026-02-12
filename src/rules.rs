@@ -26,6 +26,20 @@ pub(crate) struct CoworkerSnapshot {
 }
 
 // ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/// Case-insensitive membership check for a name in a `HashSet<String>`.
+fn contains_icase(set: &HashSet<String>, name: &str) -> bool {
+    set.iter().any(|s| s.eq_ignore_ascii_case(name))
+}
+
+/// Case-insensitive membership check for a name in a `&[String]` slice.
+fn slice_contains_icase(slice: &[String], name: &str) -> bool {
+    slice.iter().any(|s| s.eq_ignore_ascii_case(name))
+}
+
+// ---------------------------------------------------------------------------
 // CooldownTracker
 // ---------------------------------------------------------------------------
 
@@ -122,7 +136,7 @@ pub(crate) enum SessionHealth {
 /// Bundles the coworker's current health and their last channel activity
 /// timestamp into a single entry, ensuring both are cleared together on
 /// spawn and shutdown.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct CoworkerRecord {
     /// Current session health (idle), or `None` if the coworker is actively
     /// working (no special health state).
@@ -143,11 +157,8 @@ impl CoworkerRecord {
     /// Create a fresh record entry for a newly spawned coworker.
     pub fn new_spawn() -> Self {
         Self {
-            health: None,
             last_activity: Some(Instant::now()),
-            workflow_phase: None,
-            task_id: None,
-            workflow_updated_at: None,
+            ..Default::default()
         }
     }
 
@@ -177,16 +188,7 @@ pub(crate) fn set_health(
     name: &str,
     health: SessionHealth,
 ) {
-    records
-        .entry(name.to_string())
-        .or_insert_with(|| CoworkerRecord {
-            health: None,
-            last_activity: None,
-            workflow_phase: None,
-            task_id: None,
-            workflow_updated_at: None,
-        })
-        .health = Some(health);
+    records.entry(name.to_string()).or_default().health = Some(health);
 }
 
 /// Clear the health state for a coworker (without removing the record entry).
@@ -203,15 +205,7 @@ pub(crate) fn set_workflow(
     phase: crate::coworker_state::WorkflowPhase,
     task_id: Option<u32>,
 ) {
-    let record = records
-        .entry(name.to_string())
-        .or_insert_with(|| CoworkerRecord {
-            health: None,
-            last_activity: None,
-            workflow_phase: None,
-            task_id: None,
-            workflow_updated_at: None,
-        });
+    let record = records.entry(name.to_string()).or_default();
     record.workflow_phase = Some(phase);
     record.task_id = task_id;
     record.workflow_updated_at = Some(chrono::Utc::now());
@@ -322,29 +316,15 @@ pub(crate) fn decide_idle_shutdowns(
             continue;
         }
 
-        let is_busy = busy_coworkers
-            .iter()
-            .any(|b| b.eq_ignore_ascii_case(coworker));
-        let has_open_pr = coworkers_with_open_prs
-            .iter()
-            .any(|c| c.eq_ignore_ascii_case(coworker));
-        let is_reviewing = active_reviewers
-            .iter()
-            .any(|r| r.eq_ignore_ascii_case(coworker));
-        let has_unblocked_deps = coworkers_with_unblocked_deps
-            .iter()
-            .any(|d| d.eq_ignore_ascii_case(coworker));
-        let ci_passed = ci_passed_pr_coworkers
-            .iter()
-            .any(|c| c.eq_ignore_ascii_case(coworker));
-        let is_usage_limited = usage_limited_coworkers.contains(&coworker.to_lowercase());
-        let has_api_error = api_error_coworkers.contains(&coworker.to_lowercase());
-        let has_pending_task = pending_task_owners
-            .iter()
-            .any(|p| p.eq_ignore_ascii_case(coworker));
-        let has_review_feedback = review_feedback_pr_coworkers
-            .iter()
-            .any(|r| r.eq_ignore_ascii_case(coworker));
+        let is_busy = contains_icase(busy_coworkers, coworker);
+        let has_open_pr = contains_icase(coworkers_with_open_prs, coworker);
+        let is_reviewing = contains_icase(active_reviewers, coworker);
+        let has_unblocked_deps = contains_icase(coworkers_with_unblocked_deps, coworker);
+        let ci_passed = contains_icase(ci_passed_pr_coworkers, coworker);
+        let is_usage_limited = contains_icase(usage_limited_coworkers, coworker);
+        let has_api_error = contains_icase(api_error_coworkers, coworker);
+        let has_pending_task = contains_icase(pending_task_owners, coworker);
+        let has_review_feedback = contains_icase(review_feedback_pr_coworkers, coworker);
 
         // Coworkers with active/pending tasks, review assignments, unblocked deps,
         // usage limits, or API errors are never sent on break.
@@ -433,18 +413,17 @@ const API_ERROR_PATTERNS: &[&str] = &[
     "Internal server error",
 ];
 
-/// Check if pane content indicates an active (not recovered) usage limit.
+/// Check if pane content has an active (not recovered) match for any pattern.
 ///
-/// Returns true if the usage limit pattern is present AND there's no significant
-/// activity after it. If the coworker has recovered (substantial content after
-/// the limit message), returns false.
-///
-/// Detection is case-insensitive to handle variations like "/Upgrade" or "/UPGRADE".
-fn is_at_usage_limit(content: &str) -> bool {
+/// Finds the last occurrence of any pattern (case-insensitive) and counts
+/// significant lines after it. Returns true if the pattern is present and
+/// there are ≤ 5 significant lines after it (i.e., the coworker hasn't
+/// recovered).
+fn is_at_pattern(content: &str, patterns: &[&str]) -> bool {
     let content_lower = content.to_lowercase();
 
-    // Find the last occurrence of any usage limit pattern (case-insensitive)
-    let Some((limit_pos, pattern_len)) = USAGE_LIMIT_PATTERNS
+    // Find the last occurrence of any pattern (case-insensitive)
+    let Some((match_pos, pattern_len)) = patterns
         .iter()
         .filter_map(|pattern| {
             content_lower
@@ -456,12 +435,9 @@ fn is_at_usage_limit(content: &str) -> bool {
         return false;
     };
 
-    // Get content after the usage limit message
-    let after_limit = &content[limit_pos + pattern_len..];
-
-    // Count significant lines after the limit
-    // Skip: empty lines, UI chrome (box-drawing, bullets, prompts), horizontal rules
-    let significant_lines: usize = after_limit
+    // Count significant lines after the match
+    let after_match = &content[match_pos + pattern_len..];
+    let significant_lines = after_match
         .lines()
         .filter(|line| {
             let trimmed = line.trim();
@@ -469,9 +445,12 @@ fn is_at_usage_limit(content: &str) -> bool {
         })
         .count();
 
-    // If there are more than 5 significant lines after the limit, coworker has recovered
-    // (typical Claude Code output has prompts, tool calls, status lines, etc.)
+    // If there are more than 5 significant lines, the coworker has recovered
     significant_lines <= 5
+}
+
+fn is_at_usage_limit(content: &str) -> bool {
+    is_at_pattern(content, USAGE_LIMIT_PATTERNS)
 }
 
 /// Check if a line is UI chrome (visual elements, not meaningful content).
@@ -588,16 +567,45 @@ pub(crate) struct StuckCoworkerRestart {
     pub task_subject: String,
 }
 
+/// Check if a process should be considered stuck.
+///
+/// Returns `true` if the process is alive, not in any exempt state
+/// (usage-limited, API error, attached, subagent running, pending tool),
+/// and has not emitted events for longer than `stuck_threshold`.
+fn is_process_stuck(
+    name: &str,
+    health: &crate::daemon::snapshot::ProcessHealth,
+    usage_limited_coworkers: &HashSet<String>,
+    api_error_coworkers: &HashSet<String>,
+    attached_coworkers: &HashSet<String>,
+    now_utc: DateTime<Utc>,
+    stuck_threshold: chrono::Duration,
+) -> bool {
+    if !health.is_alive {
+        return false;
+    }
+    let name_lower = name.to_lowercase();
+    if usage_limited_coworkers.contains(&name_lower)
+        || api_error_coworkers.contains(&name_lower)
+        || attached_coworkers.contains(&name_lower)
+    {
+        return false;
+    }
+    if health.has_running_subagent || health.has_pending_tool {
+        return false;
+    }
+    match health.last_event_at {
+        None => false,
+        Some(t) => now_utc.signed_duration_since(t) >= stuck_threshold,
+    }
+}
+
 /// Detect coworkers whose headless process has not emitted events for
 /// `stuck_duration`, indicating a stuck/hung process.
 ///
-/// A coworker is only considered stuck if:
-/// 1. Process is alive (`is_alive` = true)
-/// 2. No stream events received for `stuck_duration`
-/// 3. Has an in-progress task (idle coworkers are handled elsewhere)
-///
-/// Skips coworkers with usage limits, API errors, or running subagents —
-/// they are paused/busy but not stuck.
+/// A coworker is only considered stuck if the process is alive, not exempt
+/// (usage-limited, API error, attached, subagent, pending tool), idle for
+/// longer than `stuck_duration`, and has an in-progress task.
 ///
 /// Pure function: takes ProcessHealth data and returns restart decisions.
 pub(crate) fn decide_stuck_coworker_restarts(
@@ -609,52 +617,26 @@ pub(crate) fn decide_stuck_coworker_restarts(
     now_utc: DateTime<Utc>,
     stuck_duration: Duration,
 ) -> Vec<StuckCoworkerRestart> {
-    let stuck_threshold = chrono::Duration::from_std(stuck_duration).unwrap_or_default();
+    let threshold = chrono::Duration::from_std(stuck_duration).unwrap_or_default();
     let mut restarts = Vec::new();
 
     for (name, health) in process_health {
-        // Only check alive processes
-        if !health.is_alive {
-            continue;
-        }
-        // Skip coworkers at usage limit — they're paused but not stuck
-        if usage_limited_coworkers.contains(&name.to_lowercase()) {
-            continue;
-        }
-        // Skip coworkers with API errors — they're waiting but may recover
-        if api_error_coworkers.contains(&name.to_lowercase()) {
-            continue;
-        }
-        // Skip attached coworkers — they're in interactive tmux mode
-        if attached_coworkers.contains(&name.to_lowercase()) {
-            continue;
-        }
-        // Skip coworkers with running subagents — parent session goes quiet
-        // while Task tool subagents work, which can take several minutes
-        if health.has_running_subagent {
-            continue;
-        }
-        // Skip coworkers with pending tool executions — session goes quiet
-        // while waiting for tool results (e.g., long Bash commands, slow API calls)
-        if health.has_pending_tool {
-            continue;
-        }
-        // Check last_event_at — no events yet means just spawned, skip
-        let last_event = match health.last_event_at {
-            Some(t) => t,
-            None => continue,
-        };
-        let elapsed = now_utc.signed_duration_since(last_event);
-        if elapsed < stuck_threshold {
+        if !is_process_stuck(
+            name,
+            health,
+            usage_limited_coworkers,
+            api_error_coworkers,
+            attached_coworkers,
+            now_utc,
+            threshold,
+        ) {
             continue;
         }
 
-        // Find the coworker's in-progress task
-        let task = in_progress_tasks
+        let Some((task_id, task_subject, _owner)) = in_progress_tasks
             .iter()
-            .find(|(_id, _subject, owner)| owner.eq_ignore_ascii_case(name));
-
-        let Some((task_id, task_subject, _owner)) = task else {
+            .find(|(_id, _subject, owner)| owner.eq_ignore_ascii_case(name))
+        else {
             continue;
         };
 
@@ -680,17 +662,8 @@ pub(crate) struct StuckReviewerRestart {
 /// `stuck_duration`, indicating a stuck/hung reviewer session.
 ///
 /// Parallel to `decide_stuck_coworker_restarts()` but for reviewers tracked
-/// by PR number in `GitHubState`, not by task. Adds a `max_restarts` limit
-/// to prevent infinite restart loops for the same PR.
-///
-/// A reviewer is only considered stuck if:
-/// 1. Process is alive (`is_alive` = true)
-/// 2. No stream events received for `stuck_duration`
-/// 3. Has an active PR assignment (in `reviewer_pr_assignments`)
-/// 4. `restart_count < max_restarts` (backoff limit not reached)
-///
-/// Skips reviewers with usage limits, API errors, running subagents, or
-/// pending tools — they are paused/busy but not stuck.
+/// by PR number in `GitHubState`. Adds a `max_restarts` limit to prevent
+/// infinite restart loops for the same PR.
 ///
 /// Pure function: takes ProcessHealth data and returns restart decisions.
 #[allow(clippy::too_many_arguments)]
@@ -705,50 +678,27 @@ pub(crate) fn decide_stuck_reviewer_restarts(
     stuck_duration: Duration,
     max_restarts: u32,
 ) -> Vec<StuckReviewerRestart> {
-    let stuck_threshold = chrono::Duration::from_std(stuck_duration).unwrap_or_default();
+    let threshold = chrono::Duration::from_std(stuck_duration).unwrap_or_default();
     let mut restarts = Vec::new();
 
     for (name, health) in process_health {
-        // Only check alive processes
-        if !health.is_alive {
-            continue;
-        }
-        // Only check coworkers that have a reviewer assignment
         let pr_number = match reviewer_pr_assignments.get(name) {
             Some(pr) => *pr,
             None => continue,
         };
-        // Skip coworkers at usage limit
-        if usage_limited_coworkers.contains(&name.to_lowercase()) {
-            continue;
-        }
-        // Skip coworkers with API errors
-        if api_error_coworkers.contains(&name.to_lowercase()) {
-            continue;
-        }
-        // Skip attached coworkers
-        if attached_coworkers.contains(&name.to_lowercase()) {
-            continue;
-        }
-        // Skip coworkers with running subagents
-        if health.has_running_subagent {
-            continue;
-        }
-        // Skip coworkers with pending tool executions
-        if health.has_pending_tool {
-            continue;
-        }
-        // Check last_event_at — no events yet means just spawned, skip
-        let last_event = match health.last_event_at {
-            Some(t) => t,
-            None => continue,
-        };
-        let elapsed = now_utc.signed_duration_since(last_event);
-        if elapsed < stuck_threshold {
+
+        if !is_process_stuck(
+            name,
+            health,
+            usage_limited_coworkers,
+            api_error_coworkers,
+            attached_coworkers,
+            now_utc,
+            threshold,
+        ) {
             continue;
         }
 
-        // Check restart count — stop if we've exceeded the limit
         let current_count = reviewer_restart_counts
             .get(&pr_number)
             .copied()
@@ -794,40 +744,9 @@ pub(crate) fn has_api_error_pattern(pane_content: &str) -> bool {
     is_at_api_error(pane_content)
 }
 
-/// Check if pane content indicates an active (not recovered) API error.
-///
-/// Uses the same recovery detection as usage limits: if there's significant
-/// activity after the error message, the coworker has recovered.
 #[allow(dead_code)]
 fn is_at_api_error(content: &str) -> bool {
-    // Find the last occurrence of any API error pattern (case-insensitive)
-    let content_lower = content.to_lowercase();
-    let Some((error_pos, pattern_len)) = API_ERROR_PATTERNS
-        .iter()
-        .filter_map(|pattern| {
-            content_lower
-                .find(&pattern.to_lowercase())
-                .map(|pos| (pos, pattern.len()))
-        })
-        .max_by_key(|(pos, _)| *pos)
-    else {
-        return false;
-    };
-
-    // Get content after the API error message
-    let after_error = &content[error_pos + pattern_len..];
-
-    // Count significant lines after the error (same logic as usage limit recovery)
-    let significant_lines: usize = after_error
-        .lines()
-        .filter(|line| {
-            let trimmed = line.trim();
-            !trimmed.is_empty() && !is_ui_chrome(trimmed)
-        })
-        .count();
-
-    // If there are more than 5 significant lines after the error, coworker has recovered
-    significant_lines <= 5
+    is_at_pattern(content, API_ERROR_PATTERNS)
 }
 
 // ---------------------------------------------------------------------------
@@ -875,9 +794,7 @@ pub fn decide_pr_issue_action(
     at_dev_limit: bool,
     message: &str,
 ) -> PrAction {
-    let is_active = active_coworkers
-        .iter()
-        .any(|c| c.eq_ignore_ascii_case(owner));
+    let is_active = slice_contains_icase(active_coworkers, owner);
 
     if is_active {
         PrAction::NudgeOwner {
@@ -918,17 +835,88 @@ pub struct PrSessionContext {
     pub pr_number: u64,
 }
 
+/// Core handoff logic shared by PR issue, comment, and review-complete actions.
+///
+/// Given the owner's active/idle status and optional session context, decides
+/// whether to nudge, spawn, hand off, or skip. The `reason_label` is used in
+/// skip messages (e.g., "PR issue", "PR comment").
+///
+/// When the owner is empty, returns `empty_owner_fallback` (PostToChannel for
+/// issue actions, SpawnOwner for comment actions).
+#[allow(clippy::too_many_arguments)]
+fn resolve_pr_handoff(
+    owner: &str,
+    active_coworkers: &[String],
+    idle_coworkers: &[String],
+    at_dev_limit: bool,
+    session_context: Option<&PrSessionContext>,
+    message: &str,
+    reason_label: &str,
+    empty_owner_fallback: PrAction,
+) -> PrAction {
+    let is_active = slice_contains_icase(active_coworkers, owner);
+    let is_idle = slice_contains_icase(idle_coworkers, owner);
+
+    if is_active && is_idle {
+        return PrAction::NudgeOwner {
+            owner: owner.to_string(),
+            message: message.to_string(),
+        };
+    }
+
+    if !is_active && !is_idle && owner.is_empty() {
+        return empty_owner_fallback;
+    }
+
+    // Owner is either active-but-busy or inactive. Try handoff first;
+    // fallback depends on whether the owner is active:
+    // - Active but busy → nudge (spawning an active coworker fails)
+    // - Inactive → spawn (they need a new tmux window)
+    if !is_active && at_dev_limit {
+        return PrAction::Skip {
+            reason: format!(
+                "dev limit reached, cannot spawn {} for {}",
+                owner, reason_label
+            ),
+        };
+    }
+
+    if let Some(ctx) = session_context {
+        let assignee = idle_coworkers
+            .iter()
+            .find(|c| !c.eq_ignore_ascii_case(owner))
+            .cloned();
+
+        if let Some(assignee) = assignee {
+            return PrAction::HandoffToCoworker {
+                assignee,
+                original_author: ctx.original_author.clone(),
+                pr_number: ctx.pr_number,
+                branch: ctx.branch.clone(),
+                session_id: ctx.session_id.clone(),
+                message: message.to_string(),
+            };
+        }
+    }
+
+    if is_active {
+        PrAction::NudgeOwner {
+            owner: owner.to_string(),
+            message: message.to_string(),
+        }
+    } else {
+        PrAction::SpawnOwner {
+            owner: owner.to_string(),
+            message: message.to_string(),
+        }
+    }
+}
+
 /// Decide what action to take for a PR issue, with support for handoff.
 ///
-/// This is an enhanced version of `decide_pr_issue_action` that considers
-/// handing off the PR to a different coworker when:
-/// - The original author is not active, or is active but busy on another task
-/// - A stored session context is available
-/// - There are idle coworkers available to take over
-///
-/// Only nudges the owner if they are both active and idle. The handoff
-/// preserves the original author's session context so the new coworker
-/// has full history of decisions and code understanding.
+/// Enhanced version of `decide_pr_issue_action` that considers handing off
+/// the PR to a different coworker when the original author is unavailable.
+/// Only nudges the owner if they are both active and idle.
 pub fn decide_pr_issue_action_with_handoff(
     owner: &str,
     active_coworkers: &[String],
@@ -937,72 +925,18 @@ pub fn decide_pr_issue_action_with_handoff(
     session_context: Option<&PrSessionContext>,
     message: &str,
 ) -> PrAction {
-    let is_active = active_coworkers
-        .iter()
-        .any(|c| c.eq_ignore_ascii_case(owner));
-    let is_idle = idle_coworkers.iter().any(|c| c.eq_ignore_ascii_case(owner));
-
-    if is_active && is_idle {
-        // Owner is active and idle — nudge them directly
-        PrAction::NudgeOwner {
-            owner: owner.to_string(),
-            message: message.to_string(),
-        }
-    } else if (is_active && !is_idle) || !owner.is_empty() {
-        // Owner is either active-but-busy or inactive. Try handoff first;
-        // fallback depends on whether the owner is active:
-        // - Active but busy → nudge (spawning an active coworker fails)
-        // - Inactive → spawn (they need a new tmux window)
-        if !is_active && at_dev_limit {
-            PrAction::Skip {
-                reason: format!("dev limit reached, cannot spawn {} for PR issue", owner),
-            }
-        } else if let Some(ctx) = session_context {
-            // We have session context — try to hand off to an idle coworker
-            // (excluding the original author who isn't available)
-            let assignee = idle_coworkers
-                .iter()
-                .find(|c| !c.eq_ignore_ascii_case(owner))
-                .cloned();
-
-            if let Some(assignee) = assignee {
-                PrAction::HandoffToCoworker {
-                    assignee,
-                    original_author: ctx.original_author.clone(),
-                    pr_number: ctx.pr_number,
-                    branch: ctx.branch.clone(),
-                    session_id: ctx.session_id.clone(),
-                    message: message.to_string(),
-                }
-            } else if is_active {
-                // No idle coworkers — nudge the busy owner (already has a window)
-                PrAction::NudgeOwner {
-                    owner: owner.to_string(),
-                    message: message.to_string(),
-                }
-            } else {
-                PrAction::SpawnOwner {
-                    owner: owner.to_string(),
-                    message: message.to_string(),
-                }
-            }
-        } else if is_active {
-            // No session context, owner is active — nudge them
-            PrAction::NudgeOwner {
-                owner: owner.to_string(),
-                message: message.to_string(),
-            }
-        } else {
-            PrAction::SpawnOwner {
-                owner: owner.to_string(),
-                message: message.to_string(),
-            }
-        }
-    } else {
+    resolve_pr_handoff(
+        owner,
+        active_coworkers,
+        idle_coworkers,
+        at_dev_limit,
+        session_context,
+        message,
+        "PR issue",
         PrAction::PostToChannel {
             message: message.to_string(),
-        }
-    }
+        },
+    )
 }
 
 /// Decide what action to take for a PR comment nudge (webhook-driven).
@@ -1020,7 +954,6 @@ pub(crate) fn decide_pr_comment_action(
     at_dev_limit: bool,
     message: &str,
 ) -> PrAction {
-    // Don't nudge about own comments
     if owner == actor {
         return PrAction::Skip {
             reason: format!("PR comment is from owner {}, skipping self-nudge", owner),
@@ -1047,9 +980,8 @@ pub(crate) fn decide_pr_comment_action(
 /// Decide what action to take for a PR comment nudge, with handoff support.
 ///
 /// Enhanced version of `decide_pr_comment_action` that considers handing off
-/// the PR to a different coworker when the original author is unavailable
-/// (inactive or active but busy on another task) and session context is
-/// available. Only nudges the owner if they are both active and idle.
+/// the PR to a different coworker when the original author is unavailable.
+/// Only nudges the owner if they are both active and idle.
 pub fn decide_pr_comment_action_with_handoff(
     owner: &str,
     actor: &str,
@@ -1059,84 +991,33 @@ pub fn decide_pr_comment_action_with_handoff(
     session_context: Option<&PrSessionContext>,
     message: &str,
 ) -> PrAction {
-    // Don't nudge about own comments
     if owner == actor {
         return PrAction::Skip {
             reason: format!("PR comment is from owner {}, skipping self-nudge", owner),
         };
     }
 
-    let is_active = active_coworkers
-        .iter()
-        .any(|c| c.eq_ignore_ascii_case(owner));
-    let is_idle = idle_coworkers.iter().any(|c| c.eq_ignore_ascii_case(owner));
-
-    if is_active && is_idle {
-        // Owner is active and idle — nudge them directly
-        PrAction::NudgeOwner {
-            owner: owner.to_string(),
-            message: message.to_string(),
-        }
-    } else if (is_active && !is_idle) || !owner.is_empty() {
-        // Owner is either active-but-busy or inactive. Try handoff first;
-        // fallback depends on whether the owner is active:
-        // - Active but busy → nudge (spawning an active coworker fails)
-        // - Inactive → spawn (they need a new tmux window)
-        if !is_active && at_dev_limit {
-            PrAction::Skip {
-                reason: format!("dev limit reached, cannot spawn {} for PR comment", owner),
-            }
-        } else if let Some(ctx) = session_context {
-            let assignee = idle_coworkers
-                .iter()
-                .find(|c| !c.eq_ignore_ascii_case(owner))
-                .cloned();
-
-            if let Some(assignee) = assignee {
-                PrAction::HandoffToCoworker {
-                    assignee,
-                    original_author: ctx.original_author.clone(),
-                    pr_number: ctx.pr_number,
-                    branch: ctx.branch.clone(),
-                    session_id: ctx.session_id.clone(),
-                    message: message.to_string(),
-                }
-            } else if is_active {
-                PrAction::NudgeOwner {
-                    owner: owner.to_string(),
-                    message: message.to_string(),
-                }
-            } else {
-                PrAction::SpawnOwner {
-                    owner: owner.to_string(),
-                    message: message.to_string(),
-                }
-            }
-        } else if is_active {
-            PrAction::NudgeOwner {
-                owner: owner.to_string(),
-                message: message.to_string(),
-            }
-        } else {
-            PrAction::SpawnOwner {
-                owner: owner.to_string(),
-                message: message.to_string(),
-            }
-        }
-    } else {
+    resolve_pr_handoff(
+        owner,
+        active_coworkers,
+        idle_coworkers,
+        at_dev_limit,
+        session_context,
+        message,
+        "PR comment",
         PrAction::SpawnOwner {
             owner: owner.to_string(),
             message: message.to_string(),
-        }
-    }
+        },
+    )
 }
 
 /// Decide what action to take when a PR has a completed review and the
 /// author needs to address feedback.
 ///
 /// Nudge if active (idle or busy), spawn if inactive,
-/// skip if inactive and at dev limit.
-/// Accessible as `pub` for integration tests that verify snapshot-driven PR decisions.
+/// skip if inactive and at dev limit. No handoff — review feedback
+/// goes to the original author.
 pub fn decide_review_complete_action(
     owner: &str,
     active_coworkers: &[String],
@@ -1144,35 +1025,20 @@ pub fn decide_review_complete_action(
     at_dev_limit: bool,
     message: &str,
 ) -> PrAction {
-    let is_active = active_coworkers
-        .iter()
-        .any(|c| c.eq_ignore_ascii_case(owner));
-    let is_idle = idle_coworkers.iter().any(|c| c.eq_ignore_ascii_case(owner));
-
-    if is_active && is_idle {
-        PrAction::NudgeOwner {
-            owner: owner.to_string(),
-            message: message.to_string(),
-        }
-    } else if !is_active && at_dev_limit {
-        PrAction::Skip {
-            reason: format!(
-                "dev limit reached, cannot spawn {} for review complete",
-                owner
-            ),
-        }
-    } else if is_active {
-        // Owner is active but busy — nudge (spawning an active coworker fails)
-        PrAction::NudgeOwner {
-            owner: owner.to_string(),
-            message: message.to_string(),
-        }
-    } else {
+    // Review complete doesn't use handoff — always route to the original author
+    resolve_pr_handoff(
+        owner,
+        active_coworkers,
+        idle_coworkers,
+        at_dev_limit,
+        None, // no session context = no handoff
+        message,
+        "review complete",
         PrAction::SpawnOwner {
             owner: owner.to_string(),
             message: message.to_string(),
-        }
-    }
+        },
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -1586,10 +1452,7 @@ mod tests {
             name.to_string(),
             CoworkerRecord {
                 health: Some(health),
-                last_activity: None,
-                workflow_phase: None,
-                task_id: None,
-                workflow_updated_at: None,
+                ..Default::default()
             },
         );
         map
@@ -1880,10 +1743,7 @@ mod tests {
                 health: Some(SessionHealth::Idle {
                     since: Instant::now() - Duration::from_secs(60),
                 }),
-                last_activity: None,
-                workflow_phase: None,
-                task_id: None,
-                workflow_updated_at: None,
+                ..Default::default()
             },
         );
 
