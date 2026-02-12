@@ -1100,6 +1100,23 @@ impl DaemonState {
             &model,
         ));
     }
+
+    /// Resolve the channel for a message based on its content.
+    ///
+    /// If the message mentions a task (e.g., "Task !42 reset to pending"),
+    /// looks up that task's assigned channel in the task_channel mapping.
+    /// Returns `Some(channel_name)` if found, `None` to use the default channel.
+    ///
+    /// This enables daemon-generated messages about tasks to automatically
+    /// route to the task's topic channel instead of the main channel.
+    pub(crate) async fn resolve_message_channel(&self, message: &str) -> Option<String> {
+        // Extract task ID from the message content
+        let task_id = helpers::extract_task_id(message)?;
+
+        // Look up the task's assigned channel
+        let ps = self.persistent_state.lock().await;
+        ps.task_channel.get(&task_id).cloned()
+    }
 }
 
 /// Load additional WorktreeManagers for multi-repo projects.

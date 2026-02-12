@@ -437,6 +437,41 @@ pub(super) fn should_cross_post_insight(
     has_insight_marker && is_topic_channel
 }
 
+/// Extract task ID from a message content.
+///
+/// Looks for patterns like "Task !42", "task !123", "!99".
+/// Returns the numeric task ID if found.
+pub fn extract_task_id(content: &str) -> Option<String> {
+    // Look for "Task !N" or "task !N" pattern first (case insensitive)
+    let content_lower = content.to_lowercase();
+    if let Some(idx) = content_lower.find("task !") {
+        let after = &content[idx + 6..];
+        let num_str: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+        if !num_str.is_empty() {
+            return Some(num_str);
+        }
+    }
+
+    // Look for standalone "!N" pattern (e.g., "Completed task !42")
+    for (i, _) in content.match_indices(" !") {
+        let after = &content[i + 2..];
+        let num_str: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+        if !num_str.is_empty() {
+            return Some(num_str);
+        }
+    }
+
+    // Also check if the message starts with "!N"
+    if let Some(after) = content.strip_prefix('!') {
+        let num_str: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+        if !num_str.is_empty() {
+            return Some(num_str);
+        }
+    }
+
+    None
+}
+
 /// Extract PR number from a message content.
 ///
 /// Looks for patterns like "PR #42", "#42", "PR #123".
@@ -1228,5 +1263,51 @@ mod tests {
             crate::message::MessageType::Text,
         );
         assert!(!should_cross_post_insight(&msg, "midtown"));
+    }
+
+    // =========================================================================
+    // extract_task_id tests
+    // =========================================================================
+
+    #[test]
+    fn extract_task_id_from_task_bang_pattern() {
+        assert_eq!(
+            extract_task_id("Task !42 reset to pending"),
+            Some("42".to_string())
+        );
+        assert_eq!(
+            extract_task_id("task !123 completed"),
+            Some("123".to_string())
+        );
+        assert_eq!(extract_task_id("TASK !99 assigned"), Some("99".to_string()));
+    }
+
+    #[test]
+    fn extract_task_id_from_standalone_bang() {
+        assert_eq!(extract_task_id("Completed !42"), Some("42".to_string()));
+        assert_eq!(extract_task_id("Working on !5"), Some("5".to_string()));
+    }
+
+    #[test]
+    fn extract_task_id_from_start_of_message() {
+        assert_eq!(
+            extract_task_id("!42 needs attention"),
+            Some("42".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_task_id_returns_none_for_no_match() {
+        assert_eq!(extract_task_id("No task mentioned here"), None);
+        assert_eq!(extract_task_id("Just some text"), None);
+    }
+
+    #[test]
+    fn extract_task_id_takes_first_match() {
+        // If multiple task refs, takes the first
+        assert_eq!(
+            extract_task_id("Task !10 blocks task !20"),
+            Some("10".to_string())
+        );
     }
 }

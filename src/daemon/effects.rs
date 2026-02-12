@@ -72,7 +72,11 @@ pub enum Effect {
         summary: Option<String>,
     },
     /// Post a message to the IRC-style channel (and broadcast to WebSocket clients).
-    /// If `channel` is None, posts to the default "midtown" channel.
+    ///
+    /// Channel routing follows a 3-step resolution:
+    /// 1. If `channel` is explicitly provided, use that
+    /// 2. Otherwise, extract task ID from message content (e.g., "!42") and route to that task's channel
+    /// 3. Fall back to the default "midtown" channel if no task ID is found
     PostToChannel {
         sender: String,
         message: String,
@@ -627,7 +631,17 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 message,
                 channel,
             } => {
-                let msg = if let Some(ch) = channel {
+                // Resolve the target channel:
+                // 1. Use explicit channel if provided
+                // 2. Otherwise, try to extract task ID from message and look up its channel
+                // 3. Fall back to default channel if no task mentioned
+                let channel_name = if let Some(ch) = channel {
+                    Some(ch)
+                } else {
+                    state.resolve_message_channel(&message).await
+                };
+
+                let msg = if let Some(ch) = channel_name {
                     Message::for_channel(&ch, &sender, &message, crate::message::MessageType::Text)
                 } else {
                     Message::text(&sender, &message)

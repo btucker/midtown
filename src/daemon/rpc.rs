@@ -1587,8 +1587,29 @@ async fn handle_coworker_asking(
     question: &str,
     state: &DaemonState,
 ) -> Response {
-    // Post question to channel
-    let msg = Message::text(name, format!("Question for Lead: {}", question));
+    // Post question to channel - route based on coworker's current task
+    let task_channel = {
+        let records = state.coworker_records.read().await;
+        let task_id = records.get(name).and_then(|r| r.task_id);
+        if let Some(tid) = task_id {
+            let ps = state.persistent_state.lock().await;
+            ps.task_channel.get(&tid.to_string()).cloned()
+        } else {
+            None
+        }
+    };
+
+    let msg = if let Some(ch) = task_channel {
+        Message::for_channel(
+            &ch,
+            name,
+            format!("Question for Lead: {}", question),
+            MessageType::Text,
+        )
+    } else {
+        Message::text(name, format!("Question for Lead: {}", question))
+    };
+
     if let Err(e) = state.send_and_broadcast_async(&msg).await {
         error!("Failed to post question to channel: {}", e);
     }
@@ -1632,7 +1653,23 @@ async fn handle_task_request(
 ) -> Response {
     let channel_message = format!("@lead [Task Request] from {}: \"{}\"", from, message);
 
-    let msg = Message::new("midtown", channel_message.clone(), MessageType::Text);
+    // Route based on requester's current task channel
+    let task_channel = {
+        let records = state.coworker_records.read().await;
+        let task_id = records.get(from).and_then(|r| r.task_id);
+        if let Some(tid) = task_id {
+            let ps = state.persistent_state.lock().await;
+            ps.task_channel.get(&tid.to_string()).cloned()
+        } else {
+            None
+        }
+    };
+
+    let msg = if let Some(ch) = task_channel {
+        Message::for_channel(&ch, from, channel_message.clone(), MessageType::Text)
+    } else {
+        Message::text(from, channel_message.clone())
+    };
 
     if let Err(e) = state.send_and_broadcast_async(&msg).await {
         warn!("Failed to post task request to channel: {}", e);
@@ -1749,8 +1786,23 @@ async fn handle_task_create(
         }
     }
 
-    // Post to channel so team is aware
-    let msg = Message::text("lead", format!("created task: {}", subject));
+    // Post to channel so team is aware - use the task's assigned channel
+    let assigned_channel = {
+        let ps = state.persistent_state.lock().await;
+        ps.task_channel.get(&task_id.to_string()).cloned()
+    };
+
+    let msg = if let Some(ch) = assigned_channel {
+        Message::for_channel(
+            &ch,
+            "lead",
+            format!("created task: {}", subject),
+            MessageType::Text,
+        )
+    } else {
+        Message::text("lead", format!("created task: {}", subject))
+    };
+
     if let Err(e) = state.send_and_broadcast_async(&msg).await {
         warn!("Failed to post task creation to channel: {}", e);
     }
@@ -2168,8 +2220,10 @@ fn unescape_shell_artifacts(s: &str) -> String {
 ///
 /// Also detects feedback requests from coworkers and nudges the Lead.
 ///
-/// Accepts an optional `channel` parameter to post to topic channels.
-/// If not provided, defaults to the main channel.
+/// Posts a message to the appropriate channel based on routing rules:
+/// 1. If `channel` parameter is explicitly provided, use that
+/// 2. If sender is a coworker with a task assignment, use the task's channel
+/// 3. Otherwise, use the default main channel
 pub(super) async fn handle_channel_post(
     id: RequestId,
     from: &str,
@@ -2217,9 +2271,43 @@ pub(super) async fn handle_channel_post(
         tracker.insert(key, now);
     }
 
-    // Use provided channel or default to main channel
-    let channel_name = channel.unwrap_or_else(|| state.channel_router.default_channel_name());
-    let msg = Message::for_channel(channel_name, from, content.clone(), msg_type.clone());
+    // Determine target channel:
+    // 1. If explicitly provided via RPC parameter, use that
+    // 2. If coworker has a task assigned, look up the task's channel in task_channel mapping
+    // 3. Otherwise default to main channel
+    let channel_name = if let Some(ch) = channel {
+        ch.to_string()
+    } else if is_coworker_sender(from) {
+        // Look up coworker's current task and its assigned channel
+        let task_id = {
+            let records = state.coworker_records.read().await;
+            records.get(from).and_then(|r| r.task_id)
+        };
+
+        if let Some(tid) = task_id {
+            let task_channel = {
+                let persistent = state.persistent_state.lock().await;
+                persistent.task_channel.get(&tid.to_string()).cloned()
+            };
+
+            match task_channel {
+                Some(ch) => ch,
+                None => {
+                    debug!(
+                        "channel.post: task {} has no channel assignment, using default",
+                        tid
+                    );
+                    state.channel_router.default_channel_name().to_string()
+                }
+            }
+        } else {
+            state.channel_router.default_channel_name().to_string()
+        }
+    } else {
+        state.channel_router.default_channel_name().to_string()
+    };
+
+    let msg = Message::for_channel(&channel_name, from, content.clone(), msg_type.clone());
 
     // Use async version to avoid blocking the runtime during file lock acquisition
     if let Err(e) = state.send_and_broadcast_async(&msg).await {

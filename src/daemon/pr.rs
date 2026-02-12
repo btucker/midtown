@@ -74,6 +74,24 @@ pub(super) fn get_coworkers_with_open_prs(state: &DaemonState) -> Vec<String> {
     }
 }
 
+/// Look up the topic channel for a PR based on its associated task.
+///
+/// Returns the channel name if the PR is linked to a task that has a channel assignment,
+/// or `None` if the PR has no task association or the task has no channel (falls back to main).
+///
+/// Takes mappings from WorldSnapshot to avoid blocking locks in decision functions.
+fn get_pr_channel(
+    pr_number: u64,
+    pr_task_associations: &HashMap<u64, String>,
+    task_channel: &HashMap<String, String>,
+) -> Option<String> {
+    // Look up PR → task association
+    let task_id = pr_task_associations.get(&pr_number)?;
+
+    // Look up task → channel mapping
+    task_channel.get(task_id).cloned()
+}
+
 /// How often to re-fetch merged PRs (5 minutes). Merges aren't urgent so
 /// polling less frequently saves significant API calls.
 const MERGED_PRS_FETCH_INTERVAL_SECS: u64 = 300;
@@ -863,6 +881,26 @@ fn pr_action_to_effects(
 ) -> Vec<Effect> {
     use crate::rules::PrAction;
 
+    // Extract channel routing data once (avoids repeated blocking_lock calls in get_pr_channel)
+    let (pr_task_associations, task_channel) = {
+        let ps = state.persistent_state.blocking_lock();
+        let pr_task: HashMap<u64, String> = ps
+            .github
+            .pr_author_sessions
+            .iter()
+            .filter_map(|(pr_num, session)| {
+                session
+                    .task_id
+                    .as_ref()
+                    .map(|task_id| (*pr_num, task_id.clone()))
+            })
+            .collect();
+        (pr_task, ps.task_channel.clone())
+    };
+
+    // Look up topic channel for this PR's task (falls back to main if not found)
+    let channel = get_pr_channel(pr_number, &pr_task_associations, &task_channel);
+
     match action {
         PrAction::NudgeOwner { owner, message } => {
             vec![Effect::NudgeCoworkerWithCallbacks {
@@ -906,7 +944,7 @@ fn pr_action_to_effects(
                         pr_number,
                         config::get_personality(),
                     ),
-                    channel: None,
+                    channel: channel.clone(),
                 },
                 Effect::RecordPrNudge {
                     pr_number,
@@ -930,7 +968,7 @@ fn pr_action_to_effects(
                         issue_type,
                         get_issue_action(issue_type)
                     ),
-                    channel: None,
+                    channel: channel.clone(),
                 },
                 Effect::RecordPrNudge {
                     pr_number,
@@ -968,7 +1006,7 @@ fn pr_action_to_effects(
                 Effect::PostToChannel {
                     sender: "midtown".to_string(),
                     message,
-                    channel: None,
+                    channel: channel.clone(),
                 },
                 Effect::RecordPrNudge {
                     pr_number,
@@ -1513,6 +1551,26 @@ fn comment_action_to_effects(
     use crate::rules::PrAction;
     let issue_type = PrIssueType::ReviewComment;
 
+    // Extract channel routing data once
+    let (pr_task_associations, task_channel) = {
+        let ps = state.persistent_state.blocking_lock();
+        let pr_task: HashMap<u64, String> = ps
+            .github
+            .pr_author_sessions
+            .iter()
+            .filter_map(|(pr_num, session)| {
+                session
+                    .task_id
+                    .as_ref()
+                    .map(|task_id| (*pr_num, task_id.clone()))
+            })
+            .collect();
+        (pr_task, ps.task_channel.clone())
+    };
+
+    // Look up topic channel for this PR's task (falls back to main if not found)
+    let channel = get_pr_channel(pr_number, &pr_task_associations, &task_channel);
+
     match action {
         PrAction::NudgeOwner { owner, message } => {
             vec![Effect::NudgeCoworkerWithCallbacks {
@@ -1556,7 +1614,7 @@ fn comment_action_to_effects(
                         pr_number,
                         crate::config::get_personality(),
                     ),
-                    channel: None,
+                    channel: channel.clone(),
                 },
                 Effect::RecordPrNudge {
                     pr_number,
@@ -1579,7 +1637,7 @@ fn comment_action_to_effects(
                         owner,
                         get_issue_action(PrIssueType::ReviewComment)
                     ),
-                    channel: None,
+                    channel,
                 },
                 Effect::RecordPrNudge {
                     pr_number,
@@ -1617,7 +1675,7 @@ fn comment_action_to_effects(
                 Effect::PostToChannel {
                     sender: "midtown".to_string(),
                     message,
-                    channel: None,
+                    channel: channel.clone(),
                 },
                 Effect::RecordPrNudge {
                     pr_number,
@@ -1652,6 +1710,26 @@ fn handoff_to_coworker_effects(
     issue_type: PrIssueType,
     state: &DaemonState,
 ) -> Vec<Effect> {
+    // Extract channel routing data once
+    let (pr_task_associations, task_channel) = {
+        let ps = state.persistent_state.blocking_lock();
+        let pr_task: HashMap<u64, String> = ps
+            .github
+            .pr_author_sessions
+            .iter()
+            .filter_map(|(pr_num, session)| {
+                session
+                    .task_id
+                    .as_ref()
+                    .map(|task_id| (*pr_num, task_id.clone()))
+            })
+            .collect();
+        (pr_task, ps.task_channel.clone())
+    };
+
+    // Look up topic channel for this PR's task (falls back to main if not found)
+    let channel = get_pr_channel(pr_number, &pr_task_associations, &task_channel);
+
     let config = crate::launch::LaunchConfig::pr_handoff(
         assignee.to_string(),
         state.repo_name.clone(),
@@ -1673,7 +1751,7 @@ fn handoff_to_coworker_effects(
                 "{} is taking over PR #{} from {} ({})",
                 assignee, pr_number, original_author, context_suffix
             ),
-            channel: None,
+            channel: channel.clone(),
         },
         Effect::RecordPrNudge {
             pr_number,
@@ -1691,7 +1769,7 @@ fn handoff_to_coworker_effects(
                 assignee,
                 message
             ),
-            channel: None,
+            channel,
         },
         Effect::RecordPrNudge {
             pr_number,
@@ -1897,6 +1975,26 @@ async fn collect_reviewer_effects_with_source(
         config.working_dir = Some(wt_path.clone());
 
         // Ensure the worktree exists BEFORE spawning (fixes effect ordering bug)
+        // Extract channel routing data (async-safe)
+        let (pr_task_associations, task_channel) = {
+            let ps = state.persistent_state.lock().await;
+            let pr_task: HashMap<u64, String> = ps
+                .github
+                .pr_author_sessions
+                .iter()
+                .filter_map(|(pr_num, session)| {
+                    session
+                        .task_id
+                        .as_ref()
+                        .map(|task_id| (*pr_num, task_id.clone()))
+                })
+                .collect();
+            (pr_task, ps.task_channel.clone())
+        };
+
+        // Look up topic channel for this PR's task (falls back to main if not found)
+        let channel = get_pr_channel(pr_number, &pr_task_associations, &task_channel);
+
         effects.push(Effect::EnsureWorktree {
             worktree_id: worktree_id.clone(),
             path: wt_path.clone(),
@@ -1944,7 +2042,7 @@ async fn collect_reviewer_effects_with_source(
                     pr_number,
                     config::get_personality(),
                 ),
-                channel: None,
+                channel: channel.clone(),
             },
         ];
 
@@ -1958,7 +2056,7 @@ async fn collect_reviewer_effects_with_source(
                     pr_number,
                     truncate_str(title, 40),
                 ),
-                channel: None,
+                channel,
             },
         ];
 
@@ -1984,6 +2082,26 @@ fn review_complete_action_to_effects(
 ) -> Vec<Effect> {
     use crate::rules::PrAction;
     let issue_type = PrIssueType::ReviewComplete;
+
+    // Extract channel routing data once
+    let (pr_task_associations, task_channel) = {
+        let ps = state.persistent_state.blocking_lock();
+        let pr_task: HashMap<u64, String> = ps
+            .github
+            .pr_author_sessions
+            .iter()
+            .filter_map(|(pr_num, session)| {
+                session
+                    .task_id
+                    .as_ref()
+                    .map(|task_id| (*pr_num, task_id.clone()))
+            })
+            .collect();
+        (pr_task, ps.task_channel.clone())
+    };
+
+    // Look up topic channel for this PR's task (falls back to main if not found)
+    let channel = get_pr_channel(pr_number, &pr_task_associations, &task_channel);
 
     match action {
         PrAction::NudgeOwner { owner, message } => {
@@ -2028,7 +2146,7 @@ fn review_complete_action_to_effects(
                         pr_number,
                         config::get_personality(),
                     ),
-                    channel: None,
+                    channel: channel.clone(),
                 },
                 Effect::RecordPrNudge {
                     pr_number,
@@ -2051,7 +2169,7 @@ fn review_complete_action_to_effects(
                         owner,
                         get_issue_action(PrIssueType::ReviewComplete)
                     ),
-                    channel: None,
+                    channel,
                 },
                 Effect::RecordPrNudge {
                     pr_number,
@@ -2089,7 +2207,7 @@ fn review_complete_action_to_effects(
                 Effect::PostToChannel {
                     sender: "midtown".to_string(),
                     message,
-                    channel: None,
+                    channel: channel.clone(),
                 },
                 Effect::RecordPrNudge {
                     pr_number,
