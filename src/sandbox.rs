@@ -142,6 +142,34 @@ pub fn wrap_shell_command_macos(cmd: &str, writable: &[String]) -> Result<String
     ))
 }
 
+/// Check if sandbox-exec can be applied in the current process context.
+///
+/// On macOS, sandbox-exec cannot nest — a process already running inside a
+/// sandbox cannot apply a new sandbox profile to child processes. This returns
+/// false if we detect that sandbox nesting would fail.
+pub fn can_sandbox() -> bool {
+    use std::sync::OnceLock;
+    static CAN_SANDBOX: OnceLock<bool> = OnceLock::new();
+    *CAN_SANDBOX.get_or_init(|| {
+        // Try applying a trivial sandbox to /usr/bin/true.
+        // If we're already sandboxed, this fails with EPERM.
+        let result = std::process::Command::new("sandbox-exec")
+            .args(["-f", "/dev/stdin", "/usr/bin/true"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .and_then(|mut child| {
+                if let Some(ref mut stdin) = child.stdin {
+                    use std::io::Write;
+                    let _ = stdin.write_all(b"(version 1)(allow default)");
+                }
+                child.wait()
+            });
+        matches!(result, Ok(status) if status.success())
+    })
+}
+
 /// Wrap a `tokio::process::Command` with sandbox-exec on macOS.
 ///
 /// Instead of running `claude ...` directly, runs:
@@ -149,7 +177,12 @@ pub fn wrap_shell_command_macos(cmd: &str, writable: &[String]) -> Result<String
 ///
 /// Returns the modified args to prepend to the command, and the profile path
 /// that must outlive the child process.
+///
+/// Returns an error if sandbox nesting is detected (already inside a sandbox).
 pub fn sandbox_exec_prefix(writable: &[String]) -> Result<(PathBuf, Vec<String>), String> {
+    if !can_sandbox() {
+        return Err("Already inside a sandbox — cannot nest sandbox-exec".to_string());
+    }
     let profile = generate_macos_profile(writable);
     let profile_path = write_profile_to_tempfile(&profile)?;
 
