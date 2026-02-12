@@ -8,10 +8,33 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::Duration;
 
-/// Test that daemon.enter-drain RPC sets the draining flag.
+/// Find the midtown binary using the same candidate path pattern as other E2E tests.
+/// Returns None if no binary is found (test should be skipped).
+fn find_binary() -> Option<PathBuf> {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let candidates = [
+        manifest_dir.join("target/release/midtown"),
+        manifest_dir.join("target/debug/midtown"),
+        // cargo-llvm-cov uses a separate target directory for instrumented builds
+        manifest_dir.join("target/llvm-cov-target/debug/midtown"),
+    ];
+
+    candidates.iter().find(|p| p.exists()).cloned()
+}
+
+/// Test that daemon.enter-drain RPC sets the draining flag and that a daemon
+/// with no coworkers drains immediately (no tasks to wait for).
 #[test]
-#[ignore] // requires tmux
+#[ignore] // requires built binary
 fn test_enter_drain_mode() {
+    let binary_path = match find_binary() {
+        Some(p) => p,
+        None => {
+            eprintln!("Skipping: No midtown binary found. Run `cargo build` first.");
+            return;
+        }
+    };
+
     // Clean up any previous test data
     let repo_name = format!("drain-test-{}", std::process::id());
     let temp_dir = std::env::temp_dir().join(&repo_name);
@@ -27,21 +50,6 @@ fn test_enter_drain_mode() {
         .status()
         .unwrap();
     assert!(status.success());
-
-    // Build the binary
-    let build_result = Command::new("cargo")
-        .args(["build", "--release"])
-        .current_dir(env!("CARGO_MANIFEST_DIR"))
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .unwrap();
-    assert!(build_result.success());
-
-    let binary_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("target")
-        .join("release")
-        .join("midtown");
 
     // Compute socket path
     let state_dir = std::env::var("XDG_STATE_HOME")
@@ -101,6 +109,31 @@ fn test_enter_drain_mode() {
 
     // Verify response indicates draining mode
     assert_eq!(response["result"]["status"], "draining");
+
+    // Query daemon status to verify no coworkers are running (drain should be immediate)
+    let mut stream2 = UnixStream::connect(&socket_path).unwrap();
+    let status_request = serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "daemon.status",
+        "id": 2
+    });
+    writeln!(stream2, "{}", status_request).unwrap();
+
+    let mut reader2 = BufReader::new(stream2);
+    let mut status_line = String::new();
+    reader2.read_line(&mut status_line).unwrap();
+    let status_resp: serde_json::Value = serde_json::from_str(&status_line).unwrap();
+
+    // With no coworkers spawned, the coworkers list should be empty
+    let coworkers = status_resp["result"]["coworkers"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        coworkers.is_empty(),
+        "Expected no coworkers in drain test, got: {:?}",
+        coworkers
+    );
 
     // Kill daemon
     let _ = daemon.kill();
