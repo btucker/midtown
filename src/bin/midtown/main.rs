@@ -159,7 +159,11 @@ enum Commands {
     },
     /// Manage authentication profiles for multi-account support
     Auth {
-        /// Show account/profile status for a specific provider only (list only)
+        /// Show account/profile status for all supported providers (list only)
+        #[arg(long, default_value_t = false)]
+        all_providers: bool,
+
+        /// Auth provider to manage (prompts if not specified)
         #[arg(long, value_enum)]
         provider: Option<AuthProviderArg>,
 
@@ -560,28 +564,33 @@ fn main() {
     }
 
     // Auth command (no daemon required - profile management)
-    // Bare `midtown auth` defaults to `midtown auth list` showing all providers
-    if let Commands::Auth { provider, command } = &command {
+    // Bare `midtown auth` defaults to `midtown auth list`
+    if let Commands::Auth {
+        all_providers,
+        provider,
+        command,
+    } = &command
+    {
         let cmd = command.clone().unwrap_or(AuthCommand::List);
-        let result = if let Some(provider_arg) = provider {
+        let result = if *all_providers {
+            if !matches!(cmd, AuthCommand::List) {
+                Err("--all-providers is only supported with `midtown auth list`".to_string())
+            } else {
+                cli::handle_auth_list_all_providers()
+            }
+        } else if let Some(provider_arg) = provider {
             // Explicit provider specified: use single-provider handling
             cli::handle_auth(&cmd, (*provider_arg).into())
         } else {
-            // No provider specified
-            match cmd {
-                AuthCommand::List => {
-                    // Default: show all providers
-                    cli::handle_auth_list_all_providers()
+            // No provider specified: prompt for selection
+            let provider = match cli::prompt_provider_selection_all() {
+                Ok(p) => p,
+                Err(e) => {
+                    handle_result(format, Err(e));
+                    return;
                 }
-                AuthCommand::Login { .. } => {
-                    // Prompt for provider selection
-                    cli::handle_auth_login_with_prompt(&cmd)
-                }
-                _ => {
-                    // For switch/remove, default to "claude" for backward compatibility
-                    cli::handle_auth(&cmd, AuthProviderArg::Claude.into())
-                }
-            }
+            };
+            cli::handle_auth(&cmd, provider)
         };
         handle_result(format, result);
         return;
