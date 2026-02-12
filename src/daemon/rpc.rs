@@ -1689,7 +1689,7 @@ async fn handle_task_create(
             return Response::error(
                 id,
                 RpcError::new(-32603, format!("Failed to create task: {}", e)),
-            )
+            );
         }
     };
 
@@ -1699,10 +1699,12 @@ async fn handle_task_create(
             Ok(diff) => {
                 // Validate the diff
                 if let Err(e) = diff.validate() {
-                    warn!("Clusterer returned invalid diff: {} — keeping provisional channel", e);
+                    warn!(
+                        "Clusterer returned invalid diff: {} — keeping provisional channel",
+                        e
+                    );
                 } else {
-                    // Apply the clustering diff via effects
-                    // TODO: Wire this into the effects pipeline. For now, just log.
+                    // Apply the clustering diff via effects pipeline
                     info!(
                         "Clusterer returned diff: {} creates, {} archives, {} merges, {} assignments",
                         diff.create_channels.len(),
@@ -1711,25 +1713,9 @@ async fn handle_task_create(
                         diff.assign_tasks.len()
                     );
 
-                    // Extract channel assignment for this specific task
-                    if let Some(assignment) = diff
-                        .assign_tasks
-                        .iter()
-                        .find(|a| a.task == task_id.to_string())
-                    {
-                        // Update task channel in persistent state
-                        let mut ps = state.persistent_state.lock().await;
-                        if apply_task_channel_mapping(
-                            &mut ps.task_channel,
-                            &task_id.to_string(),
-                            Some(&assignment.channel),
-                            false,
-                        ) {
-                            if let Err(e) = ps.save_for_repo(&repo_name) {
-                                warn!("Failed to save task channel mapping: {}", e);
-                            }
-                        }
-                    }
+                    // Convert clustering diff to effects and execute them
+                    let effects = super::clustering::apply_clustering_diff(diff);
+                    effects::execute_effects(effects, state).await;
                 }
             }
             Err(e) => {
@@ -1741,12 +1727,11 @@ async fn handle_task_create(
     // Apply model mapping if provided
     {
         let mut ps = state.persistent_state.lock().await;
-        match apply_task_model_mapping(&mut ps.task_model, &task_id.to_string(), model, false) {
+        let task_id_str = task_id.to_string();
+        match apply_task_model_mapping(&mut ps.task_model, &task_id_str, model, false) {
             Ok(changed) => {
-                if changed {
-                    if let Err(e) = ps.save_for_repo(&repo_name) {
-                        warn!("Failed to save task model mapping: {}", e);
-                    }
+                if changed && let Err(e) = ps.save_for_repo(&repo_name) {
+                    warn!("Failed to save task model mapping: {}", e);
                 }
             }
             Err(e) => {
