@@ -245,10 +245,17 @@ This log captures all daemon activity — task assignments, coworker spawns, RPC
 
 ```bash
 # View recent daemon activity
-tail -100 ~/.midtown/projects/midtown/logs/daemon.log
+tail -100 ~/.midtown/projects/<repo>/logs/daemon.log
 
 # Follow live
-tail -f ~/.midtown/projects/midtown/logs/daemon.log
+tail -f ~/.midtown/projects/<repo>/logs/daemon.log
+```
+
+The daemon respects the `MIDTOWN_LOG_LEVEL` environment variable for controlling log verbosity:
+
+```bash
+MIDTOWN_LOG_LEVEL=debug midtown daemon    # task assignments, coworker spawns, pane summaries per tick
+MIDTOWN_LOG_LEVEL=trace midtown daemon    # full pane content + serialized WorldSnapshot JSON
 ```
 
 ### Creating Failing Test Cases
