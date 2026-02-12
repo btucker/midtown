@@ -71,6 +71,7 @@ fn is_pr_merged(pr_number: u64, repo_path: &std::path::Path) -> Option<bool> {
 /// `false` if it should be skipped. A task should NOT be recovered if:
 /// - It is already completed (race condition: RPC marked it done after snapshot)
 /// - It has an explicit `pr` field pointing to a merged PR
+/// - It has an open PR tracked via pr_task_associations (tasks_with_open_prs)
 ///
 /// Note: This function performs I/O (reads task from disk, queries GitHub API) which
 /// violates the pure decision function pattern. The target architecture would move
@@ -80,6 +81,7 @@ fn should_recover_task(
     task: &crate::tasks::Task,
     merged_pr_numbers: &HashSet<u64>,
     repo_path: &std::path::Path,
+    tasks_with_open_prs: &HashMap<String, u64>,
 ) -> bool {
     // Check if task is already completed
     // Race condition: coworker reports completion via RPC, task is marked completed,
@@ -90,6 +92,27 @@ fn should_recover_task(
             task.id
         );
         return false;
+    }
+
+    // Check if this task has an open PR tracked via pr_task_associations.
+    // This prevents duplicate coworkers from being spawned when a task already
+    // has an open PR but the task.pr field isn't set yet.
+    // IMPORTANT: Only skip recovery if the PR is NOT merged. pr_author_sessions
+    // cleanup is async, so stale entries for merged PRs can linger. We must
+    // cross-reference merged_pr_numbers to avoid incorrectly skipping tasks.
+    if let Some(&pr_number) = tasks_with_open_prs.get(&task.id) {
+        if !merged_pr_numbers.contains(&pr_number) {
+            debug!(
+                "Skipping orphan recovery for task !{}: has open PR via pr_task_associations (PR #{})",
+                task.id, pr_number
+            );
+            return false;
+        } else {
+            debug!(
+                "Task !{} is in pr_task_associations but PR #{} is merged, allowing recovery for auto-completion",
+                task.id, pr_number
+            );
+        }
     }
 
     // Check if this task has an explicit PR association that's already merged.
@@ -173,11 +196,12 @@ pub(super) fn check_and_recover_orphans(
         .first()
         .expect("daemon state must have at least one repo path");
 
-    // Filter out in_progress tasks whose PRs have already been merged or that
-    // are already completed. These tasks are stale and will be auto-completed
-    // by the PR merge cleanup path. Attempting orphan recovery on them creates
-    // a loop: spawn → coworker sees task done → goes idle → grace period
-    // expires → spawn again.
+    // Filter out in_progress tasks whose PRs have already been merged, that
+    // have open PRs (via pr_task_associations), or that are already completed.
+    // These tasks are stale and will be auto-completed by the PR merge cleanup
+    // path (merged/completed) or already have active work (open PR). Attempting
+    // orphan recovery creates a loop: spawn → coworker sees task done → goes
+    // idle → grace period expires → spawn again.
     let in_progress_tasks_active: Vec<(String, String, String)> = snap
         .in_progress_tasks
         .iter()
@@ -188,7 +212,12 @@ pub(super) fn check_and_recover_orphans(
                 None => return true, // Task doesn't exist on disk? Keep it for recovery attempt
             };
 
-            should_recover_task(&task, &snap.merged_pr_numbers, repo_path)
+            should_recover_task(
+                &task,
+                &snap.merged_pr_numbers,
+                repo_path,
+                &snap.tasks_with_open_prs,
+            )
         })
         .cloned()
         .collect();
@@ -1799,8 +1828,9 @@ pub fn should_recover_task_test_helper(
     task: &crate::tasks::Task,
     merged_pr_numbers: &HashSet<u64>,
     repo_path: &std::path::Path,
+    tasks_with_open_prs: &HashMap<String, u64>,
 ) -> bool {
-    should_recover_task(task, merged_pr_numbers, repo_path)
+    should_recover_task(task, merged_pr_numbers, repo_path, tasks_with_open_prs)
 }
 
 // ============================================================================
@@ -1994,7 +2024,8 @@ mod tests {
 
         // EXPECTED: should_recover_task returns true (allow recovery)
         // ACTUAL (before fix): returns false because extract_pr_numbers_from_text finds #940 in subject
-        let result = should_recover_task(&task, &merged_prs, repo_path);
+        let tasks_with_open_prs = HashMap::new();
+        let result = should_recover_task(&task, &merged_prs, repo_path, &tasks_with_open_prs);
         assert!(
             result,
             "should_recover_task should return true when explicit pr field is None, even if merged PR mentioned in text"
@@ -2006,7 +2037,8 @@ mod tests {
             ..task
         };
 
-        let result = should_recover_task(&task_with_pr, &merged_prs, repo_path);
+        let result =
+            should_recover_task(&task_with_pr, &merged_prs, repo_path, &tasks_with_open_prs);
         assert!(
             !result,
             "should_recover_task should return false when explicit pr field matches merged PR"
@@ -4461,8 +4493,14 @@ mod tests {
         };
 
         let merged_prs = HashSet::new();
+        let tasks_with_open_prs = HashMap::new();
         assert!(
-            !should_recover_task(&completed_task, &merged_prs, std::path::Path::new(".")),
+            !should_recover_task(
+                &completed_task,
+                &merged_prs,
+                std::path::Path::new("."),
+                &tasks_with_open_prs
+            ),
             "Should NOT recover a completed task"
         );
     }
@@ -4488,10 +4526,16 @@ mod tests {
 
         // PR #923 is merged, but it's not associated with task !1120
         let merged_prs: HashSet<u64> = [923].into_iter().collect();
+        let tasks_with_open_prs = HashMap::new();
 
         // With explicit PR associations: should NOT recover because task.pr = Some(923) and PR #923 is merged
         assert!(
-            !should_recover_task(&task, &merged_prs, std::path::Path::new(".")),
+            !should_recover_task(
+                &task,
+                &merged_prs,
+                std::path::Path::new("."),
+                &tasks_with_open_prs
+            ),
             "Should NOT recover a task whose PR is already merged (explicit pr field)"
         );
     }
@@ -4515,10 +4559,16 @@ mod tests {
 
         // PR #925 is merged, but it's not associated with task !1121
         let merged_prs: HashSet<u64> = [925].into_iter().collect();
+        let tasks_with_open_prs = HashMap::new();
 
         // With explicit PR associations: should NOT recover because task.pr = Some(925) and PR #925 is merged
         assert!(
-            !should_recover_task(&task, &merged_prs, std::path::Path::new(".")),
+            !should_recover_task(
+                &task,
+                &merged_prs,
+                std::path::Path::new("."),
+                &tasks_with_open_prs
+            ),
             "Should NOT recover a task whose PR is already merged (explicit pr field)"
         );
     }
@@ -4540,8 +4590,14 @@ mod tests {
         };
 
         let merged_prs = HashSet::new();
+        let tasks_with_open_prs = HashMap::new();
         assert!(
-            should_recover_task(&task, &merged_prs, std::path::Path::new(".")),
+            should_recover_task(
+                &task,
+                &merged_prs,
+                std::path::Path::new("."),
+                &tasks_with_open_prs
+            ),
             "Should recover an active in-progress task with no merged PR"
         );
     }
@@ -4566,8 +4622,14 @@ mod tests {
         // The GitHub API check will fail (PR not found) but the function
         // should be conservative and allow recovery.
         let merged_prs: HashSet<u64> = [900, 910].into_iter().collect();
+        let tasks_with_open_prs = HashMap::new();
         assert!(
-            should_recover_task(&task, &merged_prs, std::path::Path::new(".")),
+            should_recover_task(
+                &task,
+                &merged_prs,
+                std::path::Path::new("."),
+                &tasks_with_open_prs
+            ),
             "Should recover a task whose PR is NOT yet merged (cache miss, API fails)"
         );
     }
@@ -4594,10 +4656,16 @@ mod tests {
 
         // PR #935 is NOT in the cache
         let merged_prs: HashSet<u64> = HashSet::new();
+        let tasks_with_open_prs = HashMap::new();
 
         // New behavior: SHOULD recover because PR #935 is just a contextual mention (no explicit pr field)
         assert!(
-            should_recover_task(&task, &merged_prs, std::path::Path::new(".")),
+            should_recover_task(
+                &task,
+                &merged_prs,
+                std::path::Path::new("."),
+                &tasks_with_open_prs
+            ),
             "Should recover task with contextual PR mention (no longer checks GitHub API)"
         );
     }
@@ -4622,10 +4690,11 @@ mod tests {
 
         let merged_prs: HashSet<u64> = [904].into_iter().collect();
         let repo_path = std::path::Path::new("/tmp/test-repo");
+        let tasks_with_open_prs = HashMap::new();
 
         // With explicit PR associations: should NOT recover because task.pr = Some(904) and PR #904 is merged
         assert!(
-            !should_recover_task(&task, &merged_prs, repo_path),
+            !should_recover_task(&task, &merged_prs, repo_path, &tasks_with_open_prs),
             "Should NOT recover a task whose PR (#904) is already merged (explicit pr field)"
         );
     }
@@ -4652,8 +4721,9 @@ mod tests {
         // Only #901 is merged; #902 and #903 are still open
         let merged_prs: HashSet<u64> = [901].into_iter().collect();
         let repo_path = std::path::Path::new("/tmp/test-repo");
+        let tasks_with_open_prs = HashMap::new();
         assert!(
-            should_recover_task(&task, &merged_prs, repo_path),
+            should_recover_task(&task, &merged_prs, repo_path, &tasks_with_open_prs),
             "Should recover task with multi-PR reference where only SOME PRs are merged"
         );
     }
@@ -4681,10 +4751,11 @@ mod tests {
         // All PRs are merged, but they're not the task's canonical PR
         let merged_prs: HashSet<u64> = [901, 902, 903].into_iter().collect();
         let repo_path = std::path::Path::new("/tmp/test-repo");
+        let tasks_with_open_prs = HashMap::new();
 
         // New behavior: SHOULD recover because pr field is None (contextual mentions only)
         assert!(
-            should_recover_task(&task, &merged_prs, repo_path),
+            should_recover_task(&task, &merged_prs, repo_path, &tasks_with_open_prs),
             "Should recover task with no explicit pr field (auto-completion will handle cleanup)"
         );
     }
@@ -4711,10 +4782,11 @@ mod tests {
 
         let merged_prs: HashSet<u64> = [905].into_iter().collect();
         let repo_path = std::path::Path::new("/tmp/test-repo");
+        let tasks_with_open_prs = HashMap::new();
 
         // New behavior: SHOULD recover because pr field is None (contextual mentions only)
         assert!(
-            should_recover_task(&task, &merged_prs, repo_path),
+            should_recover_task(&task, &merged_prs, repo_path, &tasks_with_open_prs),
             "Should recover task with no explicit pr field (auto-completion will handle cleanup)"
         );
     }

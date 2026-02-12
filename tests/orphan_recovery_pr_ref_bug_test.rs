@@ -12,7 +12,7 @@
 // Contextual PR mentions in text are ignored.
 
 use midtown::tasks::{Task, TaskStatus};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 /// Helper to create a minimal task for testing
@@ -48,8 +48,13 @@ fn test_should_recover_task_with_contextual_pr_mention() {
 
     // Should return true (allow recovery) because task.pr is None —
     // PR #940 is just mentioned as context, not the task's actual PR.
-    let result =
-        midtown::daemon::should_recover_task_test_helper(&task, &merged_pr_numbers, &repo_path);
+    let tasks_with_open_prs = HashMap::new(); // No open PRs
+    let result = midtown::daemon::should_recover_task_test_helper(
+        &task,
+        &merged_pr_numbers,
+        &repo_path,
+        &tasks_with_open_prs,
+    );
 
     assert!(
         result,
@@ -69,8 +74,13 @@ fn test_should_skip_recovery_when_task_pr_is_merged() {
     let repo_path = PathBuf::from("/fake/repo");
 
     // Should skip recovery because task.pr = Some(940) and PR #940 is merged
-    let result =
-        midtown::daemon::should_recover_task_test_helper(&task, &merged_pr_numbers, &repo_path);
+    let tasks_with_open_prs = HashMap::new(); // No open PRs
+    let result = midtown::daemon::should_recover_task_test_helper(
+        &task,
+        &merged_pr_numbers,
+        &repo_path,
+        &tasks_with_open_prs,
+    );
 
     assert!(
         !result,
@@ -94,8 +104,13 @@ fn test_should_recover_when_task_pr_is_open() {
 
     // Should allow recovery because PR #958 is not in the merged set
     // (and the GitHub API check in tests will fail/return None, so recovery is allowed)
-    let result =
-        midtown::daemon::should_recover_task_test_helper(&task, &merged_pr_numbers, &repo_path);
+    let tasks_with_open_prs = HashMap::new(); // No open PRs
+    let result = midtown::daemon::should_recover_task_test_helper(
+        &task,
+        &merged_pr_numbers,
+        &repo_path,
+        &tasks_with_open_prs,
+    );
 
     assert!(
         result,
@@ -117,8 +132,13 @@ fn test_should_recover_task_with_no_pr() {
     let repo_path = PathBuf::from("/fake/repo");
 
     // Should allow recovery for non-PR tasks (pr field is None)
-    let result =
-        midtown::daemon::should_recover_task_test_helper(&task, &merged_pr_numbers, &repo_path);
+    let tasks_with_open_prs = HashMap::new(); // No open PRs
+    let result = midtown::daemon::should_recover_task_test_helper(
+        &task,
+        &merged_pr_numbers,
+        &repo_path,
+        &tasks_with_open_prs,
+    );
 
     assert!(
         result,
