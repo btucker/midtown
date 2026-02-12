@@ -1584,6 +1584,143 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // Builder for decide_orphan_recovery — eliminates 7-arg boilerplate
+    // -----------------------------------------------------------------------
+
+    /// Test context builder for `decide_orphan_recovery`.
+    ///
+    /// All sets default to empty; callers only set the fields they care about.
+    struct OrphanCtx {
+        tasks: Vec<(String, String, String)>,
+        active: HashSet<String>,
+        at_dev_limit: bool,
+        open_prs: HashSet<String>,
+        review_feedback: HashSet<String>,
+        recently_stopped: HashSet<String>,
+        attached: HashSet<String>,
+    }
+
+    impl OrphanCtx {
+        /// Start with a single in-progress task owned by `owner`.
+        fn new(owner: &str, task_id: &str, subject: &str) -> Self {
+            Self {
+                tasks: vec![(task_id.to_string(), subject.to_string(), owner.to_string())],
+                active: HashSet::new(),
+                at_dev_limit: false,
+                open_prs: HashSet::new(),
+                review_feedback: HashSet::new(),
+                recently_stopped: HashSet::new(),
+                attached: HashSet::new(),
+            }
+        }
+
+        fn with_tasks(mut self, tasks: Vec<(String, String, String)>) -> Self {
+            self.tasks = tasks;
+            self
+        }
+        fn active(mut self, names: &[&str]) -> Self {
+            self.active = set(names);
+            self
+        }
+        fn at_dev_limit(mut self) -> Self {
+            self.at_dev_limit = true;
+            self
+        }
+        fn open_prs(mut self, names: &[&str]) -> Self {
+            self.open_prs = set(names);
+            self
+        }
+        fn review_feedback(mut self, names: &[&str]) -> Self {
+            self.review_feedback = set(names);
+            self
+        }
+        fn recently_stopped(mut self, names: &[&str]) -> Self {
+            self.recently_stopped = set(names);
+            self
+        }
+        fn attached(mut self, names: &[&str]) -> Self {
+            self.attached = set(names);
+            self
+        }
+
+        fn run(&self) -> Option<OrphanRecovery> {
+            decide_orphan_recovery(
+                &self.tasks,
+                &self.active,
+                self.at_dev_limit,
+                &self.open_prs,
+                &self.review_feedback,
+                &self.recently_stopped,
+                &self.attached,
+            )
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Builder for decide_stuck_coworker_restarts — eliminates boilerplate
+    // -----------------------------------------------------------------------
+
+    /// Test context builder for stuck coworker detection.
+    struct StuckCheckCtx {
+        name: String,
+        health: crate::daemon::snapshot::ProcessHealth,
+        now: DateTime<Utc>,
+        usage_limited: HashSet<String>,
+        api_error: HashSet<String>,
+        attached: HashSet<String>,
+    }
+
+    impl StuckCheckCtx {
+        /// Start with a stuck coworker (alive, no events for 10 min).
+        fn new(name: &str) -> Self {
+            let now = Utc::now();
+            Self {
+                name: name.to_string(),
+                health: stuck_health(now),
+                now,
+                usage_limited: HashSet::new(),
+                api_error: HashSet::new(),
+                attached: HashSet::new(),
+            }
+        }
+
+        fn with_health(
+            mut self,
+            f: impl FnOnce(&mut crate::daemon::snapshot::ProcessHealth),
+        ) -> Self {
+            f(&mut self.health);
+            self
+        }
+        fn usage_limited(mut self, names: &[&str]) -> Self {
+            self.usage_limited = set(names);
+            self
+        }
+        fn api_error(mut self, names: &[&str]) -> Self {
+            self.api_error = set(names);
+            self
+        }
+        fn attached(mut self, names: &[&str]) -> Self {
+            self.attached = set(names);
+            self
+        }
+
+        fn run(&self) -> Vec<StuckCoworkerRestart> {
+            let mut map = HashMap::new();
+            map.insert(self.name.clone(), self.health.clone());
+            let tasks = vec![("42".to_string(), "Fix bug".to_string(), self.name.clone())];
+            decide_stuck_coworker_restarts(
+                &map,
+                &tasks,
+                &self.usage_limited,
+                &self.api_error,
+                &self.attached,
+                self.now,
+                Duration::from_secs(180),
+            )
+        }
+    }
+
+    // -----------------------------------------------------------------------
     // decide_idle_shutdowns tests
     // -----------------------------------------------------------------------
 
@@ -2472,10 +2609,9 @@ mod tests {
 
     #[test]
     fn orphan_recovery_finds_orphan() {
-        let tasks = vec![("1".to_string(), "Fix bug".to_string(), "york".to_string())];
-        let active = set(&["amsterdam"]);
-        let empty = HashSet::new();
-        let result = decide_orphan_recovery(&tasks, &active, false, &empty, &empty, &empty, &empty);
+        let result = OrphanCtx::new("york", "1", "Fix bug")
+            .active(&["amsterdam"])
+            .run();
         assert_eq!(
             result,
             Some(OrphanRecovery {
@@ -2488,29 +2624,33 @@ mod tests {
 
     #[test]
     fn orphan_recovery_skips_active_owner() {
-        let tasks = vec![("1".to_string(), "Fix bug".to_string(), "york".to_string())];
-        let active = set(&["york"]);
-        let empty = HashSet::new();
-        let result = decide_orphan_recovery(&tasks, &active, false, &empty, &empty, &empty, &empty);
-        assert!(result.is_none());
+        assert!(
+            OrphanCtx::new("york", "1", "Fix bug")
+                .active(&["york"])
+                .run()
+                .is_none()
+        );
     }
 
     #[test]
     fn orphan_recovery_skips_at_dev_limit() {
-        let tasks = vec![("1".to_string(), "Fix bug".to_string(), "york".to_string())];
-        let active = set(&["amsterdam"]);
-        let empty = HashSet::new();
-        let result = decide_orphan_recovery(&tasks, &active, true, &empty, &empty, &empty, &empty);
-        assert!(result.is_none());
+        assert!(
+            OrphanCtx::new("york", "1", "Fix bug")
+                .active(&["amsterdam"])
+                .at_dev_limit()
+                .run()
+                .is_none()
+        );
     }
 
     #[test]
     fn orphan_recovery_skips_lead_owner() {
-        let tasks = vec![("1".to_string(), "Fix bug".to_string(), "lead".to_string())];
-        let active = set(&["amsterdam"]);
-        let empty = HashSet::new();
-        let result = decide_orphan_recovery(&tasks, &active, false, &empty, &empty, &empty, &empty);
-        assert!(result.is_none());
+        assert!(
+            OrphanCtx::new("lead", "1", "Fix bug")
+                .active(&["amsterdam"])
+                .run()
+                .is_none()
+        );
     }
 
     #[test]
@@ -2523,202 +2663,93 @@ mod tests {
                 "broadway".to_string(),
             ),
         ];
-        let active = set(&["amsterdam"]);
-        let empty = HashSet::new();
-        let result = decide_orphan_recovery(&tasks, &active, false, &empty, &empty, &empty, &empty);
+        let result = OrphanCtx::new("york", "1", "Fix bug")
+            .with_tasks(tasks)
+            .active(&["amsterdam"])
+            .run();
         assert_eq!(result.unwrap().task_id, "1");
     }
 
     #[test]
     fn orphan_recovery_skips_invalid_coworker_name() {
-        // Bug: task with invalid owner "fix" (not an avenue name) should be skipped,
-        // not returned for recovery, since we can't spawn a coworker named "fix"
-        let tasks = vec![("42".to_string(), "Fix bug".to_string(), "fix".to_string())];
-        let active = set(&["amsterdam"]);
-        let empty = HashSet::new();
-        let result = decide_orphan_recovery(&tasks, &active, false, &empty, &empty, &empty, &empty);
-        // Should be None because "fix" is not a valid coworker name
-        assert!(result.is_none());
+        // "fix" is not a valid coworker name (not an avenue name)
+        assert!(
+            OrphanCtx::new("fix", "42", "Fix bug")
+                .active(&["amsterdam"])
+                .run()
+                .is_none()
+        );
     }
 
     #[test]
     fn orphan_recovery_handles_uppercase_owner() {
-        // Uppercase owner names should still be recognized as valid coworkers
-        let tasks = vec![("1".to_string(), "Fix bug".to_string(), "YORK".to_string())];
-        let active = set(&["amsterdam"]);
-        let empty = HashSet::new();
-        let result = decide_orphan_recovery(&tasks, &active, false, &empty, &empty, &empty, &empty);
-        // Should return recovery because "YORK" maps to valid coworker "york"
+        let result = OrphanCtx::new("YORK", "1", "Fix bug")
+            .active(&["amsterdam"])
+            .run();
         assert!(result.is_some());
         assert_eq!(result.unwrap().owner, "YORK");
     }
 
     #[test]
     fn orphan_recovery_skips_coworker_awaiting_review() {
-        // Bug: coworker opened a PR with green CI and is awaiting review.
-        // The idle shutdown correctly lets them go on break, but orphan
-        // recovery kept respawning them because it didn't check PR state.
-        let tasks = vec![(
-            "789".to_string(),
-            "Add usage bars".to_string(),
-            "amsterdam".to_string(),
-        )];
-        let active = set(&[]); // amsterdam is not active (on break)
-        let coworkers_with_open_prs = set(&["amsterdam"]);
-        let review_feedback = set(&[]); // no review feedback yet
-        let recently_stopped = set(&["amsterdam"]); // cleanly stopped (on break)
-
-        let result = decide_orphan_recovery(
-            &tasks,
-            &active,
-            false,
-            &coworkers_with_open_prs,
-            &review_feedback,
-            &recently_stopped,
-            &HashSet::new(),
-        );
-        // Should NOT recover — coworker is correctly waiting for review
+        // Coworker opened a PR and is awaiting review — should not recover.
         assert!(
-            result.is_none(),
+            OrphanCtx::new("amsterdam", "789", "Add usage bars")
+                .open_prs(&["amsterdam"])
+                .recently_stopped(&["amsterdam"])
+                .run()
+                .is_none(),
             "Should not recover coworker awaiting review on green PR"
         );
     }
 
     #[test]
     fn orphan_recovery_recovers_coworker_with_review_feedback() {
-        // When review feedback arrives, the coworker should be recovered
-        // so they can address the comments.
-        let tasks = vec![(
-            "789".to_string(),
-            "Add usage bars".to_string(),
-            "amsterdam".to_string(),
-        )];
-        let active = set(&[]); // amsterdam is not active
-        let coworkers_with_open_prs = set(&["amsterdam"]);
-        let review_feedback = set(&["amsterdam"]); // review feedback posted
-
-        let result = decide_orphan_recovery(
-            &tasks,
-            &active,
-            false,
-            &coworkers_with_open_prs,
-            &review_feedback,
-            &HashSet::new(),
-            &HashSet::new(),
-        );
-        // SHOULD recover — there's actionable review feedback
+        let result = OrphanCtx::new("amsterdam", "789", "Add usage bars")
+            .open_prs(&["amsterdam"])
+            .review_feedback(&["amsterdam"])
+            .run();
         assert!(result.is_some());
         assert_eq!(result.unwrap().task_id, "789");
     }
 
     #[test]
     fn orphan_recovery_skips_coworker_with_failed_ci_and_open_pr() {
-        // When CI fails on the PR, the coworker should NOT be recovered
-        // by orphan recovery — CI failures are handled separately by
-        // handle_webhook_ci_failure() and the PR poll pathway. Recovering
-        // via orphan recovery created a loop because the coworker would
-        // be spawned, go idle (not knowing about CI failure), and shut down.
-        let tasks = vec![(
-            "789".to_string(),
-            "Add usage bars".to_string(),
-            "amsterdam".to_string(),
-        )];
-        let active = set(&[]); // amsterdam is not active
-        let coworkers_with_open_prs = set(&["amsterdam"]);
-        let review_feedback = set(&[]);
-        let recently_stopped = set(&["amsterdam"]); // cleanly stopped after opening PR
-
-        let result = decide_orphan_recovery(
-            &tasks,
-            &active,
-            false,
-            &coworkers_with_open_prs,
-            &review_feedback,
-            &recently_stopped,
-            &HashSet::new(),
-        );
-        // Should NOT recover — coworker has an open PR. CI failures
-        // are handled by the webhook/PR poll pathway, not orphan recovery.
+        // CI failures are handled by the webhook/PR poll pathway, not orphan recovery.
         assert!(
-            result.is_none(),
+            OrphanCtx::new("amsterdam", "789", "Add usage bars")
+                .open_prs(&["amsterdam"])
+                .recently_stopped(&["amsterdam"])
+                .run()
+                .is_none(),
             "Should not recover coworker with open PR (CI failures handled separately)"
         );
     }
 
     #[test]
     fn orphan_recovery_recovers_coworker_without_pr() {
-        // Coworker without an open PR should still be recovered normally.
-        let tasks = vec![(
-            "789".to_string(),
-            "Add usage bars".to_string(),
-            "amsterdam".to_string(),
-        )];
-        let active = set(&[]); // amsterdam is not active
-        let coworkers_with_open_prs = set(&[]); // no open PR
-        let review_feedback = set(&[]);
-
-        let result = decide_orphan_recovery(
-            &tasks,
-            &active,
-            false,
-            &coworkers_with_open_prs,
-            &review_feedback,
-            &HashSet::new(),
-            &HashSet::new(),
-        );
-        // SHOULD recover — no PR means work isn't done yet
+        let result = OrphanCtx::new("amsterdam", "789", "Add usage bars").run();
         assert!(result.is_some());
         assert_eq!(result.unwrap().task_id, "789");
     }
 
     #[test]
     fn orphan_recovery_skips_coworker_with_open_pr_before_ci_cached() {
-        // Bug: coworker opens a PR, goes idle, shuts down. Orphan recovery fires
-        // before the PR poll has cached CI status. coworkers_with_open_prs contains
-        // the coworker (fallback to gh CLI), but ci_passed_pr_coworkers is empty
-        // (only populated by PR poll). The skip check fails because it requires
-        // BOTH has_open_pr AND ci_passed, creating a recovery loop.
-        //
-        // This is the root cause of the lexington recovery loop (task !810):
-        // - lexington opened PR #682, went idle, shut down
-        // - orphan check fires every 10s, PR poll every 30s
-        // - In the window before PR poll caches CI status, recovery fires
-        // - coworker spawns, goes idle, shuts down, recovery fires again
-        let tasks = vec![(
-            "810".to_string(),
-            "Fix auth endpoint".to_string(),
-            "lexington".to_string(),
-        )];
-        let active = set(&[]); // lexington is not active (shut down)
-        let coworkers_with_open_prs = set(&["lexington"]); // PR detected via fallback
-        let review_feedback = set(&[]);
-        let recently_stopped = set(&["lexington"]); // cleanly stopped after opening PR
-
-        let result = decide_orphan_recovery(
-            &tasks,
-            &active,
-            false,
-            &coworkers_with_open_prs,
-            &review_feedback,
-            &recently_stopped,
-            &HashSet::new(),
-        );
-        // Should NOT recover — coworker has an open PR and no review feedback.
-        // CI status is unknown (not cached yet), but the safe default should be
-        // to skip recovery. CI failures are handled by the webhook/PR poll pathway.
+        // Bug: lexington recovery loop (task !810). Orphan recovery fires before
+        // PR poll caches CI status, creating spawn→idle→shutdown→recovery loop.
         assert!(
-            result.is_none(),
+            OrphanCtx::new("lexington", "810", "Fix auth endpoint")
+                .open_prs(&["lexington"])
+                .recently_stopped(&["lexington"])
+                .run()
+                .is_none(),
             "Should not recover coworker with open PR even when CI status is not yet cached"
         );
     }
 
     #[test]
     fn orphan_recovery_skips_multi_task_coworker_with_open_pr_before_ci() {
-        // Bug: coworker has TWO in_progress tasks and an open PR, but the PR
-        // poll hasn't cached CI status yet. ci_passed_pr_coworkers is empty.
-        // The skip check fails for both tasks, and the first one triggers
-        // recovery — creating a loop where the coworker is spawned for a task
-        // whose work is already done (PR opened).
+        // Both tasks owned by lexington — neither should trigger recovery.
         let tasks = vec![
             (
                 "810".to_string(),
@@ -2731,83 +2762,33 @@ mod tests {
                 "lexington".to_string(),
             ),
         ];
-        let active = set(&[]);
-        let coworkers_with_open_prs = set(&["lexington"]);
-        let review_feedback = set(&[]);
-        let recently_stopped = set(&["lexington"]); // cleanly stopped after opening PR
-
-        let result = decide_orphan_recovery(
-            &tasks,
-            &active,
-            false,
-            &coworkers_with_open_prs,
-            &review_feedback,
-            &recently_stopped,
-            &HashSet::new(),
-        );
-        // Should NOT recover — coworker has an open PR. Even though CI status
-        // is unknown, the safe default is to wait for the PR poll to determine
-        // if recovery is actually needed. CI failures are handled separately.
         assert!(
-            result.is_none(),
+            OrphanCtx::new("lexington", "810", "Fix auth endpoint")
+                .with_tasks(tasks)
+                .open_prs(&["lexington"])
+                .recently_stopped(&["lexington"])
+                .run()
+                .is_none(),
             "Should not recover coworker with open PR even when CI status is not yet cached"
         );
     }
 
     #[test]
     fn orphan_recovery_skips_recently_stopped_coworker() {
-        // Bug: coworker completes work, goes idle, gets shut down. The task
-        // is still in_progress because it hasn't been marked done yet. Orphan
-        // recovery fires and respawns the coworker for a task it already finished.
-        //
-        // Fix: skip recovery for coworkers that recently stopped (within a grace
-        // period), giving the system time to mark the task complete.
-        let tasks = vec![(
-            "832".to_string(),
-            "Review feedback".to_string(),
-            "york".to_string(),
-        )];
-        let active = set(&[]); // york is not active (just shut down)
-        let empty = HashSet::new();
-        let recently_stopped = set(&["york"]); // york stopped within grace period
-
-        let result = decide_orphan_recovery(
-            &tasks,
-            &active,
-            false,
-            &empty,
-            &empty,
-            &recently_stopped,
-            &empty,
-        );
+        // Grace period prevents false recovery for tasks not yet marked done.
         assert!(
-            result.is_none(),
+            OrphanCtx::new("york", "832", "Review feedback")
+                .recently_stopped(&["york"])
+                .run()
+                .is_none(),
             "Should not recover coworker that recently stopped (within grace period)"
         );
     }
 
     #[test]
     fn orphan_recovery_recovers_after_grace_period() {
-        // After the grace period expires, the coworker should be recovered
-        // if their task is still in_progress and they're not active.
-        let tasks = vec![(
-            "832".to_string(),
-            "Review feedback".to_string(),
-            "york".to_string(),
-        )];
-        let active = set(&[]); // york is not active
-        let empty = HashSet::new();
-        let recently_stopped = set(&[]); // york NOT in recently_stopped (grace period expired)
-
-        let result = decide_orphan_recovery(
-            &tasks,
-            &active,
-            false,
-            &empty,
-            &empty,
-            &recently_stopped,
-            &empty,
-        );
+        // After grace period expires, recovery fires.
+        let result = OrphanCtx::new("york", "832", "Review feedback").run();
         assert!(
             result.is_some(),
             "Should recover coworker after grace period expires"
@@ -2815,77 +2796,23 @@ mod tests {
         assert_eq!(result.unwrap().task_id, "832");
     }
 
-    /// Regression test for #874: RPC idle handler false orphan recovery.
-    ///
-    /// Bug: when a coworker reports idle via RPC, the handler shuts them down
-    /// directly (bypassing the Effect system) and does NOT record the stop time
-    /// in coworker_stop_times. On the next TaskDispatchTick (~10s later),
-    /// check_and_recover_orphans computes recently_stopped from coworker_stop_times.
-    /// Since the stop time was never recorded, recently_stopped is empty, and
-    /// the coworker's in_progress task appears orphaned → false recovery.
-    ///
-    /// Fix: record stop time in coworker_stop_times in the RPC idle handler
-    /// (and handle_coworker_break), matching what Effect::ShutdownCoworker does.
-    ///
-    /// This test verifies the decision function: when a coworker reports idle
-    /// and the stop time IS recorded (recently_stopped contains them), orphan
-    /// recovery should NOT trigger.
+    /// Regression test for #874: when stop time IS recorded, orphan recovery
+    /// should NOT trigger.
     #[test]
     fn orphan_recovery_skips_coworker_that_just_reported_idle() {
-        // Scenario: madison reports idle via RPC. She still has in_progress
-        // task !861 (task completion is async). The RPC handler shuts her down
-        // and records her stop time. On the next TaskDispatchTick, orphan
-        // recovery must skip her because she's in recently_stopped.
-        let tasks = vec![(
-            "861".to_string(),
-            "Review PR #705".to_string(),
-            "madison".to_string(),
-        )];
-        let active = set(&[]); // madison shut down (not in active_names)
-        let empty = HashSet::new();
-        let recently_stopped = set(&["madison"]); // stop time was recorded by RPC handler
-
-        let result = decide_orphan_recovery(
-            &tasks,
-            &active,
-            false,
-            &empty,
-            &empty,
-            &recently_stopped,
-            &empty,
-        );
         assert!(
-            result.is_none(),
+            OrphanCtx::new("madison", "861", "Review PR #705")
+                .recently_stopped(&["madison"])
+                .run()
+                .is_none(),
             "Should NOT recover coworker that just reported idle (recently stopped)"
         );
     }
 
-    /// Regression test for #874: verify false recovery WOULD occur without stop time.
-    ///
-    /// This is the buggy scenario: the RPC idle handler does NOT record the stop
-    /// time, so recently_stopped is empty. Orphan recovery falsely triggers.
+    /// Regression test for #874: without stop time, orphan recovery falsely triggers.
     #[test]
     fn orphan_recovery_false_positive_without_stop_time() {
-        // Same scenario as above, but recently_stopped is empty (the bug)
-        let tasks = vec![(
-            "861".to_string(),
-            "Review PR #705".to_string(),
-            "madison".to_string(),
-        )];
-        let active = set(&[]); // madison shut down
-        let empty = HashSet::new();
-        // BUG: recently_stopped is empty because RPC handler didn't record stop time
-        let recently_stopped = set(&[]);
-
-        let result = decide_orphan_recovery(
-            &tasks,
-            &active,
-            false,
-            &empty,
-            &empty,
-            &recently_stopped,
-            &empty,
-        );
+        let result = OrphanCtx::new("madison", "861", "Review PR #705").run();
         assert!(
             result.is_some(),
             "Without stop time recording, orphan recovery falsely triggers (the bug)"
@@ -2894,14 +2821,8 @@ mod tests {
     }
 
     /// Regression test for #874: auth switch shuts down multiple coworkers.
-    ///
-    /// When handle_auth_switch shuts down all running coworkers, it must record
-    /// stop times for each one. Otherwise, any coworker with an in_progress task
-    /// gets falsely recovered on the next TaskDispatchTick.
     #[test]
     fn orphan_recovery_skips_coworkers_shut_down_by_auth_switch() {
-        // Scenario: auth switch shuts down madison and park. Both have in_progress
-        // tasks. The RPC handler records stop times for both.
         let tasks = vec![
             (
                 "861".to_string(),
@@ -2914,21 +2835,12 @@ mod tests {
                 "park".to_string(),
             ),
         ];
-        let active = set(&[]); // all coworkers shut down
-        let empty = HashSet::new();
-        let recently_stopped = set(&["madison", "park"]); // stop times recorded
-
-        let result = decide_orphan_recovery(
-            &tasks,
-            &active,
-            false,
-            &empty,
-            &empty,
-            &recently_stopped,
-            &empty,
-        );
         assert!(
-            result.is_none(),
+            OrphanCtx::new("madison", "861", "Review PR #705")
+                .with_tasks(tasks)
+                .recently_stopped(&["madison", "park"])
+                .run()
+                .is_none(),
             "Should NOT recover coworkers shut down by auth switch (recently stopped)"
         );
     }
@@ -3147,57 +3059,20 @@ mod tests {
     // decide_stuck_coworker_restarts tests (ProcessHealth-based)
     // -----------------------------------------------------------------------
 
-    /// Run `decide_stuck_coworker_restarts` with a single health entry and task.
-    fn run_stuck_check(
-        name: &str,
-        health: crate::daemon::snapshot::ProcessHealth,
-        now: DateTime<Utc>,
-        usage_limited: &HashSet<String>,
-        api_error: &HashSet<String>,
-        attached: &HashSet<String>,
-    ) -> Vec<StuckCoworkerRestart> {
-        let mut map = HashMap::new();
-        map.insert(name.to_string(), health);
-        let tasks = vec![("42".to_string(), "Fix bug".to_string(), name.to_string())];
-        decide_stuck_coworker_restarts(
-            &map,
-            &tasks,
-            usage_limited,
-            api_error,
-            attached,
-            now,
-            Duration::from_secs(180),
-        )
-    }
-
     #[test]
     fn stuck_detection_triggers_for_no_events() {
-        let now = Utc::now();
-        let restarts = run_stuck_check(
-            "riverside",
-            stuck_health(now),
-            now,
-            &HashSet::new(),
-            &HashSet::new(),
-            &HashSet::new(),
-        );
+        let restarts = StuckCheckCtx::new("riverside").run();
         assert_eq!(restarts.len(), 1);
         assert_eq!(restarts[0].name, "riverside");
     }
 
     #[test]
     fn stuck_detection_skips_recent_events() {
-        let now = Utc::now();
-        let mut h = stuck_health(now);
-        h.last_event_at = Some(now - chrono::Duration::seconds(30));
-        let restarts = run_stuck_check(
-            "riverside",
-            h,
-            now,
-            &HashSet::new(),
-            &HashSet::new(),
-            &HashSet::new(),
-        );
+        let restarts = StuckCheckCtx::new("riverside")
+            .with_health(|h| {
+                h.last_event_at = Some(Utc::now() - chrono::Duration::seconds(30));
+            })
+            .run();
         assert!(
             restarts.is_empty(),
             "recent events should not trigger stuck"
@@ -3206,15 +3081,7 @@ mod tests {
 
     #[test]
     fn stuck_detection_skips_usage_limited() {
-        let now = Utc::now();
-        let restarts = run_stuck_check(
-            "york",
-            stuck_health(now),
-            now,
-            &set(&["york"]),
-            &HashSet::new(),
-            &HashSet::new(),
-        );
+        let restarts = StuckCheckCtx::new("york").usage_limited(&["york"]).run();
         assert!(
             restarts.is_empty(),
             "usage-limited coworker should be skipped"
@@ -3223,31 +3090,15 @@ mod tests {
 
     #[test]
     fn stuck_detection_skips_api_error() {
-        let now = Utc::now();
-        let restarts = run_stuck_check(
-            "madison",
-            stuck_health(now),
-            now,
-            &HashSet::new(),
-            &set(&["madison"]),
-            &HashSet::new(),
-        );
+        let restarts = StuckCheckCtx::new("madison").api_error(&["madison"]).run();
         assert!(restarts.is_empty(), "API error coworker should be skipped");
     }
 
     #[test]
     fn stuck_detection_skips_running_subagent() {
-        let now = Utc::now();
-        let mut h = stuck_health(now);
-        h.has_running_subagent = true;
-        let restarts = run_stuck_check(
-            "park",
-            h,
-            now,
-            &HashSet::new(),
-            &HashSet::new(),
-            &HashSet::new(),
-        );
+        let restarts = StuckCheckCtx::new("park")
+            .with_health(|h| h.has_running_subagent = true)
+            .run();
         assert!(
             restarts.is_empty(),
             "coworker with running subagent should not be flagged as stuck"
@@ -3256,18 +3107,12 @@ mod tests {
 
     #[test]
     fn stuck_detection_skips_dead_processes() {
-        let now = Utc::now();
-        let mut h = stuck_health(now);
-        h.is_alive = false;
-        h.exit_code = Some(1);
-        let restarts = run_stuck_check(
-            "broadway",
-            h,
-            now,
-            &HashSet::new(),
-            &HashSet::new(),
-            &HashSet::new(),
-        );
+        let restarts = StuckCheckCtx::new("broadway")
+            .with_health(|h| {
+                h.is_alive = false;
+                h.exit_code = Some(1);
+            })
+            .run();
         assert!(
             restarts.is_empty(),
             "dead processes are handled by check_and_respawn_dead_processes"
@@ -3276,15 +3121,7 @@ mod tests {
 
     #[test]
     fn stuck_detection_skips_attached_coworkers() {
-        let now = Utc::now();
-        let restarts = run_stuck_check(
-            "park",
-            stuck_health(now),
-            now,
-            &HashSet::new(),
-            &HashSet::new(),
-            &set(&["park"]),
-        );
+        let restarts = StuckCheckCtx::new("park").attached(&["park"]).run();
         assert!(
             restarts.is_empty(),
             "attached coworker should not be flagged as stuck"
@@ -3293,17 +3130,9 @@ mod tests {
 
     #[test]
     fn stuck_detection_skips_pending_tool_execution() {
-        let now = Utc::now();
-        let mut h = stuck_health(now);
-        h.has_pending_tool = true;
-        let restarts = run_stuck_check(
-            "broadway",
-            h,
-            now,
-            &HashSet::new(),
-            &HashSet::new(),
-            &HashSet::new(),
-        );
+        let restarts = StuckCheckCtx::new("broadway")
+            .with_health(|h| h.has_pending_tool = true)
+            .run();
         assert!(
             restarts.is_empty(),
             "coworker with pending tool execution should not be flagged as stuck"
@@ -3312,124 +3141,48 @@ mod tests {
 
     #[test]
     fn orphan_recovery_skips_attached_coworkers() {
-        let tasks = vec![("1".to_string(), "Fix bug".to_string(), "york".to_string())];
-        let active = set(&["amsterdam"]);
-        let empty = HashSet::new();
-        let mut attached = HashSet::new();
-        attached.insert("york".to_string());
-
-        let result =
-            decide_orphan_recovery(&tasks, &active, false, &empty, &empty, &empty, &attached);
         assert!(
-            result.is_none(),
+            OrphanCtx::new("york", "1", "Fix bug")
+                .active(&["amsterdam"])
+                .attached(&["york"])
+                .run()
+                .is_none(),
             "attached coworker should not be treated as orphan"
         );
     }
 
     #[test]
     fn orphan_recovery_skips_killed_coworker_with_open_pr() {
-        // When a coworker is killed (e.g., by auth switch) while their PR is open
-        // without review feedback, orphan recovery should NOT spawn them because:
-        // 1. The PR is already open — the work is done
-        // 2. If spawned, they'd see the PR exists and go idle again (loop)
-        //
-        // The daemon should instead auto-complete the task when it detects a PR
-        // is open for an in_progress task. Orphan recovery is not the right pathway
-        // for task completion — that's handled by PR management.
-        let tasks = vec![(
-            "952".to_string(),
-            "Fix PR handling".to_string(),
-            "broadway".to_string(),
-        )];
-        let active = set(&[]); // broadway is not active (killed)
-        let coworkers_with_open_prs = set(&["broadway"]); // PR is open
-        let review_feedback = set(&[]); // no review feedback yet
-        let recently_stopped = set(&[]); // NOT in recently_stopped (killed, not cleanly stopped)
-
-        let result = decide_orphan_recovery(
-            &tasks,
-            &active,
-            false,
-            &coworkers_with_open_prs,
-            &review_feedback,
-            &recently_stopped,
-            &HashSet::new(),
-        );
-        // Should NOT recover — PR is open, work is done. Task should be auto-completed
-        // by PR management pathway, not orphan recovery.
+        // Killed coworker with open PR — task should be auto-completed by PR management.
         assert!(
-            result.is_none(),
+            OrphanCtx::new("broadway", "952", "Fix PR handling")
+                .open_prs(&["broadway"])
+                .run()
+                .is_none(),
             "Should not recover killed coworker if PR is open (work already done)"
         );
     }
 
     #[test]
     fn orphan_recovery_skips_recently_stopped_coworker_awaiting_review() {
-        // When a coworker cleanly stops (within grace period) and has an open PR
-        // without review feedback, they're correctly waiting for review — don't recover.
-        let tasks = vec![(
-            "952".to_string(),
-            "Fix PR handling".to_string(),
-            "broadway".to_string(),
-        )];
-        let active = set(&[]); // broadway is not active
-        let coworkers_with_open_prs = set(&["broadway"]); // PR is open
-        let review_feedback = set(&[]); // no review feedback yet
-        let recently_stopped = set(&["broadway"]); // cleanly stopped within grace period
-
-        let result = decide_orphan_recovery(
-            &tasks,
-            &active,
-            false,
-            &coworkers_with_open_prs,
-            &review_feedback,
-            &recently_stopped,
-            &HashSet::new(),
-        );
-        // Should NOT recover — coworker is correctly waiting for review
         assert!(
-            result.is_none(),
+            OrphanCtx::new("broadway", "952", "Fix PR handling")
+                .open_prs(&["broadway"])
+                .recently_stopped(&["broadway"])
+                .run()
+                .is_none(),
             "Should not recover coworker who recently stopped and is awaiting review"
         );
     }
 
     #[test]
     fn orphan_recovery_skips_coworker_after_grace_period_with_open_pr() {
-        // Regression test for task !1011: When a coworker opens a PR and goes idle,
-        // after the 40s grace period expires, they're no longer in recently_stopped.
-        // Without this check, orphan recovery fires, spawns the coworker, who sees
-        // the PR exists and goes idle again → infinite loop.
-        //
-        // Observed with amsterdam on task !1008:
-        // 1. amsterdam opens PR #810, goes idle
-        // 2. Grace period (40s) passes → no longer in recently_stopped
-        // 3. Daemon recovers as "orphan" → amsterdam spawns
-        // 4. amsterdam sees PR exists, goes idle, shuts down
-        // 5. Repeat step 2 → loop
-        let tasks = vec![(
-            "1008".to_string(),
-            "Add web UI channel switching".to_string(),
-            "amsterdam".to_string(),
-        )];
-        let active = set(&[]); // amsterdam not active (shut down after grace period)
-        let coworkers_with_open_prs = set(&["amsterdam"]); // PR #810 is open
-        let review_feedback = set(&[]); // no review feedback yet
-        let recently_stopped = set(&[]); // NOT in recently_stopped (grace period expired)
-
-        let result = decide_orphan_recovery(
-            &tasks,
-            &active,
-            false,
-            &coworkers_with_open_prs,
-            &review_feedback,
-            &recently_stopped,
-            &HashSet::new(),
-        );
-        // Should NOT recover — even though grace period expired, the coworker has an
-        // open PR awaiting review. Recovering would create a loop because the coworker
-        // would spawn, see the PR exists, and go idle again.
+        // Regression test for task !1011: amsterdam recovery loop after grace period.
         assert!(
-            result.is_none(),
+            OrphanCtx::new("amsterdam", "1008", "Add web UI channel switching")
+                .open_prs(&["amsterdam"])
+                .run()
+                .is_none(),
             "Should not recover coworker with open PR even after grace period (creates loop)"
         );
     }
