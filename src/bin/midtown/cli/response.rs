@@ -69,6 +69,10 @@ pub struct CoworkerInfo {
     pub status: String,
     pub current_task: Option<String>,
     pub started_at: Option<String>,
+    #[serde(default)]
+    pub provider: Option<String>,
+    #[serde(default)]
+    pub profile: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -127,7 +131,14 @@ impl Response {
                             Some(task) => format!("working on: {}", task),
                             None => "idle".to_string(),
                         };
-                        out.push_str(&format!("  {} - {}\n", cw.name, task_desc));
+                        // Format provider:profile (e.g., "claude: ben@quotably.com")
+                        let auth_info = match (&cw.provider, &cw.profile) {
+                            (Some(provider), Some(profile)) => {
+                                format!(" ({}: {})", provider, profile)
+                            }
+                            _ => String::new(),
+                        };
+                        out.push_str(&format!("  {} - {}{}\n", cw.name, task_desc, auth_info));
                     }
 
                     // Tasks section
@@ -210,11 +221,19 @@ impl Response {
                 }
                 let mut out = String::from("Coworkers\n─────────────────────────────\n");
                 for cw in coworkers {
+                    // Format provider:profile (e.g., "claude: ben@quotably.com")
+                    let auth_info = match (&cw.provider, &cw.profile) {
+                        (Some(provider), Some(profile)) => {
+                            format!(" ({}: {})", provider, profile)
+                        }
+                        _ => String::new(),
+                    };
                     out.push_str(&format!(
-                        "{:<12} {:8} {}\n",
+                        "{:<12} {:8} {}{}\n",
                         cw.name,
                         cw.status,
-                        cw.current_task.as_deref().unwrap_or("-")
+                        cw.current_task.as_deref().unwrap_or("-"),
+                        auth_info
                     ));
                 }
                 out.trim_end().to_string()
@@ -262,218 +281,6 @@ impl Response {
     }
 }
 
+#[path = "response_tests.rs"]
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_status_response_with_full_info() {
-        let json = r#"{
-            "daemon_running": true,
-            "active_coworkers": 2,
-            "pending_tasks": 1,
-            "socket_path": "/tmp/midtown.sock",
-            "coworkers": [
-                {"name": "lex", "status": "running", "current_task": "implement auth", "started_at": "2024-01-01T00:00:00Z"},
-                {"name": "park", "status": "running", "current_task": null, "started_at": "2024-01-01T00:00:00Z"}
-            ],
-            "tasks": [
-                {"id": "t1", "subject": "implement auth endpoint", "status": "in_progress", "assignee": "lex"}
-            ],
-            "pull_requests": [
-                {"number": 42, "title": "Add auth", "author": "lex", "status": "awaiting review"}
-            ],
-            "recent_activity": []
-        }"#;
-
-        let response: Response = serde_json::from_str(json).unwrap();
-
-        match response {
-            Response::Status(status) => {
-                assert!(status.daemon_running);
-                assert_eq!(status.active_coworkers, 2);
-                assert!(status.full_status.is_some());
-
-                let full = status.full_status.unwrap();
-                assert_eq!(full.coworkers.len(), 2);
-                assert_eq!(full.coworkers[0].name, "lex");
-                assert_eq!(
-                    full.coworkers[0].current_task,
-                    Some("implement auth".to_string())
-                );
-                assert_eq!(full.coworkers[1].current_task, None);
-                assert_eq!(full.tasks.len(), 1);
-                assert_eq!(full.pull_requests.len(), 1);
-            }
-            _ => panic!("Expected Status response"),
-        }
-    }
-
-    #[test]
-    fn test_coworkers_response_parsing() {
-        let json = r#"{"coworkers": [{"name": "lexington", "status": "running", "current_task": null, "started_at": "2026-01-26T20:52:06.779326+00:00"}]}"#;
-        let response: Response = serde_json::from_str(json).expect("Should parse");
-
-        match response {
-            Response::Coworkers { coworkers } => {
-                assert_eq!(coworkers.len(), 1);
-                assert_eq!(coworkers[0].name, "lexington");
-                assert_eq!(coworkers[0].status, "running");
-            }
-            other => panic!("Expected Coworkers, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_coworkers_response_with_success_field() {
-        // Daemon returns "success": true along with coworkers
-        let json = r#"{"success": true, "coworkers": [{"name": "lexington", "status": "running", "current_task": null, "started_at": "2026-01-26T20:52:06.779326+00:00"}]}"#;
-        let response: Response =
-            serde_json::from_str(json).expect("Should parse with extra fields");
-
-        match response {
-            Response::Coworkers { coworkers } => {
-                assert_eq!(coworkers.len(), 1);
-                assert_eq!(coworkers[0].name, "lexington");
-            }
-            other => panic!("Expected Coworkers, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_coworker_view_output_format_does_not_match_response_enum() {
-        // The coworker.view RPC returns {"success": true, "output": "..."} which
-        // doesn't match any Response variant. This is why coworker_view() uses
-        // send_raw() instead of send().
-        let json = r#"{"success": true, "output": "some terminal output"}"#;
-        let result: Result<Response, _> = serde_json::from_str(json);
-        assert!(
-            result.is_err(),
-            "coworker.view output format should NOT deserialize as Response"
-        );
-    }
-
-    #[test]
-    fn test_coworker_view_output_extraction() {
-        // Verify the extraction logic used in DaemonClient::coworker_view()
-        let raw: serde_json::Value =
-            serde_json::from_str(r#"{"success": true, "output": "terminal content here"}"#)
-                .unwrap();
-        let output = raw
-            .get("output")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| "RPC response missing 'output' field".to_string());
-        assert_eq!(output.unwrap(), "terminal content here");
-    }
-
-    #[test]
-    fn test_coworker_view_missing_output_field_returns_error() {
-        // If the output field is missing, extraction should fail with a clear error
-        let raw: serde_json::Value = serde_json::from_str(r#"{"success": true}"#).unwrap();
-        let output = raw
-            .get("output")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| "RPC response missing 'output' field".to_string());
-        assert_eq!(output.unwrap_err(), "RPC response missing 'output' field");
-    }
-
-    #[test]
-    fn test_task_update_response_with_type_field() {
-        // All task RPC handlers return {"type": "message", "message": "..."} but
-        // Response::Message expects just {"message": "..."}. Serde's untagged enum
-        // deserialization silently skips unknown fields like "type".
-        let json = r#"{"type": "message", "message": "Task !1116 updated"}"#;
-        let response: Response =
-            serde_json::from_str(json).expect("Should parse task.update response with type field");
-
-        match response {
-            Response::Message { message } => {
-                assert_eq!(message, "Task !1116 updated");
-            }
-            other => panic!("Expected Message, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_task_create_response_with_type_field() {
-        // task.create returns the same {"type": "message", "message": "..."} format
-        let json = r#"{"type": "message", "message": "Task !42 created: Add auth endpoint"}"#;
-        let response: Response =
-            serde_json::from_str(json).expect("Should parse task.create response with type field");
-
-        match response {
-            Response::Message { message } => {
-                assert_eq!(message, "Task !42 created: Add auth endpoint");
-            }
-            other => panic!("Expected Message, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_task_done_response_with_type_field() {
-        // task.done returns the same {"type": "message", "message": "..."} format
-        let json = r#"{"type": "message", "message": "Task !99 completed"}"#;
-        let response: Response =
-            serde_json::from_str(json).expect("Should parse task.done response with type field");
-
-        match response {
-            Response::Message { message } => {
-                assert_eq!(message, "Task !99 completed");
-            }
-            other => panic!("Expected Message, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_status_pretty_format() {
-        let status = StatusResponse {
-            daemon_running: true,
-            active_coworkers: 2,
-            max_coworkers: Some(16),
-            pending_tasks: 1,
-            socket_path: "/tmp/test.sock".to_string(),
-            lead_session: Some("midtown-lead".to_string()),
-            lead_session_active: Some(true),
-            full_status: Some(FullStatusInfo {
-                coworkers: vec![
-                    CoworkerInfo {
-                        name: "lex".to_string(),
-                        status: "running".to_string(),
-                        current_task: Some("implement auth endpoint".to_string()),
-                        started_at: None,
-                    },
-                    CoworkerInfo {
-                        name: "park".to_string(),
-                        status: "running".to_string(),
-                        current_task: None,
-                        started_at: None,
-                    },
-                ],
-                tasks: vec![TaskInfo {
-                    id: "t1".to_string(),
-                    subject: "implement auth endpoint".to_string(),
-                    status: "in_progress".to_string(),
-                    assignee: Some("lex".to_string()),
-                }],
-                pull_requests: vec![PrInfo {
-                    number: 42,
-                    title: "Add auth".to_string(),
-                    author: "lex".to_string(),
-                    status: "awaiting review".to_string(),
-                }],
-                recent_activity: vec![],
-            }),
-        };
-
-        let response = Response::Status(status);
-        let pretty = response.to_pretty();
-
-        assert!(pretty.contains("Coworkers: 2/16 active"));
-        assert!(pretty.contains("lex - working on: implement auth endpoint"));
-        assert!(pretty.contains("park - idle"));
-        assert!(pretty.contains("Tasks: 1 open"));
-        assert!(pretty.contains("[in_progress] implement auth endpoint (lex)"));
-        assert!(pretty.contains("PRs: 1 open"));
-        assert!(pretty.contains("PR#42 Add auth (lex) - awaiting review"));
-    }
-}
+mod tests;
