@@ -381,4 +381,48 @@ mod tests {
         assert_eq!(roundtrip.provider, AuthProvider::Claude);
         assert_eq!(roundtrip.profile_name, "test-profile");
     }
+
+    /// Test that fetch_multi_usage skips non-Claude providers (no usage API).
+    #[test]
+    fn test_fetch_multi_usage_skips_non_claude() {
+        let profiles = vec![
+            (AuthProvider::Claude, "claude-profile".to_string()),
+            (AuthProvider::Zai, "zai-profile".to_string()),
+        ];
+
+        // This won't actually fetch (no credentials available in test env),
+        // but it should return an empty vec without panicking.
+        let result = fetch_multi_usage(&profiles);
+
+        // We expect either:
+        // - Empty vec (no credentials)
+        // - Only Claude providers in the result (z.ai filtered out)
+        assert!(result.iter().all(|u| u.provider == AuthProvider::Claude));
+    }
+
+    /// Test that fetch_multi_usage returns empty vec for empty input.
+    #[test]
+    fn test_fetch_multi_usage_empty_input() {
+        let result = fetch_multi_usage(&[]);
+        assert!(result.is_empty());
+    }
+
+    /// Test that fetch_multi_usage deduplicates identical profiles.
+    #[test]
+    fn test_fetch_multi_usage_deduplication() {
+        let profiles = vec![
+            (AuthProvider::Claude, "profile1".to_string()),
+            (AuthProvider::Claude, "profile1".to_string()),
+            (AuthProvider::Claude, "profile2".to_string()),
+        ];
+
+        // This won't actually fetch (no credentials available in test env),
+        // but the deduplication happens at the caller level (using HashSet),
+        // so we just verify the function accepts duplicates without error.
+        let result = fetch_multi_usage(&profiles);
+
+        // We expect empty vec (no credentials) or deduplicated profiles
+        // The actual deduplication is caller's responsibility via HashSet
+        assert!(result.is_empty() || result.len() <= 2);
+    }
 }

@@ -185,6 +185,39 @@ impl<T: Clone> TtlCache<T> {
     }
 }
 
+/// Thread-safe TTL cache that also validates a key on lookup.
+///
+/// Returns cached data only when both the TTL is valid AND the key matches.
+/// Used for caches where the input parameters can change between requests
+/// (e.g., the set of active profiles for usage data).
+struct KeyedTtlCache<K, V> {
+    inner: Mutex<Option<(Instant, K, V)>>,
+}
+
+impl<K: Clone + PartialEq, V: Clone> KeyedTtlCache<K, V> {
+    const fn new() -> Self {
+        Self {
+            inner: Mutex::new(None),
+        }
+    }
+
+    /// Return cached value if it exists, is younger than `ttl`, and the key matches.
+    fn get(&self, ttl: Duration, key: &K) -> Option<V> {
+        let guard = self.inner.lock().ok()?;
+        guard
+            .as_ref()
+            .filter(|(ts, k, _)| ts.elapsed() < ttl && k == key)
+            .map(|(_, _, v)| v.clone())
+    }
+
+    /// Store a new value with its key and the current timestamp.
+    fn set(&self, key: K, value: V) {
+        if let Ok(mut guard) = self.inner.lock() {
+            *guard = Some((Instant::now(), key, value));
+        }
+    }
+}
+
 /// Cached repo status (commit, CI, release).
 static REPO_STATUS_CACHE: TtlCache<RepoStatus> = TtlCache::new();
 
@@ -194,8 +227,13 @@ static OPEN_PRS_CACHE: TtlCache<Vec<serde_json::Value>> = TtlCache::new();
 /// Cached merged PR list.
 static MERGED_PRS_CACHE: TtlCache<Vec<serde_json::Value>> = TtlCache::new();
 
-/// Cached multi-account usage data.
-static MULTI_USAGE_CACHE: TtlCache<Vec<crate::usage::UsageData>> = TtlCache::new();
+/// Cached multi-account usage data, keyed by the active profile set.
+///
+/// The cache key is a sorted, serialized representation of the provider/profile
+/// combinations being fetched. When coworkers spawn or shut down, the profile set
+/// changes and the cache misses naturally, avoiding stale data.
+static MULTI_USAGE_CACHE: KeyedTtlCache<String, Vec<crate::usage::UsageData>> =
+    KeyedTtlCache::new();
 
 /// TTL for usage data cache (2 minutes, matching TUI refresh interval).
 const USAGE_CACHE_TTL: Duration = Duration::from_secs(120);
@@ -1385,16 +1423,30 @@ async fn api_usage(State(state): State<Arc<WebState>>) -> Result<impl IntoRespon
         active_profiles
     };
 
+    // Build a cache key from the sorted profile set so the cache invalidates
+    // naturally when coworkers spawn or shut down (changing the active profiles).
+    let cache_key = {
+        let mut sorted = profiles_to_fetch.clone();
+        sorted.sort_by(|a, b| a.0.as_str().cmp(b.0.as_str()).then_with(|| a.1.cmp(&b.1)));
+        sorted
+            .iter()
+            .map(|(p, n)| format!("{}:{}", p.as_str(), n))
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+
     let data = tokio::task::spawn_blocking(move || {
-        MULTI_USAGE_CACHE.get(USAGE_CACHE_TTL).or_else(|| {
-            let data = crate::usage::fetch_multi_usage(&profiles_to_fetch);
-            if data.is_empty() {
-                None
-            } else {
-                MULTI_USAGE_CACHE.set(data.clone());
-                Some(data)
-            }
-        })
+        MULTI_USAGE_CACHE
+            .get(USAGE_CACHE_TTL, &cache_key)
+            .or_else(|| {
+                let data = crate::usage::fetch_multi_usage(&profiles_to_fetch);
+                if data.is_empty() {
+                    None
+                } else {
+                    MULTI_USAGE_CACHE.set(cache_key, data.clone());
+                    Some(data)
+                }
+            })
     })
     .await
     .map_err(|e| {
@@ -2410,5 +2462,60 @@ mod tests {
             }
             _ => panic!("Expected ChannelMessage update"),
         }
+    }
+
+    #[test]
+    fn test_keyed_ttl_cache_returns_none_on_key_mismatch() {
+        let cache = KeyedTtlCache::new();
+        cache.set("key-a".to_string(), vec![1, 2, 3]);
+
+        // Same key should hit
+        let result = cache.get(Duration::from_secs(60), &"key-a".to_string());
+        assert_eq!(result, Some(vec![1, 2, 3]));
+
+        // Different key should miss, even within TTL
+        let result = cache.get(Duration::from_secs(60), &"key-b".to_string());
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_keyed_ttl_cache_invalidates_on_key_change() {
+        let cache = KeyedTtlCache::new();
+
+        // Store with key-a
+        cache.set("key-a".to_string(), vec![1, 2, 3]);
+        assert_eq!(
+            cache.get(Duration::from_secs(60), &"key-a".to_string()),
+            Some(vec![1, 2, 3])
+        );
+
+        // Store with key-b (overwrites)
+        cache.set("key-b".to_string(), vec![4, 5, 6]);
+
+        // key-a should now miss
+        assert_eq!(
+            cache.get(Duration::from_secs(60), &"key-a".to_string()),
+            None
+        );
+        // key-b should hit
+        assert_eq!(
+            cache.get(Duration::from_secs(60), &"key-b".to_string()),
+            Some(vec![4, 5, 6])
+        );
+    }
+
+    #[test]
+    fn test_keyed_ttl_cache_respects_ttl() {
+        let cache = KeyedTtlCache::new();
+        cache.set("key".to_string(), 42);
+
+        // Should hit within TTL
+        assert_eq!(
+            cache.get(Duration::from_secs(60), &"key".to_string()),
+            Some(42)
+        );
+
+        // Should miss with zero TTL (already expired)
+        assert_eq!(cache.get(Duration::from_secs(0), &"key".to_string()), None);
     }
 }

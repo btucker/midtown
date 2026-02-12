@@ -208,6 +208,7 @@ pub(crate) async fn handle_kanban_data(id: RequestId, state: &DaemonState) -> Re
                     "pr_number": pr_number,
                     "health": health_color,
                     "provider": cw.provider.as_str(),
+                    "profile": cw.profile,
                 }))
             })
             .collect::<Vec<_>>()

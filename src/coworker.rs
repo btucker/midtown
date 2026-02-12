@@ -1444,18 +1444,28 @@ impl CoworkerManager {
             );
         }
 
-        // Restore session_id from persistent state for recovered headless coworkers.
-        // After a daemon restart, headless sessions are alive but don't emit init
-        // events again, so their session_id stays None. This breaks reviewer assignment
-        // cleanup and spawning logic which relies on session_id for tracking.
+        // Restore session_id, provider, and profile from persistent state for recovered
+        // headless coworkers. After a daemon restart, headless sessions are alive but
+        // don't emit init events again, so their session_id stays None. This breaks
+        // reviewer assignment cleanup and spawning logic which relies on session_id for
+        // tracking. Provider and profile must also be restored to avoid losing non-default
+        // auth configuration (they default to Claude/DEFAULT_PROFILE in recovered()).
         for (name, session_info) in persistent_sessions {
             if let Some(coworker) = coworkers.values_mut().find(|cw| &cw.name == name)
                 && coworker.session_id.is_none()
             {
                 coworker.session_id = Some(session_info.session_id.clone());
+                if let Some(provider) = session_info.provider {
+                    coworker.provider = provider;
+                }
+                if let Some(ref profile) = session_info.profile {
+                    coworker.profile = profile.clone();
+                }
                 tracing::debug!(
-                    "Restored session_id {} for recovered coworker {}",
+                    "Restored session_id {}, provider {:?}, profile {:?} for recovered coworker {}",
                     session_info.session_id,
+                    session_info.provider,
+                    session_info.profile,
                     name
                 );
             }
@@ -2429,6 +2439,79 @@ mod tests {
             pleasant.session_id,
             Some("session-xyz-789".to_string()),
             "pleasant's session_id should be restored from persistent state"
+        );
+    }
+
+    /// Test that sync_with_tmux restores provider and profile from persistent state
+    /// for recovered headless coworkers after daemon restart.
+    ///
+    /// Without this fix, coworkers spawned with non-default providers or profiles
+    /// lose their auth configuration after restart because recovered() uses
+    /// AuthProvider::Claude and DEFAULT_PROFILE as defaults.
+    #[test]
+    fn test_sync_with_tmux_restores_provider_and_profile_from_persistent_state() {
+        use crate::daemon::state::HeadlessSessionInfo;
+
+        let (manager, temp_dir) = test_manager();
+
+        // Simulate persistent state with a non-default provider and profile
+        let mut persistent_sessions = HashMap::new();
+        persistent_sessions.insert(
+            "lexington".to_string(),
+            HeadlessSessionInfo {
+                session_id: "session-abc-123".to_string(),
+                last_active: Utc::now(),
+                purpose: "task !42".to_string(),
+                pid: Some(12345),
+                coworker_type: Some("dev".to_string()),
+                task_id: Some(42),
+                pr_number: None,
+                working_dir: Some(
+                    manager
+                        .worktree_manager
+                        .worktree_path("lexington")
+                        .to_string_lossy()
+                        .to_string(),
+                ),
+                provider: Some(crate::auth::AuthProvider::Codex),
+                profile: Some("custom-profile@example.com".to_string()),
+            },
+        );
+
+        // Simulate SessionManager having the coworker alive
+        let headless_names: std::collections::HashSet<String> =
+            ["lexington".to_string()].into_iter().collect();
+
+        // Create worktree so validation passes
+        let worktree_path = manager.worktree_manager.worktree_path("lexington");
+        Command::new("git")
+            .args([
+                "worktree",
+                "add",
+                "--detach",
+                &worktree_path.to_string_lossy(),
+            ])
+            .current_dir(temp_dir.path())
+            .output()
+            .expect("Failed to create worktree for lexington");
+
+        // Run sync_with_tmux
+        manager
+            .sync_with_tmux(&headless_names, &persistent_sessions)
+            .expect("sync_with_tmux should succeed");
+
+        // Verify provider and profile were restored from persistent state
+        let lexington = manager
+            .get("lexington")
+            .expect("lexington should be tracked");
+        assert_eq!(
+            lexington.provider,
+            crate::auth::AuthProvider::Codex,
+            "provider should be restored from persistent state, not default"
+        );
+        assert_eq!(
+            lexington.profile, "custom-profile@example.com",
+            "profile should be restored from persistent state, not default"
         );
     }
 }
