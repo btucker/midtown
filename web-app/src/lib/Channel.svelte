@@ -108,16 +108,14 @@
     if (!textareaElement) return { top: 0, left: 0 }
 
     const rect = textareaElement.getBoundingClientRect()
-    // Position dropdown above the textarea
-    // The dropdown will use transform: translateY(-100%) to shift up by its own height
-    const gap = 8
 
-    // getBoundingClientRect() returns viewport-relative coordinates that already
-    // account for the textarea's actual position. We don't need to adjust for
-    // safe-area-inset-bottom here — that only affects the input-area's padding,
-    // not the dropdown's absolute positioning.
+    // Position the dropdown at the top of the textarea.
+    // The dropdown's CSS uses transform: translateY(calc(-100% - 8px)) to:
+    // 1. Shift up by its own height (-100%)
+    // 2. Add an 8px gap (-8px)
+    // This places the dropdown just above the textarea with proper spacing.
     return {
-      top: rect.top - gap,
+      top: rect.top,
       left: rect.left
     }
   }
