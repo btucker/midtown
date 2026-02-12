@@ -150,6 +150,10 @@ pub fn handle_auth_list_all_providers() -> Result<Response, String> {
     auth::handle_list_all_providers()
 }
 
+pub fn handle_auth_login_with_prompt(cmd: &AuthCommand) -> Result<Response, String> {
+    auth::handle_login_with_prompt(cmd)
+}
+
 /// Handle `midtown lead remind` subcommands
 pub fn handle_remind(
     cmd: &crate::RemindCommand,

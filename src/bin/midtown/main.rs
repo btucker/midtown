@@ -159,13 +159,9 @@ enum Commands {
     },
     /// Manage authentication profiles for multi-account support
     Auth {
-        /// Show account/profile status for all supported providers (list only)
-        #[arg(long, default_value_t = false)]
-        all_providers: bool,
-
-        /// Auth provider to manage
-        #[arg(long, value_enum, default_value = "claude")]
-        provider: AuthProviderArg,
+        /// Show account/profile status for a specific provider only (list only)
+        #[arg(long, value_enum)]
+        provider: Option<AuthProviderArg>,
 
         #[command(subcommand)]
         command: Option<AuthCommand>,
@@ -564,22 +560,33 @@ fn main() {
     }
 
     // Auth command (no daemon required - profile management)
-    // Bare `midtown auth` defaults to `midtown auth list`
-    if let Commands::Auth {
-        all_providers,
-        provider,
-        command,
-    } = &command
-    {
+    // Bare `midtown auth` defaults to `midtown auth list` showing all providers
+    if let Commands::Auth { provider, command } = &command {
         let cmd = command.clone().unwrap_or(AuthCommand::List);
-        let result = if *all_providers {
+        let result = if let Some(provider_arg) = provider {
+            // Explicit provider specified: use single-provider handling
             if !matches!(cmd, AuthCommand::List) {
-                Err("--all-providers is only supported with `midtown auth list`".to_string())
+                cli::handle_auth(&cmd, (*provider_arg).into())
             } else {
-                cli::handle_auth_list_all_providers()
+                // For list command with explicit provider, show just that provider
+                cli::handle_auth(&cmd, (*provider_arg).into())
             }
         } else {
-            cli::handle_auth(&cmd, (*provider).into())
+            // No provider specified
+            match cmd {
+                AuthCommand::List => {
+                    // Default: show all providers
+                    cli::handle_auth_list_all_providers()
+                }
+                AuthCommand::Login { .. } => {
+                    // Prompt for provider selection
+                    cli::handle_auth_login_with_prompt(&cmd)
+                }
+                _ => {
+                    // Other commands require explicit --provider
+                    Err("The --provider flag is required for this command. Use --provider claude, --provider codex, or --provider zai.".to_string())
+                }
+            }
         };
         handle_result(format, result);
         return;
