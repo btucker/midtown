@@ -1083,11 +1083,7 @@ mod tests {
 
     #[test]
     fn zai_login_rejects_empty_api_key() {
-        let result = handle_login(
-            "test@z.ai",
-            Some(""),
-            midtown::auth::AuthProvider::Zai,
-        );
+        let result = handle_login("test@z.ai", Some(""), midtown::auth::AuthProvider::Zai);
         assert!(result.is_err());
         assert_eq!(result.unwrap_err(), "API key cannot be empty");
     }
