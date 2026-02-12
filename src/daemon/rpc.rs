@@ -472,7 +472,7 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
             let id = params.and_then(|p| p.get("id")).and_then(|v| v.as_str());
 
             match id {
-                Some(id) => handle_task_done(request.id, id, state),
+                Some(id) => handle_task_done(request.id, id, state).await,
                 None => Response::error(request.id, RpcError::invalid_params()),
             }
         }
@@ -2071,7 +2071,7 @@ async fn handle_task_update(
 }
 
 /// Handle task.done RPC — mark a task as completed directly.
-fn handle_task_done(id: RequestId, task_id: &str, state: &DaemonState) -> Response {
+async fn handle_task_done(id: RequestId, task_id: &str, state: &DaemonState) -> Response {
     let repo_name = state.repo_name.clone();
 
     if let Err(e) = crate::tasks::complete_task_for_repo(task_id, &repo_name) {
@@ -2083,7 +2083,7 @@ fn handle_task_done(id: RequestId, task_id: &str, state: &DaemonState) -> Respon
 
     // Mark worktree as completed (for time-based cleanup)
     {
-        let mut ps = state.persistent_state.blocking_lock();
+        let mut ps = state.persistent_state.lock().await;
         if let Some(wt_id) = ps.worktree_registry.find_worktree_by_task(task_id) {
             ps.worktree_registry
                 .mark_completed(&wt_id, chrono::Utc::now());
@@ -4637,5 +4637,111 @@ mod tests {
         let result = response.result.expect("Expected result in response");
         assert!(result["channel"].is_null());
         assert!(result["model"].is_null());
+    }
+
+    /// Verify handle_task_done uses async .lock().await (not blocking_lock()).
+    ///
+    /// Before the fix, handle_task_done used blocking_lock() on a tokio::Mutex
+    /// inside an async context, causing deadlocks when persistent_state was held
+    /// by collect_world_snapshot() on the same tokio runtime.
+    #[tokio::test]
+    async fn test_handle_task_done_uses_async_lock() {
+        use crate::daemon::DaemonState;
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().expect("temp dir");
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(temp_dir.path())
+            .output()
+            .expect("git init");
+        std::process::Command::new("git")
+            .args(["config", "user.email", "test@example.com"])
+            .current_dir(temp_dir.path())
+            .output()
+            .expect("git config");
+        std::process::Command::new("git")
+            .args(["config", "user.name", "Test"])
+            .current_dir(temp_dir.path())
+            .output()
+            .expect("git config");
+        std::process::Command::new("git")
+            .args(["commit", "--allow-empty", "-m", "init"])
+            .current_dir(temp_dir.path())
+            .output()
+            .expect("git commit");
+
+        let base_dir = temp_dir.path().to_path_buf();
+        let wm = crate::worktree::WorktreeManager::new(base_dir.clone()).expect("worktree manager");
+        let cm = crate::coworker::CoworkerManager::new("test-session", wm);
+        let channel_router = crate::ChannelRouter::new(&base_dir, "midtown");
+        std::mem::forget(temp_dir);
+
+        let (shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(1);
+        let state = DaemonState::new(
+            "/tmp/test-task-done.sock".into(),
+            cm,
+            "test-repo".to_string(),
+            vec![base_dir],
+            channel_router,
+            None,
+            10,
+            None,
+            "main".to_string(),
+            shutdown_tx,
+        )
+        .expect("daemon state");
+
+        // This would deadlock if handle_task_done still used blocking_lock()
+        // on the tokio::Mutex, since the single-threaded tokio test runtime
+        // can't make progress when a thread is blocked.
+        let response = handle_task_done(RequestId::Number(1), "nonexistent-task", &state).await;
+
+        // Should return error for nonexistent task (task file doesn't exist)
+        assert!(
+            response.error.is_some(),
+            "Expected error for nonexistent task"
+        );
+    }
+
+    /// Ensure no daemon code uses blocking_lock() on tokio::Mutex.
+    ///
+    /// blocking_lock() in async context causes deadlocks when the tokio runtime
+    /// can't schedule the lock holder. This has caused daemon crashes multiple times
+    /// (PR #1045 fixed handle_task_metadata, this PR fixed handle_task_done + pr.rs).
+    /// This test prevents regression by scanning the daemon source files.
+    #[test]
+    fn no_blocking_lock_in_daemon_code() {
+        let daemon_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/daemon");
+        let mut violations = Vec::new();
+
+        for entry in std::fs::read_dir(&daemon_dir).expect("read daemon dir") {
+            let entry = entry.expect("dir entry");
+            let path = entry.path();
+            if path.extension().is_some_and(|e| e == "rs") {
+                let content = std::fs::read_to_string(&path).expect("read file");
+                for (line_num, line) in content.lines().enumerate() {
+                    // Skip comments and test code
+                    if line.trim_start().starts_with("//") || line.trim_start().starts_with("///") {
+                        continue;
+                    }
+                    let needle = format!(".{}()", "blocking_lock");
+                    if line.contains(&needle) {
+                        violations.push(format!(
+                            "{}:{}: {}",
+                            path.file_name().unwrap().to_string_lossy(),
+                            line_num + 1,
+                            line.trim()
+                        ));
+                    }
+                }
+            }
+        }
+
+        assert!(
+            violations.is_empty(),
+            "Found blocking_lock() calls in daemon code (use .lock().await instead):\n{}",
+            violations.join("\n")
+        );
     }
 }
