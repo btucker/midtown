@@ -68,6 +68,7 @@
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
     min-width: 200px;
     max-width: 400px;
+    transform: translateY(-100%);
   }
 
   .autocomplete-item {

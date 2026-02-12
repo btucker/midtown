@@ -109,9 +109,11 @@
 
     const rect = textareaElement.getBoundingClientRect()
     // Position dropdown above the textarea
+    // The dropdown will use transform: translateY(-100%) to shift up by its own height
+    const gap = 8
     return {
-      top: rect.top - 20, // Will be adjusted by max-height in CSS
-      left: rect.left + 20
+      top: rect.top - gap,
+      left: rect.left
     }
   }
 
