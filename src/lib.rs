@@ -47,6 +47,9 @@ pub mod daemon;
 // Pure decision functions and shared types for the daemon tick loop
 pub mod rules;
 
+// Pane content pattern detection (usage limits, API errors, UI chrome)
+pub mod pane_detection;
+
 // RPC subsystem (furiosa)
 pub mod rpc;
 
