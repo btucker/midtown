@@ -1018,11 +1018,41 @@ impl App {
         }
     }
 
+    /// Validate that a channel name is safe for use as a filesystem path component.
+    ///
+    /// Rejects names containing path separators, traversal sequences, or other
+    /// filesystem-unsafe characters that could escape the channels/ directory.
+    fn is_valid_channel_name(name: &str) -> bool {
+        if name.is_empty() {
+            return false;
+        }
+
+        // Reject path separators and traversal sequences
+        if name.contains('/') || name.contains('\\') || name.contains("..") {
+            return false;
+        }
+
+        // Reject null bytes (filesystem-unsafe on all platforms)
+        if name.contains('\0') {
+            return false;
+        }
+
+        // Only allow alphanumeric, hyphens, underscores, and dots (not leading)
+        name.chars()
+            .all(|c| c.is_alphanumeric() || c == '-' || c == '_' || c == '.')
+            && !name.starts_with('.')
+    }
+
     /// Create a new channel and switch to it
     ///
     /// Returns `true` if the channel was successfully created (or already exists),
-    /// `false` on error.
+    /// `false` on error. Rejects channel names with path-unsafe characters.
     pub fn create_channel(&mut self, channel_name: &str) -> bool {
+        // Validate channel name to prevent path traversal
+        if !Self::is_valid_channel_name(channel_name) {
+            return false;
+        }
+
         let channel_repo =
             midtown::paths::detect_repo_name().unwrap_or_else(|| "default".to_string());
         let base_dir = midtown::paths::projects_dir_for_repo(&channel_repo);
@@ -3040,5 +3070,34 @@ pub(super) mod tests {
 
         // Selected channel should update
         assert_eq!(app.selected_channel, "features");
+    }
+
+    #[test]
+    fn test_valid_channel_names() {
+        assert!(App::is_valid_channel_name("my-channel"));
+        assert!(App::is_valid_channel_name("features"));
+        assert!(App::is_valid_channel_name("task_42"));
+        assert!(App::is_valid_channel_name("v2.0"));
+        assert!(App::is_valid_channel_name("UPPER"));
+        assert!(App::is_valid_channel_name("a"));
+    }
+
+    #[test]
+    fn test_invalid_channel_names_path_traversal() {
+        assert!(!App::is_valid_channel_name("../../etc/passwd"));
+        assert!(!App::is_valid_channel_name(".."));
+        assert!(!App::is_valid_channel_name("foo/bar"));
+        assert!(!App::is_valid_channel_name("foo\\bar"));
+        assert!(!App::is_valid_channel_name("../sibling"));
+    }
+
+    #[test]
+    fn test_invalid_channel_names_special_chars() {
+        assert!(!App::is_valid_channel_name(""));
+        assert!(!App::is_valid_channel_name(".hidden"));
+        assert!(!App::is_valid_channel_name("has space"));
+        assert!(!App::is_valid_channel_name("has\0null"));
+        assert!(!App::is_valid_channel_name("emoji🎉"));
+        assert!(!App::is_valid_channel_name("semi;colon"));
     }
 }

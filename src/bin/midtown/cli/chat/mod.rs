@@ -421,7 +421,8 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                     app.scroll_to_bottom();
                     EventResult::Continue
                 }
-                // Enter: select autocomplete item if showing, otherwise auto-focus InputBar or send message
+                // Enter: select autocomplete item if showing, execute /channel create command,
+                //        auto-focus InputBar, or send message to the selected channel
                 // Shift+Enter: insert newline
                 KeyCode::Enter => {
                     if key.modifiers.contains(KeyModifiers::SHIFT) {
@@ -1341,5 +1342,73 @@ mod tests {
         // because /channel create is not at the start
         #[cfg(test)]
         assert_eq!(app.last_posted_channel, Some("midtown".to_string()));
+    }
+
+    #[test]
+    fn test_channel_create_rejects_path_traversal() {
+        use app::FocusedPane;
+        let mut app = test_app();
+        app.focused_pane = FocusedPane::InputBar;
+        app.input_text = "/channel create ../../etc/passwd".to_string();
+        app.input_cursor = app.input_text.len();
+        let original_channel = app.selected_channel.clone();
+
+        let event = key_press(KeyCode::Enter);
+        let result = handle_event(&mut app, event);
+
+        assert!(matches!(result, EventResult::Continue));
+        // Path traversal name should be rejected — input preserved, channel unchanged
+        assert_eq!(
+            app.input_text, "/channel create ../../etc/passwd",
+            "Input should be preserved when channel name is invalid"
+        );
+        assert_eq!(
+            app.selected_channel, original_channel,
+            "Selected channel should not change on invalid name"
+        );
+    }
+
+    #[test]
+    fn test_channel_create_rejects_name_with_slashes() {
+        use app::FocusedPane;
+        let mut app = test_app();
+        app.focused_pane = FocusedPane::InputBar;
+        app.input_text = "/channel create foo/bar".to_string();
+        app.input_cursor = app.input_text.len();
+        let original_channel = app.selected_channel.clone();
+
+        let event = key_press(KeyCode::Enter);
+        handle_event(&mut app, event);
+
+        // Slash in name should be rejected
+        assert_eq!(
+            app.input_text, "/channel create foo/bar",
+            "Input should be preserved when channel name contains slash"
+        );
+        assert_eq!(app.selected_channel, original_channel);
+    }
+
+    #[test]
+    fn test_channel_create_preserves_input_on_failure() {
+        use app::FocusedPane;
+        let mut app = test_app();
+        app.focused_pane = FocusedPane::InputBar;
+        // Use a name with backslash which should be rejected by validation
+        app.input_text = "/channel create bad\\name".to_string();
+        app.input_cursor = app.input_text.len();
+        let original_cursor = app.input_cursor;
+
+        let event = key_press(KeyCode::Enter);
+        handle_event(&mut app, event);
+
+        // On failure, input text and cursor should be preserved
+        assert_eq!(
+            app.input_text, "/channel create bad\\name",
+            "Input text should be preserved on creation failure"
+        );
+        assert_eq!(
+            app.input_cursor, original_cursor,
+            "Input cursor should be preserved on creation failure"
+        );
     }
 }
