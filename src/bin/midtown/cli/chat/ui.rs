@@ -5,7 +5,6 @@ use std::collections::HashMap;
 use chrono::{DateTime, Local, Utc};
 use ratatui::{
     Frame,
-    buffer::Buffer,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
@@ -30,19 +29,6 @@ pub struct Hyperlink {
     pub url: String,
     /// Optional color for the first character (CI status dot)
     pub first_char_color: Option<Color>,
-}
-
-/// Format duration as (Xm) or (Xh) for display
-#[allow(dead_code)]
-fn format_duration_minutes(since: DateTime<Utc>) -> String {
-    let now = Utc::now();
-    let duration = now.signed_duration_since(since);
-    let minutes = duration.num_minutes().max(0);
-    if minutes >= 60 {
-        format!("({}h)", minutes / 60)
-    } else {
-        format!("({}m)", minutes)
-    }
 }
 
 /// Gutter width for timestamp: " HH:MM " = 7 chars
@@ -113,32 +99,6 @@ fn get_sender_color(name: &str) -> Color {
             Color::White
         }
     }
-}
-
-/// Minimum height of the kanban board (including borders)
-#[allow(dead_code)]
-const MIN_KANBAN_HEIGHT: u16 = 6;
-
-/// Calculate the dynamic kanban board height based on In Progress and Review columns
-///
-/// Only In Progress and Review columns expand the board height since they contain
-/// active work that should always be visible. Backlog and Done columns truncate
-/// because they're expected to have many items.
-#[allow(dead_code)]
-fn calculate_kanban_height(in_progress_count: usize, review_count: usize) -> u16 {
-    // In Progress items take 2 lines (title + owner/duration)
-    // Review items take 3 lines (title + PR#/elapsed + reviewer)
-    let in_progress_lines = in_progress_count * 2;
-    let review_lines = review_count * 3;
-
-    // Use the max of the two "important" columns
-    let needed_inner_height = in_progress_lines.max(review_lines);
-
-    // Add 2 for borders (top and bottom)
-    let total_height = (needed_inner_height + 2) as u16;
-
-    // Return at least the minimum height
-    total_height.max(MIN_KANBAN_HEIGHT)
 }
 
 /// Calculate height for repo status lines (1 per repo, minimum 1)
@@ -671,453 +631,6 @@ fn build_repo_status_line(repo_label: &str, status: &RepoStatus, width: u16) -> 
     Line::from(spans)
 }
 
-/// A kanban item that may span multiple lines
-#[allow(dead_code)]
-struct KanbanItem {
-    /// Lines to display (1 for Backlog/Done, up to 2 for In Progress/Review)
-    lines: Vec<String>,
-    /// Optional URL for the first line (for clickable PR links)
-    url: Option<String>,
-    /// Optional CI status for PRs (for colored dot rendering)
-    ci_status: Option<CiStatus>,
-}
-
-/// Get the dot character for CI status (colored in rendering)
-#[allow(dead_code)]
-fn ci_status_dot(status: &CiStatus) -> &'static str {
-    match status {
-        CiStatus::Passed => "●",
-        CiStatus::Failed => "●",
-        CiStatus::Running => "●",
-        CiStatus::Unknown => "○",
-    }
-}
-
-/// Build the first line of a Review card.
-///
-/// Shows task ID when available (with task name or PR title as fallback),
-/// otherwise shows PR number.
-#[allow(dead_code)]
-fn build_review_card_line1(
-    ci_dot: &str,
-    repo_badge: &str,
-    pr_number: u64,
-    pr_title: &str,
-    task_id: Option<u64>,
-    task_name: Option<&str>,
-) -> String {
-    if let Some(task_id) = task_id {
-        let display_name = task_name.unwrap_or(pr_title);
-        format!("{} {}#{} {}", ci_dot, repo_badge, task_id, display_name)
-    } else {
-        format!("{} {}PR#{} {}", ci_dot, repo_badge, pr_number, pr_title)
-    }
-}
-
-/// Get the color for CI status dot
-#[allow(dead_code)]
-fn ci_status_color(status: &CiStatus) -> Color {
-    match status {
-        CiStatus::Passed => Color::Rgb(0, 208, 80),
-        CiStatus::Failed => Color::Red,
-        CiStatus::Running => Color::Yellow,
-        CiStatus::Unknown => Color::DarkGray,
-    }
-}
-
-/// Draw the kanban board with 4 columns
-///
-/// Returns hyperlinks for PR items in Review and Done columns
-#[allow(dead_code)]
-fn draw_kanban_panel(f: &mut Frame, app: &App, area: Rect) -> Vec<Hyperlink> {
-    // Split into 4 equal columns
-    let columns = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage(25),
-            Constraint::Percentage(25),
-            Constraint::Percentage(25),
-            Constraint::Percentage(25),
-        ])
-        .split(area);
-
-    let (pending, in_progress, _completed) = app.tasks_by_status();
-
-    // Backlog column (pending tasks) - wrapped text items
-    let col0_width = columns[0].width.saturating_sub(2).max(1) as usize;
-    let backlog_items: Vec<KanbanItem> = pending
-        .iter()
-        .map(|t| {
-            let text = format!("#{} {}", t.id, t.subject);
-            let lines = wrap_kanban_text(&text, col0_width);
-            KanbanItem {
-                lines,
-                url: None,
-                ci_status: None,
-            }
-        })
-        .collect();
-    draw_kanban_column(f, columns[0], "Backlog", Color::Blue, &backlog_items);
-
-    // In Progress column (with owner and duration) - wrapped text items
-    let col1_width = columns[1].width.saturating_sub(2).max(1) as usize;
-    let in_progress_items: Vec<KanbanItem> = in_progress
-        .iter()
-        .map(|t| {
-            let text = format!("#{} {}", t.id, t.subject);
-            let mut lines = wrap_kanban_text(&text, col1_width);
-
-            let owner = t.owner.as_deref().unwrap_or("?");
-            let duration = t
-                .modified_at
-                .map(format_duration_minutes)
-                .unwrap_or_default();
-            let metadata_line = format!("  └ {} {}", owner, duration);
-            lines.push(metadata_line);
-
-            KanbanItem {
-                lines,
-                url: None,
-                ci_status: None,
-            }
-        })
-        .collect();
-    draw_kanban_column(
-        f,
-        columns[1],
-        "In Progress",
-        Color::Yellow,
-        &in_progress_items,
-    );
-
-    let mut hyperlinks = Vec::new();
-
-    // Review column (open PRs with repo#XX format, CI status dot, author/reviewer) - wrapped items
-    let col2_width = columns[2].width.saturating_sub(2).max(1) as usize;
-    let review_items: Vec<KanbanItem> = app
-        .prs
-        .iter()
-        .map(|pr| {
-            let ci_dot = ci_status_dot(&pr.ci_status);
-            let repo_badge = pr
-                .repo
-                .as_ref()
-                .map(|r| format!("[{}] ", r))
-                .unwrap_or_default();
-            let text = build_review_card_line1(
-                ci_dot,
-                &repo_badge,
-                pr.number,
-                &pr.title,
-                pr.task_id,
-                pr.task_name.as_deref(),
-            );
-            let mut lines = wrap_kanban_text(&text, col2_width);
-
-            let pr_age = format_duration_minutes(pr.created_at);
-            let pr_line = format!("  └ PR #{} {}", pr.number, pr_age);
-            lines.push(pr_line);
-
-            let reviewer_line = match (&pr.reviewer, &pr.reviewed_at) {
-                (Some(reviewer), Some(at)) => {
-                    if pr.review_posted {
-                        format!("  └ R: {} (done)", reviewer)
-                    } else {
-                        format!("  └ R: {} {}", reviewer, format_duration_minutes(*at))
-                    }
-                }
-                (Some(reviewer), None) => format!("  └ R: {}", reviewer),
-                _ => "  └ R: pending".to_string(),
-            };
-            lines.push(reviewer_line);
-
-            let url = format!("https://github.com/{}/pull/{}", app.repo_name, pr.number);
-            KanbanItem {
-                lines,
-                url: Some(url),
-                ci_status: Some(pr.ci_status.clone()),
-            }
-        })
-        .collect();
-    let review_hyperlinks =
-        draw_kanban_column(f, columns[2], "Review", Color::Magenta, &review_items);
-    hyperlinks.extend(review_hyperlinks);
-
-    // Done column (merged PRs with repo#XX format) - wrapped items, reverse chronological, max 10
-    let col3_width = columns[3].width.saturating_sub(2).max(1) as usize;
-    let done_items: Vec<KanbanItem> = app
-        .merged_prs
-        .iter()
-        .take(10)
-        .map(|pr| {
-            let url = format!("https://github.com/{}/pull/{}", app.repo_name, pr.number);
-            let repo_badge = pr
-                .repo
-                .as_ref()
-                .map(|r| format!("[{}] ", r))
-                .unwrap_or_default();
-            let text = format!("{}PR#{} {}", repo_badge, pr.number, pr.title);
-            let lines = wrap_kanban_text(&text, col3_width);
-            KanbanItem {
-                lines,
-                url: Some(url),
-                ci_status: None,
-            }
-        })
-        .collect();
-    let done_hyperlinks = draw_kanban_column(f, columns[3], "Done", Color::Green, &done_items);
-    hyperlinks.extend(done_hyperlinks);
-
-    hyperlinks
-}
-
-/// Draw a single kanban column with multi-line item support and optional hyperlinks
-///
-/// Returns hyperlinks for items that have URLs (these will be rendered post-draw)
-#[allow(dead_code)]
-fn draw_kanban_column(
-    f: &mut Frame,
-    area: Rect,
-    title: &str,
-    color: Color,
-    items: &[KanbanItem],
-) -> Vec<Hyperlink> {
-    let mut hyperlinks = Vec::new();
-
-    let block = Block::default()
-        .title(format!(" {} ({}) ", title, items.len()))
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(color));
-
-    let inner = block.inner(area);
-    f.render_widget(block, area);
-
-    if items.is_empty() {
-        let paragraph = Paragraph::new("-").style(Style::default().fg(Color::White));
-        f.render_widget(paragraph, inner);
-        return hyperlinks;
-    }
-
-    let available_width = inner.width as usize;
-    let available_lines = inner.height as usize;
-    let buffer = f.buffer_mut();
-
-    let mut lines_used = 0;
-
-    for item in items {
-        // Check if we have room for at least the first line of this item
-        if lines_used >= available_lines {
-            break;
-        }
-
-        for (line_idx, line) in item.lines.iter().enumerate() {
-            if lines_used >= available_lines {
-                break;
-            }
-
-            let truncated = truncate_str(line, available_width);
-            let y = inner.y + lines_used as u16;
-
-            // For the first line, check if we need to color a CI status dot
-            let ci_dot_color = if line_idx == 0 {
-                item.ci_status.as_ref().map(ci_status_color)
-            } else {
-                None
-            };
-
-            // Only apply hyperlink to the first line of items that have URLs
-            if let (0, Some(url)) = (line_idx, item.url.as_ref()) {
-                // Extract the PR identifier as the clickable target.
-                // Prefer "PR#XX" but fall back to "#XX" for narrow columns
-                // where truncate_str strips the "PR" prefix.
-                let (link_start, link_text) = if let Some(start) = truncated.find("PR#") {
-                    let text: String = truncated[start..]
-                        .chars()
-                        .take_while(|c| *c != ' ')
-                        .collect();
-                    (start, text)
-                } else if let Some(start) = truncated.find('#') {
-                    let text: String = truncated[start..]
-                        .chars()
-                        .take_while(|c| *c != ' ')
-                        .collect();
-                    (start, text)
-                } else {
-                    (0, String::new())
-                };
-
-                if !link_text.is_empty() {
-                    let char_offset = truncated[..link_start].chars().count() as u16;
-                    hyperlinks.push(Hyperlink {
-                        x: inner.x + char_offset,
-                        y,
-                        text: link_text,
-                        url: url.clone(),
-                        first_char_color: None,
-                    });
-                }
-
-                // Render the full line to ratatui's buffer (PR#XX will get OSC 8 post-render)
-                render_hyperlink_line(
-                    buffer,
-                    inner.x,
-                    y,
-                    &truncated,
-                    url,
-                    available_width,
-                    ci_dot_color,
-                );
-            } else {
-                // Render plain text with optional CI dot coloring
-                render_plain_line(
-                    buffer,
-                    inner.x,
-                    y,
-                    &truncated,
-                    available_width,
-                    ci_dot_color,
-                );
-            }
-
-            lines_used += 1;
-        }
-    }
-
-    hyperlinks
-}
-
-/// Render a plain text line with optional CI status dot coloring
-#[allow(dead_code)]
-fn render_plain_line(
-    buffer: &mut Buffer,
-    x: u16,
-    y: u16,
-    text: &str,
-    max_width: usize,
-    ci_dot_color: Option<Color>,
-) {
-    for (i, ch) in text.chars().enumerate() {
-        if i >= max_width {
-            break;
-        }
-        // Color the first character (CI dot) if we have a CI status
-        let fg_color = match (i, &ci_dot_color, ch) {
-            (0, Some(color), '●' | '○') => *color,
-            _ => Color::White,
-        };
-        buffer[(x + i as u16, y)].set_char(ch).set_fg(fg_color);
-    }
-}
-
-/// Render a line with optional CI dot coloring
-///
-/// NOTE: OSC 8 hyperlinks were previously attempted here but disabled because
-/// ratatui's cell/buffer system doesn't properly support embedding escape
-/// sequences in cell symbols. The sequences caused display corruption
-/// (e.g., "PR#140" appearing as "P #140"). When ratatui adds native hyperlink
-/// support, this can be revisited.
-///
-/// The `url` parameter is kept for API compatibility but currently unused.
-#[allow(dead_code)]
-fn render_hyperlink_line(
-    buffer: &mut Buffer,
-    x: u16,
-    y: u16,
-    text: &str,
-    _url: &str,
-    max_width: usize,
-    ci_dot_color: Option<Color>,
-) {
-    // Render as plain text (hyperlinks disabled due to ratatui limitations)
-    render_plain_line(buffer, x, y, text, max_width, ci_dot_color);
-}
-
-/// Truncate a string to fit within the given width, adding "..." if truncated
-///
-/// For kanban items with identifiers like "PR #42" or "#1 Task name", this function
-/// prioritizes showing the identifier (#N) when space is very limited, since that's
-/// the most useful information for identifying the item.
-#[allow(dead_code)]
-fn truncate_str(s: &str, max_width: usize) -> String {
-    if s.chars().count() <= max_width {
-        return s.to_string();
-    }
-
-    // For narrow columns, try to extract and show just the identifier (#N)
-    // This handles formats like "PR #42 title", "#1 task name", or "PR#97"
-    if let Some(id) = extract_identifier(s) {
-        let id_len = id.chars().count();
-
-        // For very narrow columns (<=5), prefer showing (truncated) identifier
-        // over useless prefix characters like "P" from "PR#97"
-        if max_width <= 5 {
-            if id_len <= max_width {
-                return id;
-            } else {
-                // Identifier doesn't fit entirely, but still better to show truncated id
-                // e.g., "PR#97" at width 2 → "#9" instead of "P…"
-                return id.chars().take(max_width).collect();
-            }
-        }
-
-        // For wider columns, show identifier when truncation would hide it
-        // e.g., "midtown#97" at width 6 → "#97" instead of "midto…"
-        if id_len <= max_width
-            && let Some(hash_pos) = s.find('#')
-            && hash_pos >= max_width.saturating_sub(1)
-        {
-            // If the # would be cut off by truncation, show just the identifier
-            return id;
-        }
-    }
-
-    // Fall back to normal truncation with ellipsis
-    if max_width <= 1 {
-        s.chars().take(max_width).collect()
-    } else {
-        let truncated: String = s.chars().take(max_width - 1).collect();
-        format!("{}…", truncated)
-    }
-}
-
-/// Extract the identifier pattern (#N) from a kanban item string
-///
-/// Handles formats like:
-/// - "PR #42 Some title" -> "#42"
-/// - "#1 Task name" -> "#1"
-#[allow(dead_code)]
-fn extract_identifier(s: &str) -> Option<String> {
-    // Find the # character
-    let hash_pos = s.find('#')?;
-
-    // Extract digits after the #
-    let after_hash = &s[hash_pos + 1..];
-    let digit_count = after_hash
-        .chars()
-        .take_while(|c| c.is_ascii_digit())
-        .count();
-
-    if digit_count == 0 {
-        return None;
-    }
-
-    // Build the identifier: # + digits
-    let digits: String = after_hash.chars().take(digit_count).collect();
-    Some(format!("#{}", digits))
-}
-
-/// Wrap a kanban item's text to fit within the column width
-///
-/// Returns a vector of owned strings (since wrap_line returns string slices).
-/// Text is wrapped to fit within the given width, splitting at word boundaries when possible.
-#[allow(dead_code)]
-fn wrap_kanban_text(text: &str, width: usize) -> Vec<String> {
-    wrap_line(text, width)
-        .into_iter()
-        .map(|s| s.to_string())
-        .collect()
-}
-
 /// Draw the chat panel showing messages
 fn draw_chat_panel(f: &mut Frame, app: &mut App, area: Rect) {
     // Calculate dynamic input bar height based on text wrapping
@@ -1421,24 +934,134 @@ fn draw_autocomplete_dropdown(f: &mut Frame, app: &App, input_area: Rect) {
     f.render_widget(paragraph, dropdown_area);
 }
 
-/// Render a single message into one or more Lines
+/// Precomputed values shared by message rendering functions.
 ///
-/// Layout for action messages:
-/// - "* HH:MM:SS name message" all on one line
+/// Avoids duplicating display name resolution, color lookup, sender visibility,
+/// content style, and extra indent calculations across `render_message` and
+/// `render_message_with_mermaid`.
+struct MessageRenderContext {
+    time: String,
+    display_from: String,
+    color: Color,
+    show_sender: bool,
+    content_style: Style,
+    /// Extra indent beyond the timestamp gutter (2 for action "* ", crosspost prefix len, or 0).
+    extra_indent: usize,
+}
+
+impl MessageRenderContext {
+    fn new(msg: &Message, prev_sender: Option<&str>, user_display_name: Option<&str>) -> Self {
+        let local_time = msg.timestamp.with_timezone(&Local);
+        let time = local_time.format("%H:%M").to_string();
+
+        let display_from: String = if msg.from == "user" {
+            user_display_name.unwrap_or("user").to_string()
+        } else {
+            msg.from.clone()
+        };
+
+        let color = get_sender_color(&display_from);
+        let show_sender = prev_sender.is_none_or(|prev| prev != msg.from);
+
+        let content_style = match msg.message_type {
+            MessageType::Action => Style::default().fg(color),
+            MessageType::System => Style::default().fg(Color::DarkGray),
+            _ if is_dim_sender(&msg.from) => Style::default().fg(Color::DarkGray),
+            _ => Style::default().fg(Color::White),
+        };
+
+        let extra_indent = if msg.message_type == MessageType::Action {
+            2 // "* "
+        } else if let Some(ref source_channel) = msg.source_channel {
+            2 + 6 + source_channel.chars().count() + 3 // "★ from #channel | "
+        } else {
+            0
+        };
+
+        Self {
+            time,
+            display_from,
+            color,
+            show_sender,
+            content_style,
+            extra_indent,
+        }
+    }
+
+    /// Content width available after timestamp gutter and extra indent.
+    fn content_width(&self, width: usize) -> usize {
+        width.saturating_sub(TIMESTAMP_GUTTER_WIDTH + self.extra_indent)
+    }
+
+    /// Total indent width (timestamp gutter + extra indent).
+    fn indent_width(&self) -> usize {
+        TIMESTAMP_GUTTER_WIDTH + self.extra_indent
+    }
+}
+
+/// Push the sender header (optional blank line + sender name line) into `lines`.
 ///
-/// Layout for regular messages when sender changes:
-/// - Line 1: Actor name (bold) + current task (if any, not bold)
-/// - Line 2: " HH:MM message"
-/// - Line 3+: "       continuation" (7 spaces)
+/// The blank-line logic differs slightly for action messages vs. regular messages:
+/// - Action messages: blank line unless prev sender was system-like
+/// - Regular messages: blank line unless both prev and current are system-like
+fn push_sender_header(
+    msg: &Message,
+    ctx: &MessageRenderContext,
+    prev_sender: Option<&str>,
+    current_tasks: &HashMap<String, String>,
+    width: usize,
+    lines: &mut Vec<Line<'static>>,
+) {
+    let add_blank = if msg.message_type == MessageType::Action {
+        prev_sender.is_some_and(|prev| !is_system_like_sender(prev))
+    } else if let Some(prev) = prev_sender {
+        !(is_system_like_sender(prev) && is_system_like_sender(&msg.from))
+    } else {
+        false
+    };
+    if add_blank {
+        lines.push(Line::from(""));
+    }
+    let current_task = current_tasks.get(&msg.from.to_lowercase());
+    lines.push(build_sender_line(
+        &ctx.display_from,
+        &msg.message_type,
+        ctx.color,
+        current_task,
+        width,
+    ));
+}
+
+/// Build the first content line with appropriate timestamp prefix.
 ///
-/// Layout for regular messages when sender is same:
-/// - Line 1: " HH:MM message"
-/// - Line 2+: "       continuation" (7 spaces)
+/// Dispatches to action ("* "), crosspost ("★ from #channel | "), or plain timestamp format.
+fn build_first_content_line(
+    msg: &Message,
+    ctx: &MessageRenderContext,
+    content: &str,
+) -> Line<'static> {
+    if msg.message_type == MessageType::Action {
+        build_action_timestamp_line(&ctx.time, content, ctx.color, ctx.content_style)
+    } else if let Some(ref source_channel) = msg.source_channel {
+        build_crosspost_timestamp_line(&ctx.time, content, source_channel, ctx.content_style)
+    } else {
+        build_timestamp_line(&ctx.time, content, ctx.content_style)
+    }
+}
+
+/// Build a continuation line (non-first content line) with proper indentation.
+fn build_continuation_line(ctx: &MessageRenderContext, content: &str) -> Line<'static> {
+    let indent = " ".repeat(ctx.indent_width());
+    let mut spans = vec![Span::raw(indent)];
+    spans.extend(parse_markdown(content, ctx.content_style));
+    Line::from(spans)
+}
+
+/// Render a single message into one or more Lines.
 ///
-/// Layout for cross-posted insights (source_channel is Some):
-/// - Line 1 (if sender changed): Actor name (bold) + current task
-/// - Line 2: " HH:MM ★ from #channel | message"
-/// - Line 3+: "                               continuation" (aligned with content)
+/// Handles three message variants (action, crosspost, regular) through a unified
+/// flow: compute context → optional sender header → timestamp first line →
+/// indented continuation lines.
 fn render_message(
     msg: &Message,
     width: usize,
@@ -1446,168 +1069,25 @@ fn render_message(
     current_tasks: &HashMap<String, String>,
     user_display_name: Option<&str>,
 ) -> Vec<Line<'static>> {
-    let local_time = msg.timestamp.with_timezone(&Local);
-    let time = local_time.format("%H:%M").to_string();
-    // Substitute user display name for rendering (internal "user" stays for routing)
-    let display_from: String = if msg.from == "user" {
-        user_display_name.unwrap_or("user").to_string()
-    } else {
-        msg.from.clone()
-    };
-    let color = get_sender_color(&display_from);
+    let ctx = MessageRenderContext::new(msg, prev_sender, user_display_name);
 
-    // Determine if we need to show the sender name
-    let show_sender = prev_sender.is_none_or(|prev| prev != msg.from);
-
-    // Determine base style for content based on message type
-    let content_style = match msg.message_type {
-        MessageType::Action => Style::default().fg(color),
-        MessageType::System => Style::default().fg(Color::DarkGray),
-        _ if is_dim_sender(&msg.from) => Style::default().fg(Color::DarkGray),
-        _ => Style::default().fg(Color::White),
-    };
-
-    // For action messages (/me), use standard format with "* " prefix before content
-    // Format: actor line (if sender changed) + " HH:MM * message"
-    if msg.message_type == MessageType::Action {
-        // Calculate content width (after " HH:MM " gutter and "* " prefix)
-        let content_width = width.saturating_sub(TIMESTAMP_GUTTER_WIDTH + 2); // +2 for "* "
-        if content_width == 0 {
-            return vec![];
-        }
-
-        let content_lines = wrap_content(&msg.content, content_width);
-        let mut result = Vec::new();
-
-        // Add sender name line if sender changed (same as regular messages)
-        if show_sender {
-            if prev_sender.is_some_and(|prev| !is_system_like_sender(prev)) {
-                result.push(Line::from(""));
-            }
-            let current_task = current_tasks.get(&msg.from.to_lowercase());
-            result.push(build_sender_line(
-                &display_from,
-                &msg.message_type,
-                color,
-                current_task,
-                width,
-            ));
-        }
-
-        // Add content lines with timestamp and "* " prefix
-        for (i, content) in content_lines.iter().enumerate() {
-            if i == 0 {
-                // First line: " HH:MM * message" with * in actor color
-                result.push(build_action_timestamp_line(
-                    &time,
-                    content,
-                    color,
-                    content_style,
-                ));
-            } else {
-                // Continuation lines: "         message" (7 + 2 spaces for "* " alignment)
-                let indent = " ".repeat(TIMESTAMP_GUTTER_WIDTH + 2);
-                let mut spans = vec![Span::raw(indent)];
-                spans.extend(parse_markdown(content, content_style));
-                result.push(Line::from(spans));
-            }
-        }
-
-        return result;
-    }
-
-    // For cross-posted insights, use special format with "★ from #channel | " prefix
-    // Format: actor line (if sender changed) + " HH:MM ★ from #channel | message"
-    if let Some(ref source_channel) = msg.source_channel {
-        // Calculate the prefix display width: "★ from #channel | "
-        // "★ " = 2, "from #" = 6, channel name (char count, not byte count), " | " = 3
-        let prefix_len = 2 + 6 + source_channel.chars().count() + 3;
-        let content_width = width.saturating_sub(TIMESTAMP_GUTTER_WIDTH + prefix_len);
-        if content_width == 0 {
-            return vec![];
-        }
-
-        let content_lines = wrap_content(&msg.content, content_width);
-        let mut result = Vec::new();
-
-        // Add sender name line if sender changed (same as regular messages)
-        if show_sender {
-            if prev_sender.is_some_and(|prev| !is_system_like_sender(prev)) {
-                result.push(Line::from(""));
-            }
-            let current_task = current_tasks.get(&msg.from.to_lowercase());
-            result.push(build_sender_line(
-                &display_from,
-                &msg.message_type,
-                color,
-                current_task,
-                width,
-            ));
-        }
-
-        // Add content lines with timestamp and cross-post attribution
-        for (i, content) in content_lines.iter().enumerate() {
-            if i == 0 {
-                // First line: " HH:MM ★ from #channel | message"
-                result.push(build_crosspost_timestamp_line(
-                    &time,
-                    content,
-                    source_channel,
-                    content_style,
-                ));
-            } else {
-                // Continuation lines: indent to align with content after prefix
-                let indent = " ".repeat(TIMESTAMP_GUTTER_WIDTH + prefix_len);
-                let mut spans = vec![Span::raw(indent)];
-                spans.extend(parse_markdown(content, content_style));
-                result.push(Line::from(spans));
-            }
-        }
-
-        return result;
-    }
-
-    // Calculate content width (after " HH:MM " gutter)
-    let content_width = width.saturating_sub(TIMESTAMP_GUTTER_WIDTH);
+    let content_width = ctx.content_width(width);
     if content_width == 0 {
-        return vec![]; // Panel too narrow
+        return vec![];
     }
 
-    // Split and wrap content
     let content_lines = wrap_content(&msg.content, content_width);
-
     let mut result = Vec::new();
 
-    // Add sender name line if sender changed
-    if show_sender {
-        // Add blank line before new sender, except between consecutive system-like senders
-        if let Some(prev) = prev_sender
-            && !(is_system_like_sender(prev) && is_system_like_sender(&msg.from))
-        {
-            result.push(Line::from(""));
-        }
-        // Look up the sender's current task (case-insensitive)
-        let current_task = current_tasks.get(&msg.from.to_lowercase());
-        result.push(build_sender_line(
-            &display_from,
-            &msg.message_type,
-            color,
-            current_task,
-            width,
-        ));
+    if ctx.show_sender {
+        push_sender_header(msg, &ctx, prev_sender, current_tasks, width, &mut result);
     }
 
-    // Add content lines with timestamp/indent prefix
     for (i, content) in content_lines.iter().enumerate() {
         if i == 0 {
-            // First content line: " HH:MM message"
-            result.push(build_timestamp_line(&time, content, content_style));
+            result.push(build_first_content_line(msg, &ctx, content));
         } else {
-            // Continuation lines: "       message" (7 spaces)
-            let indent = " ".repeat(TIMESTAMP_GUTTER_WIDTH);
-            let mut spans = vec![Span::raw(indent)];
-            spans.extend(parse_markdown(content, content_style));
-            result.push(Line::from(spans));
+            result.push(build_continuation_line(&ctx, content));
         }
     }
 
@@ -1633,62 +1113,17 @@ fn render_message_with_mermaid(
     diagram_sources: &mut Vec<String>,
     mermaid_to_render: &mut Vec<String>,
 ) {
-    let local_time = msg.timestamp.with_timezone(&Local);
-    let time = local_time.format("%H:%M").to_string();
-    let display_from: String = if msg.from == "user" {
-        user_display_name.unwrap_or("user").to_string()
-    } else {
-        msg.from.clone()
-    };
-    let color = get_sender_color(&display_from);
-    let show_sender = prev_sender.is_none_or(|prev| prev != msg.from);
-    let content_style = match msg.message_type {
-        MessageType::Action => Style::default().fg(color),
-        MessageType::System => Style::default().fg(Color::DarkGray),
-        _ if is_dim_sender(&msg.from) => Style::default().fg(Color::DarkGray),
-        _ => Style::default().fg(Color::White),
-    };
+    let ctx = MessageRenderContext::new(msg, prev_sender, user_display_name);
 
-    let is_action = msg.message_type == MessageType::Action;
-    let is_crosspost = msg.source_channel.is_some();
-
-    // Calculate extra indent for action messages ("* ") or cross-posts ("★ from #channel | ")
-    let extra_indent = if is_action {
-        2 // "* "
-    } else if let Some(ref source_channel) = msg.source_channel {
-        2 + 6 + source_channel.chars().count() + 3 // "★ " + "from #" + channel + " | "
-    } else {
-        0
-    };
-
-    let content_width = width.saturating_sub(TIMESTAMP_GUTTER_WIDTH + extra_indent);
+    let content_width = ctx.content_width(width);
     if content_width == 0 {
         return;
     }
 
-    // Add sender header (action messages use different blank-line logic)
-    if show_sender {
-        let add_blank = if is_action {
-            prev_sender.is_some_and(|prev| !is_system_like_sender(prev))
-        } else if let Some(prev) = prev_sender {
-            !(is_system_like_sender(prev) && is_system_like_sender(&msg.from))
-        } else {
-            false
-        };
-        if add_blank {
-            lines.push(Line::from(""));
-        }
-        let current_task = current_tasks.get(&msg.from.to_lowercase());
-        lines.push(build_sender_line(
-            &display_from,
-            &msg.message_type,
-            color,
-            current_task,
-            width,
-        ));
+    if ctx.show_sender {
+        push_sender_header(msg, &ctx, prev_sender, current_tasks, width, lines);
     }
 
-    let indent_width = TIMESTAMP_GUTTER_WIDTH + extra_indent;
     let mut is_first_content_line = true;
 
     for segment in segments {
@@ -1697,29 +1132,10 @@ fn render_message_with_mermaid(
                 let content_lines = wrap_content(text, content_width);
                 for content in &content_lines {
                     if is_first_content_line {
-                        if is_action {
-                            lines.push(build_action_timestamp_line(
-                                &time,
-                                content,
-                                color,
-                                content_style,
-                            ));
-                        } else if is_crosspost {
-                            lines.push(build_crosspost_timestamp_line(
-                                &time,
-                                content,
-                                msg.source_channel.as_ref().unwrap(),
-                                content_style,
-                            ));
-                        } else {
-                            lines.push(build_timestamp_line(&time, content, content_style));
-                        }
+                        lines.push(build_first_content_line(msg, &ctx, content));
                         is_first_content_line = false;
                     } else {
-                        let indent = " ".repeat(indent_width);
-                        let mut spans = vec![Span::raw(indent)];
-                        spans.extend(parse_markdown(content, content_style));
-                        lines.push(Line::from(spans));
+                        lines.push(build_continuation_line(&ctx, content));
                     }
                 }
             }
@@ -1733,7 +1149,7 @@ fn render_message_with_mermaid(
                     .next()
                     .unwrap_or("diagram");
 
-                let indent = " ".repeat(indent_width);
+                let indent = " ".repeat(ctx.indent_width());
 
                 if let Some(diagram) = mermaid_cache.get_cached(source) {
                     // Diagram is ready: show inline ASCII art with separators
@@ -2290,39 +1706,6 @@ mod tests {
         let wrapped = wrap_line("hello", 0);
         // Should produce single-character chunks
         assert_eq!(wrapped, vec!["h", "e", "l", "l", "o"]);
-    }
-
-    #[test]
-    fn test_truncate_str_narrow_preserves_identifier() {
-        // When column is narrow, we should show the PR/task identifier
-        // not just useless first characters like "P" from "PR #42"
-
-        // PR format: "PR #42" should show "#42" when space is limited
-        assert_eq!(truncate_str("PR #42", 4), "#42");
-        assert_eq!(truncate_str("PR #42 Fix bug", 4), "#42");
-
-        // Task format: "#1 Some task" should show "#1" when space is limited
-        assert_eq!(truncate_str("#1 Some task", 3), "#1");
-        assert_eq!(truncate_str("#42 Some task", 4), "#42");
-
-        // Repo#PR format: "midtown#97" should show "#97" when truncation would
-        // hide the identifier (this is the format used in Review/Done columns)
-        assert_eq!(truncate_str("midtown#97", 4), "#97");
-        assert_eq!(truncate_str("midtown#97", 6), "#97"); // "midto…" would be useless
-        assert_eq!(truncate_str("midtown#97", 8), "#97"); // still prefer identifier
-
-        // With enough space to show the full string, show it all
-        assert_eq!(truncate_str("midtown#97", 10), "midtown#97");
-        assert_eq!(truncate_str("midtown#97", 15), "midtown#97");
-
-        // When identifier starts early, normal truncation is fine
-        assert_eq!(truncate_str("#42 Some task", 8), "#42 Som…");
-
-        // VERY narrow columns (1-2 chars): show truncated identifier, not useless prefix
-        // This is the format used in Done column: "PR#97 title"
-        assert_eq!(truncate_str("PR#97 Fix bug", 1), "#"); // not "P"
-        assert_eq!(truncate_str("PR#97 Fix bug", 2), "#9"); // not "P…"
-        assert_eq!(truncate_str("PR#97 Fix bug", 3), "#97"); // full identifier fits
     }
 
     #[test]
@@ -3189,121 +2572,6 @@ mod tests {
     }
 
     // --- Tests for input box expansion / wrapping ---
-
-    #[test]
-    fn test_kanban_height_review_cards_use_3_lines() {
-        // Review cards now show 3 lines: title, author+time, reviewer+time
-        // With 2 review PRs, we need 6 content lines + 2 border = 8
-        let height = calculate_kanban_height(0, 2);
-        assert_eq!(
-            height, 8,
-            "2 review PRs at 3 lines each = 6 content lines + 2 border = 8"
-        );
-    }
-
-    #[test]
-    fn test_kanban_height_in_progress_still_2_lines() {
-        // In Progress cards remain 2 lines (title + owner/duration)
-        let height = calculate_kanban_height(2, 0);
-        assert_eq!(
-            height, 6,
-            "2 in-progress tasks at 2 lines each = 4 content lines + 2 border = 6"
-        );
-    }
-
-    #[test]
-    fn test_kanban_height_review_dominates_in_progress() {
-        // 2 review cards (6 lines) should be taller than 2 in-progress (4 lines)
-        let height = calculate_kanban_height(2, 2);
-        assert_eq!(
-            height, 8,
-            "2 review PRs at 3 lines = 6 > 2 in-progress at 2 lines = 4, so 6 + 2 border = 8"
-        );
-    }
-
-    #[test]
-    fn test_wrap_kanban_text_fits() {
-        let text = "#42 Short title";
-        let result = wrap_kanban_text(text, 30);
-        assert_eq!(result, vec!["#42 Short title"]);
-    }
-
-    #[test]
-    fn test_wrap_kanban_text_wraps_long_text() {
-        let text = "#123 This is a very long task title that should wrap";
-        let result = wrap_kanban_text(text, 20);
-        assert_eq!(result.len(), 3, "Should wrap into 3 lines");
-        assert!(
-            result[0].starts_with("#123"),
-            "First line should start with task ID"
-        );
-    }
-
-    #[test]
-    fn test_wrap_kanban_text_empty() {
-        let text = "";
-        let result = wrap_kanban_text(text, 20);
-        assert_eq!(result, vec![""]);
-    }
-
-    #[test]
-    fn test_format_duration_minutes_future_timestamp() {
-        // A future timestamp (clock skew) should not produce negative duration
-        let future = Utc::now() + chrono::Duration::minutes(5);
-        let result = format_duration_minutes(future);
-        assert_eq!(result, "(0m)");
-    }
-
-    #[test]
-    fn test_format_duration_minutes_hours() {
-        let two_hours_ago = Utc::now() - chrono::Duration::hours(2);
-        let result = format_duration_minutes(two_hours_ago);
-        assert_eq!(result, "(2h)");
-    }
-
-    #[test]
-    fn test_format_duration_minutes_minutes() {
-        let thirty_min_ago = Utc::now() - chrono::Duration::minutes(30);
-        let result = format_duration_minutes(thirty_min_ago);
-        assert_eq!(result, "(30m)");
-    }
-
-    #[test]
-    fn test_review_card_line1_with_task_id_and_name() {
-        // When both task_id and task_name are available, show #task_id task_name
-        let line = build_review_card_line1(
-            "●",
-            "",
-            123,
-            "feat: Auth [Midtown #42]",
-            Some(42),
-            Some("Auth endpoint"),
-        );
-        assert_eq!(line, "● #42 Auth endpoint");
-    }
-
-    #[test]
-    fn test_review_card_line1_with_task_id_no_name() {
-        // When task_id is available but task_name is not, show #task_id with PR title fallback
-        let line =
-            build_review_card_line1("●", "", 123, "feat: Auth [Midtown #42]", Some(42), None);
-        assert_eq!(line, "● #42 feat: Auth [Midtown #42]");
-    }
-
-    #[test]
-    fn test_review_card_line1_without_task_id() {
-        // When no task_id, fall back to PR#number
-        let line = build_review_card_line1("●", "", 123, "External PR title", None, None);
-        assert_eq!(line, "● PR#123 External PR title");
-    }
-
-    #[test]
-    fn test_review_card_line1_with_repo_badge() {
-        // Multi-repo: should include repo badge
-        let line =
-            build_review_card_line1("●", "[other] ", 99, "Fix bug", Some(10), Some("Bug fix"));
-        assert_eq!(line, "● [other] #10 Bug fix");
-    }
 
     #[test]
     fn test_usage_color_green() {
