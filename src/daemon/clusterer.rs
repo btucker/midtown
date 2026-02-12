@@ -128,7 +128,8 @@ impl SpecializedRole for ClustererRole {
 /// On first invocation, spawns a fresh session and saves the session ID.
 /// On subsequent invocations, resumes the previous session to maintain context.
 ///
-/// Returns the channel assignment or an error.
+/// Returns a [`ClusteringDiff`](crate::clustering::ClusteringDiff) containing
+/// channel operations (create, archive, merge) and task assignments, or an error.
 pub async fn assign_channel(
     request: ClustererRequest,
     cwd: PathBuf,

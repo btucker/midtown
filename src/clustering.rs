@@ -142,13 +142,19 @@ impl ClusteringDiff {
             }
         }
 
-        // 4. All task assignments must have non-empty task and channel
+        // 4. All task assignments must have non-empty task and channel, and cannot target "midtown"
         for assign in &self.assign_tasks {
             if assign.task.is_empty() {
                 return Err("Task assignment with empty task ID".to_string());
             }
             if assign.channel.is_empty() {
                 return Err(format!("Task '{}' assigned to empty channel", assign.task));
+            }
+            if assign.channel == "midtown" {
+                return Err(format!(
+                    "Task '{}' cannot be assigned to the 'midtown' channel (use a topic channel)",
+                    assign.task
+                ));
             }
         }
 
@@ -508,6 +514,25 @@ mod tests {
             diff.validate()
                 .unwrap_err()
                 .contains("assigned to empty channel")
+        );
+    }
+
+    #[test]
+    fn test_assign_task_to_midtown_channel_fails() {
+        let diff = ClusteringDiff {
+            create_channels: vec![],
+            archive_channels: vec![],
+            merge_channels: vec![],
+            assign_tasks: vec![TaskAssignment {
+                task: "1234".to_string(),
+                channel: "midtown".to_string(),
+            }],
+        };
+        assert!(diff.validate().is_err());
+        assert!(
+            diff.validate()
+                .unwrap_err()
+                .contains("cannot be assigned to the 'midtown' channel")
         );
     }
 }
