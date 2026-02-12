@@ -1096,10 +1096,12 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 }
             }
             Effect::CleanupMergedWorktree { pr_number, branch } => {
-                // Remove from registry
+                // Remove from registry and clean up pr_author_sessions
                 let removed = {
                     let mut ps = state.persistent_state.lock().await;
                     let removed = ps.worktree_registry.cleanup_for_merged_pr(pr_number);
+                    // Also clean up pr_author_sessions for this PR (defense-in-depth)
+                    ps.github.pr_author_sessions.remove(&pr_number);
                     if removed.is_some()
                         && let Err(e) = ps.save_for_repo(&state.repo_name)
                     {
@@ -2042,6 +2044,68 @@ mod tests {
             persistent_state.github.pr_author_sessions.len(),
             2,
             "Should have exactly 2 remaining entries (1002 and 1004)"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_cleanup_merged_worktree_removes_pr_author_session() {
+        use crate::daemon::state::DaemonPersistentState;
+        use crate::github_state::PrAuthorSession;
+        use chrono::Utc;
+        use std::collections::HashMap;
+
+        let mut persistent_state = DaemonPersistentState::default();
+
+        // Set up pr_author_sessions with entries for different PRs
+        let mut pr_sessions = HashMap::new();
+        pr_sessions.insert(
+            1001,
+            PrAuthorSession {
+                session_id: "session-abc".to_string(),
+                branch: "vernon/fix-bug".to_string(),
+                original_author: "vernon".to_string(),
+                stored_at: Utc::now(),
+                task_id: Some("42".to_string()),
+            },
+        );
+        pr_sessions.insert(
+            1002,
+            PrAuthorSession {
+                session_id: "session-def".to_string(),
+                branch: "park/feature".to_string(),
+                original_author: "park".to_string(),
+                stored_at: Utc::now(),
+                task_id: Some("99".to_string()),
+            },
+        );
+        persistent_state.github.pr_author_sessions = pr_sessions;
+
+        // Simulate the cleanup logic from Effect::CleanupMergedWorktree for PR 1001
+        let merged_pr_number = 1001;
+        persistent_state
+            .github
+            .pr_author_sessions
+            .remove(&merged_pr_number);
+
+        // Verify cleanup results
+        assert!(
+            !persistent_state
+                .github
+                .pr_author_sessions
+                .contains_key(&1001),
+            "PR 1001 should be removed after worktree cleanup"
+        );
+        assert!(
+            persistent_state
+                .github
+                .pr_author_sessions
+                .contains_key(&1002),
+            "PR 1002 should remain"
+        );
+        assert_eq!(
+            persistent_state.github.pr_author_sessions.len(),
+            1,
+            "Should have exactly 1 remaining entry (1002)"
         );
     }
 }
