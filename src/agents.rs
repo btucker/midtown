@@ -847,15 +847,15 @@ mod tests {
             "Coworker prompt should contain 'Before pushing' section"
         );
         assert!(
-            prompt.contains("gh pr list --head"),
-            "Coworker prompt should instruct to check for existing PRs"
+            prompt.contains("gh pr list --search"),
+            "Coworker prompt should instruct to check for existing PRs by task number"
         );
         assert!(
-            prompt.contains("force-push to that branch"),
+            prompt.contains("force-push to the existing PR branch"),
             "Coworker prompt should instruct to force-push to existing PR branch"
         );
         assert!(
-            prompt.contains("Never create a second PR for the same task"),
+            prompt.contains("Never create a new branch or new PR"),
             "Coworker prompt should warn against creating duplicate PRs"
         );
 

@@ -125,25 +125,36 @@ This notifies the lead to create a task. Another coworker can work on it in para
 - **NEVER checkout main** - your worktree is isolated and checking out main can cause conflicts with the lead's session
 - Commit frequently with clear messages
 
-**Before pushing**, if you rebased or created a new branch while working, check if a PR already exists for the old branch:
+**Before pushing or creating a PR**, check if a PR already exists for your task:
 
 ```bash
-# If you switched from old-branch to new-branch, check for existing PR
-gh pr list --head old-branch --state open --json number
+# Check if a PR exists for this task number (replace XXX with your task number)
+gh pr list --search "Midtown !XXX" --state open --json number,headRefName
 ```
 
-If a PR exists on the old branch, **verify your current branch contains the PR's work** before force-pushing:
+**If a PR already exists for your task:**
 
-```bash
-# First, check that your current HEAD is related to the old branch's history
-# This prevents accidentally overwriting unrelated work
-git merge-base --is-ancestor origin/old-branch HEAD && echo "Safe to force-push" || echo "WARNING: branches are unrelated!"
+1. **Never create a new branch or new PR.** Always update the existing PR by force-pushing to its branch.
 
-# Only proceed if safe - then force-push to the existing PR branch
-git push --force origin HEAD:old-branch
-```
+2. **Verify your current HEAD contains the PR's work** before force-pushing:
+   ```bash
+   # Replace 'existing-pr-branch' with the headRefName from above
+   git merge-base --is-ancestor origin/existing-pr-branch HEAD && echo "✓ Safe to force-push" || echo "⚠️  WARNING: branches are unrelated!"
+   ```
 
-**Never create a second PR for the same task.** Always reuse the existing PR branch. If you accidentally pushed to a new branch with no PR, delete it:
+3. **If safe, force-push to the existing PR branch:**
+   ```bash
+   git push --force origin HEAD:existing-pr-branch
+   ```
+
+4. **If unsafe (branches are unrelated)**, you likely checked out the wrong commit. Post to the channel:
+   ```bash
+   midtown channel post "@lead PR already exists for task XXX but my branch diverged - need help"
+   ```
+
+**If no PR exists**, push and create a new PR (see "Example PR creation" below).
+
+**If you accidentally pushed a branch without creating a PR**, delete it immediately:
 
 ```bash
 git push origin --delete accidentally-pushed-branch
@@ -231,14 +242,14 @@ A code review is **not complete** until you have:
 ### Responding to PR Review Feedback
 When your PR receives review comments with suggested changes:
 
-**First, check if the PR is still open.** If the PR was already merged before you address feedback, creating new commits on the old branch will leave orphaned work that never lands. Always verify:
+**First, check if the PR is still open.** If the PR was already merged before you address feedback, pushing to the old branch (or creating a new branch) will leave orphaned work that never lands. Always verify:
 
 ```bash
 gh pr view <number> --json state --jq '.state'
 ```
 
-- If **OPEN**: push fixes to the branch as normal.
-- If **MERGED**: The PR is already on main. Create a follow-up:
+- If **OPEN**: Address feedback by pushing fixes to the PR's existing branch (force-push if you rebased).
+- If **MERGED**: **Do NOT push to the old branch or create a new branch from your current work.** The PR is already on main. Create a follow-up:
   1. **Acknowledge the original feedback** by replying on the merged PR:
      ```bash
      gh pr comment <merged-pr-number> --body "<!-- midtown: {name} -->
