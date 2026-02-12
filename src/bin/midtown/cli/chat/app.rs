@@ -117,6 +117,7 @@ pub struct KanbanTask {
     /// Optional channel assignment for routing coworker messages
     pub channel: Option<String>,
     /// Task IDs this task is blocked by
+    #[allow(dead_code)]
     pub blocked_by: Vec<String>,
 }
 
@@ -187,6 +188,7 @@ pub enum BoardSelection {
     /// A channel header (channel name)
     Channel(String),
     /// A task within a channel (channel name, task ID)
+    #[allow(dead_code)]
     Task(String, String),
 }
 
@@ -771,12 +773,9 @@ impl App {
             tasks_by_channel.entry(channel_key).or_default().push(task);
         }
 
-        // Build selection list: channel headers followed by their tasks
-        for (channel_name, tasks) in &tasks_by_channel {
+        // Build selection list: channel headers only (no tasks)
+        for channel_name in tasks_by_channel.keys() {
             selections.push(BoardSelection::Channel(channel_name.clone()));
-            for task in tasks {
-                selections.push(BoardSelection::Task(channel_name.clone(), task.id.clone()));
-            }
         }
 
         selections
@@ -2953,7 +2952,7 @@ pub(super) mod tests {
         // Initial state: no selection
         assert_eq!(app.board_selection, None);
 
-        // Navigate down - should select first item (first channel)
+        // Navigate down - should select first channel
         app.board_selection_down();
         assert!(
             matches!(
@@ -2963,24 +2962,24 @@ pub(super) mod tests {
             "First down should select first channel"
         );
 
-        // Navigate down again - should select first task in that channel
+        // Navigate down again - should select next channel (midtown)
         app.board_selection_down();
         assert!(
             matches!(
                 &app.board_selection,
-                Some(BoardSelection::Task(ch, id)) if ch == "features" && id == "3"
+                Some(BoardSelection::Channel(ch)) if ch == "midtown"
             ),
-            "Second down should select first task"
+            "Second down should select second channel"
         );
 
-        // Navigate up - should go back to channel
+        // Navigate up - should go back to first channel
         app.board_selection_up();
         assert!(
             matches!(
                 &app.board_selection,
                 Some(BoardSelection::Channel(ch)) if ch == "features"
             ),
-            "Up should go back to channel"
+            "Up should go back to first channel"
         );
     }
 

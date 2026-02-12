@@ -51,7 +51,7 @@ pub fn draw_board_panel(f: &mut Frame, app: &mut App, area: Rect) -> Vec<Hyperli
         tasks_by_channel.entry(channel_key).or_default().push(task);
     }
 
-    let wrap_width = area.width.saturating_sub(2).max(20) as usize;
+    let _wrap_width = area.width.saturating_sub(2).max(20) as usize;
 
     // Count active PRs per channel
     let mut prs_by_channel: HashMap<String, Vec<&super::super::app::KanbanPr>> = HashMap::new();
@@ -65,35 +65,24 @@ pub fn draw_board_panel(f: &mut Frame, app: &mut App, area: Rect) -> Vec<Hyperli
         }
     }
 
-    // Render each channel as a swimlane
-    let mut first_channel = true;
+    // Render each channel name (no tasks)
     for (channel_name, tasks) in &tasks_by_channel {
-        if !first_channel {
-            lines.push(Line::from(""));
-        }
-        first_channel = false;
-
         render_channel_header(app, channel_name, tasks, &prs_by_channel, &mut lines);
-
-        let task_indentation = compute_task_indentation(tasks);
-
-        for task in tasks {
-            render_task_item(
-                app,
-                task,
-                channel_name,
-                &task_indentation,
-                wrap_width,
-                &mut lines,
-            );
-        }
     }
 
-    // Render the tasks panel
+    // Determine border color based on focus
+    let is_focused = app.focused_pane == super::super::app::FocusedPane::Board;
+    let border_color = if is_focused {
+        Color::Yellow
+    } else {
+        Color::White
+    };
+
+    // Render the tasks panel with focus-dependent border
     let block = Block::default()
         .borders(Borders::ALL)
         .title("Board")
-        .style(Style::default().fg(Color::White));
+        .border_style(Style::default().fg(border_color));
 
     let paragraph = Paragraph::new(lines).block(block);
     f.render_widget(paragraph, tasks_area);
@@ -167,10 +156,10 @@ fn render_channel_header(
     }
 
     lines.push(Line::from(vec![Span::styled(channel_header, style)]));
-    lines.push(Line::from("")); // Blank line after header
 }
 
 /// Render a single task item with indentation and wrapping.
+#[allow(dead_code)]
 fn render_task_item(
     app: &App,
     task: &KanbanTask,
@@ -297,6 +286,7 @@ fn draw_coworker_status(f: &mut Frame, app: &App, area: Rect) {
 
 /// Compute indentation level for each task based on dependency structure.
 /// Returns a HashMap mapping task ID to indentation level (0 = no indent, 1 = indent one level, etc.)
+#[allow(dead_code)]
 fn compute_task_indentation(tasks: &[&KanbanTask]) -> HashMap<String, usize> {
     let mut indentation: HashMap<String, usize> = HashMap::new();
     let mut processed: HashSet<String> = HashSet::new();
@@ -311,6 +301,7 @@ fn compute_task_indentation(tasks: &[&KanbanTask]) -> HashMap<String, usize> {
 }
 
 /// Recursive helper to compute indentation level for a task
+#[allow(dead_code)]
 fn compute_indentation_recursive(
     task_id: &str,
     task_map: &HashMap<String, &KanbanTask>,
