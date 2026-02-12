@@ -257,6 +257,12 @@ pub enum Effect {
     /// Looks up the worktree in the registry by PR number or branch name,
     /// removes it from the registry, and deletes the worktree directory.
     CleanupMergedWorktree { pr_number: u64, branch: String },
+    /// Clean up a stale worktree after its task has been completed for too long.
+    ///
+    /// Removes the worktree from the registry and deletes the directory.
+    /// This is the time-based cleanup path (N hours after completion),
+    /// complementing the PR-merge cleanup path.
+    CleanupStaleWorktree { worktree_id: String },
     /// Ensure a task-based worktree exists at the specified path.
     ///
     /// Creates the worktree if it doesn't exist, or succeeds idempotently
@@ -916,6 +922,17 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     warn!("Failed to complete task !{}: {}", task_id, e);
                 } else {
                     info!("Auto-completed task !{}", task_id);
+                    // Mark worktree as completed (for time-based cleanup)
+                    {
+                        let mut ps = state.persistent_state.lock().await;
+                        if let Some(wt_id) = ps.worktree_registry.find_worktree_by_task(&task_id) {
+                            ps.worktree_registry
+                                .mark_completed(&wt_id, chrono::Utc::now());
+                            if let Err(e) = ps.save_for_repo(&repo_name) {
+                                warn!("Failed to save worktree completion timestamp: {}", e);
+                            }
+                        }
+                    }
                     // Clear task assignment tracking (coworker is now free)
                     state.clear_task_assignment_by_task(&task_id);
                 }
@@ -1105,6 +1122,44 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     debug!(
                         "No worktree registered for PR #{} (branch: {}), skipping cleanup",
                         pr_number, branch
+                    );
+                }
+            }
+            Effect::CleanupStaleWorktree { worktree_id } => {
+                // Remove from registry
+                let removed = {
+                    let mut ps = state.persistent_state.lock().await;
+                    let removed = ps.worktree_registry.remove_worktree(&worktree_id);
+                    if removed.is_some()
+                        && let Err(e) = ps.save_for_repo(&state.repo_name)
+                    {
+                        warn!(
+                            "Failed to save daemon state after stale worktree cleanup: {}",
+                            e
+                        );
+                    }
+                    removed
+                };
+                if let Some(assignment) = removed {
+                    // Remove the worktree directory
+                    let wt_mgr = state.coworkers.worktree_manager().clone();
+                    let wt_id = assignment.worktree_id.clone();
+                    tokio::task::spawn_blocking(move || {
+                        if let Err(e) = wt_mgr.force_cleanup_task_worktree(&wt_id) {
+                            warn!("Failed to remove stale worktree {}: {}", wt_id, e);
+                        } else {
+                            info!(
+                                "Cleaned up stale worktree {} (retention period expired)",
+                                wt_id
+                            );
+                        }
+                    })
+                    .await
+                    .ok();
+                } else {
+                    debug!(
+                        "Worktree {} not found in registry, skipping cleanup",
+                        worktree_id
                     );
                 }
             }

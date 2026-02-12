@@ -1061,6 +1061,60 @@ fn effects_for_fired_reminders(
     effects
 }
 
+/// Check for stale worktrees that can be cleaned up.
+///
+/// Worktrees are considered stale if:
+/// - They have a `completed_at` timestamp (task completed or PR merged)
+/// - The completion was more than `retention_period` ago
+/// - They are not currently bound to an active coworker
+///
+/// Returns `CleanupStaleWorktree` effects for each stale worktree.
+pub(super) fn check_for_stale_worktrees(
+    worktree_registry: &crate::worktree_registry::WorktreeRegistry,
+    active_coworkers: &std::collections::HashSet<String>,
+    retention_period: chrono::Duration,
+) -> Vec<Effect> {
+    let now = chrono::Utc::now();
+    let mut effects = Vec::new();
+
+    for (_, assignment) in worktree_registry.all_assignments().iter() {
+        // Skip if not completed
+        let Some(completed_at) = assignment.completed_at else {
+            continue;
+        };
+
+        // Skip if within retention period
+        let age = now.signed_duration_since(completed_at);
+        if age < retention_period {
+            continue;
+        }
+
+        // Skip if actively in use
+        if let Some(ref coworker) = assignment.current_coworker
+            && active_coworkers.contains(coworker)
+        {
+            continue;
+        }
+
+        debug!(
+            "Worktree {} is stale (completed {}h ago), scheduling cleanup",
+            assignment.worktree_id,
+            age.num_hours()
+        );
+
+        // Schedule cleanup
+        effects.push(Effect::CleanupStaleWorktree {
+            worktree_id: assignment.worktree_id.clone(),
+        });
+    }
+
+    if !effects.is_empty() {
+        info!("Scheduled cleanup of {} stale worktree(s)", effects.len());
+    }
+
+    effects
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1200,6 +1254,7 @@ mod tests {
             tasks_with_worktrees: HashSet::new(),
             task_worktree_map: HashMap::new(),
             worktree_branch_owners: HashMap::new(),
+            worktree_registry: crate::worktree_registry::WorktreeRegistry::default(),
             merged_pr_branches: HashMap::new(),
             is_at_coworker_limit: false,
             is_at_dev_limit: false,
@@ -1354,6 +1409,7 @@ mod tests {
             tasks_with_worktrees: HashSet::new(),
             task_worktree_map: HashMap::new(),
             worktree_branch_owners: HashMap::new(),
+            worktree_registry: crate::worktree_registry::WorktreeRegistry::default(),
             merged_pr_branches: HashMap::new(),
             is_at_coworker_limit: false,
             is_at_dev_limit: false,
@@ -1431,6 +1487,7 @@ mod tests {
             tasks_with_worktrees: HashSet::new(),
             task_worktree_map: HashMap::new(),
             worktree_branch_owners: HashMap::new(),
+            worktree_registry: crate::worktree_registry::WorktreeRegistry::default(),
             merged_pr_branches: HashMap::new(),
             is_at_coworker_limit: false,
             is_at_dev_limit: false,

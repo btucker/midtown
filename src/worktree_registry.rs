@@ -37,6 +37,11 @@ pub struct WorktreeAssignment {
     pub pr_number: Option<u64>,
     /// When the assignment was created.
     pub created_at: DateTime<Utc>,
+    /// When the associated task was completed (if applicable).
+    /// Set when a task's status changes to Completed or when a PR merges.
+    /// Used for time-based cleanup (remove worktrees N hours after completion).
+    #[serde(default)]
+    pub completed_at: Option<DateTime<Utc>>,
 }
 
 /// Registry tracking worktree assignments.
@@ -238,6 +243,22 @@ impl WorktreeRegistry {
             }
         }
     }
+
+    /// Find the worktree ID associated with a task (if any).
+    ///
+    /// Returns the worktree_id string for use with `mark_completed()`.
+    pub fn find_worktree_by_task(&self, task_id: &str) -> Option<String> {
+        self.task_index.get(task_id).cloned()
+    }
+
+    /// Mark a worktree as completed with a timestamp.
+    ///
+    /// Used when a task completes or a PR merges, to enable time-based cleanup.
+    pub fn mark_completed(&mut self, worktree_id: &str, completed_at: DateTime<Utc>) {
+        if let Some(assignment) = self.assignments.get_mut(worktree_id) {
+            assignment.completed_at = Some(completed_at);
+        }
+    }
 }
 
 /// Generate a branch slug for a task.
@@ -345,6 +366,7 @@ mod tests {
             current_coworker: Some("lexington".to_string()),
             pr_number: None,
             created_at: Utc::now(),
+            completed_at: None,
         };
 
         registry.assign_worktree(assignment).unwrap();
@@ -372,6 +394,7 @@ mod tests {
             current_coworker: None,
             pr_number: None,
             created_at: Utc::now(),
+            completed_at: None,
         };
 
         registry.assign_worktree(assignment.clone()).unwrap();
@@ -389,6 +412,7 @@ mod tests {
             current_coworker: None,
             pr_number: None,
             created_at: Utc::now(),
+            completed_at: None,
         };
 
         registry.assign_worktree(assignment).unwrap();
@@ -418,6 +442,7 @@ mod tests {
             current_coworker: Some("lexington".to_string()),
             pr_number: None,
             created_at: Utc::now(),
+            completed_at: None,
         };
 
         registry.assign_worktree(assignment).unwrap();
@@ -439,6 +464,7 @@ mod tests {
             current_coworker: None,
             pr_number: None,
             created_at: Utc::now(),
+            completed_at: None,
         };
 
         registry.assign_worktree(assignment).unwrap();
@@ -459,6 +485,7 @@ mod tests {
             current_coworker: Some("lexington".to_string()),
             pr_number: Some(123),
             created_at: Utc::now(),
+            completed_at: None,
         };
 
         registry.assign_worktree(assignment).unwrap();
@@ -485,6 +512,7 @@ mod tests {
             current_coworker: Some("lexington".to_string()),
             pr_number: Some(123),
             created_at: Utc::now(),
+            completed_at: None,
         };
 
         registry.assign_worktree(assignment).unwrap();
@@ -504,6 +532,7 @@ mod tests {
             current_coworker: Some("lexington".to_string()),
             pr_number: Some(123),
             created_at: Utc::now(),
+            completed_at: None,
         };
 
         registry.assign_worktree(assignment).unwrap();
@@ -532,6 +561,7 @@ mod tests {
             current_coworker: Some("lexington".to_string()),
             pr_number: Some(123),
             created_at: Utc::now(),
+            completed_at: None,
         };
 
         registry.assign_worktree(assignment).unwrap();
@@ -558,6 +588,7 @@ mod tests {
             current_coworker: Some("amsterdam".to_string()),
             pr_number: None,
             created_at: Utc::now(),
+            completed_at: None,
         };
 
         let task_1011 = WorktreeAssignment {
@@ -567,6 +598,7 @@ mod tests {
             current_coworker: Some("amsterdam".to_string()),
             pr_number: None,
             created_at: Utc::now(),
+            completed_at: None,
         };
 
         registry.assign_worktree(task_948).unwrap();

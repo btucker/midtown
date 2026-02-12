@@ -309,6 +309,7 @@ pub(super) fn check_and_recover_orphans(
                 current_coworker: None,
                 pr_number: None,
                 created_at: chrono::Utc::now(),
+                completed_at: None,
             },
         });
     }
@@ -1197,6 +1198,7 @@ pub(super) fn spawn_for_pending_tasks(
                             current_coworker: None,
                             pr_number: None,
                             created_at: chrono::Utc::now(),
+                            completed_at: None,
                         },
                     });
                 }
@@ -1578,6 +1580,7 @@ pub(super) fn spawn_for_pending_tasks(
                         current_coworker: None,
                         pr_number: None,
                         created_at: chrono::Utc::now(),
+                        completed_at: None,
                     },
                 });
             }
@@ -2832,6 +2835,7 @@ mod tests {
             tasks_with_worktrees: HashSet::new(), // Task not in registry yet
             task_worktree_map: HashMap::new(),
             worktree_branch_owners: HashMap::new(),
+            worktree_registry: crate::worktree_registry::WorktreeRegistry::default(),
             merged_pr_branches: HashMap::new(),
             is_at_dev_limit: false,
             active_names: HashSet::new(),
@@ -2974,6 +2978,7 @@ mod tests {
             task_worktree_map: [("42".to_string(), "task-42-add-auth-endpoint".to_string())]
                 .into_iter()
                 .collect(),
+            worktree_registry: crate::worktree_registry::WorktreeRegistry::default(),
             worktree_branch_owners: HashMap::new(),
             merged_pr_branches: HashMap::new(),
             is_at_dev_limit: false,
@@ -3098,6 +3103,7 @@ mod tests {
             tasks_with_worktrees: HashSet::new(),
             task_worktree_map: HashMap::new(),
             worktree_branch_owners: HashMap::new(),
+            worktree_registry: crate::worktree_registry::WorktreeRegistry::default(),
             merged_pr_branches: HashMap::new(),
             merged_pr_numbers: HashSet::new(),
             running_coworkers: vec![],
@@ -3186,6 +3192,7 @@ mod tests {
             tasks_with_worktrees: HashSet::new(),
             task_worktree_map: HashMap::new(),
             worktree_branch_owners: HashMap::new(),
+            worktree_registry: crate::worktree_registry::WorktreeRegistry::default(),
             merged_pr_branches: HashMap::new(),
             merged_pr_numbers: HashSet::new(),
             running_coworkers: vec![],
@@ -3278,6 +3285,7 @@ mod tests {
             tasks_with_worktrees: HashSet::new(),
             task_worktree_map: HashMap::new(),
             worktree_branch_owners: HashMap::new(),
+            worktree_registry: crate::worktree_registry::WorktreeRegistry::default(),
             merged_pr_branches: HashMap::new(),
             merged_pr_numbers: HashSet::new(),
             running_coworkers: vec![],
@@ -3403,6 +3411,7 @@ mod tests {
             tasks_with_worktrees: HashSet::new(),
             task_worktree_map: HashMap::new(),
             worktree_branch_owners: HashMap::new(),
+            worktree_registry: crate::worktree_registry::WorktreeRegistry::default(),
             merged_pr_branches: HashMap::new(),
             merged_pr_numbers: HashSet::new(),
             running_coworkers: vec![],
@@ -3497,6 +3506,7 @@ mod tests {
             tasks_with_worktrees: HashSet::new(),
             task_worktree_map: HashMap::new(),
             worktree_branch_owners: HashMap::new(),
+            worktree_registry: crate::worktree_registry::WorktreeRegistry::default(),
             merged_pr_branches: HashMap::new(),
             merged_pr_numbers: HashSet::new(),
             running_coworkers: vec![],
@@ -3579,6 +3589,7 @@ mod tests {
             task_worktree_map: [("42".to_string(), "task-42-add-auth-endpoint".to_string())]
                 .into_iter()
                 .collect(),
+            worktree_registry: crate::worktree_registry::WorktreeRegistry::default(),
             worktree_branch_owners: HashMap::new(),
             merged_pr_branches: HashMap::new(),
             running_coworkers: vec![],
@@ -3709,6 +3720,7 @@ mod tests {
             tasks_with_worktrees: HashSet::new(), // No worktree registered
             task_worktree_map: HashMap::new(),
             worktree_branch_owners: HashMap::new(),
+            worktree_registry: crate::worktree_registry::WorktreeRegistry::default(),
             merged_pr_branches: HashMap::new(),
             running_coworkers: vec![],
             active_coworkers: vec![],
@@ -3853,6 +3865,7 @@ mod tests {
             task_worktree_map: [("42".to_string(), "task-42-add-auth-endpoint".to_string())]
                 .into_iter()
                 .collect(),
+            worktree_registry: crate::worktree_registry::WorktreeRegistry::default(),
             worktree_branch_owners: HashMap::new(),
             merged_pr_branches: HashMap::new(),
             is_at_dev_limit: false,
@@ -4037,6 +4050,7 @@ mod tests {
             tasks_with_worktrees: HashSet::new(),
             task_worktree_map: HashMap::new(),
             worktree_branch_owners: HashMap::new(),
+            worktree_registry: crate::worktree_registry::WorktreeRegistry::default(),
             merged_pr_branches: HashMap::new(),
             is_at_coworker_limit: false,
             is_at_dev_limit: false,
@@ -4745,6 +4759,7 @@ mod tests {
             tasks_with_worktrees: HashSet::new(),
             task_worktree_map: HashMap::new(),
             worktree_branch_owners: HashMap::new(),
+            worktree_registry: crate::worktree_registry::WorktreeRegistry::default(),
             merged_pr_branches: HashMap::new(),
             is_at_dev_limit: false,
             active_names: HashSet::new(),
