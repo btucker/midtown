@@ -1094,9 +1094,27 @@ mod tests {
     /// always in sync.
     #[test]
     fn test_autocomplete_no_binding_timing_bug() {
-        use app::FocusedPane;
+        use app::{CoworkerInfo, FocusedPane};
         let mut app = test_app();
         app.focused_pane = FocusedPane::InputBar;
+
+        // Add test coworkers so autocomplete has items to show
+        app.coworkers = vec![
+            CoworkerInfo {
+                name: "madison".to_string(),
+                task_id: None,
+                phase: None,
+                pr_number: None,
+                health: "green".to_string(),
+            },
+            CoworkerInfo {
+                name: "lexington".to_string(),
+                task_id: None,
+                phase: None,
+                pr_number: None,
+                health: "green".to_string(),
+            },
+        ];
 
         // Type '@' - should trigger autocomplete for @lead
         auto_focus_and_insert_char(&mut app, '@');

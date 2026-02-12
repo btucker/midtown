@@ -1213,17 +1213,29 @@ impl App {
             });
         }
 
-        // Try to get coworkers from daemon
-        if let Ok(client) = DaemonClient::connect()
-            && let Ok(Response::Status(status)) = client.status()
-            && let Some(ref full_status) = status.full_status
-        {
-            for cw in &full_status.coworkers {
+        // In test mode, use self.coworkers instead of daemon
+        if self.test_mode {
+            for cw in &self.coworkers {
                 if cw.name.to_lowercase().contains(query) {
                     items.push(AutocompleteItem {
                         value: format!("@{}", cw.name),
-                        description: cw.current_task.clone(),
+                        description: None,
                     });
+                }
+            }
+        } else {
+            // Try to get coworkers from daemon
+            if let Ok(client) = DaemonClient::connect()
+                && let Ok(Response::Status(status)) = client.status()
+                && let Some(ref full_status) = status.full_status
+            {
+                for cw in &full_status.coworkers {
+                    if cw.name.to_lowercase().contains(query) {
+                        items.push(AutocompleteItem {
+                            value: format!("@{}", cw.name),
+                            description: cw.current_task.clone(),
+                        });
+                    }
                 }
             }
         }
