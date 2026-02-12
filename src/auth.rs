@@ -1,6 +1,6 @@
 //! Auth profile management for midtown.
 //!
-//! Manages multiple authentication profiles across providers (Claude, Codex), allowing
+//! Manages multiple authentication profiles across providers (Claude, Codex, z.ai), allowing
 //! different accounts to be used for different purposes (e.g., separate accounts for E2E
 //! testing, development, production).
 //!
@@ -13,9 +13,14 @@
 //!     ├── <profile>/                 # Claude profile directories (CLAUDE_CONFIG_DIR)
 //!     │   └── .claude.json           # Claude auth tokens (managed by claude CLI)
 //!     └── providers/
-//!         └── codex/
+//!         ├── codex/
+//!         │   └── profiles/
+//!         │       └── <profile>/     # Codex profile directories (CODEX_HOME)
+//!         └── zai/
 //!             └── profiles/
-//!                 └── <profile>/     # Codex profile directories (CODEX_HOME)
+//!                 └── <profile>/     # z.ai profile directories
+//!                     ├── api_key.txt      # API key (chmod 600)
+//!                     └── base_url.txt     # Optional base URL override
 //! ```
 //!
 //! ## Environment Variables
@@ -23,6 +28,7 @@
 //! When spawning sessions, set the appropriate environment variable:
 //! - Claude: `CLAUDE_CONFIG_DIR` to the profile directory
 //! - Codex: `CODEX_HOME` to the profile directory
+//! - z.ai: `ANTHROPIC_AUTH_TOKEN` (API key) and `ANTHROPIC_BASE_URL`
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

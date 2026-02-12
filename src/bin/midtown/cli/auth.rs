@@ -123,6 +123,11 @@ fn handle_login(
     // Handle z.ai non-interactive login with API key
     if provider == midtown::auth::AuthProvider::Zai {
         if let Some(key) = api_key {
+            // Validate API key is not empty
+            if key.is_empty() {
+                return Err("API key cannot be empty".to_string());
+            }
+
             // Non-interactive: write API key to file
             let key_file = profile_dir.join("api_key.txt");
             std::fs::write(&key_file, format!("{}\n", key))
@@ -1074,5 +1079,16 @@ mod tests {
             message: "Switched profile".to_string(),
         };
         assert!(!should_apply_global_already_on_fallback(true, &other));
+    }
+
+    #[test]
+    fn zai_login_rejects_empty_api_key() {
+        let result = handle_login(
+            "test@z.ai",
+            Some(""),
+            midtown::auth::AuthProvider::Zai,
+        );
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "API key cannot be empty");
     }
 }
