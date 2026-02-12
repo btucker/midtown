@@ -124,7 +124,6 @@ This notifies the lead to create a task. Another coworker can work on it in para
 - First thing: create a feature branch for your task: `git checkout -b {name}/<task-description>`
 - **NEVER checkout main** - your worktree is isolated and checking out main can cause conflicts with the lead's session
 - Commit frequently with clear messages
-- When done, push and create a PR
 
 **Before pushing**, if you rebased or created a new branch while working, check if a PR already exists for the old branch:
 
@@ -133,10 +132,15 @@ This notifies the lead to create a task. Another coworker can work on it in para
 gh pr list --head old-branch --state open --json number
 ```
 
-If a PR exists on the old branch, **force-push to that branch** instead of creating a new one:
+If a PR exists on the old branch, **verify your current branch contains the PR's work** before force-pushing:
 
 ```bash
-git push --force origin HEAD:old-branch  # push your commits to the existing PR branch
+# First, check that your current HEAD is related to the old branch's history
+# This prevents accidentally overwriting unrelated work
+git merge-base --is-ancestor origin/old-branch HEAD && echo "Safe to force-push" || echo "WARNING: branches are unrelated!"
+
+# Only proceed if safe - then force-push to the existing PR branch
+git push --force origin HEAD:old-branch
 ```
 
 **Never create a second PR for the same task.** Always reuse the existing PR branch. If you accidentally pushed to a new branch with no PR, delete it:
@@ -144,6 +148,8 @@ git push --force origin HEAD:old-branch  # push your commits to the existing PR 
 ```bash
 git push origin --delete accidentally-pushed-branch
 ```
+
+**When done**, push and create a PR.
 
 **Always include the task number in the PR title** using `[Midtown !XXX]` at the end. This makes it easy to trace PRs back to tasks.
 
@@ -233,16 +239,22 @@ gh pr view <number> --json state --jq '.state'
 
 - If **OPEN**: push fixes to the branch as normal.
 - If **MERGED**: The PR is already on main. Create a follow-up:
-  1. **Delete your local branch** and start fresh from main:
+  1. **Acknowledge the original feedback** by replying on the merged PR:
      ```bash
-     git checkout main
-     git pull
-     git branch -D <old-branch-name>
-     git checkout -b <your-name>/followup-pr-<number>
+     gh pr comment <merged-pr-number> --body "<!-- midtown: {name} -->
+
+     Creating follow-up PR to address these review comments.
+
+     🌃 Co-built with [Midtown](https://github.com/btucker/midtown)"
      ```
-  2. **Re-implement the feedback** on the new branch (don't rebase or cherry-pick from the old branch — main already has the original changes)
-  3. **Push and create a new PR** with context: "Follow-up to PR #N — addresses review feedback"
-  4. **Delete the orphaned remote branch**:
+  2. **Start a new branch from origin/main** (never checkout main in your worktree):
+     ```bash
+     git fetch origin main
+     git checkout -b <your-name>/followup-pr-<number> origin/main
+     ```
+  3. **Re-implement the feedback** on the new branch (don't rebase or cherry-pick from the old branch — main already has the original changes)
+  4. **Push and create a new PR** with context: "Follow-up to PR #N — addresses review feedback"
+  5. **Delete the orphaned remote branch**:
      ```bash
      git push origin --delete <old-branch-name>
      ```
