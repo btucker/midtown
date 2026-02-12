@@ -1,7 +1,7 @@
 <script>
-  import { channels, activeChannel, kanbanData, activeProject, messagesByChannel } from './store.js'
+  import { channels, activeChannel, kanbanData, activeProject, messagesByChannel, detailPanelData } from './store.js'
   import { fetchHistory, fetchChannels, getApiBase } from './api.js'
-  import { getChannelTaskCount, getChannelCiStatus } from './channelUtils.js'
+  import { getChannelTaskCount, getChannelCiStatus, matchesChannel } from './channelUtils.js'
 
   let showCreateInput = false
   let newChannelName = ''
@@ -91,6 +91,98 @@
       createError = ''
     }
   }
+
+  // Track expanded task lists per channel
+  let expandedTaskLists = $state(new Set())
+
+  function toggleTaskList(channelName, event) {
+    event.stopPropagation() // Don't trigger channel selection
+    if (expandedTaskLists.has(channelName)) {
+      expandedTaskLists.delete(channelName)
+    } else {
+      expandedTaskLists.add(channelName)
+    }
+    expandedTaskLists = new Set(expandedTaskLists) // Trigger reactivity
+  }
+
+  // Compute task indentation based on blocked_by dependencies
+  function computeTaskIndentation(tasks) {
+    const indentation = new Map()
+    const taskMap = new Map(tasks.map((t) => [t.id.toString(), t]))
+    const processed = new Set()
+
+    function computeIndentRecursive(taskId) {
+      if (indentation.has(taskId)) {
+        return indentation.get(taskId)
+      }
+      if (processed.has(taskId)) {
+        indentation.set(taskId, 0)
+        return 0
+      }
+      processed.add(taskId)
+
+      const task = taskMap.get(taskId)
+      if (!task) {
+        indentation.set(taskId, 0)
+        return 0
+      }
+
+      if (!task.blocked_by || task.blocked_by.length === 0) {
+        indentation.set(taskId, 0)
+        return 0
+      }
+
+      // Find first unresolved dependency in the current task list
+      for (const blockerId of task.blocked_by) {
+        const blockerIdStr = blockerId.toString()
+        if (taskMap.has(blockerIdStr)) {
+          const blockerLevel = computeIndentRecursive(blockerIdStr)
+          const level = blockerLevel + 1
+          indentation.set(taskId, level)
+          return level
+        }
+      }
+
+      indentation.set(taskId, 0)
+      return 0
+    }
+
+    for (const task of tasks) {
+      computeIndentRecursive(task.id.toString())
+    }
+
+    return indentation
+  }
+
+  // Get tasks for a specific channel
+  function getChannelTasks(channelName, kanban) {
+    const allTasks = [...kanban.backlog, ...kanban.inProgress]
+
+    if (channelName === 'midtown') {
+      return allTasks
+    }
+
+    // Filter by channel field OR channel name in subject/description
+    return allTasks.filter(
+      (task) =>
+        task.channel === channelName ||
+        matchesChannel(task.subject || '', channelName) ||
+        matchesChannel(task.description || '', channelName)
+    )
+  }
+
+  function openTaskDetail(task, event) {
+    event.stopPropagation()
+    detailPanelData.set({ type: 'task', data: task })
+  }
+
+  function getStatusMarker(status) {
+    return status === 'in_progress' ? '●' : '○'
+  }
+
+  function getStatusColor(status) {
+    return status === 'in_progress' ? '#fbbf24' : '#606060'
+  }
 </script>
 
 <div class="channel-list">
@@ -135,6 +227,8 @@
     {@const ciStatus = getChannelCiStatus(channel.name, $kanbanData)}
     {@const totalTasks = counts.inProgress + counts.pending + counts.review}
     {@const isActive = $activeChannel === channel.name}
+    {@const tasks = getChannelTasks(channel.name, $kanbanData)}
+    {@const isExpanded = expandedTaskLists.has(channel.name)}
 
     <button
       class="channel-item"
@@ -149,7 +243,14 @@
           <span class="unread-count" title="{channel.unread} unread messages">{channel.unread}</span>
         {/if}
         {#if totalTasks > 0}
-          <span class="task-count">{totalTasks}</span>
+          <button
+            class="task-count"
+            class:expanded={isExpanded}
+            onclick={(e) => toggleTaskList(channel.name, e)}
+            title="Click to {isExpanded ? 'collapse' : 'expand'} tasks"
+          >
+            {totalTasks}
+          </button>
         {/if}
         {#if ciStatus === 'passed'}
           <span class="ci-badge ci-passed" title="CI passing">🟢</span>
@@ -161,14 +262,28 @@
       </div>
     </button>
 
-    {#if counts.inProgress > 0 || counts.pending > 0}
-      <div class="channel-tasks">
-        {#if counts.inProgress > 0}
-          <div class="task-indicator">● {counts.inProgress} in progress</div>
-        {/if}
-        {#if counts.pending > 0}
-          <div class="task-indicator">○ {counts.pending} pending</div>
-        {/if}
+    <!-- Expanded task list (collapsed by default) -->
+    {#if isExpanded && tasks.length > 0}
+      {@const indentation = computeTaskIndentation(tasks)}
+      <div class="task-list">
+        {#each tasks as task}
+          {@const indentLevel = indentation.get(task.id.toString()) || 0}
+          {@const marker = getStatusMarker(task.status)}
+          {@const color = getStatusColor(task.status)}
+
+          <button
+            class="task-item"
+            style="padding-left: {12 + indentLevel * 12}px"
+            onclick={(e) => openTaskDetail(task, e)}
+          >
+            <span class="status-marker" style="color: {color}">{marker}</span>
+            <span class="task-id">!{task.id}</span>
+            <span class="task-subject">{task.subject}</span>
+            {#if task.owner}
+              <span class="task-owner">[{task.owner}]</span>
+            {/if}
+          </button>
+        {/each}
       </div>
     {/if}
   {/each}
@@ -354,6 +469,19 @@
     color: #d0d0d0;
     min-width: 1.5em;
     text-align: center;
+    border: none;
+    cursor: pointer;
+    transition: all 0.15s;
+    font-family: inherit;
+  }
+
+  .task-count:hover {
+    background: #4a4a4a;
+  }
+
+  .task-count.expanded {
+    background: #5fafaf;
+    color: #1c1c1c;
   }
 
   .channel-item.active .task-count {
@@ -365,15 +493,57 @@
     font-size: 0.7rem;
   }
 
-  .channel-tasks {
-    margin-left: 24px;
-    padding-left: 12px;
+  .task-list {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    margin-left: 12px;
+    padding: 4px 0;
     border-left: 2px solid #2a2a2a;
   }
 
-  .task-indicator {
+  .task-item {
+    display: flex;
+    align-items: baseline;
+    gap: 5px;
+    width: 100%;
+    padding: 4px 12px;
+    border: none;
+    border-radius: 3px;
+    background: transparent;
+    color: #a0a0a0;
     font-size: 0.75rem;
-    color: #585858;
-    padding: 2px 0;
+    font-family: 'SF Mono', 'Menlo', 'Consolas', monospace;
+    cursor: pointer;
+    transition: all 0.1s;
+    text-align: left;
+  }
+
+  .task-item:hover {
+    background: #262626;
+    color: #d0d0d0;
+  }
+
+  .status-marker {
+    flex-shrink: 0;
+    font-size: 0.7rem;
+  }
+
+  .task-id {
+    flex-shrink: 0;
+    color: #606060;
+  }
+
+  .task-subject {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .task-owner {
+    flex-shrink: 0;
+    font-size: 0.7rem;
+    color: #606060;
   }
 </style>
