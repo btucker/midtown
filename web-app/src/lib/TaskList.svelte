@@ -1,5 +1,6 @@
 <script>
   import { kanbanData } from './store.js'
+  import { matchesChannel } from './channelUtils.js'
 
   let { channelName = '' } = $props()
 
@@ -7,7 +8,7 @@
    * Compute indentation level for each task based on dependency structure.
    * Returns a Map of task ID → indentation level (0 = no indent, 1+ = nested)
    *
-   * This mirrors the TUI implementation in src/bin/midtown/cli/chat/ui.rs
+   * This mirrors the TUI implementation in src/bin/midtown/cli/chat/ui/board.rs
    */
   function computeTaskIndentation(tasks) {
     const indentation = new Map()
@@ -66,13 +67,9 @@
       return tasks
     }
 
-    // Use same word boundary logic as channelUtils.js
-    const escaped = channel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-    const pattern = new RegExp(`(?<![\\w-])${escaped}(?![\\w-])`, 'i')
-
     return tasks.filter(task =>
-      pattern.test(task.subject || '') ||
-      pattern.test(task.description || '')
+      matchesChannel(task.subject, channel) ||
+      matchesChannel(task.description, channel)
     )
   }
 
