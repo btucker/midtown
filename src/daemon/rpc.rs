@@ -419,12 +419,12 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
 
         "task.done" => {
             let task_id = require_str!(params, "id", request.id);
-            super::rpc_task::handle_task_done(request.id, task_id, state)
+            super::rpc_task::handle_task_done(request.id, task_id, state).await
         }
 
         "task.metadata" => {
             let task_id = require_str!(params, "id", request.id);
-            super::rpc_task::handle_task_metadata(request.id, task_id, state)
+            super::rpc_task::handle_task_metadata(request.id, task_id, state).await
         }
 
         "task.request" => {
