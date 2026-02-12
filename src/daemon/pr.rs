@@ -78,19 +78,18 @@ pub(super) fn get_coworkers_with_open_prs(state: &DaemonState) -> Vec<String> {
 ///
 /// Returns the channel name if the PR is linked to a task that has a channel assignment,
 /// or `None` if the PR has no task association or the task has no channel (falls back to main).
-fn get_pr_channel(pr_number: u64, state: &DaemonState) -> Option<String> {
-    let ps = state.persistent_state.blocking_lock();
-
-    // Look up PR → task association via pr_author_sessions
-    let task_id = ps
-        .github
-        .pr_author_sessions
-        .get(&pr_number)?
-        .task_id
-        .as_ref()?;
+///
+/// Takes mappings from WorldSnapshot to avoid blocking locks in decision functions.
+fn get_pr_channel(
+    pr_number: u64,
+    pr_task_associations: &HashMap<u64, String>,
+    task_channel: &HashMap<String, String>,
+) -> Option<String> {
+    // Look up PR → task association
+    let task_id = pr_task_associations.get(&pr_number)?;
 
     // Look up task → channel mapping
-    ps.task_channel.get(task_id).cloned()
+    task_channel.get(task_id).cloned()
 }
 
 /// How often to re-fetch merged PRs (5 minutes). Merges aren't urgent so
@@ -849,8 +848,25 @@ fn pr_action_to_effects(
 ) -> Vec<Effect> {
     use crate::rules::PrAction;
 
+    // Extract channel routing data once (avoids repeated blocking_lock calls in get_pr_channel)
+    let (pr_task_associations, task_channel) = {
+        let ps = state.persistent_state.blocking_lock();
+        let pr_task: HashMap<u64, String> = ps
+            .github
+            .pr_author_sessions
+            .iter()
+            .filter_map(|(pr_num, session)| {
+                session
+                    .task_id
+                    .as_ref()
+                    .map(|task_id| (*pr_num, task_id.clone()))
+            })
+            .collect();
+        (pr_task, ps.task_channel.clone())
+    };
+
     // Look up topic channel for this PR's task (falls back to main if not found)
-    let channel = get_pr_channel(pr_number, state);
+    let channel = get_pr_channel(pr_number, &pr_task_associations, &task_channel);
 
     match action {
         PrAction::NudgeOwner { owner, message } => {
@@ -1502,8 +1518,25 @@ fn comment_action_to_effects(
     use crate::rules::PrAction;
     let issue_type = PrIssueType::ReviewComment;
 
+    // Extract channel routing data once
+    let (pr_task_associations, task_channel) = {
+        let ps = state.persistent_state.blocking_lock();
+        let pr_task: HashMap<u64, String> = ps
+            .github
+            .pr_author_sessions
+            .iter()
+            .filter_map(|(pr_num, session)| {
+                session
+                    .task_id
+                    .as_ref()
+                    .map(|task_id| (*pr_num, task_id.clone()))
+            })
+            .collect();
+        (pr_task, ps.task_channel.clone())
+    };
+
     // Look up topic channel for this PR's task (falls back to main if not found)
-    let channel = get_pr_channel(pr_number, state);
+    let channel = get_pr_channel(pr_number, &pr_task_associations, &task_channel);
 
     match action {
         PrAction::NudgeOwner { owner, message } => {
@@ -1644,8 +1677,25 @@ fn handoff_to_coworker_effects(
     issue_type: PrIssueType,
     state: &DaemonState,
 ) -> Vec<Effect> {
+    // Extract channel routing data once
+    let (pr_task_associations, task_channel) = {
+        let ps = state.persistent_state.blocking_lock();
+        let pr_task: HashMap<u64, String> = ps
+            .github
+            .pr_author_sessions
+            .iter()
+            .filter_map(|(pr_num, session)| {
+                session
+                    .task_id
+                    .as_ref()
+                    .map(|task_id| (*pr_num, task_id.clone()))
+            })
+            .collect();
+        (pr_task, ps.task_channel.clone())
+    };
+
     // Look up topic channel for this PR's task (falls back to main if not found)
-    let channel = get_pr_channel(pr_number, state);
+    let channel = get_pr_channel(pr_number, &pr_task_associations, &task_channel);
 
     let config = crate::launch::LaunchConfig::pr_handoff(
         assignee.to_string(),
@@ -1892,8 +1942,25 @@ async fn collect_reviewer_effects_with_source(
         config.working_dir = Some(wt_path.clone());
 
         // Ensure the worktree exists BEFORE spawning (fixes effect ordering bug)
+        // Extract channel routing data (async-safe)
+        let (pr_task_associations, task_channel) = {
+            let ps = state.persistent_state.lock().await;
+            let pr_task: HashMap<u64, String> = ps
+                .github
+                .pr_author_sessions
+                .iter()
+                .filter_map(|(pr_num, session)| {
+                    session
+                        .task_id
+                        .as_ref()
+                        .map(|task_id| (*pr_num, task_id.clone()))
+                })
+                .collect();
+            (pr_task, ps.task_channel.clone())
+        };
+
         // Look up topic channel for this PR's task (falls back to main if not found)
-        let channel = get_pr_channel(pr_number, state);
+        let channel = get_pr_channel(pr_number, &pr_task_associations, &task_channel);
 
         effects.push(Effect::EnsureWorktree {
             worktree_id: worktree_id.clone(),
@@ -1983,8 +2050,25 @@ fn review_complete_action_to_effects(
     use crate::rules::PrAction;
     let issue_type = PrIssueType::ReviewComplete;
 
+    // Extract channel routing data once
+    let (pr_task_associations, task_channel) = {
+        let ps = state.persistent_state.blocking_lock();
+        let pr_task: HashMap<u64, String> = ps
+            .github
+            .pr_author_sessions
+            .iter()
+            .filter_map(|(pr_num, session)| {
+                session
+                    .task_id
+                    .as_ref()
+                    .map(|task_id| (*pr_num, task_id.clone()))
+            })
+            .collect();
+        (pr_task, ps.task_channel.clone())
+    };
+
     // Look up topic channel for this PR's task (falls back to main if not found)
-    let channel = get_pr_channel(pr_number, state);
+    let channel = get_pr_channel(pr_number, &pr_task_associations, &task_channel);
 
     match action {
         PrAction::NudgeOwner { owner, message } => {

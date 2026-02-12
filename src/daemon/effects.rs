@@ -72,7 +72,11 @@ pub enum Effect {
         summary: Option<String>,
     },
     /// Post a message to the IRC-style channel (and broadcast to WebSocket clients).
-    /// If `channel` is None, posts to the default "midtown" channel.
+    ///
+    /// Channel routing follows a 3-step resolution:
+    /// 1. If `channel` is explicitly provided, use that
+    /// 2. Otherwise, extract task ID from message content (e.g., "!42") and route to that task's channel
+    /// 3. Fall back to the default "midtown" channel if no task ID is found
     PostToChannel {
         sender: String,
         message: String,
