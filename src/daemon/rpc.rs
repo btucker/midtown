@@ -1587,8 +1587,29 @@ async fn handle_coworker_asking(
     question: &str,
     state: &DaemonState,
 ) -> Response {
-    // Post question to channel
-    let msg = Message::text(name, format!("Question for Lead: {}", question));
+    // Post question to channel - route based on coworker's current task
+    let task_channel = {
+        let records = state.coworker_records.read().await;
+        let task_id = records.get(name).and_then(|r| r.task_id);
+        if let Some(tid) = task_id {
+            let ps = state.persistent_state.lock().await;
+            ps.task_channel.get(&tid.to_string()).cloned()
+        } else {
+            None
+        }
+    };
+
+    let msg = if let Some(ch) = task_channel {
+        Message::for_channel(
+            &ch,
+            name,
+            format!("Question for Lead: {}", question),
+            MessageType::Text,
+        )
+    } else {
+        Message::text(name, format!("Question for Lead: {}", question))
+    };
+
     if let Err(e) = state.send_and_broadcast_async(&msg).await {
         error!("Failed to post question to channel: {}", e);
     }
@@ -1632,7 +1653,23 @@ async fn handle_task_request(
 ) -> Response {
     let channel_message = format!("@lead [Task Request] from {}: \"{}\"", from, message);
 
-    let msg = Message::new("midtown", channel_message.clone(), MessageType::Text);
+    // Route based on requester's current task channel
+    let task_channel = {
+        let records = state.coworker_records.read().await;
+        let task_id = records.get(from).and_then(|r| r.task_id);
+        if let Some(tid) = task_id {
+            let ps = state.persistent_state.lock().await;
+            ps.task_channel.get(&tid.to_string()).cloned()
+        } else {
+            None
+        }
+    };
+
+    let msg = if let Some(ch) = task_channel {
+        Message::for_channel(&ch, from, channel_message.clone(), MessageType::Text)
+    } else {
+        Message::text(from, channel_message.clone())
+    };
 
     if let Err(e) = state.send_and_broadcast_async(&msg).await {
         warn!("Failed to post task request to channel: {}", e);
@@ -1749,8 +1786,23 @@ async fn handle_task_create(
         }
     }
 
-    // Post to channel so team is aware
-    let msg = Message::text("lead", format!("created task: {}", subject));
+    // Post to channel so team is aware - use the task's assigned channel
+    let assigned_channel = {
+        let ps = state.persistent_state.lock().await;
+        ps.task_channel.get(&task_id.to_string()).cloned()
+    };
+
+    let msg = if let Some(ch) = assigned_channel {
+        Message::for_channel(
+            &ch,
+            "lead",
+            format!("created task: {}", subject),
+            MessageType::Text,
+        )
+    } else {
+        Message::text("lead", format!("created task: {}", subject))
+    };
+
     if let Err(e) = state.send_and_broadcast_async(&msg).await {
         warn!("Failed to post task creation to channel: {}", e);
     }
