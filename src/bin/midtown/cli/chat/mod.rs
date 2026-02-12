@@ -1106,6 +1106,8 @@ mod tests {
                 phase: None,
                 pr_number: None,
                 health: "green".to_string(),
+                provider: "claude".to_string(),
+                profile: "default".to_string(),
             },
             CoworkerInfo {
                 name: "lexington".to_string(),
@@ -1113,6 +1115,8 @@ mod tests {
                 phase: None,
                 pr_number: None,
                 health: "green".to_string(),
+                provider: "claude".to_string(),
+                profile: "default".to_string(),
             },
         ];
 
@@ -1177,6 +1181,8 @@ mod tests {
                 phase: Some("dev".to_string()),
                 pr_number: None,
                 health: "green".to_string(),
+                provider: "claude".to_string(),
+                profile: "default".to_string(),
             },
             CoworkerInfo {
                 name: "park".to_string(),
@@ -1184,6 +1190,8 @@ mod tests {
                 phase: Some("PR".to_string()),
                 pr_number: Some(123),
                 health: "green".to_string(),
+                provider: "claude".to_string(),
+                profile: "default".to_string(),
             },
         ];
 

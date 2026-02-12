@@ -13,7 +13,7 @@ use midtown::{Channel, Message};
 use ratatui::text::Line;
 
 use super::mermaid::MermaidCache;
-use midtown::usage::{self, UsageData};
+use midtown::usage::UsageData;
 
 /// Cached output from draw_chat_messages() to avoid recomputation on input-only redraws.
 ///
@@ -64,6 +64,10 @@ pub struct CoworkerInfo {
     pub pr_number: Option<u64>,
     /// Health status: "green", "yellow", "red"
     pub health: String,
+    /// Auth provider (e.g., "claude", "zai")
+    pub provider: String,
+    /// Profile name for multi-account support
+    pub profile: String,
 }
 
 /// Info about a repo in a multi-repo project
@@ -536,12 +540,34 @@ impl App {
         {
             let (tx, rx) = mpsc::channel();
             self.usage_receiver = Some(rx);
+
+            // Collect active provider/profile combinations from coworker data
+            let active_profiles: Vec<(midtown::auth::AuthProvider, String)> = self
+                .coworkers
+                .iter()
+                .map(|cw| {
+                    let provider = cw
+                        .provider
+                        .parse::<midtown::auth::AuthProvider>()
+                        .unwrap_or(midtown::auth::AuthProvider::Claude);
+                    (provider, cw.profile.clone())
+                })
+                .collect::<std::collections::HashSet<_>>()
+                .into_iter()
+                .collect();
+
+            // Fall back to current profile if no coworkers
+            let profiles_to_fetch = if active_profiles.is_empty() {
+                vec![(
+                    midtown::auth::AuthProvider::Claude,
+                    midtown::auth::current_profile(),
+                )]
+            } else {
+                active_profiles
+            };
+
             thread::spawn(move || {
-                // For now, just fetch for the current profile
-                // TODO: Integrate with daemon RPC to get active profiles
-                let result = usage::fetch_usage_with_credentials()
-                    .map(|data| vec![data])
-                    .unwrap_or_default();
+                let result = midtown::usage::fetch_multi_usage(&profiles_to_fetch);
                 let _ = tx.send(result);
             });
         }
@@ -1906,6 +1932,17 @@ fn fetch_kanban_data_via_rpc() -> Option<(
                         .and_then(|v| v.as_str())
                         .unwrap_or("green")
                         .to_string();
+                    let provider = cw
+                        .get("provider")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("claude")
+                        .to_string();
+                    // Profile is not currently in kanban response, use default
+                    let profile = cw
+                        .get("profile")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(midtown::auth::current_profile);
 
                     Some(CoworkerInfo {
                         name,
@@ -1913,6 +1950,8 @@ fn fetch_kanban_data_via_rpc() -> Option<(
                         phase,
                         pr_number,
                         health,
+                        provider,
+                        profile,
                     })
                 })
                 .collect()
