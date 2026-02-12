@@ -22,10 +22,11 @@ fn test_archive_channel_renames_file_correctly() {
     channel.archive().unwrap();
 
     // Verify the channel file was renamed
-    assert!(!channel_file.exists(), "Original channel file should be gone");
-    let archived_file = base_dir
-        .join("channels")
-        .join("test-topic.archived.jsonl");
+    assert!(
+        !channel_file.exists(),
+        "Original channel file should be gone"
+    );
+    let archived_file = base_dir.join("channels").join("test-topic.archived.jsonl");
     assert!(
         archived_file.exists(),
         "Archived channel file should exist at {:?}",
@@ -57,9 +58,7 @@ fn test_archive_channel_preserves_messages() {
     channel.archive().unwrap();
 
     // Read the archived file directly to verify messages are preserved
-    let archived_file = base_dir
-        .join("channels")
-        .join("test-topic.archived.jsonl");
+    let archived_file = base_dir.join("channels").join("test-topic.archived.jsonl");
     let content = std::fs::read_to_string(archived_file).unwrap();
     assert!(
         content.contains("First message"),
@@ -82,10 +81,7 @@ fn test_cannot_archive_midtown_channel() {
     let result = channel.archive();
 
     // Should fail with an error
-    assert!(
-        result.is_err(),
-        "Archiving the midtown channel should fail"
-    );
+    assert!(result.is_err(), "Archiving the midtown channel should fail");
 }
 
 // Note: test_auto_archive_effects_integration removed because daemon::auto_archive

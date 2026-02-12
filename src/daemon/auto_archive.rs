@@ -23,10 +23,7 @@ pub fn collect_auto_archive_effects(tasks: &[Task], _repo_name: &str) -> Vec<Eff
 
     for task in tasks {
         if let Some(ref channel) = task.channel {
-            channel_tasks
-                .entry(channel.clone())
-                .or_default()
-                .push(task);
+            channel_tasks.entry(channel.clone()).or_default().push(task);
         }
     }
 
@@ -45,9 +42,7 @@ pub fn collect_auto_archive_effects(tasks: &[Task], _repo_name: &str) -> Vec<Eff
             .all(|task| task.status == TaskStatus::Completed);
 
         if all_completed && !channel_task_list.is_empty() {
-            effects.push(Effect::ArchiveChannel {
-                name: channel_name,
-            });
+            effects.push(Effect::ArchiveChannel { name: channel_name });
         }
     }
 
