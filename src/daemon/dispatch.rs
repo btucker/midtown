@@ -17,6 +17,89 @@ use super::helpers::format_task_prompt;
 use super::{DaemonState, snapshot};
 
 // ============================================================================
+// Worktree setup helpers
+// ============================================================================
+
+/// Pre-spawn effects for setting up a worktree for a task.
+struct WorktreeSetup {
+    worktree_id: String,
+    path: std::path::PathBuf,
+    /// Effects to run before spawning (EnsureWorktree, optional RegisterWorktreeAssignment).
+    pre_spawn_effects: Vec<Effect>,
+}
+
+/// Resolve and prepare a worktree for a task, reusing an existing one if registered.
+///
+/// Returns pre-spawn effects (EnsureWorktree + optional RegisterWorktreeAssignment)
+/// and the resolved worktree path for use in LaunchConfig.working_dir.
+fn prepare_task_worktree(
+    task_id: &str,
+    task_subject: &str,
+    repo_name: &str,
+    snap: &snapshot::WorldSnapshot,
+) -> WorktreeSetup {
+    let (worktree_id, needs_registration) =
+        if let Some(existing_wt_id) = snap.task_worktree_map.get(task_id) {
+            (existing_wt_id.clone(), false)
+        } else {
+            (
+                crate::worktree_registry::branch_slug_for_task(task_id, task_subject),
+                true,
+            )
+        };
+
+    let path = crate::paths::worktrees_dir_for_repo(repo_name).join(&worktree_id);
+
+    let mut pre_spawn_effects = vec![Effect::EnsureWorktree {
+        worktree_id: worktree_id.clone(),
+        path: path.clone(),
+    }];
+
+    if needs_registration {
+        pre_spawn_effects.push(Effect::RegisterWorktreeAssignment {
+            assignment: crate::worktree_registry::WorktreeAssignment {
+                worktree_id: worktree_id.clone(),
+                branch_name: worktree_id.clone(),
+                task_id: Some(task_id.to_string()),
+                current_coworker: None,
+                pr_number: None,
+                created_at: chrono::Utc::now(),
+                completed_at: None,
+            },
+        });
+    }
+
+    WorktreeSetup {
+        worktree_id,
+        path,
+        pre_spawn_effects,
+    }
+}
+
+// ============================================================================
+// Task completion helpers
+// ============================================================================
+
+/// Build the standard triple of effects for completing a task: CompleteTask + ClearBlockedBy + PostToChannel.
+fn task_completed_effects(task_id: &str, repo_name: &str, channel_message: String) -> Vec<Effect> {
+    vec![
+        Effect::CompleteTask {
+            task_id: task_id.to_string(),
+            repo_name: repo_name.to_string(),
+        },
+        Effect::ClearBlockedBy {
+            completed_task_id: task_id.to_string(),
+            repo_name: repo_name.to_string(),
+        },
+        Effect::PostToChannel {
+            sender: "midtown".to_string(),
+            message: channel_message,
+            channel: None,
+        },
+    ]
+}
+
+// ============================================================================
 // Orphan task recovery
 // ============================================================================
 
@@ -239,15 +322,16 @@ pub(super) fn check_and_recover_orphans(
         .collect();
 
     // Decide which orphan (if any) to recover using pure decision function
-    let recovery = crate::rules::decide_orphan_recovery(
-        &in_progress_tasks_active,
-        &snap.active_names,
-        snap.is_at_dev_limit,
-        &snap.coworkers_with_open_prs,
-        &snap.review_feedback_pr_coworkers,
-        &recently_stopped,
-        &snap.attached_coworkers,
-    );
+    let orphan_ctx = crate::rules::OrphanRecoveryContext {
+        in_progress: &in_progress_tasks_active,
+        active_names: &snap.active_names,
+        at_dev_limit: snap.is_at_dev_limit,
+        coworkers_with_open_prs: &snap.coworkers_with_open_prs,
+        review_feedback_pr_coworkers: &snap.review_feedback_pr_coworkers,
+        recently_stopped: &recently_stopped,
+        attached_coworkers: &snap.attached_coworkers,
+    };
+    let recovery = crate::rules::decide_orphan_recovery(&orphan_ctx);
 
     let Some(recovery) = recovery else {
         return vec![];
@@ -278,15 +362,21 @@ pub(super) fn check_and_recover_orphans(
         ),
     );
 
-    // Look up existing task worktree from the registry (via snapshot).
-    // If the task already has a worktree, reuse it — this preserves build cache
-    // and partial work even when a different coworker is assigned.
+    // Prepare worktree (reuse existing or create new)
+    let wt = prepare_task_worktree(
+        &recovery.task_id,
+        &recovery.task_subject,
+        &state.repo_name,
+        snap,
+    );
+
     let mut config = crate::launch::LaunchConfig::coworker(
         recovery.owner.clone(),
         state.repo_name.clone(),
         crate::launch::SessionMode::Fresh,
         Some(prompt),
     );
+    config.working_dir = Some(wt.path);
 
     // Set channel from task if available
     let channel = snap
@@ -299,48 +389,13 @@ pub(super) fn check_and_recover_orphans(
     // Apply task model if available (sets both provider and model)
     config.apply_task_model(&snap.task_model_map, &recovery.task_id);
 
-    // Reuse existing worktree if one is registered for this task (reassignment case).
-    // Otherwise, compute a new worktree_id from the task subject.
-    let (worktree_id, needs_registration) =
-        if let Some(existing_wt_id) = snap.task_worktree_map.get(&recovery.task_id) {
-            (existing_wt_id.clone(), false)
-        } else {
-            (
-                crate::worktree_registry::branch_slug_for_task(
-                    &recovery.task_id,
-                    &recovery.task_subject,
-                ),
-                true,
-            )
-        };
-    let wt_path = crate::paths::worktrees_dir_for_repo(&state.repo_name).join(&worktree_id);
-    config.working_dir = Some(wt_path.clone());
-
     // Pre-spawn effects: create worktree and register assignment BEFORE spawning.
-    // prepare_spawn() validates working_dir exists, so the worktree must exist first.
-    let mut pre_spawn = vec![Effect::EnsureWorktree {
-        worktree_id: worktree_id.clone(),
-        path: wt_path.clone(),
-    }];
-
-    if needs_registration {
-        pre_spawn.push(Effect::RegisterWorktreeAssignment {
-            assignment: crate::worktree_registry::WorktreeAssignment {
-                worktree_id: worktree_id.clone(),
-                branch_name: worktree_id.clone(),
-                task_id: Some(recovery.task_id.clone()),
-                current_coworker: None,
-                pr_number: None,
-                created_at: chrono::Utc::now(),
-                completed_at: None,
-            },
-        });
-    }
+    let mut pre_spawn = wt.pre_spawn_effects;
 
     // Post-spawn success effects
     let on_success = vec![
         Effect::BindCoworkerToWorktree {
-            worktree_id: worktree_id.clone(),
+            worktree_id: wt.worktree_id,
             coworker: recovery.owner.clone(),
         },
         Effect::BroadcastCoworkerUpdate {
@@ -1175,19 +1230,7 @@ pub(super) fn spawn_for_pending_tasks(
                     &format!("You've been assigned task !{}: {}. Get started!", tid, subj),
                 );
 
-                // Reuse existing worktree if one is registered for this task (reassignment case).
-                // Otherwise, compute a new worktree_id from the task subject.
-                let (worktree_id, needs_registration) =
-                    if let Some(existing_wt_id) = snap.task_worktree_map.get(tid.as_str()) {
-                        (existing_wt_id.clone(), false)
-                    } else {
-                        (
-                            crate::worktree_registry::branch_slug_for_task(tid, subj),
-                            true,
-                        )
-                    };
-                let wt_path =
-                    crate::paths::worktrees_dir_for_repo(&state.repo_name).join(&worktree_id);
+                let wt = prepare_task_worktree(tid, subj, &state.repo_name, snap);
 
                 let mut config = crate::launch::LaunchConfig::coworker(
                     o.clone(),
@@ -1195,31 +1238,13 @@ pub(super) fn spawn_for_pending_tasks(
                     crate::launch::SessionMode::Resume,
                     Some(prompt),
                 );
-                config.working_dir = Some(wt_path.clone());
+                config.working_dir = Some(wt.path);
 
                 // Apply task model if available (sets both provider and model)
                 config.apply_task_model(&snap.task_model_map, tid);
 
-                // Pre-spawn: create worktree and register assignment BEFORE spawning.
-                // prepare_spawn() validates working_dir exists, so the worktree must exist first.
-                effects.push(Effect::EnsureWorktree {
-                    worktree_id: worktree_id.clone(),
-                    path: wt_path.clone(),
-                });
-
-                if needs_registration {
-                    effects.push(Effect::RegisterWorktreeAssignment {
-                        assignment: crate::worktree_registry::WorktreeAssignment {
-                            worktree_id: worktree_id.clone(),
-                            branch_name: worktree_id.clone(),
-                            task_id: Some(tid.clone()),
-                            current_coworker: None,
-                            pr_number: None,
-                            created_at: chrono::Utc::now(),
-                            completed_at: None,
-                        },
-                    });
-                }
+                // Pre-spawn effects: create worktree and register assignment BEFORE spawning.
+                effects.extend(wt.pre_spawn_effects);
 
                 // Post-spawn success effects
                 // Include RecordTaskAssignment so mark_in_flight_spawns_from_effects()
@@ -1231,7 +1256,7 @@ pub(super) fn spawn_for_pending_tasks(
                         task_id: tid.clone(),
                     },
                     Effect::BindCoworkerToWorktree {
-                        worktree_id: worktree_id.clone(),
+                        worktree_id: wt.worktree_id,
                         coworker: o.clone(),
                     },
                     Effect::BroadcastCoworkerUpdate {
@@ -1300,12 +1325,23 @@ pub(super) fn spawn_for_pending_tasks(
     // This handles the case where next_available_name() returns the same name for
     // two unrelated tasks because the first spawn hasn't executed yet.
     let mut names_assigned_this_tick: HashSet<String> = HashSet::new();
+    // Track the number of NEW spawns queued in this tick (for dev limit enforcement).
+    // Spawns to already-running coworkers (grouped tasks) don't count — only fresh spawns
+    // that will create new coworker processes.
+    let mut spawns_queued_this_tick: usize = 0;
+    // Dev cap: max_coworkers - REVIEW_HEADROOM, but always allow at least 1 dev.
+    // With max=8 and REVIEW_HEADROOM=2, dev cap is 6.
+    let dev_cap = state.max_coworkers.saturating_sub(REVIEW_HEADROOM).max(1);
+    let current_coworker_count = state.coworkers.list().len();
+
     for task in pending_unowned.iter() {
-        // Check dev coworkers limit before spawning (reserve slots for reviewers)
-        if snap.is_at_dev_limit {
+        // Re-check dev limit after each spawn decision, accounting for spawns queued this tick.
+        // This prevents spawning beyond the dev cap when multiple tasks are processed in one tick.
+        let effective_count = current_coworker_count + spawns_queued_this_tick;
+        if effective_count >= dev_cap {
             debug!(
-                "Dev coworkers limit reached, deferring unowned task !{}",
-                task.id
+                "Dev coworkers limit reached ({}+{} >= {}), deferring unowned task !{}",
+                current_coworker_count, spawns_queued_this_tick, dev_cap, task.id
             );
             break;
         }
@@ -1545,18 +1581,7 @@ pub(super) fn spawn_for_pending_tasks(
             });
         } else {
             // Step 2b: Spawn a new coworker — assign ownership atomically with spawn
-            // Reuse existing worktree if one is registered for this task (reassignment case).
-            // Otherwise, compute a new worktree_id from the task subject.
-            let (worktree_id, needs_registration) =
-                if let Some(existing_wt_id) = snap.task_worktree_map.get(&task.id) {
-                    (existing_wt_id.clone(), false)
-                } else {
-                    (
-                        crate::worktree_registry::branch_slug_for_task(&task.id, &task.subject),
-                        true,
-                    )
-                };
-            let wt_path = crate::paths::worktrees_dir_for_repo(&state.repo_name).join(&worktree_id);
+            let wt = prepare_task_worktree(&task.id, &task.subject, &state.repo_name, snap);
 
             let mut config = crate::launch::LaunchConfig::coworker(
                 coworker_name.clone(),
@@ -1564,7 +1589,7 @@ pub(super) fn spawn_for_pending_tasks(
                 crate::launch::SessionMode::Fresh,
                 Some(prompt.clone()),
             );
-            config.working_dir = Some(wt_path.clone());
+            config.working_dir = Some(wt.path);
             config.channel = task.channel.clone();
 
             // Apply task model if available (sets both provider and model)
@@ -1577,31 +1602,13 @@ pub(super) fn spawn_for_pending_tasks(
                 config::get_personality(),
             );
 
-            // Pre-spawn: create worktree and register assignment BEFORE spawning.
-            // prepare_spawn() validates working_dir exists, so the worktree must exist first.
-            effects.push(Effect::EnsureWorktree {
-                worktree_id: worktree_id.clone(),
-                path: wt_path.clone(),
-            });
-
-            if needs_registration {
-                effects.push(Effect::RegisterWorktreeAssignment {
-                    assignment: crate::worktree_registry::WorktreeAssignment {
-                        worktree_id: worktree_id.clone(),
-                        branch_name: worktree_id.clone(),
-                        task_id: Some(task.id.clone()),
-                        current_coworker: None,
-                        pr_number: None,
-                        created_at: chrono::Utc::now(),
-                        completed_at: None,
-                    },
-                });
-            }
+            // Pre-spawn effects: create worktree and register assignment BEFORE spawning.
+            effects.extend(wt.pre_spawn_effects);
 
             // Post-spawn success effects
             let on_success = vec![
                 Effect::BindCoworkerToWorktree {
-                    worktree_id: worktree_id.clone(),
+                    worktree_id: wt.worktree_id,
                     coworker: coworker_name.clone(),
                 },
                 Effect::BroadcastCoworkerUpdate {
@@ -1624,6 +1631,8 @@ pub(super) fn spawn_for_pending_tasks(
                 on_success,
                 on_failure: vec![],
             });
+            // Increment spawn counter to enforce dev limit within this tick
+            spawns_queued_this_tick += 1;
         }
     }
 
@@ -1652,25 +1661,14 @@ pub(super) fn build_task_completion_effects(
         return vec![];
     };
 
-    let task_id_str = task_id.to_string();
-    vec![
-        Effect::CompleteTask {
-            task_id: task_id_str.clone(),
-            repo_name: repo_name.to_string(),
-        },
-        Effect::ClearBlockedBy {
-            completed_task_id: task_id_str.clone(),
-            repo_name: repo_name.to_string(),
-        },
-        Effect::PostToChannel {
-            sender: "midtown".to_string(),
-            message: format!(
-                "✅ Auto-completed task !{} (PR #{} merged)",
-                task_id, pr_number
-            ),
-            channel: None,
-        },
-    ]
+    task_completed_effects(
+        &task_id.to_string(),
+        repo_name,
+        format!(
+            "✅ Auto-completed task !{} (PR #{} merged)",
+            task_id, pr_number
+        ),
+    )
 }
 
 /// Build effects to auto-complete tasks when all PRs referenced in their description are merged.
@@ -1703,23 +1701,14 @@ pub(super) fn build_description_based_completion_effects(
             // Path 1: Task has explicit PR association
             // This prevents false positives (e.g., task mentions "PR #940 fix insufficient" as context)
             if snap.merged_pr_numbers.contains(&pr_number) {
-                let task_id_str = task.id.clone();
-                effects.push(Effect::CompleteTask {
-                    task_id: task_id_str.clone(),
-                    repo_name: snap.repo_name.clone(),
-                });
-                effects.push(Effect::ClearBlockedBy {
-                    completed_task_id: task_id_str.clone(),
-                    repo_name: snap.repo_name.clone(),
-                });
-                effects.push(Effect::PostToChannel {
-                    sender: "midtown".to_string(),
-                    message: format!(
+                effects.extend(task_completed_effects(
+                    &task.id,
+                    &snap.repo_name,
+                    format!(
                         "✅ Auto-completed task !{} (PR #{} merged)",
                         task.id, pr_number
                     ),
-                    channel: None,
-                });
+                ));
             }
         } else {
             // Path 2: No explicit PR field - fall back to text extraction
@@ -1743,28 +1732,19 @@ pub(super) fn build_description_based_completion_effects(
                 .all(|pr_num| snap.merged_pr_numbers.contains(pr_num));
 
             if all_merged {
-                let task_id_str = task.id.clone();
-                effects.push(Effect::CompleteTask {
-                    task_id: task_id_str.clone(),
-                    repo_name: snap.repo_name.clone(),
-                });
-                effects.push(Effect::ClearBlockedBy {
-                    completed_task_id: task_id_str.clone(),
-                    repo_name: snap.repo_name.clone(),
-                });
-                effects.push(Effect::PostToChannel {
-                    sender: "midtown".to_string(),
-                    message: format!(
+                let pr_list = pr_numbers
+                    .iter()
+                    .map(|n| format!("#{}", n))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                effects.extend(task_completed_effects(
+                    &task.id,
+                    &snap.repo_name,
+                    format!(
                         "✅ Auto-completed task !{} (all referenced PRs merged: {})",
-                        task.id,
-                        pr_numbers
-                            .iter()
-                            .map(|n| format!("#{}", n))
-                            .collect::<Vec<_>>()
-                            .join(", ")
+                        task.id, pr_list
                     ),
-                    channel: None,
-                });
+                ));
             }
         }
     }
@@ -1927,6 +1907,10 @@ pub(super) fn reset_orphaned_tasks(snap: &snapshot::WorldSnapshot) -> Vec<Effect
 
     effects
 }
+
+#[path = "dispatch_dev_limit_tests.rs"]
+#[cfg(test)]
+mod dispatch_dev_limit_tests;
 
 #[path = "dispatch_tests.rs"]
 #[cfg(test)]

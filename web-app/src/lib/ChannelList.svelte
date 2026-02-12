@@ -1,12 +1,18 @@
 <script>
+  import { SvelteSet } from 'svelte/reactivity'
   import { channels, activeChannel, kanbanData, activeProject, messagesByChannel } from './store.js'
   import { fetchHistory, fetchChannels, getApiBase } from './api.js'
   import { getChannelTaskCount, getChannelCiStatus } from './channelUtils.js'
+  import TaskList from './TaskList.svelte'
 
   let showCreateInput = false
   let newChannelName = ''
   let createError = ''
   let isCreating = false
+
+  // Track which channels have their task lists expanded (default: collapsed)
+  // Using SvelteSet for reactivity — plain Set mutations don't trigger re-renders in Svelte 5
+  let expandedChannels = new SvelteSet()
 
   async function selectChannel(channelName) {
     activeChannel.set(channelName)
@@ -91,6 +97,17 @@
       createError = ''
     }
   }
+
+  function toggleChannelTasks(channelName, event) {
+    // Stop event from bubbling to channel selection
+    event.stopPropagation()
+
+    if (expandedChannels.has(channelName)) {
+      expandedChannels.delete(channelName)
+    } else {
+      expandedChannels.add(channelName)
+    }
+  }
 </script>
 
 <div class="channel-list">
@@ -135,42 +152,55 @@
     {@const ciStatus = getChannelCiStatus(channel.name, $kanbanData)}
     {@const totalTasks = counts.inProgress + counts.pending + counts.review}
     {@const isActive = $activeChannel === channel.name}
+    {@const isExpanded = expandedChannels.has(channel.name)}
+    {@const hasActiveTasks = counts.inProgress > 0 || counts.pending > 0}
 
-    <button
-      class="channel-item"
-      class:active={isActive}
-      onclick={() => selectChannel(channel.name)}
-    >
-      <div class="channel-name">
-        {formatChannelName(channel.name)}
-      </div>
-      <div class="channel-badges">
-        {#if channel.unread > 0}
-          <span class="unread-count" title="{channel.unread} unread messages">{channel.unread}</span>
-        {/if}
-        {#if totalTasks > 0}
-          <span class="task-count">{totalTasks}</span>
-        {/if}
-        {#if ciStatus === 'passed'}
-          <span class="ci-badge ci-passed" title="CI passing">🟢</span>
-        {:else if ciStatus === 'failed'}
-          <span class="ci-badge ci-failed" title="CI failing">🔴</span>
-        {:else if ciStatus === 'pending'}
-          <span class="ci-badge ci-pending" title="CI pending">🟡</span>
-        {/if}
-      </div>
-    </button>
+    <div class="channel-group">
+      <button
+        class="channel-item"
+        class:active={isActive}
+        onclick={() => selectChannel(channel.name)}
+      >
+        <div class="channel-left">
+          {#if hasActiveTasks}
+            <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+            <span
+              class="expand-btn"
+              onclick={(e) => toggleChannelTasks(channel.name, e)}
+              title={isExpanded ? 'Collapse tasks' : 'Expand tasks'}
+              role="button"
+              tabindex="0"
+            >
+              {isExpanded ? '▼' : '▶'}
+            </span>
+          {/if}
+          <div class="channel-name">
+            {formatChannelName(channel.name)}
+          </div>
+        </div>
+        <div class="channel-badges">
+          {#if channel.unread > 0}
+            <span class="unread-count" title="{channel.unread} unread messages">{channel.unread}</span>
+          {/if}
+          {#if totalTasks > 0}
+            <span class="task-count">{totalTasks}</span>
+          {/if}
+          {#if ciStatus === 'passed'}
+            <span class="ci-badge ci-passed" title="CI passing">🟢</span>
+          {:else if ciStatus === 'failed'}
+            <span class="ci-badge ci-failed" title="CI failing">🔴</span>
+          {:else if ciStatus === 'pending'}
+            <span class="ci-badge ci-pending" title="CI pending">🟡</span>
+          {/if}
+        </div>
+      </button>
 
-    {#if counts.inProgress > 0 || counts.pending > 0}
-      <div class="channel-tasks">
-        {#if counts.inProgress > 0}
-          <div class="task-indicator">● {counts.inProgress} in progress</div>
-        {/if}
-        {#if counts.pending > 0}
-          <div class="task-indicator">○ {counts.pending} pending</div>
-        {/if}
-      </div>
-    {/if}
+      {#if isExpanded && hasActiveTasks}
+        <div class="channel-task-list">
+          <TaskList channelName={channel.name} />
+        </div>
+      {/if}
+    </div>
   {/each}
 </div>
 
@@ -296,10 +326,15 @@
     background: #4a4a4a;
   }
 
+  .channel-group {
+    margin-bottom: 2px;
+  }
+
   .channel-item {
     display: flex;
     align-items: center;
     justify-content: space-between;
+    width: 100%;
     padding: 8px 12px;
     border: none;
     border-radius: 6px;
@@ -310,6 +345,35 @@
     cursor: pointer;
     transition: all 0.15s;
     text-align: left;
+  }
+
+  .channel-left {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex: 1;
+    min-width: 0;
+  }
+
+  .expand-btn {
+    width: 18px;
+    height: 18px;
+    flex-shrink: 0;
+    padding: 0;
+    border: none;
+    background: transparent;
+    color: #606060;
+    font-size: 0.65rem;
+    line-height: 1;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: color 0.15s;
+  }
+
+  .expand-btn:hover {
+    color: #a0a0a0;
   }
 
   .channel-item:hover:not(.active) {
@@ -365,15 +429,9 @@
     font-size: 0.7rem;
   }
 
-  .channel-tasks {
+  .channel-task-list {
     margin-left: 24px;
-    padding-left: 12px;
+    padding: 4px 0 8px 12px;
     border-left: 2px solid #2a2a2a;
-  }
-
-  .task-indicator {
-    font-size: 0.75rem;
-    color: #585858;
-    padding: 2px 0;
   }
 </style>

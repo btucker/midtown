@@ -236,8 +236,7 @@ fn draw_coworker_status(f: &mut Frame, app: &App, area: Rect) {
         .split(area);
 
     let active_count = app.coworkers.len();
-    let max_coworkers = 10;
-    let header = format!("  Coworkers ({}/{})", active_count, max_coworkers);
+    let header = format!("  Coworkers ({}/{})", active_count, app.max_coworkers);
     let header_paragraph = Paragraph::new(Line::from(vec![Span::styled(
         header,
         Style::default()

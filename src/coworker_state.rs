@@ -46,6 +46,24 @@ impl WorkflowPhase {
     }
 }
 
+impl std::str::FromStr for WorkflowPhase {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "claiming" => Ok(Self::Claiming),
+            "developing" => Ok(Self::Developing),
+            "testing" => Ok(Self::Testing),
+            "pull_request" | "pull-request" => Ok(Self::PullRequest),
+            "reviewing" => Ok(Self::Reviewing),
+            "debugging" => Ok(Self::Debugging),
+            "completed" => Ok(Self::Completed),
+            "idle" => Ok(Self::Idle),
+            _ => Err(format!("Unknown phase: {}", s)),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -69,5 +87,51 @@ mod tests {
 
         let parsed: WorkflowPhase = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed, WorkflowPhase::PullRequest);
+    }
+
+    #[test]
+    fn test_from_str_all_phases() {
+        assert_eq!(
+            "claiming".parse::<WorkflowPhase>().unwrap(),
+            WorkflowPhase::Claiming
+        );
+        assert_eq!(
+            "developing".parse::<WorkflowPhase>().unwrap(),
+            WorkflowPhase::Developing
+        );
+        assert_eq!(
+            "testing".parse::<WorkflowPhase>().unwrap(),
+            WorkflowPhase::Testing
+        );
+        assert_eq!(
+            "pull_request".parse::<WorkflowPhase>().unwrap(),
+            WorkflowPhase::PullRequest
+        );
+        assert_eq!(
+            "pull-request".parse::<WorkflowPhase>().unwrap(),
+            WorkflowPhase::PullRequest
+        );
+        assert_eq!(
+            "reviewing".parse::<WorkflowPhase>().unwrap(),
+            WorkflowPhase::Reviewing
+        );
+        assert_eq!(
+            "debugging".parse::<WorkflowPhase>().unwrap(),
+            WorkflowPhase::Debugging
+        );
+        assert_eq!(
+            "completed".parse::<WorkflowPhase>().unwrap(),
+            WorkflowPhase::Completed
+        );
+        assert_eq!(
+            "idle".parse::<WorkflowPhase>().unwrap(),
+            WorkflowPhase::Idle
+        );
+    }
+
+    #[test]
+    fn test_from_str_invalid() {
+        assert!("unknown".parse::<WorkflowPhase>().is_err());
+        assert!("".parse::<WorkflowPhase>().is_err());
     }
 }

@@ -712,6 +712,7 @@ async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoRespo
                 "status": status,
                 "owner": task.owner,
                 "channel": task.channel,
+                "blocked_by": task.blocked_by,
             })
         })
         .collect();
@@ -2282,5 +2283,75 @@ mod tests {
         let json = serde_json::to_string(&data).unwrap();
         // skip_serializing_if = "Option::is_none" should omit source_channel
         assert!(!json.contains("source_channel"));
+    }
+
+    /// Test that verifies backend preconditions for task !1191 requirements:
+    /// Web UI channel switching and per-channel WebSocket updates
+    ///
+    /// NOTE: This unit test verifies data structures and serialization. Full API behavior
+    /// is tested in integration tests (tests/web_e2e.rs::test_api_channel_history_per_channel).
+    #[test]
+    fn test_task_1191_channel_switching_requirements() {
+        // Requirement 1: API accepts channel parameter on history endpoint
+        // Tested in integration tests (test_api_channel_history_per_channel).
+        // This unit test only verifies the backend data structures.
+
+        // Requirement 2: WebSocket broadcasts include channel field
+        // ChannelMessageData includes a channel field that defaults to "midtown"
+        let msg_with_channel = ChannelMessageData {
+            from: "park".to_string(),
+            content: "test message".to_string(),
+            timestamp: "2024-01-01T00:00:00Z".to_string(),
+            msg_type: "text".to_string(),
+            channel: "auth-refactor".to_string(),
+            source_channel: None,
+        };
+        assert_eq!(msg_with_channel.channel, "auth-refactor");
+
+        // Verify channel field is present in JSON serialization
+        let json = serde_json::to_string(&msg_with_channel).unwrap();
+        assert!(json.contains("\"channel\":\"auth-refactor\""));
+
+        // Default channel behavior
+        let msg_default = ChannelMessageData {
+            from: "test".to_string(),
+            content: "hello".to_string(),
+            timestamp: "2024-01-01T00:00:00Z".to_string(),
+            msg_type: "text".to_string(),
+            channel: default_channel(),
+            source_channel: None,
+        };
+        assert_eq!(msg_default.channel, "midtown");
+
+        // Requirement 3: Web UI can switch channels and load channel-specific messages
+        // This is implemented in web-app/src/lib/ChannelList.svelte::selectChannel()
+        // and api.js::fetchHistory(channelName). The API endpoint behavior is tested
+        // in integration tests (test_api_channel_history_per_channel).
+
+        // Requirement 4: Unread indicators work per channel
+        // The web UI tracks unread counts per channel (ChannelList.svelte line 148-150)
+        // and increments unread for non-active channels (api.js handleUpdate line 399-401).
+        // This unit test verifies the backend precondition: WebSocket messages include
+        // the channel field needed for frontend routing.
+        let msg = crate::message::Message::text("coworker", "test");
+        let update = channel_message_update(&msg);
+        match update {
+            WebUpdate::ChannelMessage(data) => {
+                // Verify channel field has correct default value
+                assert_eq!(data.channel, "midtown");
+            }
+            _ => panic!("Expected ChannelMessage update"),
+        }
+
+        // Test that explicit channel propagates through channel_message_update
+        let mut msg_with_explicit_channel = crate::message::Message::text("park", "hello");
+        msg_with_explicit_channel.channel = Some("auth-refactor".to_string());
+        let update = channel_message_update(&msg_with_explicit_channel);
+        match update {
+            WebUpdate::ChannelMessage(data) => {
+                assert_eq!(data.channel, "auth-refactor");
+            }
+            _ => panic!("Expected ChannelMessage update"),
+        }
     }
 }
