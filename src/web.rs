@@ -2284,20 +2284,16 @@ mod tests {
         assert!(!json.contains("source_channel"));
     }
 
-    /// Test that verifies all requirements from task !1191:
+    /// Test that verifies backend preconditions for task !1191 requirements:
     /// Web UI channel switching and per-channel WebSocket updates
+    ///
+    /// NOTE: This unit test verifies data structures and serialization. Full API behavior
+    /// is tested in integration tests (tests/web_e2e.rs::test_api_channel_history_per_channel).
     #[test]
     fn test_task_1191_channel_switching_requirements() {
         // Requirement 1: API accepts channel parameter on history endpoint
-        // The api_channel_history function (lines 504-546) accepts an optional
-        // ?channel=name query parameter via ChannelHistoryQuery struct.
-        let query_with_channel = ChannelHistoryQuery {
-            channel: Some("test-channel".to_string()),
-        };
-        assert_eq!(query_with_channel.channel.unwrap(), "test-channel");
-
-        let query_default = ChannelHistoryQuery { channel: None };
-        assert!(query_default.channel.is_none());
+        // Tested in integration tests (test_api_channel_history_per_channel).
+        // This unit test only verifies the backend data structures.
 
         // Requirement 2: WebSocket broadcasts include channel field
         // ChannelMessageData includes a channel field that defaults to "midtown"
@@ -2328,20 +2324,31 @@ mod tests {
 
         // Requirement 3: Web UI can switch channels and load channel-specific messages
         // This is implemented in web-app/src/lib/ChannelList.svelte::selectChannel()
-        // and api.js::fetchHistory(channelName). The API accepts the channel parameter
-        // as verified above, so the web UI can request channel-specific history.
+        // and api.js::fetchHistory(channelName). The API endpoint behavior is tested
+        // in integration tests (test_api_channel_history_per_channel).
 
         // Requirement 4: Unread indicators work per channel
-        // The web UI tracks unread counts per channel (ChannelList.svelte line 148-150).
-        // WebSocket updates include the channel field, allowing the UI to increment
-        // unread counts for non-active channels (api.js handleUpdate line 399-401).
-        // Verify that messages include channel information for unread tracking:
+        // The web UI tracks unread counts per channel (ChannelList.svelte line 148-150)
+        // and increments unread for non-active channels (api.js handleUpdate line 399-401).
+        // This unit test verifies the backend precondition: WebSocket messages include
+        // the channel field needed for frontend routing.
         let msg = crate::message::Message::text("coworker", "test");
         let update = channel_message_update(&msg);
         match update {
             WebUpdate::ChannelMessage(data) => {
-                // Channel field is present and can be used for routing
-                assert!(!data.channel.is_empty());
+                // Verify channel field has correct default value
+                assert_eq!(data.channel, "midtown");
+            }
+            _ => panic!("Expected ChannelMessage update"),
+        }
+
+        // Test that explicit channel propagates through channel_message_update
+        let mut msg_with_explicit_channel = crate::message::Message::text("park", "hello");
+        msg_with_explicit_channel.channel = Some("auth-refactor".to_string());
+        let update = channel_message_update(&msg_with_explicit_channel);
+        match update {
+            WebUpdate::ChannelMessage(data) => {
+                assert_eq!(data.channel, "auth-refactor");
             }
             _ => panic!("Expected ChannelMessage update"),
         }
