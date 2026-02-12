@@ -108,6 +108,7 @@ pub(super) fn collect_stale_worktree_cleanup_effects(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Utc;
     use std::collections::{HashMap, HashSet};
 
     #[test]

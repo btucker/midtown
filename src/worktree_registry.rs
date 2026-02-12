@@ -617,4 +617,45 @@ mod tests {
         assert_eq!(by_pr.worktree_id, "task-1011-fix-bug");
         assert_eq!(by_pr.pr_number, Some(813));
     }
+
+    #[test]
+    fn test_mark_task_completed() {
+        let mut registry = WorktreeRegistry::new();
+
+        // Create a worktree assignment
+        let assignment = WorktreeAssignment {
+            worktree_id: "task-42-feature".to_string(),
+            branch_name: "task-42-feature".to_string(),
+            task_id: Some("42".to_string()),
+            current_coworker: None,
+            pr_number: None,
+            created_at: Utc::now(),
+            completed_at: None,
+        };
+
+        registry.assign_worktree(assignment).unwrap();
+
+        // Verify it starts with no completion time
+        let assignment = registry.get_by_task("42").unwrap();
+        assert!(assignment.completed_at.is_none());
+
+        // Mark it as completed
+        let completed_at = Utc::now();
+        registry.mark_task_completed("42", completed_at);
+
+        // Verify the completion time was set
+        let assignment = registry.get_by_task("42").unwrap();
+        assert!(assignment.completed_at.is_some());
+        assert_eq!(assignment.completed_at.unwrap(), completed_at);
+    }
+
+    #[test]
+    fn test_mark_task_completed_nonexistent_task() {
+        let mut registry = WorktreeRegistry::new();
+
+        // Marking a non-existent task as completed should be a no-op (not panic)
+        registry.mark_task_completed("999", Utc::now());
+
+        assert!(registry.get_by_task("999").is_none());
+    }
 }

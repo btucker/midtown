@@ -1713,6 +1713,16 @@ fn handle_task_done(id: RequestId, task_id: &str, state: &DaemonState) -> Respon
     // Clear in-memory tracking
     state.clear_task_assignment_by_task(task_id);
 
+    // Mark worktree as completed for time-based cleanup
+    {
+        let mut ps = state.persistent_state.blocking_lock();
+        ps.worktree_registry
+            .mark_task_completed(task_id, chrono::Utc::now());
+        if let Err(e) = ps.save_for_repo(&repo_name) {
+            warn!("Failed to save worktree completion time: {}", e);
+        }
+    }
+
     // Unblock dependent tasks
     if let Err(e) = crate::tasks::clear_blocked_by_for_repo(task_id, &repo_name) {
         warn!("Failed to clear blockedBy for task !{}: {}", task_id, e);
