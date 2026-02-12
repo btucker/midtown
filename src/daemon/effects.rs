@@ -922,22 +922,20 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     warn!("Failed to complete task !{}: {}", task_id, e);
                 } else {
                     info!("Auto-completed task !{}", task_id);
-                    // Mark worktree as completed (for time-based cleanup)
+                    // Mark worktree as completed (for time-based cleanup) and clean up pr_author_sessions
                     {
                         let mut ps = state.persistent_state.lock().await;
                         if let Some(wt_id) = ps.worktree_registry.find_worktree_by_task(&task_id) {
                             ps.worktree_registry
                                 .mark_completed(&wt_id, chrono::Utc::now());
-                            if let Err(e) = ps.save_for_repo(&repo_name) {
-                                warn!("Failed to save worktree completion timestamp: {}", e);
-                            }
                         }
                         // Clean up pr_author_sessions for this task to prevent stale state
                         ps.github
                             .pr_author_sessions
                             .retain(|_, session| session.task_id.as_deref() != Some(&task_id));
+                        // Save both mutations in a single write
                         if let Err(e) = ps.save_for_repo(&repo_name) {
-                            warn!("Failed to save pr_author_sessions cleanup: {}", e);
+                            warn!("Failed to save task completion state: {}", e);
                         }
                     }
                     // Clear task assignment tracking (coworker is now free)
@@ -1949,5 +1947,101 @@ mod tests {
         } else {
             panic!("Expected NudgeCoworkerWithCallbacks");
         }
+    }
+
+    #[tokio::test]
+    async fn test_complete_task_cleans_up_pr_author_sessions() {
+        use crate::daemon::state::DaemonPersistentState;
+        use crate::github_state::PrAuthorSession;
+        use chrono::Utc;
+        use std::collections::HashMap;
+
+        let mut persistent_state = DaemonPersistentState::default();
+
+        // Set up pr_author_sessions with entries for different tasks
+        let mut pr_sessions = HashMap::new();
+        pr_sessions.insert(
+            1001,
+            PrAuthorSession {
+                session_id: "session-abc".to_string(),
+                branch: "vernon/fix-task-42".to_string(),
+                original_author: "vernon".to_string(),
+                stored_at: Utc::now(),
+                task_id: Some("42".to_string()),
+            },
+        );
+        pr_sessions.insert(
+            1002,
+            PrAuthorSession {
+                session_id: "session-def".to_string(),
+                branch: "park/feature-task-99".to_string(),
+                original_author: "park".to_string(),
+                stored_at: Utc::now(),
+                task_id: Some("99".to_string()),
+            },
+        );
+        pr_sessions.insert(
+            1003,
+            PrAuthorSession {
+                session_id: "session-ghi".to_string(),
+                branch: "madison/another-task-42".to_string(),
+                original_author: "madison".to_string(),
+                stored_at: Utc::now(),
+                task_id: Some("42".to_string()), // Same task_id as PR 1001
+            },
+        );
+        pr_sessions.insert(
+            1004,
+            PrAuthorSession {
+                session_id: "session-jkl".to_string(),
+                branch: "broadway/no-task".to_string(),
+                original_author: "broadway".to_string(),
+                stored_at: Utc::now(),
+                task_id: None, // No task_id
+            },
+        );
+        persistent_state.github.pr_author_sessions = pr_sessions;
+
+        // Simulate the cleanup logic from Effect::CompleteTask for task "42"
+        let completed_task_id = "42";
+        persistent_state
+            .github
+            .pr_author_sessions
+            .retain(|_, session| session.task_id.as_deref() != Some(completed_task_id));
+
+        // Verify cleanup results
+        assert!(
+            !persistent_state
+                .github
+                .pr_author_sessions
+                .contains_key(&1001),
+            "PR 1001 with task_id=42 should be removed"
+        );
+        assert!(
+            persistent_state
+                .github
+                .pr_author_sessions
+                .contains_key(&1002),
+            "PR 1002 with task_id=99 should remain"
+        );
+        assert!(
+            !persistent_state
+                .github
+                .pr_author_sessions
+                .contains_key(&1003),
+            "PR 1003 with task_id=42 should be removed"
+        );
+        assert!(
+            persistent_state
+                .github
+                .pr_author_sessions
+                .contains_key(&1004),
+            "PR 1004 with no task_id should remain"
+        );
+        assert_eq!(
+            persistent_state.github.pr_author_sessions.len(),
+            2,
+            "Should have exactly 2 remaining entries (1002 and 1004)"
+        );
     }
 }
