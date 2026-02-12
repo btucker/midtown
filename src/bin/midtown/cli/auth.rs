@@ -86,8 +86,8 @@ pub fn handle_list_all_providers() -> Result<Response, String> {
         let note = context.header_line(*provider);
         if rows.is_empty() {
             sections.push(format!(
-                "{}\n  No profiles found. Create one with: midtown auth --provider {} login <email>",
-                provider, provider
+                "{}\n  No profiles found. Create one with: midtown auth login <email>",
+                provider
             ));
             continue;
         }
@@ -102,6 +102,44 @@ pub fn handle_list_all_providers() -> Result<Response, String> {
     Ok(Response::Message {
         message: sections.join("\n\n"),
     })
+}
+
+/// Handle login command with interactive provider selection.
+pub fn handle_login_with_prompt(cmd: &AuthCommand) -> Result<Response, String> {
+    if let AuthCommand::Login { email, key } = cmd {
+        // Prompt user to select provider
+        let provider = prompt_provider_selection()?;
+        handle_login(email, key.as_deref(), provider)
+    } else {
+        Err("Expected Login command".to_string())
+    }
+}
+
+/// Prompt the user to select an auth provider.
+fn prompt_provider_selection() -> Result<midtown::auth::AuthProvider, String> {
+    println!("Select authentication provider:");
+    println!("  1. Claude (claude.ai)");
+    println!("  2. Codex (codex.cloud)");
+    println!("  3. z.ai (z.ai)");
+    println!();
+    eprint!("Choice [1-3]: ");
+    std::io::Write::flush(&mut std::io::stderr())
+        .map_err(|e| format!("Failed to flush stderr: {}", e))?;
+
+    let mut input = String::new();
+    std::io::stdin()
+        .read_line(&mut input)
+        .map_err(|e| format!("Failed to read input: {}", e))?;
+
+    match input.trim() {
+        "1" => Ok(midtown::auth::AuthProvider::Claude),
+        "2" => Ok(midtown::auth::AuthProvider::Codex),
+        "3" => Ok(midtown::auth::AuthProvider::Zai),
+        other => Err(format!(
+            "Invalid choice '{}'. Please enter 1, 2, or 3.",
+            other
+        )),
+    }
 }
 
 fn handle_login(
@@ -1086,5 +1124,20 @@ mod tests {
         let result = handle_login("test@z.ai", Some(""), midtown::auth::AuthProvider::Zai);
         assert!(result.is_err());
         assert_eq!(result.unwrap_err(), "API key cannot be empty");
+    }
+
+    #[test]
+    fn list_all_providers_shows_all_three_providers() {
+        let result = handle_list_all_providers();
+        // Should not error even if no profiles exist
+        assert!(result.is_ok());
+        let message = match result.unwrap() {
+            Response::Message { message } => message,
+            _ => panic!("Expected Message response"),
+        };
+        // Should mention all three providers
+        assert!(message.contains("claude"));
+        assert!(message.contains("codex"));
+        assert!(message.contains("zai"));
     }
 }
