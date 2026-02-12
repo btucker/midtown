@@ -18,7 +18,7 @@ use midtown::daemon::helpers::{
 };
 
 // Decision functions
-use midtown::rules::{PrAction, decide_pr_issue_action};
+use midtown::rules::{PrAction, decide_pr_issue_action_with_handoff};
 
 // ---------------------------------------------------------------------------
 // Test 1: PR Needing Review Spawns Reviewer
@@ -333,12 +333,14 @@ fn pr_comment_nudges_owner() {
     let owner = coworker_from_branch(branch).expect("should extract owner");
     assert_eq!(owner, "amsterdam");
 
-    // Test the decision function: owner is active → nudge
+    // Test the decision function: owner is active and idle → nudge
     let active_coworkers = vec!["amsterdam".to_string(), "york".to_string()];
-    let action = decide_pr_issue_action(
+    let action = decide_pr_issue_action_with_handoff(
         &owner,
         &active_coworkers,
+        &active_coworkers, // all active coworkers are idle
         false,
+        None,
         "PR #60 - changes requested: please address feedback",
     );
 
@@ -369,10 +371,12 @@ fn pr_issue_spawns_inactive_owner() {
 
     // lexington is NOT in active coworkers
     let active_coworkers = vec!["amsterdam".to_string()];
-    let action = decide_pr_issue_action(
+    let action = decide_pr_issue_action_with_handoff(
         &owner,
         &active_coworkers,
+        &active_coworkers, // all active coworkers are idle
         false,
+        None,
         "PR #61 - changes requested: please address feedback",
     );
 
@@ -390,10 +394,12 @@ fn pr_issue_respects_dev_limit() {
     let active_coworkers = vec!["amsterdam".to_string()]; // broadway not active
 
     // at_dev_limit = true
-    let action = decide_pr_issue_action(
+    let action = decide_pr_issue_action_with_handoff(
         owner,
         &active_coworkers,
-        true, // at dev limit
+        &active_coworkers, // all active coworkers are idle
+        true,              // at dev limit
+        None,
         "PR #62 - CI failed: please investigate",
     );
 
