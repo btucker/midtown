@@ -52,7 +52,7 @@
   const currentProviderProfiles = $derived($authProfilesByProvider[$selectedAuthProvider] || [])
 
   // Find the current profile across all providers
-  const currentProfile = $derived(() => {
+  const currentProfile = $derived((() => {
     for (const [provider, profiles] of Object.entries($authProfilesByProvider)) {
       const current = profiles.find((p) => p.is_current)
       if (current) {
@@ -60,7 +60,7 @@
       }
     }
     return null
-  })()
+  })())
 
   // Get list of available providers (only those with profiles)
   const availableProviders = $derived(Object.keys($authProfilesByProvider))
