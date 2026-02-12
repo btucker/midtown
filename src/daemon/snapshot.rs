@@ -37,6 +37,11 @@ pub struct ProcessHealth {
     /// Whether the coworker is experiencing API errors (transient failures
     /// that may resolve on retry).
     pub has_api_error: bool,
+    /// Whether the coworker has an authentication error (OAuth token expired).
+    /// Unlike API errors and usage limits, auth errors require user intervention
+    /// to re-authenticate and won't resolve with retries.
+    #[serde(default)]
+    pub has_auth_error: bool,
     /// Whether the coworker has a running Task tool subagent.
     /// When true, the parent session may not emit events for several minutes
     /// while the subagent works — stuck detection should skip these coworkers.
@@ -61,6 +66,7 @@ impl Default for ProcessHealth {
             has_usage_limit: false,
             usage_limit_reset_at: None,
             has_api_error: false,
+            has_auth_error: false,
             has_running_subagent: false,
             has_pending_tool: false,
             has_tool_name_conflict: false,
@@ -217,6 +223,11 @@ pub struct WorldSnapshot {
     /// Like usage limits, these should be excluded from stuck detection, but
     /// unlike usage limits, they should receive periodic nudges to retry.
     pub api_error_coworkers: HashSet<String>,
+    /// Coworkers currently experiencing authentication errors (OAuth token expired).
+    /// Unlike API errors and usage limits, auth errors require user intervention
+    /// to re-authenticate and will not resolve with retries or time.
+    #[serde(default)]
+    pub auth_error_coworkers: HashSet<String>,
     /// Coworkers currently experiencing tool name conflicts (duplicate MCP tool names).
     /// These coworkers need a restart to resolve the conflict.
     #[serde(default)]
@@ -528,11 +539,21 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
         .map(|(name, _)| name.to_lowercase())
         .collect();
 
+    // Auth errors take precedence over both usage limits and API errors, since they
+    // require user intervention and won't resolve with time or retries.
+    let auth_error_coworkers: HashSet<String> = headless_process_health
+        .iter()
+        .filter(|(_, health)| health.has_auth_error)
+        .map(|(name, _)| name.to_lowercase())
+        .collect();
+
     let api_error_coworkers: HashSet<String> = headless_process_health
         .iter()
         .filter(|(name, health)| {
-            // Only flag API error if not already at usage limit (usage limit takes precedence)
-            health.has_api_error && !usage_limited_coworkers.contains(&name.to_lowercase())
+            // Only flag API error if not already auth error or usage limit
+            health.has_api_error
+                && !auth_error_coworkers.contains(&name.to_lowercase())
+                && !usage_limited_coworkers.contains(&name.to_lowercase())
         })
         .map(|(name, _)| name.to_lowercase())
         .collect();
@@ -655,6 +676,7 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
         usage_limit_nudge_at,
         usage_limited_coworkers,
         api_error_coworkers,
+        auth_error_coworkers,
         tool_name_conflict_coworkers,
         archived_channels,
         channel_messages,
@@ -723,6 +745,7 @@ pub(super) fn minimal_snapshot_for_test() -> WorldSnapshot {
         usage_limit_nudge_at: None,
         usage_limited_coworkers: HashSet::new(),
         api_error_coworkers: HashSet::new(),
+        auth_error_coworkers: HashSet::new(),
         tool_name_conflict_coworkers: HashSet::new(),
         archived_channels: HashSet::new(),
         channel_messages: vec![],

@@ -191,6 +191,7 @@ pub(crate) struct IdleShutdownContext<'a> {
     pub ci_passed_pr_coworkers: &'a HashSet<String>,
     pub usage_limited_coworkers: &'a HashSet<String>,
     pub api_error_coworkers: &'a HashSet<String>,
+    pub auth_error_coworkers: &'a HashSet<String>,
     pub pending_task_owners: &'a HashSet<String>,
     pub review_feedback_pr_coworkers: &'a HashSet<String>,
     pub now_utc: DateTime<Utc>,
@@ -243,7 +244,8 @@ pub(crate) fn decide_idle_shutdowns(ctx: &IdleShutdownContext<'_>) -> Vec<Shutdo
                 || hashset_contains_icase(ctx.active_reviewers, name)
                 || hashset_contains_icase(ctx.coworkers_with_unblocked_deps, name)
                 || hashset_contains_icase(ctx.usage_limited_coworkers, name)
-                || hashset_contains_icase(ctx.api_error_coworkers, name);
+                || hashset_contains_icase(ctx.api_error_coworkers, name)
+                || hashset_contains_icase(ctx.auth_error_coworkers, name);
 
             !is_protected
         })
@@ -303,13 +305,14 @@ pub(crate) struct StuckCoworkerRestart {
 pub(crate) struct StuckExemptions<'a> {
     pub usage_limited: &'a HashSet<String>,
     pub api_error: &'a HashSet<String>,
+    pub auth_error: &'a HashSet<String>,
     pub attached: &'a HashSet<String>,
 }
 
 /// Check if a process should be considered stuck.
 ///
 /// Returns `true` if the process is alive, not exempt (usage-limited, API error,
-/// attached, subagent running, pending tool), and has not emitted events for
+/// auth error, attached, subagent running, pending tool), and has not emitted events for
 /// longer than `stuck_threshold`.
 fn is_process_stuck(
     name: &str,
@@ -323,6 +326,7 @@ fn is_process_stuck(
         || health.has_pending_tool
         || hashset_contains_icase(exemptions.usage_limited, name)
         || hashset_contains_icase(exemptions.api_error, name)
+        || hashset_contains_icase(exemptions.auth_error, name)
         || hashset_contains_icase(exemptions.attached, name);
 
     !is_exempt
@@ -1059,6 +1063,7 @@ mod tests {
         ci_passed: HashSet<String>,
         usage_limited: HashSet<String>,
         api_error: HashSet<String>,
+        auth_error: HashSet<String>,
         pending_tasks: HashSet<String>,
         review_feedback: HashSet<String>,
         minimum_lifetime: Duration,
@@ -1130,6 +1135,7 @@ mod tests {
                 ci_passed_pr_coworkers: &self.ci_passed,
                 usage_limited_coworkers: &self.usage_limited,
                 api_error_coworkers: &self.api_error,
+                auth_error_coworkers: &self.auth_error,
                 pending_task_owners: &self.pending_tasks,
                 review_feedback_pr_coworkers: &self.review_feedback,
                 now_utc: Utc::now(),
@@ -1151,6 +1157,7 @@ mod tests {
             has_usage_limit: false,
             usage_limit_reset_at: None,
             has_api_error: false,
+            has_auth_error: false,
             has_running_subagent: false,
             has_pending_tool: false,
             has_tool_name_conflict: false,
@@ -2372,6 +2379,7 @@ mod tests {
         let exemptions = StuckExemptions {
             usage_limited,
             api_error,
+            auth_error: &HashSet::new(),
             attached,
         };
         decide_stuck_coworker_restarts(&map, &tasks, &exemptions, now, Duration::from_secs(180))
@@ -2723,6 +2731,7 @@ mod tests {
         let exemptions = StuckExemptions {
             usage_limited,
             api_error: &HashSet::new(),
+            auth_error: &HashSet::new(),
             attached: &HashSet::new(),
         };
         decide_stuck_reviewer_restarts(
@@ -2810,6 +2819,7 @@ mod tests {
         let exemptions = StuckExemptions {
             usage_limited: &HashSet::new(),
             api_error: &HashSet::new(),
+            auth_error: &HashSet::new(),
             attached: &HashSet::new(),
         };
         let restarts = decide_stuck_reviewer_restarts(
