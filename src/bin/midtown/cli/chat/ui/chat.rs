@@ -39,7 +39,8 @@ fn draw_chat_messages(f: &mut Frame, app: &mut App, area: Rect) {
     } else {
         format!(" #{} ", app.selected_channel)
     };
-    let border_color = if app.selection_mode {
+    let is_focused = app.focused_pane == FocusedPane::Chat;
+    let border_color = if app.selection_mode || is_focused {
         Color::Yellow
     } else {
         Color::DarkGray
