@@ -39,6 +39,7 @@
     bind:this={dropdownElement}
     style:top="{position.top}px"
     style:left="{position.left}px"
+    style:width={position.width ? `${position.width}px` : 'auto'}
   >
     {#each items as item, i}
       <button
@@ -68,7 +69,8 @@
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
     min-width: 200px;
     max-width: 400px;
-    transform: translateY(-100%);
+    /* Position above the trigger point by shifting up by own height + gap */
+    transform: translateY(calc(-100% - 8px));
   }
 
   .autocomplete-item {

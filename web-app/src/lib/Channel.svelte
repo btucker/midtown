@@ -108,17 +108,26 @@
     if (!textareaElement) return { top: 0, left: 0 }
 
     const rect = textareaElement.getBoundingClientRect()
-    // Position dropdown above the textarea
-    // The dropdown will use transform: translateY(-100%) to shift up by its own height
-    const gap = 8
 
-    // getBoundingClientRect() returns viewport-relative coordinates that already
-    // account for the textarea's actual position. We don't need to adjust for
-    // safe-area-inset-bottom here — that only affects the input-area's padding,
-    // not the dropdown's absolute positioning.
+    // On mobile browsers with virtual keyboards, position: fixed elements
+    // can have viewport coordinate mismatches. Use visual viewport offset
+    // if available to ensure accurate positioning.
+    const visualViewportOffset = window.visualViewport
+      ? { top: window.visualViewport.offsetTop, left: window.visualViewport.offsetLeft }
+      : { top: 0, left: 0 }
+
+    // Position the dropdown directly above the textarea.
+    // rect.top is relative to the visual viewport, but position: fixed
+    // is relative to the layout viewport. On mobile, these can differ
+    // when the keyboard is open. Add visualViewport offset to correct this.
+    //
+    // The dropdown's CSS applies transform: translateY(calc(-100% - 8px)) which:
+    // 1. Shifts up by the dropdown's own height (-100%)
+    // 2. Adds an 8px gap between dropdown and textarea
     return {
-      top: rect.top - gap,
-      left: rect.left
+      top: rect.top + visualViewportOffset.top,
+      left: rect.left + visualViewportOffset.left,
+      width: rect.width
     }
   }
 
