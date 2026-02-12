@@ -5,7 +5,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Wrap},
+    widgets::{Block, Borders, Clear, Paragraph, Wrap},
 };
 
 use crate::cli::chat::mermaid;
@@ -273,6 +273,9 @@ fn draw_autocomplete_dropdown(f: &mut Frame, app: &App, input_area: Rect) {
             )));
         }
     }
+
+    // Clear the area first to ensure background is rendered properly
+    f.render_widget(Clear, dropdown_area);
 
     let block = Block::default()
         .borders(Borders::ALL)
