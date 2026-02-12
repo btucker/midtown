@@ -1996,7 +1996,12 @@ mod tests {
 
         // Verify all sessions are present before cleanup
         assert_eq!(persistent_state.github.pr_author_sessions.len(), 3);
-        assert!(persistent_state.github.pr_author_sessions.contains_key(&1001));
+        assert!(
+            persistent_state
+                .github
+                .pr_author_sessions
+                .contains_key(&1001)
+        );
 
         // Simulate CompleteTask effect cleanup for task "42"
         let task_id = "42";
@@ -2007,7 +2012,10 @@ mod tests {
 
         // Verify task 42's session is removed
         assert!(
-            !persistent_state.github.pr_author_sessions.contains_key(&1001),
+            !persistent_state
+                .github
+                .pr_author_sessions
+                .contains_key(&1001),
             "PR #1001 session should be removed when task 42 completes"
         );
 
@@ -2018,11 +2026,17 @@ mod tests {
             "Should have 2 sessions remaining"
         );
         assert!(
-            persistent_state.github.pr_author_sessions.contains_key(&1002),
+            persistent_state
+                .github
+                .pr_author_sessions
+                .contains_key(&1002),
             "Task 43's session should be preserved"
         );
         assert!(
-            persistent_state.github.pr_author_sessions.contains_key(&1003),
+            persistent_state
+                .github
+                .pr_author_sessions
+                .contains_key(&1003),
             "Session without task_id should be preserved"
         );
     }
@@ -2068,7 +2082,10 @@ mod tests {
 
         // Verify PR #2001 session is removed
         assert!(
-            !persistent_state.github.pr_author_sessions.contains_key(&2001),
+            !persistent_state
+                .github
+                .pr_author_sessions
+                .contains_key(&2001),
             "PR #2001 session should be removed when worktree is cleaned up"
         );
 
@@ -2079,7 +2096,10 @@ mod tests {
             "Should have 1 session remaining"
         );
         assert!(
-            persistent_state.github.pr_author_sessions.contains_key(&2002),
+            persistent_state
+                .github
+                .pr_author_sessions
+                .contains_key(&2002),
             "PR #2002 session should be preserved"
         );
     }
