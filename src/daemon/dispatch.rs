@@ -103,6 +103,17 @@ fn task_completed_effects(task_id: &str, repo_name: &str, channel_message: Strin
 // Orphan task recovery
 // ============================================================================
 
+/// Parse PR numbers from `gh pr list --jq` output (one number per line).
+///
+/// Returns a vec of parsed PR numbers, skipping any lines that aren't valid u64.
+/// Used by `find_open_pr_for_task` to separate parsing from I/O.
+fn parse_pr_numbers_from_gh_output(stdout: &str) -> Vec<u64> {
+    stdout
+        .lines()
+        .filter_map(|line| line.trim().parse().ok())
+        .collect()
+}
+
 /// Find an open PR for a task by searching GitHub for PRs with `[Midtown !{task_id}]` in the title.
 ///
 /// This is a defense-in-depth check used after daemon restart to prevent spawning duplicate
@@ -135,10 +146,7 @@ fn find_open_pr_for_task(task_id: &str, repo_path: &std::path::Path) -> Option<u
     match output {
         Ok(output) if output.status.success() => {
             let stdout = String::from_utf8_lossy(&output.stdout);
-            let pr_numbers: Vec<u64> = stdout
-                .lines()
-                .filter_map(|line| line.trim().parse().ok())
-                .collect();
+            let pr_numbers = parse_pr_numbers_from_gh_output(&stdout);
 
             if pr_numbers.len() > 1 {
                 warn!(
@@ -163,6 +171,13 @@ fn find_open_pr_for_task(task_id: &str, repo_path: &std::path::Path) -> Option<u
             None
         }
     }
+}
+
+/// Parse PR state from `gh pr view --jq '.state'` output.
+///
+/// Returns `true` if the state is "MERGED", `false` otherwise.
+fn parse_pr_merged_state(stdout: &str) -> bool {
+    stdout.trim() == "MERGED"
 }
 
 /// Check if a specific PR is merged by querying GitHub directly.
@@ -191,8 +206,8 @@ fn is_pr_merged(pr_number: u64, repo_path: &std::path::Path) -> Option<bool> {
 
     match output {
         Ok(output) if output.status.success() => {
-            let state = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            Some(state == "MERGED")
+            let state = String::from_utf8_lossy(&output.stdout);
+            Some(parse_pr_merged_state(&state))
         }
         Ok(output) => {
             let stderr = String::from_utf8_lossy(&output.stderr);

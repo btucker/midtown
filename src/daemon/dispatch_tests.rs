@@ -2723,6 +2723,91 @@ fn test_should_recover_task_with_contextual_pr_mention_in_description() {
     );
 }
 
+// ============================================================================
+// Pure parsing function tests (no I/O required)
+// ============================================================================
+
+#[test]
+fn test_parse_pr_numbers_from_gh_output_single() {
+    let output = "1089\n";
+    let numbers = super::parse_pr_numbers_from_gh_output(output);
+    assert_eq!(numbers, vec![1089]);
+}
+
+#[test]
+fn test_parse_pr_numbers_from_gh_output_multiple() {
+    let output = "1089\n1090\n1091\n";
+    let numbers = super::parse_pr_numbers_from_gh_output(output);
+    assert_eq!(numbers, vec![1089, 1090, 1091]);
+}
+
+#[test]
+fn test_parse_pr_numbers_from_gh_output_empty() {
+    let output = "";
+    let numbers = super::parse_pr_numbers_from_gh_output(output);
+    assert!(numbers.is_empty());
+}
+
+#[test]
+fn test_parse_pr_numbers_from_gh_output_whitespace_only() {
+    let output = "  \n  \n";
+    let numbers = super::parse_pr_numbers_from_gh_output(output);
+    assert!(numbers.is_empty());
+}
+
+#[test]
+fn test_parse_pr_numbers_from_gh_output_with_trailing_newline() {
+    let output = "42\n";
+    let numbers = super::parse_pr_numbers_from_gh_output(output);
+    assert_eq!(numbers, vec![42]);
+}
+
+#[test]
+fn test_parse_pr_numbers_from_gh_output_no_trailing_newline() {
+    let output = "42";
+    let numbers = super::parse_pr_numbers_from_gh_output(output);
+    assert_eq!(numbers, vec![42]);
+}
+
+#[test]
+fn test_parse_pr_numbers_from_gh_output_skips_malformed_lines() {
+    let output = "1089\nnot_a_number\n1090\n";
+    let numbers = super::parse_pr_numbers_from_gh_output(output);
+    assert_eq!(numbers, vec![1089, 1090]);
+}
+
+#[test]
+fn test_parse_pr_numbers_from_gh_output_handles_whitespace_padding() {
+    let output = "  1089  \n  1090  \n";
+    let numbers = super::parse_pr_numbers_from_gh_output(output);
+    assert_eq!(numbers, vec![1089, 1090]);
+}
+
+#[test]
+fn test_parse_pr_merged_state_merged() {
+    assert!(super::parse_pr_merged_state("MERGED\n"));
+    assert!(super::parse_pr_merged_state("MERGED"));
+    assert!(super::parse_pr_merged_state("  MERGED  "));
+}
+
+#[test]
+fn test_parse_pr_merged_state_open() {
+    assert!(!super::parse_pr_merged_state("OPEN\n"));
+    assert!(!super::parse_pr_merged_state("OPEN"));
+}
+
+#[test]
+fn test_parse_pr_merged_state_closed() {
+    assert!(!super::parse_pr_merged_state("CLOSED\n"));
+    assert!(!super::parse_pr_merged_state("CLOSED"));
+}
+
+#[test]
+fn test_parse_pr_merged_state_empty() {
+    assert!(!super::parse_pr_merged_state(""));
+    assert!(!super::parse_pr_merged_state("  "));
+}
+
 #[test]
 #[ignore] // Requires GitHub CLI and network access
 fn test_should_recover_task_with_github_pr_title_check() {
