@@ -240,6 +240,10 @@ pub struct WorldSnapshot {
     /// PR number → branch name mapping from the worktree registry for merged PRs.
     /// Used by `collect_merged_pr_cleanup_effects()` to generate cleanup effects without I/O.
     pub merged_pr_branches: HashMap<u64, String>,
+    /// All worktree assignments from the registry.
+    /// Used by `collect_stale_worktree_cleanup_effects()` to identify worktrees
+    /// whose retention period has expired.
+    pub worktree_assignments: Vec<crate::worktree_registry::WorktreeAssignment>,
 
     // ── Limits & timing ─────────────────────────────────────────────────
     /// Whether the daemon is at the absolute coworker limit (max capacity).
@@ -536,19 +540,30 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
 
     // ── Worktree registry ────────────────────────────────────────────────
     #[allow(clippy::type_complexity)]
-    let (tasks_with_worktrees, task_worktree_map, worktree_branch_owners, merged_pr_branches): (
+    let (
+        tasks_with_worktrees,
+        task_worktree_map,
+        worktree_branch_owners,
+        merged_pr_branches,
+        worktree_assignments,
+    ): (
         HashSet<String>,
         HashMap<String, String>,
         HashMap<String, String>,
         HashMap<u64, String>,
+        Vec<crate::worktree_registry::WorktreeAssignment>,
     ) = {
         let ps = state.persistent_state.lock().await;
         let mut task_ids = HashSet::new();
         let mut wt_map = HashMap::new();
         let mut branch_owners = HashMap::new();
         let mut pr_branches = HashMap::new();
+        let mut assignments = Vec::new();
 
         for (_, assignment) in ps.worktree_registry.all_assignments().iter() {
+            // Clone the assignment for the snapshot
+            assignments.push(assignment.clone());
+
             // Collect task IDs and task→worktree mapping
             if let Some(ref task_id) = assignment.task_id {
                 task_ids.insert(task_id.clone());
@@ -566,7 +581,7 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
             }
         }
 
-        (task_ids, wt_map, branch_owners, pr_branches)
+        (task_ids, wt_map, branch_owners, pr_branches, assignments)
     };
 
     // ── Limits & timing ─────────────────────────────────────────────────
@@ -622,6 +637,7 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
         task_worktree_map,
         worktree_branch_owners,
         merged_pr_branches,
+        worktree_assignments,
         is_at_coworker_limit,
         is_at_dev_limit,
         now_utc,
@@ -687,6 +703,7 @@ pub(super) fn minimal_snapshot_for_test() -> WorldSnapshot {
         task_worktree_map: HashMap::new(),
         worktree_branch_owners: HashMap::new(),
         merged_pr_branches: HashMap::new(),
+        worktree_assignments: vec![],
         is_at_coworker_limit: false,
         is_at_dev_limit: false,
         now_utc: Utc::now(),
@@ -789,6 +806,7 @@ mod tests {
             task_worktree_map: HashMap::new(),
             worktree_branch_owners: HashMap::new(),
             merged_pr_branches: HashMap::new(),
+            worktree_assignments: vec![],
             is_at_coworker_limit: false,
             is_at_dev_limit: false,
             now_utc: Utc::now(),
@@ -881,6 +899,7 @@ mod tests {
             task_worktree_map: HashMap::new(),
             worktree_branch_owners: HashMap::new(),
             merged_pr_branches: HashMap::new(),
+            worktree_assignments: vec![],
             is_at_coworker_limit: false,
             is_at_dev_limit: false,
             now_utc: Utc::now(),
@@ -1044,6 +1063,7 @@ mod tests {
             task_worktree_map: HashMap::new(),
             worktree_branch_owners: HashMap::new(),
             merged_pr_branches: HashMap::new(),
+            worktree_assignments: vec![],
             is_at_coworker_limit: false,
             is_at_dev_limit: false,
             now_utc: Utc::now(),
@@ -1120,6 +1140,7 @@ mod tests {
             task_worktree_map: HashMap::new(),
             worktree_branch_owners: HashMap::new(),
             merged_pr_branches: HashMap::new(),
+            worktree_assignments: vec![],
             is_at_coworker_limit: false,
             is_at_dev_limit: false,
             now_utc: Utc::now(),

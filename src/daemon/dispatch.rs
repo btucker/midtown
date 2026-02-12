@@ -314,6 +314,7 @@ pub(super) fn check_and_recover_orphans(
                 current_coworker: None,
                 pr_number: None,
                 created_at: chrono::Utc::now(),
+                completed_at: None,
             },
         });
     }
@@ -1188,6 +1189,7 @@ pub(super) fn spawn_for_pending_tasks(
                             current_coworker: None,
                             pr_number: None,
                             created_at: chrono::Utc::now(),
+                            completed_at: None,
                         },
                     });
                 }
@@ -1561,6 +1563,7 @@ pub(super) fn spawn_for_pending_tasks(
                         current_coworker: None,
                         pr_number: None,
                         created_at: chrono::Utc::now(),
+                        completed_at: None,
                     },
                 });
             }
@@ -2109,6 +2112,7 @@ mod tests {
             all_tasks: vec![task],
             merged_pr_numbers,
             repo_name: "test-repo".to_string(),
+            worktree_assignments: vec![],
             ..snapshot::minimal_snapshot_for_test()
         };
 
@@ -2162,6 +2166,7 @@ mod tests {
             all_tasks: vec![task],
             merged_pr_numbers,
             repo_name: "test-repo".to_string(),
+            worktree_assignments: vec![],
             ..snapshot::minimal_snapshot_for_test()
         };
 
@@ -2191,6 +2196,7 @@ mod tests {
         let snap = snapshot::WorldSnapshot {
             all_tasks: vec![task],
             repo_name: "test-repo".to_string(),
+            worktree_assignments: vec![],
             ..snapshot::minimal_snapshot_for_test()
         };
 
@@ -2225,6 +2231,7 @@ mod tests {
             all_tasks: vec![task],
             merged_pr_numbers,
             repo_name: "test-repo".to_string(),
+            worktree_assignments: vec![],
             ..snapshot::minimal_snapshot_for_test()
         };
 
@@ -2254,6 +2261,7 @@ mod tests {
         let snap = snapshot::WorldSnapshot {
             all_tasks: vec![task],
             repo_name: "test-repo".to_string(),
+            worktree_assignments: vec![],
             ..snapshot::minimal_snapshot_for_test()
         };
 
@@ -2303,6 +2311,7 @@ mod tests {
             all_tasks: vec![completed_task, in_progress_task],
             merged_pr_numbers,
             repo_name: "test-repo".to_string(),
+            worktree_assignments: vec![],
             ..snapshot::minimal_snapshot_for_test()
         };
 
@@ -2646,6 +2655,7 @@ mod tests {
             task_worktree_map: HashMap::new(),
             worktree_branch_owners: HashMap::new(),
             merged_pr_branches: HashMap::new(),
+            worktree_assignments: vec![],
             is_at_dev_limit: false,
             active_names: HashSet::new(),
             active_session_ids: HashSet::new(),
@@ -2788,6 +2798,7 @@ mod tests {
                 .collect(),
             worktree_branch_owners: HashMap::new(),
             merged_pr_branches: HashMap::new(),
+            worktree_assignments: vec![],
             is_at_dev_limit: false,
             active_names: HashSet::new(),
             active_session_ids: HashSet::new(),
@@ -2944,6 +2955,7 @@ mod tests {
             tool_name_conflict_coworkers: HashSet::new(),
             channel_messages: vec![],
             daemon_logs: vec![],
+            worktree_assignments: vec![],
             is_at_coworker_limit: false,
             is_at_dev_limit: false,
             now_utc: chrono::Utc::now(),
@@ -3031,6 +3043,7 @@ mod tests {
             tool_name_conflict_coworkers: HashSet::new(),
             channel_messages: vec![],
             daemon_logs: vec![],
+            worktree_assignments: vec![],
             is_at_coworker_limit: false,
             is_at_dev_limit: false,
             now_utc: chrono::Utc::now(),
@@ -3122,6 +3135,7 @@ mod tests {
             tool_name_conflict_coworkers: HashSet::new(),
             channel_messages: vec![],
             daemon_logs: vec![],
+            worktree_assignments: vec![],
             is_at_coworker_limit: false,
             is_at_dev_limit: false,
             now_utc: chrono::Utc::now(),
@@ -3240,6 +3254,7 @@ mod tests {
             tool_name_conflict_coworkers: HashSet::new(),
             channel_messages: vec![],
             daemon_logs: vec![],
+            worktree_assignments: vec![],
             is_at_coworker_limit: false,
             is_at_dev_limit: false,
             now_utc: chrono::Utc::now(),
@@ -3337,6 +3352,7 @@ mod tests {
             tool_name_conflict_coworkers: HashSet::new(),
             channel_messages: vec![],
             daemon_logs: vec![],
+            worktree_assignments: vec![],
             is_at_coworker_limit: false,
             is_at_dev_limit: false,
             now_utc: chrono::Utc::now(),
@@ -3417,6 +3433,7 @@ mod tests {
             tool_name_conflict_coworkers: HashSet::new(),
             channel_messages: vec![],
             daemon_logs: vec![],
+            worktree_assignments: vec![],
             is_at_coworker_limit: false,
             is_at_dev_limit: false,
             now_utc: chrono::Utc::now(),
@@ -3545,6 +3562,7 @@ mod tests {
             tool_name_conflict_coworkers: HashSet::new(),
             channel_messages: vec![],
             daemon_logs: vec![],
+            worktree_assignments: vec![],
             is_at_coworker_limit: false,
             is_at_dev_limit: false,
             now_utc: chrono::Utc::now(),
@@ -3656,6 +3674,7 @@ mod tests {
                 .collect(),
             worktree_branch_owners: HashMap::new(),
             merged_pr_branches: HashMap::new(),
+            worktree_assignments: vec![],
             is_at_dev_limit: false,
             active_names: HashSet::new(),
             active_session_ids: HashSet::new(),
@@ -3837,6 +3856,7 @@ mod tests {
             task_worktree_map: HashMap::new(),
             worktree_branch_owners: HashMap::new(),
             merged_pr_branches: HashMap::new(),
+            worktree_assignments: vec![],
             is_at_coworker_limit: false,
             is_at_dev_limit: false,
             now_utc: chrono::Utc::now(),
@@ -4165,6 +4185,7 @@ mod tests {
             channel_router,
             None,
             10,
+            24, // worktree_retention_hours
             None,
             "main".to_string(),
         )

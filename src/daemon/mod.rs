@@ -24,6 +24,7 @@ mod startup;
 pub(crate) mod state;
 mod trackers;
 mod webhook_fwd;
+mod worktree_cleanup;
 
 use constants::*;
 pub use constants::{
@@ -93,6 +94,8 @@ pub struct DaemonConfig {
     /// GitHub username for `gh` CLI authentication.
     /// When set, runs `gh auth switch --user <github_user>` at daemon startup.
     pub github_user: Option<String>,
+    /// Worktree retention period in hours after task completion. Default: 24.
+    pub worktree_retention_hours: u64,
 }
 
 impl Default for DaemonConfig {
@@ -159,6 +162,13 @@ impl Default for DaemonConfig {
             .ok()
             .or_else(|| daemon_section.github_user.clone());
 
+        // Worktree retention hours: env var -> config.toml -> default (24)
+        let worktree_retention_hours = std::env::var("MIDTOWN_WORKTREE_RETENTION_HOURS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .or(daemon_section.worktree_retention_hours)
+            .unwrap_or(24);
+
         // Max concurrent coworkers: env var > project config > global config > default (16)
         let max_coworkers = std::env::var("MIDTOWN_MAX_COWORKERS")
             .ok()
@@ -194,6 +204,7 @@ impl Default for DaemonConfig {
             max_coworkers,
             project_name: None,
             github_user,
+            worktree_retention_hours,
         }
     }
 }
@@ -351,6 +362,8 @@ pub(crate) struct DaemonState {
     lead_typing: std::sync::Mutex<trackers::LeadTypingState>,
     /// Maximum number of concurrent coworkers
     max_coworkers: usize,
+    /// Worktree retention period in hours after task completion
+    worktree_retention_hours: u64,
     /// Web Push notification manager for sending notifications to PWA clients
     /// (shared with the webserver to avoid race conditions on subscription storage)
     push_manager: Option<std::sync::Arc<crate::push::PushManager>>,
@@ -608,6 +621,7 @@ impl DaemonState {
         channel_router: crate::ChannelRouter,
         web_updates_tx: Option<tokio::sync::broadcast::Sender<WebUpdate>>,
         max_coworkers: usize,
+        worktree_retention_hours: u64,
         push_manager: Option<std::sync::Arc<crate::push::PushManager>>,
         default_branch: String,
     ) -> crate::Result<Self> {
@@ -637,6 +651,7 @@ impl DaemonState {
             persistent_state: Mutex::new(persistent_state),
             web_updates_tx,
             max_coworkers,
+            worktree_retention_hours,
             push_manager,
             usage_limit_nudge_at: Mutex::new(None),
             lead_typing: std::sync::Mutex::new(trackers::LeadTypingState::default()),
@@ -1622,6 +1637,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
         channel_router,
         web_updates_tx,
         config.max_coworkers,
+        config.worktree_retention_hours,
         shared_push_manager,
         default_branch,
     )?);

@@ -1891,6 +1891,7 @@ async fn collect_reviewer_effects_with_source(
                     current_coworker: None,           // Will be set by BindCoworkerToWorktree
                     pr_number: Some(pr_number),
                     created_at: chrono::Utc::now(),
+                    completed_at: None,
                 },
             },
             // Bind the reviewer to the worktree
@@ -3881,6 +3882,7 @@ mod tests {
             channel_router,
             None,
             10,
+            24, // worktree_retention_hours
             None,
             "main".to_string(),
         )
@@ -4134,6 +4136,7 @@ mod tests {
             tasks_with_worktrees: HashSet::new(),
             task_worktree_map: HashMap::new(),
             worktree_branch_owners: HashMap::new(),
+            worktree_assignments: vec![],
             is_at_coworker_limit: false,
             is_at_dev_limit: false,
             now_utc: chrono::Utc::now(),
@@ -4439,6 +4442,7 @@ mod tests {
             task_worktree_map: HashMap::new(),
             worktree_branch_owners: HashMap::new(),
             merged_pr_branches: HashMap::new(),
+            worktree_assignments: vec![],
             is_at_coworker_limit: false,
             is_at_dev_limit: false,
             now_utc: chrono::Utc::now(),
@@ -4523,6 +4527,7 @@ mod tests {
             task_worktree_map: HashMap::new(),
             worktree_branch_owners: HashMap::new(),
             merged_pr_branches: HashMap::new(),
+            worktree_assignments: vec![],
             is_at_coworker_limit: false,
             is_at_dev_limit: false,
             now_utc: chrono::Utc::now(),
@@ -4598,6 +4603,7 @@ mod tests {
             task_worktree_map: HashMap::new(),
             worktree_branch_owners: HashMap::new(),
             merged_pr_branches: HashMap::new(),
+            worktree_assignments: vec![],
             is_at_coworker_limit: false,
             is_at_dev_limit: false,
             now_utc: chrono::Utc::now(),

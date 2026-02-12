@@ -249,6 +249,16 @@ pub enum Effect {
     /// Looks up the worktree in the registry by PR number or branch name,
     /// removes it from the registry, and deletes the worktree directory.
     CleanupMergedWorktree { pr_number: u64, branch: String },
+    /// Clean up a task-based worktree after its retention period expires.
+    ///
+    /// Removes worktrees whose associated tasks have been completed for
+    /// longer than the configured retention period (default 24h). This
+    /// prevents unbounded disk growth while preserving build caches for
+    /// recent work.
+    CleanupStaleWorktree {
+        worktree_id: String,
+        task_id: String,
+    },
     /// Ensure a task-based worktree exists at the specified path.
     ///
     /// Creates the worktree if it doesn't exist, or succeeds idempotently
@@ -1074,6 +1084,51 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     debug!(
                         "No worktree registered for PR #{} (branch: {}), skipping cleanup",
                         pr_number, branch
+                    );
+                }
+            }
+            Effect::CleanupStaleWorktree {
+                worktree_id,
+                task_id,
+            } => {
+                // Remove from registry
+                let removed = {
+                    let mut ps = state.persistent_state.lock().await;
+                    let removed = ps.worktree_registry.remove_worktree(&worktree_id);
+                    if removed.is_some()
+                        && let Err(e) = ps.save_for_repo(&state.repo_name)
+                    {
+                        warn!(
+                            "Failed to save daemon state after stale worktree cleanup: {}",
+                            e
+                        );
+                    }
+                    removed
+                };
+                if let Some(_assignment) = removed {
+                    // Remove the worktree directory using the primary worktree manager
+                    let wt_mgr = state.coworkers.worktree_manager().clone();
+                    let wt_id_clone = worktree_id.clone();
+                    let task_id_clone = task_id.clone();
+                    tokio::task::spawn_blocking(move || {
+                        if let Err(e) = wt_mgr.force_cleanup_task_worktree(&wt_id_clone) {
+                            warn!(
+                                "Failed to remove stale task worktree {}: {}",
+                                wt_id_clone, e
+                            );
+                        } else {
+                            info!(
+                                "Cleaned up stale worktree {} (task !{} completed >24h ago)",
+                                wt_id_clone, task_id_clone
+                            );
+                        }
+                    })
+                    .await
+                    .ok();
+                } else {
+                    debug!(
+                        "No worktree registered with ID {}, skipping stale cleanup",
+                        worktree_id
                     );
                 }
             }

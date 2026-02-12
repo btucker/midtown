@@ -37,6 +37,10 @@ pub struct WorktreeAssignment {
     pub pr_number: Option<u64>,
     /// When the assignment was created.
     pub created_at: DateTime<Utc>,
+    /// When the associated task was completed (for time-based cleanup).
+    /// Set by the daemon when a task transitions to completed status.
+    #[serde(default)]
+    pub completed_at: Option<DateTime<Utc>>,
 }
 
 /// Registry tracking worktree assignments.
@@ -133,6 +137,18 @@ impl WorktreeRegistry {
             }
             assignment.pr_number = Some(pr_number);
             self.pr_index.insert(pr_number, worktree_id.to_string());
+        }
+    }
+
+    /// Mark a worktree's associated task as completed.
+    ///
+    /// Sets the `completed_at` timestamp to enable time-based cleanup.
+    /// Called by the daemon when a task transitions to completed status.
+    pub fn mark_task_completed(&mut self, task_id: &str, completed_at: DateTime<Utc>) {
+        if let Some(wt_id) = self.task_index.get(task_id)
+            && let Some(assignment) = self.assignments.get_mut(wt_id)
+        {
+            assignment.completed_at = Some(completed_at);
         }
     }
 
@@ -345,6 +361,7 @@ mod tests {
             current_coworker: Some("lexington".to_string()),
             pr_number: None,
             created_at: Utc::now(),
+            completed_at: None,
         };
 
         registry.assign_worktree(assignment).unwrap();
@@ -372,6 +389,7 @@ mod tests {
             current_coworker: None,
             pr_number: None,
             created_at: Utc::now(),
+            completed_at: None,
         };
 
         registry.assign_worktree(assignment.clone()).unwrap();
@@ -389,6 +407,7 @@ mod tests {
             current_coworker: None,
             pr_number: None,
             created_at: Utc::now(),
+            completed_at: None,
         };
 
         registry.assign_worktree(assignment).unwrap();
@@ -418,6 +437,7 @@ mod tests {
             current_coworker: Some("lexington".to_string()),
             pr_number: None,
             created_at: Utc::now(),
+            completed_at: None,
         };
 
         registry.assign_worktree(assignment).unwrap();
@@ -439,6 +459,7 @@ mod tests {
             current_coworker: None,
             pr_number: None,
             created_at: Utc::now(),
+            completed_at: None,
         };
 
         registry.assign_worktree(assignment).unwrap();
@@ -459,6 +480,7 @@ mod tests {
             current_coworker: Some("lexington".to_string()),
             pr_number: Some(123),
             created_at: Utc::now(),
+            completed_at: None,
         };
 
         registry.assign_worktree(assignment).unwrap();
@@ -485,6 +507,7 @@ mod tests {
             current_coworker: Some("lexington".to_string()),
             pr_number: Some(123),
             created_at: Utc::now(),
+            completed_at: None,
         };
 
         registry.assign_worktree(assignment).unwrap();
@@ -504,6 +527,7 @@ mod tests {
             current_coworker: Some("lexington".to_string()),
             pr_number: Some(123),
             created_at: Utc::now(),
+            completed_at: None,
         };
 
         registry.assign_worktree(assignment).unwrap();
@@ -532,6 +556,7 @@ mod tests {
             current_coworker: Some("lexington".to_string()),
             pr_number: Some(123),
             created_at: Utc::now(),
+            completed_at: None,
         };
 
         registry.assign_worktree(assignment).unwrap();
@@ -558,6 +583,7 @@ mod tests {
             current_coworker: Some("amsterdam".to_string()),
             pr_number: None,
             created_at: Utc::now(),
+            completed_at: None,
         };
 
         let task_1011 = WorktreeAssignment {
@@ -567,6 +593,7 @@ mod tests {
             current_coworker: Some("amsterdam".to_string()),
             pr_number: None,
             created_at: Utc::now(),
+            completed_at: None,
         };
 
         registry.assign_worktree(task_948).unwrap();

@@ -103,6 +103,14 @@ pub async fn evaluate_tick(
             // Always run merged PR cleanup (pure function, no API calls)
             effects.extend(super::pr::collect_merged_pr_cleanup_effects(snap));
 
+            // Always run stale worktree cleanup (pure function, no API calls)
+            effects.extend(
+                super::worktree_cleanup::collect_stale_worktree_cleanup_effects(
+                    snap,
+                    state.worktree_retention_hours,
+                ),
+            );
+
             // Reconcile orphaned PRs: create tasks for reviewed + CI green PRs with no active task
             effects.extend(super::pr::reconcile_orphaned_prs(snap));
 
@@ -497,6 +505,7 @@ mod tests {
                     current_coworker: None,
                     pr_number: None,
                     created_at: chrono::Utc::now(),
+                    completed_at: None,
                 },
             }],
             on_failure: vec![],
@@ -516,6 +525,7 @@ mod tests {
                     current_coworker: None,
                     pr_number: None,
                     created_at: chrono::Utc::now(),
+                    completed_at: None,
                 },
             }],
             on_failure: vec![],

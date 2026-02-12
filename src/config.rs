@@ -20,6 +20,7 @@
 //!    webhook_restart_interval_secs = 300
 //!    pr_poll_interval_secs = 60
 //!    chat_monitor_enabled = true
+//!    worktree_retention_hours = 24
 //!
 //!    [providers.claude]
 //!    auth_profile = "user@example.com"
@@ -389,6 +390,11 @@ pub struct DaemonSection {
     /// This is faster and more reliable than `gh auth switch` (no global state races).
     #[serde(default)]
     pub github_user: Option<String>,
+
+    /// Worktree retention period in hours after task completion (default: 24)
+    /// Worktrees are automatically cleaned up this many hours after their associated task completes.
+    #[serde(default)]
+    pub worktree_retention_hours: Option<u64>,
 }
 
 impl DaemonSection {
@@ -409,6 +415,9 @@ impl DaemonSection {
                 .github_user
                 .clone()
                 .or_else(|| self.github_user.clone()),
+            worktree_retention_hours: other
+                .worktree_retention_hours
+                .or(self.worktree_retention_hours),
         }
     }
 }
@@ -1488,6 +1497,7 @@ name = "solo"
             pr_poll_interval_secs: Some(60),
             chat_monitor_enabled: Some(true),
             github_user: Some("global-user".to_string()),
+            worktree_retention_hours: None,
         };
 
         let project = DaemonSection {
@@ -1497,6 +1507,7 @@ name = "solo"
             pr_poll_interval_secs: Some(120),
             chat_monitor_enabled: None,
             github_user: None,
+            worktree_retention_hours: None,
         };
 
         let merged = global.merge(&project);
@@ -1517,6 +1528,7 @@ name = "solo"
             pr_poll_interval_secs: None,
             chat_monitor_enabled: None,
             github_user: None,
+            worktree_retention_hours: None,
         };
 
         let empty = DaemonSection::default();
