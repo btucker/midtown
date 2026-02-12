@@ -2,7 +2,7 @@
 
 # Midtown
 
-Work with a "lead" to manage your team of **Claude Code** "coworkers" to accomplish tasks following a github PR kanban workflow.
+Work with a "lead" to manage your team of **Claude Code** "coworkers" to accomplish tasks following a github PR workflow.
 
 ## Why Midtown?
 
@@ -416,7 +416,7 @@ The web interface is a Svelte 5 + Vite SPA served on port 47022:
 
 - Installable as a PWA for mobile use
 - Real-time updates via WebSocket
-- Kanban board for task visualization
+- Channel-grouped task sidebar for task visualization
 - Multi-channel support with split-panel layout (channel list sidebar + message pane)
 - Channel list with task counts (in progress, pending) and CI status badges
 - Channel header displays channel-specific stats (PR count, in-progress tasks, pending tasks) that update when switching channels
