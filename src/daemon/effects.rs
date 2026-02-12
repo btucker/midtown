@@ -1106,6 +1106,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     // Remove the worktree directory using the primary worktree manager
                     let wt_mgr = state.coworkers.worktree_manager().clone();
                     let wt_id = assignment.worktree_id.clone();
+                    let task_id = assignment.task_id.clone();
                     tokio::task::spawn_blocking(move || {
                         if let Err(e) = wt_mgr.force_cleanup_task_worktree(&wt_id) {
                             warn!("Failed to remove task worktree {}: {}", wt_id, e);
@@ -1118,6 +1119,17 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     })
                     .await
                     .ok();
+                    // Post to channel so the team sees what was cleaned up
+                    let task_ref = task_id
+                        .map(|id| format!(" (task !{})", id))
+                        .unwrap_or_default();
+                    let msg = Message::system(format!(
+                        "🧹 Cleaned up worktree {} after PR #{} merged{}",
+                        assignment.worktree_id, pr_number, task_ref
+                    ));
+                    if let Err(e) = state.send_and_broadcast_async(&msg).await {
+                        warn!("Failed to post worktree cleanup message: {}", e);
+                    }
                 } else {
                     debug!(
                         "No worktree registered for PR #{} (branch: {}), skipping cleanup",
@@ -1144,6 +1156,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     // Remove the worktree directory
                     let wt_mgr = state.coworkers.worktree_manager().clone();
                     let wt_id = assignment.worktree_id.clone();
+                    let task_id = assignment.task_id.clone();
                     tokio::task::spawn_blocking(move || {
                         if let Err(e) = wt_mgr.force_cleanup_task_worktree(&wt_id) {
                             warn!("Failed to remove stale worktree {}: {}", wt_id, e);
@@ -1156,6 +1169,17 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     })
                     .await
                     .ok();
+                    // Post to channel so the team sees what was cleaned up
+                    let task_ref = task_id
+                        .map(|id| format!(" (task !{})", id))
+                        .unwrap_or_default();
+                    let msg = Message::system(format!(
+                        "🧹 Cleaned up stale worktree {} (retention period expired){}",
+                        assignment.worktree_id, task_ref
+                    ));
+                    if let Err(e) = state.send_and_broadcast_async(&msg).await {
+                        warn!("Failed to post worktree cleanup message: {}", e);
+                    }
                 } else {
                     debug!(
                         "Worktree {} not found in registry, skipping cleanup",
