@@ -17,6 +17,7 @@ mod health;
 pub mod helpers;
 mod pr;
 mod rpc;
+mod rpc_auth;
 pub(crate) mod sessions;
 pub(crate) mod snapshot;
 mod specialized;
