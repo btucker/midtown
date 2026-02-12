@@ -125,7 +125,10 @@ fn find_open_pr_for_task(task_id: &str, repo_path: &std::path::Path) -> Option<u
             "--json",
             "number,title",
             "--jq",
-            &format!(r#".[] | select(.title | contains("{}")) | .number"#, pattern),
+            &format!(
+                r#".[] | select(.title | contains("{}")) | .number"#,
+                pattern
+            ),
         ])
         .output();
 

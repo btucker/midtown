@@ -2740,26 +2740,26 @@ fn test_should_recover_task_with_github_pr_title_check() {
     let task = crate::tasks::Task {
         id: "1233".to_string(),
         subject: "Prevent duplicate work after daemon restarts".to_string(),
-        description: "".to_string(),
+        description: None,
         status: crate::tasks::TaskStatus::InProgress,
         owner: Some("york".to_string()),
         blocked_by: vec![],
         pr: None, // PR association not set yet
         channel: None,
+        created_at: None,
     };
 
     // Without the GitHub title check, this would return true (allow recovery).
     // With the check, it should return false if PR #1084 exists with the pattern.
-    let should_recover = super::should_recover_task(
-        &task,
-        &merged_prs,
-        repo_path,
-        &tasks_with_open_prs,
-    );
+    let should_recover =
+        super::should_recover_task(&task, &merged_prs, repo_path, &tasks_with_open_prs);
 
     // If a PR with "[Midtown !1233]" exists and is open, recovery should be skipped.
     // This test will pass or fail depending on whether such a PR exists in the repo.
-    println!("should_recover for task with potential open PR: {}", should_recover);
+    println!(
+        "should_recover for task with potential open PR: {}",
+        should_recover
+    );
     // Not asserting here since it depends on actual GitHub state.
     // This is more of an integration test to verify the function works with gh CLI.
 }
