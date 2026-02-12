@@ -56,6 +56,37 @@ pub fn contains_at_all(content: &str) -> bool {
     }
 }
 
+/// Check if a message contains @user (case-insensitive, with word boundary).
+///
+/// Word boundary means @user is not part of a larger word:
+/// - After: must be end of string or non-alphanumeric character
+/// - Before: must be start of string or non-alphanumeric character (to avoid email addresses)
+pub fn contains_at_user(content: &str) -> bool {
+    let content_lower = content.to_lowercase();
+    if let Some(idx) = content_lower.find("@user") {
+        // Check before @user - must be start of string or non-alphanumeric
+        let before_ok = idx == 0
+            || !content[..idx]
+                .chars()
+                .last()
+                .unwrap_or(' ')
+                .is_alphanumeric();
+
+        // Check after @user - must be end of string or non-alphanumeric
+        let after_idx = idx + 5; // "@user".len()
+        let after_ok = after_idx >= content.len()
+            || !content[after_idx..]
+                .chars()
+                .next()
+                .unwrap_or(' ')
+                .is_alphanumeric();
+
+        before_ok && after_ok
+    } else {
+        false
+    }
+}
+
 /// Extract valid coworker @mentions from message content.
 ///
 /// Returns a list of coworker names that were mentioned (lowercase).
@@ -84,6 +115,65 @@ pub fn extract_mentions(content: &str) -> Vec<String> {
     }
 
     mentions
+}
+
+/// Determine if message content should override task channel routing and go to main.
+///
+/// Returns true if the message contains any of these patterns that warrant
+/// routing to the main channel even when the sender has a task channel assignment:
+///
+/// - @user mentions (important cross-cutting communication)
+/// - @lead mentions (task requests, questions)
+/// - Task lifecycle events (created, completed)
+/// - Error messages and warnings
+/// - Escalation keywords (blocked, help)
+///
+/// Insights are handled separately via cross-posting and not included here.
+pub fn should_route_to_main_channel(content: &str) -> bool {
+    let content_lower = content.to_lowercase();
+
+    // @user mentions - always go to main for visibility
+    if contains_at_user(content) {
+        return true;
+    }
+
+    // @lead mentions - task requests, questions, escalations
+    if content_lower.contains("@lead") {
+        return true;
+    }
+
+    // Task lifecycle events
+    // Pattern: "task !N completed", "created task !N", "📋 Created task"
+    if (content_lower.contains("task") && content_lower.contains("completed"))
+        || (content_lower.contains("task") && content_lower.contains("created"))
+        || content.contains("📋")
+    {
+        return true;
+    }
+
+    // Error and warning messages
+    // Match specific error reporting patterns; avoid discussions about errors
+    // Only match when error/failed appears in a reporting context, not as a topic
+    if content_lower.contains("error:")
+        || content.contains("⚠️")
+        || content.contains("❌")
+        || content_lower.starts_with("failed ")
+        || content_lower.contains(" failed ")
+        || content_lower.contains("failed to")
+    {
+        return true;
+    }
+
+    // Escalation keywords indicating the coworker needs attention
+    if content_lower.contains("blocked on")
+        || content_lower.contains("i'm blocked")
+        || content_lower.contains("help needed")
+        || content_lower.contains("need help")
+    {
+        return true;
+    }
+
+    false
 }
 
 /// Check if a sender is a coworker (not Lead or system).
@@ -1309,5 +1399,108 @@ mod tests {
             extract_task_id("Task !10 blocks task !20"),
             Some("10".to_string())
         );
+    }
+
+    // =========================================================================
+    // Content-based channel filtering tests
+    //
+    // Verify that messages with certain content patterns (@user mentions,
+    // task lifecycle events, errors) are routed to the main channel even
+    // when the sender has a task channel assignment.
+    // =========================================================================
+
+    #[test]
+    fn at_user_mention_routes_to_main() {
+        assert!(should_route_to_main_channel("@user can you help?"));
+        assert!(should_route_to_main_channel("hey @user, looking at this"));
+        assert!(should_route_to_main_channel("@user I found a bug"));
+    }
+
+    #[test]
+    fn at_user_case_insensitive() {
+        assert!(should_route_to_main_channel("@USER check this"));
+        assert!(should_route_to_main_channel("@UsEr something weird"));
+    }
+
+    #[test]
+    fn task_lifecycle_events_route_to_main() {
+        // Task request (already uses @lead which routes to main)
+        assert!(should_route_to_main_channel(
+            "@lead [Task Request] from park: \"Add validation\""
+        ));
+
+        // Task completion messages
+        assert!(should_route_to_main_channel("task !42 completed"));
+        assert!(should_route_to_main_channel("completed task !123"));
+        assert!(should_route_to_main_channel("Task !999 is completed"));
+    }
+
+    #[test]
+    fn error_messages_route_to_main() {
+        assert!(should_route_to_main_channel("Error: connection failed"));
+        assert!(should_route_to_main_channel("⚠️ Warning: API rate limit"));
+        assert!(should_route_to_main_channel("❌ Tests failed"));
+        assert!(should_route_to_main_channel("Failed to build"));
+    }
+
+    #[test]
+    fn escalation_keywords_route_to_main() {
+        assert!(should_route_to_main_channel("blocked on dependency"));
+        assert!(should_route_to_main_channel(
+            "I'm blocked waiting for approval"
+        ));
+        assert!(should_route_to_main_channel("help needed with this issue"));
+        assert!(should_route_to_main_channel("Need help understanding this"));
+    }
+
+    #[test]
+    fn regular_messages_do_not_route_to_main() {
+        // Regular /me actions
+        assert!(!should_route_to_main_channel("working on auth module"));
+        assert!(!should_route_to_main_channel("refactoring the validator"));
+        assert!(!should_route_to_main_channel("running tests"));
+
+        // Regular text
+        assert!(!should_route_to_main_channel("Added validation logic"));
+        assert!(!should_route_to_main_channel("Fixed the bug"));
+    }
+
+    #[test]
+    fn word_boundaries_for_user_mention() {
+        // Should match
+        assert!(contains_at_user("@user test"));
+        assert!(contains_at_user("Hey @user!"));
+        assert!(contains_at_user("@user."));
+
+        // Should NOT match (part of larger word)
+        assert!(!contains_at_user("unusual@user.com"));
+        assert!(!contains_at_user("@username"));
+        assert!(!contains_at_user("@users"));
+    }
+
+    #[test]
+    fn task_created_routes_to_main() {
+        // System messages about task creation should go to main
+        assert!(should_route_to_main_channel(
+            "📋 Created task !42: Add auth"
+        ));
+        assert!(should_route_to_main_channel("task !123 created"));
+    }
+
+    #[test]
+    fn false_positives_do_not_trigger() {
+        // "error" in different contexts should not trigger
+        assert!(!should_route_to_main_channel("error handling is tricky"));
+        assert!(!should_route_to_main_channel("the error rate decreased"));
+
+        // "blocked" in different contexts
+        assert!(!should_route_to_main_channel(
+            "the request was blocked by CORS"
+        ));
+        assert!(!should_route_to_main_channel("blocked requests counter"));
+
+        // "task" without lifecycle indicators
+        assert!(!should_route_to_main_channel("task looks straightforward"));
+        assert!(!should_route_to_main_channel("working on the task"));
     }
 }

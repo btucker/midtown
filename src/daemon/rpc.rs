@@ -2233,8 +2233,10 @@ fn unescape_shell_artifacts(s: &str) -> String {
 ///
 /// Posts a message to the appropriate channel based on routing rules:
 /// 1. If `channel` parameter is explicitly provided, use that
-/// 2. If sender is a coworker with a task assignment, use the task's channel
-/// 3. Otherwise, use the default main channel
+/// 2. If content requires main channel routing (cross-cutting concerns like
+///    @user mentions, task lifecycle, errors, escalations), use main channel
+/// 3. If sender is a coworker with a task assignment, use the task's channel
+/// 4. Otherwise, use the default main channel
 pub(super) async fn handle_channel_post(
     id: RequestId,
     from: &str,
@@ -2284,10 +2286,15 @@ pub(super) async fn handle_channel_post(
 
     // Determine target channel:
     // 1. If explicitly provided via RPC parameter, use that
-    // 2. If coworker has a task assigned, look up the task's channel in task_channel mapping
-    // 3. Otherwise default to main channel
+    // 2. If content requires main channel routing (cross-cutting concerns), use main
+    // 3. If coworker has a task assigned, look up the task's channel in task_channel mapping
+    // 4. Otherwise default to main channel
     let channel_name = if let Some(ch) = channel {
         ch.to_string()
+    } else if should_route_to_main_channel(&content) {
+        // Content-based filtering: @user mentions, task lifecycle, errors, escalations
+        // always go to main channel for visibility, even when sender has a task channel
+        state.channel_router.default_channel_name().to_string()
     } else if is_coworker_sender(from) {
         // Look up coworker's current task and its assigned channel
         let task_id = {
