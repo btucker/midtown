@@ -1153,7 +1153,7 @@ fn wait_for_coworkers_to_drain(timeout_secs: u64) -> Result<(), String> {
 
             // Consider "stopped", "stopping" as done (CoworkerStatus lifecycle states)
             // "starting", "running" are still working
-            if status != "stopped" && status != "stopping" {
+            if status != "idle" && status != "stopped" && status != "stopping" {
                 all_done = false;
 
                 // Print status update if changed
