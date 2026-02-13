@@ -1161,8 +1161,51 @@ fn detect_repo_root() -> WorktreeResult<PathBuf> {
     Ok(PathBuf::from(path_str.trim()))
 }
 
-/// Extract repository name from the repository path.
+/// Detect the repository name from a path using git.
+///
+/// Uses `git rev-parse --git-common-dir` to correctly identify the main repo
+/// name even when `repo_path` is inside a git worktree. Falls back to
+/// extracting the last path component if git detection fails.
 fn repo_name_from_path(repo_path: &Path) -> WorktreeResult<String> {
+    // Try git-aware detection first (handles worktree paths correctly)
+    if let Ok(output) = Command::new("git")
+        .current_dir(repo_path)
+        .args(["rev-parse", "--git-common-dir"])
+        .output()
+        && output.status.success()
+    {
+        let git_common_dir = String::from_utf8_lossy(&output.stdout).trim().to_string();
+
+        if git_common_dir == ".git" {
+            // Regular repo (not a worktree) — use --show-toplevel to resolve
+            if let Ok(tl) = Command::new("git")
+                .current_dir(repo_path)
+                .args(["rev-parse", "--show-toplevel"])
+                .output()
+                && tl.status.success()
+            {
+                let path_str = String::from_utf8_lossy(&tl.stdout);
+                if let Some(name) = Path::new(path_str.trim())
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                {
+                    return Ok(name.to_string());
+                }
+            }
+        } else {
+            // Worktree: git-common-dir is the main repo's .git directory
+            let git_path = Path::new(&git_common_dir);
+            if let Some(name) = git_path
+                .parent()
+                .and_then(|p| p.file_name())
+                .and_then(|s| s.to_str())
+            {
+                return Ok(name.to_string());
+            }
+        }
+    }
+
+    // Fallback: simple path extraction
     repo_path
         .file_name()
         .and_then(|name| name.to_str())
@@ -2137,6 +2180,67 @@ branch refs/heads/bob/work
         assert!(
             !WorktreeManager::check_merged_pr_in_json(json, "amsterdam/feature-2"),
             "Should return false when no matching headRefName exists"
+        );
+    }
+
+    #[test]
+    fn test_new_with_worktree_path_detects_correct_repo_name() {
+        let temp_dir = TempDir::new().expect("create temp dir");
+
+        // Create the main repo
+        TestCommand::new("git")
+            .args(["init"])
+            .current_dir(temp_dir.path())
+            .output()
+            .expect("git init");
+        TestCommand::new("git")
+            .args(["config", "user.email", "test@example.com"])
+            .current_dir(temp_dir.path())
+            .output()
+            .expect("git config email");
+        TestCommand::new("git")
+            .args(["config", "user.name", "Test User"])
+            .current_dir(temp_dir.path())
+            .output()
+            .expect("git config name");
+        TestCommand::new("git")
+            .args(["commit", "--allow-empty", "-m", "Initial commit"])
+            .current_dir(temp_dir.path())
+            .output()
+            .expect("initial commit");
+
+        // Create worktree inside a second TempDir (ensures cleanup on panic)
+        let worktree_parent = TempDir::new().expect("create worktree parent dir");
+        let worktree_dir = worktree_parent.path().join("task-42-some-feature");
+        let wt_output = TestCommand::new("git")
+            .args([
+                "worktree",
+                "add",
+                worktree_dir.to_str().unwrap(),
+                "-b",
+                "task-42",
+            ])
+            .current_dir(temp_dir.path())
+            .output()
+            .expect("git worktree add");
+        assert!(
+            wt_output.status.success(),
+            "git worktree add failed: {}",
+            String::from_utf8_lossy(&wt_output.stderr)
+        );
+
+        // Create a WorktreeManager using the WORKTREE path (simulates the bug)
+        let wt_manager =
+            WorktreeManager::new(worktree_dir.clone()).expect("create manager from worktree path");
+
+        // The repo_name should be the main repo's name, not "task-42-some-feature"
+        let expected_name = temp_dir.path().file_name().unwrap().to_str().unwrap();
+        assert_eq!(
+            wt_manager.repo_name(),
+            expected_name,
+            "repo_name should be the main repo name '{}', not the worktree dir name '{}'",
+            expected_name,
+            wt_manager.repo_name()
         );
     }
 }
