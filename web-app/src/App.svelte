@@ -1,17 +1,17 @@
 <script>
   import { onMount } from 'svelte'
-  import Channel from './lib/Channel.svelte'
-  import ChannelList from './lib/ChannelList.svelte'
-  import ChannelHeader from './lib/ChannelHeader.svelte'
-  import Sidebar from './lib/Sidebar.svelte'
-  import DetailPanel from './lib/DetailPanel.svelte'
-  import Status from './lib/Status.svelte'
-  import Tmux from './lib/Tmux.svelte'
-  import CoworkerStatus from './lib/CoworkerStatus.svelte'
-  import UsageBars from './lib/UsageBars.svelte'
-  import AuthSwitcher from './lib/AuthSwitcher.svelte'
-  import { messages, connected, coworkers, projects, activeProject, activeChannel, detailPanelData, isWideScreen } from './lib/store.js'
-  import { connectWebSocket, fetchHistory, fetchStatus, fetchProjects, switchProject } from './lib/api.js'
+  import { SidebarProvider, Sidebar, SidebarContent, SidebarHeader, SidebarFooter, SidebarTrigger } from '$lib/components/ui/sidebar'
+  import Channel from '$lib/Channel.svelte'
+  import ChannelList from '$lib/ChannelList.svelte'
+  import ChannelHeader from '$lib/ChannelHeader.svelte'
+  import DetailPanel from '$lib/DetailPanel.svelte'
+  import Status from '$lib/Status.svelte'
+  import Tmux from '$lib/Tmux.svelte'
+  import CoworkerStatus from '$lib/CoworkerStatus.svelte'
+  import UsageBars from '$lib/UsageBars.svelte'
+  import AuthSwitcher from '$lib/AuthSwitcher.svelte'
+  import { messages, connected, coworkers, projects, activeProject, activeChannel, detailPanelData, isWideScreen } from '$lib/store.js'
+  import { connectWebSocket, fetchHistory, fetchStatus, fetchProjects, switchProject } from '$lib/api.js'
   import {
     pushSupported,
     pushPermission,
@@ -19,19 +19,10 @@
     subscribePush,
     unsubscribePush,
     checkPushSubscription,
-  } from './lib/push.js'
+  } from '$lib/push.js'
 
   let activeView = $state('board') // 'board' (channel list + chat) or 'status' or 'tmux'
-  let sidebarOpen = $state(false)
   let projectDropdownOpen = $state(false)
-
-  function toggleSidebar() {
-    sidebarOpen = !sidebarOpen
-  }
-
-  function closeSidebar() {
-    sidebarOpen = false
-  }
 
   function toggleProjectDropdown() {
     projectDropdownOpen = !projectDropdownOpen
@@ -110,152 +101,129 @@
   }
 </script>
 
-<main>
-  <header>
-    <div class="header-left">
-      <img src="/logo.png" alt="Midtown" class="header-logo" />
-      {#if $projects.length > 0}
-        <div class="project-selector">
-          <button class="project-trigger" onclick={toggleProjectDropdown}>
-            <span class="project-status-dot" class:running={$projects.find(p => p.name === $activeProject)?.status === 'running'}></span>
-            <span class="project-name">{$activeProject || 'Select project'}</span>
-            <span class="dropdown-arrow">{projectDropdownOpen ? '\u25B4' : '\u25BE'}</span>
-          </button>
-          {#if projectDropdownOpen}
-            <div class="project-dropdown">
-              {#each $projects as project}
-                <button
-                  class="project-option"
-                  class:active={$activeProject === project.name}
-                  class:stopped={project.status !== 'running'}
-                  onclick={() => selectProject(project)}
-                  disabled={project.status !== 'running'}
-                  title={project.status === 'running' ? `Port ${project.webhook_port || 'N/A'}` : 'Stopped'}
-                >
-                  <span class="project-status-dot" class:running={project.status === 'running'}></span>
-                  <span class="option-name">{project.name}</span>
-                  {#if $activeProject === project.name}
-                    <span class="active-check">\u2713</span>
-                  {/if}
-                </button>
-              {/each}
-            </div>
-          {/if}
-        </div>
-      {:else}
-        <h1>Midtown</h1>
-      {/if}
-    </div>
-    <div class="header-controls">
-      <AuthSwitcher />
-      {#if $pushSupported}
-        <button
-          class="push-toggle"
-          class:subscribed={$pushSubscribed}
-          class:denied={$pushPermission === 'denied'}
-          onclick={togglePush}
-          disabled={$pushPermission === 'denied'}
-          title={$pushPermission === 'denied'
-            ? 'Notifications blocked in browser settings'
-            : $pushSubscribed
-              ? 'Disable push notifications'
-              : 'Enable push notifications'}
-        >
-          {$pushSubscribed ? '\u{1F514}' : '\u{1F515}'}
-        </button>
-      {/if}
-      <span
-        class="connection-dot"
-        class:connected={$connected}
-        title={$connected ? 'Connected' : 'Disconnected'}
-      ></span>
-    </div>
-  </header>
+<svelte:head>
+  <title>Midtown</title>
+</svelte:head>
 
+<div class="app-container flex h-screen w-screen overflow-hidden bg-slate-900 text-slate-200">
   {#if $activeProject}
-    <nav>
-      <button
-        class:active={activeView === 'board'}
-        onclick={() => (activeView = 'board')}
-      >
-        Board
-      </button>
-      <button
-        class:active={activeView === 'status'}
-        onclick={() => (activeView = 'status')}
-      >
-        Status
-      </button>
-      <button
-        class:active={activeView === 'tmux'}
-        onclick={() => (activeView = 'tmux')}
-      >
-        tmux
-      </button>
-    </nav>
-
-    <div class="content" data-detail-open={$detailPanelData !== null}>
-      {#if activeView === 'board'}
-        <!-- Desktop: Sidebar component -->
-        <div class="desktop-sidebar">
-          <Sidebar />
-        </div>
-
-        <!-- Mobile: overlay drawer + channel bar -->
-        <div class="mobile-board-layout">
-          <!-- Channel bar at top (mobile only) -->
-          <div class="mobile-channel-bar">
-            <button class="channel-menu-btn" onclick={toggleSidebar} aria-label="Open channels">
-              <span class="hamburger-icon">☰</span>
-            </button>
-            <div class="active-channel-display">
-              <span class="channel-hash">#</span>{$activeChannel}
-            </div>
+    <SidebarProvider>
+      <Sidebar class="bg-slate-950 border-r-2 border-slate-800">
+        <SidebarHeader class="p-3 border-b border-slate-800">
+          <div class="header-left">
+            <img src="/logo.png" alt="Midtown" class="header-logo" />
+            {#if $projects.length > 0}
+              <div class="project-selector">
+                <button class="project-trigger" onclick={toggleProjectDropdown}>
+                  <span class="project-status-dot" class:running={$projects.find(p => p.name === $activeProject)?.status === 'running'}></span>
+                  <span class="project-name">{$activeProject || 'Select project'}</span>
+                  <span class="dropdown-arrow">{projectDropdownOpen ? '\u25B4' : '\u25BE'}</span>
+                </button>
+                {#if projectDropdownOpen}
+                  <div class="project-dropdown">
+                    {#each $projects as project}
+                      <button
+                        class="project-option"
+                        class:active={$activeProject === project.name}
+                        class:stopped={project.status !== 'running'}
+                        onclick={() => selectProject(project)}
+                        disabled={project.status !== 'running'}
+                        title={project.status === 'running' ? `Port ${project.webhook_port || 'N/A'}` : 'Stopped'}
+                      >
+                        <span class="project-status-dot" class:running={project.status === 'running'}></span>
+                        <span class="option-name">{project.name}</span>
+                        {#if $activeProject === project.name}
+                          <span class="active-check">\u2713</span>
+                        {/if}
+                      </button>
+                    {/each}
+                  </div>
+                {/if}
+              </div>
+            {:else}
+              <h1>Midtown</h1>
+            {/if}
           </div>
+          <div class="header-controls">
+            <AuthSwitcher />
+            {#if $pushSupported}
+              <button
+                class="push-toggle"
+                class:subscribed={$pushSubscribed}
+                class:denied={$pushPermission === 'denied'}
+                onclick={togglePush}
+                disabled={$pushPermission === 'denied'}
+                title={$pushPermission === 'denied'
+                  ? 'Notifications blocked in browser settings'
+                  : $pushSubscribed
+                    ? 'Disable push notifications'
+                    : 'Enable push notifications'}
+              >
+                {$pushSubscribed ? '\u{1F514}' : '\u{1F515}'}
+              </button>
+            {/if}
+            <span
+              class="connection-dot"
+              class:connected={$connected}
+              title={$connected ? 'Connected' : 'Disconnected'}
+            ></span>
+          </div>
+        </SidebarHeader>
 
-          <!-- Sidebar drawer (desktop: static, mobile: overlay) -->
-          <aside class="board-sidebar" class:open={sidebarOpen}>
-            <button class="mobile-close" onclick={closeSidebar} aria-label="Close menu">
-              ✕
-            </button>
+        <SidebarContent>
+          {#if activeView === 'board'}
             <div class="sidebar-scroll">
               <ChannelList />
             </div>
-            <div class="sidebar-bottom">
-              <CoworkerStatus />
-              <UsageBars />
-            </div>
-          </aside>
-
-          {#if sidebarOpen}
-            <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-            <div class="sidebar-overlay" onclick={closeSidebar} role="button" tabindex="0"></div>
+          {:else if activeView === 'status'}
+            <Status />
+          {:else if activeView === 'tmux'}
+            <Tmux />
           {/if}
+        </SidebarContent>
 
-          <!-- Main chat area -->
-          <main class="channel-main">
+        <SidebarFooter class="border-t-2 border-slate-800 bg-slate-950 p-2 pb-[calc(0.5rem+env(safe-area-inset-bottom))]">
+          {#if activeView === 'board'}
+            <CoworkerStatus />
+            <UsageBars />
+          {/if}
+        </SidebarFooter>
+      </Sidebar>
+
+      <main class="flex-1 flex flex-col h-full overflow-hidden">
+        <!-- Mobile header with sidebar trigger -->
+        <header class="flex items-center p-2 border-b border-slate-800 bg-slate-950 md:hidden">
+          <SidebarTrigger />
+          <span class="ml-2 text-sm text-slate-400">{$activeProject}</span>
+          <div class="active-channel-display ml-4">
+            <span class="channel-hash">#</span>{$activeChannel}
+          </div>
+        </header>
+
+        {#if activeView === 'board'}
+          <div class="channel-main">
             <ChannelHeader />
             <Channel />
-          </main>
-        </div>
+          </div>
 
-        <!-- Detail panel (desktop only, shown on wide screens) -->
-        {#if $detailPanelData}
-          <DetailPanel panelData={$detailPanelData} onClose={closeDetailPanel} />
+          <!-- Detail panel (desktop only, shown on wide screens) -->
+          {#if $detailPanelData}
+            <DetailPanel panelData={$detailPanelData} onClose={closeDetailPanel} />
+          {/if}
+        {:else if activeView === 'status'}
+          <!-- Status view shown in sidebar -->
+        {:else if activeView === 'tmux'}
+          <!-- Tmux view shown in sidebar -->
         {/if}
-      {:else if activeView === 'status'}
-        <Status />
-      {:else if activeView === 'tmux'}
-        <Tmux />
-      {/if}
-    </div>
+      </main>
+    </SidebarProvider>
   {:else}
     <div class="no-project">
       <p>No running projects found.</p>
       <p class="hint">Start a project with <code>midtown start</code></p>
     </div>
   {/if}
-</main>
+</div>
 
 <style>
   :global(*) {
@@ -274,33 +242,18 @@
     -moz-osx-font-smoothing: grayscale;
   }
 
-  main {
-    display: flex;
-    flex-direction: column;
-    height: 100vh;
-    height: 100dvh;
-    background: #0f0f0f;
+  .app-container {
+    /* Mobile: centered layout with max-width */
   }
 
-  /* Mobile: centered layout with max-width */
   @media (max-width: 768px) {
-    main {
+    .app-container {
       max-width: 600px;
       margin: 0 auto;
     }
   }
 
-  header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 14px 18px;
-    padding-top: calc(env(safe-area-inset-top) + 14px);
-    background: #1a1a1a;
-    border-bottom: 2px solid #2a2a2a;
-    flex-shrink: 0;
-  }
-
+  /* Header styles */
   .header-left {
     display: flex;
     align-items: center;
@@ -317,29 +270,6 @@
     display: flex;
     align-items: center;
     gap: 10px;
-  }
-
-  .push-toggle {
-    background: none;
-    border: none;
-    font-size: 1.15rem;
-    cursor: pointer;
-    padding: 5px;
-    opacity: 0.5;
-    transition: opacity 0.2s;
-  }
-
-  .push-toggle.subscribed {
-    opacity: 1;
-  }
-
-  .push-toggle.denied {
-    opacity: 0.25;
-    cursor: not-allowed;
-  }
-
-  .push-toggle:hover:not(.denied) {
-    opacity: 1;
   }
 
   h1 {
@@ -467,141 +397,41 @@
     background: #5faf5f;
   }
 
-  nav {
-    display: flex;
-    background: #1a1a1a;
-    border-bottom: 2px solid #2a2a2a;
-    flex-shrink: 0;
-  }
-
-  /* Hide tab navigation on desktop (sidebar replaces it) */
-  @media (min-width: 769px) {
-    nav {
-      display: none;
-    }
-  }
-
-  nav button {
-    flex: 1;
-    padding: 13px;
+  .push-toggle {
+    background: none;
     border: none;
-    background: transparent;
-    color: #606060;
-    font-size: 0.9rem;
-    font-weight: 600;
+    font-size: 1.15rem;
     cursor: pointer;
-    transition: all 0.2s;
-    letter-spacing: 0.02em;
+    padding: 5px;
+    opacity: 0.5;
+    transition: opacity 0.2s;
   }
 
-  nav button.active {
-    color: #5faf5f;
-    border-bottom: 3px solid #5faf5f;
+  .push-toggle.subscribed {
+    opacity: 1;
   }
 
-  nav button:hover:not(.active) {
-    color: #a0a0a0;
+  .push-toggle.denied {
+    opacity: 0.25;
+    cursor: not-allowed;
   }
 
-  .content {
+  .push-toggle:hover:not(.denied) {
+    opacity: 1;
+  }
+
+  /* Sidebar content */
+  .sidebar-scroll {
+    flex: 1;
+    overflow-y: auto;
+  }
+
+  /* Channel main area */
+  .channel-main {
     flex: 1;
     overflow: hidden;
     display: flex;
     flex-direction: column;
-  }
-
-  /* Desktop: three-column grid layout */
-  @media (min-width: 769px) {
-    .content {
-      display: grid;
-      grid-template-columns: 260px 1fr;
-      grid-template-areas: 'sidebar main';
-    }
-  }
-
-  /* Show detail panel on wide screens when panel is open */
-  @media (min-width: 1025px) {
-    .content[data-detail-open='true'] {
-      grid-template-columns: 260px 1fr 340px;
-      grid-template-areas: 'sidebar main detail';
-    }
-  }
-
-  /* Desktop sidebar wrapper */
-  .desktop-sidebar {
-    display: none;
-  }
-
-  @media (min-width: 769px) {
-    .desktop-sidebar {
-      display: block;
-      grid-area: sidebar;
-    }
-  }
-
-  /* Board layout container */
-  .mobile-board-layout {
-    display: flex;
-    flex: 1;
-    overflow: hidden;
-    position: relative;
-    flex-direction: column;
-  }
-
-  /* Desktop: hide mobile layout, show only channel-main in grid */
-  @media (min-width: 769px) {
-    .mobile-board-layout {
-      display: contents; /* Allow grid children to participate in parent grid */
-    }
-
-    /* Hide mobile-specific elements on desktop */
-    .mobile-board-layout .mobile-channel-bar,
-    .mobile-board-layout .board-sidebar,
-    .mobile-board-layout .sidebar-overlay {
-      display: none;
-    }
-  }
-
-  /* Mobile channel bar (mobile only) */
-  .mobile-channel-bar {
-    display: none;
-  }
-
-  @media (max-width: 768px) {
-    .mobile-channel-bar {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      padding: 12px 16px;
-      background: #1a1a1a;
-      border-bottom: 2px solid #2a2a2a;
-      flex-shrink: 0;
-    }
-  }
-
-  .channel-menu-btn {
-    width: 38px;
-    height: 38px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    border: 2px solid #2a2a2a;
-    border-radius: 7px;
-    background: #0f0f0f;
-    color: #d0d0d0;
-    font-size: 1.3rem;
-    cursor: pointer;
-    transition: all 0.2s;
-    flex-shrink: 0;
-  }
-
-  .channel-menu-btn:hover {
-    background: #1a1a1a;
-    border-color: #5faf5f;
-  }
-
-  .hamburger-icon {
-    line-height: 1;
   }
 
   .active-channel-display {
@@ -617,124 +447,7 @@
     color: #606060;
   }
 
-  .mobile-close {
-    display: none;
-  }
-
-  .sidebar-overlay {
-    display: none;
-  }
-
-  .board-sidebar {
-    width: 300px;
-    flex-shrink: 0;
-    display: flex;
-    flex-direction: column;
-    background: #0f0f0f;
-    border-right: 2px solid #2a2a2a;
-  }
-
-  /* Desktop: permanent sidebar in grid */
-  @media (min-width: 769px) {
-    .board-sidebar {
-      grid-area: sidebar;
-      width: 260px;
-      position: static;
-      transform: none;
-      box-shadow: none;
-      backdrop-filter: none;
-      background: #0f0f0f;
-    }
-  }
-
-  .sidebar-scroll {
-    flex: 1;
-    overflow-y: auto;
-  }
-
-  .sidebar-bottom {
-    flex-shrink: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    padding: 8px;
-    padding-bottom: calc(8px + env(safe-area-inset-bottom, 0px));
-    border-top: 2px solid #2a2a2a;
-    background: #0a0a0a;
-  }
-
-  .channel-main {
-    flex: 1;
-    overflow: hidden;
-    display: flex;
-    flex-direction: column;
-  }
-
-  /* Desktop: main panel in grid */
-  @media (min-width: 769px) {
-    .channel-main {
-      grid-area: main;
-    }
-  }
-
-  /* Responsive: mobile layout */
-  @media (max-width: 768px) {
-    .mobile-channel-bar {
-      display: flex;
-    }
-
-    .mobile-close {
-      display: block;
-      position: absolute;
-      top: calc(env(safe-area-inset-top) + 14px);
-      right: 14px;
-      width: 36px;
-      height: 36px;
-      border: none;
-      background: transparent;
-      color: #d0d0d0;
-      font-size: 1.6rem;
-      cursor: pointer;
-      z-index: 101;
-      line-height: 1;
-    }
-
-    .board-sidebar {
-      position: fixed;
-      left: 0;
-      top: 0;
-      bottom: 0;
-      padding-top: env(safe-area-inset-top);
-      padding-bottom: env(safe-area-inset-bottom);
-      z-index: 100;
-      transform: translateX(-100%);
-      transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-      box-shadow: 4px 0 16px rgba(0, 0, 0, 0.6);
-      backdrop-filter: blur(10px);
-      background: rgba(15, 15, 15, 0.95);
-    }
-
-    .board-sidebar.open {
-      transform: translateX(0);
-    }
-
-    .sidebar-overlay {
-      display: block;
-      position: fixed;
-      top: 0;
-      left: 0;
-      right: 0;
-      bottom: 0;
-      background: rgba(0, 0, 0, 0.6);
-      backdrop-filter: blur(4px);
-      z-index: 99;
-    }
-
-    .channel-main {
-      width: 100%;
-    }
-  }
-
+  /* No project message */
   .no-project {
     flex: 1;
     display: flex;
