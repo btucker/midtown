@@ -83,83 +83,20 @@
 </script>
 
 {#if loading}
-  <div class="mermaid-loading">Loading diagram...</div>
+  <div class="text-[#585858] text-[0.8rem] py-2">Loading diagram...</div>
 {:else if error}
-  <div class="mermaid-error">
-    <div class="mermaid-error-label">Diagram error</div>
-    <pre class="mermaid-error-text">{error}</pre>
+  <div class="bg-[#2a1a1a] border border-[#5a2a2a] rounded-md px-3 py-2 my-1.5 text-[0.8rem]">
+    <div class="text-[#ff5f5f] font-semibold mb-1">Diagram error</div>
+    <pre class="text-[#a0a0a0] m-0 whitespace-pre-wrap break-words">{error}</pre>
   </div>
 {:else}
   <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-  <div class="mermaid-diagram" onclick={handleExpand} title="Click to expand">
+  <div
+    class="group bg-[#1a1a2e] rounded-md p-3 my-1.5 overflow-x-auto leading-none cursor-pointer relative hover:outline hover:outline-1 hover:outline-[#3a3a5e] [&>svg]:max-w-full [&>svg]:h-auto [&>svg]:block"
+    onclick={handleExpand}
+    title="Click to expand"
+  >
     {@html svgHtml}
-    <div class="expand-hint">Click to expand</div>
+    <div class="absolute top-1.5 right-2 text-[0.7rem] text-[#585858] opacity-0 transition-opacity duration-150 pointer-events-none font-['SF_Mono',Menlo,Consolas,monospace] group-hover:opacity-100">Click to expand</div>
   </div>
 {/if}
-
-<style>
-  .mermaid-diagram {
-    background: #1a1a2e;
-    border-radius: 6px;
-    padding: 12px;
-    margin: 6px 0;
-    overflow-x: auto;
-    line-height: 1;
-    cursor: pointer;
-    position: relative;
-  }
-
-  .mermaid-diagram:hover {
-    outline: 1px solid #3a3a5e;
-  }
-
-  .expand-hint {
-    position: absolute;
-    top: 6px;
-    right: 8px;
-    font-size: 0.7rem;
-    color: #585858;
-    opacity: 0;
-    transition: opacity 0.15s;
-    pointer-events: none;
-    font-family: 'SF Mono', 'Menlo', 'Consolas', monospace;
-  }
-
-  .mermaid-diagram:hover .expand-hint {
-    opacity: 1;
-  }
-
-  .mermaid-diagram :global(svg) {
-    max-width: 100%;
-    height: auto;
-    display: block;
-  }
-
-  .mermaid-loading {
-    color: #585858;
-    font-size: 0.8rem;
-    padding: 8px 0;
-  }
-
-  .mermaid-error {
-    background: #2a1a1a;
-    border: 1px solid #5a2a2a;
-    border-radius: 6px;
-    padding: 8px 12px;
-    margin: 6px 0;
-    font-size: 0.8rem;
-  }
-
-  .mermaid-error-label {
-    color: #ff5f5f;
-    font-weight: 600;
-    margin-bottom: 4px;
-  }
-
-  .mermaid-error-text {
-    color: #a0a0a0;
-    margin: 0;
-    white-space: pre-wrap;
-    word-break: break-word;
-  }
-</style>

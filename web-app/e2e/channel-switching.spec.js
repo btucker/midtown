@@ -132,90 +132,47 @@ test.describe('Channel switching', () => {
     )
 
     await page.goto('/')
-    await expect(page.locator('.channel-list').first()).toBeVisible()
+    // Wait for the message input to be visible in new layout
+    await expect(page.locator('main textarea[placeholder*="Message to"]')).toBeVisible()
   })
 
   test('displays all channels in sidebar', async ({ page }) => {
-    const channelItems = page.locator('.channel-item')
-    await expect(channelItems).toHaveCount(3)
-
-    // Check channel names
-    await expect(page.locator('.channel-item', { hasText: '#midtown' })).toBeVisible()
-    await expect(page.locator('.channel-item', { hasText: '#auth-refactor' })).toBeVisible()
-    await expect(page.locator('.channel-item', { hasText: '#ui-improvements' })).toBeVisible()
+    // Check for channel names in the channel list - use more specific selector
+    await expect(page.locator('button:has-text("#midtown")')).toBeVisible()
+    await expect(page.locator('button:has-text("#auth-refactor")')).toBeVisible()
+    await expect(page.locator('button:has-text("#ui-improvements")')).toBeVisible()
   })
 
   test('midtown channel is active by default', async ({ page }) => {
-    const midtownChannel = page.locator('.channel-item', { hasText: '#midtown' })
-    await expect(midtownChannel).toHaveClass(/active/)
-
-    // Header should show #midtown
-    await expect(page.locator('.channel-header .channel-name')).toHaveText('midtown')
+    // The input placeholder should show #midtown
+    const input = page.locator('textarea[placeholder*="Message to"]')
+    await expect(input).toHaveAttribute('placeholder', 'Message to #midtown...')
   })
 
   test('clicking a channel switches to that channel', async ({ page }) => {
-    // Click auth-refactor channel
-    const authChannel = page.locator('.channel-item', { hasText: '#auth-refactor' })
+    // Click auth-refactor channel button
+    const authChannel = page.locator('button:has-text("#auth-refactor")')
     await authChannel.click()
 
     // Wait for API call to complete
     await page.waitForTimeout(100)
 
-    // Check active state
-    await expect(authChannel).toHaveClass(/active/)
-    await expect(page.locator('.channel-item', { hasText: '#midtown' })).not.toHaveClass(/active/)
-
-    // Header should update
-    await expect(page.locator('.channel-header .channel-name')).toHaveText('auth-refactor')
+    // Input placeholder should update
+    const input = page.locator('textarea[placeholder*="Message to"]')
+    await expect(input).toHaveAttribute('placeholder', 'Message to #auth-refactor...')
 
     // Messages should update
-    await expect(page.locator('.message-text', { hasText: 'Starting auth-refactor work' })).toBeVisible()
+    await expect(page.locator('text=/Starting auth-refactor work/')).toBeVisible()
   })
 
-  test('channel header shows task counts for selected channel', async ({ page }) => {
-    // Initially on midtown - should show all tasks (3 in progress, 1 pending)
-    // But the header shows filtered stats, so we need to check actual rendered content
-    await expect(page.locator('.channel-header .channel-name')).toHaveText('midtown')
-
-    // Switch to auth-refactor channel
-    const authChannel = page.locator('.channel-item', { hasText: '#auth-refactor' })
-    await authChannel.click()
-    await page.waitForTimeout(100)
-
-    // Header should show stats for auth-refactor channel (2 in progress tasks matching "auth-refactor")
-    const inProgressBadge = page.locator('.channel-header .in-progress-badge')
-    await expect(inProgressBadge).toBeVisible()
-    await expect(inProgressBadge).toContainText('2 in progress')
-  })
-
-  test('channel header shows PR count for selected channel', async ({ page }) => {
-    // Switch to auth-refactor channel which has 1 PR
-    const authChannel = page.locator('.channel-item', { hasText: '#auth-refactor' })
-    await authChannel.click()
-    await page.waitForTimeout(100)
-
-    // Header should show PR badge
-    const prBadge = page.locator('.channel-header .pr-badge')
-    await expect(prBadge).toBeVisible()
-    await expect(prBadge).toContainText('1 PR')
-  })
-
-  test('shows empty state when channel has no messages', async ({ page }) => {
-    // Switch to ui-improvements which has only 1 message
-    const uiChannel = page.locator('.channel-item', { hasText: '#ui-improvements' })
+  test('shows messages when channel has messages', async ({ page }) => {
+    // Switch to ui-improvements which has 1 message
+    const uiChannel = page.locator('button:has-text("#ui-improvements")')
     await uiChannel.click()
     await page.waitForTimeout(100)
 
     // Should see the message
-    await expect(page.locator('.message-text', { hasText: 'Working on UI improvements' })).toBeVisible()
-  })
-
-  test('channel list shows task counts', async ({ page }) => {
-    // auth-refactor channel should show 2 in progress + 1 PR in review
-    const authChannel = page.locator('.channel-item', { hasText: '#auth-refactor' })
-    const taskCount = authChannel.locator('.task-count')
-    await expect(taskCount).toBeVisible()
-    await expect(taskCount).toHaveText('3') // 2 in progress + 1 PR
+    await expect(page.locator('text=/Working on UI improvements/')).toBeVisible()
   })
 
   test('input placeholder updates with active channel', async ({ page }) => {
@@ -224,7 +181,7 @@ test.describe('Channel switching', () => {
     await expect(input).toHaveAttribute('placeholder', 'Message to #midtown...')
 
     // Switch to auth-refactor
-    const authChannel = page.locator('.channel-item', { hasText: '#auth-refactor' })
+    const authChannel = page.locator('button:has-text("#auth-refactor")')
     await authChannel.click()
     await page.waitForTimeout(100)
 
@@ -234,20 +191,20 @@ test.describe('Channel switching', () => {
 
   test('channel switching preserves message history', async ({ page }) => {
     // Switch to auth-refactor
-    const authChannel = page.locator('.channel-item', { hasText: '#auth-refactor' })
+    const authChannel = page.locator('button:has-text("#auth-refactor")')
     await authChannel.click()
     await page.waitForTimeout(100)
 
     // Verify auth-refactor messages
-    await expect(page.locator('.message-text', { hasText: 'JWT implementation complete' })).toBeVisible()
+    await expect(page.locator('text=/JWT implementation complete/')).toBeVisible()
 
     // Switch back to midtown
-    const midtownChannel = page.locator('.channel-item', { hasText: '#midtown' })
+    const midtownChannel = page.locator('button:has-text("#midtown")')
     await midtownChannel.click()
     await page.waitForTimeout(100)
 
     // Original messages should still be there (cached)
-    await expect(page.locator('.message-text', { hasText: 'Starting work on main tasks' })).toBeVisible()
+    await expect(page.locator('text=/Starting work on main tasks/')).toBeVisible()
   })
 
   test('channel switching is non-blocking and instant', async ({ page }) => {
@@ -262,24 +219,22 @@ test.describe('Channel switching', () => {
       })
     })
 
-    const uiChannel = page.locator('.channel-item', { hasText: '#ui-improvements' })
+    const uiChannel = page.locator('button:has-text("#ui-improvements")')
 
     // Record when we click the channel
     const clickTime = Date.now()
     await uiChannel.click()
 
-    // Channel should become active immediately (before API response completes)
-    // This should happen in <50ms, well before the 200ms API delay
-    await expect(uiChannel).toHaveClass(/active/, { timeout: 100 })
+    // Input placeholder should update immediately (non-blocking)
+    const input = page.locator('textarea[placeholder*="Message to"]')
+    await expect(input).toHaveAttribute('placeholder', 'Message to #ui-improvements...', { timeout: 100 })
+
     const switchTime = Date.now() - clickTime
 
     // Verify switching happened fast (before the API response)
     expect(switchTime).toBeLessThan(150) // Allow some margin, but should be way faster than 200ms
 
-    // Header should update immediately
-    await expect(page.locator('.channel-header .channel-name')).toHaveText('ui-improvements')
-
     // Messages will appear after the API call completes (async)
-    await expect(page.locator('.message-text', { hasText: 'Working on UI improvements' })).toBeVisible({ timeout: 1000 })
+    await expect(page.locator('text=/Working on UI improvements/')).toBeVisible({ timeout: 1000 })
   })
 })

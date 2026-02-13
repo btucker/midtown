@@ -20,7 +20,7 @@
   let pendingErrorCallbackId = null  // Track callback ID for cleanup on unmount
 
   // Approximate character width for a monospace font at 0.8rem.
-  // This converts pixel width → terminal columns for the resize message.
+  // This converts pixel width to terminal columns for the resize message.
   const CHAR_WIDTH_PX = 7.7
 
   function getViewportCols() {
@@ -212,202 +212,56 @@
   })
 </script>
 
-<div class="tmux-container">
-  <div class="window-selector">
+<div class="flex-1 flex flex-col overflow-hidden bg-[#0d0d0d]">
+  <div class="flex gap-0 p-0 bg-[#1a1a1a] border-b border-[#3a3a3a] overflow-x-auto [-webkit-overflow-scrolling:touch] [&::-webkit-scrollbar]:hidden [scrollbar-width:none]">
     {#each windows as win}
       <button
-        class="window-btn"
-        class:active={selectedWindow === win}
+        class="px-3.5 py-2 border-none bg-transparent text-[#585858] text-[0.75rem] cursor-pointer whitespace-nowrap transition-colors duration-150 hover:text-[#a8a8a8] {selectedWindow === win ? 'text-[#5fafaf] border-b-2 border-[#5fafaf]' : ''}"
         onclick={() => selectWindow(win)}
       >
         {win}
       </button>
     {/each}
     {#if windows.length === 0}
-      <span class="no-windows">No windows</span>
+      <span class="px-3.5 py-2 text-[#585858] text-[0.75rem]">No windows</span>
     {/if}
   </div>
   {#if error}
-    <div class="error-banner">{error}</div>
+    <div class="px-4 py-2 bg-[#2a1a1a] text-[#e94560] text-[0.8rem] text-center border-b border-[#3a1a1a]">{error}</div>
   {/if}
-  <pre class="pane-content" bind:this={paneEl}>{paneContent}</pre>
-  <div class="nudge-bar">
-    <button class="esc-btn" onclick={sendEscape} title="Send Escape key">
+  <pre class="flex-1 overflow-auto px-3 py-2 m-0 font-['SF_Mono',Monaco,Menlo,Consolas,monospace] text-[0.8rem] leading-snug whitespace-pre text-[#d4d4d4] [-webkit-overflow-scrolling:touch]" bind:this={paneEl}>{paneContent}</pre>
+  <div class="flex items-center gap-1.5 px-2 py-2 mb-2 bg-[#1a1a1a] border-t border-[#3a3a3a]">
+    <button
+      class="px-2.5 py-2 bg-[#2a2a2a] border border-[#3a3a3a] rounded text-[#888] text-[0.7rem] cursor-pointer whitespace-nowrap hover:bg-[#3a3a3a] hover:text-[#aaa]"
+      onclick={sendEscape}
+      title="Send Escape key"
+    >
       Esc
     </button>
     <input
-      class="nudge-input"
+      class="flex-1 px-2.5 py-2 bg-[#0d0d0d] border border-[#3a3a3a] rounded text-[#d4d4d4] font-['SF_Mono',Monaco,Menlo,Consolas,monospace] text-[0.8rem] outline-none focus:border-[#5fafaf] placeholder:text-[#585858]"
       type="text"
       placeholder="Message {selectedWindow}"
       bind:value={nudgeText}
       onkeydown={handleNudgeKeydown}
     />
-    <button class="nudge-send" onclick={sendNudge} disabled={!nudgeText.trim()}>
+    <button
+      class="px-3 py-2 bg-[#2a3a3a] border border-[#3a3a3a] rounded text-[#5fafaf] text-[0.75rem] cursor-pointer whitespace-nowrap hover:bg-[#3a4a4a] disabled:opacity-40 disabled:cursor-default"
+      onclick={sendNudge}
+      disabled={!nudgeText.trim()}
+    >
       Send
     </button>
     {#if nudgeStatus === 'sent'}
-      <span class="nudge-status">Sent</span>
+      <span class="text-[#5faf5f] text-[0.7rem] whitespace-nowrap animate-[fade-out_2s_forwards]">Sent</span>
     {/if}
     {#if nudgeError}
-      <span class="nudge-error">{nudgeError}</span>
+      <span class="text-[#e94560] text-[0.7rem] whitespace-nowrap animate-[fade-out_4s_forwards]">{nudgeError}</span>
     {/if}
   </div>
 </div>
 
 <style>
-  .tmux-container {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
-    background: #0d0d0d;
-  }
-
-  .window-selector {
-    display: flex;
-    gap: 0;
-    padding: 0;
-    background: #1a1a1a;
-    border-bottom: 1px solid #3a3a3a;
-    overflow-x: auto;
-    -webkit-overflow-scrolling: touch;
-    scrollbar-width: none;
-  }
-
-  .window-selector::-webkit-scrollbar {
-    display: none;
-  }
-
-  .window-btn {
-    padding: 8px 14px;
-    border: none;
-    background: transparent;
-    color: #585858;
-    font-family: inherit;
-    font-size: 0.75rem;
-    cursor: pointer;
-    white-space: nowrap;
-    transition: color 0.15s;
-  }
-
-  .window-btn:hover {
-    color: #a8a8a8;
-  }
-
-  .window-btn.active {
-    color: #5fafaf;
-    border-bottom: 2px solid #5fafaf;
-  }
-
-  .no-windows {
-    padding: 8px 14px;
-    color: #585858;
-    font-size: 0.75rem;
-  }
-
-  .error-banner {
-    padding: 8px 16px;
-    background: #2a1a1a;
-    color: #e94560;
-    font-size: 0.8rem;
-    text-align: center;
-    border-bottom: 1px solid #3a1a1a;
-  }
-
-  .pane-content {
-    flex: 1;
-    overflow: auto;
-    padding: 8px 12px;
-    margin: 0;
-    font-family: 'SF Mono', 'Monaco', 'Menlo', 'Consolas', monospace;
-    font-size: 0.8rem;
-    line-height: 1.3;
-    white-space: pre;
-    color: #d4d4d4;
-    -webkit-overflow-scrolling: touch;
-  }
-
-  .nudge-bar {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    padding: 8px 8px;
-    margin-bottom: 8px;
-    background: #1a1a1a;
-    border-top: 1px solid #3a3a3a;
-  }
-
-  .esc-btn {
-    padding: 8px 10px;
-    background: #2a2a2a;
-    border: 1px solid #3a3a3a;
-    border-radius: 4px;
-    color: #888;
-    font-size: 0.7rem;
-    font-family: inherit;
-    cursor: pointer;
-    white-space: nowrap;
-  }
-
-  .esc-btn:hover {
-    background: #3a3a3a;
-    color: #aaa;
-  }
-
-  .nudge-input {
-    flex: 1;
-    padding: 8px 10px;
-    background: #0d0d0d;
-    border: 1px solid #3a3a3a;
-    border-radius: 4px;
-    color: #d4d4d4;
-    font-family: 'SF Mono', 'Monaco', 'Menlo', 'Consolas', monospace;
-    font-size: 0.8rem;
-    outline: none;
-  }
-
-  .nudge-input:focus {
-    border-color: #5fafaf;
-  }
-
-  .nudge-input::placeholder {
-    color: #585858;
-  }
-
-  .nudge-send {
-    padding: 8px 12px;
-    background: #2a3a3a;
-    border: 1px solid #3a3a3a;
-    border-radius: 4px;
-    color: #5fafaf;
-    font-size: 0.75rem;
-    cursor: pointer;
-    white-space: nowrap;
-  }
-
-  .nudge-send:hover:not(:disabled) {
-    background: #3a4a4a;
-  }
-
-  .nudge-send:disabled {
-    opacity: 0.4;
-    cursor: default;
-  }
-
-  .nudge-status {
-    color: #5faf5f;
-    font-size: 0.7rem;
-    white-space: nowrap;
-    animation: fade-out 2s forwards;
-  }
-
-  .nudge-error {
-    color: #e94560;
-    font-size: 0.7rem;
-    white-space: nowrap;
-    animation: fade-out 4s forwards;
-  }
-
   @keyframes fade-out {
     0% { opacity: 1; }
     70% { opacity: 1; }
