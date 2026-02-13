@@ -82,36 +82,55 @@ fn prepare_task_worktree(
 
 /// Build plan content to append to a coworker's initial prompt.
 ///
-/// Checks `task_plan_map` for the task ID. If a plan path exists, reads the file
-/// and returns formatted plan content with midtown-specific adaptation instructions.
-/// Returns empty string if no plan is associated or the file can't be read.
+/// Build plan and execution skill prompt sections for a task.
+///
+/// Checks `task_plan_map` for plan content and `task_execution_skill_map` for an
+/// explicit skill instruction. Returns empty string if neither is associated.
 fn build_plan_prompt_section(task_id: &str, snap: &snapshot::WorldSnapshot) -> String {
-    let Some(plan_path) = snap.task_plan_map.get(task_id) else {
+    let plan_path = snap.task_plan_map.get(task_id);
+    let execution_skill = snap.task_execution_skill_map.get(task_id);
+
+    if plan_path.is_none() && execution_skill.is_none() {
         return String::new();
-    };
+    }
 
-    let plan_content = match std::fs::read_to_string(plan_path) {
-        Ok(content) => content,
-        Err(e) => {
-            warn!(
-                "Failed to read plan file for task !{}: {} (path: {})",
-                task_id, e, plan_path
-            );
-            return String::new();
-        }
-    };
+    let mut section = String::new();
 
-    format!(
-        "\n\n## Plan Context\n\n\
-         Your task is part of a larger implementation plan. The full plan is included below \
-         for context — it will help you understand the architecture, how your piece fits in, \
-         and what decisions have already been made. **You are only responsible for your assigned \
-         task above, not the entire plan.** If the plan specifies an execution skill \
-         (e.g., executing-plans or subagent-driven-development), use it for your assigned \
-         portion.\n\n\
-         <plan>\n{}\n</plan>",
-        plan_content
-    )
+    // Add execution skill instruction if specified
+    if let Some(skill) = execution_skill {
+        section.push_str(&format!(
+            "\n\n## Execution Skill\n\n\
+             **Use the `superpowers:{}` skill to execute your assigned task.** \
+             Invoke it before starting implementation.",
+            skill
+        ));
+    }
+
+    // Add plan content if available
+    if let Some(plan_path) = plan_path {
+        let plan_content = match std::fs::read_to_string(plan_path) {
+            Ok(content) => content,
+            Err(e) => {
+                warn!(
+                    "Failed to read plan file for task !{}: {} (path: {})",
+                    task_id, e, plan_path
+                );
+                return section;
+            }
+        };
+
+        section.push_str(&format!(
+            "\n\n## Plan Context\n\n\
+             Your task is part of a larger implementation plan. The full plan is included below \
+             for context — it will help you understand the architecture, how your piece fits in, \
+             and what decisions have already been made. **You are only responsible for your assigned \
+             task above, not the entire plan.**\n\n\
+             <plan>\n{}\n</plan>",
+            plan_content
+        ));
+    }
+
+    section
 }
 
 // ============================================================================

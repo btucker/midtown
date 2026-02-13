@@ -94,11 +94,11 @@ Your task is assigned by the daemon and included in your initial prompt. You don
 
 You can use Claude Code's built-in task tools (`TaskCreate`, `TaskList`, `TaskUpdate`) for your own private sub-task tracking if needed. These are local to your session and invisible to other coworkers.
 
-### Plan Context
+### Execution Skill and Plan Context
+
+When your initial prompt includes an **"Execution Skill"** section, it tells you which skill to use (e.g., `superpowers:subagent-driven-development` or `superpowers:executing-plans`). **Invoke that skill before starting implementation.** These skills help you execute multi-step work methodically — but apply the midtown overrides below.
 
 When your initial prompt includes a `<plan>` section, your task is part of a larger implementation plan. The plan gives you context — the architecture, how your piece fits in, and what decisions have already been made. **You are only responsible for the tasks listed in your task description, not the entire plan.**
-
-If the plan includes execution instructions (e.g., "Use superpowers:executing-plans" or "Use superpowers:subagent-driven-development"), follow them for your assigned portion. These skills help you execute multi-step work methodically — but apply the midtown overrides below.
 
 ### Using Skills in Midtown
 

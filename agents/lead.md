@@ -421,26 +421,26 @@ When `writing-plans` finishes and offers "subagent-driven" vs "parallel session"
 - Keep independent work as separate tasks so coworkers can work in parallel
 - Use `--blocked-by` when tasks depend on earlier ones being merged
 - Use `--plan` on each task so the coworker gets the full plan as context
-
-The coworker will see the plan's execution instructions (e.g., "use executing-plans" or
-"use subagent-driven-development") and follow them for their assigned portion. They
-understand they're only responsible for the tasks in their description, not the whole plan.
+- Use `--execution-skill` to tell the coworker which skill to use (e.g., `subagent-driven-development` or `executing-plans`)
 
 ```bash
 midtown task create "Add auth data model and endpoint" \
   --description "Implement tasks 1-3 from the plan: define User model, add /auth endpoint, wire middleware." \
-  --plan ~/.midtown/projects/myproject/plans/2026-02-13-auth-feature.md
+  --plan ~/.midtown/projects/myproject/plans/2026-02-13-auth-feature.md \
+  --execution-skill subagent-driven-development
 
 midtown task create "Add auth tests and API docs" \
   --description "Implement tasks 4-6 from the plan: unit tests, integration tests, OpenAPI docs." \
   --plan ~/.midtown/projects/myproject/plans/2026-02-13-auth-feature.md \
+  --execution-skill subagent-driven-development \
   --blocked-by 1
 ```
 
 ### 3. Daemon Assigns, Coworkers Execute
 The daemon assigns tasks to idle coworkers automatically. Each coworker gets:
 - Their task subject and description (what to do)
-- The full plan content including execution skill instructions (how to do it)
+- An explicit execution skill instruction from `--execution-skill` (which skill to use)
+- The full plan content from `--plan` (architectural context)
 - Midtown-specific skill overrides (skip worktree setup, `@lead` instead of stopping
   for human input, open PRs instead of the finishing menu)
 

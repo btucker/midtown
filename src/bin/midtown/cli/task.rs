@@ -28,6 +28,9 @@ pub enum TaskCommand {
         /// Path to an implementation plan file
         #[arg(long)]
         plan: Option<String>,
+        /// Execution skill for the coworker (e.g., subagent-driven-development, executing-plans)
+        #[arg(long)]
+        execution_skill: Option<String>,
     },
     /// Claim a task
     Claim {
@@ -103,6 +106,7 @@ pub fn handle(cmd: &TaskCommand, client: &DaemonClient) -> Result<Response, Stri
             model,
             pr,
             plan,
+            execution_skill,
         } => client.task_create(
             subject,
             description,
@@ -111,6 +115,7 @@ pub fn handle(cmd: &TaskCommand, client: &DaemonClient) -> Result<Response, Stri
             model.as_deref(),
             *pr,
             plan.as_deref(),
+            execution_skill.as_deref(),
         ),
         TaskCommand::Update {
             id,
@@ -210,6 +215,12 @@ fn handle_view(id: &str) -> Result<Response, String> {
         }
         if let Some(model) = result.get("model").and_then(|v| v.as_str()) {
             output.push_str(&format!("Model:    {}\n", model));
+        }
+        if let Some(plan) = result.get("plan").and_then(|v| v.as_str()) {
+            output.push_str(&format!("Plan:     {}\n", plan));
+        }
+        if let Some(skill) = result.get("execution_skill").and_then(|v| v.as_str()) {
+            output.push_str(&format!("Skill:    {}\n", skill));
         }
     }
     // Silently ignore errors - daemon might not be running or metadata might not exist

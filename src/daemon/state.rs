@@ -108,6 +108,14 @@ pub struct DaemonPersistentState {
     #[serde(default)]
     pub task_plan: HashMap<String, String>,
 
+    /// Task-to-execution-skill mapping for plan-driven execution.
+    /// Maps task ID → skill name (e.g., "subagent-driven-development", "executing-plans").
+    /// When a coworker is spawned for a task with an execution skill, the daemon includes
+    /// an explicit instruction to use that skill. Stored separately from Claude Code's
+    /// native task storage for compatibility.
+    #[serde(default)]
+    pub task_execution_skill: HashMap<String, String>,
+
     /// Clusterer session ID for resume-on-demand.
     /// The clusterer accumulates context about channel assignments across
     /// invocations, so we persist the session ID to resume it on next task creation.
@@ -132,14 +140,15 @@ impl DaemonPersistentState {
                 // Rebuild reverse indexes that aren't serialized
                 state.worktree_registry.rebuild_indexes();
                 debug!(
-                    "Loaded daemon state: {} PR reviewers, {} reminders, CI stats: {}, {} worktree assignments, {} task-channel mappings, {} task-model mappings, {} task-plan mappings",
+                    "Loaded daemon state: {} PR reviewers, {} reminders, CI stats: {}, {} worktree assignments, {} task-channel mappings, {} task-model mappings, {} task-plan mappings, {} task-execution-skill mappings",
                     state.github.pr_reviewers.len(),
                     state.reminders.reminders.len(),
                     state.ci_stats.summary(),
                     state.worktree_registry.len(),
                     state.task_channel.len(),
                     state.task_model.len(),
-                    state.task_plan.len()
+                    state.task_plan.len(),
+                    state.task_execution_skill.len()
                 );
                 Ok(state)
             }
@@ -162,14 +171,15 @@ impl DaemonPersistentState {
         fs::write(&tmp_path, &contents)?;
         crate::paths::atomic_rename(&tmp_path, &path)?;
         debug!(
-            "Saved daemon state: {} PR reviewers, {} reminders, CI stats: {}, {} worktree assignments, {} task-channel mappings, {} task-model mappings, {} task-plan mappings",
+            "Saved daemon state: {} PR reviewers, {} reminders, CI stats: {}, {} worktree assignments, {} task-channel mappings, {} task-model mappings, {} task-plan mappings, {} task-execution-skill mappings",
             self.github.pr_reviewers.len(),
             self.reminders.reminders.len(),
             self.ci_stats.summary(),
             self.worktree_registry.len(),
             self.task_channel.len(),
             self.task_model.len(),
-            self.task_plan.len()
+            self.task_plan.len(),
+            self.task_execution_skill.len()
         );
         Ok(())
     }
@@ -210,6 +220,7 @@ impl DaemonPersistentState {
             task_channel: HashMap::new(),
             task_model: HashMap::new(),
             task_plan: HashMap::new(),
+            task_execution_skill: HashMap::new(),
             clusterer_session_id: None,
         };
 
