@@ -173,6 +173,7 @@ fn stuck_nudge_effects_returns_only_system_message() {
 /// ...currently generates NO effects (the bug), when it should generate at
 /// least a warning or nudge about the orphaned conflicting PR.
 #[tokio::test]
+#[allow(clippy::await_holding_lock)] // Intentionally hold PATH_LOCK across await to prevent test interference
 async fn test_orphaned_pr_with_merge_conflict_is_ignored() {
     use super::super::snapshot::minimal_snapshot_for_test;
 
@@ -280,6 +281,7 @@ async fn test_orphaned_pr_with_merge_conflict_is_ignored() {
 }
 
 #[tokio::test]
+#[allow(clippy::await_holding_lock)] // Intentionally hold PATH_LOCK across await to prevent test interference
 async fn test_ci_wait_deduplication_uses_time_aware_hash() {
     use super::super::snapshot::minimal_snapshot_for_test;
 
@@ -444,6 +446,7 @@ fn test_detect_abandoned_pr_tasks_checks_for_merged_siblings() {
 /// ...currently generates NO effects (the bug), when it should generate at
 /// least a warning about the orphaned conflicting PR.
 #[tokio::test]
+#[allow(clippy::await_holding_lock)] // Intentionally hold PATH_LOCK across await to prevent test interference
 async fn test_orphaned_pr_with_task_branch_and_merge_conflict_is_ignored() {
     use super::super::snapshot::minimal_snapshot_for_test;
 
