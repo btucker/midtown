@@ -2546,7 +2546,7 @@ mod tests {
         // when building the task_id_by_pr map in the fallback path.
         use std::collections::HashMap;
 
-        let pull_requests = vec![
+        let pull_requests = &[
             serde_json::json!({
                 "number": 100,
                 "title": "Fix bug [Midtown !1234]"
