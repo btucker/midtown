@@ -272,6 +272,8 @@ pub struct App {
     pub board_selection: Option<BoardSelection>,
     /// Currently selected channel for viewing messages
     pub selected_channel: String,
+    /// Whether the currently selected channel is archived
+    pub selected_channel_archived: bool,
     /// Text input buffer for the input bar
     pub input_text: String,
     /// Cursor position in the input text
@@ -401,6 +403,7 @@ impl App {
             focused_pane: FocusedPane::Board,
             board_selection: None,
             selected_channel: "midtown".to_string(),
+            selected_channel_archived: false,
             input_text: String::new(),
             input_cursor: 0,
             selection_mode: false,
@@ -792,7 +795,10 @@ impl App {
         // Show or hide archived channels based on user preference
         let channels =
             midtown::Channel::list(&base_dir, self.show_archived_channels).unwrap_or_default();
-        let main_channel = channels.first().map(|s| s.as_str()).unwrap_or("midtown");
+        let main_channel = channels
+            .first()
+            .map(|c| c.name.as_str())
+            .unwrap_or("midtown");
 
         // Group tasks by channel
         let mut tasks_by_channel: BTreeMap<String, Vec<&KanbanTask>> = BTreeMap::new();
@@ -865,6 +871,15 @@ impl App {
 
             // Only reload messages if the channel actually changed
             if new_channel != self.selected_channel {
+                // Determine if the new channel is archived by checking for the archived file
+                let channel_repo =
+                    midtown::paths::detect_repo_name().unwrap_or_else(|| "default".to_string());
+                let base_dir = midtown::paths::projects_dir_for_repo(&channel_repo);
+                self.selected_channel_archived = base_dir
+                    .join("channels")
+                    .join(format!("{}.archived.jsonl", &new_channel))
+                    .exists();
+
                 self.selected_channel = new_channel;
                 self.load_channel_messages();
             }
@@ -877,8 +892,15 @@ impl App {
             midtown::paths::detect_repo_name().unwrap_or_else(|| "default".to_string());
         let base_dir = midtown::paths::projects_dir_for_repo(&channel_repo);
 
-        // Try to open the channel file
-        if let Ok(channel) = midtown::Channel::new(&base_dir, &self.selected_channel) {
+        // Try to open the channel file, using the correct method for archived channels.
+        // Channel::new() creates files eagerly, so we must use open_archived() for
+        // archived channels to avoid creating ghost .jsonl files.
+        let channel_result = if self.selected_channel_archived {
+            midtown::Channel::open_archived(&base_dir, &self.selected_channel)
+        } else {
+            midtown::Channel::new(&base_dir, &self.selected_channel)
+        };
+        if let Ok(channel) = channel_result {
             // Load last N messages
             if let Ok((messages, start_pos)) = channel.read_last_n_messages(INITIAL_MESSAGE_COUNT) {
                 self.messages = VecDeque::from(messages);
@@ -1202,11 +1224,18 @@ impl App {
             Err(_) => return, // Can't read channel list, skip
         };
 
-        for channel_name in channels {
-            // Open the channel
-            let channel = match Channel::new(&base_dir, &channel_name) {
-                Ok(ch) => ch,
-                Err(_) => continue, // Skip channels we can't open
+        for channel_info in channels {
+            // Open the channel (use different method for archived channels)
+            let channel = if channel_info.is_archived {
+                match Channel::open_archived(&base_dir, &channel_info.name) {
+                    Ok(ch) => ch,
+                    Err(_) => continue, // Skip channels we can't open
+                }
+            } else {
+                match Channel::new(&base_dir, &channel_info.name) {
+                    Ok(ch) => ch,
+                    Err(_) => continue, // Skip channels we can't open
+                }
             };
 
             // Get total message count
@@ -1217,18 +1246,18 @@ impl App {
 
             // Calculate unread count:
             // Load the cursor without updating it, then count messages from that position
-            let cursor = match midtown::Cursor::load_or_create(&base_dir, &channel_name, "chat-tui")
-            {
-                Ok(c) => c,
-                Err(_) => {
-                    // If we can't load cursor, assume all messages are unread
-                    if total_count > 0 {
-                        self.channel_unread_counts
-                            .insert(channel_name.clone(), total_count);
+            let cursor =
+                match midtown::Cursor::load_or_create(&base_dir, &channel_info.name, "chat-tui") {
+                    Ok(c) => c,
+                    Err(_) => {
+                        // If we can't load cursor, assume all messages are unread
+                        if total_count > 0 {
+                            self.channel_unread_counts
+                                .insert(channel_info.name.clone(), total_count);
+                        }
+                        continue;
                     }
-                    continue;
-                }
-            };
+                };
 
             // Read all messages and count how many come after the cursor position
             let all_messages = match channel.read_all() {
@@ -1251,7 +1280,7 @@ impl App {
 
             if unread_count > 0 {
                 self.channel_unread_counts
-                    .insert(channel_name, unread_count);
+                    .insert(channel_info.name, unread_count);
             }
         }
     }
@@ -1386,10 +1415,10 @@ impl App {
             let base_dir = channel.base_dir();
             // For autocomplete, include archived channels so users can reference them
             if let Ok(channels) = Channel::list(base_dir, true) {
-                for channel_name in channels {
-                    if channel_name.to_lowercase().starts_with(query) {
+                for channel_info in channels {
+                    if channel_info.name.to_lowercase().starts_with(query) {
                         items.push(AutocompleteItem {
-                            value: format!("#{}", channel_name),
+                            value: format!("#{}", channel_info.name),
                             description: None,
                         });
                     }
@@ -2433,6 +2462,7 @@ pub(super) mod tests {
             focused_pane: FocusedPane::Board,
             board_selection: None,
             selected_channel: "midtown".to_string(),
+            selected_channel_archived: false,
             input_text: String::new(),
             input_cursor: 0,
             selection_mode: false,

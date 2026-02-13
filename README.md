@@ -431,6 +431,7 @@ The `midtown chat` command opens a split-panel interface with:
 - **Ctrl+K quick channel switcher**: Slack-style overlay for fast channel navigation with real-time filtering
 - Tab-based focus navigation (Board → Chat → InputBar)
 - Arrow keys, PageUp/PageDown, Home/End for scrolling
+- Ctrl+A to toggle archived channel visibility
 - Mouse support for scrolling and navigation
 - Clickable hyperlinks via OSC 8 escape sequences
 - Real-time token usage and cost tracking
