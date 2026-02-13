@@ -222,7 +222,17 @@ fn draw_coworker_status(f: &mut Frame, app: &App, area: Rect) {
         ])
         .split(area);
 
-    let active_count = app.coworkers.len();
+    // Filter out idle coworkers - only show those actively working
+    let active_coworkers: Vec<_> = app
+        .coworkers
+        .iter()
+        .filter(|cw| {
+            // Show coworker if they have a phase and it's not "idle"
+            cw.phase.as_deref() != Some("idle") && cw.phase.is_some()
+        })
+        .collect();
+
+    let active_count = active_coworkers.len();
     let header = format!("  Coworkers ({}/{})", active_count, app.max_coworkers);
     let header_paragraph = Paragraph::new(Line::from(vec![Span::styled(
         header,
@@ -232,8 +242,7 @@ fn draw_coworker_status(f: &mut Frame, app: &App, area: Rect) {
     )]));
     f.render_widget(header_paragraph, chunks[0]);
 
-    let rows: Vec<Row> = app
-        .coworkers
+    let rows: Vec<Row> = active_coworkers
         .iter()
         .map(|cw| {
             let health_dot = "●";

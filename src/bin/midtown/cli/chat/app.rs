@@ -340,8 +340,8 @@ pub struct ChannelSwitcherItem {
     pub unread_count: usize,
 }
 
-/// Interval between kanban data refreshes (30 seconds)
-const KANBAN_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
+/// Interval between kanban data refreshes (5 seconds)
+const KANBAN_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 
 /// Interval between repo status refreshes (60 seconds)
 const REPO_STATUS_REFRESH_INTERVAL: Duration = Duration::from_secs(60);
