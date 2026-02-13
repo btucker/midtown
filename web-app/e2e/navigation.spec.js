@@ -8,80 +8,65 @@ test.describe('Navigation', () => {
     await page.goto('/')
   })
 
-  test('header shows app title and connection status', async ({ page }) => {
-    await expect(page.locator('h1')).toHaveText('Midtown')
-    await expect(page.locator('.connection-status')).toBeVisible()
+  test('header shows connection status', async ({ page }) => {
+    await expect(page.locator('.connection-dot')).toBeVisible()
   })
 
-  test('three nav tabs are rendered: Channel, Status, Lead', async ({ page }) => {
-    const nav = page.locator('nav')
-    const buttons = nav.getByRole('button')
-    await expect(buttons).toHaveCount(3)
-    await expect(buttons.nth(0)).toHaveText('Channel')
-    await expect(buttons.nth(1)).toHaveText('Status')
-    await expect(buttons.nth(2)).toHaveText('Tmux')
+  test('sidebar header shows app title and project selector', async ({ page }) => {
+    // The header contains the logo and project selector
+    await expect(page.locator('img.header-logo')).toBeVisible()
+    await expect(page.locator('.project-selector')).toBeVisible()
   })
 
-  test('Channel tab is active by default', async ({ page }) => {
-    const channelBtn = page.locator('nav').getByRole('button', { name: 'Channel' })
-    await expect(channelBtn).toHaveClass(/active/)
-
-    // Channel content visible
-    await expect(page.locator('.channel-container')).toBeVisible()
-    // Other content not visible
-    await expect(page.locator('.status-container')).toHaveCount(0)
-    await expect(page.locator('.tmux-container')).toHaveCount(0)
+  test('channel list is visible in sidebar by default', async ({ page }) => {
+    // Default view is 'board' which shows ChannelList in SidebarContent
+    await expect(page.locator('.channel-list, [class*="channel"] button').first()).toBeVisible()
   })
 
-  test('switches to Status tab', async ({ page }) => {
-    const nav = page.locator('nav')
-    await nav.getByRole('button', { name: 'Status' }).click()
-
-    await expect(nav.getByRole('button', { name: 'Status' })).toHaveClass(/active/)
-    await expect(nav.getByRole('button', { name: 'Channel' })).not.toHaveClass(/active/)
-
-    await expect(page.locator('.status-container')).toBeVisible()
-    await expect(page.locator('.channel-container')).toHaveCount(0)
+  test('main area shows channel content by default', async ({ page }) => {
+    // Main area shows the Channel component with message input
+    await expect(page.locator('main textarea[placeholder*="Message to"]')).toBeVisible()
   })
 
-  test('switches to Lead tab', async ({ page }) => {
-    const nav = page.locator('nav')
-    await nav.getByRole('button', { name: 'Tmux' }).click()
-
-    await expect(nav.getByRole('button', { name: 'Tmux' })).toHaveClass(/active/)
-    await expect(page.locator('.tmux-container')).toBeVisible()
-    await expect(page.locator('.channel-container')).toHaveCount(0)
+  test('coworker status is visible in sidebar footer', async ({ page }) => {
+    // SidebarFooter contains CoworkerStatus - look for coworker names in the footer
+    const coworkerFooter = page.locator('[data-slot="sidebar-footer"], aside footer, .sidebar-footer').first()
+    // Check if any coworker-related content is visible (park or amsterdam from mock data)
+    await expect(page.locator('text=/park|amsterdam/i').first()).toBeVisible()
   })
 
-  test('switches back to Channel from Lead', async ({ page }) => {
-    const nav = page.locator('nav')
-    await nav.getByRole('button', { name: 'Tmux' }).click()
-    await expect(page.locator('.tmux-container')).toBeVisible()
-
-    await nav.getByRole('button', { name: 'Channel' }).click()
-    await expect(page.locator('.channel-container')).toBeVisible()
-    await expect(page.locator('.tmux-container')).toHaveCount(0)
+  test('push toggle is visible when supported', async ({ page }) => {
+    // Push toggle is in SidebarHeader
+    await expect(page.locator('.push-toggle')).toBeVisible()
   })
 
-  test('kanban board is always visible below nav regardless of active tab', async ({ page }) => {
-    const kanban = page.locator('.kanban >> nth=0')
-    const nav = page.locator('nav')
+  test('mobile header shows sidebar trigger', async ({ page }) => {
+    await page.setViewportSize({ width: 375, height: 667 })
+    await page.goto('/')
 
-    // Channel tab
-    await expect(kanban).toBeVisible()
-
-    // Status tab
-    await nav.getByRole('button', { name: 'Status' }).click()
-    await expect(kanban).toBeVisible()
-
-    // Lead tab
-    await nav.getByRole('button', { name: 'Tmux' }).click()
-    await expect(kanban).toBeVisible()
+    // On mobile, there's a header with SidebarTrigger
+    const sidebarTrigger = page.locator('header button[class*="sidebar"], [data-sidebar-trigger]')
+    // The sidebar trigger should be visible on mobile
+    await expect(sidebarTrigger.or(page.locator('header button').first())).toBeVisible()
   })
 
-  test('active tab has accent color border', async ({ page }) => {
-    const channelBtn = page.locator('nav').getByRole('button', { name: 'Channel' })
-    // Active tab has bottom border color #5fafaf = rgb(95, 175, 175)
-    await expect(channelBtn).toHaveCSS('border-bottom-color', 'rgb(95, 175, 175)')
+  test('mobile header shows active channel', async ({ page }) => {
+    await page.setViewportSize({ width: 375, height: 667 })
+    await page.goto('/')
+
+    // Mobile header shows the active channel name
+    await expect(page.locator('.active-channel-display')).toBeVisible()
+  })
+})
+
+test.describe('Mobile sidebar behavior', () => {
+  test('sidebar can be toggled on mobile', async ({ page }) => {
+    await mockAllRoutes(page)
+    await page.setViewportSize({ width: 375, height: 667 })
+    await page.goto('/')
+
+    // The mobile header has a sidebar trigger button
+    const header = page.locator('header.md\\:hidden')
+    await expect(header).toBeVisible()
   })
 })

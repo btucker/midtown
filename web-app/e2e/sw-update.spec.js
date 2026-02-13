@@ -124,7 +124,7 @@ test.describe('Service Worker Update Mechanism', () => {
     const workboxLoaded = await page.evaluate(async () => {
       // Check that SW registration happened (which requires workbox-window)
       const registration = await navigator.serviceWorker.getRegistration('/')
-      return registration !== undefined
+      return registration !== undefined && registration !== null
     })
 
     expect(workboxLoaded).toBe(true)
