@@ -196,14 +196,273 @@ fn provider_profiles_dir(provider: AuthProvider) -> PathBuf {
 
 /// Get the profile directory for a specific profile.
 ///
-/// Returns `~/.midtown/auth/<profile>/`.
+/// Returns `~/.midtown/auth/<profile>/claude/` (the directory used as CLAUDE_CONFIG_DIR).
 pub fn profile_dir(name: &str) -> PathBuf {
     profile_dir_for(AuthProvider::Claude, name)
 }
 
 /// Get the profile directory for a specific provider/profile pair.
+///
+/// For Claude, this returns `~/.midtown/auth/<profile>/claude/` (the directory that
+/// gets set as CLAUDE_CONFIG_DIR, containing .claude.json plus symlinks to shared state).
+/// For other providers, returns the provider-scoped profile directory as before.
 pub fn profile_dir_for(provider: AuthProvider, name: &str) -> PathBuf {
-    provider_profiles_dir(provider).join(name)
+    let base = provider_profiles_dir(provider).join(name);
+    match provider {
+        AuthProvider::Claude => base.join("claude"),
+        AuthProvider::Codex | AuthProvider::Zai => base,
+    }
+}
+
+/// Get the shared provider storage directory.
+///
+/// For Claude, returns `~/.midtown/providers/claude/` where shared state (tasks, projects,
+/// settings, etc.) lives across all auth profiles.
+/// For other providers, this isn't used (they don't share state).
+fn shared_provider_storage_dir(provider: AuthProvider) -> Option<PathBuf> {
+    match provider {
+        AuthProvider::Claude => Some(midtown_base_dir().join("providers").join("claude")),
+        AuthProvider::Codex | AuthProvider::Zai => None,
+    }
+}
+
+/// Migrate a legacy Claude profile directory to the new structure.
+///
+/// If a profile exists at `~/.midtown/auth/<profile>/` (without the `claude/` subdirectory),
+/// this migrates it to the new structure:
+/// 1. Move `.claude.json` to `~/.midtown/auth/<profile>/claude/.claude.json`
+/// 2. Move everything else to `~/.midtown/providers/claude/<name>` (if not already there)
+/// 3. Create symlinks from the profile dir to the shared dir
+///
+/// Returns `true` if migration was performed, `false` if already migrated.
+fn migrate_legacy_claude_profile(profile_name: &str) -> std::io::Result<bool> {
+    let old_profile_dir = provider_profiles_dir(AuthProvider::Claude).join(profile_name);
+    let new_profile_dir = profile_dir_for(AuthProvider::Claude, profile_name);
+
+    // If the new structure already exists, no migration needed
+    if new_profile_dir.exists() {
+        return Ok(false);
+    }
+
+    // If the old directory doesn't exist, nothing to migrate
+    if !old_profile_dir.exists() {
+        return Ok(false);
+    }
+
+    let shared_dir = shared_provider_storage_dir(AuthProvider::Claude)
+        .expect("Claude provider should have shared storage");
+
+    // Create target directories
+    std::fs::create_dir_all(&new_profile_dir).map_err(|e| {
+        std::io::Error::new(
+            e.kind(),
+            format!(
+                "Failed to create new profile dir {}: {}",
+                new_profile_dir.display(),
+                e
+            ),
+        )
+    })?;
+    std::fs::create_dir_all(&shared_dir).map_err(|e| {
+        std::io::Error::new(
+            e.kind(),
+            format!(
+                "Failed to create shared dir {}: {}",
+                shared_dir.display(),
+                e
+            ),
+        )
+    })?;
+
+    // Scan the old profile directory
+    for entry in std::fs::read_dir(&old_profile_dir).map_err(|e| {
+        std::io::Error::new(
+            e.kind(),
+            format!(
+                "Failed to read old profile dir {}: {}",
+                old_profile_dir.display(),
+                e
+            ),
+        )
+    })? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+
+        // Skip the "providers" and "claude" subdirectories
+        // ("providers" is not profile data, "claude" is the new structure we just created)
+        if name_str == "providers" || name_str == "claude" {
+            continue;
+        }
+
+        let old_path = entry.path();
+
+        if name_str == ".claude.json" {
+            // Move .claude.json to the new profile dir
+            let new_path = new_profile_dir.join(&name);
+            // Verify the new profile dir exists
+            let dir_meta = std::fs::metadata(&new_profile_dir);
+            if !new_profile_dir.exists() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!(
+                        "New profile dir doesn't exist: {} (metadata: {:?})",
+                        new_profile_dir.display(),
+                        dir_meta
+                    ),
+                ));
+            }
+            // Use copy + remove instead of rename since the destination dir already exists
+            std::fs::copy(&old_path, &new_path).map_err(|e| {
+                std::io::Error::new(
+                    e.kind(),
+                    format!(
+                        "Failed to copy {} to {} (dir exists: {}): {}",
+                        old_path.display(),
+                        new_path.display(),
+                        new_profile_dir.exists(),
+                        e
+                    ),
+                )
+            })?;
+            std::fs::remove_file(&old_path)?;
+        } else {
+            // Move everything else to the shared dir (if not already there)
+            let shared_path = shared_dir.join(&name);
+            if !shared_path.exists() {
+                if old_path.is_dir() {
+                    // For directories, use recursive copy + remove since rename might cross filesystems
+                    copy_dir_recursive(&old_path, &shared_path)?;
+                    std::fs::remove_dir_all(&old_path)?;
+                } else {
+                    std::fs::rename(&old_path, &shared_path).map_err(|e| {
+                        std::io::Error::new(
+                            e.kind(),
+                            format!(
+                                "Failed to rename {} to {}: {}",
+                                old_path.display(),
+                                shared_path.display(),
+                                e
+                            ),
+                        )
+                    })?;
+                }
+            } else {
+                // Shared file already exists — just remove the old copy
+                if old_path.is_dir() {
+                    std::fs::remove_dir_all(&old_path)?;
+                } else {
+                    std::fs::remove_file(&old_path)?;
+                }
+            }
+        }
+    }
+
+    // Try to remove the old directory if it's now empty
+    let _ = std::fs::remove_dir(&old_profile_dir);
+
+    Ok(true)
+}
+
+/// Recursively copy a directory.
+fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst).map_err(|e| {
+        std::io::Error::new(
+            e.kind(),
+            format!("Failed to create dst dir {}: {}", dst.display(), e),
+        )
+    })?;
+    for entry in std::fs::read_dir(src).map_err(|e| {
+        std::io::Error::new(
+            e.kind(),
+            format!("Failed to read src dir {}: {}", src.display(), e),
+        )
+    })? {
+        let entry = entry?;
+        let src_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+        if src_path.is_dir() {
+            copy_dir_recursive(&src_path, &dst_path)?;
+        } else {
+            std::fs::copy(&src_path, &dst_path).map_err(|e| {
+                std::io::Error::new(
+                    e.kind(),
+                    format!(
+                        "Failed to copy {} to {}: {}",
+                        src_path.display(),
+                        dst_path.display(),
+                        e
+                    ),
+                )
+            })?;
+        }
+    }
+    Ok(())
+}
+
+/// Set up a Claude profile directory with symlinks to shared storage.
+///
+/// This ensures:
+/// 1. The profile directory exists at `~/.midtown/auth/<profile>/claude/`
+/// 2. `.claude.json` in that directory is a real file (never symlinked)
+/// 3. Everything else is symlinked to `~/.midtown/providers/claude/<name>`
+/// 4. The shared storage directory exists
+///
+/// This is called both at profile creation and at launch time to pick up new
+/// shared files that may have appeared.
+fn setup_claude_profile_symlinks(profile_name: &str) -> std::io::Result<()> {
+    let profile_dir = profile_dir_for(AuthProvider::Claude, profile_name);
+    let shared_dir = shared_provider_storage_dir(AuthProvider::Claude)
+        .expect("Claude provider should have shared storage");
+
+    // Ensure both directories exist
+    std::fs::create_dir_all(&profile_dir)?;
+    std::fs::create_dir_all(&shared_dir)?;
+
+    // Scan the shared directory for entries to symlink
+    if shared_dir.exists() {
+        for entry in std::fs::read_dir(&shared_dir)? {
+            let entry = entry?;
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+
+            // Never symlink .claude.json — that's per-profile auth credentials
+            if name_str == ".claude.json" {
+                continue;
+            }
+
+            let link_path = profile_dir.join(&name);
+            let target = shared_dir.join(&name);
+
+            // If the link already exists and points to the right place, skip it
+            if (link_path.exists() || link_path.symlink_metadata().is_ok())
+                && let Ok(existing_target) = std::fs::read_link(&link_path)
+                && existing_target == target
+            {
+                continue; // Already correct
+            }
+
+            // Create the symlink (Unix only for now; Windows would need different handling)
+            #[cfg(unix)]
+            {
+                // Remove stale link if present
+                if link_path.symlink_metadata().is_ok() {
+                    let _ = std::fs::remove_file(&link_path);
+                }
+                std::os::unix::fs::symlink(&target, &link_path)?;
+            }
+
+            #[cfg(not(unix))]
+            {
+                eprintln!(
+                    "Warning: Symlink creation not supported on this platform. Skipping: {}",
+                    link_path.display()
+                );
+            }
+        }
+    }
+
+    Ok(())
 }
 
 /// Get the path to the current profile marker file for a provider.
@@ -269,13 +528,23 @@ pub fn current_profile_for(provider: AuthProvider) -> String {
 /// Get the config directory path for the current profile.
 ///
 /// This is what should be set as `CLAUDE_CONFIG_DIR` when spawning Claude.
+/// For Claude profiles, this ensures the profile is set up with symlinks before returning.
 pub fn current_profile_dir() -> PathBuf {
     current_profile_dir_for(AuthProvider::Claude)
 }
 
 /// Get the config directory path for the current profile for a provider.
+///
+/// For Claude profiles, this ensures the profile is set up with symlinks before returning.
 pub fn current_profile_dir_for(provider: AuthProvider) -> PathBuf {
-    profile_dir_for(provider, &current_profile_for(provider))
+    let profile_name = current_profile_for(provider);
+
+    // For Claude, ensure the profile is set up before use
+    if provider == AuthProvider::Claude {
+        let _ = ensure_profile_dir_for(provider, &profile_name);
+    }
+
+    profile_dir_for(provider, &profile_name)
 }
 
 /// Get the active auth profile for a specific project.
@@ -308,19 +577,26 @@ pub fn active_profile_for_project_with_provider(project: &str, provider: AuthPro
 ///
 /// This is what should be set as `CLAUDE_CONFIG_DIR` when spawning Claude
 /// for a specific project.
+/// For Claude profiles, this ensures the profile is set up with symlinks before returning.
 pub fn active_profile_dir_for_project(project: &str) -> PathBuf {
     active_profile_dir_for_project_with_provider(project, AuthProvider::Claude)
 }
 
 /// Get the config directory path for the active profile for a specific project/provider.
+///
+/// For Claude profiles, this ensures the profile is set up with symlinks before returning.
 pub fn active_profile_dir_for_project_with_provider(
     project: &str,
     provider: AuthProvider,
 ) -> PathBuf {
-    profile_dir_for(
-        provider,
-        &active_profile_for_project_with_provider(project, provider),
-    )
+    let profile_name = active_profile_for_project_with_provider(project, provider);
+
+    // For Claude, ensure the profile is set up before use
+    if provider == AuthProvider::Claude {
+        let _ = ensure_profile_dir_for(provider, &profile_name);
+    }
+
+    profile_dir_for(provider, &profile_name)
 }
 
 /// Set the active profile.
@@ -462,12 +738,27 @@ pub fn ensure_profile_dir(name: &str) -> std::io::Result<PathBuf> {
 }
 
 /// Create a provider-specific profile directory if it doesn't exist.
+///
+/// For Claude profiles, this also:
+/// 1. Migrates legacy profile directories if needed
+/// 2. Sets up symlinks to shared storage
 pub fn ensure_profile_dir_for(provider: AuthProvider, name: &str) -> std::io::Result<PathBuf> {
     validate_profile_name(name)?;
 
-    let dir = profile_dir_for(provider, name);
-    std::fs::create_dir_all(&dir)?;
-    Ok(dir)
+    // For Claude, handle migration and symlink setup
+    if provider == AuthProvider::Claude {
+        // Migrate legacy structure if needed
+        migrate_legacy_claude_profile(name)?;
+
+        // Set up symlinks to shared storage
+        setup_claude_profile_symlinks(name)?;
+    } else {
+        // For other providers, just create the directory
+        let dir = profile_dir_for(provider, name);
+        std::fs::create_dir_all(&dir)?;
+    }
+
+    Ok(profile_dir_for(provider, name))
 }
 
 /// Get profile status information for display.
@@ -556,9 +847,11 @@ mod tests {
     #[test]
     fn test_profile_dir() {
         let dir = profile_dir("myprofile");
-        assert!(dir.to_string_lossy().contains(".midtown"));
-        assert!(dir.to_string_lossy().contains("auth"));
-        assert!(dir.to_string_lossy().ends_with("myprofile"));
+        let s = dir.to_string_lossy();
+        assert!(s.contains(".midtown"));
+        assert!(s.contains("auth"));
+        // Claude profiles now have a claude/ subdirectory
+        assert!(s.ends_with("myprofile/claude"));
     }
 
     #[test]
@@ -664,5 +957,167 @@ mod tests {
         assert!(validate_profile_name("foo\"bar").is_err());
         assert!(validate_profile_name("foo bar").is_err());
         assert!(validate_profile_name("foo$bar").is_err());
+    }
+
+    #[test]
+    fn test_shared_provider_storage_dir_claude() {
+        let dir = shared_provider_storage_dir(AuthProvider::Claude);
+        assert!(dir.is_some());
+        let path = dir.unwrap();
+        let s = path.to_string_lossy();
+        assert!(s.contains(".midtown"));
+        assert!(s.contains("providers/claude"));
+    }
+
+    #[test]
+    fn test_shared_provider_storage_dir_other_providers() {
+        assert!(shared_provider_storage_dir(AuthProvider::Codex).is_none());
+        assert!(shared_provider_storage_dir(AuthProvider::Zai).is_none());
+    }
+
+    #[test]
+    fn test_claude_profile_dir_structure() {
+        // Claude profile dirs should be at ~/.midtown/auth/<profile>/claude/
+        let dir = profile_dir_for(AuthProvider::Claude, "test@example.com");
+        let s = dir.to_string_lossy();
+        assert!(s.contains(".midtown/auth"));
+        assert!(s.contains("test@example.com/claude"));
+        assert!(s.ends_with("claude"));
+    }
+
+    #[test]
+    fn test_migration_with_temp_profile() {
+        // This test requires actual filesystem operations
+        // Create a temporary profile in the old structure, migrate it, verify the new structure
+        let test_profile = format!("test-migration-{}", std::process::id());
+
+        // Clean up any leftover test data first
+        let old_base = provider_profiles_dir(AuthProvider::Claude).join(&test_profile);
+        let _ = std::fs::remove_dir_all(&old_base);
+
+        // Create old-style profile directory with test data
+        std::fs::create_dir_all(&old_base)
+            .expect(&format!("Failed to create dir: {}", old_base.display()));
+        std::fs::write(old_base.join(".claude.json"), "{\"auth\":\"test\"}")
+            .expect("Failed to write .claude.json");
+        let tasks_dir = old_base.join("tasks");
+        std::fs::create_dir_all(&tasks_dir).expect(&format!(
+            "Failed to create tasks dir: {}",
+            tasks_dir.display()
+        ));
+        std::fs::write(tasks_dir.join("test.txt"), "test task").expect(&format!(
+            "Failed to write test.txt to {}",
+            tasks_dir.display()
+        ));
+
+        // Run migration
+        let migrated = migrate_legacy_claude_profile(&test_profile)
+            .expect(&format!("Migration failed for profile: {}", test_profile));
+        assert!(migrated, "Migration should have been performed");
+
+        // Verify new structure
+        let new_profile_dir = profile_dir_for(AuthProvider::Claude, &test_profile);
+        assert!(new_profile_dir.exists(), "New profile dir should exist");
+        assert!(
+            new_profile_dir.join(".claude.json").exists(),
+            ".claude.json should be in profile dir"
+        );
+
+        // Verify shared data moved to shared storage
+        let shared_dir = shared_provider_storage_dir(AuthProvider::Claude).unwrap();
+        assert!(
+            shared_dir.join("tasks").exists(),
+            "tasks should be in shared storage"
+        );
+        assert!(
+            shared_dir.join("tasks/test.txt").exists(),
+            "task file should be in shared storage"
+        );
+
+        // Clean up - remove only our test profile, not the entire shared dir
+        // (other tests might be using it)
+        let _ = std::fs::remove_dir_all(&old_base);
+        if let Some(parent) = new_profile_dir.parent() {
+            let _ = std::fs::remove_dir_all(parent);
+        }
+        // Clean up test data from shared storage
+        let _ = std::fs::remove_file(shared_dir.join("tasks/test.txt"));
+        let _ = std::fs::remove_dir(shared_dir.join("tasks"));
+    }
+
+    #[test]
+    fn test_setup_claude_profile_symlinks() {
+        let test_profile = format!("test-symlinks-{}", std::process::id());
+
+        // Clean up any leftover test data
+        let profile_dir = profile_dir_for(AuthProvider::Claude, &test_profile);
+        let _ = std::fs::remove_dir_all(profile_dir.parent().unwrap());
+        let shared = shared_provider_storage_dir(AuthProvider::Claude).unwrap();
+        let _ = std::fs::remove_dir_all(&shared);
+
+        // Create shared storage with test files
+        std::fs::create_dir_all(&shared).unwrap();
+        std::fs::create_dir_all(shared.join("tasks")).unwrap();
+        std::fs::write(shared.join("settings.json"), "{\"test\":true}").unwrap();
+
+        // Set up profile with symlinks
+        setup_claude_profile_symlinks(&test_profile).unwrap();
+
+        // Verify profile dir exists
+        assert!(profile_dir.exists());
+
+        // Verify symlinks were created
+        let tasks_link = profile_dir.join("tasks");
+        let settings_link = profile_dir.join("settings.json");
+
+        assert!(
+            tasks_link.symlink_metadata().is_ok(),
+            "tasks symlink should exist"
+        );
+        assert!(
+            settings_link.symlink_metadata().is_ok(),
+            "settings.json symlink should exist"
+        );
+
+        // Verify symlinks point to shared storage
+        #[cfg(unix)]
+        {
+            let tasks_target = std::fs::read_link(&tasks_link).unwrap();
+            assert_eq!(tasks_target, shared.join("tasks"));
+
+            let settings_target = std::fs::read_link(&settings_link).unwrap();
+            assert_eq!(settings_target, shared.join("settings.json"));
+        }
+
+        // Clean up
+        let _ = std::fs::remove_dir_all(profile_dir.parent().unwrap());
+        let _ = std::fs::remove_dir_all(&shared);
+    }
+
+    #[test]
+    fn test_ensure_profile_dir_creates_symlinks() {
+        let test_profile = format!("test-ensure-{}", std::process::id());
+
+        // Clean up
+        let profile_dir = profile_dir_for(AuthProvider::Claude, &test_profile);
+        let _ = std::fs::remove_dir_all(profile_dir.parent().unwrap());
+        let shared = shared_provider_storage_dir(AuthProvider::Claude).unwrap();
+        let _ = std::fs::remove_dir_all(&shared);
+
+        // Create some shared data first
+        std::fs::create_dir_all(&shared).unwrap();
+        std::fs::write(shared.join("test.txt"), "shared file").unwrap();
+
+        // Call ensure_profile_dir_for
+        let result = ensure_profile_dir_for(AuthProvider::Claude, &test_profile);
+        assert!(result.is_ok());
+
+        // Verify symlink was created
+        let test_link = profile_dir.join("test.txt");
+        assert!(test_link.symlink_metadata().is_ok());
+
+        // Clean up
+        let _ = std::fs::remove_dir_all(profile_dir.parent().unwrap());
+        let _ = std::fs::remove_dir_all(&shared);
     }
 }
