@@ -1168,40 +1168,84 @@ fn detect_repo_root() -> WorktreeResult<PathBuf> {
 /// extracting the last path component if git detection fails.
 fn repo_name_from_path(repo_path: &Path) -> WorktreeResult<String> {
     // Try git-aware detection first (handles worktree paths correctly)
-    if let Ok(output) = Command::new("git")
+    let git_result = Command::new("git")
         .current_dir(repo_path)
         .args(["rev-parse", "--git-common-dir"])
-        .output()
-        && output.status.success()
-    {
-        let git_common_dir = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        .output();
 
-        if git_common_dir == ".git" {
-            // Regular repo (not a worktree) — use --show-toplevel to resolve
-            if let Ok(tl) = Command::new("git")
-                .current_dir(repo_path)
-                .args(["rev-parse", "--show-toplevel"])
-                .output()
-                && tl.status.success()
-            {
-                let path_str = String::from_utf8_lossy(&tl.stdout);
-                if let Some(name) = Path::new(path_str.trim())
-                    .file_name()
+    match git_result {
+        Ok(output) if output.status.success() => {
+            let git_common_dir = String::from_utf8_lossy(&output.stdout).trim().to_string();
+
+            if git_common_dir == ".git" {
+                // Regular repo (not a worktree) — use --show-toplevel to resolve
+                let tl_result = Command::new("git")
+                    .current_dir(repo_path)
+                    .args(["rev-parse", "--show-toplevel"])
+                    .output();
+
+                match tl_result {
+                    Ok(tl) if tl.status.success() => {
+                        let path_str = String::from_utf8_lossy(&tl.stdout);
+                        if let Some(name) = Path::new(path_str.trim())
+                            .file_name()
+                            .and_then(|s| s.to_str())
+                        {
+                            return Ok(name.to_string());
+                        }
+                        warn!(
+                            "git rev-parse --show-toplevel returned unparseable path '{}' for {}, falling back to path extraction",
+                            path_str.trim(),
+                            repo_path.display()
+                        );
+                    }
+                    Ok(tl) => {
+                        warn!(
+                            "git rev-parse --show-toplevel failed for {} (status {}), falling back to path extraction: {}",
+                            repo_path.display(),
+                            tl.status,
+                            String::from_utf8_lossy(&tl.stderr).trim()
+                        );
+                    }
+                    Err(e) => {
+                        warn!(
+                            "git rev-parse --show-toplevel failed to execute for {}: {}, falling back to path extraction",
+                            repo_path.display(),
+                            e
+                        );
+                    }
+                }
+            } else {
+                // Worktree: git-common-dir is the main repo's .git directory
+                let git_path = Path::new(&git_common_dir);
+                if let Some(name) = git_path
+                    .parent()
+                    .and_then(|p| p.file_name())
                     .and_then(|s| s.to_str())
                 {
                     return Ok(name.to_string());
                 }
+                warn!(
+                    "Could not extract repo name from git-common-dir '{}' for {}, falling back to path extraction",
+                    git_common_dir,
+                    repo_path.display()
+                );
             }
-        } else {
-            // Worktree: git-common-dir is the main repo's .git directory
-            let git_path = Path::new(&git_common_dir);
-            if let Some(name) = git_path
-                .parent()
-                .and_then(|p| p.file_name())
-                .and_then(|s| s.to_str())
-            {
-                return Ok(name.to_string());
-            }
+        }
+        Ok(output) => {
+            warn!(
+                "git rev-parse --git-common-dir failed for {} (status {}), falling back to path extraction: {}",
+                repo_path.display(),
+                output.status,
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+        Err(e) => {
+            warn!(
+                "git rev-parse --git-common-dir failed to execute for {}: {}, falling back to path extraction",
+                repo_path.display(),
+                e
+            );
         }
     }
 
@@ -2241,6 +2285,58 @@ branch refs/heads/bob/work
             "repo_name should be the main repo name '{}', not the worktree dir name '{}'",
             expected_name,
             wt_manager.repo_name()
+        );
+    }
+
+    #[test]
+    fn test_fallback_when_not_in_git_repo() {
+        // Create a temp dir that is NOT a git repo
+        let temp_dir = TempDir::new().expect("create temp dir");
+        let subdir = temp_dir.path().join("myproject");
+        std::fs::create_dir(&subdir).expect("create subdir");
+
+        // WorktreeManager::new should fall back to path extraction
+        let manager =
+            WorktreeManager::new(subdir.clone()).expect("create manager from non-git path");
+
+        // Should use the directory name as repo name
+        assert_eq!(manager.repo_name(), "myproject");
+    }
+
+    #[test]
+    fn test_regular_repo_detects_correct_name() {
+        // Test the regular repo case (git-common-dir == ".git")
+        let temp_dir = TempDir::new().expect("create temp dir");
+
+        // Create a regular git repo
+        TestCommand::new("git")
+            .args(["init"])
+            .current_dir(temp_dir.path())
+            .output()
+            .expect("git init");
+        TestCommand::new("git")
+            .args(["config", "user.email", "test@example.com"])
+            .current_dir(temp_dir.path())
+            .output()
+            .expect("git config email");
+        TestCommand::new("git")
+            .args(["config", "user.name", "Test User"])
+            .current_dir(temp_dir.path())
+            .output()
+            .expect("git config name");
+        TestCommand::new("git")
+            .args(["commit", "--allow-empty", "-m", "Initial commit"])
+            .current_dir(temp_dir.path())
+            .output()
+            .expect("initial commit");
+
+        let manager = WorktreeManager::new(temp_dir.path().to_path_buf()).expect("create manager");
+
+        let expected_name = temp_dir.path().file_name().unwrap().to_str().unwrap();
+        assert_eq!(
+            manager.repo_name(),
+            expected_name,
+            "regular repo should detect correct name"
         );
     }
 }
