@@ -134,7 +134,10 @@ export function switchProject(projectName, webhookPort) {
 
   // Load data from the new project
   if (projectApiBase) {
-    fetchChannels() // Fetch available channels first
+    // Fetch channels first to populate the sidebar immediately.
+    // Note: fetchHistory() also builds a channel list from messages,
+    // but this ensures all channels (including empty ones) appear immediately.
+    fetchChannels()
     fetchHistory()
     fetchStatus()
     fetchUsage()
@@ -186,20 +189,28 @@ export async function fetchHistory(channelName = null) {
 
         messagesByChannel.set(byChannel)
 
-        // Build channel list
-        const channelList = Array.from(channelSet).map((name) => ({
-          name,
-          unread: 0,
-          has_pr: false,
-          ci_status: null,
-        }))
-        // Ensure midtown is first
-        channelList.sort((a, b) => {
-          if (a.name === 'midtown') return -1
-          if (b.name === 'midtown') return 1
-          return a.name.localeCompare(b.name)
+        // Merge message-derived channels with existing channel list (preserves
+        // channels loaded from GET /api/channels that may have no messages yet).
+        channels.update((existingChannels) => {
+          const existingNames = new Set(existingChannels.map((ch) => ch.name))
+          const newChannels = Array.from(channelSet)
+            .filter((name) => !existingNames.has(name))
+            .map((name) => ({
+              name,
+              unread: 0,
+              has_pr: false,
+              ci_status: null,
+            }))
+
+          const merged = [...existingChannels, ...newChannels]
+          // Ensure midtown is first
+          merged.sort((a, b) => {
+            if (a.name === 'midtown') return -1
+            if (b.name === 'midtown') return 1
+            return a.name.localeCompare(b.name)
+          })
+          return merged
         })
-        channels.set(channelList)
       }
     }
   } catch (err) {
