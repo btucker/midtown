@@ -46,6 +46,9 @@ max_coworkers = 4
 
 [daemon]
 webhook_port = 47023              # Auto-assigned if not set
+
+[channels]
+seed = ["tui", "web-interface", "daemon", "docs"]  # Pre-populated channels
 ```
 
 The `[project]` section defines:
@@ -55,6 +58,21 @@ The `[project]` section defines:
 - `primary_repo` - The main repo used for the daemon socket and channel
 
 For single-repo projects, only `name` is needed; `repos` and `primary_repo` are inferred from the working directory. This config is auto-created on first `midtown start`.
+
+The `[channels]` section defines:
+
+- `seed` - Pre-populated topic channels created at daemon startup
+
+Seed channels help guide the clusterer's task organization by establishing architectural channels upfront. When tasks are created, the clusterer can route them to existing seed channels rather than always creating new ones. Seed channels are created automatically when the daemon starts and don't need manual creation.
+
+**Example:** For a project with distinct TUI, web, and daemon subsystems, seed channels help organize work by architecture:
+
+```toml
+[channels]
+seed = ["tui", "web-interface", "daemon-core", "github-integration", "testing", "docs"]
+```
+
+The clusterer will prefer routing tasks to these established channels when appropriate, reducing channel proliferation and keeping related work grouped consistently.
 
 ## Environment Variable Overrides
 

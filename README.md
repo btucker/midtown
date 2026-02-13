@@ -210,6 +210,9 @@ max_coworkers = 4
 
 [daemon]
 webhook_port = 47023              # Auto-assigned if not set
+
+[channels]
+seed = ["tui", "web-interface", "daemon"]  # Pre-populated topic channels
 ```
 
 The `[project]` section defines:
