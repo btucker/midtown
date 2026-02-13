@@ -51,6 +51,8 @@ pub fn draw_board_panel(f: &mut Frame, app: &mut App, area: Rect) -> Vec<Hyperli
         tasks_by_channel.entry(channel_key).or_default().push(task);
     }
 
+    let wrap_width = area.width.saturating_sub(2).max(20) as usize;
+
     // Count active PRs per channel
     let mut prs_by_channel: HashMap<String, Vec<&super::super::app::KanbanPr>> = HashMap::new();
     for pr in &app.prs {
@@ -63,9 +65,29 @@ pub fn draw_board_panel(f: &mut Frame, app: &mut App, area: Rect) -> Vec<Hyperli
         }
     }
 
-    // Render each channel name (no tasks)
+    // Render each channel as a swimlane
+    let mut first_channel = true;
     for (channel_name, tasks) in &tasks_by_channel {
+        if !first_channel {
+            lines.push(Line::from(""));
+        }
+        first_channel = false;
+
         render_channel_header(app, channel_name, tasks, &prs_by_channel, &mut lines);
+        lines.push(Line::from("")); // Blank line after header
+
+        let task_indentation = compute_task_indentation(tasks);
+
+        for task in tasks {
+            render_task_item(
+                app,
+                task,
+                channel_name,
+                &task_indentation,
+                wrap_width,
+                &mut lines,
+            );
+        }
     }
 
     // Determine border color based on focus
@@ -92,54 +114,23 @@ pub fn draw_board_panel(f: &mut Frame, app: &mut App, area: Rect) -> Vec<Hyperli
     hyperlinks
 }
 
-/// Render a channel header line with task count, unread count, and CI status.
+/// Render a channel header line with task count and unread count.
 fn render_channel_header(
     app: &App,
     channel_name: &str,
     tasks: &[&KanbanTask],
-    prs_by_channel: &HashMap<String, Vec<&super::super::app::KanbanPr>>,
+    _prs_by_channel: &HashMap<String, Vec<&super::super::app::KanbanPr>>,
     lines: &mut Vec<Line<'static>>,
 ) {
     let task_count = tasks.len();
-    let mut header_parts = if let Some(&unread_count) = app.channel_unread_counts.get(channel_name)
-    {
-        vec![format!(
+    let channel_header = if let Some(&unread_count) = app.channel_unread_counts.get(channel_name) {
+        format!(
             "  #{} ({}) — {} tasks",
             channel_name, unread_count, task_count
-        )]
+        )
     } else {
-        vec![format!("  #{} — {} tasks", channel_name, task_count)]
+        format!("  #{} — {} tasks", channel_name, task_count)
     };
-
-    // Add CI status indicator
-    if let Some(channel_prs) = prs_by_channel.get(channel_name)
-        && !channel_prs.is_empty()
-    {
-        let has_failed = channel_prs
-            .iter()
-            .any(|pr| pr.ci_status == super::super::app::CiStatus::Failed);
-        let has_running = channel_prs
-            .iter()
-            .any(|pr| pr.ci_status == super::super::app::CiStatus::Running);
-        let has_passed = channel_prs
-            .iter()
-            .any(|pr| pr.ci_status == super::super::app::CiStatus::Passed);
-
-        let ci_indicator = if has_failed {
-            Some(" 🔴")
-        } else if has_running {
-            Some(" 🟡")
-        } else if has_passed {
-            Some(" 🟢")
-        } else {
-            None
-        };
-        if let Some(indicator) = ci_indicator {
-            header_parts.push(indicator.to_string());
-        }
-    }
-
-    let channel_header = header_parts.join("");
 
     let is_selected = app.board_selection.as_ref().is_some_and(|sel| match sel {
         super::super::app::BoardSelection::Channel(ch) => ch == channel_name,
@@ -157,7 +148,6 @@ fn render_channel_header(
 }
 
 /// Render a single task item with indentation and wrapping.
-#[allow(dead_code)]
 fn render_task_item(
     app: &App,
     task: &KanbanTask,
@@ -168,14 +158,45 @@ fn render_task_item(
 ) {
     let indent_level = task_indentation.get(&task.id).copied().unwrap_or(0);
     let task_indent = "  ".repeat(indent_level);
-    let status_marker = if task.status == TaskStatus::InProgress {
-        "● "
-    } else {
-        "○ "
+
+    // Find PR for this task
+    let task_pr = app.prs.iter().find(|pr| {
+        pr.task_id
+            .map(|id| id.to_string() == task.id)
+            .unwrap_or(false)
+    });
+
+    // Determine bullet color based on task and PR status
+    let (bullet_color, text_color) = match task_pr {
+        // PR exists - check for conflicts or CI status
+        Some(pr) => {
+            if pr.has_conflicts {
+                // Merge conflict takes priority - show red
+                (Color::Red, Color::Red)
+            } else {
+                match pr.ci_status {
+                    super::super::app::CiStatus::Passed => (Color::Green, Color::Green),
+                    super::super::app::CiStatus::Failed => (Color::Red, Color::Red),
+                    super::super::app::CiStatus::Running => (Color::Yellow, Color::Yellow),
+                    super::super::app::CiStatus::Unknown => {
+                        // PR exists but CI status unknown - treat as in-progress
+                        (Color::Yellow, Color::Green)
+                    }
+                }
+            }
+        }
+        // No PR - use task status
+        None => {
+            if task.status == TaskStatus::InProgress {
+                (Color::Yellow, Color::Green)
+            } else {
+                (Color::DarkGray, Color::DarkGray)
+            }
+        }
     };
 
-    let prefix = format!("{}{} !{} ", task_indent, status_marker, task.id);
-    let prefix_width = prefix.len();
+    let prefix = format!("{}!{} ", task_indent, task.id);
+    let prefix_width = prefix.len() + 2; // +2 for "● " bullet
     let task_line = format!("{}{}", prefix, task.subject);
 
     let is_task_selected = app.board_selection.as_ref().is_some_and(|sel| match sel {
@@ -185,30 +206,30 @@ fn render_task_item(
 
     let wrapped_lines = wrap_content(&task_line, wrap_width);
     for (i, wrapped) in wrapped_lines.iter().enumerate() {
-        let text = if i == 0 {
-            wrapped.to_string()
+        if i == 0 {
+            // First line: render bullet + text as separate spans
+            let bullet_span = Span::styled("● ", Style::default().fg(bullet_color));
+            let mut text_style = Style::default().fg(text_color);
+            if is_task_selected {
+                text_style = text_style.bg(Color::DarkGray);
+            }
+            let text_span = Span::styled(wrapped.to_string(), text_style);
+            lines.push(Line::from(vec![bullet_span, text_span]));
         } else {
+            // Continuation lines: indent without bullet
             let indent_width = prefix_width.saturating_sub(2);
-            format!(
+            let text = format!(
                 "{:width$}{}",
                 "",
                 wrapped.trim_start(),
                 width = indent_width
-            )
-        };
-
-        let color = if task.status == TaskStatus::InProgress {
-            Color::Green
-        } else {
-            Color::DarkGray
-        };
-
-        let mut style = Style::default().fg(color);
-        if is_task_selected {
-            style = style.bg(Color::DarkGray);
+            );
+            let mut style = Style::default().fg(text_color);
+            if is_task_selected {
+                style = style.bg(Color::DarkGray);
+            }
+            lines.push(Line::from(vec![Span::styled(text, style)]));
         }
-
-        lines.push(Line::from(vec![Span::styled(text, style)]));
     }
 }
 
@@ -284,7 +305,6 @@ fn draw_coworker_status(f: &mut Frame, app: &App, area: Rect) {
 
 /// Compute indentation level for each task based on dependency structure.
 /// Returns a HashMap mapping task ID to indentation level (0 = no indent, 1 = indent one level, etc.)
-#[allow(dead_code)]
 fn compute_task_indentation(tasks: &[&KanbanTask]) -> HashMap<String, usize> {
     let mut indentation: HashMap<String, usize> = HashMap::new();
     let mut processed: HashSet<String> = HashSet::new();
@@ -299,7 +319,6 @@ fn compute_task_indentation(tasks: &[&KanbanTask]) -> HashMap<String, usize> {
 }
 
 /// Recursive helper to compute indentation level for a task
-#[allow(dead_code)]
 fn compute_indentation_recursive(
     task_id: &str,
     task_map: &HashMap<String, &KanbanTask>,
