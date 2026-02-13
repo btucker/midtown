@@ -1594,6 +1594,27 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
     let channel_router = crate::ChannelRouter::new(&channel_base_dir, "midtown");
     info!("Channel base: {}", channel_base_dir.display());
 
+    // Create seed channels if configured
+    if let Some(ref full_config) = full_project_config {
+        for seed_channel in &full_config.channels.seed {
+            match crate::channel::Channel::create(&channel_base_dir, seed_channel) {
+                Ok(_) => {
+                    debug!("Seed channel '{}' ready", seed_channel);
+                }
+                Err(e) => {
+                    warn!("Failed to create seed channel '{}': {}", seed_channel, e);
+                }
+            }
+        }
+        if !full_config.channels.seed.is_empty() {
+            info!(
+                "Created {} seed channels: {:?}",
+                full_config.channels.seed.len(),
+                full_config.channels.seed
+            );
+        }
+    }
+
     // Remove existing socket file if present
     if config.socket_path.exists() {
         std::fs::remove_file(&config.socket_path)?;

@@ -182,6 +182,10 @@ pub struct FullProjectConfig {
     /// Project-specific daemon configuration overrides
     #[serde(default)]
     pub daemon: DaemonSection,
+
+    /// Channel configuration (seed channels)
+    #[serde(default)]
+    pub channels: ChannelsSection,
 }
 
 impl FullProjectConfig {
@@ -223,6 +227,7 @@ impl FullProjectConfig {
                 ..ProjectConfig::default()
             },
             daemon: DaemonSection::default(),
+            channels: ChannelsSection::default(),
         }
     }
 
@@ -358,6 +363,17 @@ pub struct PluginsConfig {
     /// List of required plugin names (e.g., "superpowers@claude-plugins-official")
     #[serde(default)]
     pub required: Vec<String>,
+}
+
+/// Channels configuration section.
+///
+/// Pre-populated seed channels that should exist from daemon startup.
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct ChannelsSection {
+    /// Seed channels to create at daemon startup if they don't exist.
+    /// Example: ["tui", "web-interface", "daemon", "auth", "docs"]
+    #[serde(default)]
+    pub seed: Vec<String>,
 }
 
 /// Daemon configuration section.
@@ -2342,5 +2358,54 @@ auth_profile = "old@example.com"
 
         // Verify: other config fields survived
         assert_eq!(loaded_after.project.name.as_deref(), Some("test-repo"));
+    }
+
+    #[test]
+    fn test_channels_section_parse() {
+        let toml = r#"
+[channels]
+seed = ["tui", "web-interface", "daemon", "docs"]
+"#;
+        let config: FullProjectConfig = toml::from_str(toml).unwrap();
+        assert_eq!(
+            config.channels.seed,
+            vec!["tui", "web-interface", "daemon", "docs"]
+        );
+    }
+
+    #[test]
+    fn test_channels_section_default() {
+        let config = FullProjectConfig::default();
+        assert!(config.channels.seed.is_empty());
+    }
+
+    #[test]
+    fn test_channels_section_roundtrip() {
+        let toml = r#"
+[project]
+name = "testproj"
+
+[channels]
+seed = ["daemon", "tui", "web"]
+"#;
+        let config: FullProjectConfig = toml::from_str(toml).unwrap();
+        assert_eq!(config.channels.seed, vec!["daemon", "tui", "web"]);
+
+        let serialized = toml::to_string_pretty(&config).unwrap();
+        let reparsed: FullProjectConfig = toml::from_str(&serialized).unwrap();
+        assert_eq!(reparsed.channels.seed, vec!["daemon", "tui", "web"]);
+    }
+
+    #[test]
+    fn test_channels_section_save_and_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+
+        let mut config = FullProjectConfig::minimal("testproj", "/tmp/testproj");
+        config.channels.seed = vec!["daemon".to_string(), "tui".to_string(), "web".to_string()];
+        config.save_to(&path).unwrap();
+
+        let loaded = FullProjectConfig::load_from(&path).unwrap();
+        assert_eq!(loaded.channels.seed, vec!["daemon", "tui", "web"]);
     }
 }
