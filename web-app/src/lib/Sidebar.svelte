@@ -45,7 +45,7 @@
   </Collapsible>
 
   <!-- Footer section with coworker status, usage bars, and controls -->
-  <div class="mt-auto flex flex-col gap-2 border-t-2 border-[#2a2a2a] bg-[#0a0a0a] p-2 [padding-bottom:calc(0.5rem+env(safe-area-inset-bottom,0px))]">
+  <div class="mt-auto flex flex-col gap-2 border-t-2 border-[#2a2a2a] bg-[#0a0a0a] p-2 pb-safe-offset-2">
     <CoworkerStatus />
     <UsageBars />
     <div class="flex items-center justify-end gap-2.5">

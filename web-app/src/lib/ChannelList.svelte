@@ -188,10 +188,8 @@
 
     <div class="mb-0.5">
       <button
-        class="flex items-center justify-between w-full px-3 py-2 border-none rounded-md bg-transparent text-[#a8a8a8] text-sm font-mono cursor-pointer transition-all duration-150 text-left hover:bg-[#262626] hover:text-[#d0d0d0]"
+        class="flex items-center justify-between w-full px-3 py-2 border-none rounded-md text-sm font-mono cursor-pointer transition-all duration-150 text-left {isActive ? 'bg-accent text-primary' : 'bg-transparent text-muted-foreground hover:bg-[#262626] hover:text-foreground'}"
         aria-label="Select channel {channel.name}"
-        class:bg-[#303030]={isActive}
-        class:text-[#5fafaf]={isActive}
         onclick={() => selectChannel(channel.name)}
       >
         <div class="flex items-center gap-1.5 flex-1 min-w-0">

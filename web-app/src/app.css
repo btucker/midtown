@@ -1,5 +1,6 @@
 @import 'tailwindcss';
 @import 'tw-animate-css';
+@import 'tailwindcss-safe-area';
 
 /* shadcn-svelte CSS variables for theming */
 :root {
@@ -101,10 +102,10 @@
   border-color: hsl(var(--border));
 }
 
-html {
+html, body {
   height: 100%;
   overflow: hidden;
-  background: black;
+  overscroll-behavior: none;
 }
 
 body {
@@ -113,8 +114,4 @@ body {
   color: hsl(var(--foreground));
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  overscroll-behavior: none;
-  overflow: hidden;
-  position: fixed;
-  inset: 0;
 }

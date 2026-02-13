@@ -114,11 +114,11 @@
   <title>Midtown</title>
 </svelte:head>
 
-<div class="app-container flex absolute inset-0 overflow-hidden bg-background text-foreground">
+<div class="app-container flex h-dvh w-full overflow-hidden bg-background text-foreground">
   {#if $activeProject}
     <SidebarProvider>
       <Sidebar>
-        <SidebarHeader class="p-3 pt-[calc(0.75rem+env(safe-area-inset-top))] border-b border-sidebar-border">
+        <SidebarHeader class="p-3 pt-safe-offset-3 border-b border-sidebar-border">
           <div class="header-left">
             <img src="/logo.png" alt="Midtown" class="header-logo hidden md:block" />
             {#if $projects.length > 0}
@@ -206,7 +206,7 @@
 
       <main class="flex-1 flex flex-col h-full overflow-hidden">
         <!-- Mobile header with sidebar trigger -->
-        <header class="mobile-header flex items-center px-2 pb-2 pt-[calc(0.5rem+env(safe-area-inset-top))] border-b border-border bg-sidebar md:hidden">
+        <header class="mobile-header flex items-center px-2 pb-2 pt-safe-offset-2 border-b border-border bg-sidebar md:hidden">
           <SidebarTrigger />
           <span class="ml-2 text-sm text-muted-foreground">{$activeProject}</span>
           <div class="mobile-channel active-channel-display ml-4">
