@@ -692,11 +692,27 @@ pub fn handle_start(
             return Err(format!("Failed to create session '{}'", session));
         }
 
+        // Create lead worktree (or reuse existing one) so the lead session
+        // starts in the worktree instead of the main repo.
+        emit_startup_progress(90, "creating lead worktree");
+        let worktree_manager = midtown::worktree::WorktreeManager::new(primary_repo.clone())
+            .map_err(|e| format!("Failed to initialize worktree manager: {}", e))?;
+        let lead_workdir = worktree_manager
+            .create_lead_worktree()
+            .map_err(|e| {
+                eprintln!(
+                    "Warning: Failed to create lead worktree, falling back to main repo: {}",
+                    e
+                );
+                e
+            })
+            .unwrap_or_else(|_| primary_repo.clone());
+
         // Use spawn_lead() to create the Lead window with proper config,
         // auth profile, settings, and system prompt.
         midtown::tmux::spawn_lead(
             &session,
-            &primary_repo.to_string_lossy(),
+            &lead_workdir.to_string_lossy(),
             &project_name,
             &additional_repos,
         )
@@ -1499,8 +1515,23 @@ fn ensure_lead_has_settings(session: &str, repo: &Path) -> Result<(), String> {
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| "default".to_string());
 
+    // Create lead worktree (or reuse existing one) so the lead session
+    // starts in the worktree instead of the main repo.
+    let worktree_manager = midtown::worktree::WorktreeManager::new(repo.to_path_buf())
+        .map_err(|e| format!("Failed to initialize worktree manager: {}", e))?;
+    let lead_workdir = worktree_manager
+        .create_lead_worktree()
+        .map_err(|e| {
+            eprintln!(
+                "Warning: Failed to create lead worktree, falling back to main repo: {}",
+                e
+            );
+            e
+        })
+        .unwrap_or_else(|_| repo.to_path_buf());
+
     // spawn_lead kills existing lead windows and creates a fresh one
-    midtown::tmux::spawn_lead(session, &repo.to_string_lossy(), &repo_name, &[])
+    midtown::tmux::spawn_lead(session, &lead_workdir.to_string_lossy(), &repo_name, &[])
         .map_err(|e| format!("Failed to re-launch lead: {}", e))?;
 
     // Set up chat pane (split or separate window based on config)
@@ -1916,3 +1947,7 @@ mod tests {
         );
     }
 }
+
+#[path = "daemon_tests.rs"]
+#[cfg(test)]
+mod daemon_tests;
