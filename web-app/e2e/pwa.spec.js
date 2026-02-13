@@ -54,7 +54,7 @@ test.describe('PWA behavior', () => {
     }
   })
 
-  test('body uses monospace font family', async ({ page }) => {
+  test('body uses sans-serif font family', async ({ page }) => {
     const body = page.locator('body')
     const fontFamily = await body.evaluate((el) => getComputedStyle(el).fontFamily)
     // Body uses monospace font (Terminal Noir design)

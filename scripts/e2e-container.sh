@@ -44,9 +44,12 @@ if [ "${MODE}" = "full" ]; then
     fi
 
     # Mount OAuth credentials directory if available
-    # Check new location first (~/.midtown/auth/e2e), then legacy (~/.midtown/claude-auth)
+    # Check new location first (~/.midtown/auth/e2e/claude), then fall back to old locations
     if [ -z "${CLAUDE_AUTH_DIR:-}" ]; then
-        if [ -d "${HOME}/.midtown/auth/e2e" ]; then
+        if [ -d "${HOME}/.midtown/auth/e2e/claude" ]; then
+            CLAUDE_AUTH_DIR="${HOME}/.midtown/auth/e2e/claude"
+        elif [ -d "${HOME}/.midtown/auth/e2e" ]; then
+            # Legacy: pre-restructure location
             CLAUDE_AUTH_DIR="${HOME}/.midtown/auth/e2e"
         else
             CLAUDE_AUTH_DIR="${HOME}/.midtown/claude-auth"
