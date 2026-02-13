@@ -195,8 +195,8 @@ fn render_task_item(
         }
     };
 
-    let prefix = format!("{}!{} ", task_indent, task.id);
-    let prefix_width = prefix.len() + 2; // +2 for "● " bullet
+    let prefix = format!("!{} ", task.id);
+    let prefix_width = task_indent.len() + 2 + prefix.len(); // indent + "● " + prefix
     let task_line = format!("{}{}", prefix, task.subject);
 
     let is_task_selected = app.board_selection.as_ref().is_some_and(|sel| match sel {
@@ -207,8 +207,11 @@ fn render_task_item(
     let wrapped_lines = wrap_content(&task_line, wrap_width);
     for (i, wrapped) in wrapped_lines.iter().enumerate() {
         if i == 0 {
-            // First line: render bullet + text as separate spans
-            let bullet_span = Span::styled("● ", Style::default().fg(bullet_color));
+            // First line: render indent + bullet + text as separate spans
+            let bullet_span = Span::styled(
+                format!("{}● ", task_indent),
+                Style::default().fg(bullet_color),
+            );
             let mut text_style = Style::default().fg(text_color);
             if is_task_selected {
                 text_style = text_style.bg(Color::DarkGray);
