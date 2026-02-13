@@ -337,13 +337,21 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                 match key.code {
                     KeyCode::Char('q') => return EventResult::Exit,
                     KeyCode::Char('s') => return EventResult::ToggleMouseCapture,
+                    KeyCode::Char('k') => {
+                        app.toggle_channel_switcher();
+                        return EventResult::Continue;
+                    }
                     _ => {}
                 }
             }
             match key.code {
                 KeyCode::Esc => {
+                    // Esc dismisses channel switcher if showing
+                    if app.channel_switcher.show {
+                        app.dismiss_channel_switcher();
+                        EventResult::Continue
                     // Esc dismisses autocomplete if showing
-                    if app.autocomplete.show {
+                    } else if app.autocomplete.show {
                         app.dismiss_autocomplete();
                         EventResult::Continue
                     } else if app.focused_pane == FocusedPane::InputBar {
@@ -370,9 +378,12 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                     }
                 }
                 // Arrow keys for scrolling - don't auto-focus input
-                // BUT if autocomplete is showing, navigate the dropdown instead
+                // BUT if channel switcher or autocomplete is showing, navigate those instead
                 KeyCode::Up => {
-                    if app.autocomplete.show {
+                    if app.channel_switcher.show {
+                        app.channel_switcher_select_prev();
+                        EventResult::Continue
+                    } else if app.autocomplete.show {
                         app.autocomplete_select_prev();
                         EventResult::Continue
                     } else {
@@ -389,7 +400,10 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                     }
                 }
                 KeyCode::Down => {
-                    if app.autocomplete.show {
+                    if app.channel_switcher.show {
+                        app.channel_switcher_select_next();
+                        EventResult::Continue
+                    } else if app.autocomplete.show {
                         app.autocomplete_select_next();
                         EventResult::Continue
                     } else {
@@ -421,13 +435,16 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                     app.scroll_to_bottom();
                     EventResult::Continue
                 }
-                // Enter: select autocomplete item if showing, execute /channel create command,
-                //        auto-focus InputBar, or send message to the selected channel
+                // Enter: select channel switcher item if showing, or autocomplete item if showing,
+                // execute /channel create command, auto-focus InputBar, or send message
                 // Shift+Enter: insert newline
                 KeyCode::Enter => {
                     if key.modifiers.contains(KeyModifiers::SHIFT) {
                         // Shift+Enter inserts a newline
                         auto_focus_and_insert_char(app, '\n');
+                        EventResult::Continue
+                    } else if app.channel_switcher.show {
+                        app.channel_switcher_select();
                         EventResult::Continue
                     } else if app.autocomplete.show {
                         app.insert_autocomplete_item();
@@ -481,11 +498,16 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                         EventResult::Continue
                     }
                 }
-                // Backspace: auto-focus if input has text, then delete
+                // Backspace: if channel switcher is showing, backspace in its input
+                // Otherwise auto-focus if input has text, then delete
                 KeyCode::Backspace => {
-                    if !app.input_text.is_empty() && app.input_cursor == 0 {
+                    if app.channel_switcher.show {
+                        app.channel_switcher_backspace();
+                        EventResult::Continue
+                    } else if !app.input_text.is_empty() && app.input_cursor == 0 {
                         // Input has text but cursor is at start - auto-focus but don't delete
                         app.focused_pane = FocusedPane::InputBar;
+                        EventResult::Continue
                     } else if !app.input_text.is_empty()
                         || app.focused_pane == FocusedPane::InputBar
                     {
@@ -499,8 +521,10 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                             // Detect autocomplete trigger after deletion
                             app.detect_autocomplete_trigger();
                         }
+                        EventResult::Continue
+                    } else {
+                        EventResult::Continue
                     }
-                    EventResult::Continue
                 }
                 // Delete: auto-focus if input has text, then delete forward
                 KeyCode::Delete => {
@@ -531,10 +555,16 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                     }
                     EventResult::Continue
                 }
-                // All other character input: auto-focus InputBar and insert
+                // All other character input: if channel switcher is showing, input to it
+                // Otherwise auto-focus InputBar and insert
                 KeyCode::Char(c) => {
-                    auto_focus_and_insert_char(app, c);
-                    EventResult::Continue
+                    if app.channel_switcher.show {
+                        app.channel_switcher_input(c);
+                        EventResult::Continue
+                    } else {
+                        auto_focus_and_insert_char(app, c);
+                        EventResult::Continue
+                    }
                 }
                 _ => EventResult::Continue,
             }
@@ -591,7 +621,7 @@ mod tests {
     use crossterm::event::{KeyEvent, KeyModifiers};
 
     /// Helper to create a key press event for a given KeyCode
-    fn key_press(code: KeyCode) -> Event {
+    pub(super) fn key_press(code: KeyCode) -> Event {
         Event::Key(KeyEvent::new(code, KeyModifiers::NONE))
     }
 
@@ -1412,3 +1442,7 @@ mod tests {
         );
     }
 }
+
+#[path = "channel_switcher_tests.rs"]
+#[cfg(test)]
+mod channel_switcher_tests;
