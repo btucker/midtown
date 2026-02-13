@@ -230,7 +230,9 @@ impl LaunchConfig {
     ///
     /// Generates the system prompt based on the coworker's role, and maps
     /// session mode to `persist_session` / `resume_session_id` fields.
-    pub fn to_headless_config(&self) -> HeadlessConfig {
+    ///
+    /// `project_name` is used to load sandbox configuration.
+    pub fn to_headless_config(&self, project_name: &str) -> HeadlessConfig {
         let system_prompt = match self.role {
             CoworkerRole::Reviewer => crate::agents::reviewer_system_prompt(&self.name),
             CoworkerRole::Coworker => crate::agents::coworker_system_prompt(&self.name),
@@ -297,6 +299,7 @@ impl LaunchConfig {
             system_prompt,
             json_schema: None,
             cwd: None, // Set by caller (worktree path)
+            project_name: Some(project_name.to_string()),
             max_budget_usd: None,
             allow_tools: true, // Coworkers need full tool access
             persist_session,
@@ -324,6 +327,8 @@ impl LaunchConfig {
     /// `primary_repo` is the project root directory, used to compute the
     /// filesystem sandbox profile (writable directories).
     ///
+    /// `project_name` is used to load sandbox configuration (allowed_paths).
+    ///
     /// Returns a `LaunchCommand` with the shell command and the session ID
     /// (if a fresh session was created).
     pub fn to_shell_command(
@@ -332,6 +337,7 @@ impl LaunchConfig {
         prompt_file: &std::path::Path,
         initial_prompt_file: Option<&std::path::Path>,
         primary_repo: &std::path::Path,
+        project_name: &str,
     ) -> LaunchCommand {
         // -- Environment variables --
         let mut env_parts = vec![
@@ -381,7 +387,12 @@ impl LaunchConfig {
         // On macOS, prepend sandbox-exec to restrict filesystem writes.
         // On Linux with bwrap available, prepend bwrap.
         // Falls back to no sandboxing if profile creation fails.
-        let writable = crate::sandbox::writable_dirs(primary_repo, &self.additional_dirs);
+        let sandbox_config = crate::config::get_project_sandbox_config(project_name);
+        let writable = crate::sandbox::writable_dirs(
+            primary_repo,
+            &self.additional_dirs,
+            &sandbox_config.allowed_paths,
+        );
         let mut args: Vec<String> = if cfg!(target_os = "macos") {
             match crate::sandbox::sandbox_exec_prefix(&writable) {
                 Ok((_profile_path, prefix)) => {
@@ -535,7 +546,7 @@ mod tests {
     #[test]
     fn test_to_headless_config_fresh_coworker() {
         let config = LaunchConfig::coworker("park", "myrepo", SessionMode::Fresh, None);
-        let headless = config.to_headless_config();
+        let headless = config.to_headless_config("midtown");
 
         assert!(headless.persist_session);
         assert!(headless.resume_session_id.is_none());
@@ -553,7 +564,7 @@ mod tests {
             session_mode: SessionMode::ResumeSession("abc-123".to_string()),
             ..LaunchConfig::coworker("park", "myrepo", SessionMode::Fresh, None)
         };
-        let headless = config.to_headless_config();
+        let headless = config.to_headless_config("midtown");
 
         assert!(headless.persist_session);
         assert_eq!(headless.resume_session_id, Some("abc-123".to_string()));
@@ -562,7 +573,7 @@ mod tests {
     #[test]
     fn test_to_headless_config_reviewer_has_no_teams() {
         let config = LaunchConfig::reviewer("york", 42);
-        let headless = config.to_headless_config();
+        let headless = config.to_headless_config("midtown");
 
         assert!(headless.team_name.is_none());
         assert!(headless.agent_id.is_none());
@@ -573,14 +584,14 @@ mod tests {
     #[test]
     fn test_to_headless_config_reviewer_has_tools() {
         let config = LaunchConfig::reviewer("york", 42);
-        let headless = config.to_headless_config();
+        let headless = config.to_headless_config("midtown");
         assert!(headless.allow_tools);
     }
 
     #[test]
     fn test_to_headless_config_includes_setting_sources() {
         let config = LaunchConfig::coworker("park", "myrepo", SessionMode::Fresh, None);
-        let headless = config.to_headless_config();
+        let headless = config.to_headless_config("midtown");
 
         assert_eq!(
             headless.setting_sources,
@@ -592,7 +603,7 @@ mod tests {
     #[test]
     fn test_to_headless_config_reviewer_includes_setting_sources() {
         let config = LaunchConfig::reviewer("york", 42);
-        let headless = config.to_headless_config();
+        let headless = config.to_headless_config("midtown");
 
         assert_eq!(
             headless.setting_sources,
@@ -674,6 +685,7 @@ mod tests {
             std::path::Path::new("/tmp/prompt.md"),
             None,
             std::path::Path::new("/tmp/test-repo"),
+            "midtown",
         );
         assert!(result.shell_command.contains("--session-id "));
         assert!(!result.shell_command.contains("--continue"));
@@ -692,6 +704,7 @@ mod tests {
             std::path::Path::new("/tmp/prompt.md"),
             None,
             std::path::Path::new("/tmp/test-repo"),
+            "midtown",
         );
         assert!(result.shell_command.contains("--resume abc-123"));
         assert!(result.session_id.is_none());
@@ -705,6 +718,7 @@ mod tests {
             std::path::Path::new("/tmp/prompt.md"),
             None,
             std::path::Path::new("/tmp/test-repo"),
+            "midtown",
         );
         assert!(
             result
@@ -731,6 +745,7 @@ mod tests {
             std::path::Path::new("/tmp/prompt.md"),
             None,
             std::path::Path::new("/tmp/test-repo"),
+            "midtown",
         );
         assert!(!result.shell_command.contains("--agent-id"));
         assert!(
@@ -744,7 +759,7 @@ mod tests {
     fn test_channel_routing_env_var() {
         let mut config = LaunchConfig::coworker("park", "myrepo", SessionMode::Fresh, None);
         config.channel = Some("task-42".to_string());
-        let headless = config.to_headless_config();
+        let headless = config.to_headless_config("midtown");
 
         // Verify MIDTOWN_CHANNEL env var is set
         assert_eq!(
@@ -756,7 +771,7 @@ mod tests {
     #[test]
     fn test_no_channel_routing_when_none() {
         let config = LaunchConfig::coworker("park", "myrepo", SessionMode::Fresh, None);
-        let headless = config.to_headless_config();
+        let headless = config.to_headless_config("midtown");
 
         // Verify MIDTOWN_CHANNEL env var is not set when channel is None
         assert!(!headless.env.contains_key("MIDTOWN_CHANNEL"));
@@ -768,7 +783,7 @@ mod tests {
         config.auth_provider = crate::auth::AuthProvider::Codex;
         config.auth_profile_dir = Some(std::path::PathBuf::from("/tmp/midtown-codex-profile"));
 
-        let headless = config.to_headless_config();
+        let headless = config.to_headless_config("midtown");
 
         assert_eq!(
             headless.env.get("CODEX_HOME"),

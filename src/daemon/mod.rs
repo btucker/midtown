@@ -752,7 +752,7 @@ impl DaemonState {
         let (working_dir, launch_config) = self.coworkers.prepare_spawn(&config)?;
 
         // Build headless config from the unified launch config
-        let mut headless_config = launch_config.to_headless_config();
+        let mut headless_config = launch_config.to_headless_config(&self.repo_name);
         headless_config.cwd = Some(working_dir.clone());
 
         // Write shared coworker settings file and set the path

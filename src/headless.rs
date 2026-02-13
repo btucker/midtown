@@ -41,6 +41,9 @@ pub struct HeadlessConfig {
     pub json_schema: Option<serde_json::Value>,
     /// Working directory for the Claude process. Defaults to current dir.
     pub cwd: Option<String>,
+    /// Project name for loading sandbox configuration. Defaults to "midtown".
+    #[serde(default)]
+    pub project_name: Option<String>,
     /// Maximum budget in USD. Defaults to no limit.
     pub max_budget_usd: Option<f64>,
     /// Whether to allow tool use. When false, uses `--tools ""` to disable all tools.
@@ -388,7 +391,10 @@ impl HeadlessSession {
                     .as_deref()
                     .map(std::path::Path::new)
                     .unwrap_or(std::path::Path::new("/tmp"));
-                let writable = crate::sandbox::writable_dirs(primary_repo, &[]);
+                let project_name = config.project_name.as_deref().unwrap_or("midtown");
+                let sandbox_config = crate::config::get_project_sandbox_config(project_name);
+                let writable =
+                    crate::sandbox::writable_dirs(primary_repo, &[], &sandbox_config.allowed_paths);
 
                 // On macOS, wrap with sandbox-exec to restrict filesystem writes.
                 // On Linux, wrap with bwrap if available.
@@ -497,7 +503,10 @@ impl HeadlessSession {
                     .as_deref()
                     .map(std::path::Path::new)
                     .unwrap_or(std::path::Path::new("/tmp"));
-                let writable = crate::sandbox::writable_dirs(primary_repo, &[]);
+                let project_name = config.project_name.as_deref().unwrap_or("midtown");
+                let sandbox_config = crate::config::get_project_sandbox_config(project_name);
+                let writable =
+                    crate::sandbox::writable_dirs(primary_repo, &[], &sandbox_config.allowed_paths);
 
                 let mut cmd = if cfg!(target_os = "macos") {
                     match crate::sandbox::sandbox_exec_prefix(&writable) {
@@ -1128,6 +1137,7 @@ mod tests {
             system_prompt: "You are a test assistant.".to_string(),
             json_schema: None,
             cwd: None,
+            project_name: Some("midtown".to_string()),
             max_budget_usd: None,
             allow_tools: false,
             persist_session: false,
