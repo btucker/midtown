@@ -1615,17 +1615,10 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
         }
     }
 
-    // Remove existing socket file if present
-    if config.socket_path.exists() {
-        std::fs::remove_file(&config.socket_path)?;
-    }
-
-    // Bind to Unix socket
-    let listener = UnixListener::bind(&config.socket_path)?;
-    info!("Listening on {}", config.socket_path.display());
-
     // Create worktree manager and coworker manager early so they can be
-    // shared with the web server (for the /api/status endpoint)
+    // shared with the web server (for the /api/status endpoint).
+    // Worktree initialization happens BEFORE socket binding so the daemon is
+    // fully ready when clients can connect (tests rely on this ordering).
     let session_name = format!("midtown-{}", project_name);
 
     // Build list of all repo paths for multi-repo PR fetching.
@@ -1682,6 +1675,14 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
     // For multi-repo projects, create worktree managers for additional repos
     let additional_worktree_managers =
         load_additional_worktree_managers(full_project_config.as_ref(), &config);
+
+    // Bind socket AFTER all initialization is complete so clients (and tests)
+    // can assume the daemon is fully ready when the socket becomes connectable.
+    if config.socket_path.exists() {
+        std::fs::remove_file(&config.socket_path)?;
+    }
+    let listener = UnixListener::bind(&config.socket_path)?;
+    info!("Listening on {}", config.socket_path.display());
     let coworker_manager = CoworkerManager::with_additional_repos(
         session_name,
         worktree_manager,
