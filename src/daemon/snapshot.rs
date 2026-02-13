@@ -160,6 +160,13 @@ pub struct WorldSnapshot {
     /// Pre-collected during snapshot so decision logic doesn't need to lock pr_coworker_cache.
     #[serde(default)]
     pub open_prs_data: Vec<serde_json::Value>,
+    /// Task IDs that have open PRs (derived from PR titles in `open_prs_data`).
+    /// Maps task_id → pr_number. Complements `tasks_with_open_prs` (from pr_author_sessions)
+    /// by catching cases where pr_author_sessions is stale after a daemon restart but the
+    /// PR title contains `[Midtown !{task_id}]`. Used by orphan recovery to prevent
+    /// spawning duplicate coworkers.
+    #[serde(default)]
+    pub github_open_pr_task_ids: HashMap<String, u64>,
     /// Coworkers who have pending tasks assigned to them (task.owner set, status=pending).
     /// Provides defense-in-depth idle shutdown protection alongside `busy_coworkers`
     /// (in-memory assignment tracking). Both paths are checked to prevent the
@@ -433,6 +440,18 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
         )
     };
 
+    // Derive task→PR mapping from open_prs_data PR titles for orphan recovery.
+    // This catches tasks with open PRs even when pr_author_sessions is stale after restart.
+    let github_open_pr_task_ids: HashMap<String, u64> = open_prs_data
+        .iter()
+        .filter_map(|pr| {
+            let number = pr.get("number")?.as_u64()?;
+            let title = pr.get("title")?.as_str()?;
+            let task_id = crate::tasks::extract_task_id_from_pr_title(title)?;
+            Some((task_id.to_string(), number))
+        })
+        .collect();
+
     // Pending task owners: coworkers who have claimed a task (owner set) but haven't
     // started it yet (status=pending). These should be protected from idle shutdown.
     let pending_task_owners: HashSet<String> = pending_tasks_with_owners
@@ -639,6 +658,7 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
         ci_passed_pr_coworkers,
         review_feedback_pr_coworkers,
         open_prs_data,
+        github_open_pr_task_ids,
         pending_task_owners,
         tasks_with_open_prs,
         pr_task_associations,
@@ -709,6 +729,7 @@ pub(super) fn minimal_snapshot_for_test() -> WorldSnapshot {
         ci_passed_pr_coworkers: HashSet::new(),
         review_feedback_pr_coworkers: HashSet::new(),
         open_prs_data: vec![],
+        github_open_pr_task_ids: HashMap::new(),
         pending_task_owners: HashSet::new(),
         tasks_with_open_prs: HashMap::new(),
         pr_task_associations: HashMap::new(),
