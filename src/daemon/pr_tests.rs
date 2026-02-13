@@ -426,3 +426,111 @@ fn test_detect_abandoned_pr_tasks_checks_for_merged_siblings() {
     // Should emit no effects since merged PRs are handled separately
     assert!(effects.is_empty(), "Should not reset task for merged PR");
 }
+
+/// Bug: When a coworker creates a PR with a task-based branch name (e.g.,
+/// "task-42-fix-auth") and then goes on break, the branch is removed from
+/// worktree_branch_owners. coworker_from_branch_with_map() returns None
+/// for this branch (it's not in the map and doesn't match the coworker/branch
+/// pattern). The poll_prs_for_issues loop skips such PRs entirely at line 719,
+/// so merge conflicts are never detected.
+///
+/// This test demonstrates the bug by showing that a PR with:
+/// - A task-based branch name ("task-42-fix-auth")
+/// - A merge conflict (mergeable: "CONFLICTING")
+/// - NO entry in worktree_branch_owners (owner_opt will be None)
+///
+/// ...currently generates NO effects (the bug), when it should generate at
+/// least a warning about the orphaned conflicting PR.
+#[tokio::test]
+async fn test_orphaned_pr_with_task_branch_and_merge_conflict_is_ignored() {
+    use super::super::snapshot::minimal_snapshot_for_test;
+
+    // Create a PR with a task-based branch name and a merge conflict
+    // The branch doesn't match "coworker/branch" pattern AND isn't in worktree_branch_owners
+    let pr_json = json!({
+        "number": 456,
+        "headRefName": "task-42-fix-auth",  // Task-based branch, not "york/fix-auth"
+        "title": "Fix authentication bug",
+        "mergeable": "CONFLICTING",  // This is the issue we want to detect!
+        "statusCheckRollup": null,
+        "reviewDecision": null,
+    });
+
+    // Write the PR JSON to a temp file so poll_prs_for_issues can read it via gh CLI mock
+    let temp_dir = tempfile::tempdir().unwrap();
+    let pr_list_file = temp_dir.path().join("pr_list.json");
+    std::fs::write(
+        &pr_list_file,
+        serde_json::to_string(&vec![pr_json]).unwrap(),
+    )
+    .unwrap();
+
+    // Mock gh CLI to return our test PR
+    let original_path = std::env::var("PATH").unwrap_or_default();
+    let mock_gh_dir = temp_dir.path().join("bin");
+    std::fs::create_dir_all(&mock_gh_dir).unwrap();
+    let mock_gh_script = mock_gh_dir.join("gh");
+
+    #[cfg(unix)]
+    {
+        std::fs::write(
+            &mock_gh_script,
+            format!("#!/bin/bash\ncat {}", pr_list_file.display()),
+        )
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&mock_gh_script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    unsafe {
+        std::env::set_var(
+            "PATH",
+            format!("{}:{}", mock_gh_dir.display(), original_path),
+        );
+    }
+
+    // Create a minimal snapshot with NO active coworkers and NO worktree_branch_owners
+    // entry for task-42-fix-auth. coworker_from_branch_with_map will return None.
+    let snap = minimal_snapshot_for_test();
+    // snap.worktree_branch_owners is empty - this ensures owner_opt = None
+
+    // Create minimal daemon state
+    let state = make_test_state("test-repo");
+
+    // Call poll_prs_for_issues
+    let result = poll_prs_for_issues(&snap, &state).await;
+
+    // Restore PATH
+    unsafe {
+        std::env::set_var("PATH", original_path);
+    }
+
+    // Check if we got an error (gh command not working)
+    if let Err(e) = &result {
+        panic!("poll_prs_for_issues failed: {}", e);
+    }
+
+    let effects = result.unwrap();
+
+    // Before the fix, this assertion FAILS because the PR is skipped entirely
+    // at line 719 (None => continue) when owner_opt is None.
+    //
+    // After the fix, we should detect merge conflicts even when owner_opt is None
+    // and generate a warning effect.
+    assert!(
+        !effects.is_empty(),
+        "BUG: Expected effects for orphaned PR with merge conflict, but got none. \
+         The PR with branch 'task-42-fix-auth' and merge conflict was completely \
+         ignored because coworker_from_branch_with_map returned None."
+    );
+
+    // Verify we got a system message warning about the orphaned PR
+    let has_orphan_warning = effects.iter().any(
+        |e| matches!(e, Effect::PostSystemMessage { message } if message.contains("Orphaned PR") || message.contains("orphaned")),
+    );
+    assert!(
+        has_orphan_warning,
+        "Expected PostSystemMessage warning about orphaned PR with merge conflict. Effects: {:?}",
+        effects
+    );
+}

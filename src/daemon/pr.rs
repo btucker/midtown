@@ -718,6 +718,49 @@ pub(super) async fn poll_prs_for_issues(
             }
         }
 
+        // Handle PRs with no determinable owner (not in worktree_branch_owners and
+        // doesn't match coworker/branch pattern) that have critical issues
+        if owner_opt.is_none() && !issues.is_empty() {
+            for issue_type in &issues {
+                // Only handle critical issues for PRs with no owner (merge conflicts, CI failures)
+                // Skip workflow issues like approval status that require active ownership
+                match issue_type {
+                    PrIssueType::MergeConflict | PrIssueType::CiFailed => {
+                        // Check if we should nudge for this issue
+                        let should_nudge = {
+                            let tracker = state.pr_issue_tracker.lock().await;
+                            tracker.should_nudge(pr_number, *issue_type)
+                        };
+
+                        if should_nudge {
+                            // Post a system message warning about the fully orphaned PR issue
+                            // (no extractable owner at all, not even from branch name)
+                            let warning = format!(
+                                "@lead Orphaned PR #{} ({}) - {}: {} (no owner, branch: {})",
+                                pr_number,
+                                truncate_str(title, 40),
+                                issue_type,
+                                get_issue_action(*issue_type),
+                                head_ref
+                            );
+                            effects.push(Effect::PostSystemMessage {
+                                message: format!("⚠️ {}", warning),
+                            });
+                            effects.push(Effect::RecordPrNudge {
+                                pr_number,
+                                issue_type: *issue_type,
+                            });
+                        }
+                    }
+                    _ => {
+                        // Skip non-critical issues for PRs with no owner
+                    }
+                }
+            }
+            // Continue to skip normal PR processing for this fully orphaned PR
+            continue;
+        }
+
         // Skip PRs that don't have a coworker owner (e.g., dependabot, feature branches)
         let owner = match owner_opt {
             Some(o) => o,
