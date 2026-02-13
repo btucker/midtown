@@ -192,10 +192,10 @@
 
       <main class="flex-1 flex flex-col h-full overflow-hidden">
         <!-- Mobile header with sidebar trigger -->
-        <header class="flex items-center p-2 border-b border-slate-800 bg-slate-950 md:hidden">
+        <header class="mobile-header flex items-center px-2 pb-2 pt-[calc(0.5rem+env(safe-area-inset-top))] border-b border-slate-800 bg-slate-950 md:hidden">
           <SidebarTrigger />
           <span class="ml-2 text-sm text-slate-400">{$activeProject}</span>
-          <div class="active-channel-display ml-4">
+          <div class="mobile-channel active-channel-display ml-4">
             <span class="channel-hash">#</span>{$activeChannel}
           </div>
         </header>

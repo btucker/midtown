@@ -107,8 +107,8 @@ test.describe('Push notifications', () => {
     await setupPushTest(page)
     await page.goto('/')
 
-    // Push toggle button is now an icon-btn with SVG
-    const bell = page.locator('.icon-btn:has(svg)')
+    // Push toggle button uses .push-toggle class
+    const bell = page.locator('.push-toggle')
     await expect(bell).toBeVisible()
     // Should not have subscribed class when not subscribed
     await expect(bell).not.toHaveClass(/subscribed/)
@@ -118,7 +118,7 @@ test.describe('Push notifications', () => {
     await setupPushTest(page, { permission: 'granted', subscribed: true })
     await page.goto('/')
 
-    const bell = page.locator('.icon-btn:has(svg)')
+    const bell = page.locator('.push-toggle')
     await expect(bell).toBeVisible()
     await expect(bell).toHaveClass(/subscribed/)
   })
@@ -127,10 +127,10 @@ test.describe('Push notifications', () => {
     await setupPushTest(page, { permission: 'denied' })
     await page.goto('/')
 
-    const bell = page.locator('.icon-btn:has(svg)')
+    const bell = page.locator('.push-toggle')
     await expect(bell).toBeVisible()
     await expect(bell).toBeDisabled()
-    await expect(bell).toHaveClass(/disabled/)
+    await expect(bell).toHaveClass(/denied/)
   })
 
   test('clicking bell subscribes via push API', async ({ page }) => {
@@ -145,7 +145,7 @@ test.describe('Push notifications', () => {
 
     await page.goto('/')
 
-    const bell = page.locator('.icon-btn:has(svg)')
+    const bell = page.locator('.push-toggle')
     await expect(bell).toBeVisible()
     await bell.click()
 
@@ -174,7 +174,7 @@ test.describe('Push notifications', () => {
 
     await page.goto('/')
 
-    const bell = page.locator('.icon-btn:has(svg)')
+    const bell = page.locator('.push-toggle')
     await expect(bell).toHaveClass(/subscribed/)
     await bell.click()
 
@@ -204,7 +204,7 @@ test.describe('Push notifications', () => {
 
     await page.goto('/')
 
-    const bell = page.locator('.icon-btn:has(svg)')
+    const bell = page.locator('.push-toggle')
     await expect(bell).toBeVisible()
     await bell.click()
 
@@ -224,15 +224,15 @@ test.describe('Push notifications', () => {
     await setupPushTest(page)
     await page.goto('/')
 
-    const bell = page.locator('.icon-btn:has(svg)')
-    await expect(bell).toHaveAttribute('title', 'Enable notifications')
+    const bell = page.locator('.push-toggle')
+    await expect(bell).toHaveAttribute('title', 'Enable push notifications')
   })
 
   test('denied bell title explains blocked state', async ({ page }) => {
     await setupPushTest(page, { permission: 'denied' })
     await page.goto('/')
 
-    const bell = page.locator('.icon-btn:has(svg)')
-    await expect(bell).toHaveAttribute('title', 'Notifications blocked')
+    const bell = page.locator('.push-toggle')
+    await expect(bell).toHaveAttribute('title', 'Notifications blocked in browser settings')
   })
 })

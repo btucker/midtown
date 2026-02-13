@@ -121,8 +121,11 @@ test.describe('Service Worker Update Mechanism', () => {
 
     // The app should have loaded the workbox-window module for SW registration
     // This verifies the virtual:pwa-register import works
+    // Wait for SW to be ready before checking registration
     const workboxLoaded = await page.evaluate(async () => {
-      // Check that SW registration happened (which requires workbox-window)
+      if (!('serviceWorker' in navigator)) return false
+      // Wait for the SW to be ready (handles registration race condition)
+      await navigator.serviceWorker.ready
       const registration = await navigator.serviceWorker.getRegistration('/')
       return registration !== undefined && registration !== null
     })
