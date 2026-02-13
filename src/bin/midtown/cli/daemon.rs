@@ -717,18 +717,7 @@ pub fn handle_start(
         // Create lead worktree (or reuse existing one) so the lead session
         // starts in the worktree instead of the main repo.
         emit_startup_progress(90, "creating lead worktree");
-        let worktree_manager = midtown::worktree::WorktreeManager::new(primary_repo.clone())
-            .map_err(|e| format!("Failed to initialize worktree manager: {}", e))?;
-        let lead_workdir = worktree_manager
-            .create_lead_worktree()
-            .map_err(|e| {
-                eprintln!(
-                    "Warning: Failed to create lead worktree, falling back to main repo: {}",
-                    e
-                );
-                e
-            })
-            .unwrap_or_else(|_| primary_repo.clone());
+        let lead_workdir = create_or_reuse_lead_worktree(&primary_repo)?;
 
         // Use spawn_lead() to create the Lead window with proper config,
         // auth profile, settings, and system prompt.
@@ -1539,18 +1528,7 @@ fn ensure_lead_has_settings(session: &str, repo: &Path) -> Result<(), String> {
 
     // Create lead worktree (or reuse existing one) so the lead session
     // starts in the worktree instead of the main repo.
-    let worktree_manager = midtown::worktree::WorktreeManager::new(repo.to_path_buf())
-        .map_err(|e| format!("Failed to initialize worktree manager: {}", e))?;
-    let lead_workdir = worktree_manager
-        .create_lead_worktree()
-        .map_err(|e| {
-            eprintln!(
-                "Warning: Failed to create lead worktree, falling back to main repo: {}",
-                e
-            );
-            e
-        })
-        .unwrap_or_else(|_| repo.to_path_buf());
+    let lead_workdir = create_or_reuse_lead_worktree(repo)?;
 
     // spawn_lead kills existing lead windows and creates a fresh one
     midtown::tmux::spawn_lead(session, &lead_workdir.to_string_lossy(), &repo_name, &[])
