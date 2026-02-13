@@ -2,7 +2,7 @@
 members = [
     ".",
     "midtown-types",
-    # "midtown-zellij-plugin",  # Will be created in Task 3
+    "midtown-zellij-plugin",
 ]
 resolver = "2"
 
