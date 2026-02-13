@@ -692,11 +692,27 @@ pub fn handle_start(
             return Err(format!("Failed to create session '{}'", session));
         }
 
+        // Create lead worktree (or reuse existing one) so the lead session
+        // starts in the worktree instead of the main repo.
+        emit_startup_progress(90, "creating lead worktree");
+        let worktree_manager = midtown::worktree::WorktreeManager::new(primary_repo.clone())
+            .map_err(|e| format!("Failed to initialize worktree manager: {}", e))?;
+        let lead_workdir = worktree_manager
+            .create_lead_worktree()
+            .map_err(|e| {
+                eprintln!(
+                    "Warning: Failed to create lead worktree, falling back to main repo: {}",
+                    e
+                );
+                e
+            })
+            .unwrap_or_else(|_| primary_repo.clone());
+
         // Use spawn_lead() to create the Lead window with proper config,
         // auth profile, settings, and system prompt.
         midtown::tmux::spawn_lead(
             &session,
-            &primary_repo.to_string_lossy(),
+            &lead_workdir.to_string_lossy(),
             &project_name,
             &additional_repos,
         )
@@ -1499,8 +1515,23 @@ fn ensure_lead_has_settings(session: &str, repo: &Path) -> Result<(), String> {
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| "default".to_string());
 
+    // Create lead worktree (or reuse existing one) so the lead session
+    // starts in the worktree instead of the main repo.
+    let worktree_manager = midtown::worktree::WorktreeManager::new(repo.to_path_buf())
+        .map_err(|e| format!("Failed to initialize worktree manager: {}", e))?;
+    let lead_workdir = worktree_manager
+        .create_lead_worktree()
+        .map_err(|e| {
+            eprintln!(
+                "Warning: Failed to create lead worktree, falling back to main repo: {}",
+                e
+            );
+            e
+        })
+        .unwrap_or_else(|_| repo.to_path_buf());
+
     // spawn_lead kills existing lead windows and creates a fresh one
-    midtown::tmux::spawn_lead(session, &repo.to_string_lossy(), &repo_name, &[])
+    midtown::tmux::spawn_lead(session, &lead_workdir.to_string_lossy(), &repo_name, &[])
         .map_err(|e| format!("Failed to re-launch lead: {}", e))?;
 
     // Set up chat pane (split or separate window based on config)
@@ -1913,6 +1944,101 @@ mod tests {
         assert!(
             is_working,
             "Status 'idle' doesn't exist in CoworkerStatus — if it appeared, it would be conservatively treated as 'working' (safe default for unknown statuses)"
+        );
+    }
+
+    /// Test helper to verify that paths::lead_worktree_path() returns the correct path.
+    #[test]
+    fn test_lead_worktree_path_helper() {
+        let repo_name = "test-repo";
+        let lead_worktree = midtown::paths::lead_worktree_path(repo_name);
+
+        // Should return ~/.midtown/worktrees/<repo>/lead/
+        assert!(
+            lead_worktree.to_string_lossy().contains("worktrees"),
+            "Lead worktree path should be in worktrees directory"
+        );
+        assert!(
+            lead_worktree.to_string_lossy().ends_with("/lead"),
+            "Lead worktree path should end with /lead"
+        );
+        assert!(
+            lead_worktree.to_string_lossy().contains(repo_name),
+            "Lead worktree path should include repo name"
+        );
+    }
+
+    /// Integration test that verifies WorktreeManager::create_lead_worktree()
+    /// returns a path in the worktrees directory, not the main repo.
+    ///
+    /// This test will fail if the CLI code passes primary_repo instead of
+    /// the lead worktree path to spawn_lead().
+    #[test]
+    fn test_worktree_manager_creates_lead_in_correct_location() {
+        use std::process::Command;
+
+        // Create a temporary git repo
+        let temp_dir = TempDir::new().unwrap();
+        let repo_path = temp_dir.path();
+
+        // Initialize git repo
+        Command::new("git")
+            .args(["init"])
+            .current_dir(repo_path)
+            .output()
+            .expect("Failed to init git repo");
+
+        // Create a dummy commit (needed for worktrees)
+        Command::new("git")
+            .args(["config", "user.email", "test@example.com"])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.name", "Test User"])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+
+        std::fs::write(repo_path.join("README.md"), "test").unwrap();
+
+        Command::new("git")
+            .args(["add", "."])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+
+        Command::new("git")
+            .args(["commit", "-m", "Initial commit"])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+
+        // Create WorktreeManager
+        let worktree_manager =
+            midtown::worktree::WorktreeManager::new(repo_path.to_path_buf()).unwrap();
+
+        // Create lead worktree
+        let lead_worktree_path = worktree_manager.create_lead_worktree().unwrap();
+
+        // Verify it's NOT in the main repo directory
+        assert_ne!(
+            lead_worktree_path, repo_path,
+            "Lead worktree should not be the main repo path"
+        );
+
+        // Verify it's in a worktrees subdirectory
+        let lead_path_str = lead_worktree_path.to_string_lossy();
+        assert!(
+            lead_path_str.contains("worktrees") || lead_path_str.contains("lead"),
+            "Lead worktree path should be in worktrees directory, got: {}",
+            lead_path_str
+        );
+
+        // Verify it exists
+        assert!(
+            lead_worktree_path.exists(),
+            "Lead worktree directory should exist"
         );
     }
 }
