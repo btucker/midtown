@@ -11,12 +11,11 @@
     subscribePush,
     unsubscribePush,
   } from './push.js'
+  import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '$lib/components/ui/collapsible'
+  import ChevronDown from '@lucide/svelte/icons/chevron-down'
+  import ChevronRight from '@lucide/svelte/icons/chevron-right'
 
   let channelsExpanded = $state(true)
-
-  function toggleChannels() {
-    channelsExpanded = !channelsExpanded
-  }
 
   async function togglePush() {
     if ($pushSubscribed) {
@@ -27,31 +26,33 @@
   }
 </script>
 
-<div class="sidebar">
+<div class="flex h-full flex-col border-r-2 border-[#2a2a2a] bg-[#0f0f0f]">
   <!-- Channels section -->
-  <div class="sidebar-section channels-section">
-    <button class="section-header" onclick={toggleChannels}>
-      <span class="section-title">CHANNELS</span>
-      <span class="expand-icon">{channelsExpanded ? '\u25BC' : '\u25B6'}</span>
-    </button>
-    {#if channelsExpanded}
-      <div class="section-content">
+  <Collapsible class="border-b border-[#1a1a1a]" bind:open={channelsExpanded}>
+    <CollapsibleTrigger class="flex w-full items-center justify-between bg-transparent px-3.5 py-2.5 text-left text-[0.7rem] font-bold tracking-wide text-[#606060] transition-all duration-150 hover:bg-[#1a1a1a] hover:text-[#a0a0a0]">
+      <span class="flex-1 text-left">CHANNELS</span>
+      {#if channelsExpanded}
+        <ChevronDown class="size-3 opacity-60" />
+      {:else}
+        <ChevronRight class="size-3 opacity-60" />
+      {/if}
+    </CollapsibleTrigger>
+    <CollapsibleContent>
+      <div class="p-0">
         <ChannelList />
       </div>
-    {/if}
-  </div>
+    </CollapsibleContent>
+  </Collapsible>
 
   <!-- Footer section with coworker status, usage bars, and controls -->
-  <div class="sidebar-footer">
+  <div class="mt-auto flex flex-col gap-2 border-t-2 border-[#2a2a2a] bg-[#0a0a0a] p-2 [padding-bottom:calc(0.5rem+env(safe-area-inset-bottom,0px))]">
     <CoworkerStatus />
     <UsageBars />
-    <div class="footer-controls">
+    <div class="flex items-center justify-end gap-2.5">
       <AuthSwitcher />
       {#if $pushSupported}
         <button
-          class="push-toggle"
-          class:subscribed={$pushSubscribed}
-          class:denied={$pushPermission === 'denied'}
+          class="cursor-pointer border-none bg-transparent p-1 text-base transition-opacity duration-200 {$pushSubscribed ? 'opacity-100' : 'opacity-50'} {$pushPermission === 'denied' ? 'cursor-not-allowed opacity-25' : ''} hover:opacity-100"
           onclick={togglePush}
           disabled={$pushPermission === 'denied'}
           title={$pushPermission === 'denied'
@@ -60,126 +61,13 @@
               ? 'Disable notifications'
               : 'Enable notifications'}
         >
-          {$pushSubscribed ? '\u{1F514}' : '\u{1F515}'}
+          {$pushSubscribed ? '🔔' : '🔕'}
         </button>
       {/if}
       <span
-        class="connection-dot"
-        class:connected={$connected}
+        class="size-2 shrink-0 rounded-full bg-[#af5f5f] shadow-[0_0_6px_rgba(175,95,95,0.4)] {$connected ? 'bg-[#5faf5f] shadow-[0_0_6px_rgba(95,175,95,0.5)]' : ''}"
         title={$connected ? 'Connected' : 'Disconnected'}
       ></span>
     </div>
   </div>
 </div>
-
-<style>
-  .sidebar {
-    display: flex;
-    flex-direction: column;
-    height: 100%;
-    background: #0f0f0f;
-    border-right: 2px solid #2a2a2a;
-  }
-
-  .sidebar-section {
-    border-bottom: 1px solid #1a1a1a;
-  }
-
-  /* Section headers */
-  .section-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    width: 100%;
-    padding: 10px 14px;
-    background: transparent;
-    border: none;
-    color: #606060;
-    font-size: 0.7rem;
-    font-weight: 700;
-    letter-spacing: 0.05em;
-    cursor: pointer;
-    transition: all 0.15s;
-  }
-
-  .section-header:hover {
-    background: #1a1a1a;
-    color: #a0a0a0;
-  }
-
-  .section-title {
-    flex: 1;
-    text-align: left;
-  }
-
-  .coworker-count {
-    font-size: 0.65rem;
-    opacity: 0.7;
-    margin-left: 4px;
-  }
-
-  .expand-icon {
-    font-size: 0.6rem;
-    opacity: 0.6;
-  }
-
-  .section-content {
-    padding: 0;
-  }
-
-  /* Footer */
-  .sidebar-footer {
-    margin-top: auto;
-    border-top: 2px solid #2a2a2a;
-    background: #0a0a0a;
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    padding: 8px;
-    padding-bottom: calc(8px + env(safe-area-inset-bottom, 0px));
-  }
-
-  .footer-controls {
-    display: flex;
-    align-items: center;
-    justify-content: flex-end;
-    gap: 10px;
-  }
-
-  .push-toggle {
-    background: none;
-    border: none;
-    font-size: 1rem;
-    cursor: pointer;
-    padding: 4px;
-    opacity: 0.5;
-    transition: opacity 0.2s;
-  }
-
-  .push-toggle.subscribed {
-    opacity: 1;
-  }
-
-  .push-toggle.denied {
-    opacity: 0.25;
-    cursor: not-allowed;
-  }
-
-  .push-toggle:hover:not(.denied) {
-    opacity: 1;
-  }
-
-  .connection-dot {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background: #af5f5f;
-    flex-shrink: 0;
-    box-shadow: 0 0 6px rgba(175, 95, 95, 0.4);
-  }
-
-  .connection-dot.connected {
-    background: #5faf5f;
-    box-shadow: 0 0 6px rgba(95, 175, 95, 0.5);
-  }
-</style>
