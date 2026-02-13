@@ -661,15 +661,63 @@ pub(super) async fn poll_prs_for_issues(
         let head_ref = pr.get("headRefName").and_then(|s| s.as_str()).unwrap_or("");
         let title = pr.get("title").and_then(|s| s.as_str()).unwrap_or("");
 
-        // Only process coworker-owned PRs (validates branch prefix against known names)
-        let owner =
-            match coworker_from_branch_with_map(head_ref, Some(&snap.worktree_branch_owners)) {
-                Some(o) => o,
-                None => continue, // Not a coworker PR (e.g., dependabot, feature branches)
-            };
+        // Try to map branch to a coworker owner
+        let owner_opt = coworker_from_branch_with_map(head_ref, Some(&snap.worktree_branch_owners));
 
         // Check for actionable issues
         let issues = detect_pr_issues(pr);
+
+        // Handle PRs whose owner is not currently active (on break, never spawned, etc.)
+        // coworker_from_branch_with_map returns Some("york") for "york/fix-auth" even if
+        // york has no worktree, so we need to check if the owner is actually active.
+        if let Some(ref owner) = owner_opt {
+            // Check if this owner has an active worktree (i.e., is actually working)
+            let has_active_worktree = snap.worktree_branch_owners.values().any(|o| o == owner);
+
+            // If the owner has no active worktree, treat this as an orphaned PR
+            if !has_active_worktree && !issues.is_empty() {
+                for issue_type in &issues {
+                    // Only handle critical issues for orphaned PRs (merge conflicts, CI failures)
+                    // Skip workflow issues like approval status that require active ownership
+                    match issue_type {
+                        PrIssueType::MergeConflict | PrIssueType::CiFailed => {
+                            // Check if we should nudge for this issue
+                            let should_nudge = {
+                                let tracker = state.pr_issue_tracker.lock().await;
+                                tracker.should_nudge(pr_number, *issue_type)
+                            };
+
+                            if should_nudge {
+                                // Post a system message warning about the orphaned PR issue
+                                let warning = format!(
+                                    "@lead Orphaned PR #{} ({}) - {}: {} (owner: {}, branch: {})",
+                                    pr_number,
+                                    truncate_str(title, 40),
+                                    issue_type,
+                                    get_issue_action(*issue_type),
+                                    owner,
+                                    head_ref
+                                );
+                                effects.push(Effect::PostSystemMessage {
+                                    message: format!("⚠️ {}", warning),
+                                });
+                            }
+                        }
+                        _ => {
+                            // Skip non-critical issues for orphaned PRs
+                        }
+                    }
+                }
+                // Continue to skip the normal PR processing for this orphaned PR
+                continue;
+            }
+        }
+
+        // Skip PRs that don't have a coworker owner (e.g., dependabot, feature branches)
+        let owner = match owner_opt {
+            Some(o) => o,
+            None => continue,
+        };
 
         for issue_type in issues {
             // Check if we should nudge for this issue
