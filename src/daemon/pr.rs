@@ -701,6 +701,11 @@ pub(super) async fn poll_prs_for_issues(
                                 effects.push(Effect::PostSystemMessage {
                                     message: format!("⚠️ {}", warning),
                                 });
+                                // Record the nudge to prevent repeated warnings on subsequent ticks
+                                effects.push(Effect::RecordPrNudge {
+                                    pr_number,
+                                    issue_type: *issue_type,
+                                });
                             }
                         }
                         _ => {

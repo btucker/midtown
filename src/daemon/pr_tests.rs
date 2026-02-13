@@ -257,6 +257,16 @@ async fn test_orphaned_pr_with_merge_conflict_is_ignored() {
         "Expected PostSystemMessage warning about orphaned PR. Effects: {:?}",
         effects
     );
+
+    // Verify we record the nudge to prevent infinite warning loops
+    let has_nudge_record = effects
+        .iter()
+        .any(|e| matches!(e, Effect::RecordPrNudge { pr_number: 123, .. }));
+    assert!(
+        has_nudge_record,
+        "Expected RecordPrNudge to prevent repeated warnings. Effects: {:?}",
+        effects
+    );
 }
 
 #[tokio::test]
