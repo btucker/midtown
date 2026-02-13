@@ -297,24 +297,36 @@ Profile names can contain alphanumeric characters, hyphens, underscores, `@`, an
 
 ### Profile Storage
 
-Profiles are stored under `~/.midtown/auth/`:
+Profiles are stored under `~/.midtown/`:
 
 ```text
-~/.midtown/auth/
-├── current                             # Active Claude profile
-├── <claude-profile>/                   # Claude profiles (legacy layout)
+~/.midtown/
+├── auth/
+│   ├── <claude-profile>/                   # Claude profile containers
+│   │   └── claude/                         # CLAUDE_CONFIG_DIR (set per-session)
+│   │       ├── .claude.json                # Auth tokens (per-profile, never shared)
+│   │       ├── projects -> symlink         # Symlinked to shared storage
+│   │       ├── tasks    -> symlink         # Symlinked to shared storage
+│   │       └── ...                         # Other shared entries symlinked
+│   └── providers/
+│       ├── codex/
+│       │   ├── current                     # Active Codex profile
+│       │   └── profiles/
+│       │       └── <codex-profile>/        # Codex profiles
+│       └── zai/
+│           ├── current                     # Active z.ai profile
+│           └── profiles/
+│               └── <zai-profile>/          # z.ai profiles
+│                   ├── api_key.txt         # API key (chmod 600)
+│                   └── base_url.txt        # Optional base URL override
 └── providers/
-    ├── codex/
-    │   ├── current                     # Active Codex profile
-    │   └── profiles/
-    │       └── <codex-profile>/        # Codex profiles
-    └── zai/
-        ├── current                     # Active z.ai profile
-        └── profiles/
-            └── <zai-profile>/          # z.ai profiles
-                ├── api_key.txt         # API key (chmod 600)
-                └── base_url.txt        # Optional base URL override
+    └── claude/                             # Shared Claude state (all profiles)
+        ├── projects/
+        ├── tasks/
+        └── ...
 ```
+
+Claude profiles use a two-tier structure: per-profile auth credentials (`.claude.json`) live in `auth/<profile>/claude/`, while shared state (projects, tasks, settings) is symlinked from `~/.midtown/providers/claude/`. This allows multiple auth profiles to share the same Claude Code data.
 
 When Midtown launches a session, it sets provider-specific env vars:
 - Claude: `CLAUDE_CONFIG_DIR` to the profile directory
