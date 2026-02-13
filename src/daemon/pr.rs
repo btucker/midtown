@@ -2644,10 +2644,44 @@ pub(super) async fn handle_pr_comment_nudge(
         None => get_pr_owner_coworker_async(pr_number).await,
     };
 
-    let Some(owner) = owner else {
+    let Some(mut owner) = owner else {
         debug!("PR #{} has no coworker owner, skipping nudge", pr_number);
         return;
     };
+
+    // Check if this PR is linked to a task with an active owner.
+    // If so, route the review feedback to the task owner instead of the PR owner.
+    // This handles cases where a task was reassigned (e.g., via orphan recovery)
+    // and the PR metadata still shows the original author.
+    if let Some(task_id) = {
+        let ps = state.persistent_state.lock().await;
+        ps.github
+            .pr_author_sessions
+            .get(&pr_number)
+            .and_then(|session| session.task_id.as_ref())
+            .cloned()
+    } {
+        // Check if the task has an active owner in_progress
+        if let Some(task) = crate::tasks::read_task(&task_id)
+            && task.status == crate::tasks::TaskStatus::InProgress
+            && let Some(task_owner) = task.owner
+        {
+            // Check if the task owner is active
+            let task_owner_active = state
+                .coworkers
+                .list()
+                .iter()
+                .any(|c| c.name.eq_ignore_ascii_case(&task_owner));
+
+            if task_owner_active {
+                debug!(
+                    "PR #{} linked to task !{} with active owner {} — routing review feedback to task owner instead of PR owner {}",
+                    pr_number, task_id, task_owner, owner
+                );
+                owner = task_owner;
+            }
+        }
+    }
 
     // Author posted a comment on their own PR — notify the reviewer
     // (e.g., author is asking a follow-up question about review feedback)
@@ -3337,3 +3371,7 @@ pub(super) fn collect_merged_pr_cleanup_effects(snap: &WorldSnapshot) -> Vec<Eff
 #[path = "pr_tests.rs"]
 #[cfg(test)]
 mod tests;
+
+#[path = "pr_review_feedback_tests.rs"]
+#[cfg(test)]
+mod review_feedback_tests;
