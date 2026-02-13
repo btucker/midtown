@@ -559,6 +559,28 @@ fn update_project_config(
         .map_err(|e| format!("Failed to save project config: {}", e))
 }
 
+/// Create or reuse the lead worktree, falling back to the main repo path on error.
+///
+/// This helper encapsulates the worktree creation logic shared between
+/// `handle_start()` and `ensure_lead_has_settings()`.
+///
+/// Returns the lead worktree path on success, or the original repo path as fallback.
+fn create_or_reuse_lead_worktree(repo: &Path) -> Result<PathBuf, String> {
+    let worktree_manager = midtown::worktree::WorktreeManager::new(repo.to_path_buf())
+        .map_err(|e| format!("Failed to initialize worktree manager: {}", e))?;
+
+    worktree_manager
+        .create_lead_worktree()
+        .map_err(|e| {
+            eprintln!(
+                "Warning: Failed to create lead worktree, falling back to main repo: {}",
+                e
+            );
+            e
+        })
+        .or_else(|_| Ok(repo.to_path_buf()))
+}
+
 /// Handle `midtown start` command.
 ///
 /// 1. Starts the daemon (if not running)
@@ -1944,6 +1966,79 @@ mod tests {
         assert!(
             is_working,
             "Status 'idle' doesn't exist in CoworkerStatus — if it appeared, it would be conservatively treated as 'working' (safe default for unknown statuses)"
+        );
+    }
+
+    #[test]
+    fn test_create_or_reuse_lead_worktree_success() {
+        use std::process::Command;
+
+        // Create a temporary git repo
+        let temp_dir = TempDir::new().unwrap();
+        let repo_path = temp_dir.path();
+
+        // Initialize git repo
+        Command::new("git")
+            .args(["init"])
+            .current_dir(repo_path)
+            .output()
+            .expect("Failed to init git repo");
+
+        // Create a dummy commit (needed for worktrees)
+        Command::new("git")
+            .args(["config", "user.email", "test@example.com"])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.name", "Test User"])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+
+        std::fs::write(repo_path.join("README.md"), "test").unwrap();
+
+        Command::new("git")
+            .args(["add", "."])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+
+        Command::new("git")
+            .args(["commit", "-m", "Initial commit"])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+
+        // Call the helper function
+        let result = create_or_reuse_lead_worktree(&repo_path.to_path_buf());
+
+        // Should return a worktree path, not the main repo
+        assert!(result.is_ok());
+        let worktree_path = result.unwrap();
+        assert_ne!(
+            worktree_path, repo_path,
+            "Should return worktree path, not main repo"
+        );
+        assert!(
+            worktree_path.to_string_lossy().contains("worktrees")
+                || worktree_path.to_string_lossy().contains("lead"),
+            "Should return a path in the worktrees directory"
+        );
+    }
+
+    #[test]
+    fn test_create_or_reuse_lead_worktree_fallback_on_error() {
+        // Use a non-existent path that will cause WorktreeManager to fail
+        let invalid_repo = PathBuf::from("/nonexistent/invalid/repo");
+
+        // Should fall back to the original repo path
+        let result = create_or_reuse_lead_worktree(&invalid_repo);
+        assert!(result.is_ok());
+        assert_eq!(
+            result.unwrap(),
+            invalid_repo,
+            "Should fall back to original repo path on error"
         );
     }
 }
