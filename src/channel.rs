@@ -99,6 +99,19 @@ impl Channel {
         let base_dir = base_dir.into();
         let channel_name = channel_name.into();
 
+        // Validate channel name: must be non-empty and contain only
+        // alphanumeric characters, hyphens, and underscores.
+        if channel_name.is_empty()
+            || !channel_name
+                .chars()
+                .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+        {
+            return Err(crate::Error::InvalidMessage(format!(
+                "Invalid channel name '{}': must be non-empty and contain only alphanumeric characters, hyphens, and underscores",
+                channel_name
+            )));
+        }
+
         fs::create_dir_all(&base_dir)?;
         fs::create_dir_all(base_dir.join("cursors"))?;
 
@@ -1068,6 +1081,32 @@ mod tests {
         // Channel file should exist (for tailf) but be empty (no messages)
         assert!(channel.exists());
         assert_eq!(message_count_with_retry(&channel, 5).unwrap(), 0);
+    }
+
+    #[test]
+    fn test_channel_name_rejects_spaces() {
+        let temp_dir = TempDir::new().unwrap();
+        assert!(Channel::new(temp_dir.path(), "has space").is_err());
+    }
+
+    #[test]
+    fn test_channel_name_rejects_newlines() {
+        let temp_dir = TempDir::new().unwrap();
+        assert!(Channel::new(temp_dir.path(), "test\nextra text").is_err());
+    }
+
+    #[test]
+    fn test_channel_name_rejects_empty() {
+        let temp_dir = TempDir::new().unwrap();
+        assert!(Channel::new(temp_dir.path(), "").is_err());
+    }
+
+    #[test]
+    fn test_channel_name_allows_valid_names() {
+        let temp_dir = TempDir::new().unwrap();
+        assert!(Channel::new(temp_dir.path(), "my-channel").is_ok());
+        assert!(Channel::new(temp_dir.path(), "feature_123").is_ok());
+        assert!(Channel::new(temp_dir.path(), "midtown").is_ok());
     }
 
     #[test]

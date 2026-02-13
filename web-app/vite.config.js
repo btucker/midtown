@@ -25,8 +25,8 @@ export default defineConfig({
         name: 'Midtown Mobile',
         short_name: 'Midtown',
         description: 'Midtown team coordination app',
-        theme_color: '#262626',
-        background_color: '#1c1c1c',
+        theme_color: '#0a0a0a',
+        background_color: '#0a0a0a',
         display: 'standalone',
         icons: [
           {

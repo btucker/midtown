@@ -5,6 +5,7 @@ import { getApiBase } from './api.js'
 export const pushSupported = writable(false)
 export const pushPermission = writable('default') // 'default' | 'granted' | 'denied'
 export const pushSubscribed = writable(false)
+export const pushError = writable(null) // string | null — user-visible error message
 
 // Check if push notifications are supported
 export function checkPushSupport() {
@@ -42,12 +43,13 @@ function urlBase64ToUint8Array(base64String) {
 // Subscribe to push notifications
 // Must be called from a user gesture (click/tap) for iOS compatibility
 export async function subscribePush() {
+  pushError.set(null)
   try {
     const permission = await Notification.requestPermission()
     pushPermission.set(permission)
 
     if (permission !== 'granted') {
-      console.log('Push notification permission denied')
+      pushError.set('Notification permission denied')
       return false
     }
 
@@ -86,16 +88,17 @@ export async function subscribePush() {
     if (!res.ok) throw new Error('Failed to register subscription')
 
     pushSubscribed.set(true)
-    console.log('Push notification subscription successful')
     return true
   } catch (err) {
     console.error('Failed to subscribe to push:', err)
+    pushError.set(err.message || 'Failed to subscribe')
     return false
   }
 }
 
 // Unsubscribe from push notifications
 export async function unsubscribePush() {
+  pushError.set(null)
   try {
     const registration = await navigator.serviceWorker.ready
     const subscription = await registration.pushManager.getSubscription()
@@ -111,10 +114,10 @@ export async function unsubscribePush() {
     }
 
     pushSubscribed.set(false)
-    console.log('Push notification unsubscribed')
     return true
   } catch (err) {
     console.error('Failed to unsubscribe from push:', err)
+    pushError.set(err.message || 'Failed to unsubscribe')
     return false
   }
 }

@@ -44,7 +44,7 @@
     {#each items as item, i}
       <button
         type="button"
-        class="flex flex-col items-start gap-0.5 px-3.5 py-2.5 w-full border-none bg-transparent text-[#d0d0d0] text-left cursor-pointer transition-colors duration-150 border-b border-[#2a2a2a] last:border-b-0 hover:bg-[#2a2a2a] {i === selectedIndex ? 'bg-[#2a2a2a]' : ''}"
+        class="flex flex-col items-start gap-0.5 px-3.5 py-2.5 w-full border-none bg-transparent text-[#d0d0d0] text-left cursor-pointer transition-colors duration-150 border-b border-[#2a2a2a] last:border-b-0 hover:bg-[#2a2a2a] {i === selectedIndex ? 'highlighted bg-[#2a2a2a]' : ''}"
         onclick={() => handleItemClick(item)}
       >
         <span class="font-semibold text-[0.95rem] font-['SF_Mono',Menlo,Consolas,Monaco,'Courier_New',monospace]">{getLabel(item)}</span>

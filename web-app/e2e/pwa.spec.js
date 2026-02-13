@@ -57,8 +57,8 @@ test.describe('PWA behavior', () => {
   test('body uses sans-serif font family', async ({ page }) => {
     const body = page.locator('body')
     const fontFamily = await body.evaluate((el) => getComputedStyle(el).fontFamily)
-    // Body uses sans-serif font (IBM Plex Sans) for readability
-    expect(fontFamily).toMatch(/IBM Plex|sans-serif/i)
+    // Body uses monospace font (Terminal Noir design)
+    expect(fontFamily).toMatch(/monospace|SF Mono|Menlo|Consolas/i)
   })
 
   test('main layout uses full screen', async ({ page }) => {

@@ -13,8 +13,8 @@ test.describe('Navigation', () => {
   })
 
   test('sidebar header shows app title and project selector', async ({ page }) => {
-    // The header contains the logo mark (div with logo-text) and project selector
-    await expect(page.locator('.logo-mark')).toBeVisible()
+    // The header contains the logo image and project selector
+    await expect(page.locator('.header-logo')).toBeVisible()
     await expect(page.locator('.project-selector')).toBeVisible()
   })
 
@@ -36,8 +36,8 @@ test.describe('Navigation', () => {
   })
 
   test('push toggle is visible when supported', async ({ page }) => {
-    // Push toggle is in SidebarHeader - now uses .icon-btn with SVG
-    await expect(page.locator('.icon-btn:has(svg)')).toBeVisible()
+    // Push toggle is in SidebarHeader
+    await expect(page.locator('.push-toggle')).toBeVisible()
   })
 
   test('mobile header shows sidebar trigger', async ({ page }) => {

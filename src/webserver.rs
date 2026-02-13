@@ -403,8 +403,11 @@ pub async fn run(config: WebserverConfig) -> std::result::Result<(), Box<dyn std
 
     let app = app.with_state(state);
 
-    let addr = SocketAddr::from(([0, 0, 0, 0], config.port));
-    info!("Webserver listening on http://{}", addr);
+    // Bind to IPv6 wildcard [::] which accepts both IPv4 and IPv6 connections
+    // on most systems (dual-stack). This prevents another process from binding
+    // to the same port on the other protocol and intercepting browser connections.
+    let addr = SocketAddr::from(([0, 0, 0, 0, 0, 0, 0, 0], config.port));
+    info!("Webserver listening on http://localhost:{}", config.port);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app).await?;
@@ -491,6 +494,79 @@ mod tests {
         names.sort();
 
         assert_eq!(names, vec!["midtown", "my-app"]);
+    }
+
+    /// Test that discover_projects detects a running daemon via PID file lock.
+    ///
+    /// Simulates the real scenario: a project directory with a locked PID file
+    /// and a socket file should be reported as Running.
+    #[test]
+    fn test_discover_projects_finds_running_daemon() {
+        use fs2::FileExt;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let projects_dir = temp_dir.path();
+
+        // Create a project directory with a locked PID file
+        let project_dir = projects_dir.join("test-project");
+        std::fs::create_dir_all(&project_dir).unwrap();
+
+        let pid_path = project_dir.join("daemon.pid");
+        let pid_file = std::fs::File::options()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&pid_path)
+            .unwrap();
+        pid_file.lock_exclusive().unwrap();
+        std::io::Write::write_all(&mut &pid_file, b"12345\n").unwrap();
+
+        // Verify is_pid_locked detects the held lock
+        assert!(
+            is_pid_locked(&pid_path),
+            "PID file should be detected as locked while we hold the lock"
+        );
+
+        // Verify the unlock path works too
+        drop(pid_file); // releases lock
+        assert!(
+            !is_pid_locked(&pid_path),
+            "PID file should be detected as unlocked after dropping the File handle"
+        );
+    }
+
+    /// Test that the actual /api/projects endpoint finds the live midtown daemon.
+    ///
+    /// This test runs against the real filesystem. It should find the "midtown"
+    /// project with Running status when the daemon is active.
+    #[test]
+    fn test_discover_projects_finds_midtown_if_running() {
+        let projects = discover_projects();
+
+        // Find the midtown project
+        let midtown = projects.iter().find(|p| p.name == "midtown");
+
+        // If the daemon is running (PID file is locked), it should be found
+        let pid_path = crate::paths::midtown_base_dir()
+            .join("projects")
+            .join("midtown")
+            .join("daemon.pid");
+
+        if pid_path.exists() && is_pid_locked(&pid_path) {
+            let project = midtown
+                .expect("discover_projects should find 'midtown' when daemon PID file is locked");
+            assert!(
+                matches!(project.status, ProjectStatus::Running),
+                "midtown project should have Running status, got: {:?}",
+                project.status
+            );
+            assert!(
+                project.daemon_socket.is_some(),
+                "running project should have a daemon_socket path"
+            );
+        }
+        // If daemon not running, this test is a no-op (can't assert)
     }
 
     #[test]

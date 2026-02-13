@@ -57,11 +57,12 @@ export async function fetchChannels(includeArchived = false) {
     const res = await fetch(url)
     if (res.ok) {
       const data = await res.json()
-      const channelList = data.channels.map((name) => ({
-        name,
+      const channelList = data.channels.map((ch) => ({
+        name: typeof ch === 'string' ? ch : ch.name,
         unread: 0,
         has_pr: false,
         ci_status: null,
+        is_archived: typeof ch === 'object' && ch.is_archived,
       }))
       // Ensure midtown is first
       channelList.sort((a, b) => {

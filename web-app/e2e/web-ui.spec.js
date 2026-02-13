@@ -59,8 +59,8 @@ test.describe('Web UI', () => {
       await mockAllRoutes(page)
       await page.goto('/')
 
-      // Push toggle is in sidebar header - now uses .icon-btn with SVG
-      const pushToggle = page.locator('.icon-btn:has(svg)')
+      // Push toggle is in sidebar header
+      const pushToggle = page.locator('.push-toggle')
       await expect(pushToggle).toBeVisible()
     })
   })

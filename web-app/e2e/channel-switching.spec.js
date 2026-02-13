@@ -6,7 +6,11 @@ const MOCK_PROJECTS = [
 ]
 
 const MOCK_CHANNELS = {
-  channels: ['midtown', 'auth-refactor', 'ui-improvements']
+  channels: [
+    { name: 'midtown', is_archived: false },
+    { name: 'auth-refactor', is_archived: false },
+    { name: 'ui-improvements', is_archived: false },
+  ]
 }
 
 const MOCK_MAIN_MESSAGES = [

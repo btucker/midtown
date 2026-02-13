@@ -5,7 +5,6 @@
   import MermaidDiagram from './MermaidDiagram.svelte'
   import { parseSegments, hasMermaid, renderContent } from './markdown.js'
   import Autocomplete from './Autocomplete.svelte'
-  import { ScrollArea } from '$lib/components/ui/scroll-area'
   import * as Dialog from '$lib/components/ui/dialog'
 
   let inputText = $state('')
@@ -404,6 +403,12 @@
     }
   })
 
+  // Reset textarea height when input is cleared (after send)
+  $effect(() => {
+    inputText;
+    tick().then(() => resizeTextarea())
+  })
+
   async function handleSubmit(e) {
     e.preventDefault()
 
@@ -510,17 +515,24 @@
     }
   }
 
+  function resizeTextarea() {
+    if (!textareaElement) return
+    textareaElement.style.height = 'auto'
+    textareaElement.style.height = textareaElement.scrollHeight + 'px'
+  }
+
   function handleInput() {
+    resizeTextarea()
     detectAutocompleteTrigger()
   }
 </script>
 
-<div class="flex flex-col h-full overflow-hidden relative">
-  <ScrollArea
-    class="flex-1 font-[SF_Mono,Menlo,Consolas,Monaco,'Courier_New',monospace] text-[0.88rem] leading-[1.55]"
-    bind:viewportRef={scrollAreaViewport}
+<div class="flex flex-col h-full min-h-0 overflow-hidden relative">
+  <div
+    class="flex-1 min-h-0 overflow-y-auto overflow-x-hidden overscroll-contain font-[SF_Mono,Menlo,Consolas,Monaco,'Courier_New',monospace] text-[0.88rem] leading-[1.55] px-[18px] pt-[14px] pb-[18px]"
+    bind:this={scrollAreaViewport}
+    onscroll={handleScroll}
   >
-    <div class="px-[18px] pt-[14px] pb-[18px]" onscroll={handleScroll}>
       {#if channelMessages.length === 0}
         <div class="text-center text-[#606060] py-[50px] px-[22px] font-[system-ui,-apple-system,sans-serif]">
           <p>No messages in #{$activeChannel}</p>
@@ -614,8 +626,7 @@
           </span>
         </div>
       {/if}
-    </div>
-  </ScrollArea>
+  </div>
 
   {#if !autoScroll}
     <button
@@ -627,7 +638,7 @@
     </button>
   {/if}
 
-  <form class="flex flex-col gap-2 p-3 pb-[calc(12px+env(safe-area-inset-bottom,0px))] bg-[#1a1a1a] border-t-2 border-[#2a2a2a] shrink-0" onsubmit={handleSubmit}>
+  <form class="flex flex-col gap-2 px-3 pt-2 pb-1 bg-card border-t border-border shrink-0" onsubmit={handleSubmit}>
     {#if pendingFile}
       <div class="relative inline-block max-w-[200px] border border-[#3a3a3a] rounded-lg p-2 bg-[#1c1c1c]">
         {#if pendingFile.type.startsWith('image/')}
@@ -683,7 +694,7 @@
 </div>
 
 <!-- Task detail modal (opened by clicking !N task links in chat) -->
-<Dialog.Root bind:open={selectedTask}>
+<Dialog.Root open={selectedTask != null} onOpenChange={(open) => { if (!open) selectedTask = null }}>
   <Dialog.Content class="bg-[#16213e] rounded-[9px] p-[18px] max-w-[420px] max-h-[80vh] overflow-y-auto border border-[#0f3460]">
     <Dialog.Header>
       <div class="flex items-center gap-[9px]">
