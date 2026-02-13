@@ -120,29 +120,34 @@
   }
 </script>
 
-<div class="channel-list">
-  <div class="channel-list-header-row">
-    <div class="channel-list-header">Channels</div>
-    <div class="header-buttons">
+<div class="flex flex-col gap-1 p-3 bg-[#1c1c1c] border-r border-[#3a3a3a] overflow-y-auto">
+  <div class="flex items-center justify-between px-3 pt-2 pb-1">
+    <div class="text-xs font-bold text-[#585858] uppercase tracking-wide">Channels</div>
+    <div class="flex gap-1">
       <button
-        class="toggle-archived-btn"
-        class:active={$showArchivedChannels}
+        class="w-6 h-6 p-0 border-none rounded bg-transparent text-[#585858] text-sm leading-none cursor-pointer transition-all duration-150 flex items-center justify-center hover:bg-[#2a2a2a] hover:text-[#d0d0d0] aria-label='Toggle archived channels'"
+        class:bg-[#3a3a3a]={$showArchivedChannels}
+        class:text-[#5fafaf]={$showArchivedChannels}
         onclick={() => showArchivedChannels.update(v => !v)}
         title={$showArchivedChannels ? "Hide archived channels" : "Show archived channels"}
       >
-        📦
+        <span class="text-sm">📦</span>
       </button>
-      <button class="create-channel-btn" onclick={toggleCreateInput} title="Create new channel">
+      <button
+        class="w-6 h-6 p-0 border-none rounded bg-transparent text-[#585858] text-xl leading-none cursor-pointer transition-all duration-150 flex items-center justify-center hover:bg-[#2a2a2a] hover:text-[#d0d0d0]"
+        onclick={toggleCreateInput}
+        title="Create new channel"
+      >
         +
       </button>
     </div>
   </div>
 
   {#if showCreateInput}
-    <div class="create-channel-form">
+    <div class="px-3 py-2 mb-2 bg-[#242424] rounded-md">
       <input
         type="text"
-        class="channel-name-input"
+        class="w-full px-2 py-1.5 border border-[#3a3a3a] rounded bg-[#1c1c1c] text-[#d0d0d0] text-sm font-mono outline-none focus:border-[#5fafaf] disabled:opacity-50"
         placeholder="channel-name"
         bind:value={newChannelName}
         onkeydown={handleKeyDown}
@@ -150,17 +155,21 @@
         autofocus
       />
       {#if createError}
-        <div class="create-error">{createError}</div>
+        <div class="mt-1 text-xs text-[#ff6b6b]">{createError}</div>
       {/if}
-      <div class="create-actions">
+      <div class="flex gap-1.5 mt-2">
         <button
-          class="create-btn"
+          class="flex-1 px-3 py-1.5 border-none rounded text-xs font-medium cursor-pointer transition-all duration-150 bg-[#5fafaf] text-[#1c1c1c] hover:bg-[#6fc5c5] disabled:opacity-50 disabled:cursor-not-allowed"
           onclick={createChannel}
           disabled={isCreating || !newChannelName.trim()}
         >
           {isCreating ? 'Creating...' : 'Create'}
         </button>
-        <button class="cancel-btn" onclick={toggleCreateInput} disabled={isCreating}>
+        <button
+          class="flex-1 px-3 py-1.5 border-none rounded text-xs font-medium cursor-pointer transition-all duration-150 bg-[#3a3a3a] text-[#d0d0d0] hover:bg-[#4a4a4a] disabled:opacity-50"
+          onclick={toggleCreateInput}
+          disabled={isCreating}
+        >
           Cancel
         </button>
       </div>
@@ -175,17 +184,18 @@
     {@const isExpanded = expandedChannels.has(channel.name)}
     {@const hasActiveTasks = counts.inProgress > 0 || counts.pending > 0}
 
-    <div class="channel-group">
+    <div class="mb-0.5">
       <button
-        class="channel-item"
-        class:active={isActive}
+        class="flex items-center justify-between w-full px-3 py-2 border-none rounded-md bg-transparent text-[#a8a8a8] text-sm font-mono cursor-pointer transition-all duration-150 text-left hover:bg-[#262626] hover:text-[#d0d0d0] aria-label='Select channel {channel.name}'"
+        class:bg-[#303030]={isActive}
+        class:text-[#5fafaf]={isActive}
         onclick={() => selectChannel(channel.name)}
       >
-        <div class="channel-left">
+        <div class="flex items-center gap-1.5 flex-1 min-w-0">
           {#if hasActiveTasks}
             <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
             <span
-              class="expand-btn"
+              class="w-[18px] h-[18px] shrink-0 p-0 border-none bg-transparent text-[#606060] text-[0.65rem] leading-none cursor-pointer flex items-center justify-center transition-colors duration-150 hover:text-[#a0a0a0]"
               onclick={(e) => toggleChannelTasks(channel.name, e)}
               title={isExpanded ? 'Collapse tasks' : 'Expand tasks'}
               role="button"
@@ -194,280 +204,38 @@
               {isExpanded ? '▼' : '▶'}
             </span>
           {/if}
-          <div class="channel-name">
+          <div class="flex-1 overflow-hidden text-ellipsis whitespace-nowrap">
             {formatChannelName(channel.name)}
           </div>
         </div>
-        <div class="channel-badges">
+        <div class="flex items-center gap-1.5">
           {#if channel.unread > 0}
-            <span class="unread-count" title="{channel.unread} unread messages">{channel.unread}</span>
+            <span class="text-xs px-1.5 py-0.5 rounded-[10px] bg-[#ff6b6b] text-white min-w-[1.5em] text-center font-semibold" title="{channel.unread} unread messages">{channel.unread}</span>
           {/if}
           {#if totalTasks > 0}
-            <span class="task-count">{totalTasks}</span>
+            <span
+              class="text-xs px-1.5 py-0.5 rounded-[10px] min-w-[1.5em] text-center"
+              class:bg-[#3a3a3a]={!isActive}
+              class:text-[#d0d0d0]={!isActive}
+              class:bg-[#5fafaf]={isActive}
+              class:text-[#1c1c1c]={isActive}
+            >{totalTasks}</span>
           {/if}
           {#if ciStatus === 'passed'}
-            <span class="ci-badge ci-passed" title="CI passing">🟢</span>
+            <span class="text-[0.7rem]" title="CI passing">🟢</span>
           {:else if ciStatus === 'failed'}
-            <span class="ci-badge ci-failed" title="CI failing">🔴</span>
+            <span class="text-[0.7rem]" title="CI failing">🔴</span>
           {:else if ciStatus === 'pending'}
-            <span class="ci-badge ci-pending" title="CI pending">🟡</span>
+            <span class="text-[0.7rem]" title="CI pending">🟡</span>
           {/if}
         </div>
       </button>
 
       {#if isExpanded && hasActiveTasks}
-        <div class="channel-task-list">
+        <div class="ml-6 py-1 pb-2 pl-3 border-l-2 border-[#2a2a2a]">
           <TaskList channelName={channel.name} />
         </div>
       {/if}
     </div>
   {/each}
 </div>
-
-<style>
-  .channel-list {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    padding: 12px;
-    background: #1c1c1c;
-    border-right: 1px solid #3a3a3a;
-    overflow-y: auto;
-  }
-
-  .channel-list-header-row {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 8px 12px 4px;
-  }
-
-  .channel-list-header {
-    font-size: 0.75rem;
-    font-weight: 700;
-    color: #585858;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-  }
-
-  .header-buttons {
-    display: flex;
-    gap: 4px;
-  }
-
-  .toggle-archived-btn,
-  .create-channel-btn {
-    width: 24px;
-    height: 24px;
-    padding: 0;
-    border: none;
-    border-radius: 4px;
-    background: transparent;
-    color: #585858;
-    font-size: 1.25rem;
-    line-height: 1;
-    cursor: pointer;
-    transition: all 0.15s;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-  }
-
-  .toggle-archived-btn {
-    font-size: 0.875rem;
-  }
-
-  .toggle-archived-btn:hover,
-  .create-channel-btn:hover {
-    background: #2a2a2a;
-    color: #d0d0d0;
-  }
-
-  .toggle-archived-btn.active {
-    background: #3a3a3a;
-    color: #5fafaf;
-  }
-
-  .create-channel-form {
-    padding: 8px 12px;
-    margin-bottom: 8px;
-    background: #242424;
-    border-radius: 6px;
-  }
-
-  .channel-name-input {
-    width: 100%;
-    padding: 6px 8px;
-    border: 1px solid #3a3a3a;
-    border-radius: 4px;
-    background: #1c1c1c;
-    color: #d0d0d0;
-    font-size: 0.875rem;
-    font-family: 'SF Mono', 'Menlo', 'Consolas', monospace;
-    outline: none;
-  }
-
-  .channel-name-input:focus {
-    border-color: #5fafaf;
-  }
-
-  .channel-name-input:disabled {
-    opacity: 0.5;
-  }
-
-  .create-error {
-    margin-top: 4px;
-    font-size: 0.75rem;
-    color: #ff6b6b;
-  }
-
-  .create-actions {
-    display: flex;
-    gap: 6px;
-    margin-top: 8px;
-  }
-
-  .create-btn,
-  .cancel-btn {
-    flex: 1;
-    padding: 6px 12px;
-    border: none;
-    border-radius: 4px;
-    font-size: 0.75rem;
-    font-weight: 500;
-    cursor: pointer;
-    transition: all 0.15s;
-  }
-
-  .create-btn {
-    background: #5fafaf;
-    color: #1c1c1c;
-  }
-
-  .create-btn:hover:not(:disabled) {
-    background: #6fc5c5;
-  }
-
-  .create-btn:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-
-  .cancel-btn {
-    background: #3a3a3a;
-    color: #d0d0d0;
-  }
-
-  .cancel-btn:hover:not(:disabled) {
-    background: #4a4a4a;
-  }
-
-  .channel-group {
-    margin-bottom: 2px;
-  }
-
-  .channel-item {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    width: 100%;
-    padding: 8px 12px;
-    border: none;
-    border-radius: 6px;
-    background: transparent;
-    color: #a8a8a8;
-    font-size: 0.875rem;
-    font-family: 'SF Mono', 'Menlo', 'Consolas', monospace;
-    cursor: pointer;
-    transition: all 0.15s;
-    text-align: left;
-  }
-
-  .channel-left {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    flex: 1;
-    min-width: 0;
-  }
-
-  .expand-btn {
-    width: 18px;
-    height: 18px;
-    flex-shrink: 0;
-    padding: 0;
-    border: none;
-    background: transparent;
-    color: #606060;
-    font-size: 0.65rem;
-    line-height: 1;
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    transition: color 0.15s;
-  }
-
-  .expand-btn:hover {
-    color: #a0a0a0;
-  }
-
-  .channel-item:hover:not(.active) {
-    background: #262626;
-    color: #d0d0d0;
-  }
-
-  .channel-item.active {
-    background: #303030;
-    color: #5fafaf;
-  }
-
-  .channel-name {
-    flex: 1;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .channel-badges {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-  }
-
-  .unread-count {
-    font-size: 0.75rem;
-    padding: 2px 6px;
-    border-radius: 10px;
-    background: #ff6b6b;
-    color: #ffffff;
-    min-width: 1.5em;
-    text-align: center;
-    font-weight: 600;
-  }
-
-  .task-count {
-    font-size: 0.75rem;
-    padding: 2px 6px;
-    border-radius: 10px;
-    background: #3a3a3a;
-    color: #d0d0d0;
-    min-width: 1.5em;
-    text-align: center;
-  }
-
-  .channel-item.active .task-count {
-    background: #5fafaf;
-    color: #1c1c1c;
-  }
-
-  .ci-badge {
-    font-size: 0.7rem;
-  }
-
-  .channel-task-list {
-    margin-left: 24px;
-    padding: 4px 0 8px 12px;
-    border-left: 2px solid #2a2a2a;
-  }
-</style>
