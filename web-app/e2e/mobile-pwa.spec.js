@@ -32,8 +32,8 @@ test.describe('Mobile PWA - Viewport Tests', () => {
       const appContainer = page.locator('.app-container')
       await expect(appContainer).toBeVisible()
 
-      // Mobile header should be visible on small screens
-      const mobileHeader = page.locator('header.md\\:hidden')
+      // Mobile header should be visible on small screens (uses .mobile-header class)
+      const mobileHeader = page.locator('.mobile-header')
       await expect(mobileHeader).toBeVisible()
 
       // SidebarTrigger button should be visible on mobile
@@ -78,8 +78,8 @@ test.describe('Mobile PWA - Sidebar Behavior', () => {
   })
 
   test('mobile header shows active channel', async ({ page }) => {
-    // Mobile header should show the active channel
-    const activeChannelDisplay = page.locator('.active-channel-display')
+    // Mobile header should show the active channel (uses .mobile-channel class)
+    const activeChannelDisplay = page.locator('.mobile-channel')
     await expect(activeChannelDisplay).toBeVisible()
 
     // Should show the channel name
@@ -189,7 +189,7 @@ test.describe('Mobile PWA - Connection Status', () => {
 
   test('mobile header shows project name', async ({ page }) => {
     // On mobile, the header shows project name instead of connection dot
-    const mobileHeader = page.locator('header.md\\:hidden')
+    const mobileHeader = page.locator('.mobile-header')
     await expect(mobileHeader).toBeVisible()
 
     // Should contain the SidebarTrigger and project name
@@ -227,10 +227,11 @@ test.describe('Mobile PWA - Typography and Readability', () => {
     expect(bgColor).toBeTruthy()
   })
 
-  test('monospace font is applied', async ({ page }) => {
+  test('sans-serif font is applied', async ({ page }) => {
     const body = page.locator('body')
     const fontFamily = await body.evaluate((el) => getComputedStyle(el).fontFamily)
-    expect(fontFamily).toMatch(/monospace/i)
+    // Body uses sans-serif font (IBM Plex Sans) for readability
+    expect(fontFamily).toMatch(/sans-serif|IBM Plex/i)
   })
 })
 

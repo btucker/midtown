@@ -59,8 +59,8 @@ test.describe('Web UI', () => {
       await mockAllRoutes(page)
       await page.goto('/')
 
-      // Push toggle is in sidebar header
-      const pushToggle = page.locator('.push-toggle')
+      // Push toggle is in sidebar header - now uses .icon-btn with SVG
+      const pushToggle = page.locator('.icon-btn:has(svg)')
       await expect(pushToggle).toBeVisible()
     })
   })
@@ -140,8 +140,8 @@ test.describe('Mobile layout', () => {
     await page.setViewportSize({ width: 375, height: 667 })
     await page.goto('/')
 
-    // Mobile header with sidebar trigger should be visible
-    const header = page.locator('header.md\\:hidden')
+    // Mobile header with sidebar trigger should be visible (uses .mobile-header class)
+    const header = page.locator('.mobile-header')
     await expect(header).toBeVisible()
   })
 
@@ -150,7 +150,7 @@ test.describe('Mobile layout', () => {
     await page.setViewportSize({ width: 375, height: 667 })
     await page.goto('/')
 
-    // Active channel display should show current channel
-    await expect(page.locator('.active-channel-display')).toBeVisible()
+    // Active channel display should show current channel (uses .mobile-channel class)
+    await expect(page.locator('.mobile-channel')).toBeVisible()
   })
 })

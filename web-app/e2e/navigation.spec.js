@@ -13,8 +13,8 @@ test.describe('Navigation', () => {
   })
 
   test('sidebar header shows app title and project selector', async ({ page }) => {
-    // The header contains the logo and project selector
-    await expect(page.locator('img.header-logo')).toBeVisible()
+    // The header contains the logo mark (div with logo-text) and project selector
+    await expect(page.locator('.logo-mark')).toBeVisible()
     await expect(page.locator('.project-selector')).toBeVisible()
   })
 
@@ -36,8 +36,8 @@ test.describe('Navigation', () => {
   })
 
   test('push toggle is visible when supported', async ({ page }) => {
-    // Push toggle is in SidebarHeader
-    await expect(page.locator('.push-toggle')).toBeVisible()
+    // Push toggle is in SidebarHeader - now uses .icon-btn with SVG
+    await expect(page.locator('.icon-btn:has(svg)')).toBeVisible()
   })
 
   test('mobile header shows sidebar trigger', async ({ page }) => {
@@ -54,8 +54,8 @@ test.describe('Navigation', () => {
     await page.setViewportSize({ width: 375, height: 667 })
     await page.goto('/')
 
-    // Mobile header shows the active channel name
-    await expect(page.locator('.active-channel-display')).toBeVisible()
+    // Mobile header shows the active channel name (uses .mobile-channel class)
+    await expect(page.locator('.mobile-channel')).toBeVisible()
   })
 })
 
@@ -65,8 +65,8 @@ test.describe('Mobile sidebar behavior', () => {
     await page.setViewportSize({ width: 375, height: 667 })
     await page.goto('/')
 
-    // The mobile header has a sidebar trigger button
-    const header = page.locator('header.md\\:hidden')
+    // The mobile header has a sidebar trigger button (uses .mobile-header class)
+    const header = page.locator('.mobile-header')
     await expect(header).toBeVisible()
   })
 })

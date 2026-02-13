@@ -9,8 +9,10 @@ test.describe('PWA behavior', () => {
   })
 
   test('has theme-color meta tag', async ({ page }) => {
-    const themeColor = page.locator('meta[name="theme-color"]')
-    await expect(themeColor).toHaveAttribute('content', '#262626')
+    // There may be two theme-color meta tags (from index.html and svelte:head)
+    // Check that at least one has the correct dark color
+    const themeColor = page.locator('meta[name="theme-color"]').first()
+    await expect(themeColor).toHaveAttribute('content', '#0a0a0b')
   })
 
   test('has viewport meta tag disabling user scaling', async ({ page }) => {
@@ -52,10 +54,11 @@ test.describe('PWA behavior', () => {
     }
   })
 
-  test('body uses monospace font family', async ({ page }) => {
+  test('body uses sans-serif font family', async ({ page }) => {
     const body = page.locator('body')
     const fontFamily = await body.evaluate((el) => getComputedStyle(el).fontFamily)
-    expect(fontFamily).toMatch(/SF Mono|Menlo|Consolas|monospace/)
+    // Body uses sans-serif font (IBM Plex Sans) for readability
+    expect(fontFamily).toMatch(/IBM Plex|sans-serif/i)
   })
 
   test('main layout uses full screen', async ({ page }) => {
