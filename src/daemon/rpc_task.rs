@@ -189,10 +189,18 @@ async fn invoke_clusterer_for_task(
 
     // Collect channel information: list all channels and their active task counts
     let base_dir = crate::paths::projects_dir_for_repo(&state.repo_name);
-    let channel_names = crate::channel::Channel::list(&base_dir).unwrap_or_else(|e| {
-        warn!("Failed to list channels for clusterer: {}", e);
-        vec!["midtown".to_string()]
-    });
+    // Exclude archived channels from task assignment clustering
+    let channel_names = crate::channel::Channel::list(&base_dir, false)
+        .unwrap_or_else(|e| {
+            warn!("Failed to list channels for clusterer: {}", e);
+            vec![crate::channel::ChannelInfo {
+                name: "midtown".to_string(),
+                is_archived: false,
+            }]
+        })
+        .into_iter()
+        .map(|info| info.name)
+        .collect::<Vec<_>>();
 
     // Read all tasks to compute per-channel stats and recent completions
     let all_tasks = crate::tasks::read_tasks_for_repo(Some(&state.repo_name));

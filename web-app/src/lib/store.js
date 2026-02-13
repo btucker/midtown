@@ -121,3 +121,6 @@ export const detailPanelData = writable(null)
 // Viewport width tracking for responsive breakpoints
 // true when viewport > 1024px (wide desktop layout)
 export const isWideScreen = writable(false)
+
+// Whether to show archived channels in the channel list (default: false)
+export const showArchivedChannels = writable(false)

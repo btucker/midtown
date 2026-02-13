@@ -4,9 +4,23 @@ use crate::Result;
 use crate::cursor::Cursor;
 use crate::message::Message;
 use fs2::FileExt;
+use serde::{Deserialize, Serialize};
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+
+/// Metadata about a channel returned by [`Channel::list()`].
+///
+/// Contains the channel name and whether it is archived, allowing callers
+/// to choose the correct open method ([`Channel::new()`] vs
+/// [`Channel::open_archived()`]) without creating ghost files.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChannelInfo {
+    /// Channel name (without `.jsonl` or `.archived.jsonl` extension)
+    pub name: String,
+    /// Whether this channel is archived
+    pub is_archived: bool,
+}
 
 /// A channel for agent communication.
 ///
@@ -159,16 +173,23 @@ impl Channel {
 
     /// List all available channels in the base directory
     ///
-    /// Returns channel names (without .jsonl extension).
+    /// Returns channel metadata including name and archived status.
     /// Includes both legacy channel.jsonl (as "midtown") and channels/*.jsonl files.
-    /// Excludes archived channels (those ending in .archived.jsonl).
-    pub fn list(base_dir: impl Into<PathBuf>) -> Result<Vec<String>> {
+    ///
+    /// # Arguments
+    ///
+    /// * `base_dir` - Base directory to search for channels
+    /// * `include_archived` - If true, includes archived channels in the result
+    pub fn list(base_dir: impl Into<PathBuf>, include_archived: bool) -> Result<Vec<ChannelInfo>> {
         let base_dir = base_dir.into();
         let mut channels = Vec::new();
 
         // Check for legacy channel.jsonl
         if base_dir.join("channel.jsonl").exists() {
-            channels.push("midtown".to_string());
+            channels.push(ChannelInfo {
+                name: "midtown".to_string(),
+                is_archived: false,
+            });
         }
 
         // Check channels/ directory
@@ -177,23 +198,41 @@ impl Channel {
             for entry in fs::read_dir(channels_dir)? {
                 let entry = entry?;
                 let path = entry.path();
-                // Filter for .jsonl files, excluding .archived.jsonl
+                // Filter for .jsonl files
                 // Note: path.extension() returns the part after the *last* dot, so
                 // "foo.archived.jsonl" has extension "jsonl". We need to check the
-                // file_stem to exclude ".archived" suffix.
+                // file_stem to determine if it's archived.
                 if path.extension().is_some_and(|e| e == "jsonl")
                     && let Some(stem) = path.file_stem().and_then(|s| s.to_str())
-                    && !stem.ends_with(".archived")
                 {
+                    let is_archived = stem.ends_with(".archived");
+
+                    // Skip archived channels unless include_archived is true
+                    if is_archived && !include_archived {
+                        continue;
+                    }
+
+                    // Extract the channel name (remove .archived suffix if present)
+                    let channel_name = if is_archived {
+                        stem.strip_suffix(".archived").unwrap()
+                    } else {
+                        stem
+                    };
+
                     // Don't duplicate "midtown" if we already found channel.jsonl
-                    if stem != "midtown" || !channels.contains(&"midtown".to_string()) {
-                        channels.push(stem.to_string());
+                    let channel_info = ChannelInfo {
+                        name: channel_name.to_string(),
+                        is_archived,
+                    };
+
+                    if channel_name != "midtown" || !channels.iter().any(|c| c.name == "midtown") {
+                        channels.push(channel_info);
                     }
                 }
             }
         }
 
-        channels.sort();
+        channels.sort_by(|a, b| a.name.cmp(&b.name));
         Ok(channels)
     }
 
@@ -1679,13 +1718,13 @@ mod tests {
         let _channel2 = Channel::new(temp_dir.path(), "test2").unwrap();
 
         // Both should appear in the list
-        let channels = Channel::list(temp_dir.path()).unwrap();
+        let channels = Channel::list(temp_dir.path(), false).unwrap();
         assert!(
-            channels.contains(&"test1".to_string()),
+            channels.iter().any(|c| c.name == "test1"),
             "test1 should be in the list"
         );
         assert!(
-            channels.contains(&"test2".to_string()),
+            channels.iter().any(|c| c.name == "test2"),
             "test2 should be in the list"
         );
 
@@ -1693,13 +1732,13 @@ mod tests {
         channel1.archive().unwrap();
 
         // Now only test2 should appear in the list
-        let channels = Channel::list(temp_dir.path()).unwrap();
+        let channels = Channel::list(temp_dir.path(), false).unwrap();
         assert!(
-            !channels.contains(&"test1".to_string()),
+            !channels.iter().any(|c| c.name == "test1"),
             "Archived channel test1 should not be in the list"
         );
         assert!(
-            channels.contains(&"test2".to_string()),
+            channels.iter().any(|c| c.name == "test2"),
             "test2 should still be in the list"
         );
 

@@ -49,9 +49,12 @@ export async function fetchProjects() {
 }
 
 // Fetch the list of available channels
-export async function fetchChannels() {
+export async function fetchChannels(includeArchived = false) {
   try {
-    const res = await fetch(`${getApiBase()}/channels`)
+    const url = includeArchived
+      ? `${getApiBase()}/channels?include_archived=true`
+      : `${getApiBase()}/channels`
+    const res = await fetch(url)
     if (res.ok) {
       const data = await res.json()
       const channelList = data.channels.map((name) => ({

@@ -1,6 +1,6 @@
 <script>
   import { SvelteSet } from 'svelte/reactivity'
-  import { channels, activeChannel, kanbanData, activeProject, messagesByChannel } from './store.js'
+  import { channels, activeChannel, kanbanData, activeProject, messagesByChannel, showArchivedChannels } from './store.js'
   import { fetchHistory, fetchChannels, getApiBase } from './api.js'
   import { getChannelTaskCount, getChannelCiStatus } from './channelUtils.js'
   import TaskList from './TaskList.svelte'
@@ -9,6 +9,11 @@
   let newChannelName = ''
   let createError = ''
   let isCreating = false
+
+  // React to changes in showArchivedChannels toggle
+  $: {
+    fetchChannels($showArchivedChannels)
+  }
 
   // Track which channels have their task lists expanded (default: collapsed)
   // Using SvelteSet for reactivity — plain Set mutations don't trigger re-renders in Svelte 5
@@ -113,9 +118,19 @@
 <div class="channel-list">
   <div class="channel-list-header-row">
     <div class="channel-list-header">Channels</div>
-    <button class="create-channel-btn" onclick={toggleCreateInput} title="Create new channel">
-      +
-    </button>
+    <div class="header-buttons">
+      <button
+        class="toggle-archived-btn"
+        class:active={$showArchivedChannels}
+        onclick={() => showArchivedChannels.update(v => !v)}
+        title={$showArchivedChannels ? "Hide archived channels" : "Show archived channels"}
+      >
+        📦
+      </button>
+      <button class="create-channel-btn" onclick={toggleCreateInput} title="Create new channel">
+        +
+      </button>
+    </div>
   </div>
 
   {#if showCreateInput}
@@ -230,6 +245,12 @@
     letter-spacing: 0.05em;
   }
 
+  .header-buttons {
+    display: flex;
+    gap: 4px;
+  }
+
+  .toggle-archived-btn,
   .create-channel-btn {
     width: 24px;
     height: 24px;
@@ -247,9 +268,19 @@
     justify-content: center;
   }
 
+  .toggle-archived-btn {
+    font-size: 0.875rem;
+  }
+
+  .toggle-archived-btn:hover,
   .create-channel-btn:hover {
     background: #2a2a2a;
     color: #d0d0d0;
+  }
+
+  .toggle-archived-btn.active {
+    background: #3a3a3a;
+    color: #5fafaf;
   }
 
   .create-channel-form {
