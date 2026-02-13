@@ -343,11 +343,28 @@ pub fn draw_channel_switcher_overlay(f: &mut Frame, app: &App, area: Rect) {
             Style::default().fg(Color::DarkGray),
         )));
     } else {
+        // Calculate scrolling offset to keep selected item visible
+        let total_channels = app.channel_switcher.filtered_channels.len();
+        let selected = app.channel_switcher.selected_index;
+
+        // Scroll window to keep selection visible
+        let offset = if selected < max_visible_items / 2 {
+            // Near start - show from beginning
+            0
+        } else if selected >= total_channels.saturating_sub(max_visible_items / 2) {
+            // Near end - show last N items
+            total_channels.saturating_sub(max_visible_items)
+        } else {
+            // Middle - center selection in window
+            selected.saturating_sub(max_visible_items / 2)
+        };
+
         for (i, channel) in app
             .channel_switcher
             .filtered_channels
             .iter()
             .enumerate()
+            .skip(offset)
             .take(max_visible_items)
         {
             let is_selected = i == app.channel_switcher.selected_index;

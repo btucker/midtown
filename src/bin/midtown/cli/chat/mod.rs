@@ -621,7 +621,7 @@ mod tests {
     use crossterm::event::{KeyEvent, KeyModifiers};
 
     /// Helper to create a key press event for a given KeyCode
-    fn key_press(code: KeyCode) -> Event {
+    pub(super) fn key_press(code: KeyCode) -> Event {
         Event::Key(KeyEvent::new(code, KeyModifiers::NONE))
     }
 
