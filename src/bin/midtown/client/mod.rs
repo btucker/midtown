@@ -304,6 +304,7 @@ impl DaemonClient {
 
     // Task commands
 
+    #[allow(clippy::too_many_arguments)]
     pub fn task_create(
         &self,
         subject: &str,
@@ -312,6 +313,8 @@ impl DaemonClient {
         channel: Option<&str>,
         model: Option<&str>,
         pr: Option<u64>,
+        plan: Option<&str>,
+        execution_skill: Option<&str>,
     ) -> Result<Response, String> {
         let mut params = serde_json::json!({
             "subject": subject,
@@ -328,6 +331,12 @@ impl DaemonClient {
         }
         if let Some(pr_num) = pr {
             params["pr"] = serde_json::json!(pr_num);
+        }
+        if let Some(p) = plan {
+            params["plan"] = serde_json::json!(p);
+        }
+        if let Some(skill) = execution_skill {
+            params["execution_skill"] = serde_json::json!(skill);
         }
         self.send("task.create", Some(params))
     }

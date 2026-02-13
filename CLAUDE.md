@@ -277,6 +277,13 @@ fn test_stuck_detection_with_usage_limit() {
 }
 ```
 
+## Keeping docs/architecture.md Up-to-Date
+
+`docs/architecture.md` is the living reference for how the codebase works. Keep it current:
+
+- **When exploring the codebase** (using the Explore agent or deep code reads), capture what you learn in `docs/architecture.md`. If a module's behavior, data flow, or key invariant isn't documented there yet, add it.
+- **When reviewing PRs**, check whether the changes should be reflected in `docs/architecture.md`. New modules, changed data flows, new state fields, and altered decision logic should all be documented.
+
 ## Keeping README.md Up-to-Date
 
 When your changes affect anything documented in README.md, update the README as part of the same PR. This includes:
