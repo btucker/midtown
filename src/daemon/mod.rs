@@ -1646,19 +1646,38 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
     // Capture lead-specific values for health monitoring in the main loop.
     // These are cloned here because session_name is moved into CoworkerManager.
     let lead_session_name = session_name.clone();
-    let lead_workdir = config.workdir.clone();
-    let lead_project_name = project_name.clone();
-    let lead_additional_dirs: Vec<PathBuf> = all_repo_paths
-        .iter()
-        .filter(|p| **p != config.workdir)
-        .cloned()
-        .collect();
-
     let worktree_manager =
         WorktreeManager::new(config.workdir.clone()).map_err(|e| crate::Error::Rpc {
             code: -32603,
             message: format!("Failed to initialize worktree manager: {}", e),
         })?;
+
+    // Create the lead worktree (or reuse existing one)
+    let lead_workdir = match worktree_manager.create_lead_worktree() {
+        Ok(path) => {
+            info!("Lead worktree ready at {}", path.display());
+            path
+        }
+        Err(e) => {
+            warn!(
+                "Failed to create lead worktree, falling back to main repo: {}",
+                e
+            );
+            config.workdir.clone()
+        }
+    };
+    let lead_project_name = project_name.clone();
+    // Include the main repo as an additional dir so the lead can reference it.
+    // Also include any other repos from the project config.
+    let lead_additional_dirs: Vec<PathBuf> = {
+        let mut dirs = vec![config.workdir.clone()];
+        for path in &all_repo_paths {
+            if *path != config.workdir && *path != lead_workdir {
+                dirs.push(path.clone());
+            }
+        }
+        dirs
+    };
 
     // For multi-repo projects, create worktree managers for additional repos
     let additional_worktree_managers =
