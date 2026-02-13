@@ -398,6 +398,7 @@ query($owner: String!, $repo: String!) {
         author { login }
         createdAt
         body
+        mergeable
         commits(last: 1) {
           nodes {
             commit {
@@ -531,6 +532,13 @@ fn fetch_kanban_all_prs(
 
                     let created_at = pr.get("createdAt").and_then(|v| v.as_str()).unwrap_or("");
 
+                    // Check for merge conflicts
+                    let has_conflicts = pr
+                        .get("mergeable")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s == "CONFLICTING")
+                        .unwrap_or(false);
+
                     // Extract CI status from the last commit's statusCheckRollup
                     let check_contexts: Vec<serde_json::Value> = pr
                         .pointer("/commits/nodes")
@@ -576,6 +584,7 @@ fn fetch_kanban_all_prs(
                         "reviewed_at": reviewer_assigned_at,
                         "review_posted": review_posted,
                         "repo": repo_label,
+                        "has_conflicts": has_conflicts,
                     }))
                 })
                 .collect()

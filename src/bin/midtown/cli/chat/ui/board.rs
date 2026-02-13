@@ -168,16 +168,23 @@ fn render_task_item(
 
     // Determine bullet color based on task and PR status
     let (bullet_color, text_color) = match task_pr {
-        // PR exists - use CI status
-        Some(pr) => match pr.ci_status {
-            super::super::app::CiStatus::Passed => (Color::Green, Color::Green),
-            super::super::app::CiStatus::Failed => (Color::Red, Color::Red),
-            super::super::app::CiStatus::Running => (Color::Yellow, Color::Yellow),
-            super::super::app::CiStatus::Unknown => {
-                // PR exists but CI status unknown - treat as in-progress
-                (Color::Yellow, Color::Green)
+        // PR exists - check for conflicts or CI status
+        Some(pr) => {
+            if pr.has_conflicts {
+                // Merge conflict takes priority - show red
+                (Color::Red, Color::Red)
+            } else {
+                match pr.ci_status {
+                    super::super::app::CiStatus::Passed => (Color::Green, Color::Green),
+                    super::super::app::CiStatus::Failed => (Color::Red, Color::Red),
+                    super::super::app::CiStatus::Running => (Color::Yellow, Color::Yellow),
+                    super::super::app::CiStatus::Unknown => {
+                        // PR exists but CI status unknown - treat as in-progress
+                        (Color::Yellow, Color::Green)
+                    }
+                }
             }
-        },
+        }
         // No PR - use task status
         None => {
             if task.status == TaskStatus::InProgress {

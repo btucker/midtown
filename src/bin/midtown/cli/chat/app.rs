@@ -150,6 +150,8 @@ pub struct KanbanPr {
     pub task_id: Option<u64>,
     /// Task name/subject looked up from task list
     pub task_name: Option<String>,
+    /// Whether the PR has merge conflicts
+    pub has_conflicts: bool,
 }
 
 /// A merged PR item for the Done column
@@ -1853,6 +1855,7 @@ fn fetch_prs() -> Vec<KanbanPr> {
                         repo: None,
                         task_id,
                         task_name,
+                        has_conflicts: false, // Local fetch doesn't check mergeable status
                     });
                 }
             }
@@ -2120,6 +2123,11 @@ fn fetch_kanban_data_via_rpc() -> Option<(
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string());
 
+            let has_conflicts = pr
+                .get("has_conflicts")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+
             Some(KanbanPr {
                 number,
                 title,
@@ -2132,6 +2140,7 @@ fn fetch_kanban_data_via_rpc() -> Option<(
                 repo,
                 task_id,
                 task_name,
+                has_conflicts,
             })
         })
         .collect();
