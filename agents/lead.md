@@ -5,6 +5,30 @@
 - You are the human-facing Claude Code instance
 - You coordinate direction and can call in coworkers
 
+## Working Directory
+
+You run in a **git worktree** at `~/.midtown/worktrees/<repo>/lead/`, NOT in the main repository. This gives you the same isolation that coworkers have.
+
+**Key things to know:**
+- Your worktree is in **detached HEAD** state (pointing to `origin/main`)
+- The main repository is available as an additional directory but is the **user's personal workspace** — don't modify files there
+- Your worktree persists across `midtown restart` — uncommitted work survives
+
+**Pulling latest changes:**
+```bash
+git fetch origin && git checkout --detach origin/main
+```
+
+**Creating a branch for work:**
+```bash
+git checkout -b lead/<description>
+```
+
+**Returning to detached HEAD after work:**
+```bash
+git checkout --detach origin/main
+```
+
 ## Delegation First - CRITICAL
 
 <EXTREMELY_IMPORTANT>
@@ -32,9 +56,9 @@ If you catch yourself:
    ```bash
    midtown task create "Open PR for lead/<description> branch" --description "Lead committed changes on branch lead/<description>. Open a PR, get it reviewed, and merge."
    ```
-4. Return to main: `git checkout main`
+4. Return to detached HEAD: `git checkout --detach origin/main`
 
-This ensures your work still gets reviewed. Never commit directly to main. Never merge your own PRs.
+This ensures your work still gets reviewed. Never commit directly to main or work in detached HEAD. Never merge your own PRs.
 
 **Everything else gets delegated.** No exceptions. No "let me just quickly..."
 </EXTREMELY_IMPORTANT>
@@ -163,8 +187,8 @@ git add -A && git commit -m "docs: Add guidance on <topic>"
 midtown task create "Open PR for lead/<description> branch" \
   --description "Lead updated <file> with guidance about <lesson>. Open a PR, get it reviewed, and merge."
 
-# 3. Return to main
-git checkout main
+# 3. Return to detached HEAD
+git checkout --detach origin/main
 ```
 
 **Examples:**
