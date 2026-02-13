@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 use tracing::{debug, error, warn};
 
 use crate::rpc::{RequestId, Response, RpcError};
+use crate::rules::CoworkerRecord;
 
 use super::DaemonState;
 use super::snapshot::ProcessHealth;
@@ -41,8 +42,20 @@ pub(crate) async fn handle_kanban_data(id: RequestId, state: &DaemonState) -> Re
     }
     let repo_hash = hasher.finish();
 
+    // Compute a hash of coworker state for cache invalidation
+    let coworker_state_hash = {
+        let coworker_records = state.coworker_records.read().await;
+        compute_coworker_state_hash(&coworker_records)
+    };
+
+    // Combine repo hash and coworker state hash for the final cache key
+    let mut cache_key_hasher = DefaultHasher::new();
+    repo_hash.hash(&mut cache_key_hasher);
+    coworker_state_hash.hash(&mut cache_key_hasher);
+    let cache_key = cache_key_hasher.finish();
+
     // Check cache first
-    if let Some(cached) = state.kanban_cache.get(repo_hash) {
+    if let Some(cached) = state.kanban_cache.get(cache_key) {
         debug!(
             "Returning cached kanban data (TTL: {}s)",
             KANBAN_CACHE_TTL.as_secs()
@@ -242,7 +255,7 @@ pub(crate) async fn handle_kanban_data(id: RequestId, state: &DaemonState) -> Re
         "max_coworkers": state.max_coworkers,
     });
 
-    state.kanban_cache.set(response_data.clone(), repo_hash);
+    state.kanban_cache.set(response_data.clone(), cache_key);
 
     Response::success(id, response_data)
 }
@@ -253,6 +266,47 @@ pub(crate) async fn handle_kanban_data(id: RequestId, state: &DaemonState) -> Re
 
 /// TTL for kanban data cache (30 seconds, matching web server's CACHE_TTL).
 const KANBAN_CACHE_TTL: Duration = Duration::from_secs(30);
+
+/// Compute a hash representing coworker state for cache invalidation.
+///
+/// The hash includes:
+/// - Coworker count
+/// - Each coworker's name and task_id
+///
+/// When any of these change (coworker spawns/shuts down, task assigned, phase changes),
+/// the hash changes and the cache misses, ensuring fresh data is fetched.
+fn compute_coworker_state_hash(coworker_records: &HashMap<String, CoworkerRecord>) -> u64 {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    let mut hasher = DefaultHasher::new();
+
+    // Collect (name, task_id) tuples and sort by name for deterministic hashing
+    let mut state: Vec<(&String, Option<u32>)> = coworker_records
+        .iter()
+        .filter_map(|(name, record)| {
+            // Skip idle coworkers (they don't appear in the kanban response)
+            if matches!(
+                record.workflow_phase,
+                Some(crate::coworker_state::WorkflowPhase::Idle)
+                    | Some(crate::coworker_state::WorkflowPhase::Completed)
+            ) {
+                return None;
+            }
+
+            Some((name, record.task_id))
+        })
+        .collect();
+
+    state.sort_by(|a, b| a.0.cmp(b.0));
+
+    for (name, task_id) in state {
+        name.hash(&mut hasher);
+        task_id.hash(&mut hasher);
+    }
+
+    hasher.finish()
+}
 
 /// Build a map of task_id -> pr_number from PR data.
 ///
@@ -273,9 +327,15 @@ fn build_pr_task_map(prs: &[serde_json::Value]) -> HashMap<u32, u64> {
 
 /// Thread-safe TTL cache for kanban GraphQL data.
 ///
-/// Stores the full kanban response (PRs, merged PRs, repos) keyed by a hash
-/// of the repo paths. The cache expires after KANBAN_CACHE_TTL and avoids
-/// expensive GraphQL queries on every RPC call.
+/// Stores the full kanban response (PRs, merged PRs, repos, coworkers) keyed
+/// by a combined hash of repo paths AND coworker state (task assignments).
+/// The cache expires after KANBAN_CACHE_TTL and avoids expensive GraphQL
+/// queries on every RPC call.
+///
+/// The cache key includes coworker state so it invalidates when:
+/// - Coworkers spawn or shut down
+/// - Task assignments change
+/// - Coworker workflow phases change (idle → active, etc.)
 ///
 /// Lives in `DaemonState` so the daemon can inspect and clean it up alongside
 /// other caches (see `DaemonState::cleanup_rpc_response_cache`).
@@ -290,19 +350,19 @@ impl KanbanCache {
         }
     }
 
-    /// Return cached value if it exists, is younger than TTL, and matches the repo_hash.
-    fn get(&self, repo_hash: u64) -> Option<serde_json::Value> {
+    /// Return cached value if it exists, is younger than TTL, and matches the cache_key.
+    fn get(&self, cache_key: u64) -> Option<serde_json::Value> {
         let guard = self.inner.lock().ok()?;
         guard
             .as_ref()
-            .filter(|(ts, _, hash)| ts.elapsed() < KANBAN_CACHE_TTL && *hash == repo_hash)
+            .filter(|(ts, _, key)| ts.elapsed() < KANBAN_CACHE_TTL && *key == cache_key)
             .map(|(_, v, _)| v.clone())
     }
 
-    /// Store a new value with the current timestamp and repo_hash.
-    fn set(&self, value: serde_json::Value, repo_hash: u64) {
+    /// Store a new value with the current timestamp and cache_key.
+    fn set(&self, value: serde_json::Value, cache_key: u64) {
         if let Ok(mut guard) = self.inner.lock() {
-            *guard = Some((Instant::now(), value, repo_hash));
+            *guard = Some((Instant::now(), value, cache_key));
         }
     }
 
@@ -659,6 +719,10 @@ fn kanban_ci_status(checks: &[serde_json::Value]) -> &'static str {
         "unknown"
     }
 }
+
+#[path = "rpc_kanban_tests.rs"]
+#[cfg(test)]
+mod cache_tests;
 
 #[cfg(test)]
 mod tests {
