@@ -74,36 +74,38 @@
 </script>
 
 {#if availableProviders.length > 0}
-  <div class="auth-switcher">
+  <div class="relative">
     <button
-      class="auth-trigger"
-      class:switching={$authSwitching}
+      class="flex items-center gap-1 bg-[#303030] border border-[#3a3a3a] rounded-md px-2 py-1 text-[#a8a8a8] text-[0.75rem] cursor-pointer transition-all duration-150 hover:bg-[#3a3a3a] hover:text-[#d0d0d0] hover:border-[#5fafaf] disabled:opacity-60 disabled:cursor-wait"
+      class:opacity-60={$authSwitching}
+      class:cursor-wait={$authSwitching}
       onclick={toggle}
       disabled={$authSwitching}
       title={$authSwitching ? 'Switching profile...' : 'Switch auth profile'}
     >
       {#if $authSwitching}
-        <span class="spinner"></span>
+        <span class="inline-block w-2.5 h-2.5 border-[1.5px] border-[#585858] border-t-[#5fafaf] rounded-full animate-spin"></span>
       {:else}
-        <span class="profile-icon"></span>
+        <span class="before:content-['🔑'] before:text-[0.7rem]"></span>
       {/if}
-      <span class="profile-provider">{providerNames[currentProfile?.provider] || '...'}</span>
-      <span class="profile-separator">/</span>
-      <span class="profile-name">{currentProfile?.name || '...'}</span>
+      <span class="text-[#808080] shrink-0">{providerNames[currentProfile?.provider] || '...'}</span>
+      <span class="text-[#585858] mx-0.5 shrink-0">/</span>
+      <span class="max-w-[60px] truncate">{currentProfile?.name || '...'}</span>
     </button>
 
     {#if error}
-      <div class="auth-error">{error}</div>
+      <div class="absolute top-full right-0 mt-1 px-2 py-1 bg-[#3a2020] border border-[#af5f5f] rounded text-[#e08080] text-[0.7rem] whitespace-nowrap z-[100]">
+        {error}
+      </div>
     {/if}
 
     {#if open}
-      <div class="auth-dropdown">
+      <div class="absolute top-full right-0 mt-1 bg-[#262626] border border-[#3a3a3a] rounded-md min-w-[180px] z-[100] shadow-[0_4px_12px_rgba(0,0,0,0.4)]">
         {#if availableProviders.length > 1}
-          <div class="provider-tabs">
+          <div class="flex border-b border-[#3a3a3a] pt-1 px-1">
             {#each availableProviders as provider}
               <button
-                class="provider-tab"
-                class:active={provider === $selectedAuthProvider}
+                class="flex-1 px-2 py-1 border-none bg-transparent text-[#808080] text-[0.7rem] cursor-pointer border-b-2 border-transparent transition-all duration-150 hover:text-[#d0d0d0] {provider === $selectedAuthProvider ? 'text-[#5fafaf] border-b-[#5fafaf]' : ''}"
                 onclick={() => selectProvider(provider)}
               >
                 {providerNames[provider]}
@@ -112,20 +114,18 @@
           </div>
         {/if}
 
-        <div class="profile-list">
+        <div class="overflow-hidden">
           {#each currentProviderProfiles as profile}
             <button
-              class="auth-option"
-              class:current={profile.is_current}
-              class:no-creds={!profile.has_credentials}
-              onclick={() => selectProfile(profile, $selectedAuthProvider)}
+              class="flex items-center gap-1.5 w-full px-2.5 py-2 border-none bg-transparent text-[#a8a8a8] text-[0.75rem] cursor-pointer text-left transition-colors duration-100 hover:bg-[#303030] hover:text-[#d0d0d0] disabled:cursor-default {profile.is_current ? 'text-[#5fafaf]' : ''} {!profile.has_credentials ? 'opacity-50' : ''}"
               disabled={profile.is_current}
               title={!profile.has_credentials ? 'No credentials — run midtown auth login' : ''}
+              onclick={() => selectProfile(profile, $selectedAuthProvider)}
             >
-              <span class="option-indicator">{profile.is_current ? '\u25CF' : '\u25CB'}</span>
-              <span class="option-name">{profile.name}</span>
+              <span class="text-[0.5rem] shrink-0">{profile.is_current ? '\u25CF' : '\u25CB'}</span>
+              <span class="flex-1 truncate">{profile.name}</span>
               {#if !profile.has_credentials}
-                <span class="option-badge">no auth</span>
+                <span class="text-[0.6rem] px-1 py-[1px] bg-[#af5f5f] text-[#1c1c1c] rounded shrink-0">no auth</span>
               {/if}
             </button>
           {/each}
@@ -134,180 +134,3 @@
     {/if}
   </div>
 {/if}
-
-<style>
-  .auth-switcher {
-    position: relative;
-  }
-
-  .auth-trigger {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    background: #303030;
-    border: 1px solid #3a3a3a;
-    border-radius: 6px;
-    padding: 4px 8px;
-    color: #a8a8a8;
-    font-size: 0.75rem;
-    cursor: pointer;
-    transition: all 0.15s;
-  }
-
-  .auth-trigger:hover:not(:disabled) {
-    background: #3a3a3a;
-    color: #d0d0d0;
-    border-color: #5fafaf;
-  }
-
-  .auth-trigger.switching {
-    opacity: 0.6;
-    cursor: wait;
-  }
-
-  .profile-icon::before {
-    content: '\1F511';
-    font-size: 0.7rem;
-  }
-
-  .profile-provider {
-    color: #808080;
-    flex-shrink: 0;
-  }
-
-  .profile-separator {
-    color: #585858;
-    margin: 0 2px;
-    flex-shrink: 0;
-  }
-
-  .profile-name {
-    max-width: 60px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .spinner {
-    display: inline-block;
-    width: 10px;
-    height: 10px;
-    border: 1.5px solid #585858;
-    border-top-color: #5fafaf;
-    border-radius: 50%;
-    animation: spin 0.6s linear infinite;
-  }
-
-  @keyframes spin {
-    to { transform: rotate(360deg); }
-  }
-
-  .auth-dropdown {
-    position: absolute;
-    top: 100%;
-    right: 0;
-    margin-top: 4px;
-    background: #262626;
-    border: 1px solid #3a3a3a;
-    border-radius: 6px;
-    min-width: 180px;
-    z-index: 100;
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
-  }
-
-  .provider-tabs {
-    display: flex;
-    border-bottom: 1px solid #3a3a3a;
-    padding: 4px 4px 0;
-  }
-
-  .provider-tab {
-    flex: 1;
-    padding: 4px 8px;
-    border: none;
-    background: transparent;
-    color: #808080;
-    font-size: 0.7rem;
-    cursor: pointer;
-    border-bottom: 2px solid transparent;
-    transition: all 0.15s;
-  }
-
-  .provider-tab:hover {
-    color: #d0d0d0;
-  }
-
-  .provider-tab.active {
-    color: #5fafaf;
-    border-bottom-color: #5fafaf;
-  }
-
-  .profile-list {
-    overflow: hidden;
-  }
-
-  .auth-option {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    width: 100%;
-    padding: 8px 10px;
-    border: none;
-    background: transparent;
-    color: #a8a8a8;
-    font-size: 0.75rem;
-    cursor: pointer;
-    text-align: left;
-    transition: background 0.1s;
-  }
-
-  .auth-option:hover:not(:disabled) {
-    background: #303030;
-    color: #d0d0d0;
-  }
-
-  .auth-option.current {
-    color: #5fafaf;
-    cursor: default;
-  }
-
-  .auth-option.no-creds {
-    opacity: 0.5;
-  }
-
-  .option-indicator {
-    font-size: 0.5rem;
-    flex-shrink: 0;
-  }
-
-  .option-name {
-    flex: 1;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .option-badge {
-    font-size: 0.6rem;
-    padding: 1px 4px;
-    background: #af5f5f;
-    color: #1c1c1c;
-    border-radius: 3px;
-    flex-shrink: 0;
-  }
-
-  .auth-error {
-    position: absolute;
-    top: 100%;
-    right: 0;
-    margin-top: 4px;
-    padding: 4px 8px;
-    background: #3a2020;
-    border: 1px solid #af5f5f;
-    border-radius: 4px;
-    color: #e08080;
-    font-size: 0.7rem;
-    white-space: nowrap;
-    z-index: 100;
-  }
-</style>
