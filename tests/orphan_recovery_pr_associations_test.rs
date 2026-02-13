@@ -48,6 +48,7 @@ fn test_should_not_recover_task_with_open_pr_in_pr_task_associations() {
         &merged_pr_numbers,
         &repo_path,
         &tasks_with_open_prs,
+        &HashMap::new(),
     );
 
     assert!(
@@ -73,6 +74,7 @@ fn test_should_not_recover_task_with_explicit_pr_field_and_pr_task_associations(
         &merged_pr_numbers,
         &repo_path,
         &tasks_with_open_prs,
+        &HashMap::new(),
     );
 
     assert!(
@@ -100,6 +102,7 @@ fn test_should_recover_task_when_pr_is_merged() {
         &merged_pr_numbers,
         &repo_path,
         &tasks_with_open_prs,
+        &HashMap::new(),
     );
 
     assert!(
@@ -124,6 +127,7 @@ fn test_should_recover_task_with_no_pr_anywhere() {
         &merged_pr_numbers,
         &repo_path,
         &tasks_with_open_prs,
+        &HashMap::new(),
     );
 
     assert!(
@@ -154,6 +158,7 @@ fn test_should_recover_task_when_pr_task_associations_stale_but_pr_merged() {
         &merged_pr_numbers,
         &repo_path,
         &tasks_with_open_prs,
+        &HashMap::new(),
     );
 
     assert!(

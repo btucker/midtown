@@ -54,6 +54,7 @@ fn test_should_recover_task_with_contextual_pr_mention() {
         &merged_pr_numbers,
         &repo_path,
         &tasks_with_open_prs,
+        &HashMap::new(),
     );
 
     assert!(
@@ -80,6 +81,7 @@ fn test_should_skip_recovery_when_task_pr_is_merged() {
         &merged_pr_numbers,
         &repo_path,
         &tasks_with_open_prs,
+        &HashMap::new(),
     );
 
     assert!(
@@ -110,6 +112,7 @@ fn test_should_recover_when_task_pr_is_open() {
         &merged_pr_numbers,
         &repo_path,
         &tasks_with_open_prs,
+        &HashMap::new(),
     );
 
     assert!(
@@ -138,6 +141,7 @@ fn test_should_recover_task_with_no_pr() {
         &merged_pr_numbers,
         &repo_path,
         &tasks_with_open_prs,
+        &HashMap::new(),
     );
 
     assert!(

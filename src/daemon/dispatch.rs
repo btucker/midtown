@@ -103,6 +103,13 @@ fn task_completed_effects(task_id: &str, repo_name: &str, channel_message: Strin
 // Orphan task recovery
 // ============================================================================
 
+/// Parse PR state from `gh pr view --jq '.state'` output.
+///
+/// Returns `true` if the state is "MERGED", `false` otherwise.
+fn parse_pr_merged_state(stdout: &str) -> bool {
+    stdout.trim() == "MERGED"
+}
+
 /// Check if a specific PR is merged by querying GitHub directly.
 ///
 /// This bypasses the cached merged PR list to avoid race conditions where:
@@ -129,8 +136,8 @@ fn is_pr_merged(pr_number: u64, repo_path: &std::path::Path) -> Option<bool> {
 
     match output {
         Ok(output) if output.status.success() => {
-            let state = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            Some(state == "MERGED")
+            let state = String::from_utf8_lossy(&output.stdout);
+            Some(parse_pr_merged_state(&state))
         }
         Ok(output) => {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -150,21 +157,21 @@ fn is_pr_merged(pr_number: u64, repo_path: &std::path::Path) -> Option<bool> {
 
 /// Determine whether an orphaned task should be recovered.
 ///
-/// Decision function: returns `true` if the task should be recovered,
+/// Pure decision function: returns `true` if the task should be recovered,
 /// `false` if it should be skipped. A task should NOT be recovered if:
 /// - It is already completed (race condition: RPC marked it done after snapshot)
 /// - It has an explicit `pr` field pointing to a merged PR
 /// - It has an open PR tracked via pr_task_associations (tasks_with_open_prs)
+/// - It has an open PR detected from GitHub PR titles (github_open_pr_task_ids)
 ///
-/// Note: This function performs I/O (reads task from disk, queries GitHub API) which
-/// violates the pure decision function pattern. The target architecture would move
-/// this to snapshot collection, but orphan recovery is already impure (reads tasks
-/// from disk) so we handle it here for now.
+/// All data except the `is_pr_merged` fallback is pre-collected during snapshot collection.
+/// The `is_pr_merged` call is a pre-existing safety net for stale merged PR caches.
 fn should_recover_task(
     task: &crate::tasks::Task,
     merged_pr_numbers: &HashSet<u64>,
     repo_path: &std::path::Path,
     tasks_with_open_prs: &HashMap<String, u64>,
+    github_open_pr_task_ids: &HashMap<String, u64>,
 ) -> bool {
     // Check if task is already completed
     // Race condition: coworker reports completion via RPC, task is marked completed,
@@ -243,6 +250,20 @@ fn should_recover_task(
         }
     }
 
+    // Defense-in-depth: Check if GitHub has an open PR with [Midtown !{task_id}] in the title.
+    // This data is pre-collected during snapshot from open_prs_data (no I/O here).
+    // Catches cases where:
+    // 1. A PR was created but pr_author_sessions wasn't updated yet
+    // 2. Daemon restarted before the PR association was persisted
+    // 3. The task.pr field hasn't been set yet
+    if let Some(&open_pr) = github_open_pr_task_ids.get(&task.id) {
+        info!(
+            "Skipping orphan recovery for task !{}: found open PR #{} via GitHub PR title pattern",
+            task.id, open_pr
+        );
+        return false;
+    }
+
     // No associated PR found — this is a non-PR task (investigation, review, etc.)
     // or a task that hasn't opened a PR yet. Allow recovery.
     true
@@ -300,6 +321,7 @@ pub(super) fn check_and_recover_orphans(
                 &snap.merged_pr_numbers,
                 repo_path,
                 &snap.tasks_with_open_prs,
+                &snap.github_open_pr_task_ids,
             )
         })
         .cloned()
@@ -1809,8 +1831,15 @@ pub fn should_recover_task_test_helper(
     merged_pr_numbers: &HashSet<u64>,
     repo_path: &std::path::Path,
     tasks_with_open_prs: &HashMap<String, u64>,
+    github_open_pr_task_ids: &HashMap<String, u64>,
 ) -> bool {
-    should_recover_task(task, merged_pr_numbers, repo_path, tasks_with_open_prs)
+    should_recover_task(
+        task,
+        merged_pr_numbers,
+        repo_path,
+        tasks_with_open_prs,
+        github_open_pr_task_ids,
+    )
 }
 
 // ============================================================================

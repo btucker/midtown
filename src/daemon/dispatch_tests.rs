@@ -112,7 +112,13 @@ fn test_should_recover_task_with_explicit_pr_association() {
     // EXPECTED: should_recover_task returns true (allow recovery)
     // ACTUAL (before fix): returns false because extract_pr_numbers_from_text finds #940 in subject
     let tasks_with_open_prs = HashMap::new();
-    let result = should_recover_task(&task, &merged_prs, repo_path, &tasks_with_open_prs);
+    let result = should_recover_task(
+        &task,
+        &merged_prs,
+        repo_path,
+        &tasks_with_open_prs,
+        &HashMap::new(),
+    );
     assert!(
         result,
         "should_recover_task should return true when explicit pr field is None, even if merged PR mentioned in text"
@@ -124,7 +130,13 @@ fn test_should_recover_task_with_explicit_pr_association() {
         ..task
     };
 
-    let result = should_recover_task(&task_with_pr, &merged_prs, repo_path, &tasks_with_open_prs);
+    let result = should_recover_task(
+        &task_with_pr,
+        &merged_prs,
+        repo_path,
+        &tasks_with_open_prs,
+        &HashMap::new(),
+    );
     assert!(
         !result,
         "should_recover_task should return false when explicit pr field matches merged PR"
@@ -962,6 +974,7 @@ fn test_spawn_for_pending_tasks_generates_registry_effects_new_task() {
         ci_passed_pr_coworkers: HashSet::new(),
         review_feedback_pr_coworkers: HashSet::new(),
         open_prs_data: vec![],
+        github_open_pr_task_ids: HashMap::new(),
         pending_task_owners: HashSet::new(),
         tasks_with_open_prs: HashMap::new(),
         pr_task_associations: HashMap::new(),
@@ -1109,6 +1122,7 @@ fn test_spawn_for_pending_tasks_reuses_worktree_for_owned_task() {
         ci_passed_pr_coworkers: HashSet::new(),
         review_feedback_pr_coworkers: HashSet::new(),
         open_prs_data: vec![],
+        github_open_pr_task_ids: HashMap::new(),
         pending_task_owners: HashSet::new(),
         tasks_with_open_prs: HashMap::new(),
         pr_task_associations: HashMap::new(),
@@ -1227,6 +1241,7 @@ fn test_spawn_for_pending_tasks_skips_when_owner_has_pending_task() {
         ci_passed_pr_coworkers: HashSet::new(),
         review_feedback_pr_coworkers: HashSet::new(),
         open_prs_data: vec![],
+        github_open_pr_task_ids: HashMap::new(),
         pending_task_owners: HashSet::new(),
         tasks_with_open_prs: HashMap::new(),
         pr_task_associations: HashMap::new(),
@@ -1318,6 +1333,7 @@ fn test_spawn_owner_includes_record_task_assignment_for_cross_tick_dedup() {
         ci_passed_pr_coworkers: HashSet::new(),
         review_feedback_pr_coworkers: HashSet::new(),
         open_prs_data: vec![],
+        github_open_pr_task_ids: HashMap::new(),
         pending_task_owners: HashSet::new(),
         tasks_with_open_prs: HashMap::new(),
         pr_task_associations: HashMap::new(),
@@ -1413,6 +1429,7 @@ fn test_cross_tick_dedup_skips_in_flight_owned_task() {
         ci_passed_pr_coworkers: HashSet::new(),
         review_feedback_pr_coworkers: HashSet::new(),
         open_prs_data: vec![],
+        github_open_pr_task_ids: HashMap::new(),
         pending_task_owners: HashSet::new(),
         tasks_with_open_prs: HashMap::new(),
         pr_task_associations: HashMap::new(),
@@ -1537,6 +1554,7 @@ fn test_cross_case_dedup_prevents_same_coworker_from_case1_and_case2() {
         ci_passed_pr_coworkers: HashSet::new(),
         review_feedback_pr_coworkers: HashSet::new(),
         open_prs_data: vec![],
+        github_open_pr_task_ids: HashMap::new(),
         pending_task_owners: HashSet::new(),
         tasks_with_open_prs: HashMap::new(),
         pr_task_associations: HashMap::new(),
@@ -1636,6 +1654,7 @@ fn test_spawn_for_pending_tasks_skips_via_snapshot_assignment_check() {
         ci_passed_pr_coworkers: HashSet::new(),
         review_feedback_pr_coworkers: HashSet::new(),
         open_prs_data: vec![],
+        github_open_pr_task_ids: HashMap::new(),
         pending_task_owners: HashSet::new(),
         tasks_with_open_prs: HashMap::new(),
         pr_task_associations: HashMap::new(),
@@ -1696,6 +1715,7 @@ fn test_orphan_recovery_reuses_existing_task_worktree() {
         coworkers_with_open_prs: HashSet::new(),
         review_feedback_pr_coworkers: HashSet::new(),
         open_prs_data: vec![],
+        github_open_pr_task_ids: HashMap::new(),
         coworker_stop_times: HashMap::new(),
         attached_coworkers: HashSet::new(),
         tasks_with_worktrees: ["42".to_string()].into_iter().collect(),
@@ -1830,6 +1850,7 @@ fn test_orphan_recovery_creates_new_worktree_when_none_exists() {
         coworkers_with_open_prs: HashSet::new(),
         review_feedback_pr_coworkers: HashSet::new(),
         open_prs_data: vec![],
+        github_open_pr_task_ids: HashMap::new(),
         coworker_stop_times: HashMap::new(),
         attached_coworkers: HashSet::new(),
         tasks_with_worktrees: HashSet::new(), // No worktree registered
@@ -2009,6 +2030,7 @@ fn test_spawn_for_pending_unowned_reuses_existing_worktree() {
         ci_passed_pr_coworkers: HashSet::new(),
         review_feedback_pr_coworkers: HashSet::new(),
         open_prs_data: vec![],
+        github_open_pr_task_ids: HashMap::new(),
         pending_task_owners: HashSet::new(),
         tasks_with_open_prs: HashMap::new(),
         pr_task_associations: HashMap::new(),
@@ -2149,6 +2171,7 @@ fn make_reconcile_snapshot(
         ci_passed_pr_coworkers: HashSet::new(),
         review_feedback_pr_coworkers: HashSet::new(),
         open_prs_data: vec![],
+        github_open_pr_task_ids: HashMap::new(),
         pending_task_owners: HashSet::new(),
         tasks_with_open_prs,
         pr_task_associations: HashMap::new(),
@@ -2660,7 +2683,8 @@ fn test_should_recover_task_skips_completed_tasks() {
             &completed_task,
             &merged_prs,
             std::path::Path::new("."),
-            &tasks_with_open_prs
+            &tasks_with_open_prs,
+            &HashMap::new(),
         ),
         "Should NOT recover a completed task"
     );
@@ -2695,7 +2719,8 @@ fn test_should_recover_task_with_contextual_pr_mention_in_subject() {
             &task,
             &merged_prs,
             std::path::Path::new("."),
-            &tasks_with_open_prs
+            &tasks_with_open_prs,
+            &HashMap::new(),
         ),
         "Should NOT recover a task whose PR is already merged (explicit pr field)"
     );
@@ -2728,9 +2753,152 @@ fn test_should_recover_task_with_contextual_pr_mention_in_description() {
             &task,
             &merged_prs,
             std::path::Path::new("."),
-            &tasks_with_open_prs
+            &tasks_with_open_prs,
+            &HashMap::new(),
         ),
         "Should NOT recover a task whose PR is already merged (explicit pr field)"
+    );
+}
+
+// ============================================================================
+// Pure parsing function tests (no I/O required)
+// ============================================================================
+
+#[test]
+fn test_parse_pr_merged_state_merged() {
+    assert!(super::parse_pr_merged_state("MERGED\n"));
+    assert!(super::parse_pr_merged_state("MERGED"));
+    assert!(super::parse_pr_merged_state("  MERGED  "));
+}
+
+#[test]
+fn test_parse_pr_merged_state_open() {
+    assert!(!super::parse_pr_merged_state("OPEN\n"));
+    assert!(!super::parse_pr_merged_state("OPEN"));
+}
+
+#[test]
+fn test_parse_pr_merged_state_closed() {
+    assert!(!super::parse_pr_merged_state("CLOSED\n"));
+    assert!(!super::parse_pr_merged_state("CLOSED"));
+}
+
+#[test]
+fn test_parse_pr_merged_state_empty() {
+    assert!(!super::parse_pr_merged_state(""));
+    assert!(!super::parse_pr_merged_state("  "));
+}
+
+// ============================================================================
+// github_open_pr_task_ids defense-in-depth tests (snapshot-based, no I/O)
+// ============================================================================
+
+#[test]
+fn test_should_not_recover_task_with_open_pr_via_github_title() {
+    // Scenario: Task !1233 has no pr field, no entry in tasks_with_open_prs,
+    // but there's an open PR #1089 with "[Midtown !1233]" in the title.
+    // The github_open_pr_task_ids snapshot data prevents duplicate recovery.
+    use crate::tasks::{Task, TaskStatus};
+
+    let task = Task {
+        id: "1233".to_string(),
+        subject: "Prevent duplicate work after daemon restarts".to_string(),
+        description: None,
+        status: TaskStatus::InProgress,
+        owner: Some("york".to_string()),
+        blocked_by: vec![],
+        pr: None,
+        channel: None,
+        created_at: None,
+    };
+
+    let merged_prs = HashSet::new();
+    let tasks_with_open_prs = HashMap::new(); // Empty (stale after daemon restart)
+    let mut github_open_pr_task_ids = HashMap::new();
+    github_open_pr_task_ids.insert("1233".to_string(), 1089u64); // PR #1089 has [Midtown !1233]
+
+    let result = should_recover_task(
+        &task,
+        &merged_prs,
+        std::path::Path::new("."),
+        &tasks_with_open_prs,
+        &github_open_pr_task_ids,
+    );
+
+    assert!(
+        !result,
+        "Should NOT recover task when github_open_pr_task_ids shows an open PR for it"
+    );
+}
+
+#[test]
+fn test_should_recover_task_when_github_title_has_no_match() {
+    // Scenario: Task !42 has no PR association anywhere — not in pr field,
+    // not in tasks_with_open_prs, not in github_open_pr_task_ids.
+    use crate::tasks::{Task, TaskStatus};
+
+    let task = Task {
+        id: "42".to_string(),
+        subject: "Add auth endpoint".to_string(),
+        description: None,
+        status: TaskStatus::InProgress,
+        owner: Some("lexington".to_string()),
+        blocked_by: vec![],
+        pr: None,
+        channel: None,
+        created_at: None,
+    };
+
+    let merged_prs = HashSet::new();
+    let tasks_with_open_prs = HashMap::new();
+    let github_open_pr_task_ids = HashMap::new(); // No title matches
+
+    let result = should_recover_task(
+        &task,
+        &merged_prs,
+        std::path::Path::new("."),
+        &tasks_with_open_prs,
+        &github_open_pr_task_ids,
+    );
+
+    assert!(result, "Should recover task when no PR found in any source");
+}
+
+#[test]
+fn test_should_not_recover_task_github_title_takes_precedence_over_no_pr_field() {
+    // Scenario: Task !55 has no pr field (not set yet), tasks_with_open_prs is empty
+    // (stale after restart), but github_open_pr_task_ids has a match.
+    // This is the exact scenario that caused duplicate work after daemon restart.
+    use crate::tasks::{Task, TaskStatus};
+
+    let task = Task {
+        id: "55".to_string(),
+        subject: "Fix flaky tests".to_string(),
+        description: None,
+        status: TaskStatus::InProgress,
+        owner: Some("park".to_string()),
+        blocked_by: vec![],
+        pr: None, // Not set yet — PR was created but task field wasn't updated
+        channel: None,
+        created_at: None,
+    };
+
+    let merged_prs = HashSet::new();
+    let tasks_with_open_prs = HashMap::new(); // Stale after restart
+    let mut github_open_pr_task_ids = HashMap::new();
+    github_open_pr_task_ids.insert("55".to_string(), 200u64);
+
+    let result = should_recover_task(
+        &task,
+        &merged_prs,
+        std::path::Path::new("."),
+        &tasks_with_open_prs,
+        &github_open_pr_task_ids,
+    );
+
+    assert!(
+        !result,
+        "Should NOT recover: github_open_pr_task_ids catches the open PR even when other sources are stale"
     );
 }
 
@@ -2757,7 +2925,8 @@ fn test_should_recover_task_allows_active_in_progress_task() {
             &task,
             &merged_prs,
             std::path::Path::new("."),
-            &tasks_with_open_prs
+            &tasks_with_open_prs,
+            &HashMap::new(),
         ),
         "Should recover an active in-progress task with no merged PR"
     );
@@ -2789,7 +2958,8 @@ fn test_should_recover_task_allows_task_with_unmerged_pr() {
             &task,
             &merged_prs,
             std::path::Path::new("."),
-            &tasks_with_open_prs
+            &tasks_with_open_prs,
+            &HashMap::new(),
         ),
         "Should recover a task whose PR is NOT yet merged (cache miss, API fails)"
     );
@@ -2825,7 +2995,8 @@ fn test_should_recover_task_checks_github_when_cache_stale() {
             &task,
             &merged_prs,
             std::path::Path::new("."),
-            &tasks_with_open_prs
+            &tasks_with_open_prs,
+            &HashMap::new(),
         ),
         "Should recover task with contextual PR mention (no longer checks GitHub API)"
     );
@@ -2855,7 +3026,13 @@ fn test_should_recover_task_with_bare_hash_pr_reference() {
 
     // With explicit PR associations: should NOT recover because task.pr = Some(904) and PR #904 is merged
     assert!(
-        !should_recover_task(&task, &merged_prs, repo_path, &tasks_with_open_prs),
+        !should_recover_task(
+            &task,
+            &merged_prs,
+            repo_path,
+            &tasks_with_open_prs,
+            &HashMap::new()
+        ),
         "Should NOT recover a task whose PR (#904) is already merged (explicit pr field)"
     );
 }
@@ -2884,7 +3061,13 @@ fn test_should_recover_task_recovers_multi_pr_with_only_some_merged() {
     let repo_path = std::path::Path::new("/tmp/test-repo");
     let tasks_with_open_prs = HashMap::new();
     assert!(
-        should_recover_task(&task, &merged_prs, repo_path, &tasks_with_open_prs),
+        should_recover_task(
+            &task,
+            &merged_prs,
+            repo_path,
+            &tasks_with_open_prs,
+            &HashMap::new()
+        ),
         "Should recover task with multi-PR reference where only SOME PRs are merged"
     );
 }
@@ -2916,7 +3099,13 @@ fn test_should_recover_task_with_multi_pr_when_all_merged() {
 
     // New behavior: SHOULD recover because pr field is None (contextual mentions only)
     assert!(
-        should_recover_task(&task, &merged_prs, repo_path, &tasks_with_open_prs),
+        should_recover_task(
+            &task,
+            &merged_prs,
+            repo_path,
+            &tasks_with_open_prs,
+            &HashMap::new()
+        ),
         "Should recover task with no explicit pr field (auto-completion will handle cleanup)"
     );
 }
@@ -2947,7 +3136,13 @@ fn test_should_recover_task_with_pr_in_subject_only() {
 
     // New behavior: SHOULD recover because pr field is None (contextual mentions only)
     assert!(
-        should_recover_task(&task, &merged_prs, repo_path, &tasks_with_open_prs),
+        should_recover_task(
+            &task,
+            &merged_prs,
+            repo_path,
+            &tasks_with_open_prs,
+            &HashMap::new()
+        ),
         "Should recover task with no explicit pr field (auto-completion will handle cleanup)"
     );
 }
@@ -3002,6 +3197,7 @@ fn test_spawn_extracts_model_alias_from_provider_model_format() {
         ci_passed_pr_coworkers: HashSet::new(),
         review_feedback_pr_coworkers: HashSet::new(),
         open_prs_data: vec![],
+        github_open_pr_task_ids: HashMap::new(),
         pending_task_owners: HashSet::new(),
         tasks_with_open_prs: HashMap::new(),
         pr_task_associations: HashMap::new(),
