@@ -2058,6 +2058,37 @@ async fn collect_reviewer_effects_with_source(
             }
         }
 
+        // Skip orphaned PRs (PRs whose author has no active worktree or can't be determined).
+        // These should not get auto-review spawned since the author can't address feedback.
+        // The main PR loop already posts warnings for orphaned PRs with critical issues.
+        let head_ref = pr.get("headRefName").and_then(|s| s.as_str()).unwrap_or("");
+        let owner_opt = coworker_from_branch_with_map(head_ref, branch_owners_map);
+
+        // If we can't determine an owner, skip auto-review
+        let owner = match owner_opt {
+            Some(o) => o,
+            None => {
+                debug!(
+                    "PR #{} has no determinable owner (branch: {}), skipping auto-review",
+                    pr_number, head_ref
+                );
+                continue;
+            }
+        };
+
+        // Check if this owner has an active worktree (i.e., is actually working)
+        let has_active_worktree = branch_owners_map
+            .map(|map| map.values().any(|o| o == &owner))
+            .unwrap_or(false);
+
+        if !has_active_worktree {
+            debug!(
+                "PR #{} is orphaned (owner {} has no active worktree), skipping auto-review",
+                pr_number, owner
+            );
+            continue;
+        }
+
         let title = pr.get("title").and_then(|s| s.as_str()).unwrap_or("");
         debug!(
             "Spawning isolated coworker to review PR #{}: {}",

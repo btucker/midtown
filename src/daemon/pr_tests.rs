@@ -223,9 +223,6 @@ async fn test_orphaned_pr_with_merge_conflict_is_ignored() {
         );
     }
 
-    // Drop the lock before async calls to avoid holding it across await points
-    drop(_path_guard);
-
     // Create a minimal snapshot with NO active coworkers (york is on break)
     // and NO worktree_branch_owners entry for york/fix-auth (the key part!)
     let snap = minimal_snapshot_for_test();
@@ -234,13 +231,14 @@ async fn test_orphaned_pr_with_merge_conflict_is_ignored() {
     // Create minimal daemon state
     let state = make_test_state("test-repo");
 
-    // Call poll_prs_for_issues
+    // Call poll_prs_for_issues (keep PATH_LOCK held to prevent test interference)
     let result = poll_prs_for_issues(&snap, &state).await;
 
-    // Restore PATH (lock will be released when _path_guard drops)
+    // Restore PATH and release lock
     unsafe {
         std::env::set_var("PATH", original_path);
     }
+    drop(_path_guard);
 
     // Check if we got an error (gh command not working)
     if let Err(e) = &result {
