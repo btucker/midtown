@@ -18,23 +18,29 @@ pub struct DashboardState {
 }
 
 /// Summary of a task for the plugin sidebar.
+///
+/// Field names match the canonical `Task` type in `src/tasks.rs`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskSummary {
     pub id: String,
-    pub title: String,
+    pub subject: String,
     pub status: String,
-    pub assignee: Option<String>,
+    pub owner: Option<String>,
     pub pr_number: Option<u64>,
     pub pr_status: Option<String>,
 }
 
 /// Summary of a coworker for the plugin sidebar.
+///
+/// Field names match the canonical `Coworker` type in `src/coworker.rs`
+/// and `CoworkerStatusData` in `src/web.rs`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CoworkerSummary {
     pub name: String,
     pub status: String,
-    pub task_id: Option<String>,
+    pub current_task: Option<String>,
     pub session_id: Option<String>,
+    pub model: String,
     pub is_alive: bool,
     pub has_usage_limit: bool,
     pub has_api_error: bool,
@@ -42,9 +48,11 @@ pub struct CoworkerSummary {
 }
 
 /// A channel message for the plugin channel view.
+///
+/// Field names match the canonical `Message` type in `src/message.rs`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChannelMessage {
-    pub sender: String,
+    pub from: String,
     pub content: String,
     pub timestamp: DateTime<Utc>,
     pub message_type: String,

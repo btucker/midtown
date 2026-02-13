@@ -23,7 +23,7 @@ jobs:
 
       - name: Verify version matches release tag
         run: |
-          CARGO_VERSION=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
+          CARGO_VERSION=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "midtown") | .version')
           RELEASE_TAG="${{ github.event.release.tag_name }}"
           # Strip 'v' prefix if present
           RELEASE_VERSION="${RELEASE_TAG#v}"

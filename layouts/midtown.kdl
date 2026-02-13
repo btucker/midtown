@@ -4,9 +4,10 @@ layout {
         plugin location="file:~/.midtown/plugins/midtown_zellij_plugin.wasm"
     }
     // Channel pane (terminal running midtown chat)
+    // TODO(zellij-migration): Replace --tmux-embedded with --embedded flag once implemented
     pane size="25%" {
         command "midtown"
-        args "chat" "--tmux-embedded"
+        args "chat"
     }
     // Lead / Coworker pane (primary workspace)
     pane size="50%" focus=true
