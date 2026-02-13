@@ -19,7 +19,12 @@
   // Using SvelteSet for reactivity — plain Set mutations don't trigger re-renders in Svelte 5
   let expandedChannels = new SvelteSet()
 
-  async function selectChannel(channelName) {
+  function selectChannel(channelName) {
+    // Switch channel immediately for instant UI response (non-blocking).
+    // Previously this was async and awaited fetchHistory, which blocked the UI
+    // until the network request completed (~100-500ms), making channel switching
+    // feel sluggish on desktop. Now the channel switches instantly and messages
+    // appear when the fetch completes.
     activeChannel.set(channelName)
 
     // Clear unread count for this channel
@@ -27,10 +32,10 @@
       channelList.map((ch) => (ch.name === channelName ? { ...ch, unread: 0 } : ch))
     )
 
-    // Load messages for this channel if we haven't fetched them yet
+    // Load messages for this channel if we haven't fetched them yet (non-blocking)
     const currentMessages = $messagesByChannel[channelName]
     if (!currentMessages || currentMessages.length === 0) {
-      await fetchHistory(channelName)
+      fetchHistory(channelName) // Fire-and-forget - Channel.svelte will show empty state briefly
     }
   }
 
