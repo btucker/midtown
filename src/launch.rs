@@ -256,6 +256,13 @@ impl LaunchConfig {
         let mut env = std::collections::HashMap::new();
         env.insert("MIDTOWN_AGENT".to_string(), self.name.clone());
 
+        // Set CARGO_HOME to a sandbox-writable path to avoid permission errors.
+        // Cargo's default ~/.cargo/registry/src/ isn't writable in the sandbox,
+        // but ~/.midtown/ is (see sandbox.rs writable_dirs).
+        let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/root"));
+        let cargo_home = home.join(".midtown/cargo");
+        env.insert("CARGO_HOME".to_string(), cargo_home.to_string_lossy().to_string());
+
         // Set auth-provider-specific env vars
         let config_dir = self
             .auth_profile_dir
@@ -334,9 +341,16 @@ impl LaunchConfig {
         primary_repo: &std::path::Path,
     ) -> LaunchCommand {
         // -- Environment variables --
+        // Set CARGO_HOME to a sandbox-writable path to avoid permission errors.
+        // Cargo's default ~/.cargo/registry/src/ isn't writable in the sandbox,
+        // but ~/.midtown/ is (see sandbox.rs writable_dirs).
+        let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/root"));
+        let cargo_home = home.join(".midtown/cargo");
+
         let mut env_parts = vec![
             format!("MIDTOWN_AGENT='{}'", self.name),
             "DISABLE_AUTOUPDATER=1".to_string(),
+            format!("CARGO_HOME='{}'", cargo_home.display()),
         ];
 
         // Set auth-provider-specific env vars
@@ -527,6 +541,10 @@ fn parse_task_model(full_model: &str) -> Option<(crate::auth::AuthProvider, &str
     let provider = provider_str.parse::<crate::auth::AuthProvider>().ok()?;
     Some((provider, model_alias))
 }
+
+#[path = "launch_tests.rs"]
+#[cfg(test)]
+mod launch_tests;
 
 #[cfg(test)]
 mod tests {
