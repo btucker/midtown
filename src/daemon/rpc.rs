@@ -379,6 +379,8 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
             let channel = params.str_param("channel");
             let model = params.str_param("model");
             let pr = params.u64_param("pr");
+            let plan = params.str_param("plan");
+            let execution_skill = params.str_param("execution_skill");
             super::rpc_task::handle_task_create(
                 request.id,
                 subject,
@@ -387,6 +389,8 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
                 channel,
                 model,
                 pr,
+                plan,
+                execution_skill,
                 state,
             )
             .await

@@ -338,6 +338,8 @@ pub(super) async fn handle_task_create(
     channel: Option<&str>,
     model: Option<&str>,
     pr: Option<u64>,
+    plan: Option<&str>,
+    execution_skill: Option<&str>,
     state: &DaemonState,
 ) -> Response {
     let repo_name = state.repo_name.clone();
@@ -420,6 +422,25 @@ pub(super) async fn handle_task_create(
                 // Model format validation failed - return error
                 return Response::error(id, RpcError::new(-32602, e));
             }
+        }
+    }
+
+    // Apply plan and execution_skill mappings if provided (stored in daemon state,
+    // NOT in task JSON, to keep task JSON compatible with Claude Code's native format)
+    {
+        let mut ps = state.persistent_state.lock().await;
+        let mut changed = false;
+        if let Some(plan_path) = plan {
+            ps.task_plan.insert(task_id.clone(), plan_path.to_string());
+            changed = true;
+        }
+        if let Some(skill) = execution_skill {
+            ps.task_execution_skill
+                .insert(task_id.clone(), skill.to_string());
+            changed = true;
+        }
+        if changed && let Err(e) = ps.save_for_repo(&repo_name) {
+            warn!("Failed to save task plan/execution_skill mapping: {}", e);
         }
     }
 
@@ -589,12 +610,16 @@ pub(super) async fn handle_task_metadata(
     let ps = state.persistent_state.lock().await;
     let channel = ps.task_channel.get(task_id).cloned();
     let model = ps.task_model.get(task_id).cloned();
+    let plan = ps.task_plan.get(task_id).cloned();
+    let execution_skill = ps.task_execution_skill.get(task_id).cloned();
 
     Response::success(
         id,
         serde_json::json!({
             "channel": channel,
             "model": model,
+            "plan": plan,
+            "execution_skill": execution_skill,
         }),
     )
 }

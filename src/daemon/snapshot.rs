@@ -148,6 +148,17 @@ pub struct WorldSnapshot {
     /// for a task. Stored in DaemonPersistentState and loaded here for decision functions.
     #[serde(default)]
     pub task_model_map: HashMap<String, String>,
+    /// Task-to-plan mapping for plan-driven execution.
+    /// Maps task ID → absolute path to a plan file. Used by dispatch.rs to include
+    /// plan content in the coworker's initial prompt when spawning for a task with a plan.
+    #[serde(default)]
+    pub task_plan_map: HashMap<String, String>,
+    /// Task-to-execution-skill mapping for plan-driven execution.
+    /// Maps task ID → skill name (e.g., "subagent-driven-development", "executing-plans").
+    /// Used by dispatch.rs to include an explicit skill instruction in the coworker's
+    /// initial prompt when spawning for a task with an execution skill.
+    #[serde(default)]
+    pub task_execution_skill_map: HashMap<String, String>,
 
     // ── PR / GitHub state ───────────────────────────────────────────────
     /// Coworkers who have at least one open PR.
@@ -427,10 +438,15 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
     let pending_tasks_with_owners = crate::tasks::get_pending_tasks_with_owners();
     let pending_tasks_without_owners = crate::tasks::get_pending_tasks_without_owners();
 
-    // Task-to-channel and task-to-model mappings from persistent state
-    let (task_channel, task_model_map) = {
+    // Task-to-channel, task-to-model, task-to-plan, and task-to-execution-skill mappings
+    let (task_channel, task_model_map, task_plan_map, task_execution_skill_map) = {
         let ps = state.persistent_state.lock().await;
-        (ps.task_channel.clone(), ps.task_model.clone())
+        (
+            ps.task_channel.clone(),
+            ps.task_model.clone(),
+            ps.task_plan.clone(),
+            ps.task_execution_skill.clone(),
+        )
     };
 
     // ── PR / GitHub state ───────────────────────────────────────────────
@@ -673,6 +689,8 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
         pending_tasks_without_owners,
         task_channel,
         task_model_map,
+        task_plan_map,
+        task_execution_skill_map,
         coworkers_with_open_prs,
         coworkers_with_merged_prs,
         merged_pr_numbers,
@@ -745,6 +763,8 @@ pub(super) fn minimal_snapshot_for_test() -> WorldSnapshot {
         pending_tasks_without_owners: vec![],
         task_channel: HashMap::new(),
         task_model_map: HashMap::new(),
+        task_plan_map: HashMap::new(),
+        task_execution_skill_map: HashMap::new(),
         coworkers_with_open_prs: HashSet::new(),
         coworkers_with_merged_prs: HashSet::new(),
         merged_pr_numbers: HashSet::new(),

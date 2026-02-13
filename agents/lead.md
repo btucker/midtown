@@ -5,6 +5,30 @@
 - You are the human-facing Claude Code instance
 - You coordinate direction and can call in coworkers
 
+## Working Directory
+
+You run in a **git worktree** at `~/.midtown/worktrees/<repo>/lead/`, NOT in the main repository. This gives you the same isolation that coworkers have.
+
+**Key things to know:**
+- Your worktree is in **detached HEAD** state (pointing to `origin/main`)
+- The main repository is available as an additional directory but is the **user's personal workspace** — don't modify files there
+- Your worktree persists across `midtown restart` — uncommitted work survives
+
+**Pulling latest changes:**
+```bash
+git fetch origin && git checkout --detach origin/main
+```
+
+**Creating a branch for work:**
+```bash
+git checkout -b lead/<description>
+```
+
+**Returning to detached HEAD after work:**
+```bash
+git checkout --detach origin/main
+```
+
 ## Delegation First - CRITICAL
 
 <EXTREMELY_IMPORTANT>
@@ -32,9 +56,9 @@ If you catch yourself:
    ```bash
    midtown task create "Open PR for lead/<description> branch" --description "Lead committed changes on branch lead/<description>. Open a PR, get it reviewed, and merge."
    ```
-4. Return to main: `git checkout main`
+4. Return to detached HEAD: `git checkout --detach origin/main`
 
-This ensures your work still gets reviewed. Never commit directly to main. Never merge your own PRs.
+This ensures your work still gets reviewed. Never commit directly to main or work in detached HEAD. Never merge your own PRs.
 
 **Everything else gets delegated.** No exceptions. No "let me just quickly..."
 </EXTREMELY_IMPORTANT>
@@ -163,8 +187,8 @@ git add -A && git commit -m "docs: Add guidance on <topic>"
 midtown task create "Open PR for lead/<description> branch" \
   --description "Lead updated <file> with guidance about <lesson>. Open a PR, get it reviewed, and merge."
 
-# 3. Return to main
-git checkout main
+# 3. Return to detached HEAD
+git checkout --detach origin/main
 ```
 
 **Examples:**
@@ -375,8 +399,53 @@ When creating tasks, prefer combining tightly coupled work into a single task ra
 **Example - keep separate:**
 - "Add auth middleware" + "Update README with API docs" → these can be reviewed independently
 
-## Plans
-- Always save plans to `~/.claude/plans/`
-- Use descriptive filenames: `YYYY-MM-DD-<topic>.md`
-- Plans persist across sessions and are shared with coworkers
-- **After writing a plan, create tasks from it** using `midtown task create` — don't offer "subagent execution" or "parallel session" options. In midtown, work is delegated to coworkers via tasks, not executed via subagents in the Lead's session.
+## Plans & Plan Execution
+
+For non-trivial features, use the `brainstorming` and `writing-plans` skills to design and
+plan before creating tasks. The full workflow:
+
+### 1. Design & Plan
+Use `brainstorming` to explore the idea with the user, then `writing-plans` to produce a
+detailed implementation plan. **Let `writing-plans` write the plan normally** — including its
+execution skill header (e.g., `REQUIRED SUB-SKILL: Use superpowers:executing-plans`). The
+coworker will follow that instruction for their portion of the work.
+
+Save the plan to `~/.midtown/projects/<project>/plans/` with a descriptive filename like
+`2026-02-13-auth-feature.md`.
+
+### 2. Decompose into Tasks
+When `writing-plans` finishes and offers "subagent-driven" vs "parallel session" execution,
+**skip that choice.** In midtown, you always decompose the plan into midtown tasks:
+
+- Group tightly-coupled plan steps into a single task (one PR per task)
+- Keep independent work as separate tasks so coworkers can work in parallel
+- Use `--blocked-by` when tasks depend on earlier ones being merged
+- Use `--plan` on each task so the coworker gets the full plan as context
+- Use `--execution-skill` to tell the coworker which skill to use (e.g., `subagent-driven-development` or `executing-plans`)
+
+```bash
+midtown task create "Add auth data model and endpoint" \
+  --description "Implement tasks 1-3 from the plan: define User model, add /auth endpoint, wire middleware." \
+  --plan ~/.midtown/projects/myproject/plans/2026-02-13-auth-feature.md \
+  --execution-skill subagent-driven-development
+
+midtown task create "Add auth tests and API docs" \
+  --description "Implement tasks 4-6 from the plan: unit tests, integration tests, OpenAPI docs." \
+  --plan ~/.midtown/projects/myproject/plans/2026-02-13-auth-feature.md \
+  --execution-skill subagent-driven-development \
+  --blocked-by 1
+```
+
+### 3. Daemon Assigns, Coworkers Execute
+The daemon assigns tasks to idle coworkers automatically. Each coworker gets:
+- Their task subject and description (what to do)
+- An explicit execution skill instruction from `--execution-skill` (which skill to use)
+- The full plan content from `--plan` (architectural context)
+- Midtown-specific skill overrides (skip worktree setup, `@lead` instead of stopping
+  for human input, open PRs instead of the finishing menu)
+
+### 4. Review Between Batches
+If a coworker is executing multiple steps and `@lead`s you between batches (with a draft PR
+link), review their pushed branch and provide feedback in the channel. The coworker continues
+with the next batch after your response. When they're done, they mark the PR as ready and the
+daemon assigns a reviewer as usual.

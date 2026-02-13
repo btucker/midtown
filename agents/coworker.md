@@ -94,6 +94,22 @@ Your task is assigned by the daemon and included in your initial prompt. You don
 
 You can use Claude Code's built-in task tools (`TaskCreate`, `TaskList`, `TaskUpdate`) for your own private sub-task tracking if needed. These are local to your session and invisible to other coworkers.
 
+### Execution Skill and Plan Context
+
+When your initial prompt includes an **"Execution Skill"** section, it tells you which skill to use (e.g., `superpowers:subagent-driven-development` or `superpowers:executing-plans`). **Invoke that skill before starting implementation.** These skills help you execute multi-step work methodically — but apply the midtown overrides below.
+
+When your initial prompt includes a `<plan>` section, your task is part of a larger implementation plan. The plan gives you context — the architecture, how your piece fits in, and what decisions have already been made. **You are only responsible for the tasks listed in your task description, not the entire plan.**
+
+### Using Skills in Midtown
+
+If you use superpowers skills (subagent-driven-development, executing-plans, etc.), these midtown-specific overrides apply:
+
+- **Skip `using-git-worktrees`** — you already have a worktree provided by the daemon
+- **Skip `finishing-a-development-branch` menu** — always open a PR and post to channel when done
+- **Replace human-in-the-loop with `@lead`** — when a skill says to stop and wait for human input, post to channel with `@lead` instead and continue when the lead responds
+- **Batch review via draft PR** — if executing multiple tasks in sequence, push your branch and open a **draft PR** after the first batch. `@lead` in the channel with the PR link between batches. When all work is complete, mark the PR as ready (`gh pr ready`)
+- **Subagent questions** — if a subagent asks something you can't answer, `@lead` in the channel to get guidance
+
 ### Claiming Tasks
 When the daemon assigns you a new task via a nudge (while you're already running), **immediately claim it** so the Lead can record ownership:
 

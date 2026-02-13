@@ -1615,17 +1615,10 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
         }
     }
 
-    // Remove existing socket file if present
-    if config.socket_path.exists() {
-        std::fs::remove_file(&config.socket_path)?;
-    }
-
-    // Bind to Unix socket
-    let listener = UnixListener::bind(&config.socket_path)?;
-    info!("Listening on {}", config.socket_path.display());
-
     // Create worktree manager and coworker manager early so they can be
-    // shared with the web server (for the /api/status endpoint)
+    // shared with the web server (for the /api/status endpoint).
+    // Worktree initialization happens BEFORE socket binding so the daemon is
+    // fully ready when clients can connect (tests rely on this ordering).
     let session_name = format!("midtown-{}", project_name);
 
     // Build list of all repo paths for multi-repo PR fetching.
@@ -1646,23 +1639,50 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
     // Capture lead-specific values for health monitoring in the main loop.
     // These are cloned here because session_name is moved into CoworkerManager.
     let lead_session_name = session_name.clone();
-    let lead_workdir = config.workdir.clone();
-    let lead_project_name = project_name.clone();
-    let lead_additional_dirs: Vec<PathBuf> = all_repo_paths
-        .iter()
-        .filter(|p| **p != config.workdir)
-        .cloned()
-        .collect();
-
     let worktree_manager =
         WorktreeManager::new(config.workdir.clone()).map_err(|e| crate::Error::Rpc {
             code: -32603,
             message: format!("Failed to initialize worktree manager: {}", e),
         })?;
 
+    // Create the lead worktree (or reuse existing one)
+    let lead_workdir = match worktree_manager.create_lead_worktree() {
+        Ok(path) => {
+            info!("Lead worktree ready at {}", path.display());
+            path
+        }
+        Err(e) => {
+            warn!(
+                "Failed to create lead worktree, falling back to main repo: {}",
+                e
+            );
+            config.workdir.clone()
+        }
+    };
+    let lead_project_name = project_name.clone();
+    // Include the main repo as an additional dir so the lead can reference it.
+    // Also include any other repos from the project config.
+    let lead_additional_dirs: Vec<PathBuf> = {
+        let mut dirs = vec![config.workdir.clone()];
+        for path in &all_repo_paths {
+            if *path != config.workdir && *path != lead_workdir {
+                dirs.push(path.clone());
+            }
+        }
+        dirs
+    };
+
     // For multi-repo projects, create worktree managers for additional repos
     let additional_worktree_managers =
         load_additional_worktree_managers(full_project_config.as_ref(), &config);
+
+    // Bind socket AFTER all initialization is complete so clients (and tests)
+    // can assume the daemon is fully ready when the socket becomes connectable.
+    if config.socket_path.exists() {
+        std::fs::remove_file(&config.socket_path)?;
+    }
+    let listener = UnixListener::bind(&config.socket_path)?;
+    info!("Listening on {}", config.socket_path.display());
     let coworker_manager = CoworkerManager::with_additional_repos(
         session_name,
         worktree_manager,

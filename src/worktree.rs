@@ -170,6 +170,78 @@ impl WorktreeManager {
         Ok(worktree_path)
     }
 
+    /// Create or reuse the lead's persistent worktree.
+    ///
+    /// The lead worktree lives at `~/.midtown/worktrees/<repo>/lead/` and uses
+    /// detached HEAD (same as coworkers). Unlike task worktrees, this does NOT
+    /// create a branch — the lead creates branches as needed for work.
+    ///
+    /// Idempotent: returns the existing path if the worktree already exists.
+    pub fn create_lead_worktree(&self) -> WorktreeResult<PathBuf> {
+        let worktree_path = self.task_worktrees_base.join("lead");
+
+        // Check if worktree already exists and is valid (idempotent)
+        if worktree_path.exists() && self.is_worktree_registered(&worktree_path) {
+            return Ok(worktree_path);
+        }
+
+        // Path exists but not registered with git — remove it first
+        if worktree_path.exists() {
+            let _ = std::fs::remove_dir_all(&worktree_path);
+        }
+
+        // Ensure parent directory exists
+        if let Some(parent) = worktree_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        // Create the worktree detached at HEAD
+        let output = Command::new("git")
+            .current_dir(&self.repo_root)
+            .args([
+                "worktree",
+                "add",
+                "--detach",
+                worktree_path.to_str().unwrap(),
+            ])
+            .output()?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+            // Stale reference — prune and retry once
+            if !worktree_path.exists() {
+                tracing::warn!(
+                    "git worktree add for lead failed ({}), pruning and retrying",
+                    stderr.trim()
+                );
+                let _ = self.prune();
+
+                let retry = Command::new("git")
+                    .current_dir(&self.repo_root)
+                    .args([
+                        "worktree",
+                        "add",
+                        "--detach",
+                        worktree_path.to_str().unwrap(),
+                    ])
+                    .output()?;
+
+                if !retry.status.success() {
+                    return Err(WorktreeError::GitError(
+                        String::from_utf8_lossy(&retry.stderr).to_string(),
+                    ));
+                }
+
+                return Ok(worktree_path);
+            }
+
+            return Err(WorktreeError::GitError(stderr));
+        }
+
+        Ok(worktree_path)
+    }
+
     /// Remove a coworker's worktree.
     ///
     /// If `force` is true, removes the worktree even if it has uncommitted changes.
@@ -2337,6 +2409,44 @@ branch refs/heads/bob/work
             manager.repo_name(),
             expected_name,
             "regular repo should detect correct name"
+        );
+    }
+
+    #[test]
+    fn test_create_lead_worktree() {
+        let (manager, _temp_dir) = create_test_repo();
+
+        // First call creates the worktree
+        let path = manager
+            .create_lead_worktree()
+            .expect("create lead worktree");
+        assert!(path.exists());
+        assert!(path.ends_with("lead"));
+        assert!(manager.is_worktree_registered(&path));
+
+        // Second call is idempotent — returns same path
+        let path2 = manager
+            .create_lead_worktree()
+            .expect("create lead worktree again");
+        assert_eq!(path, path2);
+    }
+
+    #[test]
+    fn test_create_lead_worktree_is_detached() {
+        let (manager, _temp_dir) = create_test_repo();
+        let path = manager
+            .create_lead_worktree()
+            .expect("create lead worktree");
+
+        // Verify it's in detached HEAD state (not on a branch)
+        let output = TestCommand::new("git")
+            .current_dir(&path)
+            .args(["symbolic-ref", "HEAD"])
+            .output()
+            .expect("git symbolic-ref");
+        assert!(
+            !output.status.success(),
+            "Lead worktree should be in detached HEAD, not on a branch"
         );
     }
 }

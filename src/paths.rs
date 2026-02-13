@@ -193,6 +193,13 @@ pub fn worktrees_dir_for_repo(repo: &str) -> PathBuf {
     midtown_base_dir().join("worktrees").join(repo)
 }
 
+/// Get the lead worktree path for a specific repository.
+///
+/// Returns `~/.midtown/worktrees/<repo>/lead/`.
+pub fn lead_worktree_path(repo: &str) -> PathBuf {
+    worktrees_dir_for_repo(repo).join("lead")
+}
+
 /// Get the lead directory for a specific repository.
 ///
 /// Returns `~/.midtown/lead/<repo>/`.
@@ -664,6 +671,13 @@ mod tests {
             tmp_file.exists(),
             "temp file should be leaked when cleanup fails"
         );
+    }
+
+    #[test]
+    fn test_lead_worktree_path() {
+        let path = lead_worktree_path("myrepo");
+        assert!(path.ends_with("worktrees/myrepo/lead"));
+        assert_eq!(path, worktrees_dir_for_repo("myrepo").join("lead"));
     }
 
     #[test]
