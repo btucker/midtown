@@ -4,15 +4,15 @@
 </script>
 
 {#if $usageData && $usageData.length > 0}
-  <div class="usage-container">
+  <div class="py-2.5 px-3 border-t border-[#3a3a3a]">
     {#each $usageData as account, index}
       {@const label = account.account_email
         ? `${account.provider.toUpperCase()} (${account.account_email})`
         : `${account.provider.toUpperCase()} (${account.profile})`
       }
 
-      <div class="account-section" class:not-first={index > 0}>
-        <div class="usage-header">{label}</div>
+      <div class="mt-0 first:mt-0 first:pt-0 first:border-t-0 {index > 0 ? 'mt-3 pt-3 border-t border-[#2a2a2a]' : ''}">
+        <div class="text-[0.7rem] text-[#7ec4cf] mb-2 truncate">{label}</div>
 
         {#if account.session_resets || account.week_resets}
           {#each [
@@ -24,115 +24,32 @@
             {@const estimate = estimateTimeToFull(bar.util, bar.resets, bar.isSession)}
             {@const resetText = formatResetTime(bar.resets, bar.isSession)}
 
-            <div class="usage-row">
-              <span class="usage-label">{bar.label}</span>
-              <div class="bar-track">
+            <div class="flex items-center gap-1.5">
+              <span class="text-[0.7rem] text-[#585858] min-w-[42px]">{bar.label}</span>
+              <div class="flex-1 h-1.5 bg-[#303030] rounded overflow-hidden">
                 <div
-                  class="bar-fill"
+                  class="h-full rounded transition-all duration-500 ease-in-out"
                   style="width: {Math.min(bar.util, 100)}%; background: {color}"
                 ></div>
               </div>
-              <span class="usage-pct" style="color: {color}">{pct}%</span>
+              <span class="text-[0.7rem] min-w-[28px] text-right tabular-nums" style="color: {color}">{pct}%</span>
             </div>
-            <div class="usage-detail">
+            <div class="flex gap-2 text-[0.65rem] text-[#484848] pl-12 mb-1">
               {#if estimate}
-                <span class="usage-estimate">{estimate}</span>
+                <span class="text-[#585858]">{estimate}</span>
               {/if}
-              <span class="usage-reset">resets {resetText}</span>
+              <span>resets {resetText}</span>
             </div>
           {/each}
         {:else}
-          <div class="no-usage">No usage data available</div>
+          <div class="text-[0.7rem] text-[#484848] py-1">No usage data available</div>
         {/if}
       </div>
     {/each}
   </div>
 {:else}
-  <div class="usage-container">
-    <div class="usage-header">Usage</div>
-    <div class="usage-placeholder">Loading...</div>
+  <div class="py-2.5 px-3 border-t border-[#3a3a3a]">
+    <div class="text-[0.7rem] text-[#7ec4cf] mb-2">Usage</div>
+    <div class="text-[0.7rem] text-[#484848]">Loading...</div>
   </div>
 {/if}
-
-<style>
-  .usage-container {
-    padding: 10px 12px;
-    border-top: 1px solid #3a3a3a;
-  }
-
-  .account-section {
-    margin-bottom: 0;
-  }
-
-  .account-section.not-first {
-    margin-top: 12px;
-    padding-top: 12px;
-    border-top: 1px solid #2a2a2a;
-  }
-
-  .usage-header {
-    font-size: 0.7rem;
-    color: #7ec4cf;
-    margin-bottom: 8px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .usage-row {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-  }
-
-  .usage-label {
-    font-size: 0.7rem;
-    color: #585858;
-    min-width: 42px;
-  }
-
-  .bar-track {
-    flex: 1;
-    height: 6px;
-    background: #303030;
-    border-radius: 3px;
-    overflow: hidden;
-  }
-
-  .bar-fill {
-    height: 100%;
-    border-radius: 3px;
-    transition: width 0.5s ease, background 0.5s ease;
-  }
-
-  .usage-pct {
-    font-size: 0.7rem;
-    min-width: 28px;
-    text-align: right;
-    font-variant-numeric: tabular-nums;
-  }
-
-  .usage-detail {
-    display: flex;
-    gap: 8px;
-    font-size: 0.65rem;
-    color: #484848;
-    padding-left: 48px;
-    margin-bottom: 4px;
-  }
-
-  .usage-estimate {
-    color: #585858;
-  }
-
-  .no-usage {
-    font-size: 0.7rem;
-    color: #484848;
-    padding: 4px 0;
-  }
-
-  .usage-placeholder {
-    font-size: 0.7rem;
-    color: #484848;
-  }
-</style>
