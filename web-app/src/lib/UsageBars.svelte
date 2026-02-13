@@ -4,7 +4,7 @@
 </script>
 
 {#if $usageData && $usageData.length > 0}
-  <div class="py-2.5 px-3 border-t border-[#3a3a3a]">
+  <div class="px-3 py-1">
     {#each $usageData as account, index}
       {@const label = account.account_email
         ? `${account.provider.toUpperCase()} (${account.account_email})`
@@ -48,7 +48,7 @@
     {/each}
   </div>
 {:else}
-  <div class="py-2.5 px-3 border-t border-[#3a3a3a]">
+  <div class="px-3 py-1">
     <div class="text-[0.7rem] text-[#7ec4cf] mb-2">Usage</div>
     <div class="text-[0.7rem] text-[#484848]">Loading...</div>
   </div>

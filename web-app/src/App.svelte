@@ -16,6 +16,7 @@
     pushSupported,
     pushPermission,
     pushSubscribed,
+    pushError,
     subscribePush,
     unsubscribePush,
     checkPushSubscription,
@@ -96,6 +97,14 @@
     }
   }
 
+  // Auto-clear push errors after 5 seconds
+  $effect(() => {
+    if ($pushError) {
+      const timeout = setTimeout(() => pushError.set(null), 5000)
+      return () => clearTimeout(timeout)
+    }
+  })
+
   function closeDetailPanel() {
     detailPanelData.set(null)
   }
@@ -105,13 +114,13 @@
   <title>Midtown</title>
 </svelte:head>
 
-<div class="app-container flex h-screen w-screen overflow-hidden bg-slate-900 text-slate-200">
+<div class="app-container flex absolute inset-0 overflow-hidden bg-background text-foreground">
   {#if $activeProject}
     <SidebarProvider>
-      <Sidebar class="bg-slate-950 border-r-2 border-slate-800">
-        <SidebarHeader class="p-3 border-b border-slate-800">
+      <Sidebar>
+        <SidebarHeader class="p-3 pt-[calc(0.75rem+env(safe-area-inset-top))] border-b border-sidebar-border">
           <div class="header-left">
-            <img src="/logo.png" alt="Midtown" class="header-logo" />
+            <img src="/logo.png" alt="Midtown" class="header-logo hidden md:block" />
             {#if $projects.length > 0}
               <div class="project-selector">
                 <button class="project-trigger" onclick={toggleProjectDropdown}>
@@ -147,20 +156,25 @@
           <div class="header-controls">
             <AuthSwitcher />
             {#if $pushSupported}
-              <button
-                class="push-toggle"
-                class:subscribed={$pushSubscribed}
-                class:denied={$pushPermission === 'denied'}
-                onclick={togglePush}
-                disabled={$pushPermission === 'denied'}
-                title={$pushPermission === 'denied'
-                  ? 'Notifications blocked in browser settings'
-                  : $pushSubscribed
-                    ? 'Disable push notifications'
-                    : 'Enable push notifications'}
-              >
-                {$pushSubscribed ? '\u{1F514}' : '\u{1F515}'}
-              </button>
+              <div class="push-wrapper">
+                <button
+                  class="push-toggle"
+                  class:subscribed={$pushSubscribed}
+                  class:denied={$pushPermission === 'denied'}
+                  onclick={togglePush}
+                  disabled={$pushPermission === 'denied'}
+                  title={$pushPermission === 'denied'
+                    ? 'Notifications blocked in browser settings'
+                    : $pushSubscribed
+                      ? 'Disable push notifications'
+                      : 'Enable push notifications'}
+                >
+                  {$pushSubscribed ? '\u{1F514}' : '\u{1F515}'}
+                </button>
+                {#if $pushError}
+                  <div class="push-error">{$pushError}</div>
+                {/if}
+              </div>
             {/if}
             <span
               class="connection-dot"
@@ -182,7 +196,7 @@
           {/if}
         </SidebarContent>
 
-        <SidebarFooter class="border-t-2 border-slate-800 bg-slate-950 p-2 pb-[calc(0.5rem+env(safe-area-inset-bottom))]">
+        <SidebarFooter class="border-t border-sidebar-border p-2 pb-1">
           {#if activeView === 'board'}
             <CoworkerStatus />
             <UsageBars />
@@ -192,9 +206,9 @@
 
       <main class="flex-1 flex flex-col h-full overflow-hidden">
         <!-- Mobile header with sidebar trigger -->
-        <header class="mobile-header flex items-center px-2 pb-2 pt-[calc(0.5rem+env(safe-area-inset-top))] border-b border-slate-800 bg-slate-950 md:hidden">
+        <header class="mobile-header flex items-center px-2 pb-2 pt-[calc(0.5rem+env(safe-area-inset-top))] border-b border-border bg-sidebar md:hidden">
           <SidebarTrigger />
-          <span class="ml-2 text-sm text-slate-400">{$activeProject}</span>
+          <span class="ml-2 text-sm text-muted-foreground">{$activeProject}</span>
           <div class="mobile-channel active-channel-display ml-4">
             <span class="channel-hash">#</span>{$activeChannel}
           </div>
@@ -226,22 +240,6 @@
 </div>
 
 <style>
-  :global(*) {
-    box-sizing: border-box;
-    margin: 0;
-    padding: 0;
-  }
-
-  :global(body) {
-    font-family: 'SF Mono', 'Menlo', 'Consolas', 'Monaco', 'Courier New', monospace;
-    background: #0a0a0a;
-    color: #d0d0d0;
-    min-height: 100vh;
-    overscroll-behavior: none;
-    -webkit-font-smoothing: antialiased;
-    -moz-osx-font-smoothing: grayscale;
-  }
-
   .app-container {
     /* Mobile: centered layout with max-width */
   }
@@ -275,7 +273,7 @@
   h1 {
     font-size: 1.3rem;
     font-weight: 700;
-    color: #5faf5f;
+    color: hsl(var(--primary));
     letter-spacing: -0.02em;
   }
 
@@ -284,14 +282,14 @@
     width: 9px;
     height: 9px;
     border-radius: 50%;
-    background: #af5f5f;
+    background: hsl(var(--destructive));
     flex-shrink: 0;
-    box-shadow: 0 0 8px rgba(175, 95, 95, 0.4);
+    box-shadow: 0 0 8px hsl(var(--destructive) / 0.4);
   }
 
   .connection-dot.connected {
-    background: #5faf5f;
-    box-shadow: 0 0 8px rgba(95, 175, 95, 0.5);
+    background: hsl(var(--primary));
+    box-shadow: 0 0 8px hsl(var(--primary) / 0.5);
   }
 
   /* Project selector */
@@ -305,7 +303,7 @@
     gap: 7px;
     background: transparent;
     border: none;
-    color: #5faf5f;
+    color: hsl(var(--primary));
     font-size: 1.15rem;
     font-weight: 700;
     cursor: pointer;
@@ -315,7 +313,7 @@
   }
 
   .project-trigger:hover {
-    background: #252525;
+    background: hsl(var(--accent));
   }
 
   .project-name {
@@ -327,7 +325,7 @@
 
   .dropdown-arrow {
     font-size: 0.75rem;
-    color: #606060;
+    color: hsl(var(--muted-foreground));
   }
 
   .project-dropdown {
@@ -335,8 +333,8 @@
     top: 100%;
     left: 0;
     margin-top: 6px;
-    background: #1a1a1a;
-    border: 2px solid #2a2a2a;
+    background: hsl(var(--card));
+    border: 2px solid hsl(var(--border));
     border-radius: 6px;
     min-width: 190px;
     z-index: 100;
@@ -352,7 +350,7 @@
     padding: 10px 12px;
     border: none;
     background: transparent;
-    color: #a0a0a0;
+    color: hsl(var(--foreground) / 0.7);
     font-size: 0.85rem;
     cursor: pointer;
     text-align: left;
@@ -360,12 +358,12 @@
   }
 
   .project-option:hover:not(:disabled) {
-    background: #252525;
-    color: #d0d0d0;
+    background: hsl(var(--accent));
+    color: hsl(var(--foreground));
   }
 
   .project-option.active {
-    color: #5faf5f;
+    color: hsl(var(--primary));
   }
 
   .project-option.stopped {
@@ -381,7 +379,7 @@
   }
 
   .active-check {
-    color: #5faf5f;
+    color: hsl(var(--primary));
     font-size: 0.8rem;
   }
 
@@ -389,12 +387,30 @@
     width: 7px;
     height: 7px;
     border-radius: 50%;
-    background: #606060;
+    background: hsl(var(--muted-foreground));
     flex-shrink: 0;
   }
 
   .project-status-dot.running {
-    background: #5faf5f;
+    background: hsl(var(--primary));
+  }
+
+  .push-wrapper {
+    position: relative;
+  }
+
+  .push-error {
+    position: absolute;
+    top: 100%;
+    right: 0;
+    margin-top: 4px;
+    padding: 4px 8px;
+    background: hsl(var(--destructive));
+    color: hsl(var(--destructive-foreground));
+    font-size: 0.7rem;
+    border-radius: 4px;
+    white-space: nowrap;
+    z-index: 100;
   }
 
   .push-toggle {
@@ -429,6 +445,7 @@
   /* Channel main area */
   .channel-main {
     flex: 1;
+    min-height: 0;
     overflow: hidden;
     display: flex;
     flex-direction: column;
@@ -437,14 +454,14 @@
   .active-channel-display {
     font-size: 1.1rem;
     font-weight: 700;
-    color: #d0d0d0;
+    color: hsl(var(--foreground));
     display: flex;
     align-items: baseline;
     gap: 2px;
   }
 
   .channel-hash {
-    color: #606060;
+    color: hsl(var(--muted-foreground));
   }
 
   /* No project message */
@@ -455,7 +472,7 @@
     align-items: center;
     justify-content: center;
     gap: 10px;
-    color: #606060;
+    color: hsl(var(--muted-foreground));
   }
 
   .no-project .hint {
@@ -463,10 +480,10 @@
   }
 
   .no-project code {
-    background: #252525;
+    background: hsl(var(--accent));
     padding: 3px 8px;
     border-radius: 4px;
-    color: #a0a0a0;
+    color: hsl(var(--foreground) / 0.7);
   }
 
   /* Bigger Picture lightbox styles - dark theme */

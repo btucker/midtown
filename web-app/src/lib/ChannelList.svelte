@@ -4,6 +4,7 @@
   import { fetchHistory, fetchChannels, getApiBase } from './api.js'
   import { getChannelTaskCount, getChannelCiStatus } from './channelUtils.js'
   import TaskList from './TaskList.svelte'
+  import ArchiveIcon from '@lucide/svelte/icons/archive'
 
   let showCreateInput = false
   let newChannelName = ''
@@ -125,13 +126,14 @@
     <div class="text-xs font-bold text-[#585858] uppercase tracking-wide">Channels</div>
     <div class="flex gap-1">
       <button
-        class="w-6 h-6 p-0 border-none rounded bg-transparent text-[#585858] text-sm leading-none cursor-pointer transition-all duration-150 flex items-center justify-center hover:bg-[#2a2a2a] hover:text-[#d0d0d0] aria-label='Toggle archived channels'"
+        class="w-6 h-6 p-0 border-none rounded bg-transparent text-[#585858] text-sm leading-none cursor-pointer transition-all duration-150 flex items-center justify-center hover:bg-[#2a2a2a] hover:text-[#d0d0d0]"
+        aria-label="Toggle archived channels"
         class:bg-[#3a3a3a]={$showArchivedChannels}
         class:text-[#5fafaf]={$showArchivedChannels}
         onclick={() => showArchivedChannels.update(v => !v)}
         title={$showArchivedChannels ? "Hide archived channels" : "Show archived channels"}
       >
-        <span class="text-sm">📦</span>
+        <ArchiveIcon size={14} />
       </button>
       <button
         class="w-6 h-6 p-0 border-none rounded bg-transparent text-[#585858] text-xl leading-none cursor-pointer transition-all duration-150 flex items-center justify-center hover:bg-[#2a2a2a] hover:text-[#d0d0d0]"
@@ -186,7 +188,8 @@
 
     <div class="mb-0.5">
       <button
-        class="flex items-center justify-between w-full px-3 py-2 border-none rounded-md bg-transparent text-[#a8a8a8] text-sm font-mono cursor-pointer transition-all duration-150 text-left hover:bg-[#262626] hover:text-[#d0d0d0] aria-label='Select channel {channel.name}'"
+        class="flex items-center justify-between w-full px-3 py-2 border-none rounded-md bg-transparent text-[#a8a8a8] text-sm font-mono cursor-pointer transition-all duration-150 text-left hover:bg-[#262626] hover:text-[#d0d0d0]"
+        aria-label="Select channel {channel.name}"
         class:bg-[#303030]={isActive}
         class:text-[#5fafaf]={isActive}
         onclick={() => selectChannel(channel.name)}
