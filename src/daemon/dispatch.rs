@@ -77,6 +77,44 @@ fn prepare_task_worktree(
 }
 
 // ============================================================================
+// Plan content helpers
+// ============================================================================
+
+/// Build plan content to append to a coworker's initial prompt.
+///
+/// Checks `task_plan_map` for the task ID. If a plan path exists, reads the file
+/// and returns formatted plan content with midtown-specific adaptation instructions.
+/// Returns empty string if no plan is associated or the file can't be read.
+fn build_plan_prompt_section(task_id: &str, snap: &snapshot::WorldSnapshot) -> String {
+    let Some(plan_path) = snap.task_plan_map.get(task_id) else {
+        return String::new();
+    };
+
+    let plan_content = match std::fs::read_to_string(plan_path) {
+        Ok(content) => content,
+        Err(e) => {
+            warn!(
+                "Failed to read plan file for task !{}: {} (path: {})",
+                task_id, e, plan_path
+            );
+            return String::new();
+        }
+    };
+
+    format!(
+        "\n\n## Plan Context\n\n\
+         Your task is part of a larger implementation plan. The full plan is included below \
+         for context — it will help you understand the architecture, how your piece fits in, \
+         and what decisions have already been made. **You are only responsible for your assigned \
+         task above, not the entire plan.** If the plan specifies an execution skill \
+         (e.g., executing-plans or subagent-driven-development), use it for your assigned \
+         portion.\n\n\
+         <plan>\n{}\n</plan>",
+        plan_content
+    )
+}
+
+// ============================================================================
 // Task completion helpers
 // ============================================================================
 
@@ -376,11 +414,12 @@ pub(super) fn check_and_recover_orphans(
         recovery.task_id, recovery.owner
     );
 
+    let plan_section = build_plan_prompt_section(&recovery.task_id, snap);
     let prompt = format_task_prompt(
         &recovery.task_id,
         &format!(
-            "You've been assigned task !{}: {}. Your previous session was interrupted but your worktree and branch are still intact. Check your git status and get started!",
-            recovery.task_id, recovery.task_subject
+            "You've been assigned task !{}: {}. Your previous session was interrupted but your worktree and branch are still intact. Check your git status and get started!{}",
+            recovery.task_id, recovery.task_subject, plan_section
         ),
     );
 
@@ -1247,9 +1286,13 @@ pub(super) fn spawn_for_pending_tasks(
                     "Pending task !{} is assigned to {} but coworker not running - spawning",
                     tid, o
                 );
+                let plan_section = build_plan_prompt_section(tid, snap);
                 let prompt = format_task_prompt(
                     tid,
-                    &format!("You've been assigned task !{}: {}. Get started!", tid, subj),
+                    &format!(
+                        "You've been assigned task !{}: {}. Get started!{}",
+                        tid, subj, plan_section
+                    ),
                 );
 
                 let wt = prepare_task_worktree(tid, subj, &state.repo_name, snap);
@@ -1557,20 +1600,21 @@ pub(super) fn spawn_for_pending_tasks(
         coworkers_dispatched_this_tick.insert(coworker_name.to_lowercase());
 
         // Build the prompt message — already-running coworkers need explicit claim instruction
+        let plan_section = build_plan_prompt_section(&task.id, snap);
         let prompt = if already_running {
             format_task_prompt(
                 &task.id,
                 &format!(
-                    "You've been assigned task !{}: {}. Run `midtown task claim {}` to claim it, then get started!",
-                    task.id, task.subject, task.id
+                    "You've been assigned task !{}: {}. Run `midtown task claim {}` to claim it, then get started!{}",
+                    task.id, task.subject, task.id, plan_section
                 ),
             )
         } else {
             format_task_prompt(
                 &task.id,
                 &format!(
-                    "You've been assigned task !{}: {}. Get started!",
-                    task.id, task.subject
+                    "You've been assigned task !{}: {}. Get started!{}",
+                    task.id, task.subject, plan_section
                 ),
             )
         };

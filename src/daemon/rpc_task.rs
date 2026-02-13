@@ -338,6 +338,7 @@ pub(super) async fn handle_task_create(
     channel: Option<&str>,
     model: Option<&str>,
     pr: Option<u64>,
+    plan: Option<&str>,
     state: &DaemonState,
 ) -> Response {
     let repo_name = state.repo_name.clone();
@@ -420,6 +421,16 @@ pub(super) async fn handle_task_create(
                 // Model format validation failed - return error
                 return Response::error(id, RpcError::new(-32602, e));
             }
+        }
+    }
+
+    // Apply plan mapping if provided (stored in daemon state, NOT in task JSON,
+    // to keep task JSON compatible with Claude Code's native format)
+    if let Some(plan_path) = plan {
+        let mut ps = state.persistent_state.lock().await;
+        ps.task_plan.insert(task_id.clone(), plan_path.to_string());
+        if let Err(e) = ps.save_for_repo(&repo_name) {
+            warn!("Failed to save task plan mapping: {}", e);
         }
     }
 

@@ -25,6 +25,9 @@ pub enum TaskCommand {
         /// Explicit PR number associated with this task
         #[arg(long)]
         pr: Option<u64>,
+        /// Path to an implementation plan file
+        #[arg(long)]
+        plan: Option<String>,
     },
     /// Claim a task
     Claim {
@@ -99,6 +102,7 @@ pub fn handle(cmd: &TaskCommand, client: &DaemonClient) -> Result<Response, Stri
             channel,
             model,
             pr,
+            plan,
         } => client.task_create(
             subject,
             description,
@@ -106,6 +110,7 @@ pub fn handle(cmd: &TaskCommand, client: &DaemonClient) -> Result<Response, Stri
             channel.as_deref(),
             model.as_deref(),
             *pr,
+            plan.as_deref(),
         ),
         TaskCommand::Update {
             id,
