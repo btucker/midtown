@@ -1,5 +1,11 @@
 use super::*;
 use serde_json::json;
+use std::sync::Mutex;
+
+// Global mutex to serialize tests that modify PATH environment variable.
+// Without this, parallel test execution causes gh CLI mocks to interfere
+// with each other (one test's mock returns data to a different test).
+static PATH_LOCK: Mutex<()> = Mutex::new(());
 
 /// Helper to create minimal DaemonState for testing
 fn make_test_state(repo_name: &str) -> DaemonState {
@@ -190,6 +196,9 @@ async fn test_orphaned_pr_with_merge_conflict_is_ignored() {
     )
     .unwrap();
 
+    // Acquire lock to prevent parallel tests from interfering with PATH mocking
+    let _path_guard = PATH_LOCK.lock().unwrap();
+
     // Mock gh CLI to return our test PR
     let original_path = std::env::var("PATH").unwrap_or_default();
     let mock_gh_dir = temp_dir.path().join("bin");
@@ -225,7 +234,7 @@ async fn test_orphaned_pr_with_merge_conflict_is_ignored() {
     // Call poll_prs_for_issues
     let result = poll_prs_for_issues(&snap, &state).await;
 
-    // Restore PATH
+    // Restore PATH (lock will be released when _path_guard drops)
     unsafe {
         std::env::set_var("PATH", original_path);
     }
@@ -293,6 +302,9 @@ async fn test_ci_wait_deduplication_uses_time_aware_hash() {
     let pr_list_file = temp_dir.path().join("pr_list.json");
     std::fs::write(&pr_list_file, serde_json::to_string(&vec![pr]).unwrap()).unwrap();
 
+    // Acquire lock to prevent parallel tests from interfering with PATH mocking
+    let _path_guard = PATH_LOCK.lock().unwrap();
+
     let original_path = std::env::var("PATH").unwrap_or_default();
     let mock_gh_dir = temp_dir.path().join("bin");
     std::fs::create_dir_all(&mock_gh_dir).unwrap();
@@ -329,6 +341,7 @@ async fn test_ci_wait_deduplication_uses_time_aware_hash() {
     // Second poll immediately should NOT post duplicate (deduplicated by time-aware hash)
     let _effects2 = poll_prs_for_issues(&snap, &state).await.unwrap();
 
+    // Restore PATH (lock will be released when _path_guard drops)
     unsafe {
         std::env::set_var("PATH", original_path);
     }
