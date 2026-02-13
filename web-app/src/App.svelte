@@ -198,11 +198,7 @@
       {#if activeView === 'board'}
         <!-- Desktop: Sidebar component -->
         <div class="desktop-sidebar">
-          <Sidebar
-            bind:projectDropdownOpen
-            onProjectSelect={selectProject}
-            onToggleProjectDropdown={toggleProjectDropdown}
-          />
+          <Sidebar />
         </div>
 
         <!-- Mobile: overlay drawer + channel bar -->
