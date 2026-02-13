@@ -997,22 +997,18 @@ mod tests {
 
         // Create old-style profile directory with test data
         std::fs::create_dir_all(&old_base)
-            .expect(&format!("Failed to create dir: {}", old_base.display()));
+            .unwrap_or_else(|_| panic!("Failed to create dir: {}", old_base.display()));
         std::fs::write(old_base.join(".claude.json"), "{\"auth\":\"test\"}")
             .expect("Failed to write .claude.json");
         let tasks_dir = old_base.join("tasks");
-        std::fs::create_dir_all(&tasks_dir).expect(&format!(
-            "Failed to create tasks dir: {}",
-            tasks_dir.display()
-        ));
-        std::fs::write(tasks_dir.join("test.txt"), "test task").expect(&format!(
-            "Failed to write test.txt to {}",
-            tasks_dir.display()
-        ));
+        std::fs::create_dir_all(&tasks_dir)
+            .unwrap_or_else(|_| panic!("Failed to create tasks dir: {}", tasks_dir.display()));
+        std::fs::write(tasks_dir.join("test.txt"), "test task")
+            .unwrap_or_else(|_| panic!("Failed to write test.txt to {}", tasks_dir.display()));
 
         // Run migration
         let migrated = migrate_legacy_claude_profile(&test_profile)
-            .expect(&format!("Migration failed for profile: {}", test_profile));
+            .unwrap_or_else(|_| panic!("Migration failed for profile: {}", test_profile));
         assert!(migrated, "Migration should have been performed");
 
         // Verify new structure
