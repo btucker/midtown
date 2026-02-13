@@ -5,7 +5,7 @@
 
   /**
    * Compute indentation level for each task based on dependency structure.
-   * Returns a Map of task ID → indentation level (0 = no indent, 1+ = nested)
+   * Returns a Map of task ID to indentation level (0 = no indent, 1+ = nested)
    *
    * This mirrors the TUI implementation in src/bin/midtown/cli/chat/ui/board.rs
    */
@@ -88,100 +88,33 @@
 
   // Status marker for each task
   function getStatusMarker(status) {
-    return status === 'in_progress' ? '●' : '○'
+    return status === 'in_progress' ? '\u2022' : '\u25CB'
   }
 
   function getStatusColor(status) {
-    return status === 'in_progress' ? 'status-in-progress' : 'status-pending'
+    return status === 'in_progress' ? 'text-[#4ade80]' : 'text-[#606060]'
   }
 </script>
 
-<div class="task-list">
+<div class="flex flex-col gap-px py-1">
   {#each channelTasks as task}
     {@const indentLevel = indentMap.get(task.id) || 0}
     {@const indentStyle = `padding-left: ${indentLevel * 16}px`}
 
-    <div class="task-item {getStatusColor(task.status)}" style={indentStyle}>
-      <span class="status-marker">{getStatusMarker(task.status)}</span>
-      <span class="task-id">!{task.id}</span>
-      <span class="task-subject">{task.subject}</span>
+    <div
+      class="flex items-baseline gap-1.5 px-2 py-[3px] text-[0.75rem] leading-snug cursor-pointer transition-colors duration-100 rounded hover:bg-[#1a1a1a]"
+      style={indentStyle}
+    >
+      <span class="shrink-0 text-[0.6rem] {getStatusColor(task.status)}">{getStatusMarker(task.status)}</span>
+      <span class="shrink-0 text-[#606060] font-medium">!{task.id}</span>
+      <span class="flex-1 text-[#a8a8a8] truncate {task.status === 'in_progress' ? 'text-[#d0d0d0]' : ''}">{task.subject}</span>
       {#if task.owner}
-        <span class="task-owner">[{task.owner}]</span>
+        <span class="shrink-0 text-[0.7rem] text-[#606060]">[{task.owner}]</span>
       {/if}
     </div>
   {/each}
 
   {#if channelTasks.length === 0}
-    <div class="empty-state">No active tasks</div>
+    <div class="py-2 text-[0.75rem] text-[#444] italic text-center">No active tasks</div>
   {/if}
 </div>
-
-<style>
-  .task-list {
-    display: flex;
-    flex-direction: column;
-    gap: 1px;
-    padding: 4px 0;
-  }
-
-  .task-item {
-    display: flex;
-    align-items: baseline;
-    gap: 6px;
-    padding: 3px 8px;
-    font-size: 0.75rem;
-    line-height: 1.4;
-    cursor: pointer;
-    transition: background 0.1s;
-    border-radius: 3px;
-  }
-
-  .task-item:hover {
-    background: #1a1a1a;
-  }
-
-  .status-marker {
-    flex-shrink: 0;
-    font-size: 0.6rem;
-  }
-
-  .status-in-progress .status-marker {
-    color: #4ade80;
-  }
-
-  .status-pending .status-marker {
-    color: #606060;
-  }
-
-  .task-id {
-    flex-shrink: 0;
-    color: #606060;
-    font-weight: 500;
-  }
-
-  .task-subject {
-    flex: 1;
-    color: #a8a8a8;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .status-in-progress .task-subject {
-    color: #d0d0d0;
-  }
-
-  .task-owner {
-    flex-shrink: 0;
-    font-size: 0.7rem;
-    color: #606060;
-  }
-
-  .empty-state {
-    padding: 8px;
-    font-size: 0.75rem;
-    color: #444;
-    font-style: italic;
-    text-align: center;
-  }
-</style>
