@@ -329,9 +329,6 @@ async fn test_ci_wait_deduplication_uses_time_aware_hash() {
         );
     }
 
-    // Drop the lock before async calls to avoid holding it across await points
-    drop(_path_guard);
-
     // Create snapshot with york's branch in worktree_branch_owners
     let mut snap = minimal_snapshot_for_test();
     snap.worktree_branch_owners
@@ -339,16 +336,17 @@ async fn test_ci_wait_deduplication_uses_time_aware_hash() {
 
     let state = make_test_state("test-repo");
 
-    // First poll should post "Waiting for CI" message
+    // First poll should post "Waiting for CI" message (keep PATH_LOCK held to prevent test interference)
     let effects1 = poll_prs_for_issues(&snap, &state).await.unwrap();
 
     // Second poll immediately should NOT post duplicate (deduplicated by time-aware hash)
     let _effects2 = poll_prs_for_issues(&snap, &state).await.unwrap();
 
-    // Restore PATH (lock will be released when _path_guard drops)
+    // Restore PATH and release lock
     unsafe {
         std::env::set_var("PATH", original_path);
     }
+    drop(_path_guard);
 
     // Both polls should return effects (the nudge to york about waiting for CI)
     assert!(!effects1.is_empty(), "First poll should generate effects");
@@ -469,6 +467,9 @@ async fn test_orphaned_pr_with_task_branch_and_merge_conflict_is_ignored() {
     )
     .unwrap();
 
+    // Acquire lock to prevent parallel tests from interfering with PATH mocking
+    let _path_guard = PATH_LOCK.lock().unwrap();
+
     // Mock gh CLI to return our test PR
     let original_path = std::env::var("PATH").unwrap_or_default();
     let mock_gh_dir = temp_dir.path().join("bin");
@@ -501,13 +502,14 @@ async fn test_orphaned_pr_with_task_branch_and_merge_conflict_is_ignored() {
     // Create minimal daemon state
     let state = make_test_state("test-repo");
 
-    // Call poll_prs_for_issues
+    // Call poll_prs_for_issues (keep PATH_LOCK held to prevent test interference)
     let result = poll_prs_for_issues(&snap, &state).await;
 
-    // Restore PATH
+    // Restore PATH and release lock
     unsafe {
         std::env::set_var("PATH", original_path);
     }
+    drop(_path_guard);
 
     // Check if we got an error (gh command not working)
     if let Err(e) = &result {
