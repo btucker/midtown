@@ -1,8 +1,8 @@
 [workspace]
 members = [
     ".",
+    "midtown-types",
     # "midtown-zellij-plugin",  # Will be created in Task 3
-    # "midtown-types",          # Will be created in Task 2
 ]
 resolver = "2"
 
