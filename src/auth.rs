@@ -43,6 +43,8 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
+use tracing::warn;
+
 use crate::paths::midtown_base_dir;
 
 /// Default profile name used when none is specified.
@@ -560,8 +562,13 @@ pub fn current_profile_dir_for(provider: AuthProvider) -> PathBuf {
     let profile_name = current_profile_for(provider);
 
     // For Claude, ensure the profile is set up before use
-    if provider == AuthProvider::Claude {
-        let _ = ensure_profile_dir_for(provider, &profile_name);
+    if provider == AuthProvider::Claude
+        && let Err(e) = ensure_profile_dir_for(provider, &profile_name)
+    {
+        warn!(
+            "Failed to set up {} profile '{}': {}. Profile directory may be misconfigured.",
+            provider, profile_name, e
+        );
     }
 
     profile_dir_for(provider, &profile_name)
@@ -612,8 +619,13 @@ pub fn active_profile_dir_for_project_with_provider(
     let profile_name = active_profile_for_project_with_provider(project, provider);
 
     // For Claude, ensure the profile is set up before use
-    if provider == AuthProvider::Claude {
-        let _ = ensure_profile_dir_for(provider, &profile_name);
+    if provider == AuthProvider::Claude
+        && let Err(e) = ensure_profile_dir_for(provider, &profile_name)
+    {
+        warn!(
+            "Failed to set up {} profile '{}' for project '{}': {}. Profile directory may be misconfigured.",
+            provider, profile_name, project, e
+        );
     }
 
     profile_dir_for(provider, &profile_name)
