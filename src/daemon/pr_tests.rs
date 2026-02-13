@@ -223,6 +223,9 @@ async fn test_orphaned_pr_with_merge_conflict_is_ignored() {
         );
     }
 
+    // Drop the lock before async calls to avoid holding it across await points
+    drop(_path_guard);
+
     // Create a minimal snapshot with NO active coworkers (york is on break)
     // and NO worktree_branch_owners entry for york/fix-auth (the key part!)
     let snap = minimal_snapshot_for_test();
@@ -327,6 +330,9 @@ async fn test_ci_wait_deduplication_uses_time_aware_hash() {
             format!("{}:{}", mock_gh_dir.display(), original_path),
         );
     }
+
+    // Drop the lock before async calls to avoid holding it across await points
+    drop(_path_guard);
 
     // Create snapshot with york's branch in worktree_branch_owners
     let mut snap = minimal_snapshot_for_test();
