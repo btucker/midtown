@@ -89,9 +89,7 @@ fn compute_cache_key(repo_hash: u64, coworker_state_hash: u64) -> u64 {
 ///
 /// Input: list of (coworker_name, task_id, pr_number) tuples.
 /// Returns a hash that changes when task assignments or PR associations change.
-fn compute_coworker_state_hash(
-    coworkers: &[(&str, Option<u32>, Option<u64>)],
-) -> u64 {
+fn compute_coworker_state_hash(coworkers: &[(&str, Option<u32>, Option<u64>)]) -> u64 {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
 

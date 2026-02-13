@@ -275,9 +275,7 @@ const KANBAN_CACHE_TTL: Duration = Duration::from_secs(30);
 ///
 /// When any of these change (coworker spawns/shuts down, task assigned, phase changes),
 /// the hash changes and the cache misses, ensuring fresh data is fetched.
-fn compute_coworker_state_hash(
-    coworker_records: &HashMap<String, CoworkerRecord>,
-) -> u64 {
+fn compute_coworker_state_hash(coworker_records: &HashMap<String, CoworkerRecord>) -> u64 {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
 
