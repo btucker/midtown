@@ -56,6 +56,7 @@ You will receive:
    - Channel name
    - Tasks currently assigned to that channel (with status: pending, in_progress, completed)
    - Task subjects and descriptions
+   - **Note**: This includes pre-populated seed channels from the project config. Seed channels are durable channels created at daemon startup to guide task organization — prefer routing tasks to existing seed channels when appropriate.
 
 3. **Recently Completed Tasks**: Tasks that were recently finished
    - Helps identify when a channel's theme is exhausted and should be archived
