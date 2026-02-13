@@ -5,9 +5,11 @@
   import MermaidDiagram from './MermaidDiagram.svelte'
   import { parseSegments, hasMermaid, renderContent } from './markdown.js'
   import Autocomplete from './Autocomplete.svelte'
+  import { ScrollArea } from '$lib/components/ui/scroll-area'
+  import * as Dialog from '$lib/components/ui/dialog'
 
   let inputText = $state('')
-  let messagesContainer = $state(null)
+  let scrollAreaViewport = $state(null)
   let autoScroll = $state(true)
   let selectedTask = $state(null)
   let pendingFile = $state(null)
@@ -234,12 +236,6 @@
     selectedTask = null
   }
 
-  function handleModalKeydown(event) {
-    if (event.key === 'Escape' && selectedTask) {
-      closeTaskModal()
-    }
-  }
-
   // Handle clicks on channel links, task links, PR links, and coworker links
   onMount(() => {
     function handleLinkClick(e) {
@@ -310,9 +306,9 @@
       }
     }
 
-    if (messagesContainer) {
-      messagesContainer.addEventListener('click', handleLinkClick)
-      return () => messagesContainer.removeEventListener('click', handleLinkClick)
+    if (scrollAreaViewport) {
+      scrollAreaViewport.addEventListener('click', handleLinkClick)
+      return () => scrollAreaViewport.removeEventListener('click', handleLinkClick)
     }
   })
 
@@ -401,9 +397,9 @@
 
   // Auto-scroll to bottom when new messages arrive
   $effect(() => {
-    if (channelMessages.length > 0 && autoScroll && messagesContainer) {
+    if (channelMessages.length > 0 && autoScroll && scrollAreaViewport) {
       tick().then(() => {
-        messagesContainer.scrollTop = messagesContainer.scrollHeight
+        scrollAreaViewport.scrollTop = scrollAreaViewport.scrollHeight
       })
     }
   })
@@ -503,14 +499,14 @@
   }
 
   function handleScroll() {
-    if (!messagesContainer) return
-    const { scrollTop, scrollHeight, clientHeight } = messagesContainer
+    if (!scrollAreaViewport) return
+    const { scrollTop, scrollHeight, clientHeight } = scrollAreaViewport
     autoScroll = scrollHeight - scrollTop - clientHeight < 50
   }
 
   function scrollToBottom() {
-    if (messagesContainer) {
-      messagesContainer.scrollTop = messagesContainer.scrollHeight
+    if (scrollAreaViewport) {
+      scrollAreaViewport.scrollTop = scrollAreaViewport.scrollHeight
     }
   }
 
@@ -519,134 +515,155 @@
   }
 </script>
 
-<svelte:window onkeydown={handleModalKeydown} />
+<div class="flex flex-col h-full overflow-hidden relative">
+  <ScrollArea
+    class="flex-1 font-[SF_Mono,Menlo,Consolas,Monaco,'Courier_New',monospace] text-[0.88rem] leading-[1.55]"
+    bind:viewportRef={scrollAreaViewport}
+  >
+    <div class="px-[18px] pt-[14px] pb-[18px]" onscroll={handleScroll}>
+      {#if channelMessages.length === 0}
+        <div class="text-center text-[#606060] py-[50px] px-[22px] font-[system-ui,-apple-system,sans-serif]">
+          <p>No messages in #{$activeChannel}</p>
+          <p class="text-[0.9rem] mt-[10px]">Messages posted to this channel will appear here</p>
+        </div>
+      {:else}
+        {#each channelMessages as msg, i}
+          {#if needsBlankLine(channelMessages, i)}
+            <div class="h-[0.8em]"></div>
+          {/if}
 
-<div class="channel-container">
-  <div class="messages" bind:this={messagesContainer} onscroll={handleScroll}>
-    {#if channelMessages.length === 0}
-      <div class="empty-state">
-        <p>No messages in #{$activeChannel}</p>
-        <p class="hint">Messages posted to this channel will appear here</p>
-      </div>
-    {:else}
-      {#each channelMessages as msg, i}
-        {#if needsBlankLine(channelMessages, i)}
-          <div class="blank-line"></div>
-        {/if}
+          {#if senderChanged(channelMessages, i)}
+            <!-- Author line: bold name + current task + cross-post indicator -->
+            <div
+              class="whitespace-nowrap overflow-hidden text-ellipsis flex items-center gap-[7px] {isInsight(msg) && isCrossPost(msg) ? 'py-[5px] px-[10px] -mt-[5px] -mx-[10px] mb-[5px] border-l-[3px] border-l-[#af5faf] bg-[rgba(175,95,175,0.12)] rounded-[5px]' : ''}"
+            >
+              {#if isInsight(msg) && isCrossPost(msg)}
+                <span class="text-[#ffaf5f] text-[1.05rem]">&#9733;</span>
+                <span class="text-[#5fafaf] text-[0.88rem] font-semibold">from <a class="channel-link text-inherit no-underline hover:underline" data-channel={msg.source_channel} href="#{msg.source_channel}">#{msg.source_channel}</a></span>
+                <span class="text-[#606060]">|</span>
+              {/if}
+              <span class="font-bold" style="color: {getSenderColor(msg.from)}">{msg.from}</span>
+              {#if currentTasks[msg.from.toLowerCase()]}
+                <span class="text-[#606060]"> - {currentTasks[msg.from.toLowerCase()]}</span>
+              {/if}
+            </div>
+          {/if}
 
-        {#if senderChanged(channelMessages, i)}
-          <!-- Author line: bold name + current task + cross-post indicator -->
-          <div class="sender-line" class:cross-post={isInsight(msg) && isCrossPost(msg)}>
-            {#if isInsight(msg) && isCrossPost(msg)}
-              <span class="insight-star">★</span>
-              <span class="cross-post-source">from <a class="channel-link" data-channel={msg.source_channel} href="#{msg.source_channel}">#{msg.source_channel}</a></span>
-              <span class="sender-divider">|</span>
-            {/if}
-            <span class="sender-name" style="color: {getSenderColor(msg.from)}">{msg.from}</span>
-            {#if currentTasks[msg.from.toLowerCase()]}
-              <span class="sender-task"> - {currentTasks[msg.from.toLowerCase()]}</span>
-            {/if}
-          </div>
-        {/if}
+          {#if isAction(msg) && !hasMermaid(msg.content)}
+            <!-- Action message: HH:MM * content -->
+            <div class="flex gap-0 break-words">
+              <span class="text-[#4a4a4a] flex-shrink-0 w-[3.7em] text-right mr-[0.5em] select-none">{formatTime(msg.timestamp)}</span>
+              <span class="flex-shrink-0 mr-[0.3em]" style="color: {getSenderColor(msg.from)}">*</span>
+              <span class="flex-1 min-w-0" style="color: {getSenderColor(msg.from)}">{@html renderContent(getActionContent(msg))}</span>
+            </div>
+          {:else if isAction(msg) && hasMermaid(msg.content)}
+            <!-- Action message with mermaid diagram(s) -->
+            {#each parseSegments(getActionContent(msg)) as segment, si}
+              {#if segment.type === 'mermaid'}
+                <div class="ml-[4.2em]">
+                  <MermaidDiagram code={segment.content} />
+                </div>
+              {:else}
+                <div class="flex gap-0 break-words">
+                  {#if si === 0}
+                    <span class="text-[#4a4a4a] flex-shrink-0 w-[3.7em] text-right mr-[0.5em] select-none">{formatTime(msg.timestamp)}</span>
+                    <span class="flex-shrink-0 mr-[0.3em]" style="color: {getSenderColor(msg.from)}">*</span>
+                  {:else}
+                    <span class="text-[#4a4a4a] flex-shrink-0 w-[3.7em] text-right mr-[0.5em] select-none"></span>
+                    <span class="flex-shrink-0 mr-[0.3em] invisible">*</span>
+                  {/if}
+                  <span class="flex-1 min-w-0" style="color: {getSenderColor(msg.from)}">{@html renderContent(segment.content)}</span>
+                </div>
+              {/if}
+            {/each}
+          {:else if hasMermaid(msg.content)}
+            <!-- Message with mermaid diagram(s) -->
+            {#each parseSegments(msg.content) as segment, si}
+              {#if segment.type === 'mermaid'}
+                <div class="ml-[4.2em]">
+                  <MermaidDiagram code={segment.content} />
+                </div>
+              {:else}
+                <div class="flex gap-0 break-words">
+                  {#if si === 0}
+                    <span class="text-[#4a4a4a] flex-shrink-0 w-[3.7em] text-right mr-[0.5em] select-none">{formatTime(msg.timestamp)}</span>
+                  {:else}
+                    <span class="text-[#4a4a4a] flex-shrink-0 w-[3.7em] text-right mr-[0.5em] select-none"></span>
+                  {/if}
+                  <span class="flex-1 min-w-0 {isDimSender(msg.from) ? 'text-[#606060]' : 'text-[#d0d0d0]'}">{@html renderContent(segment.content)}</span>
+                </div>
+              {/if}
+            {/each}
+          {:else}
+            <!-- Regular message: HH:MM content -->
+            <div class="flex gap-0 break-words">
+              <span class="text-[#4a4a4a] flex-shrink-0 w-[3.7em] text-right mr-[0.5em] select-none">{formatTime(msg.timestamp)}</span>
+              <span class="flex-1 min-w-0 {isDimSender(msg.from) ? 'text-[#606060]' : 'text-[#d0d0d0]'}">{@html renderContent(msg.content)}</span>
+            </div>
+          {/if}
+        {/each}
+      {/if}
 
-        {#if isAction(msg) && !hasMermaid(msg.content)}
-          <!-- Action message: HH:MM * content -->
-          <div class="message-line">
-            <span class="time-gutter">{formatTime(msg.timestamp)}</span>
-            <span class="action-star" style="color: {getSenderColor(msg.from)}">*</span>
-            <span class="action-text" style="color: {getSenderColor(msg.from)}">{@html renderContent(getActionContent(msg))}</span>
-          </div>
-        {:else if isAction(msg) && hasMermaid(msg.content)}
-          <!-- Action message with mermaid diagram(s) -->
-          {#each parseSegments(getActionContent(msg)) as segment, si}
-            {#if segment.type === 'mermaid'}
-              <div class="mermaid-block">
-                <MermaidDiagram code={segment.content} />
-              </div>
-            {:else}
-              <div class="message-line">
-                {#if si === 0}
-                  <span class="time-gutter">{formatTime(msg.timestamp)}</span>
-                  <span class="action-star" style="color: {getSenderColor(msg.from)}">*</span>
-                {:else}
-                  <span class="time-gutter"></span>
-                  <span class="action-star" style="visibility: hidden">*</span>
-                {/if}
-                <span class="action-text" style="color: {getSenderColor(msg.from)}">{@html renderContent(segment.content)}</span>
-              </div>
-            {/if}
-          {/each}
-        {:else if hasMermaid(msg.content)}
-          <!-- Message with mermaid diagram(s) -->
-          {#each parseSegments(msg.content) as segment, si}
-            {#if segment.type === 'mermaid'}
-              <div class="mermaid-block">
-                <MermaidDiagram code={segment.content} />
-              </div>
-            {:else}
-              <div class="message-line">
-                {#if si === 0}
-                  <span class="time-gutter">{formatTime(msg.timestamp)}</span>
-                {:else}
-                  <span class="time-gutter"></span>
-                {/if}
-                <span class="message-text" class:dim-text={isDimSender(msg.from)}>{@html renderContent(segment.content)}</span>
-              </div>
-            {/if}
-          {/each}
-        {:else}
-          <!-- Regular message: HH:MM content -->
-          <div class="message-line">
-            <span class="time-gutter">{formatTime(msg.timestamp)}</span>
-            <span class="message-text" class:dim-text={isDimSender(msg.from)}>{@html renderContent(msg.content)}</span>
-          </div>
-        {/if}
-      {/each}
-    {/if}
-
-    {#if $leadTyping}
-      <div class="typing-indicator">
-        <span class="typing-name" style="color: {AVENUE_COLORS.lead}">lead</span>
-        <span class="typing-dots">
-          <span class="dot"></span>
-          <span class="dot"></span>
-          <span class="dot"></span>
-        </span>
-      </div>
-    {/if}
-  </div>
+      {#if $leadTyping}
+        <div class="flex items-center gap-[7px] py-[5px] mt-[5px] opacity-70">
+          <span class="font-bold text-[0.85rem]" style="color: {AVENUE_COLORS.lead}">lead</span>
+          <span class="typing-dots flex gap-[3px] items-center">
+            <span class="dot w-[5px] h-[5px] rounded-full bg-[#d7d787]"></span>
+            <span class="dot w-[5px] h-[5px] rounded-full bg-[#d7d787]"></span>
+            <span class="dot w-[5px] h-[5px] rounded-full bg-[#d7d787]"></span>
+          </span>
+        </div>
+      {/if}
+    </div>
+  </ScrollArea>
 
   {#if !autoScroll}
-    <button class="scroll-to-bottom" onclick={scrollToBottom} aria-label="Scroll to bottom">
-      ↓
+    <button
+      class="absolute bottom-[90px] right-[22px] w-[40px] h-[40px] rounded-full border-2 border-[#2a2a2a] bg-[#1a1a1a] text-[#d0d0d0] text-[1.2rem] cursor-pointer flex items-center justify-center transition-all duration-200 opacity-85 hover:opacity-100 hover:border-[#5faf5f] hover:text-[#5faf5f] z-10"
+      onclick={scrollToBottom}
+      aria-label="Scroll to bottom"
+    >
+      &#8595;
     </button>
   {/if}
 
-  <form class="input-area" onsubmit={handleSubmit}>
+  <form class="flex flex-col gap-2 p-3 pb-[calc(12px+env(safe-area-inset-bottom,0px))] bg-[#1a1a1a] border-t-2 border-[#2a2a2a] shrink-0" onsubmit={handleSubmit}>
     {#if pendingFile}
-      <div class="file-preview">
+      <div class="relative inline-block max-w-[200px] border border-[#3a3a3a] rounded-lg p-2 bg-[#1c1c1c]">
         {#if pendingFile.type.startsWith('image/')}
-          <img src={URL.createObjectURL(pendingFile)} alt="Preview" class="preview-image" />
+          <img src={URL.createObjectURL(pendingFile)} alt="Preview" class="max-w-full max-h-[120px] rounded block" />
         {:else}
-          <div class="preview-file">
-            <span class="file-icon">📄</span>
-            <span class="file-name">{pendingFile.name}</span>
+          <div class="flex items-center gap-2 text-[#d0d0d0]">
+            <span class="text-[1.5rem]">&#128196;</span>
+            <span class="text-[0.85rem] overflow-hidden text-ellipsis whitespace-nowrap">{pendingFile.name}</span>
           </div>
         {/if}
-        <button type="button" class="remove-file" onclick={clearPendingFile} aria-label="Remove file">×</button>
+        <button
+          type="button"
+          class="absolute top-1 right-1 w-6 h-6 p-0 rounded-full bg-[rgba(0,0,0,0.7)] text-white text-[1.2rem] leading-none flex items-center justify-center cursor-pointer border border-[#3a3a3a] hover:bg-[rgba(255,87,87,0.8)] hover:border-[#ff5f5f]"
+          onclick={clearPendingFile}
+          aria-label="Remove file"
+        >
+          &times;
+        </button>
       </div>
     {/if}
-    <div class="input-row">
+    <div class="flex gap-2 w-full">
       <textarea
         bind:this={textareaElement}
         bind:value={inputText}
         placeholder="Message to #{$activeChannel}..."
         rows="1"
+        class="flex-1 py-[13px] px-[17px] border-2 border-[#2a2a2a] rounded-[18px] bg-[#0f0f0f] text-[#d0d0d0] text-[1.02rem] font-inherit outline-none resize-none min-h-[1.6em] max-h-[9em] overflow-y-auto focus:border-[#5faf5f] placeholder:text-[#606060]"
         onkeydown={handleKeyDown}
         onpaste={handlePaste}
         oninput={handleInput}
       ></textarea>
-      <button type="submit" disabled={!inputText.trim() && !pendingFile || uploading}>
+      <button
+        type="submit"
+        disabled={!inputText.trim() && !pendingFile || uploading}
+        class="py-[13px] px-[22px] border-none rounded-[26px] bg-[#5faf5f] text-[#0a0a0a] font-bold cursor-pointer transition-all duration-200 text-[0.95rem] tracking-[0.01em] disabled:opacity-40 disabled:cursor-not-allowed hover:bg-[#6fc57f] hover:-translate-y-[1px] active:translate-y-0 not-disabled:hover:bg-[#6fc57f]"
+      >
         {uploading ? 'Uploading...' : 'Send'}
       </button>
     </div>
@@ -666,193 +683,77 @@
 </div>
 
 <!-- Task detail modal (opened by clicking !N task links in chat) -->
-{#if selectedTask}
-  <!-- svelte-ignore a11y_click_events_have_key_events a11y_interactive_supports_focus -->
-  <div class="task-modal-overlay" onclick={closeTaskModal} role="dialog" aria-modal="true" tabindex="-1">
-    <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_noninteractive_element_interactions -->
-    <div class="task-modal-content" role="document" onclick={(e) => e.stopPropagation()}>
-      <button class="task-modal-close" onclick={closeTaskModal} aria-label="Close">×</button>
-
-      <div class="task-modal-header">
-        <span class="task-modal-id">!{selectedTask.id}</span>
-        <span class="task-modal-status">{selectedTask.status}</span>
+<Dialog.Root bind:open={selectedTask}>
+  <Dialog.Content class="bg-[#16213e] rounded-[9px] p-[18px] max-w-[420px] max-h-[80vh] overflow-y-auto border border-[#0f3460]">
+    <Dialog.Header>
+      <div class="flex items-center gap-[9px]">
+        <span class="text-[#00d9ff] font-mono text-[0.88rem]">!{selectedTask?.id}</span>
+        <span class="text-[0.72rem] py-[3px] px-[9px] rounded-[13px] bg-[#0f3460] text-[#888] capitalize">{selectedTask?.status}</span>
       </div>
-      <h4 class="task-modal-title">{selectedTask.subject}</h4>
-      {#if selectedTask.description}
-        <p class="task-modal-description">{selectedTask.description}</p>
-      {:else}
-        <p class="task-modal-description empty">No description</p>
-      {/if}
-      {#if selectedTask.owner}
-        <div class="task-modal-meta">
-          <span class="task-meta-label">Owner:</span>
-          <span class="task-meta-value">{selectedTask.owner}</span>
-        </div>
-      {/if}
-    </div>
-  </div>
-{/if}
+      <Dialog.Title class="text-[#eee] text-[1.05rem] font-semibold m-0 leading-[1.45]">
+        {selectedTask?.subject}
+      </Dialog.Title>
+    </Dialog.Header>
+
+    {#if selectedTask?.description}
+      <p class="text-[#aaa] text-[0.88rem] leading-[1.55] m-0 mb-[13px] whitespace-pre-wrap">{selectedTask.description}</p>
+    {:else}
+      <p class="text-[#666] text-[0.88rem] italic leading-[1.55] m-0 mb-[13px]">No description</p>
+    {/if}
+
+    {#if selectedTask?.owner}
+      <div class="flex gap-[9px] text-[0.85rem] mb-[5px]">
+        <span class="text-[#666]">Owner:</span>
+        <span class="text-[#ccc]">{selectedTask.owner}</span>
+      </div>
+    {/if}
+  </Dialog.Content>
+</Dialog.Root>
 
 <style>
-  .channel-container {
-    display: flex;
-    flex-direction: column;
-    height: 100%;
-    overflow: hidden;
-    position: relative;
-  }
-
-  .messages {
-    flex: 1;
-    overflow-y: auto;
-    padding: 14px 18px;
-    padding-bottom: 18px;
-    font-family: 'SF Mono', 'Menlo', 'Consolas', 'Monaco', 'Courier New', monospace;
-    font-size: 0.88rem;
-    line-height: 1.55;
-  }
-
-  .empty-state {
-    text-align: center;
-    color: #606060;
-    padding: 50px 22px;
-    font-family: system-ui, -apple-system, sans-serif;
-  }
-
-  .empty-state .hint {
-    font-size: 0.9rem;
-    margin-top: 10px;
-  }
-
-  /* Blank line separator between different senders */
-  .blank-line {
-    height: 0.8em;
-  }
-
-  /* Author/sender header line */
-  .sender-line {
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    display: flex;
-    align-items: center;
-    gap: 7px;
-  }
-
-  .sender-line.cross-post {
-    padding: 5px 10px;
-    margin: -5px -10px 5px;
-    border-left: 3px solid #af5faf;
-    background: rgba(175, 95, 175, 0.12);
-    border-radius: 5px;
-  }
-
-  .insight-star {
-    color: #ffaf5f;
-    font-size: 1.05rem;
-  }
-
-  .cross-post-source {
-    color: #5fafaf;
-    font-size: 0.88rem;
-    font-weight: 600;
-  }
-
-  .cross-post-source :global(a.channel-link) {
-    color: inherit;
-    text-decoration: none;
-    font-weight: inherit;
-  }
-
-  .cross-post-source :global(a.channel-link:hover) {
-    text-decoration: underline;
-  }
-
-  .sender-divider {
-    color: #606060;
-  }
-
-  .sender-name {
-    font-weight: 700;
-  }
-
-  .sender-task {
-    color: #606060;
-  }
-
-  /* Mermaid diagram block (indented to match message gutter) */
-  .mermaid-block {
-    margin-left: 4.2em;
-  }
-
-  /* Message line with timestamp gutter */
-  .message-line {
-    display: flex;
-    gap: 0;
-    word-break: break-word;
-  }
-
-  .time-gutter {
-    color: #4a4a4a;
-    flex-shrink: 0;
-    width: 3.7em;
-    text-align: right;
-    margin-right: 0.5em;
-    user-select: none;
-  }
-
-  .message-text {
-    color: #d0d0d0;
-    flex: 1;
-    min-width: 0;
-  }
-
-  .message-text.dim-text {
-    color: #606060;
-  }
-
-  .message-text :global(a),
-  .action-text :global(a) {
+  /* Link styles - applied globally within message content */
+  :global(.message-text a),
+  :global(.action-text a) {
     color: #5fafaf;
     text-decoration: none;
   }
 
-  .message-text :global(a:hover),
-  .action-text :global(a:hover) {
+  :global(.message-text a:hover),
+  :global(.action-text a:hover) {
     text-decoration: underline;
   }
 
-  .message-text :global(a.channel-link),
-  .action-text :global(a.channel-link) {
+  :global(.message-text a.channel-link),
+  :global(.action-text a.channel-link) {
     color: #5fafaf;
     font-weight: 600;
     cursor: pointer;
   }
 
-  .message-text :global(a.task-link),
-  .action-text :global(a.task-link) {
+  :global(.message-text a.task-link),
+  :global(.action-text a.task-link) {
     color: #af5faf;
     font-weight: 600;
     cursor: pointer;
   }
 
-  .message-text :global(a.pr-link),
-  .action-text :global(a.pr-link) {
+  :global(.message-text a.pr-link),
+  :global(.action-text a.pr-link) {
     color: #5f87af;
     font-weight: 600;
     cursor: pointer;
   }
 
-  .message-text :global(a.coworker-link),
-  .action-text :global(a.coworker-link) {
+  :global(.message-text a.coworker-link),
+  :global(.action-text a.coworker-link) {
     color: #87d7d7;
     font-weight: 600;
     cursor: pointer;
   }
 
   /* Inline code */
-  .message-text :global(code),
-  .action-text :global(code) {
+  :global(.message-text code),
+  :global(.action-text code) {
     background: #1a1a1a;
     padding: 0.12em 0.45em;
     border-radius: 3px;
@@ -860,8 +761,8 @@
   }
 
   /* Code blocks */
-  .message-text :global(pre),
-  .action-text :global(pre) {
+  :global(.message-text pre),
+  :global(.action-text pre) {
     background: #1a1a1a;
     padding: 10px 14px;
     border-radius: 5px;
@@ -869,8 +770,8 @@
     margin: 5px 0;
   }
 
-  .message-text :global(pre code),
-  .action-text :global(pre code) {
+  :global(.message-text pre code),
+  :global(.action-text pre code) {
     background: none;
     padding: 0;
     border-radius: 0;
@@ -878,87 +779,36 @@
   }
 
   /* Headings - scaled down for chat context */
-  .message-text :global(h1),
-  .message-text :global(h2),
-  .message-text :global(h3),
-  .action-text :global(h1),
-  .action-text :global(h2),
-  .action-text :global(h3) {
+  :global(.message-text h1),
+  :global(.message-text h2),
+  :global(.message-text h3),
+  :global(.action-text h1),
+  :global(.action-text h2),
+  :global(.action-text h3) {
     font-size: 1em;
     font-weight: 700;
     margin: 5px 0 3px;
   }
 
   /* Lists */
-  .message-text :global(ul),
-  .message-text :global(ol),
-  .action-text :global(ul),
-  .action-text :global(ol) {
+  :global(.message-text ul),
+  :global(.message-text ol),
+  :global(.action-text ul),
+  :global(.action-text ol) {
     margin: 3px 0;
     padding-left: 1.6em;
   }
 
   /* Blockquotes */
-  .message-text :global(blockquote),
-  .action-text :global(blockquote) {
+  :global(.message-text blockquote),
+  :global(.action-text blockquote) {
     border-left: 2px solid #4a4a4a;
     margin: 3px 0;
     padding-left: 10px;
     color: #888;
   }
 
-  /* Action messages (in sender's color) */
-  .action-star {
-    flex-shrink: 0;
-    margin-right: 0.3em;
-  }
-
-  .action-text {
-    flex: 1;
-    min-width: 0;
-  }
-
-  /* Typing indicator */
-  .typing-indicator {
-    display: flex;
-    align-items: center;
-    gap: 7px;
-    padding: 5px 0;
-    margin-top: 5px;
-    opacity: 0.7;
-  }
-
-  .typing-name {
-    font-weight: 700;
-    font-size: 0.85rem;
-  }
-
-  .typing-dots {
-    display: flex;
-    gap: 3px;
-    align-items: center;
-  }
-
-  .typing-dots .dot {
-    width: 5px;
-    height: 5px;
-    border-radius: 50%;
-    background: #d7d787;
-    animation: typing-bounce 1.4s infinite ease-in-out both;
-  }
-
-  .typing-dots .dot:nth-child(1) {
-    animation-delay: 0s;
-  }
-
-  .typing-dots .dot:nth-child(2) {
-    animation-delay: 0.2s;
-  }
-
-  .typing-dots .dot:nth-child(3) {
-    animation-delay: 0.4s;
-  }
-
+  /* Typing indicator bounce animation */
   @keyframes typing-bounce {
     0%, 80%, 100% {
       opacity: 0.3;
@@ -970,264 +820,19 @@
     }
   }
 
-  /* Scroll-to-bottom button */
-  .scroll-to-bottom {
-    position: absolute;
-    bottom: 90px;
-    right: 22px;
-    width: 40px;
-    height: 40px;
-    border-radius: 50%;
-    border: 2px solid #2a2a2a;
-    background: #1a1a1a;
-    color: #d0d0d0;
-    font-size: 1.2rem;
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    transition: all 0.2s;
-    opacity: 0.85;
-    z-index: 10;
+  :global(.typing-dots .dot) {
+    animation: typing-bounce 1.4s infinite ease-in-out both;
   }
 
-  .scroll-to-bottom:hover {
-    opacity: 1;
-    border-color: #5faf5f;
-    color: #5faf5f;
+  :global(.typing-dots .dot:nth-child(1)) {
+    animation-delay: 0s;
   }
 
-  /* Input area - FIXED at bottom with safe-area */
-  .input-area {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    padding: 12px;
-    padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px));
-    background: #1a1a1a;
-    border-top: 2px solid #2a2a2a;
-    flex-shrink: 0;
+  :global(.typing-dots .dot:nth-child(2)) {
+    animation-delay: 0.2s;
   }
 
-  /* File preview */
-  .file-preview {
-    position: relative;
-    display: inline-block;
-    max-width: 200px;
-    border: 1px solid #3a3a3a;
-    border-radius: 8px;
-    padding: 8px;
-    background: #1c1c1c;
-  }
-
-  .preview-image {
-    max-width: 100%;
-    max-height: 120px;
-    border-radius: 4px;
-    display: block;
-  }
-
-  .preview-file {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    color: #d0d0d0;
-  }
-
-  .file-icon {
-    font-size: 1.5rem;
-  }
-
-  .file-name {
-    font-size: 0.85rem;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .remove-file {
-    position: absolute;
-    top: 4px;
-    right: 4px;
-    width: 24px;
-    height: 24px;
-    padding: 0;
-    border-radius: 50%;
-    background: rgba(0, 0, 0, 0.7);
-    color: #fff;
-    font-size: 1.2rem;
-    line-height: 1;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    cursor: pointer;
-    border: 1px solid #3a3a3a;
-  }
-
-  .remove-file:hover {
-    background: rgba(255, 87, 87, 0.8);
-    border-color: #ff5f5f;
-  }
-
-  .input-row {
-    display: flex;
-    gap: 8px;
-    width: 100%;
-  }
-
-  textarea {
-    flex: 1;
-    padding: 13px 17px;
-    border: 2px solid #2a2a2a;
-    border-radius: 18px;
-    background: #0f0f0f;
-    color: #d0d0d0;
-    font-size: 1.02rem;
-    font-family: inherit;
-    outline: none;
-    resize: none;
-    min-height: 1.6em;
-    max-height: 9em;
-    overflow-y: auto;
-    field-sizing: content;
-    transition: border-color 0.2s;
-  }
-
-  textarea:focus {
-    border-color: #5faf5f;
-  }
-
-  textarea::placeholder {
-    color: #606060;
-  }
-
-  button[type="submit"] {
-    padding: 13px 22px;
-    border: none;
-    border-radius: 26px;
-    background: #5faf5f;
-    color: #0a0a0a;
-    font-weight: 700;
-    cursor: pointer;
-    transition: all 0.2s;
-    font-size: 0.95rem;
-    letter-spacing: 0.01em;
-  }
-
-  button[type="submit"]:disabled {
-    opacity: 0.4;
-    cursor: not-allowed;
-  }
-
-  button[type="submit"]:hover:not(:disabled) {
-    background: #6fc57f;
-    transform: translateY(-1px);
-  }
-
-  button[type="submit"]:active:not(:disabled) {
-    transform: translateY(0);
-  }
-
-  /* Task detail modal (matches Kanban modal style) */
-  .task-modal-overlay {
-    position: fixed;
-    top: 0;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    background: rgba(0, 0, 0, 0.75);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    z-index: 1000;
-    padding: 18px;
-  }
-
-  .task-modal-content {
-    background: #16213e;
-    border-radius: 9px;
-    padding: 18px;
-    max-width: 420px;
-    width: 100%;
-    max-height: 80vh;
-    overflow-y: auto;
-    position: relative;
-    border: 1px solid #0f3460;
-  }
-
-  .task-modal-close {
-    position: absolute;
-    top: 9px;
-    right: 9px;
-    background: transparent;
-    border: none;
-    color: #666;
-    font-size: 1.6rem;
-    cursor: pointer;
-    padding: 5px 10px;
-    line-height: 1;
-    border-radius: 0;
-  }
-
-  .task-modal-close:hover {
-    color: #00d9ff;
-  }
-
-  .task-modal-header {
-    display: flex;
-    align-items: center;
-    gap: 9px;
-    margin-bottom: 9px;
-  }
-
-  .task-modal-id {
-    color: #00d9ff;
-    font-family: ui-monospace, monospace;
-    font-size: 0.88rem;
-  }
-
-  .task-modal-status {
-    font-size: 0.72rem;
-    padding: 3px 9px;
-    border-radius: 13px;
-    background: #0f3460;
-    color: #888;
-    text-transform: capitalize;
-  }
-
-  .task-modal-title {
-    color: #eee;
-    font-size: 1.05rem;
-    font-weight: 600;
-    margin: 0 0 13px 0;
-    line-height: 1.45;
-  }
-
-  .task-modal-description {
-    color: #aaa;
-    font-size: 0.88rem;
-    line-height: 1.55;
-    margin: 0 0 13px 0;
-    white-space: pre-wrap;
-  }
-
-  .task-modal-description.empty {
-    color: #666;
-    font-style: italic;
-  }
-
-  .task-modal-meta {
-    display: flex;
-    gap: 9px;
-    font-size: 0.85rem;
-    margin-bottom: 5px;
-  }
-
-  .task-meta-label {
-    color: #666;
-  }
-
-  .task-meta-value {
-    color: #ccc;
+  :global(.typing-dots .dot:nth-child(3)) {
+    animation-delay: 0.4s;
   }
 </style>
