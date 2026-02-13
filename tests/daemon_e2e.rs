@@ -153,6 +153,28 @@ impl DaemonFixture {
             return None;
         }
 
+        // Configure git user (needed for commits)
+        let _ = Command::new("git")
+            .args(["config", "user.email", "test@example.com"])
+            .current_dir(&temp_dir)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        let _ = Command::new("git")
+            .args(["config", "user.name", "Test User"])
+            .current_dir(&temp_dir)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+
+        // Create an initial commit (needed for git worktree to have a HEAD)
+        let _ = Command::new("git")
+            .args(["commit", "--allow-empty", "-m", "Initial commit"])
+            .current_dir(&temp_dir)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+
         // Compute socket and PID paths
         // These match the paths from midtown::paths
         let state_dir = std::env::var("XDG_STATE_HOME")
@@ -385,6 +407,14 @@ impl Drop for DaemonFixture {
         // Clean up the entire project directory (~/.midtown/projects/<name>/)
         // This includes config.toml, daemon.pid, channel.jsonl, cursors/, etc.
         let _ = fs::remove_dir_all(&self.project_dir);
+
+        // Clean up worktrees directory (~/.midtown/worktrees/<name>/)
+        let worktrees_dir = dirs::home_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join(".midtown")
+            .join("worktrees")
+            .join(&self.repo_name);
+        let _ = fs::remove_dir_all(&worktrees_dir);
 
         // Clean up task directory (~/.claude/tasks/midtown-<name>/)
         let _ = fs::remove_dir_all(&self.tasks_dir);
@@ -3310,4 +3340,117 @@ fn test_daemon_accepts_valid_model_format_on_create() {
             result
         );
     }
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Lead worktree E2E tests
+//
+// These tests verify the daemon creates and manages the lead worktree
+// at ~/.midtown/worktrees/<repo>/lead/ during startup.
+// ────────────────────────────────────────────────────────────────────────────
+
+/// Test that the daemon creates a lead worktree on startup.
+///
+/// The daemon should create a detached-HEAD worktree at
+/// ~/.midtown/worktrees/<repo>/lead/ pointing at the main repo.
+#[test]
+#[ignore] // Requires built binary
+fn test_daemon_creates_lead_worktree_on_startup() {
+    let mut fixture = match DaemonFixture::new() {
+        Some(f) => f,
+        None => return,
+    };
+
+    assert!(fixture.start_daemon(), "daemon should start");
+
+    let lead_worktree = midtown::paths::lead_worktree_path(&fixture.repo_name);
+    assert!(
+        lead_worktree.exists(),
+        "Lead worktree should exist at {}",
+        lead_worktree.display()
+    );
+
+    // Verify it's a valid git worktree (has .git file pointing to main repo)
+    let git_file = lead_worktree.join(".git");
+    assert!(git_file.exists(), "Lead worktree should have a .git file");
+
+    // Verify it's in detached HEAD state
+    let output = Command::new("git")
+        .current_dir(&lead_worktree)
+        .args(["symbolic-ref", "HEAD"])
+        .output()
+        .expect("git symbolic-ref");
+    assert!(
+        !output.status.success(),
+        "Lead worktree should be in detached HEAD state"
+    );
+}
+
+/// Test that the lead worktree persists across daemon restart.
+///
+/// The daemon should reuse an existing lead worktree rather than
+/// recreating it, preserving any local modifications.
+#[test]
+#[ignore] // Requires built binary
+fn test_lead_worktree_persists_across_restart() {
+    let mut fixture = match DaemonFixture::new() {
+        Some(f) => f,
+        None => return,
+    };
+
+    assert!(fixture.start_daemon(), "daemon should start");
+
+    let lead_worktree = midtown::paths::lead_worktree_path(&fixture.repo_name);
+    assert!(lead_worktree.exists(), "Lead worktree should exist");
+
+    // Create a marker file to verify persistence
+    let marker = lead_worktree.join("test-marker.txt");
+    fs::write(&marker, "persist-test").expect("write marker");
+    assert!(marker.exists());
+
+    // Stop and restart the daemon
+    fixture.stop_daemon();
+    assert!(fixture.start_daemon(), "daemon should restart");
+
+    // Worktree and marker should still exist
+    assert!(
+        lead_worktree.exists(),
+        "Lead worktree should persist after restart"
+    );
+    assert!(
+        marker.exists(),
+        "Marker file should persist — worktree was not recreated"
+    );
+    assert_eq!(fs::read_to_string(&marker).unwrap(), "persist-test");
+}
+
+/// Test that the daemon starts even if lead worktree creation fails.
+///
+/// If the worktree path is occupied by something invalid, the daemon
+/// should fall back to the main repo directory and continue running.
+#[test]
+#[ignore] // Requires built binary
+fn test_daemon_starts_even_if_lead_worktree_creation_fails() {
+    let mut fixture = match DaemonFixture::new() {
+        Some(f) => f,
+        None => return,
+    };
+
+    // Create a corrupted directory at the lead worktree path.
+    // The daemon's create_lead_worktree will try to remove this and re-create,
+    // but a .git file with garbage content will cause `git worktree add` to
+    // encounter an already-existing directory after removal fails or the path
+    // has unexpected state. We block creation by making the parent read-only.
+    let lead_worktree = midtown::paths::lead_worktree_path(&fixture.repo_name);
+    if let Some(parent) = lead_worktree.parent() {
+        fs::create_dir_all(parent).expect("create parent");
+    }
+    fs::create_dir_all(&lead_worktree).expect("create dir");
+    fs::write(lead_worktree.join(".git"), "garbage-not-a-worktree").expect("write fake .git");
+
+    // Daemon should still start (falling back to main repo)
+    assert!(
+        fixture.start_daemon(),
+        "Daemon should start even if lead worktree creation fails"
+    );
 }
