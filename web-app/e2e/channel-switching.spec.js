@@ -249,4 +249,37 @@ test.describe('Channel switching', () => {
     // Original messages should still be there (cached)
     await expect(page.locator('.message-text', { hasText: 'Starting work on main tasks' })).toBeVisible()
   })
+
+  test('channel switching is non-blocking and instant', async ({ page }) => {
+    // Add a slow API response for ui-improvements channel
+    await page.route('**/api/channels/history?channel=ui-improvements', async (route) => {
+      // Delay the response by 200ms to simulate network latency
+      await new Promise(resolve => setTimeout(resolve, 200))
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(MOCK_UI_MESSAGES)
+      })
+    })
+
+    const uiChannel = page.locator('.channel-item', { hasText: '#ui-improvements' })
+
+    // Record when we click the channel
+    const clickTime = Date.now()
+    await uiChannel.click()
+
+    // Channel should become active immediately (before API response completes)
+    // This should happen in <50ms, well before the 200ms API delay
+    await expect(uiChannel).toHaveClass(/active/, { timeout: 100 })
+    const switchTime = Date.now() - clickTime
+
+    // Verify switching happened fast (before the API response)
+    expect(switchTime).toBeLessThan(150) // Allow some margin, but should be way faster than 200ms
+
+    // Header should update immediately
+    await expect(page.locator('.channel-header .channel-name')).toHaveText('ui-improvements')
+
+    // Messages will appear after the API call completes (async)
+    await expect(page.locator('.message-text', { hasText: 'Working on UI improvements' })).toBeVisible({ timeout: 1000 })
+  })
 })
