@@ -48,7 +48,7 @@ Attach to a headless coworker's session in an interactive tmux window for debugg
 
 | Command | Description |
 |---------|-------------|
-| `midtown task create <subject> --description <desc> [--blocked-by <ids>] [--channel <name>] [--model <provider/model>]` | Create a new task (optionally blocked by task IDs, routed to a channel, or assigned a model) |
+| `midtown task create <subject> --description <desc> [--blocked-by <ids>] [--channel <name>] [--model <provider/model>] [--plan <path>] [--execution-skill <skill>]` | Create a new task (optionally blocked by task IDs, routed to a channel, assigned a model, given a plan file, or assigned an execution skill) |
 | `midtown task list [--all]` | List tasks (pending/in-progress by default) |
 | `midtown task view <id>` | View task details |
 | `midtown task update <id> [--owner <name>] [--status <status>] [--channel <name>] [--model <provider/model>]` | Update a task (use `--model ""` to clear) |
