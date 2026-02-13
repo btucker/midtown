@@ -1,0 +1,13 @@
+layout {
+    // Midtown sidebar plugin — always visible on left
+    pane size="25%" {
+        plugin location="file:~/.midtown/plugins/midtown_zellij_plugin.wasm"
+    }
+    // Channel pane (terminal running midtown chat)
+    pane size="25%" {
+        command "midtown"
+        args "chat" "--tmux-embedded"
+    }
+    // Lead / Coworker pane (primary workspace)
+    pane size="50%" focus=true
+}
