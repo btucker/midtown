@@ -67,6 +67,8 @@ impl ZellijPlugin for MidtownPlugin {
             PermissionType::ReadApplicationState,
             PermissionType::RunCommands,
             PermissionType::MessageAndLaunchOtherPlugins,
+            PermissionType::WriteToStdin,
+            PermissionType::OpenTerminalsOrPlugins,
         ]);
         subscribe(&[
             EventType::Timer,
