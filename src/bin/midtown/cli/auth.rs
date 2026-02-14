@@ -408,6 +408,15 @@ fn handle_login(
         ));
     }
 
+    // Re-run profile setup after login to promote any new non-auth files
+    // created during the interactive session into shared storage.
+    if let Err(e) = midtown::auth::ensure_profile_dir_for(provider, email) {
+        eprintln!(
+            "Warning: profile '{}' authenticated, but post-login setup failed: {}",
+            email, e
+        );
+    }
+
     // If this is the first profile, set it as current
     let profiles = midtown::auth::list_profiles_for(provider).unwrap_or_default();
     if profiles.len() == 1

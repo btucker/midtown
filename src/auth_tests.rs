@@ -130,7 +130,7 @@ fn test_shared_provider_storage_dir_claude() {
     let path = dir.unwrap();
     let s = path.to_string_lossy();
     assert!(s.contains(".midtown"));
-    assert!(s.contains("providers/claude"));
+    assert!(s.contains("platforms/claude"));
 }
 
 #[test]
@@ -245,6 +245,56 @@ fn test_setup_claude_profile_symlinks() {
     }
 
     // Clean up profile dir only — don't remove shared storage
+    let _ = std::fs::remove_dir_all(profile_dir.parent().unwrap());
+}
+
+#[test]
+fn test_setup_claude_profile_symlinks_promotes_unknown_entries() {
+    let test_profile = format!("test-promote-{}", std::process::id());
+    let profile_dir = profile_dir_for(AuthProvider::Claude, &test_profile);
+    let shared = shared_provider_storage_dir(AuthProvider::Claude).unwrap();
+
+    let _ = std::fs::remove_dir_all(profile_dir.parent().unwrap());
+    let _ = std::fs::remove_dir_all(&shared);
+
+    std::fs::create_dir_all(&profile_dir).unwrap();
+    std::fs::write(profile_dir.join("unknown.json"), "{\"k\":1}").unwrap();
+    std::fs::create_dir_all(profile_dir.join("plugins")).unwrap();
+    std::fs::write(profile_dir.join("plugins").join("a.txt"), "x").unwrap();
+
+    setup_claude_profile_symlinks(&test_profile).unwrap();
+
+    assert!(shared.join("unknown.json").exists());
+    assert!(shared.join("plugins").join("a.txt").exists());
+
+    #[cfg(unix)]
+    {
+        let file_link = profile_dir.join("unknown.json");
+        let dir_link = profile_dir.join("plugins");
+        assert!(
+            file_link
+                .symlink_metadata()
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert!(
+            dir_link
+                .symlink_metadata()
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(
+            std::fs::read_link(file_link).unwrap(),
+            shared.join("unknown.json")
+        );
+        assert_eq!(
+            std::fs::read_link(dir_link).unwrap(),
+            shared.join("plugins")
+        );
+    }
+
     let _ = std::fs::remove_dir_all(profile_dir.parent().unwrap());
 }
 

@@ -10,13 +10,19 @@ Profile names are email addresses (e.g., `user@example.com`). They can contain a
 
 ## Profile Storage
 
-Profiles are stored in `~/.midtown/auth/`:
+Profiles are stored in `~/.midtown/`:
 
 ```
-~/.midtown/auth/
-├── current              # Text file containing the active profile name
-└── <profile>/           # Per-profile directory
-    └── .claude.json     # Claude config with auth tokens
+~/.midtown/
+├── auth/
+│   └── <profile>/
+│       └── claude/                  # CLAUDE_CONFIG_DIR
+│           ├── .claude.json         # Per-profile auth tokens
+│           ├── projects -> symlink  # Shared state
+│           ├── tasks    -> symlink  # Shared state
+│           └── ...
+└── platforms/
+    └── claude/                      # Shared Claude state
 ```
 
 When midtown spawns Claude sessions (Lead or Coworkers), it sets `CLAUDE_CONFIG_DIR` to the active profile's directory, isolating authentication between profiles.
