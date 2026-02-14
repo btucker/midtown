@@ -1,7 +1,5 @@
 //! Tests for status RPC handler.
 
-use super::*;
-
 #[test]
 fn test_current_task_includes_id_and_title() {
     // Test that current_task includes both the task ID and title
