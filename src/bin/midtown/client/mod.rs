@@ -524,6 +524,34 @@ impl DaemonClient {
         self.send_raw_with_timeout("headless.execute", Some(params), 120)
     }
 
+    // Plugin commands (Zellij plugin ↔ daemon communication)
+
+    /// Get complete dashboard state for the Zellij plugin.
+    pub fn plugin_dashboard(&self) -> Result<Value, String> {
+        self.send_raw("plugin.dashboard", None)
+    }
+
+    /// Attach to a coworker's session (pause headless, return session ID).
+    pub fn plugin_attach(&self, name: &str, force: bool) -> Result<Value, String> {
+        self.send_raw(
+            "plugin.attach",
+            Some(serde_json::json!({ "name": name, "force": force })),
+        )
+    }
+
+    /// Detach from a coworker's session (resume headless).
+    pub fn plugin_detach(&self, name: &str) -> Result<Value, String> {
+        self.send_raw("plugin.detach", Some(serde_json::json!({ "name": name })))
+    }
+
+    /// Get recent streaming events from a headless coworker.
+    pub fn plugin_coworker_stream(&self, name: &str) -> Result<Value, String> {
+        self.send_raw(
+            "plugin.coworker-stream",
+            Some(serde_json::json!({ "name": name })),
+        )
+    }
+
     /// Send a JSON-RPC request with a custom timeout in seconds.
     fn send_raw_with_timeout(
         &self,

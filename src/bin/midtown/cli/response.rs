@@ -16,6 +16,8 @@ pub enum Response {
     Tasks { tasks: Vec<TaskInfo> },
     /// List of PRs
     PullRequests { pull_requests: Vec<PrInfo> },
+    /// Raw JSON value (for plugin RPC passthrough)
+    Json { value: serde_json::Value },
 }
 
 /// Basic status response (legacy)
@@ -264,6 +266,8 @@ impl Response {
                 }
                 out.trim_end().to_string()
             }
+            Response::Json { value } => serde_json::to_string_pretty(value)
+                .unwrap_or_else(|e| format!("{{\"error\": \"{}\"}}", e)),
             Response::PullRequests { pull_requests } => {
                 if pull_requests.is_empty() {
                     return "No pull requests".to_string();
