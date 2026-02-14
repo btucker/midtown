@@ -1395,20 +1395,21 @@ fn no_cross_tick_duplicate_spawn_for_in_flight_task() {
 // Test: Daemon dispatch when all coworkers are idle/gone
 // =============================================================================
 
-/// Regression test for task !1288: Daemon not dispatching tasks when all coworkers are idle/gone.
+/// Regression test for task !1288: Validates snapshot preconditions for dispatch bug.
 ///
-/// Captured snapshot shows:
+/// Captured snapshot shows the exact state where the daemon failed to dispatch:
 /// - 0 active coworkers (all went on break / were shut down)
 /// - 8 pending tasks without owners
 /// - 3 PRs needing review
 /// - Not at dev/coworker limits
 ///
-/// Expected: Daemon should spawn coworkers for pending tasks
-/// Actual (bug): No dispatch activity in logs — tasks sit unassigned indefinitely
+/// This test verifies the snapshot preconditions are correct. The actual dispatch
+/// behavior is tested via unit tests in dispatch_tests.rs.
 #[test]
-fn daemon_dispatches_tasks_when_all_coworkers_are_gone() {
-    let fixture =
-        include_str!("fixtures/snapshot/snapshot-reviewer-not-spawning-20260214-003545.json");
+fn snapshot_preconditions_for_zero_coworker_dispatch() {
+    let fixture = include_str!(
+        "fixtures/snapshot/snapshot-dispatch-with-zero-coworkers-20260214-003545.json"
+    );
     let snap = load_snapshot(fixture);
 
     // Verify preconditions: this is the exact state where the bug occurs
