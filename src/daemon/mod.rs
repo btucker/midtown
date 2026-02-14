@@ -2303,7 +2303,8 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                 health::check_lead_typing(&state).await;
             }
 
-            // Check if lead window is still alive; recreate if killed.
+            // Check if lead session is still alive; recreate if killed.
+            // Supports both Zellij (session-level check) and tmux (window-level check).
             // Skip during the startup grace period to avoid races with
             // `midtown restart` where the lead window is still settling.
             _ = lead_health_interval.tick() => {
@@ -2312,12 +2313,12 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                     let workdir = lead_workdir.clone();
                     let project = lead_project_name.clone();
                     let additional = lead_additional_dirs.clone();
-                    let tmux_server_gone = tokio::task::spawn_blocking(move || {
+                    let terminal_server_gone = tokio::task::spawn_blocking(move || {
                         health::check_and_respawn_lead(&session, &workdir, &project, &additional)
                     }).await.unwrap_or(false);
 
-                    if tmux_server_gone {
-                        error!("Tmux server died unexpectedly. Daemon shutting down.");
+                    if terminal_server_gone {
+                        error!("Terminal multiplexer died unexpectedly. Daemon shutting down.");
                         let _ = shutdown_tx.send(());
                         break;
                     }

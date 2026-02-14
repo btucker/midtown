@@ -46,8 +46,9 @@ fn resolve_project_name(project: &Option<String>) -> Option<String> {
     })
 }
 
-/// Get the tmux session name for an explicit or inferred project.
+/// Get the session name for an explicit or inferred project.
 /// Format: midtown-{project_name}
+/// Used for both Zellij and tmux sessions.
 ///
 /// Returns an error if no project name can be determined.
 fn session_name_for(project: &Option<String>) -> Result<String, String> {
@@ -60,8 +61,9 @@ fn session_name_for(project: &Option<String>) -> Result<String, String> {
     }
 }
 
-/// Get the tmux session name based on the project name.
+/// Get the session name based on the project name.
 /// Format: midtown-{project_name}
+/// Used for both Zellij and tmux sessions.
 ///
 /// The project name is resolved from config.toml `[project].name`,
 /// falling back to the git repo directory name.
@@ -423,6 +425,21 @@ fn cleanup_stale_daemon() {
 
 /// Check if the project's tmux session exists.
 fn session_exists(session: &str) -> bool {
+    // Check Zellij first, then fall back to tmux
+    if zellij_session_exists(session) {
+        return true;
+    }
+    tmux_session_exists(session)
+}
+
+/// Check if a Zellij session with the given name exists.
+/// Delegates to the shared implementation in `midtown::tmux`.
+fn zellij_session_exists(session: &str) -> bool {
+    midtown::tmux::zellij_session_exists(session)
+}
+
+/// Check if a tmux session with the given name exists.
+fn tmux_session_exists(session: &str) -> bool {
     let output = Command::new("tmux")
         .args(["has-session", "-t", session])
         .output();
@@ -431,6 +448,171 @@ fn session_exists(session: &str) -> bool {
         Ok(o) => o.status.success(),
         Err(_) => false,
     }
+}
+
+/// Check if Zellij is available on the system.
+/// Delegates to the shared implementation in `midtown::tmux`.
+fn zellij_is_available() -> bool {
+    midtown::tmux::zellij_is_available()
+}
+
+/// Escape a string for use inside KDL double-quoted strings.
+///
+/// KDL uses the same escape sequences as JSON strings, so we need to escape
+/// backslashes and double quotes. This prevents paths with special characters
+/// from producing invalid KDL.
+fn escape_kdl_string(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+/// Generate a KDL layout file for the Zellij session.
+///
+/// Creates a layout with:
+/// - Left pane (25%): Midtown sidebar plugin
+/// - Middle pane (25%): midtown chat (channel TUI)
+/// - Right pane (50%): Lead Claude Code session (launched via shell script)
+fn generate_zellij_layout(
+    project_name: &str,
+    lead_launcher: &Path,
+    lead_workdir: &Path,
+) -> Result<PathBuf, String> {
+    let layout_dir = midtown::paths::midtown_base_dir().join("layouts");
+    std::fs::create_dir_all(&layout_dir)
+        .map_err(|e| format!("Failed to create layout dir: {}", e))?;
+
+    let layout_path = layout_dir.join(format!("{}.kdl", project_name));
+    let plugin_path = midtown::paths::midtown_base_dir()
+        .join("plugins")
+        .join("midtown_zellij_plugin.wasm");
+
+    // Escape paths for KDL string interpolation
+    let escaped_launcher = escape_kdl_string(&lead_launcher.display().to_string());
+    let escaped_cwd = escape_kdl_string(&lead_workdir.display().to_string());
+
+    // Check if the plugin WASM file exists; if not, use a simpler layout
+    // without the plugin pane (graceful degradation).
+    let layout = if plugin_path.exists() {
+        let escaped_plugin = escape_kdl_string(&plugin_path.display().to_string());
+        format!(
+            r#"layout {{
+    pane size="25%" {{
+        plugin location="file:{plugin_path}"
+    }}
+    pane size="25%" {{
+        command "midtown"
+        args "chat"
+    }}
+    pane size="50%" focus=true {{
+        command "bash"
+        args "-c" "{launcher}"
+        cwd "{cwd}"
+    }}
+}}
+"#,
+            plugin_path = escaped_plugin,
+            launcher = escaped_launcher,
+            cwd = escaped_cwd,
+        )
+    } else {
+        format!(
+            r#"layout {{
+    pane size="30%" {{
+        command "midtown"
+        args "chat"
+    }}
+    pane size="70%" focus=true {{
+        command "bash"
+        args "-c" "{launcher}"
+        cwd "{cwd}"
+    }}
+}}
+"#,
+            launcher = escaped_launcher,
+            cwd = escaped_cwd,
+        )
+    };
+
+    std::fs::write(&layout_path, layout).map_err(|e| format!("Failed to write layout: {}", e))?;
+
+    Ok(layout_path)
+}
+
+/// Write a shell launcher script for the Lead Claude Code session.
+///
+/// The launcher script sets environment variables and execs claude with
+/// the appropriate flags. This is used by Zellij's KDL layout to start
+/// the Lead pane.
+fn write_lead_launcher_script(
+    _session: &str,
+    lead_workdir: &Path,
+    project_name: &str,
+    additional_repos: &[PathBuf],
+) -> Result<PathBuf, String> {
+    let lead_dir = midtown::paths::midtown_base_dir()
+        .join("lead")
+        .join(project_name);
+    std::fs::create_dir_all(&lead_dir).map_err(|e| format!("Failed to create lead dir: {}", e))?;
+
+    // Reuse existing tmux infrastructure to build the lead shell command.
+    // spawn_lead writes prompt/settings files and constructs the command;
+    // we extract just the command string for the launcher script.
+    let prompt_file = midtown::tmux::write_lead_prompt_file()
+        .map_err(|e| format!("Failed to write lead prompt: {}", e))?;
+    let settings_file = midtown::tmux::write_lead_settings_file()
+        .map_err(|e| format!("Failed to write lead settings: {}", e))?;
+
+    // Resolve auth profile from project config
+    let auth_dir = midtown::auth::active_profile_dir_for_project(project_name);
+
+    let config = midtown::launch::LaunchConfig {
+        name: "lead".to_string(),
+        session_mode: midtown::launch::SessionMode::Fresh,
+        role: midtown::launch::CoworkerRole::Coworker,
+        initial_prompt: None,
+        additional_dirs: additional_repos.to_vec(),
+        restrict_setting_sources: false,
+        pr_number: None,
+        team_name: None,
+        working_dir: None,
+        model: "sonnet".to_string(),
+        channel: None,
+        auth_profile_dir: Some(auth_dir),
+        auth_provider: midtown::auth::AuthProvider::Claude,
+    };
+
+    let task_list_id = midtown::paths::task_list_id_for_repo(project_name);
+
+    // Allow tests/CI to override the lead command (claude isn't available in CI)
+    let shell_command = if let Ok(test_cmd) = std::env::var("MIDTOWN_LEAD_COMMAND") {
+        test_cmd
+    } else {
+        let launch = config.to_shell_command(
+            &settings_file,
+            &prompt_file,
+            None,
+            lead_workdir,
+            project_name,
+        );
+        launch.shell_command
+    };
+
+    let script_content = format!(
+        "#!/bin/bash\nexport CLAUDE_CODE_TASK_LIST_ID='{}';\n{}\n",
+        task_list_id, shell_command
+    );
+
+    let script_path = lead_dir.join("zellij-lead-launcher.sh");
+    std::fs::write(&script_path, &script_content)
+        .map_err(|e| format!("Failed to write launcher script: {}", e))?;
+
+    // Make the script executable
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755));
+    }
+
+    Ok(script_path)
 }
 
 /// Find the git repository root by walking up the directory tree.
@@ -584,8 +766,12 @@ fn create_or_reuse_lead_worktree(repo: &Path) -> Result<PathBuf, String> {
 /// Handle `midtown start` command.
 ///
 /// 1. Starts the daemon (if not running)
-/// 2. Creates tmux session for the project
+/// 2. Creates a terminal session for the project (Zellij preferred, tmux fallback)
 /// 3. Launches Claude Code with Lead config in that session
+///
+/// When Zellij is available, creates a Zellij session with a KDL layout containing
+/// a sidebar plugin, chat pane, and lead pane. When Zellij is not installed, falls
+/// back to the legacy tmux-based session with status bar hooks and chat pane.
 ///
 /// Claude Code processes run inside a lightweight filesystem sandbox
 /// (sandbox-exec on macOS, bwrap on Linux) that restricts writes to
@@ -684,15 +870,63 @@ pub fn handle_start(
         }
     }
 
-    // Step 2: Launch tmux session (unless --daemon-only)
+    // Step 2: Launch terminal session (unless --daemon-only)
+    // Prefer Zellij when available, fall back to tmux.
     if daemon_only {
-        messages.push("Skipping tmux session (--daemon-only)".to_string());
-        emit_startup_progress(88, "skipping tmux session (--daemon-only)");
+        messages.push("Skipping terminal session (--daemon-only)".to_string());
+        emit_startup_progress(88, "skipping terminal session (--daemon-only)");
     } else if session_exists(&session) {
         messages.push(format!("Session '{}' already exists", session));
-        emit_startup_progress(88, &format!("tmux session '{}' already exists", session));
+        emit_startup_progress(88, &format!("session '{}' already exists", session));
+    } else if zellij_is_available() {
+        // --- Zellij path ---
+        emit_startup_progress(88, "creating Zellij session");
+
+        // Clear stale task ID mappings from previous sessions
+        midtown::tasks::clear_lead_task_id_map(&project_name);
+
+        // Create lead worktree (or reuse existing one)
+        emit_startup_progress(90, "creating lead worktree");
+        let lead_workdir = create_or_reuse_lead_worktree(&primary_repo)?;
+
+        // Write launcher script for the Lead Claude Code session
+        let lead_launcher =
+            write_lead_launcher_script(&session, &lead_workdir, &project_name, &additional_repos)?;
+
+        // Generate KDL layout for this project
+        let layout_path = generate_zellij_layout(&project_name, &lead_launcher, &lead_workdir)?;
+
+        // Launch Zellij in the background (detached)
+        let status = Command::new("zellij")
+            .args([
+                "--session",
+                &session,
+                "--layout",
+                &layout_path.to_string_lossy(),
+            ])
+            .current_dir(&lead_workdir)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map_err(|e| format!("Failed to create Zellij session: {}", e))?;
+
+        if !status.success() {
+            clear_startup_progress();
+            return Err(format!("Failed to create Zellij session '{}'", session));
+        }
+
+        // Write marker file indicating Lead was initialized by midtown
+        let marker_path = lead_initialized_marker(&primary_repo);
+        if let Some(parent) = marker_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = std::fs::write(&marker_path, env!("CARGO_PKG_VERSION"));
+
+        messages.push(format!("Started Lead session in '{}' (Zellij)", session));
+        emit_startup_progress(93, "lead session started (Zellij)");
     } else {
-        // Get project name for status bar (uppercase)
+        // --- tmux path (legacy) ---
         let display_name = project_name.to_uppercase();
         emit_startup_progress(88, "creating tmux session");
 
@@ -711,7 +945,7 @@ pub fn handle_start(
 
         if !status.success() {
             clear_startup_progress();
-            return Err(format!("Failed to create session '{}'", session));
+            return Err(format!("Failed to create tmux session '{}'", session));
         }
 
         // Create lead worktree (or reuse existing one) so the lead session
@@ -785,7 +1019,7 @@ pub fn handle_start(
         }
         let _ = std::fs::write(&marker_path, env!("CARGO_PKG_VERSION"));
 
-        messages.push(format!("Started Lead session in '{}'", session));
+        messages.push(format!("Started Lead session in '{}' (tmux)", session));
         emit_startup_progress(93, "lead session started");
     }
 
@@ -943,22 +1177,48 @@ pub fn handle_stop(keep_session: bool) -> Result<Response, String> {
 
     // Get session name (if in a git repo)
     if let Ok(session) = session_name() {
-        // Stop tmux session (unless --keep-session)
+        // Stop session (unless --keep-session)
         if !keep_session && session_exists(&session) {
-            // SIGTERM all pane processes first — Claude Code survives SIGHUP
-            // (which is what tmux kill-session sends), leaving orphaned processes
-            // that consume memory and cause contention with other instances.
-            midtown::tmux::terminate_session_processes(&session);
+            // Try Zellij first, then tmux
+            if zellij_session_exists(&session) {
+                // Kill the Zellij session — `zellij kill-session` sends SIGHUP to
+                // pane processes, which Claude Code may survive. Use `zellij kill-session`
+                // first, then clean up any orphaned processes.
+                let status = Command::new("zellij")
+                    .args(["kill-session", &session])
+                    .status()
+                    .map_err(|e| format!("Failed to kill Zellij session: {}", e))?;
 
-            let status = Command::new("tmux")
-                .args(["kill-session", "-t", &session])
-                .status()
-                .map_err(|e| format!("Failed to kill session: {}", e))?;
+                if status.success() {
+                    messages.push(format!("Stopped Zellij session '{}'", session));
+                } else {
+                    messages.push(format!(
+                        "Warning: Failed to stop Zellij session '{}'",
+                        session
+                    ));
+                }
+            }
 
-            if status.success() {
-                messages.push(format!("Stopped session '{}'", session));
-            } else {
-                messages.push(format!("Warning: Failed to stop session '{}'", session));
+            // Also try tmux — both may exist in mixed environments, or only tmux
+            if tmux_session_exists(&session) {
+                // SIGTERM all pane processes first — Claude Code survives SIGHUP
+                // (which is what tmux kill-session sends), leaving orphaned processes
+                // that consume memory and cause contention with other instances.
+                midtown::tmux::terminate_session_processes(&session);
+
+                let status = Command::new("tmux")
+                    .args(["kill-session", "-t", &session])
+                    .status()
+                    .map_err(|e| format!("Failed to kill tmux session: {}", e))?;
+
+                if status.success() {
+                    messages.push(format!("Stopped tmux session '{}'", session));
+                } else {
+                    messages.push(format!(
+                        "Warning: Failed to stop tmux session '{}'",
+                        session
+                    ));
+                }
             }
         } else if session_exists(&session) {
             messages.push(format!(
@@ -1376,7 +1636,7 @@ fn clear_stale_lead_session(repo: &Path) {
 
 /// Handle `midtown attach` command.
 ///
-/// Attaches to the project's tmux session.
+/// Attaches to the project's terminal session (Zellij or tmux).
 /// If the session doesn't exist, it is automatically created first.
 /// If the session exists but Lead wasn't started with midtown settings, reinitialize it.
 pub fn handle_attach(project: Option<&str>) -> Result<Response, String> {
@@ -1399,33 +1659,40 @@ pub fn handle_attach(project: Option<&str>) -> Result<Response, String> {
         if project.is_some() {
             // Named project: don't auto-create, just error
             return Err(format!(
-                "No tmux session '{}' found. Start the project first with 'midtown start'.",
+                "No session '{}' found. Start the project first with 'midtown start'.",
                 session
             ));
         }
 
-        // No active tmux session means Lead is not running.
+        // No active session means Lead is not running.
         // Clear any stale session-id file so we start a fresh
         // Claude Code session instead of resuming the old one.
         if let Some(ref repo) = repo {
             clear_stale_lead_session(repo);
         }
 
-        // Start midtown (daemon + tmux session)
+        // Start midtown (daemon + terminal session)
         handle_start(false, None, vec![])?;
 
         // Wait briefly for the session to be ready
         std::thread::sleep(std::time::Duration::from_millis(200));
     } else if let Some(ref repo) = repo {
-        // Session exists - ensure Lead has proper settings
-        ensure_lead_has_settings(&session, repo)?;
+        // Session exists - ensure Lead has proper settings (tmux only)
+        if tmux_session_exists(&session) {
+            ensure_lead_has_settings(&session, repo)?;
+        }
     }
 
-    // Execute tmux attach - this replaces the current process
-    let err = Command::new("tmux").args(["attach", "-t", &session]).exec();
-
-    // If we get here, exec failed
-    Err(format!("Failed to attach to session: {}", err))
+    // Attach to the session — try Zellij first, then tmux
+    if zellij_session_exists(&session) {
+        let err = Command::new("zellij").args(["attach", &session]).exec();
+        // If we get here, exec failed
+        Err(format!("Failed to attach to Zellij session: {}", err))
+    } else {
+        let err = Command::new("tmux").args(["attach", "-t", &session]).exec();
+        // If we get here, exec failed
+        Err(format!("Failed to attach to tmux session: {}", err))
+    }
 }
 
 /// List all known projects and their running status.
