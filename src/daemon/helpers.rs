@@ -364,12 +364,15 @@ pub fn get_issue_action(issue_type: PrIssueType) -> &'static str {
 ///
 /// Coworker reviews are identified by:
 /// - The "🤖 Reviewed by" or "Reviewed by" signature (legacy formal reviews)
-/// - The "<!-- midtown:" frontmatter (comment-based reviews)
 /// - The "# Code Review by" header at any heading level (case-insensitive)
+///
+/// Note: We do NOT check for "<!-- midtown:" frontmatter alone, as ALL coworker
+/// GitHub comments include this frontmatter. Checking for it would cause false
+/// positives where any coworker comment (CI fix explanations, status updates, etc.)
+/// would be incorrectly detected as a code review.
 pub fn text_contains_review_signature(text: &str) -> bool {
     text.contains("🤖 Reviewed by")
         || text.contains("Reviewed by")
-        || text.contains("<!-- midtown:")
         || text_has_code_review_header(text)
 }
 

@@ -514,9 +514,11 @@ fn polling_recognizes_comment_based_review_with_space() {
         "should recognize comment-based review without space"
     );
 
-    // With additional metadata
+    // With additional metadata (and review header)
     assert!(
-        text_contains_review_signature("<!-- midtown: broadway reviewer=true -->\n\nLooks good"),
+        text_contains_review_signature(
+            "<!-- midtown: broadway reviewer=true -->\n\n## Code Review\n\nLooks good"
+        ),
         "should recognize comment-based review with additional metadata"
     );
 }
