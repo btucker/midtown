@@ -95,17 +95,25 @@ impl Channel {
     ///
     /// For backward compatibility, if `channel.jsonl` exists, it's treated as the
     /// "midtown" channel. New channels always use the `channels/` directory.
+    /// Validates a channel name.
+    ///
+    /// Channel names must be non-empty and contain only alphanumeric characters,
+    /// hyphens, and underscores. This prevents path traversal attacks and ensures
+    /// filesystem compatibility.
+    fn is_valid_channel_name(name: &str) -> bool {
+        !name.is_empty()
+            && name
+                .chars()
+                .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+    }
+
     pub fn new(base_dir: impl Into<PathBuf>, channel_name: impl Into<String>) -> Result<Self> {
         let base_dir = base_dir.into();
         let channel_name = channel_name.into();
 
         // Validate channel name: must be non-empty and contain only
         // alphanumeric characters, hyphens, and underscores.
-        if channel_name.is_empty()
-            || !channel_name
-                .chars()
-                .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
-        {
+        if !Self::is_valid_channel_name(&channel_name) {
             return Err(crate::Error::InvalidMessage(format!(
                 "Invalid channel name '{}': must be non-empty and contain only alphanumeric characters, hyphens, and underscores",
                 channel_name
@@ -231,6 +239,12 @@ impl Channel {
                     } else {
                         stem
                     };
+
+                    // Validate channel name - skip files with invalid names
+                    // (could be created by filesystem bugs, manual edits, etc.)
+                    if !Self::is_valid_channel_name(channel_name) {
+                        continue;
+                    }
 
                     // Don't duplicate "midtown" if we already found channel.jsonl
                     let channel_info = ChannelInfo {
@@ -1790,6 +1804,48 @@ mod tests {
             archived_path.exists(),
             "Archived file should exist at {:?}",
             archived_path
+        );
+    }
+
+    #[test]
+    fn test_list_skips_invalid_channel_names() {
+        let temp_dir = TempDir::new().unwrap();
+
+        // Create valid channels
+        Channel::new(temp_dir.path(), "valid-channel").unwrap();
+        Channel::new(temp_dir.path(), "feature_123").unwrap();
+
+        // Manually create files with invalid names in channels/ directory
+        // (these could be created by filesystem bugs, manual edits, etc.)
+        let channels_dir = temp_dir.path().join("channels");
+        fs::create_dir_all(&channels_dir).unwrap();
+        File::create(channels_dir.join("test extra text.jsonl")).unwrap(); // spaces
+        File::create(channels_dir.join("has\nnewline.jsonl")).unwrap(); // newline (if filesystem allows)
+        File::create(channels_dir.join(".hidden.jsonl")).unwrap(); // leading dot
+
+        // List should only return valid channel names
+        let channels = Channel::list(temp_dir.path(), false).unwrap();
+        let channel_names: Vec<&str> = channels.iter().map(|c| c.name.as_str()).collect();
+
+        assert!(
+            channel_names.contains(&"valid-channel"),
+            "valid-channel should be in the list"
+        );
+        assert!(
+            channel_names.contains(&"feature_123"),
+            "feature_123 should be in the list"
+        );
+        assert!(
+            !channel_names.contains(&"test extra text"),
+            "Channel with spaces should be filtered out"
+        );
+        assert!(
+            !channel_names.contains(&"has\nnewline"),
+            "Channel with newline should be filtered out"
+        );
+        assert!(
+            !channel_names.contains(&".hidden"),
+            "Channel with leading dot should be filtered out"
         );
     }
 
