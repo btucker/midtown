@@ -65,10 +65,11 @@ pub fn handle_pr(cmd: &PrCommand, client: &DaemonClient) -> Result<Response, Str
 /// Handle start command (no daemon required - it starts the daemon)
 pub fn handle_start(
     daemon_only: bool,
+    swap_layout: bool,
     project: Option<String>,
     repos: Vec<std::path::PathBuf>,
 ) -> Result<Response, String> {
-    daemon::handle_start(daemon_only, project, repos)
+    daemon::handle_start(daemon_only, swap_layout, project, repos)
 }
 
 /// Handle stop command (no daemon required - it stops the daemon)

@@ -461,9 +461,10 @@ fn test_daemon_spawns_lead_with_real_claude() {
     eprintln!("[TIMING] Fixture setup took {:?}", setup_start.elapsed());
 
     let daemon_start = std::time::Instant::now();
-    if !fixture.start_daemon() {
-        return;
-    }
+    assert!(
+        fixture.start_daemon(),
+        "Fixture failed to start daemon via `midtown start`"
+    );
     eprintln!("[TIMING] start_daemon() took {:?}", daemon_start.elapsed());
 
     let session = fixture.tmux_session_name();
@@ -555,9 +556,10 @@ fn test_nudge_reaches_real_claude() {
         None => return,
     };
 
-    if !fixture.start_daemon() {
-        return;
-    }
+    assert!(
+        fixture.start_daemon(),
+        "Fixture failed to start daemon via `midtown start`"
+    );
 
     let session = fixture.tmux_session_name();
 
@@ -800,9 +802,10 @@ fn test_worktree_isolation() {
         None => return,
     };
 
-    if !fixture.start_daemon() {
-        return;
-    }
+    assert!(
+        fixture.start_daemon(),
+        "Fixture failed to start daemon via `midtown start`"
+    );
 
     // Spawn a coworker via RPC. The daemon assigns names from the avenue pool,
     // so we don't specify a name - just check the returned name.

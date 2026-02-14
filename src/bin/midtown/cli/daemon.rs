@@ -468,65 +468,63 @@ fn escape_kdl_string(s: &str) -> String {
 /// Generate a KDL layout file for the Zellij session.
 ///
 /// Creates a layout with:
-/// - Left pane (25%): Midtown sidebar plugin
-/// - Middle pane (25%): midtown chat (channel TUI)
-/// - Right pane (50%): Lead Claude Code session (launched via shell script)
+/// - Left pane: midtown chat (channel TUI)
+/// - Right pane: Lead Claude Code session (launched via shell script)
+///
+/// Pane widths are configurable via `chat_pane_size` (10-90%).
 fn generate_zellij_layout(
     project_name: &str,
     lead_launcher: &Path,
     lead_workdir: &Path,
+    swap_layout: bool,
+    chat_pane_size: u8,
 ) -> Result<PathBuf, String> {
     let layout_dir = midtown::paths::midtown_base_dir().join("layouts");
     std::fs::create_dir_all(&layout_dir)
         .map_err(|e| format!("Failed to create layout dir: {}", e))?;
 
     let layout_path = layout_dir.join(format!("{}.kdl", project_name));
-    let plugin_path = midtown::paths::midtown_base_dir()
-        .join("plugins")
-        .join("midtown_zellij_plugin.wasm");
-
     // Escape paths for KDL string interpolation
     let escaped_launcher = escape_kdl_string(&lead_launcher.display().to_string());
     let escaped_cwd = escape_kdl_string(&lead_workdir.display().to_string());
 
-    // Check if the plugin WASM file exists; if not, use a simpler layout
-    // without the plugin pane (graceful degradation).
-    let layout = if plugin_path.exists() {
-        let escaped_plugin = escape_kdl_string(&plugin_path.display().to_string());
+    let chat_size = chat_pane_size.clamp(10, 90);
+    let lead_size = 100u8.saturating_sub(chat_size);
+    let layout = if swap_layout {
         format!(
             r#"layout {{
-    pane size="25%" {{
-        plugin location="file:{plugin_path}"
-    }}
-    pane size="25%" {{
-        command "midtown"
-        args "chat"
-    }}
-    pane size="50%" focus=true {{
+    pane size="{lead_size}%" focus=true {{
         command "bash"
         args "-c" "{launcher}"
         cwd "{cwd}"
     }}
+    pane size="{chat_size}%" {{
+        command "midtown"
+        args "chat"
+    }}
 }}
 "#,
-            plugin_path = escaped_plugin,
+            lead_size = lead_size,
+            chat_size = chat_size,
             launcher = escaped_launcher,
             cwd = escaped_cwd,
         )
     } else {
         format!(
             r#"layout {{
-    pane size="30%" {{
+    pane size="{chat_size}%" {{
         command "midtown"
         args "chat"
     }}
-    pane size="70%" focus=true {{
+    pane size="{lead_size}%" focus=true {{
         command "bash"
         args "-c" "{launcher}"
         cwd "{cwd}"
     }}
 }}
 "#,
+            chat_size = chat_size,
+            lead_size = lead_size,
             launcher = escaped_launcher,
             cwd = escaped_cwd,
         )
@@ -770,7 +768,8 @@ fn create_or_reuse_lead_worktree(repo: &Path) -> Result<PathBuf, String> {
 /// 3. Launches Claude Code with Lead config in that session
 ///
 /// When Zellij is available, creates a Zellij session with a KDL layout containing
-/// a sidebar plugin, chat pane, and lead pane. When Zellij is not installed, falls
+/// a left chat pane and a right lead pane by default (or swapped with
+/// `--swap-layout`). When Zellij is not installed, falls
 /// back to the legacy tmux-based session with status bar hooks and chat pane.
 ///
 /// Claude Code processes run inside a lightweight filesystem sandbox
@@ -778,6 +777,7 @@ fn create_or_reuse_lead_worktree(repo: &Path) -> Result<PathBuf, String> {
 /// the project directory, ~/.midtown, ~/.claude, and temp directories.
 pub fn handle_start(
     daemon_only: bool,
+    swap_layout: bool,
     project: Option<String>,
     repos: Vec<PathBuf>,
 ) -> Result<Response, String> {
@@ -795,6 +795,13 @@ pub fn handle_start(
             .unwrap_or_else(|| "default".to_string())
     });
     let additional_repos = resolve_repos(&repos, &project_name);
+    let project_config = midtown::config::get_project_config(&project_name);
+    let effective_swap_layout = if swap_layout {
+        true
+    } else {
+        project_config.zellij_swap_layout()
+    };
+    let effective_chat_pane_size = project_config.zellij_chat_pane_size();
     let session = session_name_for(&Some(project_name.clone()))?;
     emit_startup_progress(
         5,
@@ -894,26 +901,56 @@ pub fn handle_start(
             write_lead_launcher_script(&session, &lead_workdir, &project_name, &additional_repos)?;
 
         // Generate KDL layout for this project
-        let layout_path = generate_zellij_layout(&project_name, &lead_launcher, &lead_workdir)?;
+        let layout_path = generate_zellij_layout(
+            &project_name,
+            &lead_launcher,
+            &lead_workdir,
+            effective_swap_layout,
+            effective_chat_pane_size,
+        )?;
 
-        // Launch Zellij in the background (detached)
-        let status = Command::new("zellij")
+        // Launch Zellij in the background (detached).
+        // Use `attach --create-background` so this works without taking over
+        // the current terminal and without requiring an active TTY.
+        let layout_arg = layout_path.to_string_lossy().to_string();
+        let output = Command::new("zellij")
             .args([
-                "--session",
+                "--new-session-with-layout",
+                &layout_arg,
+                "attach",
+                "--create-background",
                 &session,
-                "--layout",
-                &layout_path.to_string_lossy(),
             ])
             .current_dir(&lead_workdir)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
+            .stderr(Stdio::piped())
+            .output()
             .map_err(|e| format!("Failed to create Zellij session: {}", e))?;
 
-        if !status.success() {
+        if !output.status.success() {
             clear_startup_progress();
-            return Err(format!("Failed to create Zellij session '{}'", session));
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            let detail = if stderr.is_empty() {
+                match output.status.code() {
+                    Some(code) => format!("exit code {}", code),
+                    None => "terminated by signal".to_string(),
+                }
+            } else {
+                stderr
+            };
+            return Err(format!(
+                "Failed to create Zellij session '{}': {}",
+                session, detail
+            ));
+        }
+
+        if !zellij_session_exists(&session) {
+            clear_startup_progress();
+            return Err(format!(
+                "Failed to create Zellij session '{}': command succeeded but session was not found",
+                session
+            ));
         }
 
         // Write marker file indicating Lead was initialized by midtown
@@ -1551,7 +1588,7 @@ pub fn handle_restart(force: bool) -> Result<Response, String> {
             std::thread::sleep(poll_interval);
         }
 
-        let result = handle_start(true, None, vec![])?;
+        let result = handle_start(true, false, None, vec![])?;
         restart_chat_pane();
         return match result {
             Response::Message { message } => Ok(Response::Message {
@@ -1672,7 +1709,7 @@ pub fn handle_attach(project: Option<&str>) -> Result<Response, String> {
         }
 
         // Start midtown (daemon + terminal session)
-        handle_start(false, None, vec![])?;
+        handle_start(false, false, None, vec![])?;
 
         // Wait briefly for the session to be ready
         std::thread::sleep(std::time::Duration::from_millis(200));
@@ -2168,6 +2205,73 @@ mod tests {
         // The actual result depends on whether claude is installed in the test environment.
         let _result: bool = claude_cli_available();
         // If we get here without panicking, the function works correctly
+    }
+
+    #[test]
+    fn test_generate_zellij_layout_default_chat_left() {
+        let temp = tempfile::tempdir().unwrap();
+        let launcher = temp.path().join("launcher.sh");
+        std::fs::write(&launcher, "#!/bin/bash\necho ok\n").unwrap();
+        let project_name = format!("layout-default-{}", uuid::Uuid::new_v4());
+
+        let layout_path =
+            generate_zellij_layout(&project_name, &launcher, temp.path(), false, 35).unwrap();
+        let content = std::fs::read_to_string(&layout_path).unwrap();
+
+        let chat_idx = content.find("command \"midtown\"").unwrap();
+        let lead_idx = content.find("command \"bash\"").unwrap();
+        assert!(
+            chat_idx < lead_idx,
+            "default layout should place chat pane before lead pane"
+        );
+        assert!(
+            content.contains("pane size=\"35%\""),
+            "default layout should use configured chat size"
+        );
+
+        let _ = std::fs::remove_file(layout_path);
+    }
+
+    #[test]
+    fn test_generate_zellij_layout_swap_lead_left() {
+        let temp = tempfile::tempdir().unwrap();
+        let launcher = temp.path().join("launcher.sh");
+        std::fs::write(&launcher, "#!/bin/bash\necho ok\n").unwrap();
+        let project_name = format!("layout-swapped-{}", uuid::Uuid::new_v4());
+
+        let layout_path =
+            generate_zellij_layout(&project_name, &launcher, temp.path(), true, 35).unwrap();
+        let content = std::fs::read_to_string(&layout_path).unwrap();
+
+        let chat_idx = content.find("command \"midtown\"").unwrap();
+        let lead_idx = content.find("command \"bash\"").unwrap();
+        assert!(
+            lead_idx < chat_idx,
+            "swapped layout should place lead pane before chat pane"
+        );
+        assert!(
+            content.contains("pane size=\"65%\""),
+            "swapped layout should keep lead pane width as inverse chat size"
+        );
+
+        let _ = std::fs::remove_file(layout_path);
+    }
+
+    #[test]
+    fn test_generate_zellij_layout_custom_chat_size() {
+        let temp = tempfile::tempdir().unwrap();
+        let launcher = temp.path().join("launcher.sh");
+        std::fs::write(&launcher, "#!/bin/bash\necho ok\n").unwrap();
+        let project_name = format!("layout-size-{}", uuid::Uuid::new_v4());
+
+        let layout_path =
+            generate_zellij_layout(&project_name, &launcher, temp.path(), false, 42).unwrap();
+        let content = std::fs::read_to_string(&layout_path).unwrap();
+
+        assert!(content.contains("pane size=\"42%\""));
+        assert!(content.contains("pane size=\"58%\""));
+
+        let _ = std::fs::remove_file(layout_path);
     }
 
     #[test]

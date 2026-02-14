@@ -1816,12 +1816,10 @@ fn test_daemon_installs_required_plugins() {
         }
         Ok(output) => {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            eprintln!("midtown start failed: {}", stderr);
-            return;
+            panic!("midtown start failed: {}", stderr);
         }
         Err(e) => {
-            eprintln!("Failed to run midtown start: {}", e);
-            return;
+            panic!("Failed to run midtown start: {}", e);
         }
     }
 

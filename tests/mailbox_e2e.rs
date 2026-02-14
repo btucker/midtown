@@ -541,9 +541,10 @@ fn test_spawn_creates_team_config_and_inbox_dir() {
         None => return,
     };
 
-    if !fixture.start_daemon() {
-        return;
-    }
+    assert!(
+        fixture.start_daemon(),
+        "Fixture failed to start daemon for mailbox integration test"
+    );
 
     // Spawn a coworker via RPC
     let spawn_response = fixture.rpc_call("coworker.spawn", Some(serde_json::json!({})));
@@ -850,9 +851,10 @@ fn test_daemon_delivers_mailbox_message_on_task_assignment() {
         None => return,
     };
 
-    if !fixture.start_daemon() {
-        return;
-    }
+    assert!(
+        fixture.start_daemon(),
+        "Fixture failed to start daemon for mailbox integration test"
+    );
 
     // Spawn a coworker so the daemon has someone to assign tasks to
     let spawn_response = fixture.rpc_call("coworker.spawn", Some(serde_json::json!({})));
@@ -963,9 +965,10 @@ fn test_real_claude_coworker_has_agent_teams_setup() {
         None => return,
     };
 
-    if !fixture.start_daemon_with_tmux() {
-        return;
-    }
+    assert!(
+        fixture.start_daemon_with_tmux(),
+        "Fixture failed to start daemon via `midtown start` for real-Claude mailbox test"
+    );
 
     let session = fixture.tmux_session_name();
 
