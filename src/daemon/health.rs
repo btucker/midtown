@@ -1175,26 +1175,10 @@ pub(super) fn check_for_stale_worktrees(
             age.num_hours()
         );
 
-        // Schedule cleanup with channel notification
-        let message = if let Some(ref task_id) = assignment.task_id {
-            format!(
-                "🧹 Cleaned up stale worktree {} (task !{}, completed {}h ago)",
-                assignment.worktree_id,
-                task_id,
-                age.num_hours()
-            )
-        } else {
-            format!(
-                "🧹 Cleaned up stale worktree {} (completed {}h ago)",
-                assignment.worktree_id,
-                age.num_hours()
-            )
-        };
-
+        // Schedule cleanup (message posting happens in effects.rs when cleanup executes)
         effects.push(Effect::CleanupStaleWorktree {
             worktree_id: assignment.worktree_id.clone(),
         });
-        effects.push(Effect::PostSystemMessage { message });
     }
 
     if !effects.is_empty() {
