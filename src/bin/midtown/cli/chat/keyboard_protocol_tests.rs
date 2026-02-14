@@ -1,66 +1,32 @@
-//! Tests for keyboard protocol initialization
+//! Tests for keyboard protocol configuration.
 //!
-//! Bug #1284: Shift+Enter currently inserts 'j' instead of newline because
-//! the terminal is sending escape sequences that crossterm can't decode
-//! without keyboard enhancement flags.
+//! Verifies that the KEYBOARD_ENHANCEMENT_FLAGS constant includes the
+//! required flags for proper Shift+Enter detection via the kitty protocol.
 
-#[cfg(test)]
-mod tests {
-    use crossterm::event::{
-        KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers, KeyboardEnhancementFlags,
-    };
+use crossterm::event::KeyboardEnhancementFlags;
 
-    /// This test demonstrates the expected behavior when keyboard enhancement
-    /// flags are properly enabled.
-    ///
-    /// Without keyboard enhancement flags:
-    /// - Terminal sends ambiguous escape sequences for Shift+Enter
-    /// - Crossterm may decode these as 'j' or other characters
-    ///
-    /// With keyboard enhancement flags:
-    /// - Terminal sends unambiguous escape sequences
-    /// - Crossterm correctly decodes as KeyCode::Enter with SHIFT modifier
-    #[test]
-    fn test_shift_enter_with_enhancement_flags() {
-        // When keyboard enhancement flags are enabled, crossterm should
-        // properly decode Shift+Enter as Enter with SHIFT modifier
-        let expected_event = KeyEvent {
-            code: KeyCode::Enter,
-            modifiers: KeyModifiers::SHIFT,
-            kind: KeyEventKind::Press,
-            state: KeyEventState::NONE,
-        };
+/// Verify that the enhancement flags constant includes DISAMBIGUATE_ESCAPE_CODES.
+///
+/// Without this flag, terminals send ambiguous escape sequences for special
+/// keys and crossterm may decode them incorrectly (e.g., Shift+Enter as 'j').
+#[test]
+fn test_enhancement_flags_include_disambiguate() {
+    assert!(
+        super::KEYBOARD_ENHANCEMENT_FLAGS
+            .contains(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES),
+        "KEYBOARD_ENHANCEMENT_FLAGS must include DISAMBIGUATE_ESCAPE_CODES"
+    );
+}
 
-        // Verify the expected modifier is SHIFT
-        assert!(
-            expected_event.modifiers.contains(KeyModifiers::SHIFT),
-            "Shift+Enter should have SHIFT modifier"
-        );
-
-        // Verify the code is Enter, not a character
-        assert!(
-            matches!(expected_event.code, KeyCode::Enter),
-            "Shift+Enter should be KeyCode::Enter, not KeyCode::Char"
-        );
-    }
-
-    /// This test documents the keyboard enhancement flags that should be used
-    #[test]
-    fn test_required_enhancement_flags() {
-        // The flags needed for Shift+Enter support
-        let required_flags = KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
-            | KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES;
-
-        // Verify the flags include DISAMBIGUATE_ESCAPE_CODES
-        assert!(
-            required_flags.contains(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES),
-            "Must include DISAMBIGUATE_ESCAPE_CODES for special keys"
-        );
-
-        // Verify the flags include REPORT_ALL_KEYS_AS_ESCAPE_CODES
-        assert!(
-            required_flags.contains(KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES),
-            "Must include REPORT_ALL_KEYS_AS_ESCAPE_CODES for modifier keys"
-        );
-    }
+/// Verify that the enhancement flags constant includes REPORT_ALL_KEYS_AS_ESCAPE_CODES.
+///
+/// Without this flag, modifier state (Shift, Ctrl, etc.) is not reliably
+/// reported for all key combinations.
+#[test]
+fn test_enhancement_flags_include_report_all_keys() {
+    assert!(
+        super::KEYBOARD_ENHANCEMENT_FLAGS
+            .contains(KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES),
+        "KEYBOARD_ENHANCEMENT_FLAGS must include REPORT_ALL_KEYS_AS_ESCAPE_CODES"
+    );
 }
