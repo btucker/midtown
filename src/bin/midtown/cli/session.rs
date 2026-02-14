@@ -86,7 +86,7 @@ fn handle_attach(target: &Option<AttachTarget>, client: &DaemonClient) -> Result
     // Step 2: Create tmux window with `claude --resume <session-id>`
     let repo_name =
         midtown::paths::detect_repo_name().ok_or_else(|| "Not in a git repository".to_string())?;
-    let tmux_session = format!("{}{}", midtown::tmux::SESSION_PREFIX, repo_name);
+    let tmux_session = format!("{}{}", midtown::process::SESSION_PREFIX, repo_name);
 
     // Window name uses ~ separator since : is used for tmux targets and
     // window_exists() splits on : for base name matching

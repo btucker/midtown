@@ -72,7 +72,7 @@ pub fn handle(cmd: &CoworkerCommand, client: &DaemonClient) -> Result<Response, 
 fn handle_view(name: &str, client: &DaemonClient) -> Result<Response, String> {
     let repo_name =
         midtown::paths::detect_repo_name().ok_or_else(|| "Not in a git repository".to_string())?;
-    let session = format!("{}{}", midtown::tmux::SESSION_PREFIX, repo_name);
+    let session = format!("{}{}", midtown::process::SESSION_PREFIX, repo_name);
     let target = format!("{}:{}", session, name);
 
     // Try tmux pane capture first (for headed coworkers)

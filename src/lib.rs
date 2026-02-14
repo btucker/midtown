@@ -65,6 +65,12 @@ mod message;
 pub mod coworker;
 pub mod tmux;
 
+// Process management (orphan cleanup, PID tracking, Zellij detection)
+pub mod process;
+
+// Settings and prompt file management for Claude Code sessions
+pub mod settings;
+
 // GitHub webhook integration (rictus)
 pub mod webhook;
 

@@ -772,7 +772,7 @@ impl DaemonState {
         headless_config.cwd = Some(working_dir.clone());
 
         // Write shared coworker settings file and set the path
-        let settings_file = crate::tmux::write_coworker_settings_file()?;
+        let settings_file = crate::settings::write_coworker_settings_file()?;
         headless_config.settings_path = Some(settings_file.to_string_lossy().to_string());
 
         // Set up agent-teams infrastructure (mailbox) before spawning
@@ -1904,7 +1904,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
     // start spawning new coworkers.
     {
         let pattern = "claude.*--settings.*/midtown/.*-settings\\.json";
-        let killed = crate::tmux::kill_orphaned_processes(pattern);
+        let killed = crate::process::kill_orphaned_processes(pattern);
         if killed > 0 {
             info!(
                 "Startup cleanup: killed {} orphaned claude process(es) from previous daemon",
@@ -2383,7 +2383,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                 // Only kill truly orphaned processes (PPID=1) to avoid killing
                 // claude sessions the user started manually or in other projects.
                 let pattern = "claude.*--settings.*/midtown/.*-settings\\.json";
-                let killed = crate::tmux::kill_orphaned_processes(pattern);
+                let killed = crate::process::kill_orphaned_processes(pattern);
                 if killed > 0 {
                     info!("Cleaned up {} orphaned claude process(es)", killed);
                 }

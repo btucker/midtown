@@ -1,80 +1,16 @@
-//! Terminal multiplexer session management for coworker processes.
+//! Tmux session and window management for the Lead terminal session.
 //!
-//! Provides functions for creating, managing, and communicating with
-//! tmux (and Zellij) sessions that host coworker Claude Code processes
-//! within the project session.
+//! Provides functions for managing tmux windows and panes within the
+//! project session. Used by the Lead session (interactive tmux),
+//! health checks, and the web UI pane viewer.
+//!
+//! Non-tmux utilities (process management, settings files, Zellij detection)
+//! have been extracted to `crate::process` and `crate::settings`.
 
 use std::path::PathBuf;
 use std::process::Command;
 
 use crate::Error;
-
-// --- Zellij helpers (shared between CLI and daemon) ---
-
-/// Check if a Zellij session with the given name exists.
-///
-/// Runs `zellij list-sessions --no-formatting` and checks if any line
-/// starts with the given session name (sessions may have extra info after
-/// whitespace).
-pub fn zellij_session_exists(session: &str) -> bool {
-    let output = Command::new("zellij")
-        .args(["list-sessions", "--no-formatting"])
-        .output();
-
-    match output {
-        Ok(o) if o.status.success() => {
-            let stdout = String::from_utf8_lossy(&o.stdout);
-            stdout
-                .lines()
-                .any(|line| line.split_whitespace().next() == Some(session))
-        }
-        _ => false,
-    }
-}
-
-/// Check if Zellij is available on the system.
-pub fn zellij_is_available() -> bool {
-    Command::new("zellij")
-        .arg("--version")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success())
-}
-
-/// Embedded common settings shared by both Lead and coworker Claude Code sessions.
-const DEFAULT_COMMON_SETTINGS: &str = include_str!("../agents/common-settings.json");
-
-/// Embedded settings specific to Lead Claude Code sessions (merged on top of common).
-const DEFAULT_LEAD_SETTINGS: &str = include_str!("../agents/lead-settings.json");
-
-/// Embedded settings specific to coworker Claude Code sessions (merged on top of common).
-const DEFAULT_COWORKER_SETTINGS: &str = include_str!("../agents/coworker-settings.json");
-
-/// Load settings by merging common with role-specific, then replacing `{bin}` placeholders.
-///
-/// Role-specific keys override common keys (shallow merge of top-level keys).
-/// The `{bin}` placeholder in hook commands is replaced with the actual binary command.
-fn load_settings(role_settings: &str) -> serde_json::Value {
-    let bin_command = crate::config::get_bin_command();
-
-    // Merge common + role JSON as raw strings, then replace {bin} before parsing.
-    // This is simpler than walking the parsed JSON tree to find command strings.
-    let common = DEFAULT_COMMON_SETTINGS.replace("{bin}", &bin_command);
-    let role = role_settings.replace("{bin}", &bin_command);
-
-    let mut settings: serde_json::Value =
-        serde_json::from_str(&common).expect("invalid common-settings.json");
-    let role: serde_json::Value = serde_json::from_str(&role).expect("invalid role settings JSON");
-
-    if let (Some(base), Some(overrides)) = (settings.as_object_mut(), role.as_object()) {
-        for (key, value) in overrides {
-            base.insert(key.clone(), value.clone());
-        }
-    }
-
-    settings
-}
 
 /// Parse a status message and return an abbreviated version for tmux tab display.
 ///
@@ -188,46 +124,8 @@ fn truncate_status(status: &str, max_len: usize) -> String {
     }
 }
 
-/// Get the state directory for midtown.
-fn state_dir() -> PathBuf {
-    let state_dir = std::env::var("XDG_STATE_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            dirs::home_dir()
-                .unwrap_or_else(|| PathBuf::from("."))
-                .join(".local")
-                .join("state")
-        });
-    state_dir.join("midtown")
-}
-
-/// Write a coworker's system prompt to a file and return the path.
-fn write_coworker_prompt_file(name: &str, prompt: &str) -> crate::Result<PathBuf> {
-    let dir = state_dir();
-    std::fs::create_dir_all(&dir).map_err(Error::Io)?;
-
-    let path = dir.join(format!("coworker-{}-prompt.md", name));
-    std::fs::write(&path, prompt).map_err(Error::Io)?;
-
-    Ok(path)
-}
-
-/// Write a coworker's initial prompt to a file and return the path.
-///
-/// This is the task/nudge message that the coworker should work on. It's
-/// passed to claude via `-p "$(cat file)"` so it's available at startup
-/// without needing to send keystrokes after the TUI initializes.
-fn write_coworker_initial_prompt_file(name: &str, prompt: &str) -> crate::Result<PathBuf> {
-    let dir = state_dir();
-    std::fs::create_dir_all(&dir).map_err(Error::Io)?;
-
-    let path = dir.join(format!("coworker-{}-initial-prompt.md", name));
-    std::fs::write(&path, prompt).map_err(Error::Io)?;
-
-    Ok(path)
-}
-
 /// Prefix for all midtown tmux sessions.
+/// Re-exported from `crate::process` for backward compatibility.
 pub const SESSION_PREFIX: &str = "midtown-";
 
 /// Coworker name to tmux color mapping.
@@ -523,290 +421,6 @@ fn kill_window_by_target_unchecked(target: &str) -> crate::Result<()> {
     }
 
     Ok(())
-}
-
-/// Collect PIDs of all pane processes in a session.
-///
-/// Returns (window_name, pid) pairs for every pane in the session.
-pub fn session_pane_pids(session: &str) -> Vec<(String, u32)> {
-    let output = Command::new("tmux")
-        .args([
-            "list-panes",
-            "-s",
-            "-t",
-            session,
-            "-F",
-            "#{window_name} #{pane_pid}",
-        ])
-        .output();
-
-    match output {
-        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
-            .lines()
-            .filter(|l| !l.is_empty())
-            .filter_map(|line| {
-                let mut parts = line.splitn(2, ' ');
-                let name = parts.next()?.to_string();
-                let pid = parts.next()?.parse().ok()?;
-                Some((name, pid))
-            })
-            .collect(),
-        _ => Vec::new(),
-    }
-}
-
-/// Send SIGTERM to all pane processes in a session, then SIGKILL any survivors.
-///
-/// Claude Code (node) installs a SIGHUP handler, so `tmux kill-session`
-/// (which sends SIGHUP) leaves orphaned processes consuming memory and
-/// potentially causing contention with other Claude instances. SIGTERM
-/// triggers a clean shutdown.
-///
-/// Also kills child processes (Claude spawns node subprocesses) to ensure
-/// complete cleanup even if the parent shell exits but children survive.
-pub fn terminate_session_processes(session: &str) {
-    let pids = session_pane_pids(session);
-    if pids.is_empty() {
-        return;
-    }
-
-    // Collect all pane PIDs and their descendants
-    let mut all_pids: Vec<u32> = Vec::new();
-    for (_, pid) in &pids {
-        all_pids.push(*pid);
-        // Also collect child processes (Claude's node subprocesses)
-        all_pids.extend(get_descendant_pids(*pid));
-    }
-    all_pids.sort();
-    all_pids.dedup();
-
-    if all_pids.is_empty() {
-        return;
-    }
-
-    // Send SIGTERM to all processes
-    let pid_strings: Vec<String> = all_pids.iter().map(|p| p.to_string()).collect();
-    let _ = Command::new("kill")
-        .args(&pid_strings)
-        .stderr(std::process::Stdio::null())
-        .status();
-
-    tracing::debug!(
-        "Sent SIGTERM to {} processes in session {}",
-        all_pids.len(),
-        session
-    );
-
-    // Poll for processes to exit (up to 2 seconds)
-    let poll_interval = std::time::Duration::from_millis(100);
-    let timeout = std::time::Duration::from_secs(2);
-    let start = std::time::Instant::now();
-
-    while start.elapsed() < timeout {
-        std::thread::sleep(poll_interval);
-        let survivors: Vec<u32> = all_pids
-            .iter()
-            .copied()
-            .filter(|&p| is_pid_alive(p))
-            .collect();
-        if survivors.is_empty() {
-            tracing::debug!("All processes in session {} exited cleanly", session);
-            return;
-        }
-    }
-
-    // Force kill any survivors
-    let survivors: Vec<u32> = all_pids
-        .iter()
-        .copied()
-        .filter(|&p| is_pid_alive(p))
-        .collect();
-    if !survivors.is_empty() {
-        tracing::warn!(
-            "Force killing {} processes that didn't exit: {:?}",
-            survivors.len(),
-            survivors
-        );
-        let pid_strings: Vec<String> = survivors.iter().map(|p| p.to_string()).collect();
-        let _ = Command::new("kill")
-            .arg("-9")
-            .args(&pid_strings)
-            .stderr(std::process::Stdio::null())
-            .status();
-
-        // Brief wait for SIGKILL to take effect
-        std::thread::sleep(std::time::Duration::from_millis(100));
-    }
-}
-
-/// Get all descendant PIDs of a process (children, grandchildren, etc).
-///
-/// Uses `pgrep -P` to find immediate children, then recursively finds their children.
-fn get_descendant_pids(parent_pid: u32) -> Vec<u32> {
-    let mut descendants = Vec::new();
-    let mut to_check = vec![parent_pid];
-
-    while let Some(pid) = to_check.pop() {
-        // Find immediate children of this PID
-        let output = Command::new("pgrep")
-            .args(["-P", &pid.to_string()])
-            .output();
-
-        if let Ok(o) = output
-            && o.status.success()
-        {
-            for line in String::from_utf8_lossy(&o.stdout).lines() {
-                if let Ok(child_pid) = line.trim().parse::<u32>()
-                    && !descendants.contains(&child_pid)
-                {
-                    descendants.push(child_pid);
-                    to_check.push(child_pid); // Check for grandchildren
-                }
-            }
-        }
-    }
-
-    descendants
-}
-
-/// Check if a process is still alive.
-pub fn is_pid_alive(pid: u32) -> bool {
-    Command::new("kill")
-        .args(["-0", &pid.to_string()])
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
-}
-
-/// Get the parent PID of a process.
-pub fn get_ppid(pid: u32) -> Option<u32> {
-    let output = Command::new("ps")
-        .args(["-o", "ppid=", "-p", &pid.to_string()])
-        .output()
-        .ok()?;
-
-    String::from_utf8_lossy(&output.stdout).trim().parse().ok()
-}
-
-/// Find orphaned processes matching a pattern.
-///
-/// Returns PIDs of processes that:
-/// 1. Match the given regex pattern in their command line
-/// 2. Have PPID=1 (orphaned - no legitimate parent)
-/// 3. Are NOT tmux processes (to avoid killing the tmux server)
-///
-/// This is conservative: only truly orphaned processes are returned.
-/// The tmux exclusion is critical because `tmux new-session` commands may
-/// match patterns like "claude" in their arguments, but killing the tmux
-/// server would destroy all coworker windows.
-pub fn find_orphaned_processes(pattern: &str) -> Vec<u32> {
-    // Find PIDs matching the pattern
-    let output = match Command::new("pgrep").args(["-f", pattern]).output() {
-        Ok(o) if o.status.success() => o,
-        _ => return vec![],
-    };
-
-    let pids: Vec<u32> = String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .filter_map(|l| l.trim().parse().ok())
-        .collect();
-
-    // Filter to only orphaned processes (PPID=1) that are NOT tmux
-    // Bug fix: The pattern may match tmux server processes because the
-    // `tmux new-session` command line includes "claude" in its arguments.
-    // Killing the tmux server would destroy all windows, so we must exclude it.
-    pids.into_iter()
-        .filter(|&pid| {
-            // Must be orphaned (PPID=1)
-            if get_ppid(pid) != Some(1) {
-                return false;
-            }
-            // Must NOT be a tmux process
-            let is_tmux = Command::new("ps")
-                .args(["-p", &pid.to_string(), "-o", "comm="])
-                .output()
-                .ok()
-                .map(|o| {
-                    String::from_utf8_lossy(&o.stdout)
-                        .trim()
-                        .starts_with("tmux")
-                })
-                .unwrap_or(false);
-            if is_tmux {
-                tracing::debug!(pid = pid, "Skipping tmux process in orphan cleanup");
-                return false;
-            }
-            true
-        })
-        .collect()
-}
-
-/// Kill orphaned processes matching a pattern.
-///
-/// Sends SIGTERM first, waits briefly, then SIGKILL to any survivors.
-/// Returns the number of processes killed.
-///
-/// Only kills processes that are truly orphaned (PPID=1) to avoid
-/// killing legitimate processes the user may have started.
-pub fn kill_orphaned_processes(pattern: &str) -> usize {
-    let orphan_pids = find_orphaned_processes(pattern);
-
-    if orphan_pids.is_empty() {
-        return 0;
-    }
-
-    let count = orphan_pids.len();
-
-    // Log what we're about to kill for debugging
-    for &pid in &orphan_pids {
-        // Get process command line for debugging
-        let cmdline = std::process::Command::new("ps")
-            .args(["-p", &pid.to_string(), "-o", "args="])
-            .output()
-            .ok()
-            .and_then(|o| {
-                if o.status.success() {
-                    Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
-                } else {
-                    None
-                }
-            })
-            .unwrap_or_else(|| "<unknown>".to_string());
-        tracing::warn!(
-            pid = pid,
-            cmdline = %cmdline,
-            pattern = %pattern,
-            "ORPHAN_CLEANUP: killing orphaned claude process"
-        );
-    }
-
-    // Send SIGTERM to orphaned processes
-    let pid_strings: Vec<String> = orphan_pids.iter().map(|p| p.to_string()).collect();
-    let _ = Command::new("kill")
-        .args(&pid_strings)
-        .stderr(std::process::Stdio::null())
-        .status();
-
-    // Wait briefly for processes to exit
-    std::thread::sleep(std::time::Duration::from_millis(500));
-
-    // Force kill any survivors
-    let survivors: Vec<String> = orphan_pids
-        .iter()
-        .filter(|&&pid| is_pid_alive(pid))
-        .map(|p| p.to_string())
-        .collect();
-
-    if !survivors.is_empty() {
-        let _ = Command::new("kill")
-            .arg("-9")
-            .args(&survivors)
-            .stderr(std::process::Stdio::null())
-            .status();
-    }
-
-    count
 }
 
 /// Capture the current content of a tmux pane.
@@ -1583,43 +1197,6 @@ pub fn wait_for_window_stable(session: &str, name: &str) -> bool {
     true // survived 3 seconds of polling
 }
 
-/// Read plugins from user's ~/.claude/settings.json
-fn read_user_plugins() -> Option<serde_json::Value> {
-    let home = std::env::var("HOME").ok()?;
-    let settings_path = std::path::PathBuf::from(home)
-        .join(".claude")
-        .join("settings.json");
-    let content = std::fs::read_to_string(settings_path).ok()?;
-    let settings: serde_json::Value = serde_json::from_str(&content).ok()?;
-    settings.get("enabledPlugins").cloned()
-}
-
-/// Build coworker settings from agents/common-settings.json + agents/coworker-settings.json.
-///
-/// Merges base settings, replaces `{bin}` placeholders, and adds user's enabled plugins.
-fn coworker_settings_json() -> serde_json::Value {
-    let mut settings = load_settings(DEFAULT_COWORKER_SETTINGS);
-
-    // Add user's plugins from ~/.claude/settings.json
-    let user_plugins = read_user_plugins().unwrap_or_default();
-    settings["enabledPlugins"] = user_plugins;
-
-    settings
-}
-
-/// Write coworker settings to a shared file and return the path.
-/// All coworkers use the same settings file.
-pub fn write_coworker_settings_file() -> crate::Result<PathBuf> {
-    let dir = state_dir();
-    std::fs::create_dir_all(&dir).map_err(Error::Io)?;
-
-    let path = dir.join("coworker-settings.json");
-    let settings = coworker_settings_json();
-    std::fs::write(&path, settings.to_string()).map_err(Error::Io)?;
-
-    Ok(path)
-}
-
 // Re-export launch types for backward compatibility.
 // The canonical definitions live in `crate::launch`. These re-exports allow
 // existing `crate::tmux::ClaudeLaunchConfig` references to keep working during
@@ -1669,15 +1246,15 @@ pub fn spawn_claude(
     }
 
     // Write system prompt and settings to files (avoids quoting issues)
-    let prompt_file = write_coworker_prompt_file(&config.name, &system_prompt)?;
-    let settings_file = write_coworker_settings_file()?;
+    let prompt_file = crate::settings::write_coworker_prompt_file(&config.name, &system_prompt)?;
+    let settings_file = crate::settings::write_coworker_settings_file()?;
 
     // Write initial prompt to file if provided (avoids shell quoting issues
     // and eliminates the timing race of sending keystrokes after spawn)
     let initial_prompt_file = config
         .initial_prompt
         .as_deref()
-        .map(|p| write_coworker_initial_prompt_file(&config.name, p))
+        .map(|p| crate::settings::write_coworker_initial_prompt_file(&config.name, p))
         .transpose()?;
 
     // Extract project name from session (format: "midtown-<project_name>")
@@ -1860,36 +1437,6 @@ pub fn spawn_claude(
     Ok(coworker_session_id)
 }
 
-/// Write the Lead system prompt to a file and return the path.
-pub fn write_lead_prompt_file() -> crate::Result<PathBuf> {
-    let dir = state_dir();
-    std::fs::create_dir_all(&dir).map_err(Error::Io)?;
-
-    let path = dir.join("lead-prompt.md");
-    std::fs::write(&path, crate::agents::lead_system_prompt()).map_err(Error::Io)?;
-
-    Ok(path)
-}
-
-/// Build lead settings from agents/common-settings.json + agents/lead-settings.json.
-///
-/// Merges base settings and replaces `{bin}` placeholders.
-pub fn lead_settings_json() -> serde_json::Value {
-    load_settings(DEFAULT_LEAD_SETTINGS)
-}
-
-/// Write Lead settings to a file and return the path.
-pub fn write_lead_settings_file() -> crate::Result<PathBuf> {
-    let dir = state_dir();
-    std::fs::create_dir_all(&dir).map_err(Error::Io)?;
-
-    let path = dir.join("lead-settings.json");
-    let settings = lead_settings_json();
-    std::fs::write(&path, settings.to_string()).map_err(Error::Io)?;
-
-    Ok(path)
-}
-
 /// Spawn the Lead Claude Code instance in a tmux window.
 ///
 /// Creates (or recreates) the `lead` window in the given tmux session.
@@ -1920,8 +1467,8 @@ pub fn spawn_lead(
     // from a /resume cycle are no longer valid and could cause mis-remapping.
     crate::tasks::clear_lead_task_id_map(project_name);
 
-    let prompt_file = write_lead_prompt_file()?;
-    let settings_file = write_lead_settings_file()?;
+    let prompt_file = crate::settings::write_lead_prompt_file()?;
+    let settings_file = crate::settings::write_lead_settings_file()?;
 
     // Resolve auth profile from project config
     let auth_dir = crate::auth::active_profile_dir_for_project(project_name);
@@ -1977,90 +1524,6 @@ pub fn spawn_lead(
     }
 
     Ok(())
-}
-
-// Legacy functions for backward compatibility during transition
-// These will be removed once all callers are updated
-
-/// Create a new tmux session (legacy - use create_window instead).
-#[deprecated(note = "Use create_window instead")]
-pub fn create_session(name: &str, working_dir: &str) -> crate::Result<()> {
-    let session_name = format!("{}{}", SESSION_PREFIX, name);
-
-    let status = Command::new("tmux")
-        .args(["new-session", "-d", "-s", &session_name, "-c", working_dir])
-        .status()
-        .map_err(Error::Io)?;
-
-    if !status.success() {
-        return Err(Error::Rpc {
-            code: -32603,
-            message: format!("Failed to create tmux session: {}", session_name),
-        });
-    }
-
-    Ok(())
-}
-
-/// Kill a tmux session (legacy - use kill_window instead).
-#[deprecated(note = "Use kill_window instead")]
-pub fn kill_session(name: &str) -> crate::Result<()> {
-    let session_name = format!("{}{}", SESSION_PREFIX, name);
-
-    let status = Command::new("tmux")
-        .args(["kill-session", "-t", &session_name])
-        .status()
-        .map_err(Error::Io)?;
-
-    if !status.success() {
-        return Err(Error::Rpc {
-            code: -32603,
-            message: format!("Failed to kill tmux session: {}", session_name),
-        });
-    }
-
-    Ok(())
-}
-
-/// List all midtown tmux sessions (legacy - use list_windows instead).
-#[deprecated(note = "Use list_windows instead")]
-pub fn list_sessions() -> crate::Result<Vec<String>> {
-    let output = Command::new("tmux")
-        .args(["list-sessions", "-F", "#{session_name}"])
-        .output()
-        .map_err(Error::Io)?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        if stderr.contains("no server running") || stderr.contains("no sessions") {
-            return Ok(Vec::new());
-        }
-        return Err(Error::Rpc {
-            code: -32603,
-            message: format!("Failed to list tmux sessions: {}", stderr),
-        });
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let sessions: Vec<String> = stdout
-        .lines()
-        .filter_map(|line| line.strip_prefix(SESSION_PREFIX).map(|s| s.to_string()))
-        .collect();
-
-    Ok(sessions)
-}
-
-/// Check if a session exists (legacy - use window_exists instead).
-#[deprecated(note = "Use window_exists instead")]
-pub fn session_exists(name: &str) -> crate::Result<bool> {
-    let session_name = format!("{}{}", SESSION_PREFIX, name);
-
-    let status = Command::new("tmux")
-        .args(["has-session", "-t", &session_name])
-        .status()
-        .map_err(Error::Io)?;
-
-    Ok(status.success())
 }
 
 /// Minimum terminal width enforced when web viewers resize a window.
@@ -2296,121 +1759,6 @@ pub fn create_chat_split(session: &str, bin_command: &str) -> crate::Result<()> 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_session_prefix() {
-        assert_eq!(SESSION_PREFIX, "midtown-");
-    }
-
-    #[test]
-    fn test_coworker_settings_json_is_valid() {
-        let settings = coworker_settings_json();
-
-        // Verify common settings are merged in
-        assert_eq!(settings["autoUpdates"], false);
-
-        // CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS is blocklisted from settings.json by Claude Code;
-        // it's now exported as a real shell env var in to_shell_command() instead.
-        assert!(settings["env"]["CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS"].is_null());
-
-        // Verify coworker-specific settings
-        assert_eq!(settings["editorMode"], "normal");
-
-        // Verify no Stop hook (removed - daemon handles work assignment)
-        assert!(settings["hooks"]["Stop"].is_null());
-
-        // Verify PostToolUse hooks for task operations, questions, and insights
-        let post_tool_hooks = &settings["hooks"]["PostToolUse"];
-        assert!(post_tool_hooks.is_array());
-        assert_eq!(post_tool_hooks.as_array().unwrap().len(), 4);
-
-        // TaskUpdate hook
-        assert_eq!(post_tool_hooks[0]["matcher"], "TaskUpdate");
-        assert_eq!(
-            post_tool_hooks[0]["hooks"][0]["command"],
-            "midtown hook task"
-        );
-
-        // TaskCreate hook
-        assert_eq!(post_tool_hooks[1]["matcher"], "TaskCreate");
-        assert_eq!(
-            post_tool_hooks[1]["hooks"][0]["command"],
-            "midtown hook task"
-        );
-
-        // AskUserQuestion hook
-        assert_eq!(post_tool_hooks[2]["matcher"], "AskUserQuestion");
-        assert_eq!(
-            post_tool_hooks[2]["hooks"][0]["command"],
-            "midtown hook ask"
-        );
-
-        // Insight hook (no matcher)
-        assert!(post_tool_hooks[3]["matcher"].is_null());
-        assert_eq!(
-            post_tool_hooks[3]["hooks"][0]["command"],
-            "midtown hook insight"
-        );
-
-        // Verify Notification hook for idle
-        let notification_hooks = &settings["hooks"]["Notification"];
-        assert!(notification_hooks.is_array());
-        assert_eq!(notification_hooks[0]["matcher"], "idle_prompt");
-        assert_eq!(
-            notification_hooks[0]["hooks"][0]["command"],
-            "midtown hook idle"
-        );
-
-        // Verify {bin} placeholders were replaced (no literal "{bin}" in output)
-        let serialized = settings.to_string();
-        assert!(
-            !serialized.contains("{bin}"),
-            "settings should not contain unreplaced {{bin}} placeholders"
-        );
-    }
-
-    #[test]
-    fn test_lead_settings_json_is_valid() {
-        let settings = lead_settings_json();
-
-        // Verify common settings are merged in
-        assert_eq!(settings["autoUpdates"], false);
-
-        // CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS is blocklisted from settings.json by Claude Code;
-        // it's now exported as a real shell env var in to_shell_command() instead.
-        assert!(settings["env"]["CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS"].is_null());
-
-        // Verify lead-specific hooks
-        let stop_hooks = &settings["hooks"]["Stop"];
-        assert!(stop_hooks.is_array());
-        assert!(
-            stop_hooks[0]["hooks"][0]["command"]
-                .as_str()
-                .unwrap()
-                .ends_with("hook lead-stop")
-        );
-
-        let post_tool_hooks = &settings["hooks"]["PostToolUse"];
-        assert!(post_tool_hooks.is_array());
-        // Lead has only the catch-all insight hook (task hooks removed —
-        // Lead now uses `midtown task` CLI instead of TaskCreate/TaskUpdate tools)
-        assert!(
-            post_tool_hooks[0]["hooks"][0]["command"]
-                .as_str()
-                .unwrap()
-                .ends_with("hook insight"),
-            "PostToolUse hook should be the catch-all insight hook"
-        );
-
-        // Verify {bin} placeholders were replaced
-        let serialized = settings.to_string();
-        assert!(
-            !serialized.contains("{bin}"),
-            "settings should not contain unreplaced {{bin}} placeholders"
-        );
-    }
-
-    // Note: coworker_system_prompt tests moved to src/agents.rs
 
     #[test]
     fn test_min_resize_cols_is_80() {
@@ -3275,80 +2623,6 @@ Claude is now processing the request
             config.team_name,
             Some("midtown-myrepo".to_string()),
             "pr_handoff must have team name set"
-        );
-    }
-
-    /// Regression test: orphan cleanup must not kill tmux processes.
-    ///
-    /// Bug context: The orphan cleanup pattern matches "claude" in command lines,
-    /// but tmux servers include "claude" in their args when spawning windows.
-    /// Since tmux servers run as daemons (PPID=1), they were incorrectly matched
-    /// as orphans and killed, destroying all windows.
-    #[test]
-    fn orphan_cleanup_excludes_tmux_processes() {
-        use std::process::Command;
-
-        let session_name = "test-orphan-cleanup";
-
-        // Clean up any leftover session from previous failed runs
-        let _ = Command::new("tmux")
-            .args(["kill-session", "-t", session_name])
-            .output();
-
-        // Start a tmux session with "claude --settings" in the command line
-        // This simulates how midtown starts sessions
-        let create_result = Command::new("tmux")
-            .args([
-                "new-session",
-                "-d",
-                "-s",
-                session_name,
-                "echo",
-                "claude",
-                "--settings",
-                "/fake/midtown/test-settings.json",
-            ])
-            .output();
-
-        if create_result.is_err() {
-            // tmux not available, skip test
-            return;
-        }
-
-        // Verify session was created
-        let session_exists = Command::new("tmux")
-            .args(["has-session", "-t", session_name])
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
-
-        if !session_exists {
-            // Could not create session (tmux server issues), skip
-            return;
-        }
-
-        // Run the orphan cleanup with the pattern that matches "claude --settings"
-        // This is the same pattern used by the daemon
-        let pattern = "claude.*--settings.*/midtown/.*-settings\\.json";
-        let killed = super::kill_orphaned_processes(pattern);
-
-        // The tmux session should still exist - it must NOT have been killed
-        let session_still_exists = Command::new("tmux")
-            .args(["has-session", "-t", session_name])
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
-
-        // Clean up
-        let _ = Command::new("tmux")
-            .args(["kill-session", "-t", session_name])
-            .output();
-
-        assert!(
-            session_still_exists,
-            "tmux session was killed by orphan cleanup! killed={} processes. \
-             The orphan cleanup pattern must exclude tmux processes.",
-            killed
         );
     }
 }

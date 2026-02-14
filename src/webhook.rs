@@ -309,7 +309,7 @@ pub async fn start_webhook_server(
         }
     };
 
-    let tmux_session = format!("{}{}", crate::tmux::SESSION_PREFIX, config.repo);
+    let tmux_session = format!("{}{}", crate::process::SESSION_PREFIX, config.repo);
     let web_state = Arc::new(WebState {
         config: web_config,
         updates_tx: web_updates_tx.clone(),

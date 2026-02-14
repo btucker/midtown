@@ -433,9 +433,9 @@ fn session_exists(session: &str) -> bool {
 }
 
 /// Check if a Zellij session with the given name exists.
-/// Delegates to the shared implementation in `midtown::tmux`.
+/// Delegates to the shared implementation in `midtown::process`.
 fn zellij_session_exists(session: &str) -> bool {
-    midtown::tmux::zellij_session_exists(session)
+    midtown::process::zellij_session_exists(session)
 }
 
 /// Check if a tmux session with the given name exists.
@@ -451,9 +451,9 @@ fn tmux_session_exists(session: &str) -> bool {
 }
 
 /// Check if Zellij is available on the system.
-/// Delegates to the shared implementation in `midtown::tmux`.
+/// Delegates to the shared implementation in `midtown::process`.
 fn zellij_is_available() -> bool {
-    midtown::tmux::zellij_is_available()
+    midtown::process::zellij_is_available()
 }
 
 /// Escape a string for use inside KDL double-quoted strings.
@@ -556,9 +556,9 @@ fn write_lead_launcher_script(
     // Reuse existing tmux infrastructure to build the lead shell command.
     // spawn_lead writes prompt/settings files and constructs the command;
     // we extract just the command string for the launcher script.
-    let prompt_file = midtown::tmux::write_lead_prompt_file()
+    let prompt_file = midtown::settings::write_lead_prompt_file()
         .map_err(|e| format!("Failed to write lead prompt: {}", e))?;
-    let settings_file = midtown::tmux::write_lead_settings_file()
+    let settings_file = midtown::settings::write_lead_settings_file()
         .map_err(|e| format!("Failed to write lead settings: {}", e))?;
 
     // Resolve auth profile from project config
@@ -1204,7 +1204,7 @@ pub fn handle_stop(keep_session: bool) -> Result<Response, String> {
                 // SIGTERM all pane processes first — Claude Code survives SIGHUP
                 // (which is what tmux kill-session sends), leaving orphaned processes
                 // that consume memory and cause contention with other instances.
-                midtown::tmux::terminate_session_processes(&session);
+                midtown::process::terminate_session_processes(&session);
 
                 let status = Command::new("tmux")
                     .args(["kill-session", "-t", &session])
@@ -1321,7 +1321,7 @@ fn kill_orphaned_claude_processes(messages: &mut Vec<String>) {
     // Pattern matches claude processes using midtown settings files
     let pattern = "claude.*--settings.*/midtown/.*-settings\\.json";
 
-    let count = midtown::tmux::kill_orphaned_processes(pattern);
+    let count = midtown::process::kill_orphaned_processes(pattern);
     if count > 0 {
         messages.push(format!("Killed {} orphaned claude process(es)", count));
     }
