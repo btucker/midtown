@@ -420,7 +420,7 @@ mod tests {
     #[test]
     #[cfg(target_os = "macos")]
     fn test_sandbox_exec_prefix_returns_err_when_nested() {
-        // Skip if already sandboxed (can't nest sandbox-exec)
+        // Skip if we're already inside a sandbox (can't nest sandbox-exec)
         if !can_sandbox() {
             eprintln!("Skipping test: already inside a sandbox (nesting not allowed)");
             return;

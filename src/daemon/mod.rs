@@ -1495,6 +1495,14 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
         .with_ansi(false)
         .init();
 
+    // Check for sandbox nesting early — prevents crash loop when daemon
+    // is started from within a sandboxed tmux session (2026-02-13 incident).
+    if let Some(warning) = startup::check_sandbox_context() {
+        warn!("{}", warning);
+        // Log to stderr as well so it's visible when daemon is started interactively
+        eprintln!("\n{}\n", warning);
+    }
+
     // Ensure required plugins are installed (non-blocking, logs warnings on failure)
     check_required_plugins().await;
 
