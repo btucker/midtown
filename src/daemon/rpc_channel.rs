@@ -174,13 +174,7 @@ pub(super) async fn handle_channel_post(
         if !has_coworker_mentions || has_lead_mention {
             let nudge_msg = format!("user: {}", content);
             info!("Nudging Lead about user message");
-            // Run in spawn_blocking to avoid blocking the async runtime
-            let coworkers = state.coworkers.clone();
-            tokio::task::spawn_blocking(move || {
-                if let Err(e) = coworkers.nudge_lead(&nudge_msg) {
-                    warn!("Failed to nudge Lead about user message: {}", e);
-                }
-            });
+            state.nudge_lead(&nudge_msg).await;
         } else {
             info!("Skipping Lead nudge — user message routed directly to mentioned coworker(s)");
         }
@@ -207,14 +201,7 @@ pub(super) async fn handle_channel_post(
 
             let nudge_msg = format!("{} mentioned @lead: {}", from, summary);
             info!("Nudging Lead about @lead mention from {}", from);
-
-            // Nudge the Lead window (spawn_blocking to avoid blocking async runtime)
-            let coworkers = state.coworkers.clone();
-            tokio::task::spawn_blocking(move || {
-                if let Err(e) = coworkers.nudge_lead(&nudge_msg) {
-                    warn!("Failed to nudge Lead about @lead mention: {}", e);
-                }
-            });
+            state.nudge_lead(&nudge_msg).await;
 
             // Send push notification to mobile PWA
             state.send_push_notification(&format!("@lead from {}", from), &summary, "mention");
@@ -315,6 +302,55 @@ pub(super) fn handle_channel_read(id: RequestId, all: bool, state: &DaemonState)
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::Command;
+
+    fn make_test_state(repo_name: &str) -> DaemonState {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        Command::new("git")
+            .args(["init"])
+            .current_dir(temp_dir.path())
+            .output()
+            .expect("git init");
+        Command::new("git")
+            .args(["config", "user.email", "test@example.com"])
+            .current_dir(temp_dir.path())
+            .output()
+            .expect("git config");
+        Command::new("git")
+            .args(["config", "user.name", "Test"])
+            .current_dir(temp_dir.path())
+            .output()
+            .expect("git config");
+        Command::new("git")
+            .args(["commit", "--allow-empty", "-m", "init"])
+            .current_dir(temp_dir.path())
+            .output()
+            .expect("git commit");
+
+        let wm = crate::worktree::WorktreeManager::new(temp_dir.path().to_path_buf())
+            .expect("worktree manager");
+        let cm = crate::coworker::CoworkerManager::new(repo_name, wm);
+
+        // Leak temp_dir so it survives the test
+        let base_dir = temp_dir.path().to_path_buf();
+        std::mem::forget(temp_dir);
+
+        let channel_router = crate::ChannelRouter::new(&base_dir, "midtown");
+        let (shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(1);
+        DaemonState::new(
+            "/tmp/test.sock".into(),
+            cm,
+            repo_name.to_string(),
+            vec![base_dir],
+            channel_router,
+            None,
+            10,
+            None,
+            "main".to_string(),
+            shutdown_tx,
+        )
+        .expect("daemon state")
+    }
 
     #[test]
     fn test_unescape_shell_artifacts_exclamation() {
@@ -370,6 +406,33 @@ mod tests {
         assert_eq!(
             extract_review_note_pr("@lead [Review Note] PR #9999: edge case"),
             Some(9999)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_user_message_queues_lead_nudge() {
+        let state = make_test_state("midtown-test-rpc-channel-queue-user");
+        let response =
+            handle_channel_post(1_i64.into(), "user", "please check this", None, &state).await;
+        assert!(response.error.is_none(), "channel.post should succeed");
+
+        let queue = state.lead_nudge_queue.lock().await;
+        assert_eq!(queue.len(), 1);
+        assert_eq!(queue[0], "user: please check this");
+    }
+
+    #[tokio::test]
+    async fn test_coworker_at_lead_queues_lead_nudge() {
+        let state = make_test_state("midtown-test-rpc-channel-queue-coworker");
+        let response =
+            handle_channel_post(2_i64.into(), "york", "@lead need a review", None, &state).await;
+        assert!(response.error.is_none(), "channel.post should succeed");
+
+        let queue = state.lead_nudge_queue.lock().await;
+        assert_eq!(queue.len(), 1);
+        assert!(
+            queue[0].contains("york mentioned @lead"),
+            "queue entry should summarize coworker @lead mention"
         );
     }
 }

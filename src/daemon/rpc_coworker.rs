@@ -412,10 +412,8 @@ pub(super) async fn handle_coworker_asking(
         if let Err(e) = coworkers.update_status_display(&name_owned, Some("waiting for feedback")) {
             debug!("Failed to update tmux tab for {}: {}", name_owned, e);
         }
-        if let Err(e) = coworkers.nudge("Lead", &nudge_message) {
-            debug!("Failed to nudge Lead: {}", e);
-        }
     });
+    state.nudge_lead(&nudge_message).await;
 
     info!("Coworker {} asking: {}", name, question);
     Response::success(
