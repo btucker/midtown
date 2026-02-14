@@ -19,16 +19,19 @@ use crate::rpc::{RequestId, Response, RpcError};
 /// This handler runs blocking operations (gh CLI, file I/O) in spawn_blocking
 /// to avoid blocking the async runtime and causing RPC timeouts.
 pub(super) async fn handle_status(id: RequestId, state: &DaemonState) -> Response {
-    // Build a map of coworker name -> task subject from in_progress tasks
+    // Build a map of coworker name -> task display string from in_progress tasks
     // This is the source of truth for what each coworker is working on
+    // Format: "!1234 Task subject" (task ID + subject)
     let coworker_tasks: std::collections::HashMap<String, String> =
         crate::tasks::get_in_progress_tasks_with_subjects()
             .into_iter()
-            .filter_map(|(_task_id, subject, owner)| {
+            .filter_map(|(task_id, subject, owner)| {
                 if owner.is_empty() {
                     None
                 } else {
-                    Some((owner.to_lowercase(), subject))
+                    // Include both task ID and subject in the display string
+                    let task_display = format!("!{} {}", task_id, subject);
+                    Some((owner.to_lowercase(), task_display))
                 }
             })
             .collect();
@@ -204,3 +207,7 @@ fn get_recent_channel_activity() -> Vec<serde_json::Value> {
         Err(_) => Vec::new(),
     }
 }
+
+#[path = "rpc_status_tests.rs"]
+#[cfg(test)]
+mod tests;
