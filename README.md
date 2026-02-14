@@ -319,14 +319,14 @@ Profiles are stored under `~/.midtown/`:
 │               └── <zai-profile>/          # z.ai profiles
 │                   ├── api_key.txt         # API key (chmod 600)
 │                   └── base_url.txt        # Optional base URL override
-└── providers/
+└── platforms/
     └── claude/                             # Shared Claude state (all profiles)
         ├── projects/
         ├── tasks/
         └── ...
 ```
 
-Claude profiles use a two-tier structure: per-profile auth credentials (`.claude.json`) live in `auth/<profile>/claude/`, while shared state (projects, tasks, settings) is symlinked from `~/.midtown/providers/claude/`. This allows multiple auth profiles to share the same Claude Code data.
+Claude profiles use a two-tier structure: per-profile auth credentials (`.claude.json`) live in `auth/<profile>/claude/`, while shared state (projects, tasks, settings) is symlinked from `~/.midtown/platforms/claude/`. This allows multiple auth profiles to share the same Claude Code data.
 
 When Midtown launches a session, it sets provider-specific env vars:
 - Claude: `CLAUDE_CONFIG_DIR` to the profile directory
