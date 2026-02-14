@@ -57,18 +57,31 @@ pub(super) async fn handle_dashboard(id: RequestId, state: &DaemonState) -> Resp
             guard.clone()
         };
 
-        // Build coworker task map for current_task lookup
-        let coworker_tasks: std::collections::HashMap<String, String> =
-            crate::tasks::get_in_progress_tasks_with_subjects()
-                .into_iter()
-                .filter_map(|(_task_id, subject, owner)| {
-                    if owner.is_empty() {
-                        None
-                    } else {
-                        Some((owner.to_lowercase(), subject))
-                    }
-                })
-                .collect();
+        // Collect session IDs with a consistent .lock().await (not try_lock)
+        // to avoid silent drops when the lock is contended.
+        let session_ids: std::collections::HashMap<String, String> = {
+            let persistent = state.persistent_state.lock().await;
+            persistent
+                .headless_sessions
+                .iter()
+                .map(|(name, info)| (name.clone(), info.session_id.clone()))
+                .collect()
+        };
+
+        // Build coworker task map from the already-loaded tasks (avoids a
+        // second blocking `read_tasks()` call — see review issue #1).
+        let coworker_tasks: std::collections::HashMap<String, String> = tasks
+            .iter()
+            .filter(|t| t.status == crate::tasks::TaskStatus::InProgress)
+            .filter_map(|t| {
+                let owner = t.owner.as_deref().unwrap_or("");
+                if owner.is_empty() {
+                    None
+                } else {
+                    Some((owner.to_lowercase(), t.subject.clone()))
+                }
+            })
+            .collect();
 
         let inputs: Vec<CoworkerBuildInput> = active_coworkers
             .iter()
@@ -79,14 +92,7 @@ pub(super) async fn handle_dashboard(id: RequestId, state: &DaemonState) -> Resp
                     .and_then(|r| r.workflow_phase)
                     .map(|p| format!("{:?}", p).to_lowercase());
                 let current_task = coworker_tasks.get(&cw.name.to_lowercase()).cloned();
-                let session_id = {
-                    // Best-effort: try persistent state without blocking
-                    state.persistent_state.try_lock().ok().and_then(|ps| {
-                        ps.headless_sessions
-                            .get(&cw.name)
-                            .map(|info| info.session_id.clone())
-                    })
-                };
+                let session_id = session_ids.get(&cw.name).cloned();
 
                 CoworkerBuildInput {
                     name: cw.name.clone(),
@@ -143,7 +149,7 @@ pub(super) async fn handle_dashboard(id: RequestId, state: &DaemonState) -> Resp
 pub(super) async fn handle_attach(
     id: RequestId,
     name: &str,
-    force: bool,
+    _force: bool, // Force vs graceful shutdown are currently identical
     state: &DaemonState,
 ) -> Response {
     let name = name.to_lowercase();
@@ -156,10 +162,12 @@ pub(super) async fn handle_attach(
         );
     }
 
-    // Guard against double-attach
+    // Atomically check-and-mark as attached to prevent TOCTOU races.
+    // If two concurrent attach requests arrive, only one will succeed at
+    // inserting into the set.
     {
-        let attached = state.attached_coworkers.lock().unwrap();
-        if attached.contains(&name) {
+        let mut attached = state.attached_coworkers.lock().unwrap();
+        if !attached.insert(name.clone()) {
             return Response::error(
                 id,
                 RpcError::new(-32602, format!("Coworker '{}' is already attached", name)),
@@ -179,6 +187,9 @@ pub(super) async fn handle_attach(
     let session_id = match session_id {
         Some(sid) => sid,
         None => {
+            // Roll back the attached mark since we can't proceed
+            let mut attached = state.attached_coworkers.lock().unwrap();
+            attached.remove(&name);
             return Response::success(
                 id,
                 serde_json::to_value(&AttachResponse {
@@ -191,42 +202,25 @@ pub(super) async fn handle_attach(
         }
     };
 
-    // Shut down the headless coworker
-    if force {
-        // Force mode: kill immediately
-        if let Err(e) = state.coworkers.shutdown(&name) {
-            return Response::success(
-                id,
-                serde_json::to_value(&AttachResponse {
-                    success: false,
-                    session_id: None,
-                    error: Some(format!("Failed to shut down coworker '{}': {}", name, e)),
-                })
-                .unwrap(),
-            );
-        }
-    } else {
-        // Graceful mode: same as force for now (headless sessions don't have
-        // a "wait for turn completion" mode yet)
-        if let Err(e) = state.coworkers.shutdown(&name) {
-            return Response::success(
-                id,
-                serde_json::to_value(&AttachResponse {
-                    success: false,
-                    session_id: None,
-                    error: Some(format!("Failed to shut down coworker '{}': {}", name, e)),
-                })
-                .unwrap(),
-            );
-        }
+    // Shut down the headless coworker (force and graceful are currently identical
+    // since headless sessions don't have a "wait for turn completion" mode yet)
+    if let Err(e) = state.coworkers.shutdown(&name) {
+        // Roll back the attached mark since shutdown failed
+        let mut attached = state.attached_coworkers.lock().unwrap();
+        attached.remove(&name);
+        return Response::success(
+            id,
+            serde_json::to_value(&AttachResponse {
+                success: false,
+                session_id: None,
+                error: Some(format!("Failed to shut down coworker '{}': {}", name, e)),
+            })
+            .unwrap(),
+        );
     }
 
-    // Record stop time and mark as attached
+    // Record stop time (attached mark was already set above)
     state.record_coworker_stop_time(&name);
-    {
-        let mut attached = state.attached_coworkers.lock().unwrap();
-        attached.insert(name.clone());
-    }
 
     info!(
         "Plugin attached to coworker '{}' (session={})",
@@ -261,14 +255,12 @@ pub(super) async fn handle_attach(
 pub(super) async fn handle_detach(id: RequestId, name: &str, state: &DaemonState) -> Response {
     let name = name.to_lowercase();
 
-    // Clear attached state
-    {
-        let mut attached = state.attached_coworkers.lock().unwrap();
-        attached.remove(&name);
-    }
-
-    // Idempotency: if already running, skip re-spawn
+    // Idempotency: if already running, just clear attached state and return
     if state.coworkers.get(&name).is_some() {
+        {
+            let mut attached = state.attached_coworkers.lock().unwrap();
+            attached.remove(&name);
+        }
         info!("Coworker '{}' already running — detach is a no-op", name);
         return Response::success(
             id,
@@ -316,6 +308,13 @@ pub(super) async fn handle_detach(id: RequestId, name: &str, state: &DaemonState
 
     match state.spawn_coworker(&config).await {
         Ok(()) => {
+            // Only clear attached state after successful re-spawn.
+            // This prevents leaving the coworker in limbo if spawn fails.
+            {
+                let mut attached = state.attached_coworkers.lock().unwrap();
+                attached.remove(&name);
+            }
+
             info!(
                 "Resumed headless coworker '{}' after plugin detach (session={})",
                 name, session_id
@@ -337,6 +336,8 @@ pub(super) async fn handle_detach(id: RequestId, name: &str, state: &DaemonState
             )
         }
         Err(e) => {
+            // Leave coworker in attached_coworkers so the state is consistent:
+            // it's still attached (not running headless), and the user can retry.
             warn!(
                 "Failed to resume coworker '{}' after plugin detach: {}",
                 name, e
@@ -492,6 +493,14 @@ fn read_recent_channel_messages(count: usize) -> Vec<Message> {
 // ============================================================================
 // Stream event buffer types
 // ============================================================================
+
+/// Maximum number of lead nudges kept in the queue.
+///
+/// Prevents unbounded growth when the Zellij plugin is not running
+/// (e.g., in standard tmux mode). When the cap is reached, the oldest
+/// entries are evicted. 50 nudges is sufficient for several hours of
+/// daemon operation at typical nudge rates (~1 per minute).
+pub const MAX_LEAD_NUDGE_QUEUE: usize = 50;
 
 /// Maximum number of recent events kept per coworker in the stream buffer.
 ///

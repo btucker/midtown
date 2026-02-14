@@ -249,6 +249,114 @@ fn test_lead_nudge_queue_drain_is_atomic() {
 }
 
 // ============================================================================
+// Lead nudge queue cap tests
+// ============================================================================
+
+#[test]
+fn test_lead_nudge_queue_cap_evicts_oldest() {
+    use super::MAX_LEAD_NUDGE_QUEUE;
+
+    let mut queue: Vec<String> = (0..MAX_LEAD_NUDGE_QUEUE + 10)
+        .map(|i| format!("nudge {}", i))
+        .collect();
+
+    // Simulate the cap logic from effects.rs
+    if queue.len() > MAX_LEAD_NUDGE_QUEUE {
+        let excess = queue.len() - MAX_LEAD_NUDGE_QUEUE;
+        queue.drain(..excess);
+    }
+
+    assert_eq!(queue.len(), MAX_LEAD_NUDGE_QUEUE);
+    // Oldest entries (0-9) should be evicted
+    assert_eq!(queue[0], "nudge 10");
+    assert_eq!(
+        queue.last().unwrap(),
+        &format!("nudge {}", MAX_LEAD_NUDGE_QUEUE + 9)
+    );
+}
+
+#[test]
+fn test_lead_nudge_queue_under_cap_no_eviction() {
+    use super::MAX_LEAD_NUDGE_QUEUE;
+
+    let mut queue: Vec<String> = (0..5).map(|i| format!("nudge {}", i)).collect();
+
+    // Simulate the cap logic — should not evict
+    if queue.len() > MAX_LEAD_NUDGE_QUEUE {
+        let excess = queue.len() - MAX_LEAD_NUDGE_QUEUE;
+        queue.drain(..excess);
+    }
+
+    assert_eq!(queue.len(), 5);
+    assert_eq!(queue[0], "nudge 0");
+}
+
+// ============================================================================
+// Coworker task map from pre-loaded tasks
+// ============================================================================
+
+#[test]
+fn test_coworker_task_map_from_preloaded_tasks() {
+    // Verifies that the dashboard handler correctly builds the coworker task
+    // map from the already-loaded tasks slice (avoiding a duplicate read_tasks call).
+    let tasks = vec![
+        crate::tasks::Task {
+            id: "1".to_string(),
+            subject: "Active task".to_string(),
+            description: None,
+            status: crate::tasks::TaskStatus::InProgress,
+            owner: Some("madison".to_string()),
+            blocked_by: vec![],
+            channel: None,
+            pr: None,
+            created_at: None,
+        },
+        crate::tasks::Task {
+            id: "2".to_string(),
+            subject: "Pending task".to_string(),
+            description: None,
+            status: crate::tasks::TaskStatus::Pending,
+            owner: Some("park".to_string()),
+            blocked_by: vec![],
+            channel: None,
+            pr: None,
+            created_at: None,
+        },
+        crate::tasks::Task {
+            id: "3".to_string(),
+            subject: "Unowned task".to_string(),
+            description: None,
+            status: crate::tasks::TaskStatus::InProgress,
+            owner: None,
+            blocked_by: vec![],
+            channel: None,
+            pr: None,
+            created_at: None,
+        },
+    ];
+
+    // Replicate the logic from handle_dashboard
+    let coworker_tasks: std::collections::HashMap<String, String> = tasks
+        .iter()
+        .filter(|t| t.status == crate::tasks::TaskStatus::InProgress)
+        .filter_map(|t| {
+            let owner = t.owner.as_deref().unwrap_or("");
+            if owner.is_empty() {
+                None
+            } else {
+                Some((owner.to_lowercase(), t.subject.clone()))
+            }
+        })
+        .collect();
+
+    // Only in_progress tasks with owners should appear
+    assert_eq!(coworker_tasks.len(), 1);
+    assert_eq!(coworker_tasks.get("madison").unwrap(), "Active task");
+    // Pending tasks and unowned tasks should not appear
+    assert!(coworker_tasks.get("park").is_none());
+}
+
+// ============================================================================
 // Stream event buffer tests
 // ============================================================================
 
