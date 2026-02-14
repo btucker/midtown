@@ -1,7 +1,7 @@
 //! End-to-end tests for the web UI and WebSocket functionality.
 //!
 //! These tests verify:
-//! - REST API endpoints (health, channel, status, tmux)
+//! - REST API endpoints (health, channel, status)
 //! - WebSocket connection and real-time message streaming
 //! - Multi-project webserver routing
 //! - Static file serving
@@ -590,110 +590,11 @@ fn test_web_api_status_returns_kanban_data() {
     );
 }
 
-/// Test that /api/tmux-windows returns a list of windows.
-#[test]
-#[ignore] // Requires built binary and tmux
-fn test_web_api_tmux_windows() {
-    let mut fixture = match WebTestFixture::new() {
-        Some(f) => f,
-        None => return,
-    };
-
-    if !fixture.start_daemon() {
-        return;
-    }
-
-    let response = reqwest::blocking::get(format!("{}/tmux-windows", fixture.api_base()));
-
-    // This may fail if tmux session doesn't exist (expected in test env)
-    if let Ok(response) = response
-        && response.status().is_success()
-    {
-        let data: serde_json::Value = response.json().unwrap();
-        assert!(
-            data.get("windows").map(|w| w.is_array()).unwrap_or(false),
-            "tmux-windows should return windows array"
-        );
-    }
-}
-
-/// Test that /api/tmux-pane validates window name.
-#[test]
-#[ignore] // Requires built binary
-fn test_web_api_tmux_pane_validates_window() {
-    let mut fixture = match WebTestFixture::new() {
-        Some(f) => f,
-        None => return,
-    };
-
-    if !fixture.start_daemon() {
-        return;
-    }
-
-    // Invalid window names should return 400
-    let invalid_names = ["", "foo;bar", "foo:bar", "foo bar"];
-
-    for name in invalid_names {
-        let response =
-            reqwest::blocking::get(format!("{}/tmux-pane?window={}", fixture.api_base(), name));
-        if let Ok(resp) = response {
-            assert!(
-                !resp.status().is_success() || name.is_empty(),
-                "Window name '{}' should be rejected or handled",
-                name
-            );
-        }
-    }
-
-    // Valid window names that don't exist should return 404 (not 400)
-    let response = reqwest::blocking::get(format!(
-        "{}/tmux-pane?window=nonexistent",
-        fixture.api_base()
-    ));
-    if let Ok(resp) = response {
-        // Either 404 (window not found) or 500 (no tmux session) is acceptable
-        assert!(
-            resp.status() == reqwest::StatusCode::NOT_FOUND
-                || resp.status() == reqwest::StatusCode::INTERNAL_SERVER_ERROR,
-            "Nonexistent window should return 404 or 500, got {}",
-            resp.status()
-        );
-    }
-}
-
-/// Test that /api/lead-pane returns pane content or appropriate error.
-#[test]
-#[ignore] // Requires built binary and tmux
-fn test_web_api_lead_pane() {
-    let mut fixture = match WebTestFixture::new() {
-        Some(f) => f,
-        None => return,
-    };
-
-    if !fixture.start_daemon() {
-        return;
-    }
-
-    let response = reqwest::blocking::get(format!("{}/lead-pane", fixture.api_base()));
-
-    // This may fail if tmux session doesn't exist (expected in test env)
-    if let Ok(response) = response {
-        // Either success (with content) or 404 (no lead window)
-        assert!(
-            response.status().is_success() || response.status() == reqwest::StatusCode::NOT_FOUND,
-            "lead-pane should return 200 or 404, got {}",
-            response.status()
-        );
-
-        if response.status().is_success() {
-            let data: serde_json::Value = response.json().unwrap();
-            assert!(
-                data.get("content").is_some(),
-                "lead-pane should return content field"
-            );
-        }
-    }
-}
+// ────────────────────────────────────────────────────────────────────────────
+// Note: /api/tmux-windows, /api/tmux-pane, and /api/lead-pane endpoints were
+// removed as part of the Zellij migration (Phase 7). The Svelte web app now
+// embeds the Zellij web client instead of fetching tmux pane content.
+// ────────────────────────────────────────────────────────────────────────────
 
 // ────────────────────────────────────────────────────────────────────────────
 // WebSocket Tests

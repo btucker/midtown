@@ -93,15 +93,9 @@ run_coordination_tests() {
             --skip test_daemon_installs_required_plugins \
             "${test_args[@]}"
 
-    run_bg "tmux_e2e" \
-        cargo test --release --test tmux_e2e -- --ignored --test-threads=1 \
-            --skip test_lead_pane_width_stable_across_reinits \
-            --skip test_setup_chat_pane_is_idempotent \
-            --skip test_spawn_claude_with_initial_prompt_renders_tui \
-            "${test_args[@]}"
-
-    run_bg "nudge_delivery_e2e" \
-        cargo test --release --test nudge_delivery_e2e -- --ignored "${test_args[@]}"
+    # Note: tmux_e2e and nudge_delivery_e2e suites are skipped in the container
+    # because they require tmux, which is no longer installed (replaced by Zellij).
+    # These tests can still be run locally where tmux is available.
 
     run_bg "chat_e2e" \
         cargo test --release --test chat_e2e -- --ignored "${test_args[@]}"
