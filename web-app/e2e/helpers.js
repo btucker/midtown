@@ -92,8 +92,9 @@ export const MOCK_CHANNELS = {
   ]
 }
 
-export const MOCK_LEAD_PANE = {
-  content: 'claude> Running tests...\n$ npm test\nAll 42 tests passed.',
+export const MOCK_ZELLIJ_WEB_URL = {
+  url: 'https://localhost:6780',
+  session: 'midtown-test-project',
 }
 
 /**
@@ -103,12 +104,12 @@ export const MOCK_LEAD_PANE = {
  * @param {object} [overrides]
  * @param {object[]} [overrides.messages]
  * @param {object} [overrides.status]
- * @param {object} [overrides.leadPane]
+ * @param {object} [overrides.zellijWebUrl]
  */
 export async function mockAllRoutes(page, overrides = {}) {
   const msgs = overrides.messages ?? MOCK_MESSAGES
   const status = overrides.status ?? MOCK_STATUS
-  const leadPane = overrides.leadPane ?? MOCK_LEAD_PANE
+  const zellijWebUrl = overrides.zellijWebUrl ?? MOCK_ZELLIJ_WEB_URL
 
   await page.route('**/api/projects', (route) =>
     route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(MOCK_PROJECTS) })
@@ -130,7 +131,7 @@ export async function mockAllRoutes(page, overrides = {}) {
     route.fulfill({ status: 200, contentType: 'text/plain', body: 'ok' })
   )
 
-  await page.route('**/api/lead-pane', (route) =>
-    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(leadPane) })
+  await page.route('**/api/projects/*/zellij-web-url', (route) =>
+    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(zellijWebUrl) })
   )
 }
