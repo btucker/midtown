@@ -17,7 +17,8 @@ use crossterm::{
     cursor::MoveTo,
     event::{
         DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyCode, KeyEventKind,
-        KeyModifiers, MouseEventKind,
+        KeyModifiers, KeyboardEnhancementFlags, MouseEventKind, PopKeyboardEnhancementFlags,
+        PushKeyboardEnhancementFlags,
     },
     execute,
     style::{Color as CrosstermColor, Print, ResetColor, SetForegroundColor},
@@ -30,6 +31,18 @@ use tokio::time::interval;
 use app::App;
 use ratatui::style::Color as RatatuiColor;
 use ui::Hyperlink;
+
+/// Keyboard enhancement flags for the kitty keyboard protocol.
+///
+/// These flags enable unambiguous decoding of modifier key combinations
+/// like Shift+Enter. Without them, terminals send ambiguous escape sequences
+/// that crossterm may decode as incorrect characters (e.g., 'j' for Shift+Enter).
+///
+/// - `DISAMBIGUATE_ESCAPE_CODES`: Ensures special keys use unique codes
+/// - `REPORT_ALL_KEYS_AS_ESCAPE_CODES`: Ensures modifier state is reported
+const KEYBOARD_ENHANCEMENT_FLAGS: KeyboardEnhancementFlags =
+    KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+        .union(KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES);
 
 /// Convert a character index to a byte index in a UTF-8 string.
 ///
@@ -47,8 +60,16 @@ pub fn run() -> Result<(), String> {
     // Setup terminal
     enable_raw_mode().map_err(|e| format!("Failed to enable raw mode: {}", e))?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)
-        .map_err(|e| format!("Failed to enter alternate screen: {}", e))?;
+
+    // Enable keyboard enhancement flags for proper Shift+Enter detection.
+    // See KEYBOARD_ENHANCEMENT_FLAGS for details.
+    execute!(
+        stdout,
+        EnterAlternateScreen,
+        EnableMouseCapture,
+        PushKeyboardEnhancementFlags(KEYBOARD_ENHANCEMENT_FLAGS)
+    )
+    .map_err(|e| format!("Failed to enter alternate screen: {}", e))?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal =
         Terminal::new(backend).map_err(|e| format!("Failed to create terminal: {}", e))?;
@@ -68,7 +89,8 @@ pub fn run() -> Result<(), String> {
     let _ = execute!(
         terminal.backend_mut(),
         LeaveAlternateScreen,
-        DisableMouseCapture
+        DisableMouseCapture,
+        PopKeyboardEnhancementFlags
     );
     let _ = terminal.show_cursor();
 
@@ -1455,3 +1477,7 @@ mod tests {
 #[path = "channel_switcher_tests.rs"]
 #[cfg(test)]
 mod channel_switcher_tests;
+
+#[path = "keyboard_protocol_tests.rs"]
+#[cfg(test)]
+mod keyboard_protocol_tests;
