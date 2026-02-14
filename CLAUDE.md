@@ -187,6 +187,8 @@ If you are the Lead, whenever a PR is merged into main, pull, install the update
 git pull && cargo install --path . && midtown restart
 ```
 
+This builds the release binary and installs it atomically to `~/.cargo/bin/` (which is typically in your PATH).
+
 Post to the channel when done so the team knows the new code is live:
 
 ```bash
