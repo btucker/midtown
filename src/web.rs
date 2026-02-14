@@ -26,129 +26,6 @@ use crate::coworker::CoworkerManager;
 use crate::message::Message;
 use crate::push::PushManager;
 use crate::tasks::extract_task_id_from_pr_title;
-use crate::{process, tmux};
-
-/// Tracks which WebSocket connections are viewing which tmux windows,
-/// along with each viewer's viewport width in columns.
-///
-/// NOTE: This tracker no longer performs any tmux resizing. The resize
-/// functionality was removed because it blocked TUI users from controlling
-/// their terminal size. The tracker is retained for potential future
-/// analytics, debugging, or optional resize features.
-#[derive(Debug)]
-pub struct ViewerTracker {
-    /// Map of conn_id → (window_name, cols)
-    viewers: std::collections::HashMap<u64, (String, u16)>,
-    /// Next connection ID to assign
-    next_conn_id: u64,
-    /// Tmux session name for resize commands
-    session: String,
-}
-
-impl ViewerTracker {
-    pub fn new(session: String) -> Self {
-        Self {
-            viewers: std::collections::HashMap::new(),
-            next_conn_id: 1,
-            session,
-        }
-    }
-
-    /// Allocate a new connection ID.
-    pub fn new_conn_id(&mut self) -> u64 {
-        let id = self.next_conn_id;
-        self.next_conn_id += 1;
-        id
-    }
-
-    /// Register or update a viewer's window and viewport width.
-    ///
-    /// Returns ResizeActions (currently unused - resize execution is disabled).
-    pub fn set_viewing(&mut self, conn_id: u64, window: String, cols: u16) -> ResizeActions {
-        let old_window = self.viewers.get(&conn_id).map(|(w, _)| w.clone());
-        self.viewers.insert(conn_id, (window.clone(), cols));
-
-        let mut actions = ResizeActions::default();
-
-        // If viewer switched windows, check if old window needs reset
-        if let Some(ref old) = old_window
-            && *old != window
-        {
-            let max_cols = self.max_cols_for_window(old);
-            if max_cols == 0 {
-                actions.reset_windows.push(old.clone());
-            } else {
-                actions.resize_windows.push((old.clone(), max_cols));
-            }
-        }
-
-        // Resize the new window to the max viewer width
-        let max_cols = self.max_cols_for_window(&window);
-        actions.resize_windows.push((window, max_cols));
-
-        actions
-    }
-
-    /// Remove a viewer (on disconnect or leave).
-    ///
-    /// Returns ResizeActions (currently unused - resize execution is disabled).
-    pub fn remove_viewer(&mut self, conn_id: u64) -> ResizeActions {
-        let mut actions = ResizeActions::default();
-
-        if let Some((window, _)) = self.viewers.remove(&conn_id) {
-            let max_cols = self.max_cols_for_window(&window);
-            if max_cols == 0 {
-                actions.reset_windows.push(window);
-            } else {
-                actions.resize_windows.push((window, max_cols));
-            }
-        }
-
-        actions
-    }
-
-    /// Stop viewing without removing the connection (viewer navigated away).
-    pub fn stop_viewing(&mut self, conn_id: u64) -> ResizeActions {
-        self.remove_viewer(conn_id)
-    }
-
-    /// Compute max(cols) across all viewers of a given window.
-    fn max_cols_for_window(&self, window: &str) -> u16 {
-        self.viewers
-            .values()
-            .filter(|(w, _)| w == window)
-            .map(|(_, cols)| *cols)
-            .max()
-            .unwrap_or(0)
-    }
-}
-
-/// Actions to perform after a viewer change.
-#[derive(Debug, Default)]
-pub struct ResizeActions {
-    /// Windows to resize to a specific column width.
-    pub resize_windows: Vec<(String, u16)>,
-    /// Windows to reset to automatic sizing.
-    pub reset_windows: Vec<String>,
-}
-
-impl ResizeActions {
-    /// Execute all resize/reset actions against tmux.
-    ///
-    /// NOTE: This is intentionally a no-op. The TUI user controls tmux sizing,
-    /// and the web UI adapts to whatever size the terminal is. Web-driven
-    /// resizing was removed because it blocked TUI users from resizing their
-    /// terminal (tmux resize-window commands would override their changes).
-    ///
-    /// The ViewerTracker is retained for potential future analytics/debugging,
-    /// but no actual resize commands are executed.
-    #[allow(unused_variables)]
-    pub fn execute(&self, session: &str) {
-        // Intentionally empty - see doc comment above.
-        // Previously this resized tmux windows to match web viewer viewport,
-        // but that prevented TUI users from controlling their terminal size.
-    }
-}
 
 /// TTL for cached API responses (30 seconds).
 const CACHE_TTL: Duration = Duration::from_secs(30);
@@ -278,9 +155,6 @@ pub struct WebState {
     /// Cached GitHub repo full names (owner/repo) by repo path.
     /// Repo names never change during a session, so we cache indefinitely.
     pub repo_name_cache: std::sync::RwLock<std::collections::HashMap<std::path::PathBuf, String>>,
-    /// Tracks which WebSocket connections are viewing which tmux windows.
-    /// Note: Resize functionality is disabled; TUI users control terminal size.
-    pub viewer_tracker: Mutex<ViewerTracker>,
 }
 
 impl WebState {
@@ -392,12 +266,6 @@ pub enum ClientMessage {
     /// Request coworker status
     #[serde(rename = "get_status")]
     GetStatus,
-    /// Client is viewing a tmux window (resize disabled; for tracking only)
-    #[serde(rename = "view_window")]
-    ViewWindow { window: String, cols: u16 },
-    /// Client stopped viewing a tmux window (resize disabled; for tracking only)
-    #[serde(rename = "leave_window")]
-    LeaveWindow,
     /// Send a nudge (text input) to a coworker or the lead
     #[serde(rename = "nudge")]
     Nudge { target: String, message: String },
@@ -418,9 +286,7 @@ pub fn create_web_router(state: Arc<WebState>) -> Router {
         .route("/api/channels", get(api_channels_list))
         .route("/api/channels/create", post(api_channels_create))
         .route("/api/status", get(api_status))
-        .route("/api/lead-pane", get(api_lead_pane))
-        .route("/api/tmux-pane", get(api_tmux_pane))
-        .route("/api/tmux-windows", get(api_tmux_windows))
+        .route("/api/zellij-web-url", get(api_zellij_web_url))
         .route("/api/push/vapid-key", get(api_push_vapid_key))
         .route("/api/push/subscribe", post(api_push_subscribe))
         .route("/api/push/unsubscribe", post(api_push_unsubscribe))
@@ -1098,92 +964,16 @@ fn fetch_merged_prs_via_cli() -> Vec<serde_json::Value> {
         _ => Vec::new(),
     }
 }
-/// Get the lead's tmux pane content
+/// Get the Zellij web client URL for embedding in the web app.
 ///
-/// Captures the current content of the lead window's pane via tmux.
-/// The frontend polls this endpoint to stream the lead's terminal output.
-async fn api_lead_pane(
-    State(state): State<Arc<WebState>>,
-) -> Result<impl IntoResponse, StatusCode> {
-    let session = format!("{}{}", process::SESSION_PREFIX, state.config.repo);
-    let target = format!("{}:lead", session);
-
-    // capture_pane is blocking (spawns a process), so run on blocking thread pool
-    let content = tokio::task::spawn_blocking(move || tmux::capture_pane(&target))
-        .await
-        .map_err(|e| {
-            error!("Failed to spawn blocking task: {}", e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
-
-    match content {
-        Some(text) => Ok(axum::Json(serde_json::json!({ "content": text }))),
-        None => Err(StatusCode::NOT_FOUND),
-    }
-}
-
-/// Query parameters for tmux pane capture
-#[derive(Debug, Deserialize)]
-struct TmuxPaneQuery {
-    /// Which tmux window to capture (e.g., "lead", "riverside")
-    window: String,
-}
-
-/// Get the content of any tmux window's pane
-///
-/// Accepts a `?window=name` query parameter to select which window to capture.
-/// Used by the "Tmux" tab in the web UI.
-async fn api_tmux_pane(
-    State(state): State<Arc<WebState>>,
-    Query(params): Query<TmuxPaneQuery>,
-) -> Result<impl IntoResponse, StatusCode> {
-    let session = format!("{}{}", process::SESSION_PREFIX, state.config.repo);
-    let window = params.window;
-
-    // Validate window name: only allow non-empty alphanumeric, hyphens, and underscores
-    if window.is_empty()
-        || !window
-            .chars()
-            .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
-    {
-        return Err(StatusCode::BAD_REQUEST);
-    }
-
-    let target = format!("{}:{}", session, window);
-
-    let content = tokio::task::spawn_blocking(move || tmux::capture_pane(&target))
-        .await
-        .map_err(|e| {
-            error!("Failed to spawn blocking task: {}", e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
-
-    match content {
-        Some(text) => Ok(axum::Json(serde_json::json!({ "content": text }))),
-        None => Err(StatusCode::NOT_FOUND),
-    }
-}
-
-/// List all tmux windows in the session
-///
-/// Returns a JSON array of window names that can be passed to `/api/tmux-pane?window=`.
-async fn api_tmux_windows(
-    State(state): State<Arc<WebState>>,
-) -> Result<impl IntoResponse, StatusCode> {
-    let session = format!("{}{}", process::SESSION_PREFIX, state.config.repo);
-
-    let windows = tokio::task::spawn_blocking(move || tmux::list_all_windows(&session))
-        .await
-        .map_err(|e| {
-            error!("Failed to spawn blocking task: {}", e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?
-        .map_err(|e| {
-            error!("Failed to list tmux windows: {}", e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
-
-    Ok(axum::Json(serde_json::json!({ "windows": windows })))
+/// Returns the URL of the Zellij web client and the session name,
+/// so the Svelte app can embed it in an iframe.
+async fn api_zellij_web_url(State(state): State<Arc<WebState>>) -> impl IntoResponse {
+    let session = format!("midtown-{}", state.config.repo);
+    Json(serde_json::json!({
+        "url": "https://localhost:6780",
+        "session": session,
+    }))
 }
 
 /// Get the VAPID public key for push subscription.
@@ -1636,12 +1426,7 @@ async fn ws_handler(ws: WebSocketUpgrade, State(state): State<Arc<WebState>>) ->
 async fn handle_websocket(socket: WebSocket, state: Arc<WebState>) {
     let (mut sender, mut receiver) = socket.split();
 
-    // Assign a unique connection ID for viewer tracking
-    let conn_id = {
-        let mut tracker = state.viewer_tracker.lock().unwrap();
-        tracker.new_conn_id()
-    };
-    debug!("WebSocket connection {} opened", conn_id);
+    debug!("WebSocket connection opened");
 
     // Subscribe to broadcast updates
     let mut updates_rx = state.updates_tx.subscribe();
@@ -1699,15 +1484,12 @@ async fn handle_websocket(socket: WebSocket, state: Arc<WebState>) {
     while let Some(msg) = receiver.next().await {
         match msg {
             Ok(WsMessage::Text(text)) => {
-                if let Err(e) = handle_client_message(&text, &state_clone, conn_id).await {
+                if let Err(e) = handle_client_message(&text, &state_clone).await {
                     warn!("Error handling client message: {}", e);
                     // Send error back to client using try_send to avoid blocking.
                     // If the channel is full (client is slow), log and drop the error.
                     if let Err(send_err) = error_tx.try_send(e) {
-                        warn!(
-                            "Failed to send error to WebSocket client (conn {}): {:?}",
-                            conn_id, send_err
-                        );
+                        warn!("Failed to send error to WebSocket client: {:?}", send_err);
                     }
                 }
             }
@@ -1720,28 +1502,12 @@ async fn handle_websocket(socket: WebSocket, state: Arc<WebState>) {
         }
     }
 
-    // Clean up viewer tracking on disconnect
-    let actions = {
-        let mut tracker = state.viewer_tracker.lock().unwrap();
-        tracker.remove_viewer(conn_id)
-    };
-    if !actions.resize_windows.is_empty() || !actions.reset_windows.is_empty() {
-        let session = state.viewer_tracker.lock().unwrap().session.clone();
-        tokio::task::spawn_blocking(move || actions.execute(&session))
-            .await
-            .ok();
-    }
-
     send_task.abort();
-    debug!("WebSocket connection {} closed", conn_id);
+    debug!("WebSocket connection closed");
 }
 
 /// Handle a message from a WebSocket client
-async fn handle_client_message(
-    text: &str,
-    state: &Arc<WebState>,
-    conn_id: u64,
-) -> Result<(), String> {
+async fn handle_client_message(text: &str, state: &Arc<WebState>) -> Result<(), String> {
     let msg: ClientMessage =
         serde_json::from_str(text).map_err(|e| format!("Invalid message format: {}", e))?;
 
@@ -1766,39 +1532,6 @@ async fn handle_client_message(
         ClientMessage::GetStatus => {
             // Client should use the REST endpoint for status
             debug!("Client requested status via WebSocket");
-        }
-        ClientMessage::ViewWindow { window, cols } => {
-            // Validate window name
-            if window.is_empty()
-                || !window
-                    .chars()
-                    .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
-            {
-                return Err("Invalid window name".to_string());
-            }
-            let actions = {
-                let mut tracker = state.viewer_tracker.lock().unwrap();
-                tracker.set_viewing(conn_id, window.clone(), cols)
-            };
-            let session = state.viewer_tracker.lock().unwrap().session.clone();
-            debug!(
-                "conn {} viewing window {} at {} cols",
-                conn_id, window, cols
-            );
-            tokio::task::spawn_blocking(move || actions.execute(&session))
-                .await
-                .map_err(|e| format!("Resize task failed: {}", e))?;
-        }
-        ClientMessage::LeaveWindow => {
-            let actions = {
-                let mut tracker = state.viewer_tracker.lock().unwrap();
-                tracker.stop_viewing(conn_id)
-            };
-            let session = state.viewer_tracker.lock().unwrap().session.clone();
-            debug!("conn {} left window view", conn_id);
-            tokio::task::spawn_blocking(move || actions.execute(&session))
-                .await
-                .map_err(|e| format!("Resize task failed: {}", e))?;
         }
         ClientMessage::Nudge { target, message } => {
             // Validate target name
@@ -1950,11 +1683,10 @@ mod tests {
             default_branch: "main".to_string(),
             max_coworkers: 8,
             repo_name_cache: std::sync::RwLock::new(std::collections::HashMap::new()),
-            viewer_tracker: Mutex::new(ViewerTracker::new("midtown-test".to_string())),
         });
 
         let json = r#"{"type": "send_message", "content": "hello from mobile"}"#;
-        handle_client_message(json, &state, 1).await.unwrap();
+        handle_client_message(json, &state).await.unwrap();
 
         // The message should be forwarded to the daemon via channel_post_tx
         let post = channel_post_rx
@@ -1997,38 +1729,6 @@ mod tests {
     }
 
     #[test]
-    fn test_tmux_pane_query_parsing() {
-        // Valid window names
-        let json = r#"{"window": "lead"}"#;
-        let query: TmuxPaneQuery = serde_json::from_str(json).unwrap();
-        assert_eq!(query.window, "lead");
-
-        let json = r#"{"window": "riverside"}"#;
-        let query: TmuxPaneQuery = serde_json::from_str(json).unwrap();
-        assert_eq!(query.window, "riverside");
-    }
-
-    #[test]
-    fn test_tmux_window_name_validation() {
-        // Valid names: non-empty, alphanumeric, hyphens, underscores
-        let valid = |name: &str| {
-            !name.is_empty()
-                && name
-                    .chars()
-                    .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
-        };
-
-        assert!(valid("lead"));
-        assert!(valid("riverside"));
-        assert!(valid("my-window"));
-        assert!(valid("window_1"));
-        assert!(!valid("foo:bar"));
-        assert!(!valid("foo;bar"));
-        assert!(!valid("foo bar"));
-        assert!(!valid(""));
-    }
-
-    #[test]
     fn test_lead_typing_update_serialization() {
         let update = WebUpdate::LeadTyping(LeadTypingData { working: true });
         let json = serde_json::to_string(&update).unwrap();
@@ -2038,104 +1738,6 @@ mod tests {
         let update = WebUpdate::LeadTyping(LeadTypingData { working: false });
         let json = serde_json::to_string(&update).unwrap();
         assert!(json.contains(r#""working":false"#));
-    }
-
-    #[test]
-    fn test_client_message_view_window_parsing() {
-        let json = r#"{"type": "view_window", "window": "riverside", "cols": 120}"#;
-        let msg: ClientMessage = serde_json::from_str(json).unwrap();
-        match msg {
-            ClientMessage::ViewWindow { window, cols } => {
-                assert_eq!(window, "riverside");
-                assert_eq!(cols, 120);
-            }
-            _ => panic!("Expected ViewWindow"),
-        }
-    }
-
-    #[test]
-    fn test_client_message_leave_window_parsing() {
-        let json = r#"{"type": "leave_window"}"#;
-        let msg: ClientMessage = serde_json::from_str(json).unwrap();
-        assert!(matches!(msg, ClientMessage::LeaveWindow));
-    }
-
-    #[test]
-    fn test_viewer_tracker_single_viewer() {
-        let mut tracker = ViewerTracker::new("midtown-test".to_string());
-        let conn = tracker.new_conn_id();
-
-        let actions = tracker.set_viewing(conn, "riverside".to_string(), 120);
-        assert_eq!(actions.resize_windows.len(), 1);
-        assert_eq!(actions.resize_windows[0], ("riverside".to_string(), 120));
-        assert!(actions.reset_windows.is_empty());
-    }
-
-    #[test]
-    fn test_viewer_tracker_max_cols_across_viewers() {
-        let mut tracker = ViewerTracker::new("midtown-test".to_string());
-        let conn1 = tracker.new_conn_id();
-        let conn2 = tracker.new_conn_id();
-
-        tracker.set_viewing(conn1, "riverside".to_string(), 100);
-        let actions = tracker.set_viewing(conn2, "riverside".to_string(), 150);
-
-        // Should resize to max(100, 150) = 150
-        assert_eq!(actions.resize_windows.len(), 1);
-        assert_eq!(actions.resize_windows[0], ("riverside".to_string(), 150));
-    }
-
-    #[test]
-    fn test_viewer_tracker_remove_recalculates_max() {
-        let mut tracker = ViewerTracker::new("midtown-test".to_string());
-        let conn1 = tracker.new_conn_id();
-        let conn2 = tracker.new_conn_id();
-
-        tracker.set_viewing(conn1, "riverside".to_string(), 100);
-        tracker.set_viewing(conn2, "riverside".to_string(), 150);
-
-        // Remove the wider viewer — should resize down to 100
-        let actions = tracker.remove_viewer(conn2);
-        assert_eq!(actions.resize_windows.len(), 1);
-        assert_eq!(actions.resize_windows[0], ("riverside".to_string(), 100));
-        assert!(actions.reset_windows.is_empty());
-    }
-
-    #[test]
-    fn test_viewer_tracker_last_viewer_resets() {
-        let mut tracker = ViewerTracker::new("midtown-test".to_string());
-        let conn = tracker.new_conn_id();
-
-        tracker.set_viewing(conn, "riverside".to_string(), 120);
-        let actions = tracker.remove_viewer(conn);
-
-        // No viewers left — should reset
-        assert!(actions.resize_windows.is_empty());
-        assert_eq!(actions.reset_windows, vec!["riverside".to_string()]);
-    }
-
-    #[test]
-    fn test_viewer_tracker_switch_windows() {
-        let mut tracker = ViewerTracker::new("midtown-test".to_string());
-        let conn = tracker.new_conn_id();
-
-        tracker.set_viewing(conn, "riverside".to_string(), 120);
-        let actions = tracker.set_viewing(conn, "park".to_string(), 100);
-
-        // Should reset riverside (no viewers) and resize park
-        assert!(actions.reset_windows.contains(&"riverside".to_string()));
-        assert!(actions.resize_windows.contains(&("park".to_string(), 100)));
-    }
-
-    #[test]
-    fn test_viewer_tracker_stop_viewing() {
-        let mut tracker = ViewerTracker::new("midtown-test".to_string());
-        let conn = tracker.new_conn_id();
-
-        tracker.set_viewing(conn, "riverside".to_string(), 120);
-        let actions = tracker.stop_viewing(conn);
-
-        assert_eq!(actions.reset_windows, vec!["riverside".to_string()]);
     }
 
     #[test]
@@ -2234,11 +1836,10 @@ mod tests {
             default_branch: "main".to_string(),
             max_coworkers: 8,
             repo_name_cache: std::sync::RwLock::new(std::collections::HashMap::new()),
-            viewer_tracker: Mutex::new(ViewerTracker::new("midtown-test".to_string())),
         });
 
         let json = r#"{"type": "nudge", "target": "lexington", "message": "test nudge"}"#;
-        let result = handle_client_message(json, &state, 1).await;
+        let result = handle_client_message(json, &state).await;
 
         // Should return an error since coworker nudges are not supported via web UI
         assert!(result.is_err());
@@ -2294,12 +1895,11 @@ mod tests {
             default_branch: "main".to_string(),
             max_coworkers: 8,
             repo_name_cache: std::sync::RwLock::new(std::collections::HashMap::new()),
-            viewer_tracker: Mutex::new(ViewerTracker::new("midtown-test".to_string())),
         });
 
         // Try to nudge a coworker (not "lead")
         let json = r#"{"type": "nudge", "target": "lexington", "message": "test nudge"}"#;
-        let result = handle_client_message(json, &state, 1).await;
+        let result = handle_client_message(json, &state).await;
 
         // Should return the "Cannot nudge coworker" error
         assert!(result.is_err());
@@ -2356,14 +1956,13 @@ mod tests {
             default_branch: "main".to_string(),
             max_coworkers: 8,
             repo_name_cache: std::sync::RwLock::new(std::collections::HashMap::new()),
-            viewer_tracker: Mutex::new(ViewerTracker::new("midtown-test".to_string())),
         });
 
         // Trigger 20 errors (channel capacity is 10) by sending invalid messages.
         // The key assertion: handle_client_message should not hang or panic.
         for i in 0..20 {
             let json = format!(r#"{{"type": "invalid_type_{}"}}"#, i);
-            let result = handle_client_message(&json, &state, 1).await;
+            let result = handle_client_message(&json, &state).await;
             // All should error (invalid message type)
             assert!(result.is_err(), "Expected error for invalid message {}", i);
         }
