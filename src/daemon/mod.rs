@@ -24,6 +24,7 @@ mod rpc_coworker;
 mod rpc_headless;
 mod rpc_insight;
 mod rpc_kanban;
+mod rpc_plugin;
 mod rpc_reminder;
 mod rpc_session;
 mod rpc_status;
@@ -525,6 +526,19 @@ pub(crate) struct DaemonState {
     /// this channel to break the main loop.
     #[allow(dead_code)] // Used in rpc.rs via state.shutdown_tx.send()
     shutdown_tx: broadcast::Sender<()>,
+    /// Queued lead nudges for the Zellij plugin to pull.
+    ///
+    /// When `Effect::NudgeLead` fires, the message is appended here instead of
+    /// being sent directly via tmux send-keys. The `plugin.dashboard` handler
+    /// drains this queue on each poll so the plugin can deliver the nudges to
+    /// the Lead's terminal pane.
+    lead_nudge_queue: Mutex<Vec<String>>,
+    /// Ring buffer of recent stream events per coworker, for the
+    /// `plugin.coworker-stream` endpoint.
+    ///
+    /// Keyed by coworker name (lowercase). Each coworker keeps the last N
+    /// events so the plugin can render a read-only activity view.
+    stream_event_buffer: std::sync::RwLock<HashMap<String, Vec<rpc_plugin::BufferedStreamEvent>>>,
 }
 
 impl DaemonState {
@@ -710,6 +724,8 @@ impl DaemonState {
             draining: std::sync::atomic::AtomicBool::new(false),
             restart_requested: std::sync::atomic::AtomicBool::new(false),
             shutdown_tx,
+            lead_nudge_queue: Mutex::new(Vec::new()),
+            stream_event_buffer: std::sync::RwLock::new(HashMap::new()),
         })
     }
 
