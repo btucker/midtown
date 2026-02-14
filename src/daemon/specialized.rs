@@ -236,6 +236,7 @@ impl SpecializedCoworker {
             system_prompt: role.system_prompt(),
             json_schema: None,
             cwd: cwd.map(|p| p.to_string_lossy().to_string()),
+            project_name: Some("midtown".to_string()), // Specialized coworkers run in main repo
             max_budget_usd: Some(role.max_budget_usd()),
             allow_tools: role.allow_tools(),
             persist_session: role.persist_session(),

@@ -15,13 +15,18 @@ use std::path::{Path, PathBuf};
 /// Includes:
 /// - Primary repo directory
 /// - All additional repo directories (multi-repo projects)
+/// - Additional configured paths from `[sandbox].allowed_paths` (global + project)
 /// - `~/.midtown` (daemon state, channel logs, worktrees)
 /// - `~/.claude` (Claude Code config, sessions, tasks)
 /// - `~/.codex` (Codex config)
 /// - `~/.local/state/midtown` (daemon socket, runtime state)
 /// - Main repo `.git/` directory (when primary_repo is a git worktree)
 /// - `/tmp` and platform-specific temp directories
-pub fn writable_dirs(primary_repo: &Path, additional_repos: &[PathBuf]) -> Vec<String> {
+pub fn writable_dirs(
+    primary_repo: &Path,
+    additional_repos: &[PathBuf],
+    configured_paths: &[String],
+) -> Vec<String> {
     let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/root"));
 
     let mut dirs = Vec::new();
@@ -33,6 +38,18 @@ pub fn writable_dirs(primary_repo: &Path, additional_repos: &[PathBuf]) -> Vec<S
             .unwrap_or_else(|_| p.to_path_buf())
             .to_string_lossy()
             .to_string()
+    };
+
+    // Helper to expand ~ and canonicalize configured paths
+    let expand_and_canon = |s: &str| -> String {
+        let expanded = if let Some(rest) = s.strip_prefix("~/") {
+            home.join(rest)
+        } else if s == "~" {
+            home.clone()
+        } else {
+            PathBuf::from(s)
+        };
+        canon(&expanded)
     };
 
     // Primary project repo
@@ -60,6 +77,14 @@ pub fn writable_dirs(primary_repo: &Path, additional_repos: &[PathBuf]) -> Vec<S
     // Additional repos (multi-repo projects)
     for repo in additional_repos {
         let s = canon(repo);
+        if !dirs.contains(&s) {
+            dirs.push(s);
+        }
+    }
+
+    // Additional configured paths from [sandbox].allowed_paths
+    for path in configured_paths {
+        let s = expand_and_canon(path);
         if !dirs.contains(&s) {
             dirs.push(s);
         }
@@ -243,14 +268,14 @@ mod tests {
 
     #[test]
     fn test_writable_dirs_includes_primary_repo() {
-        let dirs = writable_dirs(Path::new("/home/user/project"), &[]);
+        let dirs = writable_dirs(Path::new("/home/user/project"), &[], &[]);
         assert!(dirs.contains(&"/home/user/project".to_string()));
     }
 
     #[test]
     fn test_writable_dirs_includes_additional_repos() {
         let additional = vec![PathBuf::from("/home/user/lib")];
-        let dirs = writable_dirs(Path::new("/home/user/project"), &additional);
+        let dirs = writable_dirs(Path::new("/home/user/project"), &additional, &[]);
         assert!(dirs.contains(&"/home/user/project".to_string()));
         assert!(dirs.contains(&"/home/user/lib".to_string()));
     }
@@ -258,14 +283,14 @@ mod tests {
     #[test]
     fn test_writable_dirs_deduplicates() {
         let additional = vec![PathBuf::from("/home/user/project")];
-        let dirs = writable_dirs(Path::new("/home/user/project"), &additional);
+        let dirs = writable_dirs(Path::new("/home/user/project"), &additional, &[]);
         let count = dirs.iter().filter(|d| *d == "/home/user/project").count();
         assert_eq!(count, 1, "Primary repo should not be duplicated");
     }
 
     #[test]
     fn test_writable_dirs_includes_config_dirs() {
-        let dirs = writable_dirs(Path::new("/home/user/project"), &[]);
+        let dirs = writable_dirs(Path::new("/home/user/project"), &[], &[]);
         let has_midtown = dirs.iter().any(|d| d.ends_with(".midtown"));
         let has_claude = dirs.iter().any(|d| d.ends_with(".claude"));
         let has_codex = dirs.iter().any(|d| d.ends_with(".codex"));
@@ -276,7 +301,7 @@ mod tests {
 
     #[test]
     fn test_writable_dirs_includes_tmp() {
-        let dirs = writable_dirs(Path::new("/home/user/project"), &[]);
+        let dirs = writable_dirs(Path::new("/home/user/project"), &[], &[]);
         assert!(dirs.contains(&"/tmp".to_string()));
     }
 
@@ -296,7 +321,7 @@ mod tests {
         )
         .expect("write .git file");
 
-        let dirs = writable_dirs(&worktree, &[]);
+        let dirs = writable_dirs(&worktree, &[], &[]);
         let main_git = main_git_dir.canonicalize().unwrap_or(main_git_dir);
         assert!(
             dirs.iter()
@@ -395,6 +420,12 @@ mod tests {
     #[test]
     #[cfg(target_os = "macos")]
     fn test_sandbox_exec_prefix_returns_err_when_nested() {
+        // Skip if already sandboxed (can't nest sandbox-exec)
+        if !can_sandbox() {
+            eprintln!("Skipping test: already inside a sandbox (nesting not allowed)");
+            return;
+        }
+
         // Run sandbox_exec_prefix inside a sandbox to verify it detects nesting.
         // We can't use OnceLock-cached can_sandbox() from the outer process,
         // so we spawn a child that checks from inside a sandbox.
@@ -562,7 +593,7 @@ mod tests {
         }
         let project = tempfile::TempDir::new().expect("create project dir");
         let real_project = project.path().canonicalize().expect("canonicalize");
-        let writable = writable_dirs(&real_project, &[]);
+        let writable = writable_dirs(&real_project, &[], &[]);
         let profile = generate_macos_profile(&writable);
         let profile_path = write_profile_to_tempfile(&profile).expect("write profile");
 
@@ -591,5 +622,56 @@ mod tests {
         let _ = std::fs::remove_dir_all(&blocked_dir);
 
         let _ = std::fs::remove_file(&profile_path);
+    }
+
+    #[test]
+    fn test_writable_dirs_includes_configured_paths() {
+        let configured = vec!["~/.cargo".to_string(), "/opt/toolchain".to_string()];
+        let dirs = writable_dirs(Path::new("/home/user/project"), &[], &configured);
+
+        // Check that configured paths are expanded and included
+        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/root"));
+        let cargo_path = home.join(".cargo").to_string_lossy().to_string();
+        assert!(
+            dirs.contains(&cargo_path),
+            "Should include ~/.cargo expanded to {}",
+            cargo_path
+        );
+        assert!(
+            dirs.contains(&"/opt/toolchain".to_string()),
+            "Should include /opt/toolchain"
+        );
+    }
+
+    #[test]
+    fn test_writable_dirs_deduplicates_configured_paths() {
+        let configured = vec![
+            "~/.cargo".to_string(),
+            "~/.cargo".to_string(), // duplicate
+            "/opt/toolchain".to_string(),
+        ];
+        let dirs = writable_dirs(Path::new("/home/user/project"), &[], &configured);
+
+        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/root"));
+        let cargo_path = home.join(".cargo").to_string_lossy().to_string();
+        let count = dirs.iter().filter(|d| *d == &cargo_path).count();
+        assert_eq!(count, 1, "~/.cargo should not be duplicated");
+    }
+
+    #[test]
+    fn test_writable_dirs_expands_tilde() {
+        let configured = vec!["~/.cargo".to_string()];
+        let dirs = writable_dirs(Path::new("/home/user/project"), &[], &configured);
+
+        // Should not contain the literal "~/.cargo", should be expanded
+        assert!(
+            !dirs.contains(&"~/.cargo".to_string()),
+            "Should not contain literal ~ path"
+        );
+
+        // Should contain the expanded path
+        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/root"));
+        let cargo_path = home.join(".cargo").to_string_lossy().to_string();
+        assert!(dirs.contains(&cargo_path), "Should contain expanded path");
     }
 }

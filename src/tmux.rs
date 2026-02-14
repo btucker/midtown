@@ -1647,11 +1647,14 @@ pub fn spawn_claude(
         .map(|p| write_coworker_initial_prompt_file(&config.name, p))
         .transpose()?;
 
+    // Extract project name from session (format: "midtown-<project_name>")
+    let project_name = session.strip_prefix(SESSION_PREFIX).unwrap_or(session);
     let launch = config.to_shell_command(
         &settings_file,
         &prompt_file,
         initial_prompt_file.as_deref(),
         std::path::Path::new(working_dir),
+        project_name,
     );
     let coworker_session_id = launch.session_id.unwrap_or_default();
 
@@ -1780,11 +1783,13 @@ pub fn spawn_claude(
         );
 
         let retry_config = config.as_fresh_retry();
+        // Use the same project_name extracted earlier from session
         let retry_launch = retry_config.to_shell_command(
             &settings_file,
             &prompt_file,
             initial_prompt_file.as_deref(),
             std::path::Path::new(working_dir),
+            project_name,
         );
         let fresh_session_id = retry_launch.session_id.unwrap_or_default();
 
@@ -1915,6 +1920,7 @@ pub fn spawn_lead(
                 &prompt_file,
                 None,
                 std::path::Path::new(working_dir),
+                project_name,
             )
             .shell_command;
         // Prepend CLAUDE_CODE_TASK_LIST_ID export so leads share task storage with coworkers
@@ -2703,6 +2709,7 @@ Claude is now processing the request
             std::path::Path::new("/tmp/prompt.md"),
             None,
             std::path::Path::new("/tmp/test-repo"),
+            "midtown",
         );
         assert!(
             !result.shell_command.contains("--setting-sources"),
@@ -2740,6 +2747,7 @@ Claude is now processing the request
             std::path::Path::new("/tmp/prompt.md"),
             None,
             std::path::Path::new("/tmp/test-repo"),
+            "midtown",
         );
         assert!(
             result.shell_command.contains("--session-id "),
@@ -2781,6 +2789,7 @@ Claude is now processing the request
             std::path::Path::new("/tmp/prompt.md"),
             None,
             std::path::Path::new("/tmp/test-repo"),
+            "midtown",
         );
         assert!(
             result.shell_command.contains(" --continue"),
@@ -2818,6 +2827,7 @@ Claude is now processing the request
             std::path::Path::new("/tmp/prompt.md"),
             None,
             std::path::Path::new("/tmp/test-repo"),
+            "midtown",
         );
         assert!(
             result.shell_command.contains("--resume abc-123"),
@@ -2851,6 +2861,7 @@ Claude is now processing the request
             std::path::Path::new("/tmp/prompt.md"),
             None,
             std::path::Path::new("/tmp/test-repo"),
+            "midtown",
         );
         assert!(
             !result.shell_command.contains("CLAUDE_CODE_TASK_LIST_ID"),
@@ -2884,6 +2895,7 @@ Claude is now processing the request
             std::path::Path::new("/tmp/prompt.md"),
             None,
             std::path::Path::new("/tmp/test-repo"),
+            "midtown",
         );
         // CLAUDE_CONFIG_DIR must be set from auth profile for account isolation
         assert!(
@@ -2919,6 +2931,7 @@ Claude is now processing the request
             std::path::Path::new("/tmp/prompt.md"),
             Some(std::path::Path::new("/tmp/initial-prompt.md")),
             std::path::Path::new("/tmp/test-repo"),
+            "midtown",
         );
         // PR #447 regression: must NEVER use -p or --print
         assert!(
@@ -2960,6 +2973,7 @@ Claude is now processing the request
             std::path::Path::new("/tmp/prompt.md"),
             None,
             std::path::Path::new("/tmp/test-repo"),
+            "midtown",
         );
         // Count occurrences of $(cat — should be exactly 1 (the system prompt)
         let cat_count = result.shell_command.matches("$(cat ").count();
@@ -2991,6 +3005,7 @@ Claude is now processing the request
             std::path::Path::new("/tmp/prompt.md"),
             None,
             std::path::Path::new("/tmp/test-repo"),
+            "midtown",
         );
         assert!(
             result.shell_command.contains("--add-dir /extra/repo1"),
@@ -3024,6 +3039,7 @@ Claude is now processing the request
             std::path::Path::new("/tmp/prompt.md"),
             None,
             std::path::Path::new("/tmp/test-repo"),
+            "midtown",
         );
         assert!(
             result.shell_command.contains("exec ") && result.shell_command.contains("claude"),
@@ -3053,6 +3069,7 @@ Claude is now processing the request
             std::path::Path::new("/tmp/prompt.md"),
             None,
             std::path::Path::new("/tmp/test-repo"),
+            "midtown",
         );
         assert!(
             result
@@ -3134,6 +3151,7 @@ Claude is now processing the request
             std::path::Path::new("/tmp/prompt.md"),
             None,
             std::path::Path::new("/tmp/test-repo"),
+            "midtown",
         );
         assert!(
             result
@@ -3179,6 +3197,7 @@ Claude is now processing the request
             std::path::Path::new("/tmp/prompt.md"),
             None,
             std::path::Path::new("/tmp/test-repo"),
+            "midtown",
         );
         assert!(
             !result.shell_command.contains("--agent-id"),

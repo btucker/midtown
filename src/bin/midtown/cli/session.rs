@@ -96,7 +96,12 @@ fn handle_attach(target: &Option<AttachTarget>, client: &DaemonClient) -> Result
     // Uses --resume to pick up the exact session state.
     // Wrap with sandbox-exec on macOS for filesystem write restrictions.
     let config_dir = midtown::auth::active_profile_dir_for_project(&repo_name);
-    let writable = midtown::sandbox::writable_dirs(std::path::Path::new(cwd), &[]);
+    let sandbox_config = midtown::config::get_project_sandbox_config(&repo_name);
+    let writable = midtown::sandbox::writable_dirs(
+        std::path::Path::new(cwd),
+        &[],
+        &sandbox_config.allowed_paths,
+    );
     let claude_part = if cfg!(target_os = "macos") {
         match midtown::sandbox::sandbox_exec_prefix(&writable) {
             Ok((_profile_path, prefix)) => {

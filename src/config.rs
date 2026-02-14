@@ -21,6 +21,9 @@
 //!    pr_poll_interval_secs = 60
 //!    chat_monitor_enabled = true
 //!
+//!    [sandbox]
+//!    allowed_paths = ["~/.cargo", "~/.rustup"]
+//!
 //!    [providers.claude]
 //!    auth_profile = "user@example.com"
 //!    ```
@@ -39,6 +42,9 @@
 //!
 //!    [daemon]
 //!    webhook_port = 47023
+//!
+//!    [sandbox]
+//!    allowed_paths = ["/opt/custom-toolchain"]
 //!    ```
 //!
 //! Project config takes precedence over global defaults.
@@ -186,6 +192,10 @@ pub struct FullProjectConfig {
     /// Channel configuration (seed channels)
     #[serde(default)]
     pub channels: ChannelsSection,
+
+    /// Sandbox configuration (additional writable paths)
+    #[serde(default)]
+    pub sandbox: SandboxSection,
 }
 
 impl FullProjectConfig {
@@ -228,6 +238,7 @@ impl FullProjectConfig {
             },
             daemon: DaemonSection::default(),
             channels: ChannelsSection::default(),
+            sandbox: SandboxSection::default(),
         }
     }
 
@@ -374,6 +385,40 @@ pub struct ChannelsSection {
     /// Example: ["tui", "web-interface", "daemon", "auth", "docs"]
     #[serde(default)]
     pub seed: Vec<String>,
+}
+
+/// Sandbox configuration section.
+///
+/// Controls additional writable paths for coworker sandboxes.
+/// Project-level paths extend (not replace) global paths.
+///
+/// Example:
+/// ```toml
+/// [sandbox]
+/// allowed_paths = ["~/.cargo", "~/.rustup"]
+/// ```
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct SandboxSection {
+    /// Additional writable directories for coworker sandboxes.
+    /// Paths are expanded (~ → home dir) and canonicalized.
+    /// Project-level paths are merged with global paths (deduplicated).
+    #[serde(default)]
+    pub allowed_paths: Vec<String>,
+}
+
+impl SandboxSection {
+    /// Merge project-level sandbox config with global config.
+    ///
+    /// Project paths extend (not replace) global paths. Duplicates are removed.
+    pub fn merge(&self, other: &SandboxSection) -> SandboxSection {
+        let mut merged = self.allowed_paths.clone();
+        merged.extend(other.allowed_paths.clone());
+        merged.sort();
+        merged.dedup();
+        SandboxSection {
+            allowed_paths: merged,
+        }
+    }
 }
 
 /// Daemon configuration section.
@@ -533,6 +578,10 @@ pub struct GlobalConfig {
     /// Daemon configuration
     #[serde(default)]
     pub daemon: DaemonSection,
+
+    /// Sandbox configuration (additional writable paths)
+    #[serde(default)]
+    pub sandbox: SandboxSection,
 
     /// Provider configuration (auth profiles, etc.)
     #[serde(default)]
@@ -731,6 +780,19 @@ pub fn get_project_daemon_config(project_name: &str) -> DaemonSection {
     match project {
         Some(proj) => global.daemon.merge(&proj.daemon),
         None => global.daemon,
+    }
+}
+
+/// Get the project-specific sandbox configuration, merged with global.
+///
+/// Project-level paths extend (not replace) global paths.
+pub fn get_project_sandbox_config(project_name: &str) -> SandboxSection {
+    let global = GlobalConfig::load();
+    let project = FullProjectConfig::load(project_name);
+
+    match project {
+        Some(proj) => global.sandbox.merge(&proj.sandbox),
+        None => global.sandbox,
     }
 }
 
@@ -2407,5 +2469,102 @@ seed = ["daemon", "tui", "web"]
 
         let loaded = FullProjectConfig::load_from(&path).unwrap();
         assert_eq!(loaded.channels.seed, vec!["daemon", "tui", "web"]);
+    }
+
+    #[test]
+    fn test_parse_sandbox_config() {
+        let toml = r#"
+allowed_paths = ["~/.cargo", "~/.rustup", "/opt/toolchain"]
+"#;
+        let config: SandboxSection = toml::from_str(toml).unwrap();
+        assert_eq!(config.allowed_paths.len(), 3);
+        assert_eq!(config.allowed_paths[0], "~/.cargo");
+        assert_eq!(config.allowed_paths[1], "~/.rustup");
+        assert_eq!(config.allowed_paths[2], "/opt/toolchain");
+    }
+
+    #[test]
+    fn test_sandbox_section_merge_deduplicates() {
+        let global = SandboxSection {
+            allowed_paths: vec!["~/.cargo".to_string(), "~/.rustup".to_string()],
+        };
+        let project = SandboxSection {
+            allowed_paths: vec!["~/.cargo".to_string(), "/opt/toolchain".to_string()],
+        };
+        let merged = global.merge(&project);
+        assert_eq!(merged.allowed_paths.len(), 3);
+        assert!(merged.allowed_paths.contains(&"~/.cargo".to_string()));
+        assert!(merged.allowed_paths.contains(&"~/.rustup".to_string()));
+        assert!(merged.allowed_paths.contains(&"/opt/toolchain".to_string()));
+    }
+
+    #[test]
+    fn test_sandbox_section_merge_empty_global() {
+        let global = SandboxSection::default();
+        let project = SandboxSection {
+            allowed_paths: vec!["/opt/toolchain".to_string()],
+        };
+        let merged = global.merge(&project);
+        assert_eq!(merged.allowed_paths, vec!["/opt/toolchain"]);
+    }
+
+    #[test]
+    fn test_sandbox_section_merge_empty_project() {
+        let global = SandboxSection {
+            allowed_paths: vec!["~/.cargo".to_string()],
+        };
+        let project = SandboxSection::default();
+        let merged = global.merge(&project);
+        assert_eq!(merged.allowed_paths, vec!["~/.cargo"]);
+    }
+
+    #[test]
+    fn test_get_project_sandbox_config_defaults_to_global() {
+        // This test assumes "nonexistent-project" doesn't have a config file
+        let config = get_project_sandbox_config("nonexistent-project-12345");
+        // Should return global config (which defaults to empty)
+        assert_eq!(config.allowed_paths.len(), 0);
+    }
+
+    /// Integration test: verify that sandbox config flows through to writable_dirs()
+    #[test]
+    fn test_sandbox_config_integration() {
+        use std::path::Path;
+
+        // Simulate merged config with some paths
+        let sandbox_config = SandboxSection {
+            allowed_paths: vec!["~/.cargo".to_string(), "/opt/toolchain".to_string()],
+        };
+
+        // Call writable_dirs with the configured paths
+        let dirs = crate::sandbox::writable_dirs(
+            Path::new("/home/user/project"),
+            &[],
+            &sandbox_config.allowed_paths,
+        );
+
+        // Verify the configured paths are included and expanded
+        let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/root"));
+        let cargo_path = home.join(".cargo").to_string_lossy().to_string();
+
+        assert!(
+            dirs.contains(&cargo_path),
+            "Should include ~/.cargo expanded to {}",
+            cargo_path
+        );
+        assert!(
+            dirs.contains(&"/opt/toolchain".to_string()),
+            "Should include /opt/toolchain"
+        );
+
+        // Verify standard paths are also included
+        assert!(
+            dirs.iter().any(|d| d.ends_with(".midtown")),
+            "Should include ~/.midtown"
+        );
+        assert!(
+            dirs.iter().any(|d| d.ends_with(".claude")),
+            "Should include ~/.claude"
+        );
     }
 }

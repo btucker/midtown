@@ -509,6 +509,25 @@ The sandbox allows reads from anywhere but restricts writes to explicitly permit
 - `~/.codex` (Codex config)
 - `~/.local/state/midtown` (daemon socket, runtime state)
 - `/tmp` and platform-specific temp directories
+- Additional paths configured via `[sandbox].allowed_paths` (see below)
+
+**Configuring additional writable paths:**
+
+You can add extra writable directories to the sandbox via config. This is useful for tools that need to write outside the project directory (e.g., `~/.cargo` for Rust tooling, `~/.npm` for Node.js).
+
+Global config (`~/.midtown/config.toml`):
+```toml
+[sandbox]
+allowed_paths = ["~/.cargo", "~/.rustup"]
+```
+
+Project-level config (`~/.midtown/projects/<repo>/config.toml`):
+```toml
+[sandbox]
+allowed_paths = ["/opt/toolchain"]
+```
+
+Project-level paths **extend** (not replace) global paths. Paths support `~` expansion and are automatically deduplicated.
 
 **Git worktree support:** When the primary repo is a git worktree, Midtown detects this and automatically adds the main repository's `.git/` directory to the writable list, ensuring git operations (commits, refs, objects) work correctly.
 

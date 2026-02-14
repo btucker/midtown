@@ -292,6 +292,7 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
                     .all_repo_paths
                     .first()
                     .map(|p| p.to_string_lossy().to_string()),
+                project_name: Some(state.repo_name.clone()),
                 persist_session: false,
                 resume_session_id: None,
                 inactivity_timeout: None,
