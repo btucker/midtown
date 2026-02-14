@@ -297,3 +297,238 @@ fn test_stream_events_convert_to_midtown_types() {
     assert_eq!(stream_events[0].event_type, "tool_use");
     assert_eq!(stream_events[1].event_type, "assistant");
 }
+
+// ============================================================================
+// StreamEvent → BufferedStreamEvent conversion tests
+// ============================================================================
+
+#[test]
+fn test_stream_event_to_buffered_system_init() {
+    let event = crate::headless::StreamEvent::System {
+        subtype: "init".to_string(),
+        session_id: Some("sess-123".to_string()),
+        model: Some("claude-sonnet".to_string()),
+        extra: serde_json::json!({}),
+    };
+
+    let buffered = super::stream_event_to_buffered(&event);
+    assert_eq!(buffered.event_type, "system:init");
+    assert!(buffered.content.contains("sess-123"));
+}
+
+#[test]
+fn test_stream_event_to_buffered_assistant_text() {
+    let event = crate::headless::StreamEvent::Assistant {
+        message: serde_json::json!({
+            "content": [
+                {"type": "text", "text": "Working on the implementation"}
+            ]
+        }),
+        session_id: None,
+        extra: serde_json::json!({}),
+    };
+
+    let buffered = super::stream_event_to_buffered(&event);
+    assert_eq!(buffered.event_type, "assistant");
+    assert_eq!(buffered.content, "Working on the implementation");
+}
+
+#[test]
+fn test_stream_event_to_buffered_assistant_tool_use() {
+    let event = crate::headless::StreamEvent::Assistant {
+        message: serde_json::json!({
+            "content": [
+                {"type": "tool_use", "name": "Read", "id": "t1", "input": {}},
+                {"type": "text", "text": "Let me check that file"}
+            ]
+        }),
+        session_id: None,
+        extra: serde_json::json!({}),
+    };
+
+    let buffered = super::stream_event_to_buffered(&event);
+    assert_eq!(buffered.event_type, "assistant");
+    assert!(buffered.content.contains("Tool: Read"));
+    assert!(buffered.content.contains("Let me check that file"));
+}
+
+#[test]
+fn test_stream_event_to_buffered_assistant_long_text_truncated() {
+    let long_text = "x".repeat(300);
+    let event = crate::headless::StreamEvent::Assistant {
+        message: serde_json::json!({
+            "content": [
+                {"type": "text", "text": long_text}
+            ]
+        }),
+        session_id: None,
+        extra: serde_json::json!({}),
+    };
+
+    let buffered = super::stream_event_to_buffered(&event);
+    // Should be truncated to 200 chars + "..."
+    assert!(buffered.content.len() <= 203);
+    assert!(buffered.content.ends_with("..."));
+}
+
+#[test]
+fn test_stream_event_to_buffered_result_success() {
+    let event = crate::headless::StreamEvent::Result {
+        subtype: "success".to_string(),
+        is_error: false,
+        result: None,
+        duration_ms: Some(5000),
+        total_cost_usd: Some(0.0123),
+        session_id: None,
+        extra: serde_json::json!({}),
+    };
+
+    let buffered = super::stream_event_to_buffered(&event);
+    assert_eq!(buffered.event_type, "result");
+    assert!(buffered.content.contains("Turn completed"));
+    assert!(buffered.content.contains("$0.0123"));
+}
+
+#[test]
+fn test_stream_event_to_buffered_result_error() {
+    let event = crate::headless::StreamEvent::Result {
+        subtype: "error".to_string(),
+        is_error: true,
+        result: Some("API rate limit exceeded".to_string()),
+        duration_ms: None,
+        total_cost_usd: None,
+        session_id: None,
+        extra: serde_json::json!({}),
+    };
+
+    let buffered = super::stream_event_to_buffered(&event);
+    assert_eq!(buffered.event_type, "result");
+    assert!(buffered.content.contains("Error: API rate limit exceeded"));
+}
+
+#[test]
+fn test_stream_event_to_buffered_user() {
+    let event = crate::headless::StreamEvent::User {
+        message: serde_json::json!({}),
+        extra: serde_json::json!({}),
+    };
+
+    let buffered = super::stream_event_to_buffered(&event);
+    assert_eq!(buffered.event_type, "user");
+    assert_eq!(buffered.content, "User message");
+}
+
+// ============================================================================
+// Ring buffer append / trim tests
+// ============================================================================
+
+#[test]
+fn test_append_to_stream_buffer_basic() {
+    use super::BufferedStreamEvent;
+
+    let buffer = std::sync::RwLock::new(std::collections::HashMap::new());
+    let events = vec![BufferedStreamEvent {
+        timestamp: chrono::Utc::now(),
+        event_type: "assistant".to_string(),
+        content: "Hello".to_string(),
+    }];
+
+    super::append_to_stream_buffer(&buffer, "madison", events);
+
+    let buf = buffer.read().unwrap();
+    assert_eq!(buf.get("madison").unwrap().len(), 1);
+    assert_eq!(buf.get("madison").unwrap()[0].content, "Hello");
+}
+
+#[test]
+fn test_append_to_stream_buffer_trims_to_max() {
+    use super::{BufferedStreamEvent, MAX_STREAM_EVENTS_PER_COWORKER};
+
+    let buffer = std::sync::RwLock::new(std::collections::HashMap::new());
+
+    // Add MAX + 20 events
+    let events: Vec<BufferedStreamEvent> = (0..MAX_STREAM_EVENTS_PER_COWORKER + 20)
+        .map(|i| BufferedStreamEvent {
+            timestamp: chrono::Utc::now(),
+            event_type: "assistant".to_string(),
+            content: format!("Event {}", i),
+        })
+        .collect();
+
+    super::append_to_stream_buffer(&buffer, "park", events);
+
+    let buf = buffer.read().unwrap();
+    let entries = buf.get("park").unwrap();
+    assert_eq!(entries.len(), MAX_STREAM_EVENTS_PER_COWORKER);
+    // Oldest events should be trimmed; the last entry should be the most recent
+    assert_eq!(
+        entries.last().unwrap().content,
+        format!("Event {}", MAX_STREAM_EVENTS_PER_COWORKER + 19)
+    );
+    // First entry should be event 20 (the oldest 20 were trimmed)
+    assert_eq!(entries[0].content, "Event 20");
+}
+
+#[test]
+fn test_append_to_stream_buffer_empty_events_noop() {
+    let buffer = std::sync::RwLock::new(std::collections::HashMap::new());
+    super::append_to_stream_buffer(&buffer, "madison", vec![]);
+    let buf = buffer.read().unwrap();
+    assert!(buf.get("madison").is_none());
+}
+
+#[test]
+fn test_append_to_stream_buffer_case_insensitive() {
+    use super::BufferedStreamEvent;
+
+    let buffer = std::sync::RwLock::new(std::collections::HashMap::new());
+    let events = vec![BufferedStreamEvent {
+        timestamp: chrono::Utc::now(),
+        event_type: "assistant".to_string(),
+        content: "Test".to_string(),
+    }];
+
+    super::append_to_stream_buffer(&buffer, "Madison", events);
+
+    let buf = buffer.read().unwrap();
+    // Should be stored under lowercase key
+    assert!(buf.get("madison").is_some());
+    assert!(buf.get("Madison").is_none());
+}
+
+#[test]
+fn test_remove_stream_buffer() {
+    use super::BufferedStreamEvent;
+
+    let buffer = std::sync::RwLock::new(std::collections::HashMap::new());
+    let events = vec![BufferedStreamEvent {
+        timestamp: chrono::Utc::now(),
+        event_type: "assistant".to_string(),
+        content: "Test".to_string(),
+    }];
+    super::append_to_stream_buffer(&buffer, "madison", events);
+
+    // Verify it exists
+    assert!(buffer.read().unwrap().get("madison").is_some());
+
+    // Remove it
+    super::remove_stream_buffer(&buffer, "madison");
+    assert!(buffer.read().unwrap().get("madison").is_none());
+}
+
+#[test]
+fn test_remove_stream_buffer_case_insensitive() {
+    use super::BufferedStreamEvent;
+
+    let buffer = std::sync::RwLock::new(std::collections::HashMap::new());
+    let events = vec![BufferedStreamEvent {
+        timestamp: chrono::Utc::now(),
+        event_type: "assistant".to_string(),
+        content: "Test".to_string(),
+    }];
+    super::append_to_stream_buffer(&buffer, "madison", events);
+
+    // Remove with different case
+    super::remove_stream_buffer(&buffer, "Madison");
+    assert!(buffer.read().unwrap().get("madison").is_none());
+}

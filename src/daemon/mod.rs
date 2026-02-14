@@ -2192,8 +2192,20 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                     *hh = health;
                 }
 
-                // Log received events at debug level for diagnostics
+                // Buffer events for the plugin.coworker-stream endpoint and
+                // log them at debug level for diagnostics.
                 for (name, session_events) in &events {
+                    // Convert StreamEvents to BufferedStreamEvents for the ring buffer
+                    let buffered: Vec<rpc_plugin::BufferedStreamEvent> = session_events
+                        .iter()
+                        .map(rpc_plugin::stream_event_to_buffered)
+                        .collect();
+                    rpc_plugin::append_to_stream_buffer(
+                        &state.stream_event_buffer,
+                        name,
+                        buffered,
+                    );
+
                     for event in session_events {
                         debug!(coworker = %name, event = ?event, "headless session event");
                     }
@@ -2220,11 +2232,12 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                     state.record_coworker_stop_time(&name);
                     // Remove from session manager tracking
                     state.session_manager.remove(&name).await;
-                    // Clean up coworker record
+                    // Clean up coworker record and stream buffer
                     {
                         let mut records = state.coworker_records.write().await;
                         records.remove(&name);
                     }
+                    rpc_plugin::remove_stream_buffer(&state.stream_event_buffer, &name);
 
                     // Format message with stderr if available
                     let message_text = if let Some(stderr_lines) = stderr_by_name.get(&name) {

@@ -493,6 +493,13 @@ fn read_recent_channel_messages(count: usize) -> Vec<Message> {
 // Stream event buffer types
 // ============================================================================
 
+/// Maximum number of recent events kept per coworker in the stream buffer.
+///
+/// The plugin polls `plugin.coworker-stream` to render a read-only activity
+/// feed. 100 events is enough for several minutes of coworker activity
+/// without consuming excessive memory (each event is a small string).
+pub const MAX_STREAM_EVENTS_PER_COWORKER: usize = 100;
+
 /// A buffered stream event for the coworker-stream endpoint.
 ///
 /// Stored in a ring buffer per coworker in `DaemonState`.
@@ -501,6 +508,128 @@ pub struct BufferedStreamEvent {
     pub timestamp: DateTime<Utc>,
     pub event_type: String,
     pub content: String,
+}
+
+/// Convert a headless `StreamEvent` into a `BufferedStreamEvent` for the ring buffer.
+///
+/// Extracts a human-readable event type and content summary from each variant.
+/// System init events are included (they mark session starts). Result events
+/// include cost info. Assistant events extract text content blocks.
+pub fn stream_event_to_buffered(event: &crate::headless::StreamEvent) -> BufferedStreamEvent {
+    let now = Utc::now();
+    match event {
+        crate::headless::StreamEvent::System {
+            subtype,
+            session_id,
+            ..
+        } => BufferedStreamEvent {
+            timestamp: now,
+            event_type: format!("system:{}", subtype),
+            content: session_id
+                .as_deref()
+                .map(|sid| format!("Session initialized ({})", sid))
+                .unwrap_or_else(|| format!("System event: {}", subtype)),
+        },
+        crate::headless::StreamEvent::Assistant { message, .. } => {
+            // Extract text content from assistant message blocks
+            let content = message
+                .get("content")
+                .and_then(|c| c.as_array())
+                .map(|blocks| {
+                    blocks
+                        .iter()
+                        .filter_map(|block| {
+                            let block_type = block.get("type")?.as_str()?;
+                            match block_type {
+                                "text" => block.get("text")?.as_str().map(|t| {
+                                    if t.len() > 200 {
+                                        format!("{}...", &t[..200])
+                                    } else {
+                                        t.to_string()
+                                    }
+                                }),
+                                "tool_use" => {
+                                    let name = block
+                                        .get("name")
+                                        .and_then(|n| n.as_str())
+                                        .unwrap_or("unknown");
+                                    Some(format!("Tool: {}", name))
+                                }
+                                _ => Some(format!("[{}]", block_type)),
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                })
+                .unwrap_or_default();
+
+            BufferedStreamEvent {
+                timestamp: now,
+                event_type: "assistant".to_string(),
+                content,
+            }
+        }
+        crate::headless::StreamEvent::User { .. } => BufferedStreamEvent {
+            timestamp: now,
+            event_type: "user".to_string(),
+            content: "User message".to_string(),
+        },
+        crate::headless::StreamEvent::Result {
+            is_error,
+            result,
+            total_cost_usd,
+            ..
+        } => {
+            let content = if *is_error {
+                result
+                    .as_deref()
+                    .map(|r| format!("Error: {}", r))
+                    .unwrap_or_else(|| "Error (no details)".to_string())
+            } else {
+                let cost_str = total_cost_usd
+                    .map(|c| format!(", cost=${:.4}", c))
+                    .unwrap_or_default();
+                format!("Turn completed{}", cost_str)
+            };
+
+            BufferedStreamEvent {
+                timestamp: now,
+                event_type: "result".to_string(),
+                content,
+            }
+        }
+    }
+}
+
+/// Append events to a coworker's ring buffer, enforcing the max size.
+///
+/// This is the only function that writes to the stream event buffer.
+/// Called from the daemon event loop after `drain_events()`.
+pub fn append_to_stream_buffer(
+    buffer: &std::sync::RwLock<std::collections::HashMap<String, Vec<BufferedStreamEvent>>>,
+    coworker_name: &str,
+    new_events: Vec<BufferedStreamEvent>,
+) {
+    if new_events.is_empty() {
+        return;
+    }
+    let mut buf = buffer.write().unwrap();
+    let entry = buf.entry(coworker_name.to_lowercase()).or_default();
+    entry.extend(new_events);
+    // Trim to ring buffer size
+    if entry.len() > MAX_STREAM_EVENTS_PER_COWORKER {
+        let excess = entry.len() - MAX_STREAM_EVENTS_PER_COWORKER;
+        entry.drain(..excess);
+    }
+}
+
+/// Remove a coworker's stream buffer entry (cleanup on session exit).
+pub fn remove_stream_buffer(
+    buffer: &std::sync::RwLock<std::collections::HashMap<String, Vec<BufferedStreamEvent>>>,
+    coworker_name: &str,
+) {
+    let mut buf = buffer.write().unwrap();
+    buf.remove(&coworker_name.to_lowercase());
 }
 
 #[path = "rpc_plugin_tests.rs"]
