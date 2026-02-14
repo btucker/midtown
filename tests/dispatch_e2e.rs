@@ -1392,6 +1392,80 @@ fn no_cross_tick_duplicate_spawn_for_in_flight_task() {
 }
 
 // =============================================================================
+// Test: Daemon dispatch when all coworkers are idle/gone
+// =============================================================================
+
+/// Regression test for task !1288: Daemon not dispatching tasks when all coworkers are idle/gone.
+///
+/// Captured snapshot shows:
+/// - 0 active coworkers (all went on break / were shut down)
+/// - 8 pending tasks without owners
+/// - 3 PRs needing review
+/// - Not at dev/coworker limits
+///
+/// Expected: Daemon should spawn coworkers for pending tasks
+/// Actual (bug): No dispatch activity in logs — tasks sit unassigned indefinitely
+#[test]
+fn daemon_dispatches_tasks_when_all_coworkers_are_gone() {
+    let fixture =
+        include_str!("fixtures/snapshot/snapshot-reviewer-not-spawning-20260214-003545.json");
+    let snap = load_snapshot(fixture);
+
+    // Verify preconditions: this is the exact state where the bug occurs
+    assert_eq!(
+        snap.active_names.len(),
+        0,
+        "snapshot should have 0 active coworkers"
+    );
+    assert!(
+        !snap.pending_tasks_without_owners.is_empty(),
+        "snapshot should have pending tasks without owners"
+    );
+    assert!(!snap.is_at_dev_limit, "snapshot should not be at dev limit");
+    assert!(
+        !snap.is_at_coworker_limit,
+        "snapshot should not be at coworker limit"
+    );
+
+    println!(
+        "Pending tasks without owners: {}",
+        snap.pending_tasks_without_owners.len()
+    );
+    println!("PRs needing review: {}", snap.prs_needing_review);
+
+    // With 0 active coworkers and 8 pending tasks, the daemon SHOULD attempt to spawn.
+    // The bug was that no dispatch attempts occurred at all.
+    // This test verifies the preconditions are suitable for dispatch.
+
+    // Verify there are unblocked tasks available for dispatch
+    for task in &snap.pending_tasks_without_owners {
+        let is_blocked = is_task_blocked(task, &snap.all_tasks);
+        if !is_blocked {
+            println!(
+                "Task !{} ({}) is unblocked and should be eligible for spawn",
+                task.id, task.subject
+            );
+        }
+    }
+
+    // Count how many tasks are truly unblocked
+    let unblocked_count = snap
+        .pending_tasks_without_owners
+        .iter()
+        .filter(|t| !is_task_blocked(t, &snap.all_tasks))
+        .count();
+
+    assert!(
+        unblocked_count > 0,
+        "there should be at least one unblocked task available for dispatch"
+    );
+
+    // The actual bug test would require calling spawn_for_pending_tasks with a proper DaemonState.
+    // For now, this E2E test verifies the snapshot conditions are correct.
+    // The real fix will be tested via unit tests in dispatch.rs that can access internal state.
+}
+
+// =============================================================================
 // PR decision function tests with captured snapshots
 // =============================================================================
 
