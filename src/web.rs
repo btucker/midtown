@@ -26,7 +26,7 @@ use crate::coworker::CoworkerManager;
 use crate::message::Message;
 use crate::push::PushManager;
 use crate::tasks::extract_task_id_from_pr_title;
-use crate::tmux;
+use crate::{process, tmux};
 
 /// Tracks which WebSocket connections are viewing which tmux windows,
 /// along with each viewer's viewport width in columns.
@@ -1105,7 +1105,7 @@ fn fetch_merged_prs_via_cli() -> Vec<serde_json::Value> {
 async fn api_lead_pane(
     State(state): State<Arc<WebState>>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    let session = format!("{}{}", tmux::SESSION_PREFIX, state.config.repo);
+    let session = format!("{}{}", process::SESSION_PREFIX, state.config.repo);
     let target = format!("{}:lead", session);
 
     // capture_pane is blocking (spawns a process), so run on blocking thread pool
@@ -1137,7 +1137,7 @@ async fn api_tmux_pane(
     State(state): State<Arc<WebState>>,
     Query(params): Query<TmuxPaneQuery>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    let session = format!("{}{}", tmux::SESSION_PREFIX, state.config.repo);
+    let session = format!("{}{}", process::SESSION_PREFIX, state.config.repo);
     let window = params.window;
 
     // Validate window name: only allow non-empty alphanumeric, hyphens, and underscores
@@ -1170,7 +1170,7 @@ async fn api_tmux_pane(
 async fn api_tmux_windows(
     State(state): State<Arc<WebState>>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    let session = format!("{}{}", tmux::SESSION_PREFIX, state.config.repo);
+    let session = format!("{}{}", process::SESSION_PREFIX, state.config.repo);
 
     let windows = tokio::task::spawn_blocking(move || tmux::list_all_windows(&session))
         .await

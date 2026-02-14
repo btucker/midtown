@@ -810,7 +810,7 @@ fn test_terminate_session_processes_kills_pane_processes() {
     thread::sleep(Duration::from_millis(300));
 
     // Collect pane PIDs before termination
-    let pids = midtown::tmux::session_pane_pids(&session);
+    let pids = midtown::process::session_pane_pids(&session);
     assert!(
         pids.len() >= 3,
         "Expected at least 3 panes, got: {:?}",
@@ -818,7 +818,7 @@ fn test_terminate_session_processes_kills_pane_processes() {
     );
 
     // SIGTERM all processes then kill session
-    midtown::tmux::terminate_session_processes(&session);
+    midtown::process::terminate_session_processes(&session);
     kill_test_session(&session);
 
     // Verify all pane processes are dead
@@ -876,7 +876,7 @@ fn test_node_sighup_handler_survives_kill_session() {
         .expect("create_window failed");
     thread::sleep(Duration::from_millis(500));
 
-    let pids = midtown::tmux::session_pane_pids(&session);
+    let pids = midtown::process::session_pane_pids(&session);
     let node_pid = pids
         .iter()
         .find(|(name, _)| name.contains("sighup"))
@@ -941,7 +941,7 @@ fn test_terminate_session_processes_kills_child_processes() {
     thread::sleep(Duration::from_millis(500));
 
     // Get the pane PID (the shell)
-    let pane_pids = midtown::tmux::session_pane_pids(&session);
+    let pane_pids = midtown::process::session_pane_pids(&session);
     let parent_pid = pane_pids
         .iter()
         .find(|(name, _)| name.contains("parent"))
@@ -962,7 +962,7 @@ fn test_terminate_session_processes_kills_child_processes() {
     };
 
     // Terminate and kill session
-    midtown::tmux::terminate_session_processes(&session);
+    midtown::process::terminate_session_processes(&session);
     kill_test_session(&session);
 
     // Verify parent is dead
@@ -1019,7 +1019,7 @@ fn test_terminate_session_processes_force_kills_stubborn_processes() {
         .expect("create_window failed");
     thread::sleep(Duration::from_millis(500));
 
-    let pane_pids = midtown::tmux::session_pane_pids(&session);
+    let pane_pids = midtown::process::session_pane_pids(&session);
     let stubborn_pid = pane_pids
         .iter()
         .find(|(name, _)| name.contains("stubborn"))
@@ -1027,7 +1027,7 @@ fn test_terminate_session_processes_force_kills_stubborn_processes() {
         .expect("Couldn't find stubborn pane");
 
     // Terminate and kill session
-    midtown::tmux::terminate_session_processes(&session);
+    midtown::process::terminate_session_processes(&session);
     kill_test_session(&session);
 
     // The stubborn process should be dead (killed with SIGKILL after timeout)
@@ -1100,7 +1100,7 @@ fn test_spawn_and_stop_claude_kills_all_processes() {
     thread::sleep(Duration::from_secs(5));
 
     // Get all pane PIDs and their descendants
-    let pane_pids = midtown::tmux::session_pane_pids(&session);
+    let pane_pids = midtown::process::session_pane_pids(&session);
     let mut all_pids: Vec<u32> = pane_pids.iter().map(|(_, pid)| *pid).collect();
 
     // Find all descendant PIDs
@@ -1124,7 +1124,7 @@ fn test_spawn_and_stop_claude_kills_all_processes() {
     println!("PIDs before terminate: {:?}", all_pids);
 
     // Terminate and kill session
-    midtown::tmux::terminate_session_processes(&session);
+    midtown::process::terminate_session_processes(&session);
     kill_test_session(&session);
 
     // Give processes time to die
@@ -1552,7 +1552,7 @@ fn test_find_orphaned_processes_returns_only_orphans() {
     thread::sleep(Duration::from_millis(200));
 
     // Verify the orphan has PPID=1
-    let orphan_ppid = midtown::tmux::get_ppid(orphan_pid);
+    let orphan_ppid = midtown::process::get_ppid(orphan_pid);
     assert_eq!(
         orphan_ppid,
         Some(1),
@@ -1561,7 +1561,7 @@ fn test_find_orphaned_processes_returns_only_orphans() {
     );
 
     // Verify the non-orphan has a real parent
-    let child_ppid = midtown::tmux::get_ppid(child.id());
+    let child_ppid = midtown::process::get_ppid(child.id());
     assert_ne!(
         child_ppid,
         Some(1),
@@ -1571,7 +1571,7 @@ fn test_find_orphaned_processes_returns_only_orphans() {
 
     // find_orphaned_processes should only return the orphan
     let pattern = format!("orphan-marker {}", test_marker);
-    let orphans = midtown::tmux::find_orphaned_processes(&pattern);
+    let orphans = midtown::process::find_orphaned_processes(&pattern);
 
     assert!(
         orphans.contains(&orphan_pid),
@@ -1617,17 +1617,17 @@ fn test_kill_orphaned_processes_kills_only_orphans() {
 
     // Verify both are alive before cleanup
     assert!(
-        midtown::tmux::is_pid_alive(orphan_pid),
+        midtown::process::is_pid_alive(orphan_pid),
         "Orphan should be alive before cleanup"
     );
     assert!(
-        midtown::tmux::is_pid_alive(child_pid),
+        midtown::process::is_pid_alive(child_pid),
         "Non-orphan should be alive before cleanup"
     );
 
     // Kill orphaned processes (only matches orphan-marker, not non-orphan-marker)
     let pattern = format!("orphan-marker {}", test_marker);
-    let killed = midtown::tmux::kill_orphaned_processes(&pattern);
+    let killed = midtown::process::kill_orphaned_processes(&pattern);
 
     // Should have killed exactly 1 (the orphan)
     assert_eq!(killed, 1, "Should have killed exactly 1 orphan");
@@ -1637,14 +1637,14 @@ fn test_kill_orphaned_processes_kills_only_orphans() {
 
     // Verify orphan is dead
     assert!(
-        !midtown::tmux::is_pid_alive(orphan_pid),
+        !midtown::process::is_pid_alive(orphan_pid),
         "Orphan PID {} should be dead after cleanup",
         orphan_pid
     );
 
     // Verify non-orphan is still alive
     assert!(
-        midtown::tmux::is_pid_alive(child_pid),
+        midtown::process::is_pid_alive(child_pid),
         "Non-orphan PID {} should still be alive after cleanup",
         child_pid
     );
@@ -1710,7 +1710,7 @@ fn test_kill_orphaned_claude_processes_real() {
     thread::sleep(Duration::from_secs(5));
 
     // Get the claude process PID
-    let pids = midtown::tmux::session_pane_pids(&session);
+    let pids = midtown::process::session_pane_pids(&session);
     let claude_pid = pids
         .iter()
         .find(|(name, _)| name.contains("orphan-test"))
@@ -1745,7 +1745,7 @@ fn test_kill_orphaned_claude_processes_real() {
     let survivors: Vec<u32> = all_pids
         .iter()
         .copied()
-        .filter(|&pid| midtown::tmux::is_pid_alive(pid))
+        .filter(|&pid| midtown::process::is_pid_alive(pid))
         .collect();
 
     println!("Survivors after killing session: {:?}", survivors);
@@ -1761,7 +1761,7 @@ fn test_kill_orphaned_claude_processes_real() {
     let orphaned_survivors: Vec<u32> = survivors
         .iter()
         .copied()
-        .filter(|&pid| midtown::tmux::get_ppid(pid) == Some(1))
+        .filter(|&pid| midtown::process::get_ppid(pid) == Some(1))
         .collect();
 
     println!("Orphaned survivors: {:?}", orphaned_survivors);
@@ -1777,7 +1777,7 @@ fn test_kill_orphaned_claude_processes_real() {
 
     // Now test the cleanup function
     let pattern = "claude.*--settings.*/midtown/.*-settings\\.json";
-    let killed = midtown::tmux::kill_orphaned_processes(pattern);
+    let killed = midtown::process::kill_orphaned_processes(pattern);
 
     println!("Killed {} orphaned processes", killed);
     assert!(killed > 0, "Should have killed at least one orphan");
@@ -1786,7 +1786,7 @@ fn test_kill_orphaned_claude_processes_real() {
     thread::sleep(Duration::from_millis(600));
     for pid in &orphaned_survivors {
         assert!(
-            !midtown::tmux::is_pid_alive(*pid),
+            !midtown::process::is_pid_alive(*pid),
             "Orphan {} should be dead after cleanup",
             pid
         );
@@ -1898,99 +1898,6 @@ fn test_send_keys_raw_enter_submits_input() {
     assert!(
         marker_file.exists(),
         "Marker file should exist - proves 'Enter' was sent and command executed"
-    );
-}
-
-// ── Session management ──────────────────────────────────────────────
-
-/// `session_exists` returns true for existing sessions.
-#[test]
-#[ignore]
-#[timeout(15_000)]
-#[allow(deprecated)]
-fn test_session_exists_returns_true_for_existing() {
-    if !tmux_available() {
-        eprintln!("tmux not available, skipping");
-        return;
-    }
-
-    let session = test_session_name();
-    assert!(create_test_session(&session));
-    let _cleanup = SessionCleanup {
-        session: session.clone(),
-    };
-
-    // session_exists expects the name WITHOUT the prefix
-    // The test session was created with the full name, so we need to extract the suffix
-    let session_suffix = session
-        .strip_prefix(midtown::tmux::SESSION_PREFIX)
-        .unwrap_or(&session);
-
-    let exists = midtown::tmux::session_exists(session_suffix);
-    assert!(
-        exists.is_ok() && exists.unwrap(),
-        "session_exists should return true for existing session"
-    );
-}
-
-/// `session_exists` returns false for non-existing sessions.
-#[test]
-#[ignore]
-#[timeout(15_000)]
-#[allow(deprecated)]
-fn test_session_exists_returns_false_for_nonexistent() {
-    if !tmux_available() {
-        eprintln!("tmux not available, skipping");
-        return;
-    }
-
-    let nonexistent = format!("nonexistent-{}", std::process::id());
-    let exists = midtown::tmux::session_exists(&nonexistent);
-    assert!(
-        exists.is_ok() && !exists.unwrap(),
-        "session_exists should return false for non-existing session"
-    );
-}
-
-/// `list_sessions` returns existing midtown sessions.
-#[test]
-#[ignore]
-#[timeout(15_000)]
-#[allow(deprecated)]
-fn test_list_sessions_finds_midtown_sessions() {
-    if !tmux_available() {
-        eprintln!("tmux not available, skipping");
-        return;
-    }
-
-    // Create a session with the midtown prefix
-    let unique_name = format!("test-list-{}", std::process::id());
-    let full_session = format!("{}{}", midtown::tmux::SESSION_PREFIX, unique_name);
-
-    let status = Command::new("tmux")
-        .args(["new-session", "-d", "-s", &full_session])
-        .status()
-        .expect("Failed to create test session");
-    assert!(status.success(), "Failed to create midtown test session");
-
-    // Cleanup on drop
-    struct MidtownSessionCleanup(String);
-    impl Drop for MidtownSessionCleanup {
-        fn drop(&mut self) {
-            let _ = Command::new("tmux")
-                .args(["kill-session", "-t", &self.0])
-                .status();
-        }
-    }
-    let _cleanup = MidtownSessionCleanup(full_session);
-
-    let sessions = midtown::tmux::list_sessions().expect("list_sessions failed");
-
-    assert!(
-        sessions.contains(&unique_name),
-        "list_sessions should find our midtown session '{}', got: {:?}",
-        unique_name,
-        sessions
     );
 }
 

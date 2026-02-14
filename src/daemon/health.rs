@@ -33,7 +33,7 @@ pub(super) async fn check_lead_typing(state: &DaemonState) {
         None => return,
     };
 
-    let session = format!("{}{}", crate::tmux::SESSION_PREFIX, state.repo_name);
+    let session = format!("{}{}", crate::process::SESSION_PREFIX, state.repo_name);
 
     // Check if the tmux session exists before trying to capture pane content.
     // Under Zellij, there's no tmux session, so we skip pane-based typing detection.
@@ -126,7 +126,7 @@ pub(super) fn check_and_respawn_lead(
 
     // Zellij session is NOT alive. Check if Zellij is available — if so,
     // we know the session was launched with Zellij and has since been closed.
-    let zellij_available = crate::tmux::zellij_is_available();
+    let zellij_available = crate::process::zellij_is_available();
 
     // Now check tmux session.
     let tmux_session_alive = match std::process::Command::new("tmux")
@@ -232,7 +232,7 @@ pub(super) fn check_and_respawn_lead(
 /// Check if a Zellij session with the given name is alive.
 /// Delegates to the shared implementation in `crate::tmux`.
 fn zellij_session_alive(session: &str) -> bool {
-    crate::tmux::zellij_session_exists(session)
+    crate::process::zellij_session_exists(session)
 }
 
 /// Pure decision function: is the lead still working?
