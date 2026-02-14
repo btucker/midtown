@@ -181,7 +181,7 @@ Each concern has a primary owner. The non-owner path only acts as reconciliation
 
 ## Lead Maintenance
 
-If you are the Lead, whenever a PR is merged into main, pull, rebuild, and restart so the running daemon and coworkers pick up the changes:
+If you are the Lead, whenever a PR is merged into main, pull, install the updated binary, and restart so the running daemon and coworkers pick up the changes:
 
 ```bash
 git pull && cargo install --path . && midtown restart
