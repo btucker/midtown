@@ -1,3 +1,11 @@
+[workspace]
+members = [
+    ".",
+    "midtown-types",
+    "midtown-zellij-plugin",
+]
+resolver = "2"
+
 [package]
 name = "midtown"
 version = "0.5.4"
