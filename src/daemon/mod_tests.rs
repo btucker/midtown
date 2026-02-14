@@ -910,15 +910,20 @@ fn test_text_contains_review_signature_plain() {
 
 #[test]
 fn test_text_contains_review_signature_frontmatter() {
-    // Coworker comment frontmatter (used in gh pr comment)
-    assert!(text_contains_review_signature(
+    // Frontmatter ALONE should NOT match (all coworker comments have frontmatter)
+    assert!(!text_contains_review_signature(
         "<!-- midtown: lexington -->"
     ));
-    assert!(text_contains_review_signature(
+    assert!(!text_contains_review_signature(
         "<!-- midtown: park -->\n\n## Summary\nLooks good!"
     ));
-    assert!(text_contains_review_signature(
+    assert!(!text_contains_review_signature(
         "Some text\n<!-- midtown: york -->\nMore text"
+    ));
+
+    // But frontmatter + review header SHOULD match
+    assert!(text_contains_review_signature(
+        "<!-- midtown: lexington -->\n\n## Code Review by lexington\n\nFound issues..."
     ));
 }
 

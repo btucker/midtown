@@ -397,7 +397,8 @@ fn review_signature_detects_emoji_signature() {
 }
 
 #[test]
-fn review_signature_detects_frontmatter() {
+fn review_signature_detects_frontmatter_with_review_header() {
+    // Frontmatter + review header = valid review
     assert!(text_contains_review_signature(
         "<!-- midtown:reviewer=lexington -->\n\n## Code Review"
     ));
@@ -459,6 +460,33 @@ fn review_signature_detects_exact_code_review() {
     // But not with trailing text
     assert!(!text_contains_review_signature(
         "### Code review checklist\n\nItems..."
+    ));
+}
+
+#[test]
+fn review_signature_requires_review_header_with_frontmatter() {
+    // Bug fix: frontmatter alone should NOT be detected as a review.
+    // ALL coworker GitHub comments have frontmatter, so we need to also check
+    // for an actual review heading or signature.
+
+    // This is a CI fix explanation, NOT a review:
+    assert!(!text_contains_review_signature(
+        "<!-- midtown: columbus -->\n\n## Fix for zellij_e2e CI failure\n\nThe test was failing because..."
+    ));
+
+    // This is a status update, NOT a review:
+    assert!(!text_contains_review_signature(
+        "<!-- midtown: broadway -->\n\n## Update\n\nCompleted task 1269, all tests passing."
+    ));
+
+    // But frontmatter + review heading SHOULD be detected:
+    assert!(text_contains_review_signature(
+        "<!-- midtown: columbus -->\n\n## Code Review by columbus\n\nFound 2 issues..."
+    ));
+
+    // And frontmatter + exact "code review" heading SHOULD be detected:
+    assert!(text_contains_review_signature(
+        "<!-- midtown: york -->\n\n### Code review\n\nNo issues found."
     ));
 }
 
