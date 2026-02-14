@@ -404,7 +404,7 @@ fn test_check_for_usage_limits_already_scheduled() {
 }
 
 #[test]
-fn check_for_stale_worktrees_generates_cleanup_and_channel_message() {
+fn check_for_stale_worktrees_generates_only_cleanup_effect() {
     use std::collections::HashSet;
 
     let mut registry = crate::worktree_registry::WorktreeRegistry::new();
@@ -438,18 +438,16 @@ fn check_for_stale_worktrees_generates_cleanup_and_channel_message() {
 
     let effects = check_for_stale_worktrees(&registry, &active_coworkers, retention);
 
-    // Only the 48h-old worktree should be cleaned up (2 effects: cleanup + message)
+    // Only the 48h-old worktree should be cleaned up.
+    // Decision function should only return CleanupStaleWorktree effect.
+    // The message posting is handled by effects.rs when executing the cleanup.
     assert_eq!(
         effects.len(),
-        2,
-        "should generate 1 cleanup + 1 channel message effect"
+        1,
+        "should generate only 1 CleanupStaleWorktree effect (message posting happens in effects.rs)"
     );
     assert!(
         matches!(&effects[0], Effect::CleanupStaleWorktree { worktree_id } if worktree_id == "task-99-fix-bug"),
         "first effect should be CleanupStaleWorktree"
-    );
-    assert!(
-        matches!(&effects[1], Effect::PostSystemMessage { message } if message.contains("task-99-fix-bug") && message.contains("task !99") && message.contains('🧹')),
-        "second effect should be PostSystemMessage with task ID"
     );
 }
