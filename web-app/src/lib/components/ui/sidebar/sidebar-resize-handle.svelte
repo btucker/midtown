@@ -39,6 +39,16 @@
 		document.body.style.cursor = '';
 		document.body.style.userSelect = '';
 	}
+
+	// Cleanup listeners if component is destroyed mid-drag
+	$effect(() => {
+		return () => {
+			document.removeEventListener('mousemove', handleMouseMove);
+			document.removeEventListener('mouseup', handleMouseUp);
+			document.body.style.cursor = '';
+			document.body.style.userSelect = '';
+		};
+	});
 </script>
 
 <div
