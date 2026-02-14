@@ -574,8 +574,19 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 }
             }
             Effect::NudgeLead { message } => {
+                // Queue the nudge for the Zellij plugin to pull via plugin.dashboard.
+                // Also attempt tmux delivery as a fallback for non-Zellij sessions.
+                {
+                    let mut queue = state.lead_nudge_queue.lock().await;
+                    queue.push(message.clone());
+                }
                 if let Err(e) = state.coworkers.nudge_lead(&message) {
-                    warn!("Failed to nudge Lead: {}", e);
+                    // Expected to fail when running under Zellij (no tmux session).
+                    // The plugin will deliver the nudge instead.
+                    debug!(
+                        "tmux nudge_lead fallback failed (expected under Zellij): {}",
+                        e
+                    );
                 }
             }
             Effect::ResumeCoworker {

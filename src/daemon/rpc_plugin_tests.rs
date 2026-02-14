@@ -221,3 +221,79 @@ fn test_lead_nudge_queue_drain() {
     assert_eq!(drained.len(), 2);
     assert!(queue.is_empty());
 }
+
+#[test]
+fn test_lead_nudge_queue_drain_is_atomic() {
+    // Verify that draining returns all queued items and leaves queue empty.
+    // This matches the dashboard handler's `std::mem::take` pattern.
+    let mut queue: Vec<String> = vec![];
+
+    // Empty queue drain
+    let drained: Vec<String> = std::mem::take(&mut queue);
+    assert!(drained.is_empty());
+    assert!(queue.is_empty());
+
+    // Add items and drain
+    queue.push("nudge 1".to_string());
+    queue.push("nudge 2".to_string());
+    queue.push("nudge 3".to_string());
+    let drained: Vec<String> = std::mem::take(&mut queue);
+    assert_eq!(drained.len(), 3);
+    assert_eq!(drained[0], "nudge 1");
+    assert_eq!(drained[2], "nudge 3");
+    assert!(queue.is_empty());
+
+    // Second drain returns empty
+    let drained: Vec<String> = std::mem::take(&mut queue);
+    assert!(drained.is_empty());
+}
+
+// ============================================================================
+// Stream event buffer tests
+// ============================================================================
+
+#[test]
+fn test_buffered_stream_event_fields() {
+    use super::BufferedStreamEvent;
+
+    let event = BufferedStreamEvent {
+        timestamp: chrono::Utc::now(),
+        event_type: "assistant".to_string(),
+        content: "Working on implementation".to_string(),
+    };
+
+    assert_eq!(event.event_type, "assistant");
+    assert_eq!(event.content, "Working on implementation");
+}
+
+#[test]
+fn test_stream_events_convert_to_midtown_types() {
+    use super::BufferedStreamEvent;
+    use midtown_types::StreamEvent;
+
+    let buffered = vec![
+        BufferedStreamEvent {
+            timestamp: chrono::Utc::now(),
+            event_type: "tool_use".to_string(),
+            content: "Read file foo.rs".to_string(),
+        },
+        BufferedStreamEvent {
+            timestamp: chrono::Utc::now(),
+            event_type: "assistant".to_string(),
+            content: "Found the issue".to_string(),
+        },
+    ];
+
+    let stream_events: Vec<StreamEvent> = buffered
+        .into_iter()
+        .map(|evt| StreamEvent {
+            timestamp: evt.timestamp,
+            event_type: evt.event_type,
+            content: evt.content,
+        })
+        .collect();
+
+    assert_eq!(stream_events.len(), 2);
+    assert_eq!(stream_events[0].event_type, "tool_use");
+    assert_eq!(stream_events[1].event_type, "assistant");
+}
