@@ -284,6 +284,21 @@ pub fn get_in_progress_tasks_with_subjects() -> Vec<(String, String, String)> {
         .collect()
 }
 
+/// Get in-progress tasks with subjects for a specific repository.
+///
+/// Unlike the cwd-based variant, this takes an explicit repo name to avoid
+/// dependency on the current working directory. Used by the daemon to ensure
+/// task reads are consistent regardless of where the daemon process runs.
+pub fn get_in_progress_tasks_with_subjects_for_repo(
+    repo_name: &str,
+) -> Vec<(String, String, String)> {
+    read_tasks_for_repo(Some(repo_name))
+        .into_iter()
+        .filter(|t| t.status == TaskStatus::InProgress)
+        .map(|t| (t.id, t.subject, t.owner.unwrap_or_default()))
+        .collect()
+}
+
 /// Get pending tasks (ready to work on).
 pub fn get_pending_tasks() -> Vec<Task> {
     read_tasks()
@@ -379,6 +394,19 @@ pub fn get_pending_tasks_with_owners() -> Vec<(String, String, String)> {
         .collect()
 }
 
+/// Get pending tasks with owners for a specific repository.
+///
+/// Unlike the cwd-based variant, this takes an explicit repo name to avoid
+/// dependency on the current working directory. Used by the daemon to ensure
+/// task reads are consistent regardless of where the daemon process runs.
+pub fn get_pending_tasks_with_owners_for_repo(repo_name: &str) -> Vec<(String, String, String)> {
+    read_tasks_for_repo(Some(repo_name))
+        .into_iter()
+        .filter(|t| t.status == TaskStatus::Pending && t.owner.is_some())
+        .map(|t| (t.id, t.subject, t.owner.unwrap_or_default()))
+        .collect()
+}
+
 /// Get pending tasks that have no owner (unclaimed and not started).
 ///
 /// Applies a grace period to skip recently-created tasks, giving the creating
@@ -411,6 +439,35 @@ pub fn get_pending_tasks_without_owners_with_grace(grace_secs: u64) -> Vec<Task>
         .collect()
 }
 
+/// Get pending tasks without owners for a specific repository.
+///
+/// Unlike the cwd-based variant, this takes an explicit repo name to avoid
+/// dependency on the current working directory. Used by the daemon to ensure
+/// task reads are consistent regardless of where the daemon process runs.
+pub fn get_pending_tasks_without_owners_for_repo(repo_name: &str) -> Vec<Task> {
+    get_pending_tasks_without_owners_with_grace_for_repo(repo_name, TASK_CREATION_GRACE_SECS)
+}
+
+/// Get pending tasks without owners with grace period for a specific repository.
+fn get_pending_tasks_without_owners_with_grace_for_repo(
+    repo_name: &str,
+    grace_secs: u64,
+) -> Vec<Task> {
+    let now = std::time::SystemTime::now();
+    let grace = std::time::Duration::from_secs(grace_secs);
+    let all_tasks = read_tasks_for_repo(Some(repo_name));
+    all_tasks
+        .iter()
+        .filter(|t| {
+            t.status == TaskStatus::Pending
+                && t.owner.is_none()
+                && !is_within_grace_period(t, now, grace)
+                && !has_unresolved_blockers(t, &all_tasks)
+        })
+        .cloned()
+        .collect()
+}
+
 /// Get coworkers that have newly-unblocked dependent tasks.
 ///
 /// A coworker has unblocked dependents when:
@@ -423,6 +480,27 @@ pub fn get_pending_tasks_without_owners_with_grace(grace_secs: u64) -> Vec<Task>
 /// tasks are about to become assignable.
 pub fn get_coworkers_with_unblocked_dependents() -> std::collections::HashSet<String> {
     let all_tasks = read_tasks();
+    get_coworkers_with_unblocked_dependents_from_tasks(&all_tasks)
+}
+
+/// Get coworkers with unblocked dependents for a specific repository.
+///
+/// Unlike the cwd-based variant, this takes an explicit repo name to avoid
+/// dependency on the current working directory. Used by the daemon to ensure
+/// task reads are consistent regardless of where the daemon process runs.
+pub fn get_coworkers_with_unblocked_dependents_for_repo(
+    repo_name: &str,
+) -> std::collections::HashSet<String> {
+    let all_tasks = read_tasks_for_repo(Some(repo_name));
+    get_coworkers_with_unblocked_dependents_from_tasks(&all_tasks)
+}
+
+/// Extract coworkers with unblocked dependents from a given task list.
+///
+/// Shared implementation for both cwd-based and repo-specific variants.
+fn get_coworkers_with_unblocked_dependents_from_tasks(
+    all_tasks: &[Task],
+) -> std::collections::HashSet<String> {
     let mut result = std::collections::HashSet::new();
 
     // Find pending, unowned tasks that are fully unblocked
@@ -432,7 +510,7 @@ pub fn get_coworkers_with_unblocked_dependents() -> std::collections::HashSet<St
             t.status == TaskStatus::Pending
                 && t.owner.is_none()
                 && !t.blocked_by.is_empty()
-                && !has_unresolved_blockers(t, &all_tasks)
+                && !has_unresolved_blockers(t, all_tasks)
         })
         .collect();
 
