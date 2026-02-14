@@ -124,55 +124,49 @@ pub(super) fn check_and_respawn_lead(
         return false; // Zellij manages panes via layout, no respawn needed
     }
 
-    // Check if any Zellij session was expected but is now gone.
-    // If `zellij` binary exists but no matching session found, and no tmux
-    // session either, the session was likely closed by the user.
-    let zellij_available = std::process::Command::new("zellij")
-        .arg("--version")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success());
+    // Zellij session is NOT alive. Check if Zellij is available — if so,
+    // we know the session was launched with Zellij and has since been closed.
+    let zellij_available = crate::tmux::zellij_is_available();
 
     // Now check tmux session.
-    let session_check = std::process::Command::new("tmux")
+    let tmux_session_alive = match std::process::Command::new("tmux")
         .args(["has-session", "-t", session])
-        .output();
-    match session_check {
-        Ok(o) if o.status.success() => {}
+        .output()
+    {
+        Ok(o) if o.status.success() => true,
         Ok(o) => {
             let stderr = String::from_utf8_lossy(&o.stderr);
             if stderr.contains("no server running") {
-                if zellij_available {
-                    // No tmux server, but Zellij is available — session was likely
-                    // launched with Zellij and has been closed. Don't signal shutdown
-                    // here; the missing Zellij session is handled above.
-                    debug!(
-                        "LEAD_HEALTH: No tmux server, Zellij available — session may have been a Zellij session"
-                    );
-                    return false;
-                }
-                // No tmux server and no Zellij — signal daemon to shut down
-                error!(
-                    "Tmux server is not running. The daemon cannot operate without a terminal \
-                     multiplexer. Run `midtown start` to restart."
-                );
-                return true;
+                // No tmux server running at all
+                false
+            } else {
+                // tmux server running but session doesn't exist
+                false
             }
-            // Session was killed by user (intentional) - don't interfere
-            return false;
         }
-        Err(e) => {
-            // Failed to run tmux command at all
-            if zellij_available {
-                // tmux not installed but Zellij available — this is fine,
-                // the session is managed by Zellij.
-                debug!("LEAD_HEALTH: tmux not available, Zellij is — session managed by Zellij");
-                return false;
-            }
-            error!("Failed to check tmux session: {}", e);
-            return false;
+        Err(_) => {
+            // tmux binary not available
+            false
         }
+    };
+
+    // If neither Zellij nor tmux session is alive, signal shutdown.
+    if !tmux_session_alive {
+        if zellij_available {
+            // Zellij is installed but session is gone — user closed it.
+            error!(
+                "Zellij session '{}' is no longer running. The daemon cannot operate without a \
+                 terminal multiplexer session. Run `midtown start` to restart.",
+                session
+            );
+            return true;
+        }
+        // No Zellij, no tmux — signal daemon to shut down
+        error!(
+            "No terminal multiplexer session found. The daemon cannot operate without a terminal \
+             multiplexer. Run `midtown start` to restart."
+        );
+        return true;
     }
 
     // tmux session exists — check how many lead windows are present.
@@ -235,21 +229,10 @@ pub(super) fn check_and_respawn_lead(
     false // Terminal multiplexer is running normally
 }
 
-/// Check if a Zellij session with the given name is currently alive.
+/// Check if a Zellij session with the given name is alive.
+/// Delegates to the shared implementation in `crate::tmux`.
 fn zellij_session_alive(session: &str) -> bool {
-    let output = std::process::Command::new("zellij")
-        .args(["list-sessions", "--no-formatting"])
-        .output();
-
-    match output {
-        Ok(o) if o.status.success() => {
-            let stdout = String::from_utf8_lossy(&o.stdout);
-            stdout
-                .lines()
-                .any(|line| line.split_whitespace().next() == Some(session))
-        }
-        _ => false,
-    }
+    crate::tmux::zellij_session_exists(session)
 }
 
 /// Pure decision function: is the lead still working?

@@ -433,21 +433,9 @@ fn session_exists(session: &str) -> bool {
 }
 
 /// Check if a Zellij session with the given name exists.
+/// Delegates to the shared implementation in `midtown::tmux`.
 fn zellij_session_exists(session: &str) -> bool {
-    let output = Command::new("zellij")
-        .args(["list-sessions", "--no-formatting"])
-        .output();
-
-    match output {
-        Ok(o) if o.status.success() => {
-            let stdout = String::from_utf8_lossy(&o.stdout);
-            // Each line is a session name (possibly with extra info after whitespace)
-            stdout
-                .lines()
-                .any(|line| line.split_whitespace().next() == Some(session))
-        }
-        _ => false,
-    }
+    midtown::tmux::zellij_session_exists(session)
 }
 
 /// Check if a tmux session with the given name exists.
@@ -462,23 +450,19 @@ fn tmux_session_exists(session: &str) -> bool {
     }
 }
 
-/// Detect whether the current session is running inside Zellij.
-///
-/// Returns true if the `ZELLIJ` environment variable is set, which Zellij
-/// sets for all processes running inside its sessions.
-#[allow(dead_code)]
-fn is_zellij_session() -> bool {
-    std::env::var("ZELLIJ").is_ok()
+/// Check if Zellij is available on the system.
+/// Delegates to the shared implementation in `midtown::tmux`.
+fn zellij_is_available() -> bool {
+    midtown::tmux::zellij_is_available()
 }
 
-/// Check if Zellij is available on the system.
-fn zellij_is_available() -> bool {
-    Command::new("zellij")
-        .arg("--version")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success())
+/// Escape a string for use inside KDL double-quoted strings.
+///
+/// KDL uses the same escape sequences as JSON strings, so we need to escape
+/// backslashes and double quotes. This prevents paths with special characters
+/// from producing invalid KDL.
+fn escape_kdl_string(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
 /// Generate a KDL layout file for the Zellij session.
@@ -501,9 +485,14 @@ fn generate_zellij_layout(
         .join("plugins")
         .join("midtown_zellij_plugin.wasm");
 
+    // Escape paths for KDL string interpolation
+    let escaped_launcher = escape_kdl_string(&lead_launcher.display().to_string());
+    let escaped_cwd = escape_kdl_string(&lead_workdir.display().to_string());
+
     // Check if the plugin WASM file exists; if not, use a simpler layout
     // without the plugin pane (graceful degradation).
     let layout = if plugin_path.exists() {
+        let escaped_plugin = escape_kdl_string(&plugin_path.display().to_string());
         format!(
             r#"layout {{
     pane size="25%" {{
@@ -520,9 +509,9 @@ fn generate_zellij_layout(
     }}
 }}
 "#,
-            plugin_path = plugin_path.display(),
-            launcher = lead_launcher.display(),
-            cwd = lead_workdir.display(),
+            plugin_path = escaped_plugin,
+            launcher = escaped_launcher,
+            cwd = escaped_cwd,
         )
     } else {
         format!(
@@ -538,8 +527,8 @@ fn generate_zellij_layout(
     }}
 }}
 "#,
-            launcher = lead_launcher.display(),
-            cwd = lead_workdir.display(),
+            launcher = escaped_launcher,
+            cwd = escaped_cwd,
         )
     };
 
@@ -592,17 +581,24 @@ fn write_lead_launcher_script(
     };
 
     let task_list_id = midtown::paths::task_list_id_for_repo(project_name);
-    let launch = config.to_shell_command(
-        &settings_file,
-        &prompt_file,
-        None,
-        lead_workdir,
-        project_name,
-    );
+
+    // Allow tests/CI to override the lead command (claude isn't available in CI)
+    let shell_command = if let Ok(test_cmd) = std::env::var("MIDTOWN_LEAD_COMMAND") {
+        test_cmd
+    } else {
+        let launch = config.to_shell_command(
+            &settings_file,
+            &prompt_file,
+            None,
+            lead_workdir,
+            project_name,
+        );
+        launch.shell_command
+    };
 
     let script_content = format!(
         "#!/bin/bash\nexport CLAUDE_CODE_TASK_LIST_ID='{}';\n{}\n",
-        task_list_id, launch.shell_command
+        task_list_id, shell_command
     );
 
     let script_path = lead_dir.join("zellij-lead-launcher.sh");
@@ -885,6 +881,9 @@ pub fn handle_start(
     } else if zellij_is_available() {
         // --- Zellij path ---
         emit_startup_progress(88, "creating Zellij session");
+
+        // Clear stale task ID mappings from previous sessions
+        midtown::tasks::clear_lead_task_id_map(&project_name);
 
         // Create lead worktree (or reuse existing one)
         emit_startup_progress(90, "creating lead worktree");
@@ -1178,22 +1177,48 @@ pub fn handle_stop(keep_session: bool) -> Result<Response, String> {
 
     // Get session name (if in a git repo)
     if let Ok(session) = session_name() {
-        // Stop tmux session (unless --keep-session)
+        // Stop session (unless --keep-session)
         if !keep_session && session_exists(&session) {
-            // SIGTERM all pane processes first — Claude Code survives SIGHUP
-            // (which is what tmux kill-session sends), leaving orphaned processes
-            // that consume memory and cause contention with other instances.
-            midtown::tmux::terminate_session_processes(&session);
+            // Try Zellij first, then tmux
+            if zellij_session_exists(&session) {
+                // Kill the Zellij session — `zellij kill-session` sends SIGHUP to
+                // pane processes, which Claude Code may survive. Use `zellij kill-session`
+                // first, then clean up any orphaned processes.
+                let status = Command::new("zellij")
+                    .args(["kill-session", &session])
+                    .status()
+                    .map_err(|e| format!("Failed to kill Zellij session: {}", e))?;
 
-            let status = Command::new("tmux")
-                .args(["kill-session", "-t", &session])
-                .status()
-                .map_err(|e| format!("Failed to kill session: {}", e))?;
+                if status.success() {
+                    messages.push(format!("Stopped Zellij session '{}'", session));
+                } else {
+                    messages.push(format!(
+                        "Warning: Failed to stop Zellij session '{}'",
+                        session
+                    ));
+                }
+            }
 
-            if status.success() {
-                messages.push(format!("Stopped session '{}'", session));
-            } else {
-                messages.push(format!("Warning: Failed to stop session '{}'", session));
+            // Also try tmux — both may exist in mixed environments, or only tmux
+            if tmux_session_exists(&session) {
+                // SIGTERM all pane processes first — Claude Code survives SIGHUP
+                // (which is what tmux kill-session sends), leaving orphaned processes
+                // that consume memory and cause contention with other instances.
+                midtown::tmux::terminate_session_processes(&session);
+
+                let status = Command::new("tmux")
+                    .args(["kill-session", "-t", &session])
+                    .status()
+                    .map_err(|e| format!("Failed to kill tmux session: {}", e))?;
+
+                if status.success() {
+                    messages.push(format!("Stopped tmux session '{}'", session));
+                } else {
+                    messages.push(format!(
+                        "Warning: Failed to stop tmux session '{}'",
+                        session
+                    ));
+                }
             }
         } else if session_exists(&session) {
             messages.push(format!(

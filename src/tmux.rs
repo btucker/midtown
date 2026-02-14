@@ -1,13 +1,46 @@
-//! Tmux session management for coworker processes.
+//! Terminal multiplexer session management for coworker processes.
 //!
 //! Provides functions for creating, managing, and communicating with
-//! tmux windows that host coworker Claude Code processes within the
-//! project session.
+//! tmux (and Zellij) sessions that host coworker Claude Code processes
+//! within the project session.
 
 use std::path::PathBuf;
 use std::process::Command;
 
 use crate::Error;
+
+// --- Zellij helpers (shared between CLI and daemon) ---
+
+/// Check if a Zellij session with the given name exists.
+///
+/// Runs `zellij list-sessions --no-formatting` and checks if any line
+/// starts with the given session name (sessions may have extra info after
+/// whitespace).
+pub fn zellij_session_exists(session: &str) -> bool {
+    let output = Command::new("zellij")
+        .args(["list-sessions", "--no-formatting"])
+        .output();
+
+    match output {
+        Ok(o) if o.status.success() => {
+            let stdout = String::from_utf8_lossy(&o.stdout);
+            stdout
+                .lines()
+                .any(|line| line.split_whitespace().next() == Some(session))
+        }
+        _ => false,
+    }
+}
+
+/// Check if Zellij is available on the system.
+pub fn zellij_is_available() -> bool {
+    Command::new("zellij")
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
+}
 
 /// Embedded common settings shared by both Lead and coworker Claude Code sessions.
 const DEFAULT_COMMON_SETTINGS: &str = include_str!("../agents/common-settings.json");
