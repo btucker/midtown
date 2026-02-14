@@ -150,15 +150,17 @@ pub(super) async fn handle_coworker_break(
 
 /// Handle coworker.list RPC method.
 pub(super) fn handle_coworker_list(id: RequestId, state: &DaemonState) -> Response {
-    // Build a map of coworker name -> task subject from in_progress tasks
+    // Build a map of coworker name -> task display string from in_progress tasks
+    // Format: "!1234 Task subject" (task ID + subject) — matches handle_status()
     let coworker_tasks: std::collections::HashMap<String, String> =
         crate::tasks::get_in_progress_tasks_with_subjects()
             .into_iter()
-            .filter_map(|(_task_id, subject, owner)| {
+            .filter_map(|(task_id, subject, owner)| {
                 if owner.is_empty() {
                     None
                 } else {
-                    Some((owner.to_lowercase(), subject))
+                    let task_display = format!("!{} {}", task_id, subject);
+                    Some((owner.to_lowercase(), task_display))
                 }
             })
             .collect();
