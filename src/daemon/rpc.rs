@@ -9,6 +9,7 @@
 //! - `rpc_headless` — headless execution and snapshot
 //! - `rpc_insight` — insight reporting and deduplication
 //! - `rpc_kanban` — kanban board data
+//! - `rpc_plugin` — Zellij plugin dashboard, attach/detach, coworker stream
 //! - `rpc_reminder` — reminder CRUD
 //! - `rpc_session` — session attach/detach/list
 //! - `rpc_status` — daemon status overview
@@ -502,6 +503,25 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
         }
 
         "session.list" => super::rpc_session::handle_session_list(request.id, state).await,
+
+        // ---- Plugin (Zellij) ----
+        "plugin.dashboard" => super::rpc_plugin::handle_dashboard(request.id, state).await,
+
+        "plugin.attach" => {
+            let name = require_str!(params, "name", request.id);
+            let force = params.bool_or("force", false);
+            super::rpc_plugin::handle_attach(request.id, name, force, state).await
+        }
+
+        "plugin.detach" => {
+            let name = require_str!(params, "name", request.id);
+            super::rpc_plugin::handle_detach(request.id, name, state).await
+        }
+
+        "plugin.coworker-stream" => {
+            let name = require_str!(params, "name", request.id);
+            super::rpc_plugin::handle_coworker_stream(request.id, name, state).await
+        }
 
         _ => {
             warn!("Unknown method: {}", request.method);

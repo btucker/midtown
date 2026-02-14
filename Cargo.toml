@@ -70,6 +70,9 @@ crossterm = { version = "0.29", features = ["event-stream"] }
 # Mermaid diagram rendering
 selkie-rs = { version = "0.3", default-features = false }
 
+# Shared types for Zellij plugin RPC
+midtown-types = { path = "midtown-types" }
+
 # Async file tailing for instant message updates
 tailf = "0.1"
 futures = "0.3"
