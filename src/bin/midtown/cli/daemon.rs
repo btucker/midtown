@@ -1197,7 +1197,7 @@ fn wait_for_coworkers_to_drain(timeout_secs: u64) -> Result<(), String> {
                     let task_info = coworker
                         .current_task
                         .as_ref()
-                        .map(|t| format!(" (task !{})", t))
+                        .map(|t| format!(" (task {})", t))
                         .unwrap_or_default();
                     eprintln!("  {}: {}{}", coworker.name, status, task_info);
                 }
@@ -1951,3 +1951,7 @@ mod tests {
 #[path = "daemon_tests.rs"]
 #[cfg(test)]
 mod daemon_tests;
+
+#[path = "daemon_restart_display_tests.rs"]
+#[cfg(test)]
+mod daemon_restart_display_tests;
