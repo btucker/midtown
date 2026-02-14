@@ -474,6 +474,10 @@ pub(super) fn check_and_recover_orphans(
 
     // Post-spawn success effects
     let on_success = vec![
+        Effect::RecordTaskAssignment {
+            coworker: recovery.owner.clone(),
+            task_id: recovery.task_id.clone(),
+        },
         Effect::BindCoworkerToWorktree {
             worktree_id: wt.worktree_id,
             coworker: recovery.owner.clone(),

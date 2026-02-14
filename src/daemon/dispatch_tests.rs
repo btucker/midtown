@@ -3403,3 +3403,114 @@ fn test_spawn_extracts_model_alias_from_provider_model_format() {
         "LaunchConfig.auth_provider should be Claude"
     );
 }
+
+#[test]
+fn test_orphan_recovery_marks_task_in_flight() {
+    // Regression test: Orphan recovery must include RecordTaskAssignment in on_success
+    // to prevent task dispatch from double-assigning the task while the recovered
+    // coworker is spawning.
+    //
+    // Timeline without the fix:
+    // 1. Coworker crashes, task !1264 is in_progress with owner=lexington
+    // 2. Orphan recovery spawns lexington (tick 0s)
+    // 3. Task dispatch runs (tick 10s) before lexington claims via RPC
+    // 4. Task dispatch sees task as in_progress but lexington not active → spawns another coworker
+    // 5. Result: double assignment (lexington + madison both working on !1264)
+    let snap = snapshot::WorldSnapshot {
+        active_coworkers: vec![],
+        running_coworkers: vec![],
+        coworker_snapshots: vec![],
+        active_names: HashSet::new(), // lexington crashed, not active
+        active_session_ids: HashSet::new(),
+        session_name: "midtown-test".to_string(),
+        coworker_start_times: HashMap::new(),
+        coworker_stop_times: HashMap::new(),
+        headless_process_health: HashMap::new(),
+        attached_coworkers: HashSet::new(),
+        in_progress_tasks: vec![(
+            "1264".to_string(),
+            "Test task".to_string(),
+            "lexington".to_string(),
+        )],
+        busy_coworkers: HashSet::new(),
+        coworker_task_assignments: HashMap::new(),
+        all_tasks: vec![],
+        pending_tasks_with_owners: vec![],
+        pending_tasks_without_owners: vec![],
+        task_channel: HashMap::new(),
+        task_model_map: HashMap::new(),
+        task_plan_map: HashMap::new(),
+        task_execution_skill_map: HashMap::new(),
+        coworkers_with_open_prs: HashSet::new(),
+        coworkers_with_merged_prs: HashSet::new(),
+        merged_pr_numbers: HashSet::new(),
+        ci_passed_pr_coworkers: HashSet::new(),
+        review_feedback_pr_coworkers: HashSet::new(),
+        open_prs_data: vec![],
+        github_open_pr_task_ids: HashMap::new(),
+        pending_task_owners: HashSet::new(),
+        tasks_with_open_prs: HashMap::new(),
+        pr_task_associations: HashMap::new(),
+        active_reviewers: HashSet::new(),
+        reviewer_pr_assignments: HashMap::new(),
+        reviewed_prs: HashSet::new(),
+        prs_needing_review: 0,
+        reviewer_restart_counts: HashMap::new(),
+        reviewer_escalations_posted: HashSet::new(),
+        github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
+        freshly_fetched_rate_limit: None,
+        coworkers_with_unblocked_deps: HashSet::new(),
+        usage_limit_nudge_scheduled: false,
+        usage_limit_nudge_at: None,
+        usage_limited_coworkers: HashSet::new(),
+        api_error_coworkers: HashSet::new(),
+        auth_error_coworkers: HashSet::new(),
+        tool_name_conflict_coworkers: HashSet::new(),
+        channel_messages: vec![],
+        archived_channels: HashSet::new(),
+        daemon_logs: vec![],
+        tasks_with_worktrees: HashSet::new(),
+        task_worktree_map: HashMap::new(),
+        worktree_registry: crate::worktree_registry::WorktreeRegistry::default(),
+        worktree_branch_owners: HashMap::new(),
+        merged_pr_branches: HashMap::new(),
+        is_at_coworker_limit: false,
+        is_at_dev_limit: false,
+        now_utc: chrono::Utc::now(),
+        repo_name: "test-repo".to_string(),
+    };
+
+    let state = make_test_state();
+    let effects = check_and_recover_orphans(&snap, &state);
+
+    // Should have SpawnCoworkerWithCallbacks effect
+    let spawn_effect = effects
+        .iter()
+        .find(|e| matches!(e, Effect::SpawnCoworkerWithCallbacks { .. }))
+        .expect("Should have SpawnCoworkerWithCallbacks effect");
+
+    // Extract on_success effects
+    let on_success = if let Effect::SpawnCoworkerWithCallbacks { on_success, .. } = spawn_effect {
+        on_success
+    } else {
+        panic!("Expected SpawnCoworkerWithCallbacks");
+    };
+
+    // Should include RecordTaskAssignment in on_success
+    let has_record_assignment = on_success.iter().any(|e| {
+        matches!(e, Effect::RecordTaskAssignment { task_id, coworker }
+            if task_id == "1264" && coworker == "lexington")
+    });
+
+    assert!(
+        has_record_assignment,
+        "Orphan recovery must include RecordTaskAssignment in on_success to prevent double-assignment race"
+    );
+
+    // Verify that mark_in_flight_spawns_from_effects would mark this task
+    state.mark_in_flight_spawns_from_effects(&effects);
+    assert!(
+        state.is_task_spawn_in_flight("1264"),
+        "Task !1264 should be marked in-flight after orphan recovery"
+    );
+}
