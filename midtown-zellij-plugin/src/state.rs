@@ -102,6 +102,13 @@ impl PluginState {
     pub fn update_coworker_stream(&mut self, stream: CoworkerStreamOutput) {
         self.stream_coworker = Some(stream.coworker_name);
         self.stream_events = stream.events;
+        // Clamp scroll offset in case the new event list is shorter
+        if !self.stream_events.is_empty() {
+            let max_offset = self.stream_events.len().saturating_sub(1);
+            self.stream_scroll_offset = self.stream_scroll_offset.min(max_offset);
+        } else {
+            self.stream_scroll_offset = 0;
+        }
     }
 
     /// Record an RPC error.
@@ -171,7 +178,9 @@ impl PluginState {
     pub fn stream_scroll_down(&mut self) {
         if !self.stream_events.is_empty() {
             self.stream_scroll_offset += 1;
-            // Clamp handled during render
+            // Clamp to max possible offset (last event index)
+            let max_offset = self.stream_events.len().saturating_sub(1);
+            self.stream_scroll_offset = self.stream_scroll_offset.min(max_offset);
         }
     }
 }
@@ -315,6 +324,68 @@ mod tests {
         assert_eq!(state.stream_scroll_offset, 0);
         // Can't scroll past 0
         state.stream_scroll_up();
+        assert_eq!(state.stream_scroll_offset, 0);
+    }
+
+    #[test]
+    fn test_stream_scroll_clamped() {
+        let mut state = PluginState::default();
+        // 5 events; max offset should be 4
+        state.stream_events = (0..5)
+            .map(|i| StreamEvent {
+                timestamp: chrono::Utc::now(),
+                event_type: "test".to_string(),
+                content: format!("event{}", i),
+            })
+            .collect();
+
+        // Scroll down many times — should clamp to max offset (4)
+        for _ in 0..100 {
+            state.stream_scroll_down();
+        }
+        assert_eq!(state.stream_scroll_offset, 4);
+    }
+
+    #[test]
+    fn test_stream_scroll_clamps_on_update() {
+        let mut state = PluginState::default();
+        // Start with 10 events and scroll to offset 9
+        state.stream_events = (0..10)
+            .map(|i| StreamEvent {
+                timestamp: chrono::Utc::now(),
+                event_type: "test".to_string(),
+                content: format!("event{}", i),
+            })
+            .collect();
+        for _ in 0..20 {
+            state.stream_scroll_down();
+        }
+        assert_eq!(state.stream_scroll_offset, 9);
+
+        // Update with fewer events — offset should be clamped
+        let stream = CoworkerStreamOutput {
+            coworker_name: "test".to_string(),
+            events: (0..3)
+                .map(|i| StreamEvent {
+                    timestamp: chrono::Utc::now(),
+                    event_type: "test".to_string(),
+                    content: format!("event{}", i),
+                })
+                .collect(),
+        };
+        state.update_coworker_stream(stream);
+        assert_eq!(state.stream_scroll_offset, 2); // max for 3 events
+    }
+
+    #[test]
+    fn test_stream_scroll_resets_on_empty_update() {
+        let mut state = PluginState::default();
+        state.stream_scroll_offset = 10;
+        let stream = CoworkerStreamOutput {
+            coworker_name: "test".to_string(),
+            events: Vec::new(),
+        };
+        state.update_coworker_stream(stream);
         assert_eq!(state.stream_scroll_offset, 0);
     }
 }

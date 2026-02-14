@@ -202,20 +202,46 @@ impl MidtownPlugin {
 
     /// Handle a command error (non-zero exit code).
     fn handle_command_error(&mut self, cmd: &str, stderr: &str) -> bool {
-        if cmd == CMD_DASHBOARD {
-            self.state.consecutive_failures += 1;
-            if self.state.consecutive_failures >= DISCONNECT_THRESHOLD {
-                self.state.connected = false;
+        match cmd {
+            CMD_DASHBOARD => {
+                self.state.consecutive_failures += 1;
+                if self.state.consecutive_failures >= DISCONNECT_THRESHOLD {
+                    self.state.connected = false;
+                }
+                let msg = if stderr.is_empty() {
+                    "Daemon not reachable".to_string()
+                } else {
+                    format!("Daemon error: {}", stderr.lines().next().unwrap_or(""))
+                };
+                self.state.record_error(msg);
+                true
             }
-            let msg = if stderr.is_empty() {
-                "Daemon not reachable".to_string()
-            } else {
-                format!("Daemon error: {}", stderr.lines().next().unwrap_or(""))
-            };
-            self.state.error = Some(msg);
-            return true;
+            CMD_ATTACH | CMD_DETACH => {
+                let action = if cmd == CMD_ATTACH {
+                    "Attach"
+                } else {
+                    "Detach"
+                };
+                let msg = if stderr.is_empty() {
+                    format!("{} failed", action)
+                } else {
+                    format!("{} failed: {}", action, stderr.lines().next().unwrap_or(""))
+                };
+                self.state.record_error(msg);
+                true
+            }
+            CMD_COWORKER_STREAM => {
+                // Stream errors are non-critical; record but don't disrupt the view
+                let msg = if stderr.is_empty() {
+                    "Stream fetch failed".to_string()
+                } else {
+                    format!("Stream error: {}", stderr.lines().next().unwrap_or(""))
+                };
+                self.state.record_error(msg);
+                true
+            }
+            _ => false,
         }
-        false
     }
 
     /// Handle keyboard input.

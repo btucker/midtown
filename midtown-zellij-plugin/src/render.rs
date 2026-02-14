@@ -277,12 +277,16 @@ fn render_footer(state: &PluginState, _rows: usize, cols: usize) {
     println!("{DIM}{}{RESET}", truncate(&line, cols));
 }
 
-/// Truncate a string to fit within a given width.
+/// Truncate a string to fit within a given number of characters.
+///
+/// Uses character count consistently (not byte length) to avoid
+/// incorrect truncation of multi-byte strings.
 fn truncate(s: &str, max_len: usize) -> String {
     if max_len == 0 {
         return String::new();
     }
-    if s.len() <= max_len {
+    let char_count = s.chars().count();
+    if char_count <= max_len {
         s.to_string()
     } else if max_len <= 3 {
         s.chars().take(max_len).collect()
@@ -315,5 +319,27 @@ mod tests {
     #[test]
     fn test_truncate_zero() {
         assert_eq!(truncate("hello", 0), "");
+    }
+
+    #[test]
+    fn test_truncate_multibyte() {
+        // Multi-byte chars: "héllo wörld" — é and ö are 2 bytes each but 1 char
+        let s = "héllo wörld";
+        assert_eq!(s.len(), 13); // 13 bytes
+        assert_eq!(s.chars().count(), 11); // 11 chars
+
+        // Should not truncate when char count fits
+        assert_eq!(truncate(s, 11), "héllo wörld");
+
+        // Should truncate based on char count, not byte count
+        assert_eq!(truncate(s, 8), "héllo w…");
+    }
+
+    #[test]
+    fn test_truncate_emoji() {
+        let s = "🌃 hello";
+        // Emoji is 4 bytes but 1 char; should truncate by char count
+        assert_eq!(truncate(s, 7), "🌃 hello");
+        assert_eq!(truncate(s, 5), "🌃 he…");
     }
 }
