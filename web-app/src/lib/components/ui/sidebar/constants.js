@@ -4,3 +4,6 @@ export const SIDEBAR_WIDTH = "16rem";
 export const SIDEBAR_WIDTH_MOBILE = "18rem";
 export const SIDEBAR_WIDTH_ICON = "3rem";
 export const SIDEBAR_KEYBOARD_SHORTCUT = "b";
+export const SIDEBAR_WIDTH_STORAGE_KEY = "sidebar:width";
+export const SIDEBAR_MIN_WIDTH = 200; // pixels
+export const SIDEBAR_MAX_WIDTH = 600; // pixels

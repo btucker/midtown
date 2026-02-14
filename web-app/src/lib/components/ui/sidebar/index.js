@@ -19,6 +19,7 @@ import MenuSub from "./sidebar-menu-sub.svelte";
 import Menu from "./sidebar-menu.svelte";
 import Provider from "./sidebar-provider.svelte";
 import Rail from "./sidebar-rail.svelte";
+import ResizeHandle from "./sidebar-resize-handle.svelte";
 import Separator from "./sidebar-separator.svelte";
 import Trigger from "./sidebar-trigger.svelte";
 import Root from "./sidebar.svelte";
@@ -44,6 +45,7 @@ export {
 	MenuSubItem,
 	Provider,
 	Rail,
+	ResizeHandle,
 	Root,
 	Separator,
 	//
@@ -68,6 +70,7 @@ export {
 	MenuSubItem as SidebarMenuSubItem,
 	Provider as SidebarProvider,
 	Rail as SidebarRail,
+	ResizeHandle as SidebarResizeHandle,
 	Separator as SidebarSeparator,
 	Trigger as SidebarTrigger,
 	Trigger,

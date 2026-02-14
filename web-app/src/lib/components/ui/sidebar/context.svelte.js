@@ -1,6 +1,6 @@
 import { IsMobile } from "$lib/hooks/is-mobile.svelte.js";
 import { getContext, setContext } from "svelte";
-import { SIDEBAR_KEYBOARD_SHORTCUT } from "./constants.js";
+import { SIDEBAR_KEYBOARD_SHORTCUT, SIDEBAR_WIDTH_STORAGE_KEY, SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH } from "./constants.js";
 
 class SidebarState {
 	 props;
@@ -9,11 +9,24 @@ class SidebarState {
 	setOpen;
 	#isMobile;
 	state = $derived.by(() => (this.open ? "expanded" : "collapsed"));
+	width = $state(256); // Default width in pixels (16rem)
+	isResizing = $state(false);
 
 	constructor(props) {
 		this.setOpen = props.setOpen;
 		this.#isMobile = new IsMobile();
 		this.props = props;
+
+		// Load saved width from localStorage
+		if (typeof window !== 'undefined') {
+			const saved = localStorage.getItem(SIDEBAR_WIDTH_STORAGE_KEY);
+			if (saved) {
+				const parsed = parseInt(saved, 10);
+				if (!isNaN(parsed) && parsed >= SIDEBAR_MIN_WIDTH && parsed <= SIDEBAR_MAX_WIDTH) {
+					this.width = parsed;
+				}
+			}
+		}
 	}
 
 	// Convenience getter for checking if the sidebar is mobile
@@ -38,6 +51,22 @@ class SidebarState {
 		return this.#isMobile.current
 			? (this.openMobile = !this.openMobile)
 			: this.setOpen(!this.open);
+	};
+
+	setWidth = (newWidth) => {
+		const clamped = Math.max(SIDEBAR_MIN_WIDTH, Math.min(SIDEBAR_MAX_WIDTH, newWidth));
+		this.width = clamped;
+		if (typeof window !== 'undefined') {
+			localStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY, String(clamped));
+		}
+	};
+
+	startResize = () => {
+		this.isResizing = true;
+	};
+
+	stopResize = () => {
+		this.isResizing = false;
 	};
 }
 
