@@ -100,6 +100,9 @@ pub mod github_rate_limit;
 
 // Task-based worktree registry
 pub mod worktree_registry;
+#[path = "worktree_registry_tests.rs"]
+#[cfg(test)]
+mod worktree_registry_tests;
 
 // CI check duration statistics (for auto-retry of stale checks)
 pub mod ci_stats;
