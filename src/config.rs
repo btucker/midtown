@@ -2525,4 +2525,46 @@ allowed_paths = ["~/.cargo", "~/.rustup", "/opt/toolchain"]
         // Should return global config (which defaults to empty)
         assert_eq!(config.allowed_paths.len(), 0);
     }
+
+    /// Integration test: verify that sandbox config flows through to writable_dirs()
+    #[test]
+    fn test_sandbox_config_integration() {
+        use std::path::Path;
+
+        // Simulate merged config with some paths
+        let sandbox_config = SandboxSection {
+            allowed_paths: vec!["~/.cargo".to_string(), "/opt/toolchain".to_string()],
+        };
+
+        // Call writable_dirs with the configured paths
+        let dirs = crate::sandbox::writable_dirs(
+            Path::new("/home/user/project"),
+            &[],
+            &sandbox_config.allowed_paths,
+        );
+
+        // Verify the configured paths are included and expanded
+        let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/root"));
+        let cargo_path = home.join(".cargo").to_string_lossy().to_string();
+
+        assert!(
+            dirs.contains(&cargo_path),
+            "Should include ~/.cargo expanded to {}",
+            cargo_path
+        );
+        assert!(
+            dirs.contains(&"/opt/toolchain".to_string()),
+            "Should include /opt/toolchain"
+        );
+
+        // Verify standard paths are also included
+        assert!(
+            dirs.iter().any(|d| d.ends_with(".midtown")),
+            "Should include ~/.midtown"
+        );
+        assert!(
+            dirs.iter().any(|d| d.ends_with(".claude")),
+            "Should include ~/.claude"
+        );
+    }
 }

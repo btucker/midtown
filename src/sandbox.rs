@@ -420,6 +420,12 @@ mod tests {
     #[test]
     #[cfg(target_os = "macos")]
     fn test_sandbox_exec_prefix_returns_err_when_nested() {
+        // Skip if already sandboxed (can't nest sandbox-exec)
+        if !can_sandbox() {
+            eprintln!("Skipping test: already inside a sandbox (nesting not allowed)");
+            return;
+        }
+
         // Run sandbox_exec_prefix inside a sandbox to verify it detects nesting.
         // We can't use OnceLock-cached can_sandbox() from the outer process,
         // so we spawn a child that checks from inside a sandbox.
