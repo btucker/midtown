@@ -605,14 +605,14 @@ impl DaemonState {
 
     /// Check if the daemon is at the maximum coworker limit (absolute cap).
     fn is_at_coworker_limit(&self) -> bool {
-        self.coworkers.list().len() >= self.max_coworkers
+        self.coworkers.list_running().len() >= self.max_coworkers
     }
 
     /// Check if the daemon is at the dev coworker limit.
     /// Reserves `REVIEW_HEADROOM` slots for reviewers, but always allows at least 1 dev slot.
     fn is_at_dev_limit(&self) -> bool {
         let dev_cap = self.max_coworkers.saturating_sub(REVIEW_HEADROOM).max(1);
-        self.coworkers.list().len() >= dev_cap
+        self.coworkers.list_running().len() >= dev_cap
     }
 
     /// Check if a coworker slot is available for spawning.
