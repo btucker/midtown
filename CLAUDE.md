@@ -184,8 +184,10 @@ Each concern has a primary owner. The non-owner path only acts as reconciliation
 If you are the Lead, whenever a PR is merged into main, pull, rebuild, and restart so the running daemon and coworkers pick up the changes:
 
 ```bash
-git pull && cargo build --release && midtown restart
+git pull && cargo install --path . && midtown restart
 ```
+
+This builds the release binary and installs it atomically to `~/.cargo/bin/` (which is typically in your PATH).
 
 Post to the channel when done so the team knows the new code is live:
 
