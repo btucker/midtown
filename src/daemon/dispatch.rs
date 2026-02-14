@@ -1416,7 +1416,10 @@ pub(super) fn spawn_for_pending_tasks(
     // Dev cap: max_coworkers - REVIEW_HEADROOM, but always allow at least 1 dev.
     // With max=8 and REVIEW_HEADROOM=2, dev cap is 6.
     let dev_cap = state.max_coworkers.saturating_sub(REVIEW_HEADROOM).max(1);
-    let current_coworker_count = state.coworkers.list().len();
+    // Use running coworkers from snapshot, not all coworkers from internal map.
+    // The internal map includes stopped coworkers until they're cleaned up, which
+    // incorrectly blocks task dispatch when all coworkers are stopped.
+    let current_coworker_count = snap.running_coworkers.len();
 
     for task in pending_unowned.iter() {
         // Re-check dev limit after each spawn decision, accounting for spawns queued this tick.

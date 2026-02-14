@@ -1407,9 +1407,8 @@ fn no_cross_tick_duplicate_spawn_for_in_flight_task() {
 /// behavior is tested via unit tests in dispatch_tests.rs.
 #[test]
 fn snapshot_preconditions_for_zero_coworker_dispatch() {
-    let fixture = include_str!(
-        "fixtures/snapshot/snapshot-dispatch-with-zero-coworkers-20260214-003545.json"
-    );
+    let fixture =
+        include_str!("fixtures/snapshot/snapshot-reviewer-not-spawning-20260214-003545.json");
     let snap = load_snapshot(fixture);
 
     // Verify preconditions: this is the exact state where the bug occurs
