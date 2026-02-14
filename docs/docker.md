@@ -2,7 +2,7 @@
 
 # Docker
 
-Midtown is available as a Docker image for containerized deployments. The image includes all runtime dependencies (tmux, git, gh CLI, Claude CLI).
+Midtown is available as a Docker image for containerized deployments. The image includes all runtime dependencies (Zellij, git, gh CLI, Claude CLI).
 
 ## Pull from Docker Hub
 

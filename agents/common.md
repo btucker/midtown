@@ -32,7 +32,7 @@ If there's genuinely more to discuss, continue. Otherwise, one exchange is enoug
 midtown coworker view <name>  # View a coworker's current terminal output
 ```
 
-Use `midtown coworker view` to check on what a coworker is doing without switching tmux windows. This captures and prints the coworker's tmux pane content.
+Use `midtown coworker view` to check on what a coworker is doing. This captures and prints the coworker's recent terminal output.
 
 ## GitHub Etiquette
 

@@ -6,10 +6,10 @@
 
 | Command | Description |
 |---------|-------------|
-| `midtown start [--project <name>] [--add-repo <path>]` | Start the daemon and tmux session |
-| `midtown stop [--keep-session]` | Stop the daemon (optionally keep tmux session) |
+| `midtown start [--project <name>] [--add-repo <path>]` | Start the daemon and Zellij session |
+| `midtown stop [--keep-session]` | Stop the daemon (optionally keep Zellij session) |
 | `midtown restart` | Restart the daemon |
-| `midtown attach [<project>]` | Attach to the project's tmux session |
+| `midtown attach [<project>]` | Attach to the project's Zellij session |
 | `midtown status` | Show system status |
 | `midtown chat` | Open the IRC-style chat TUI |
 | `midtown log [--hooks] [--path] [-f] [-n <lines>]` | View daemon or hook logs |
@@ -28,11 +28,11 @@
 | `midtown coworker call-in [--resume] [--prompt <msg>]` | Call in a new coworker |
 | `midtown coworker break <name>` | Send a coworker on a break |
 | `midtown coworker list` | List all coworkers |
-| `midtown coworker view <name>` | View a coworker's terminal output (supports both tmux and headless sessions) |
+| `midtown coworker view <name>` | View a coworker's terminal output (headless sessions) |
 
 ## Session Management (Attach/Detach)
 
-Attach to a headless coworker's session in an interactive tmux window for debugging or guidance, then detach to resume headless execution.
+Attach to a headless coworker's session in an interactive terminal pane for debugging or guidance, then detach to resume headless execution.
 
 | Command | Description |
 |---------|-------------|
@@ -42,7 +42,7 @@ Attach to a headless coworker's session in an interactive tmux window for debugg
 | `midtown session detach <name>` | Detach and resume headless execution |
 | `midtown session list` | List headless sessions with status |
 
-**How it works:** Attach kills the headless process (the Claude session persists on disk), then opens an interactive tmux window with `claude --resume`. When the window closes (or you run `detach`), the daemon re-spawns the headless session, picking up where it left off.
+**How it works:** Attach stops the headless process (the Claude session persists on disk), then opens an interactive terminal pane with `claude --resume`. When you detach, the daemon re-spawns the headless session, picking up where it left off. In Zellij, the plugin handles attach/detach via the dashboard sidebar.
 
 ## Task Management
 
