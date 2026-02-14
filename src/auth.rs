@@ -446,7 +446,10 @@ fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::
 
 /// Merge a directory into an existing destination directory without overwriting
 /// destination files.
-fn merge_dir_recursive_missing(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+fn merge_dir_recursive_missing(
+    src: &std::path::Path,
+    dst: &std::path::Path,
+) -> std::io::Result<()> {
     std::fs::create_dir_all(dst)?;
     for entry in std::fs::read_dir(src)? {
         let entry = entry?;
@@ -818,8 +821,7 @@ pub fn list_profiles_for(provider: AuthProvider) -> std::io::Result<Vec<String>>
             if path.is_dir()
                 && let Some(name) = path.file_name().and_then(|n| n.to_str())
             {
-                if provider == AuthProvider::Claude
-                    && (name == "providers" || name == "platforms")
+                if provider == AuthProvider::Claude && (name == "providers" || name == "platforms")
                 {
                     continue;
                 }

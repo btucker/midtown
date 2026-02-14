@@ -271,10 +271,28 @@ fn test_setup_claude_profile_symlinks_promotes_unknown_entries() {
     {
         let file_link = profile_dir.join("unknown.json");
         let dir_link = profile_dir.join("plugins");
-        assert!(file_link.symlink_metadata().unwrap().file_type().is_symlink());
-        assert!(dir_link.symlink_metadata().unwrap().file_type().is_symlink());
-        assert_eq!(std::fs::read_link(file_link).unwrap(), shared.join("unknown.json"));
-        assert_eq!(std::fs::read_link(dir_link).unwrap(), shared.join("plugins"));
+        assert!(
+            file_link
+                .symlink_metadata()
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert!(
+            dir_link
+                .symlink_metadata()
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(
+            std::fs::read_link(file_link).unwrap(),
+            shared.join("unknown.json")
+        );
+        assert_eq!(
+            std::fs::read_link(dir_link).unwrap(),
+            shared.join("plugins")
+        );
     }
 
     let _ = std::fs::remove_dir_all(profile_dir.parent().unwrap());
