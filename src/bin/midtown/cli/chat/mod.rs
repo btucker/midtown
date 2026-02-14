@@ -22,7 +22,10 @@ use crossterm::{
     },
     execute,
     style::{Color as CrosstermColor, Print, ResetColor, SetForegroundColor},
-    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
+    terminal::{
+        EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+        supports_keyboard_enhancement,
+    },
 };
 use futures::StreamExt;
 use ratatui::{Terminal, prelude::CrosstermBackend};
@@ -49,29 +52,31 @@ pub fn run() -> Result<(), String> {
     enable_raw_mode().map_err(|e| format!("Failed to enable raw mode: {}", e))?;
     let mut stdout = io::stdout();
 
-    // Always enable keyboard enhancement flags for proper Shift+Enter detection.
-    // These flags enable the kitty keyboard protocol which removes ambiguity
-    // from modifier key combinations like Shift+Enter.
-    //
-    // Even if supports_keyboard_enhancement() returns false, we should still
-    // push the flags because:
-    // 1. Terminals that support the protocol will use it correctly
-    // 2. Terminals that don't support it will ignore the escape sequences
-    // 3. WITHOUT the flags, terminals that send escape sequences but don't
-    //    formally support the protocol cause crossterm to misinterpret the
-    //    sequences (e.g., Shift+Enter decoded as 'j')
-    //
-    // See: Bug #1284 - Shift+Enter inserts 'j' without keyboard enhancement
-    let enhancement_flags = KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
-        | KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES;
+    // Check if terminal supports keyboard enhancement protocol
+    // Only enable enhancement flags if supported to avoid crossterm misinterpreting
+    // legacy escape sequences (e.g., Shift+Enter being decoded as 'j')
+    // On error (e.g., timeout on Unix, piped stdin), gracefully default to false
+    let enhancement_supported = supports_keyboard_enhancement().unwrap_or(false);
 
-    execute!(
-        stdout,
-        EnterAlternateScreen,
-        EnableMouseCapture,
-        PushKeyboardEnhancementFlags(enhancement_flags)
-    )
-    .map_err(|e| format!("Failed to enter alternate screen: {}", e))?;
+    if enhancement_supported {
+        // Enable keyboard enhancement flags for proper Shift+Enter detection
+        // These flags enable the kitty keyboard protocol which removes ambiguity
+        // from modifier key combinations like Shift+Enter.
+        let enhancement_flags = KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+            | KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES;
+
+        execute!(
+            stdout,
+            EnterAlternateScreen,
+            EnableMouseCapture,
+            PushKeyboardEnhancementFlags(enhancement_flags)
+        )
+        .map_err(|e| format!("Failed to enter alternate screen: {}", e))?;
+    } else {
+        // Terminal doesn't support keyboard enhancement, use legacy mode
+        execute!(stdout, EnterAlternateScreen, EnableMouseCapture)
+            .map_err(|e| format!("Failed to enter alternate screen: {}", e))?;
+    }
     let backend = CrosstermBackend::new(stdout);
     let mut terminal =
         Terminal::new(backend).map_err(|e| format!("Failed to create terminal: {}", e))?;
@@ -88,12 +93,20 @@ pub fn run() -> Result<(), String> {
 
     // Restore terminal (always attempt cleanup)
     let _ = disable_raw_mode();
-    let _ = execute!(
-        terminal.backend_mut(),
-        LeaveAlternateScreen,
-        DisableMouseCapture,
-        PopKeyboardEnhancementFlags
-    );
+    if enhancement_supported {
+        let _ = execute!(
+            terminal.backend_mut(),
+            LeaveAlternateScreen,
+            DisableMouseCapture,
+            PopKeyboardEnhancementFlags
+        );
+    } else {
+        let _ = execute!(
+            terminal.backend_mut(),
+            LeaveAlternateScreen,
+            DisableMouseCapture
+        );
+    }
     let _ = terminal.show_cursor();
 
     result.map_err(|e| format!("TUI error: {}", e))
