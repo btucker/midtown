@@ -49,15 +49,18 @@
 	data-slot="resize-handle"
 	onmousedown={handleMouseDown}
 	class={cn(
-		"absolute inset-y-0 right-0 w-1 cursor-ew-resize hover:bg-primary/20 transition-colors z-30",
+		"absolute inset-y-0 -right-1 w-2 cursor-ew-resize hover:bg-primary/20 transition-colors z-30",
 		"hidden md:block",
 		sidebar.isResizing && "bg-primary/30",
 		className
 	)}
 	{...restProps}
 >
-	<!-- Visual indicator on hover -->
-	<div class="absolute inset-y-0 left-0 w-full flex items-center justify-center opacity-0 hover:opacity-100 transition-opacity">
-		<div class="w-0.5 h-8 bg-primary/40 rounded-full"></div>
+	<!-- Visual indicator on hover and during resize -->
+	<div class={cn(
+		"absolute inset-y-0 left-0 w-full flex items-center justify-center transition-opacity",
+		sidebar.isResizing ? "opacity-100" : "opacity-0 hover:opacity-100"
+	)}>
+		<div class="w-0.5 h-12 bg-primary/60 rounded-full"></div>
 	</div>
 </div>
