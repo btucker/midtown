@@ -1,8 +1,8 @@
 # Dockerfile.e2e — Containerized E2E test environment for Midtown
 #
-# Provides a reproducible environment with tmux, git, and all dependencies
-# needed to run E2E tests that exercise the daemon, coworker lifecycle, and
-# channel communication.
+# Provides a reproducible environment with Zellij, tmux, git, and all
+# dependencies needed to run E2E tests that exercise the daemon, coworker
+# lifecycle, and channel communication.
 #
 # Usage:
 #   docker build -t midtown-e2e -f Dockerfile.e2e .
@@ -34,6 +34,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         pkg-config \
     && rm -rf /var/lib/apt/lists/*
 
+# Install WASM target for Zellij plugin builds
+RUN rustup target add wasm32-wasip1
+
 # Build dependencies from recipe (cached layer)
 COPY --from=planner /app/recipe.json recipe.json
 RUN cargo chef cook --release --recipe-path recipe.json
@@ -46,8 +49,8 @@ RUN cargo build --release \
 # ─── Stage 4: Final runtime image ────────────────────────────────────────────
 FROM rust:bookworm AS runtime
 
-# System dependencies: tmux for process model, git for worktrees,
-# procps for process inspection, jq for JSON parsing in scripts
+# System dependencies: tmux (legacy E2E tests), Zellij for session management,
+# git for worktrees, procps for process inspection, jq for JSON parsing
 RUN apt-get update && apt-get install -y --no-install-recommends \
         tmux \
         git \
@@ -55,6 +58,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         procps \
         jq \
     && rm -rf /var/lib/apt/lists/*
+
+# Install Zellij (terminal workspace manager)
+RUN curl -L https://github.com/zellij-org/zellij/releases/latest/download/zellij-x86_64-unknown-linux-musl.tar.gz \
+    | tar xz -C /usr/local/bin
 
 # gh CLI via GitHub's apt repo
 RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
@@ -101,6 +108,9 @@ COPY --from=builder --chown=testuser:testuser /app/src ./src
 COPY --from=builder --chown=testuser:testuser /app/agents ./agents
 COPY --from=builder --chown=testuser:testuser /app/tests ./tests
 COPY --from=builder --chown=testuser:testuser /app/scripts ./scripts
+COPY --from=builder --chown=testuser:testuser /app/layouts ./layouts
+COPY --from=builder --chown=testuser:testuser /app/midtown-types ./midtown-types
+COPY --from=builder --chown=testuser:testuser /app/midtown-zellij-plugin ./midtown-zellij-plugin
 
 USER testuser
 
