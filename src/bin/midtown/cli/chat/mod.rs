@@ -17,7 +17,8 @@ use crossterm::{
     cursor::MoveTo,
     event::{
         DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyCode, KeyEventKind,
-        KeyModifiers, MouseEventKind,
+        KeyModifiers, KeyboardEnhancementFlags, MouseEventKind, PopKeyboardEnhancementFlags,
+        PushKeyboardEnhancementFlags,
     },
     execute,
     style::{Color as CrosstermColor, Print, ResetColor, SetForegroundColor},
@@ -47,8 +48,20 @@ pub fn run() -> Result<(), String> {
     // Setup terminal
     enable_raw_mode().map_err(|e| format!("Failed to enable raw mode: {}", e))?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)
-        .map_err(|e| format!("Failed to enter alternate screen: {}", e))?;
+
+    // Enable keyboard enhancement flags for proper Shift+Enter detection
+    // These flags enable the kitty keyboard protocol which removes ambiguity
+    // from modifier key combinations like Shift+Enter.
+    let enhancement_flags = KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+        | KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES;
+
+    execute!(
+        stdout,
+        EnterAlternateScreen,
+        EnableMouseCapture,
+        PushKeyboardEnhancementFlags(enhancement_flags)
+    )
+    .map_err(|e| format!("Failed to enter alternate screen: {}", e))?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal =
         Terminal::new(backend).map_err(|e| format!("Failed to create terminal: {}", e))?;
@@ -68,7 +81,8 @@ pub fn run() -> Result<(), String> {
     let _ = execute!(
         terminal.backend_mut(),
         LeaveAlternateScreen,
-        DisableMouseCapture
+        DisableMouseCapture,
+        PopKeyboardEnhancementFlags
     );
     let _ = terminal.show_cursor();
 
@@ -1455,3 +1469,7 @@ mod tests {
 #[path = "channel_switcher_tests.rs"]
 #[cfg(test)]
 mod channel_switcher_tests;
+
+#[path = "keyboard_protocol_tests.rs"]
+#[cfg(test)]
+mod keyboard_protocol_tests;
