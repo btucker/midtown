@@ -2604,6 +2604,7 @@ dependencies = [
 name = "midtown-zellij-plugin"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "midtown-types",
  "serde",
  "serde_json",

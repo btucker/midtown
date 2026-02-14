@@ -10,7 +10,7 @@ mod client;
 
 use cli::{
     AuthCommand, ChannelCommand, CoworkerCommand, DiagramCommand, E2eCommand, HookCommand,
-    PrCommand, SessionCommand, TaskCommand,
+    PluginCommand, PrCommand, SessionCommand, TaskCommand,
 };
 use client::DaemonClient;
 
@@ -140,6 +140,11 @@ enum Commands {
     },
     /// Show system status
     Status,
+    /// Zellij plugin communication (JSON interface for WASM plugin)
+    Plugin {
+        #[command(subcommand)]
+        command: PluginCommand,
+    },
     /// Pull request commands
     Pr {
         #[command(subcommand)]
@@ -839,6 +844,7 @@ fn main() {
         Commands::Session { command } => cli::handle_session(command, &client),
         Commands::Task { command } => cli::handle_task(command, &client),
         Commands::Status => cli::handle_status(&client),
+        Commands::Plugin { command } => cli::handle_plugin(command, &client),
         Commands::Pr { command } => cli::handle_pr(command, &client),
         Commands::Headless {
             prompt,
