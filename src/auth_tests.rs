@@ -249,7 +249,7 @@ fn test_setup_claude_profile_symlinks() {
 }
 
 #[test]
-fn test_setup_claude_profile_symlinks_promotes_unknown_entries() {
+fn test_setup_claude_profile_symlinks_only_uses_allowlist() {
     let test_profile = format!("test-promote-{}", std::process::id());
     let profile_dir = profile_dir_for(AuthProvider::Claude, &test_profile);
     let shared = shared_provider_storage_dir(AuthProvider::Claude).unwrap();
@@ -261,23 +261,19 @@ fn test_setup_claude_profile_symlinks_promotes_unknown_entries() {
     std::fs::write(profile_dir.join("unknown.json"), "{\"k\":1}").unwrap();
     std::fs::create_dir_all(profile_dir.join("plugins")).unwrap();
     std::fs::write(profile_dir.join("plugins").join("a.txt"), "x").unwrap();
+    std::fs::create_dir_all(&shared).unwrap();
+    std::fs::write(shared.join("unknown-shared.json"), "{\"shared\":true}").unwrap();
 
     setup_claude_profile_symlinks(&test_profile).unwrap();
 
-    assert!(shared.join("unknown.json").exists());
+    assert!(profile_dir.join("unknown.json").exists());
+    assert!(!shared.join("unknown.json").exists());
     assert!(shared.join("plugins").join("a.txt").exists());
+    assert!(!profile_dir.join("unknown-shared.json").exists());
 
     #[cfg(unix)]
     {
-        let file_link = profile_dir.join("unknown.json");
         let dir_link = profile_dir.join("plugins");
-        assert!(
-            file_link
-                .symlink_metadata()
-                .unwrap()
-                .file_type()
-                .is_symlink()
-        );
         assert!(
             dir_link
                 .symlink_metadata()
@@ -285,9 +281,13 @@ fn test_setup_claude_profile_symlinks_promotes_unknown_entries() {
                 .file_type()
                 .is_symlink()
         );
-        assert_eq!(
-            std::fs::read_link(file_link).unwrap(),
-            shared.join("unknown.json")
+        assert!(
+            !profile_dir
+                .join("unknown.json")
+                .symlink_metadata()
+                .unwrap()
+                .file_type()
+                .is_symlink()
         );
         assert_eq!(
             std::fs::read_link(dir_link).unwrap(),
@@ -344,12 +344,12 @@ fn test_broken_symlink_is_repaired() {
 
     // Create shared storage with a file
     std::fs::create_dir_all(&shared).unwrap();
-    let test_file = shared.join("test-broken.txt");
+    let test_file = shared.join("settings.json");
     std::fs::write(&test_file, "test data").unwrap();
 
     // Set up symlinks initially
     setup_claude_profile_symlinks(&test_profile).unwrap();
-    let link_path = profile_dir.join("test-broken.txt");
+    let link_path = profile_dir.join("settings.json");
     assert!(link_path.exists(), "Symlink should initially work");
 
     // Delete the target to create a broken symlink
@@ -391,16 +391,16 @@ fn test_directory_replaced_with_symlink() {
 
     // Create shared storage with a directory
     std::fs::create_dir_all(&shared).unwrap();
-    std::fs::create_dir_all(shared.join("test-dir-entry")).unwrap();
+    std::fs::create_dir_all(shared.join("tasks")).unwrap();
 
     // Create the profile dir and put a real directory where a symlink should go
     std::fs::create_dir_all(&profile_dir).unwrap();
-    std::fs::create_dir_all(profile_dir.join("test-dir-entry")).unwrap();
+    std::fs::create_dir_all(profile_dir.join("tasks")).unwrap();
 
     // Run setup — it should replace the real directory with a symlink
     setup_claude_profile_symlinks(&test_profile).unwrap();
 
-    let link_path = profile_dir.join("test-dir-entry");
+    let link_path = profile_dir.join("tasks");
     let metadata = link_path.symlink_metadata().unwrap();
     assert!(
         metadata.file_type().is_symlink(),
@@ -409,5 +409,5 @@ fn test_directory_replaced_with_symlink() {
 
     // Clean up
     let _ = std::fs::remove_dir_all(profile_dir.parent().unwrap());
-    let _ = std::fs::remove_dir_all(shared.join("test-dir-entry"));
+    let _ = std::fs::remove_dir_all(shared.join("tasks"));
 }
