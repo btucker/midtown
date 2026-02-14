@@ -7,16 +7,33 @@
 //! ## Architecture
 //!
 //! - `MidtownPlugin` holds all UI state and implements `ZellijPlugin`
-//! - Timer fires every 2s → runs `midtown plugin dashboard`
-//! - `RunCommandResult` delivers stdout → parsed into `DashboardState`
+//! - Timer fires every 2s -> runs `midtown plugin dashboard`
+//! - `RunCommandResult` delivers stdout -> parsed into `DashboardState`
 //! - `render()` draws the sidebar based on current view (main or coworker stream)
 //! - Key/Mouse events handle navigation between views
+//!
+//! ## Attach/Detach Flow (Phase 4)
+//!
+//! 1. User selects a coworker and presses 'a' (or 'A' to force)
+//! 2. Plugin runs `midtown plugin attach <name>` via `run_command()`
+//! 3. Daemon pauses headless session, returns AttachResponse with session ID
+//! 4. Plugin opens a terminal pane with `claude --resume <session_id>`
+//! 5. User interacts directly with Claude Code
+//! 6. On detach ('d') or pane close, plugin runs `midtown plugin detach <name>`
+//! 7. Daemon restarts headless session
+//!
+//! ## Nudge Delivery (Phase 4)
+//!
+//! The daemon queues nudges for the Lead in `lead_nudge_queue`. The plugin
+//! pulls these via the dashboard response and delivers them to the Lead's
+//! terminal pane using `write_chars_to_pane_id`.
 
 use std::collections::BTreeMap;
 use zellij_tile::prelude::*;
 
 use midtown_types::DashboardState;
 
+mod actions;
 mod render;
 mod state;
 
@@ -59,6 +76,9 @@ impl ZellijPlugin for MidtownPlugin {
             EventType::CustomMessage,
             EventType::PaneUpdate,
             EventType::TabUpdate,
+            EventType::CommandPaneOpened,
+            EventType::CommandPaneExited,
+            EventType::PaneClosed,
         ]);
         // Start the polling timer
         set_timeout(POLL_INTERVAL_SECS);
@@ -81,6 +101,30 @@ impl ZellijPlugin for MidtownPlugin {
             }
             Event::Key(key) => self.handle_key(key),
             Event::Mouse(mouse) => self.handle_mouse(mouse),
+            Event::PaneUpdate(pane_manifest) => {
+                self.handle_pane_update(pane_manifest);
+                false // Pane updates don't change our rendered content
+            }
+            Event::CommandPaneOpened(pane_id, context) => {
+                actions::handle_command_pane_opened(&mut self.state, pane_id, &context);
+                false
+            }
+            Event::CommandPaneExited(pane_id, _exit_code, context) => {
+                if let Some(name) =
+                    actions::handle_command_pane_exited(&mut self.state, pane_id, &context)
+                {
+                    // Auto-detach: the coworker's interactive pane exited
+                    self.request_detach(&name);
+                    self.state.view = View::Main;
+                    true
+                } else {
+                    false
+                }
+            }
+            Event::PaneClosed(pane_id) => {
+                self.handle_pane_closed(pane_id);
+                true
+            }
             _ => false,
         }
     }
@@ -149,6 +193,9 @@ impl MidtownPlugin {
             CMD_DASHBOARD => {
                 match serde_json::from_str::<DashboardState>(&output) {
                     Ok(dashboard) => {
+                        // Deliver nudges before updating state (they come from
+                        // lead_nudge_queue which gets overwritten by update_dashboard)
+                        actions::deliver_nudges(&self.state, &dashboard.lead_nudge_queue);
                         self.state.update_dashboard(dashboard);
                     }
                     Err(e) => {
@@ -169,11 +216,15 @@ impl MidtownPlugin {
                 match serde_json::from_str::<midtown_types::AttachResponse>(&output) {
                     Ok(response) if response.success => {
                         if let Some(session_id) = response.session_id {
+                            // Open a terminal pane with claude --resume
                             let cmd = CommandToRun::new_with_args(
                                 "claude",
                                 vec!["--resume".to_string(), session_id],
                             );
-                            open_command_pane(cmd, BTreeMap::new());
+                            // Mark this pane as belonging to an attached coworker
+                            let mut pane_context = BTreeMap::new();
+                            pane_context.insert("midtown_attached".to_string(), "true".to_string());
+                            open_command_pane(cmd, pane_context);
                         }
                         if let Some(name) = context.get("name") {
                             self.state.view = View::CoworkerAttached { name: name.clone() };
@@ -192,7 +243,10 @@ impl MidtownPlugin {
                 true
             }
             CMD_DETACH => {
-                // On successful detach, return to main view
+                // On successful detach, close the attached pane and return to main view
+                if let Some(pane_id) = self.state.attached_pane_id.take() {
+                    close_terminal_pane(pane_id);
+                }
                 self.state.view = View::Main;
                 true
             }
@@ -372,6 +426,37 @@ impl MidtownPlugin {
                 true
             }
             _ => false,
+        }
+    }
+
+    /// Handle pane update events -- detect Lead pane and closed attached panes.
+    fn handle_pane_update(&mut self, pane_manifest: PaneManifest) {
+        // Detect the Lead's pane for nudge delivery
+        actions::detect_lead_pane(&mut self.state, &pane_manifest);
+
+        // Detect if an attached coworker's pane was closed
+        if let Some(coworker_name) =
+            actions::detect_closed_attached_pane(&self.state, &pane_manifest)
+        {
+            // Auto-detach when the pane is gone
+            self.state.attached_pane_id = None;
+            self.request_detach(&coworker_name);
+            self.state.view = View::Main;
+        }
+    }
+
+    /// Handle a closed pane -- check if it was an attached coworker.
+    fn handle_pane_closed(&mut self, pane_id: PaneId) {
+        if let PaneId::Terminal(term_id) = pane_id
+            && self.state.attached_pane_id == Some(term_id)
+        {
+            // The attached pane was closed externally
+            if let Some(name) = self.state.attached_coworker_name() {
+                let name = name.to_string();
+                self.state.attached_pane_id = None;
+                self.request_detach(&name);
+            }
+            self.state.view = View::Main;
         }
     }
 }

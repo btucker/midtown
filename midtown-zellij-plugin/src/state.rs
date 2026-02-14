@@ -5,6 +5,7 @@
 use midtown_types::{
     ChannelMessage, CoworkerStreamOutput, CoworkerSummary, DashboardState, StreamEvent, TaskSummary,
 };
+use zellij_tile::prelude::PaneId;
 
 /// Which view the plugin is currently showing.
 #[derive(Clone, Debug)]
@@ -53,6 +54,17 @@ pub struct PluginState {
 
     /// Number of consecutive dashboard RPC failures.
     pub consecutive_failures: u32,
+
+    // --- Phase 4: Attach/Detach & Nudge Delivery ---
+    /// Pane ID of an attached coworker's interactive terminal.
+    pub attached_pane_id: Option<u32>,
+
+    /// The Lead's terminal pane ID (discovered from PaneUpdate events).
+    /// Used for delivering nudges via `write_chars_to_pane_id`.
+    pub lead_pane_id: Option<PaneId>,
+
+    /// Plugin's own pane ID (discovered from PaneUpdate events).
+    pub self_pane_id: Option<u32>,
 }
 
 impl Default for PluginState {
@@ -73,6 +85,9 @@ impl Default for PluginState {
             error: None,
             connected: false,
             consecutive_failures: 0,
+            attached_pane_id: None,
+            lead_pane_id: None,
+            self_pane_id: None,
         }
     }
 }
@@ -164,6 +179,14 @@ impl PluginState {
             Some(self.coworkers[self.coworker_index].name.clone())
         } else {
             None
+        }
+    }
+
+    /// Get the name of the attached coworker, if any.
+    pub fn attached_coworker_name(&self) -> Option<&str> {
+        match &self.view {
+            View::CoworkerAttached { name } => Some(name),
+            _ => None,
         }
     }
 
@@ -295,7 +318,7 @@ mod tests {
         state.section = Section::Coworkers;
         state.coworker_index = 2;
 
-        // Dashboard update with fewer items — indices should be clamped
+        // Dashboard update with fewer items -- indices should be clamped
         state.update_dashboard(make_dashboard(1, 1));
         assert_eq!(state.task_index, 0);
         assert_eq!(state.coworker_index, 0);
@@ -339,7 +362,7 @@ mod tests {
             })
             .collect();
 
-        // Scroll down many times — should clamp to max offset (4)
+        // Scroll down many times -- should clamp to max offset (4)
         for _ in 0..100 {
             state.stream_scroll_down();
         }
@@ -362,7 +385,7 @@ mod tests {
         }
         assert_eq!(state.stream_scroll_offset, 9);
 
-        // Update with fewer events — offset should be clamped
+        // Update with fewer events -- offset should be clamped
         let stream = CoworkerStreamOutput {
             coworker_name: "test".to_string(),
             events: (0..3)
@@ -387,5 +410,19 @@ mod tests {
         };
         state.update_coworker_stream(stream);
         assert_eq!(state.stream_scroll_offset, 0);
+    }
+
+    #[test]
+    fn test_attached_coworker_name() {
+        let mut state = PluginState::default();
+        assert_eq!(state.attached_coworker_name(), None);
+
+        state.view = View::CoworkerAttached {
+            name: "park".to_string(),
+        };
+        assert_eq!(state.attached_coworker_name(), Some("park"));
+
+        state.view = View::Main;
+        assert_eq!(state.attached_coworker_name(), None);
     }
 }
