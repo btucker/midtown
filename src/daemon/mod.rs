@@ -1012,6 +1012,44 @@ impl DaemonState {
         let mut pending = self.pending_nudges.lock().unwrap();
         pending.remove(&name.to_lowercase());
     }
+
+    /// Queue a nudge for the Lead and attempt tmux delivery as best-effort fallback.
+    ///
+    /// This is the daemon's canonical Lead nudge path. Under Zellij, tmux
+    /// delivery is expected to fail (no lead tmux window) and the plugin
+    /// consumes `lead_nudge_queue` via `plugin.dashboard`.
+    pub(crate) async fn nudge_lead(&self, message: &str) {
+        {
+            let mut queue = self.lead_nudge_queue.lock().await;
+            queue.push(message.to_string());
+            if queue.len() > rpc_plugin::MAX_LEAD_NUDGE_QUEUE {
+                let excess = queue.len() - rpc_plugin::MAX_LEAD_NUDGE_QUEUE;
+                queue.drain(..excess);
+            }
+        }
+
+        let coworkers = self.coworkers.clone();
+        let message = message.to_string();
+        match tokio::task::spawn_blocking(move || coworkers.nudge_lead(&message)).await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                if e.to_string().contains("Lead session not found") {
+                    debug!(
+                        "tmux nudge_lead fallback unavailable (expected under Zellij): {}",
+                        e
+                    );
+                } else {
+                    warn!("tmux nudge_lead fallback failed: {}", e);
+                }
+            }
+            Err(e) => {
+                warn!(
+                    "spawn_blocking panic while attempting tmux nudge_lead fallback: {}",
+                    e
+                );
+            }
+        }
+    }
 }
 
 impl DaemonState {
@@ -2086,11 +2124,8 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                         "PR #{} merged into {}. Run `git pull` to stay current.",
                         pr_number, state.default_branch
                     );
-                    if let Err(e) = state.coworkers.nudge_lead(&nudge_text) {
-                        warn!("Failed to nudge lead for PR #{} merge: {}", pr_number, e);
-                    } else {
-                        info!("Nudged lead about PR #{} merge", pr_number);
-                    }
+                    state.nudge_lead(&nudge_text).await;
+                    info!("Nudged lead about PR #{} merge", pr_number);
 
                     // Auto-complete task when PR title contains [Midtown #XX]
                     if let Some(pr_merged_info) = webhook_event.pr_merged_info {
@@ -2107,11 +2142,8 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
 
                 // Nudge lead when a CI check fails on the default branch
                 if let Some(nudge_msg) = webhook_event.ci_failed_on_default_branch {
-                    if let Err(e) = state.coworkers.nudge_lead(&nudge_msg) {
-                        warn!("Failed to nudge lead for CI failure on default branch: {}", e);
-                    } else {
-                        info!("Nudged lead about CI failure on default branch");
-                    }
+                    state.nudge_lead(&nudge_msg).await;
+                    info!("Nudged lead about CI failure on default branch");
                     state.send_push_notification(
                         "CI failed on default branch",
                         &nudge_msg,
