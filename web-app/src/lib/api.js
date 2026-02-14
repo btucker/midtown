@@ -178,40 +178,19 @@ export async function fetchHistory(channelName = null) {
         messages.set(data)
 
         const byChannel = {}
-        const channelSet = new Set()
         for (const msg of data) {
           const name = msg.channel || 'midtown'
           if (!byChannel[name]) {
             byChannel[name] = []
           }
           byChannel[name].push(msg)
-          channelSet.add(name)
         }
 
         messagesByChannel.set(byChannel)
 
-        // Merge message-derived channels with existing channel list (preserves
-        // channels loaded from GET /api/channels that may have no messages yet).
-        channels.update((existingChannels) => {
-          const existingNames = new Set(existingChannels.map((ch) => ch.name))
-          const newChannels = Array.from(channelSet)
-            .filter((name) => !existingNames.has(name))
-            .map((name) => ({
-              name,
-              unread: 0,
-              has_pr: false,
-              ci_status: null,
-            }))
-
-          const merged = [...existingChannels, ...newChannels]
-          // Ensure midtown is first
-          merged.sort((a, b) => {
-            if (a.name === 'midtown') return -1
-            if (b.name === 'midtown') return 1
-            return a.name.localeCompare(b.name)
-          })
-          return merged
-        })
+        // Channels are already populated by fetchChannels() which calls the
+        // backend's Channel::list(). We no longer derive channels from message
+        // content to avoid showing ghost channels for invalid/deleted .jsonl files.
       }
     }
   } catch (err) {
@@ -410,28 +389,19 @@ function handleUpdate(update) {
       // Update channel list - increment unread if not viewing this channel
       const currentActiveChannel = get(activeChannel)
 
+      // Only update unread counts for channels that already exist in the list.
+      // We no longer auto-add channels from message content to prevent ghost
+      // channels. New channels will appear after the next fetchChannels() call
+      // (triggered by status polling or manual refresh).
       channels.update((channelList) => {
         const existingChannel = channelList.find((ch) => ch.name === channelName)
-        if (existingChannel) {
+        if (existingChannel && channelName !== currentActiveChannel) {
           // Channel exists - increment unread if it's not the active channel
-          if (channelName !== currentActiveChannel) {
-            return channelList.map((ch) =>
-              ch.name === channelName ? { ...ch, unread: ch.unread + 1 } : ch
-            )
-          }
-          return channelList
-        } else {
-          // New channel - add it with unread count if not active
-          return [
-            ...channelList,
-            {
-              name: channelName,
-              unread: channelName === currentActiveChannel ? 0 : 1,
-              has_pr: false,
-              ci_status: null,
-            },
-          ]
+          return channelList.map((ch) =>
+            ch.name === channelName ? { ...ch, unread: ch.unread + 1 } : ch
+          )
         }
+        return channelList
       })
 
       // Dismiss typing indicator when lead posts a message
