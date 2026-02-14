@@ -2625,6 +2625,134 @@ fn test_case1_nudge_records_assignment_and_prevents_loop() {
     );
 }
 
+// ======================================================================
+// Regression test for task !1288: No dispatch when all coworkers are gone
+// ======================================================================
+
+#[test]
+fn test_spawn_for_pending_tasks_when_all_coworkers_are_gone() {
+    use crate::tasks::{Task, TaskStatus};
+    use std::time::SystemTime;
+
+    // Bug scenario: 0 active coworkers, 8 pending unblocked tasks
+    // Expected: should spawn coworkers for tasks
+    // Actual (bug): no dispatch activity
+
+    let snap = snapshot::WorldSnapshot {
+        pending_tasks_without_owners: vec![
+            Task {
+                id: "1263".to_string(),
+                subject: "Phase 2: Daemon RPC endpoints for Zellij plugin".to_string(),
+                status: TaskStatus::Pending,
+                owner: None,
+                blocked_by: vec![],
+                description: None,
+                channel: None,
+                pr: None,
+                created_at: Some(SystemTime::now()),
+            },
+            Task {
+                id: "1274".to_string(),
+                subject: "Add sandbox_allowed_paths to config".to_string(),
+                status: TaskStatus::Pending,
+                owner: None,
+                blocked_by: vec![],
+                description: None,
+                channel: None,
+                pr: None,
+                created_at: Some(SystemTime::now()),
+            },
+        ],
+        tasks_with_worktrees: HashSet::new(),
+        task_worktree_map: HashMap::new(),
+        worktree_branch_owners: HashMap::new(),
+        worktree_registry: crate::worktree_registry::WorktreeRegistry::default(),
+        merged_pr_branches: HashMap::new(),
+        is_at_dev_limit: false,
+        active_names: HashSet::new(),
+        active_session_ids: HashSet::new(),
+        running_coworkers: vec![], // 0 running coworkers!
+        active_coworkers: vec![],  // 0 active coworkers!
+        coworker_snapshots: vec![],
+        session_name: "midtown-test".to_string(),
+        coworker_start_times: HashMap::new(),
+        coworker_stop_times: HashMap::new(),
+        headless_process_health: HashMap::new(),
+        attached_coworkers: HashSet::new(),
+        in_progress_tasks: vec![],
+        busy_coworkers: HashSet::new(),
+        coworker_task_assignments: HashMap::new(),
+        all_tasks: vec![],
+        pending_tasks_with_owners: vec![],
+        task_channel: HashMap::new(),
+        task_model_map: HashMap::new(),
+        task_plan_map: HashMap::new(),
+        task_execution_skill_map: HashMap::new(),
+        coworkers_with_open_prs: HashSet::new(),
+        coworkers_with_merged_prs: HashSet::new(),
+        merged_pr_numbers: HashSet::new(),
+        ci_passed_pr_coworkers: HashSet::new(),
+        review_feedback_pr_coworkers: HashSet::new(),
+        open_prs_data: vec![],
+        github_open_pr_task_ids: HashMap::new(),
+        pending_task_owners: HashSet::new(),
+        tasks_with_open_prs: HashMap::new(),
+        pr_task_associations: HashMap::new(),
+        active_reviewers: HashSet::new(),
+        reviewer_pr_assignments: HashMap::new(),
+        reviewed_prs: HashSet::new(),
+        prs_needing_review: 0,
+        reviewer_restart_counts: HashMap::new(),
+        reviewer_escalations_posted: HashSet::new(),
+        coworkers_with_unblocked_deps: HashSet::new(),
+        usage_limit_nudge_scheduled: false,
+        usage_limit_nudge_at: None,
+        usage_limited_coworkers: HashSet::new(),
+        api_error_coworkers: HashSet::new(),
+        auth_error_coworkers: HashSet::new(),
+        tool_name_conflict_coworkers: HashSet::new(),
+        channel_messages: vec![],
+        archived_channels: HashSet::new(),
+        daemon_logs: vec![],
+        is_at_coworker_limit: false,
+        now_utc: chrono::Utc::now(),
+        repo_name: "test-repo".to_string(),
+        github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
+        freshly_fetched_rate_limit: None,
+    };
+
+    let state = make_test_state();
+
+    // The bug: when state.coworkers.list() is empty, spawn_for_pending_tasks
+    // should still work — it should spawn fresh coworkers for pending tasks.
+    assert_eq!(
+        state.coworkers.list().len(),
+        0,
+        "test precondition: no coworkers registered in DaemonState"
+    );
+
+    let effects = spawn_for_pending_tasks(&snap, &state);
+
+    // Expected: should spawn coworkers for pending tasks
+    println!("Effects generated: {:?}", effects.len());
+
+    let spawn_count = effects
+        .iter()
+        .filter(|e| matches!(e, Effect::AssignAndSpawn { .. }))
+        .count();
+
+    assert!(
+        !effects.is_empty(),
+        "spawn_for_pending_tasks should generate effects when there are pending tasks and no active coworkers"
+    );
+    assert!(
+        spawn_count > 0,
+        "should spawn at least one coworker for pending tasks; got {} effects total but {} spawns",
+        effects.len(),
+        spawn_count
+    );
+}
+
 /// Helper to create minimal DaemonState for testing
 fn make_test_state() -> DaemonState {
     use std::process::Command;

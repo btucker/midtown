@@ -422,7 +422,13 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
     };
 
     // ── Task state ──────────────────────────────────────────────────────
-    let in_progress_tasks = crate::tasks::get_in_progress_tasks_with_subjects();
+    // IMPORTANT: Use _for_repo variants to avoid dependency on cwd.
+    // The daemon may run from a directory where detect_repo_name() fails,
+    // but state.repo_name is set correctly at startup. Using cwd-based
+    // task reads causes the daemon to read from the wrong task directory
+    // (or "default") and miss pending tasks, preventing dispatch (see #1288).
+    let in_progress_tasks =
+        crate::tasks::get_in_progress_tasks_with_subjects_for_repo(&state.repo_name);
     let busy_coworkers: HashSet<String> = state.get_all_busy_coworkers().into_iter().collect();
 
     // Coworker → task assignments (for nudge/spawn loop prevention in dispatch)
@@ -434,9 +440,11 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
             .collect()
     };
 
-    let all_tasks = crate::tasks::read_tasks();
-    let pending_tasks_with_owners = crate::tasks::get_pending_tasks_with_owners();
-    let pending_tasks_without_owners = crate::tasks::get_pending_tasks_without_owners();
+    let all_tasks = crate::tasks::read_tasks_for_repo(Some(&state.repo_name));
+    let pending_tasks_with_owners =
+        crate::tasks::get_pending_tasks_with_owners_for_repo(&state.repo_name);
+    let pending_tasks_without_owners =
+        crate::tasks::get_pending_tasks_without_owners_for_repo(&state.repo_name);
 
     // Task-to-channel, task-to-model, task-to-plan, and task-to-execution-skill mappings
     let (task_channel, task_model_map, task_plan_map, task_execution_skill_map) = {
@@ -558,7 +566,8 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
     };
 
     // ── Dependency state ──────────────────────────────────────────────────
-    let coworkers_with_unblocked_deps = crate::tasks::get_coworkers_with_unblocked_dependents();
+    let coworkers_with_unblocked_deps =
+        crate::tasks::get_coworkers_with_unblocked_dependents_for_repo(&state.repo_name);
 
     // ── Usage limit state ────────────────────────────────────────────────
     let (usage_limit_nudge_scheduled, usage_limit_nudge_at) = {
