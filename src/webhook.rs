@@ -309,7 +309,6 @@ pub async fn start_webhook_server(
         }
     };
 
-    let tmux_session = format!("{}{}", crate::process::SESSION_PREFIX, config.repo);
     let web_state = Arc::new(WebState {
         config: web_config,
         updates_tx: web_updates_tx.clone(),
@@ -320,7 +319,6 @@ pub async fn start_webhook_server(
         default_branch,
         max_coworkers,
         repo_name_cache: std::sync::RwLock::new(std::collections::HashMap::new()),
-        viewer_tracker: std::sync::Mutex::new(crate::web::ViewerTracker::new(tmux_session)),
     });
 
     // CORS layer for development (allows requests from Vite dev server)
