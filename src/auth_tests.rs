@@ -261,6 +261,7 @@ fn test_setup_claude_profile_symlinks_only_uses_allowlist() {
     std::fs::write(profile_dir.join("unknown.json"), "{\"k\":1}").unwrap();
     std::fs::create_dir_all(profile_dir.join("plugins")).unwrap();
     std::fs::write(profile_dir.join("plugins").join("a.txt"), "x").unwrap();
+    std::fs::create_dir_all(&shared).unwrap();
     std::fs::write(shared.join("unknown-shared.json"), "{\"shared\":true}").unwrap();
 
     setup_claude_profile_symlinks(&test_profile).unwrap();
