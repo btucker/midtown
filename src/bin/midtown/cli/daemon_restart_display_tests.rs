@@ -5,8 +5,6 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::cli::Response;
-
     /// Test that task info formatting includes both ID and title.
     ///
     /// The drain status display should show "task !1274 Add sandbox..." not just "task !1274".
