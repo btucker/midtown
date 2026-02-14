@@ -3411,11 +3411,11 @@ fn test_orphan_recovery_marks_task_in_flight() {
     // coworker is spawning.
     //
     // Timeline without the fix:
-    // 1. Coworker crashes, task !1264 is in_progress with owner=lexington
+    // 1. Coworker crashes, task !999999 is in_progress with owner=lexington
     // 2. Orphan recovery spawns lexington (tick 0s)
     // 3. Task dispatch runs (tick 10s) before lexington claims via RPC
     // 4. Task dispatch sees task as in_progress but lexington not active → spawns another coworker
-    // 5. Result: double assignment (lexington + madison both working on !1264)
+    // 5. Result: double assignment (lexington + madison both working on !999999)
     let snap = snapshot::WorldSnapshot {
         active_coworkers: vec![],
         running_coworkers: vec![],
@@ -3428,7 +3428,7 @@ fn test_orphan_recovery_marks_task_in_flight() {
         headless_process_health: HashMap::new(),
         attached_coworkers: HashSet::new(),
         in_progress_tasks: vec![(
-            "1264".to_string(),
+            "999999".to_string(),
             "Test task".to_string(),
             "lexington".to_string(),
         )],
@@ -3499,7 +3499,7 @@ fn test_orphan_recovery_marks_task_in_flight() {
     // Should include RecordTaskAssignment in on_success
     let has_record_assignment = on_success.iter().any(|e| {
         matches!(e, Effect::RecordTaskAssignment { task_id, coworker }
-            if task_id == "1264" && coworker == "lexington")
+            if task_id == "999999" && coworker == "lexington")
     });
 
     assert!(
@@ -3510,7 +3510,7 @@ fn test_orphan_recovery_marks_task_in_flight() {
     // Verify that mark_in_flight_spawns_from_effects would mark this task
     state.mark_in_flight_spawns_from_effects(&effects);
     assert!(
-        state.is_task_spawn_in_flight("1264"),
-        "Task !1264 should be marked in-flight after orphan recovery"
+        state.is_task_spawn_in_flight("999999"),
+        "Task !999999 should be marked in-flight after orphan recovery"
     );
 }
