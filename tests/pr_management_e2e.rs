@@ -120,7 +120,7 @@ fn pr_with_claude_review_does_not_spawn_reviewer() {
     let signatures = [
         "## Code Review by lexington\n\nLooks good!",
         "<!-- midtown: park -->\n\n## Code Review\n\nApproved.",
-        "<!-- midtown:broadway -->\n\nLGTM!",
+        "<!-- midtown: broadway -->\n\n### Code review\n\nNo issues found.",
     ];
 
     for signature in signatures {
@@ -131,11 +131,14 @@ fn pr_with_claude_review_does_not_spawn_reviewer() {
         );
     }
 
-    // Non-review comments should NOT be recognized
+    // Non-review comments should NOT be recognized.
+    // Note: bare frontmatter without a review header is NOT a review —
+    // all coworker GitHub comments include frontmatter.
     let non_reviews = [
         "Thanks for the PR! I'll review it soon.",
         "Can you add a test for this?",
-        "LGTM - approved!", // Missing the signature pattern
+        "LGTM - approved!",                   // Missing the signature pattern
+        "<!-- midtown:broadway -->\n\nLGTM!", // Frontmatter alone is not a review
     ];
 
     for comment in non_reviews {
