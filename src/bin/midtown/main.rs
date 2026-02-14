@@ -82,11 +82,15 @@ enum Commands {
         #[arg(long)]
         project: Option<String>,
     },
-    /// Start midtown (daemon + tmux session)
+    /// Start midtown (daemon + terminal session)
     Start {
-        /// Start daemon only, without tmux session
+        /// Start daemon only, without terminal session
         #[arg(long)]
         daemon_only: bool,
+
+        /// Swap Zellij pane order (Lead on left, chat on right)
+        #[arg(long)]
+        swap_layout: bool,
 
         /// Project name (overrides auto-detection)
         #[arg(long)]
@@ -96,9 +100,9 @@ enum Commands {
         #[arg(long = "add-repo")]
         repos: Vec<std::path::PathBuf>,
     },
-    /// Stop midtown (daemon + tmux session)
+    /// Stop midtown (daemon + terminal session)
     Stop {
-        /// Keep the tmux session running
+        /// Keep the terminal session running
         #[arg(long)]
         keep_session: bool,
     },
@@ -108,7 +112,7 @@ enum Commands {
         #[arg(long)]
         force: bool,
     },
-    /// Attach to the project's tmux session
+    /// Attach to the project's terminal session
     Attach {
         /// Project name to attach to (default: inferred from cwd)
         project: Option<String>,
@@ -321,6 +325,7 @@ fn main() {
     // Default to Start if no command provided
     let command = cli.command.unwrap_or(Commands::Start {
         daemon_only: false,
+        swap_layout: false,
         project: None,
         repos: vec![],
     });
@@ -489,11 +494,12 @@ fn main() {
     // Start command (starts daemon, doesn't need existing connection)
     if let Commands::Start {
         daemon_only,
+        swap_layout,
         project,
         repos,
     } = &command
     {
-        let result = cli::handle_start(*daemon_only, project.clone(), repos.clone());
+        let result = cli::handle_start(*daemon_only, *swap_layout, project.clone(), repos.clone());
         handle_result(format, result);
         return;
     }

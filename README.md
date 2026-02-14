@@ -18,7 +18,7 @@ When you're working with Claude Code on a complex project, you might want to par
 
 Midtown provides two UIs:
 
-1. A Zellij-based terminal workspace with an interactive WASM plugin dashboard and IRC-style chat pane (includes mermaid diagram rendering with inline ASCII art)
+1. A Zellij-based terminal workspace with an IRC-style chat pane and Lead terminal (includes mermaid diagram rendering with inline ASCII art)
 2. A web interface (meant to be run as a PWA) so you can collaborate with the lead (and the team) while on the go.
 
 Midtown makes extensive use of the new Claude Code Tasks system to manage the state of all work, create dependencies, and assign ownership.
@@ -54,7 +54,13 @@ From your project directory:
 midtown start
 ```
 
-This starts the daemon and launches a Zellij session with the plugin dashboard, chat pane, and Lead terminal.
+This starts the daemon and launches a Zellij session with chat on the left and the Lead terminal on the right.
+
+Prefer the opposite split? Use:
+
+```bash
+midtown start --swap-layout
+```
 
 For multi-repo projects, specify a project name and additional repos:
 
@@ -184,6 +190,8 @@ Project settings take precedence over global defaults. All fields are optional.
 bin_command = "midtown"         # CLI command to invoke midtown
 chat_layout = "auto"            # "auto", "split", or "window"
 chat_min_width = 160            # Min terminal width for split layout (auto mode)
+zellij_swap_layout = false      # Lead left + chat right when true
+zellij_chat_pane_size = 35      # Chat pane width percentage (10-90)
 max_coworkers = 10              # Maximum concurrent coworkers
 
 [daemon]
@@ -209,6 +217,8 @@ primary_repo = "/path/to/backend"
 [default]
 bin_command = "cargo run --release --"
 max_coworkers = 4
+zellij_swap_layout = true       # Project-specific override
+zellij_chat_pane_size = 40      # Wider chat for this project
 
 [daemon]
 webhook_port = 47023              # Auto-assigned if not set

@@ -6,7 +6,7 @@
 
 | Command | Description |
 |---------|-------------|
-| `midtown start [--project <name>] [--add-repo <path>]` | Start the daemon and Zellij session |
+| `midtown start [--swap-layout] [--project <name>] [--add-repo <path>]` | Start the daemon and Zellij session |
 | `midtown stop [--keep-session]` | Stop the daemon (optionally keep Zellij session) |
 | `midtown restart` | Restart the daemon |
 | `midtown attach [<project>]` | Attach to the project's Zellij session |
