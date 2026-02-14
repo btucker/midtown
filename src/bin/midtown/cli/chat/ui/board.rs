@@ -195,8 +195,8 @@ fn render_task_item(
         }
     };
 
-    let prefix = format!("{}!{} ", task_indent, task.id);
-    let prefix_width = prefix.len() + 2; // +2 for "● " bullet
+    let prefix = format!("!{} ", task.id);
+    let prefix_width = task_indent.len() + 2 + prefix.len(); // indent + "● " + prefix
     let task_line = format!("{}{}", prefix, task.subject);
 
     let is_task_selected = app.board_selection.as_ref().is_some_and(|sel| match sel {
@@ -207,8 +207,11 @@ fn render_task_item(
     let wrapped_lines = wrap_content(&task_line, wrap_width);
     for (i, wrapped) in wrapped_lines.iter().enumerate() {
         if i == 0 {
-            // First line: render bullet + text as separate spans
-            let bullet_span = Span::styled("● ", Style::default().fg(bullet_color));
+            // First line: render indent + bullet + text as separate spans
+            let bullet_span = Span::styled(
+                format!("{}● ", task_indent),
+                Style::default().fg(bullet_color),
+            );
             let mut text_style = Style::default().fg(text_color);
             if is_task_selected {
                 text_style = text_style.bg(Color::DarkGray);
@@ -375,6 +378,7 @@ fn compute_indentation_recursive(
 
 #[cfg(test)]
 mod tests {
+    use super::super::super::app::tests::test_app;
     use super::*;
 
     fn make_task(id: &str, blocked_by: Vec<&str>) -> KanbanTask {
@@ -480,5 +484,90 @@ mod tests {
         assert!(indent.contains_key("A"));
         assert!(indent.contains_key("B"));
         assert!(indent.contains_key("C"));
+    }
+
+    #[test]
+    fn test_render_task_item_no_indent() {
+        let app = test_app();
+        let task = make_task("42", vec![]);
+        let indentation = HashMap::from([("42".to_string(), 0)]);
+        let mut lines = Vec::new();
+
+        render_task_item(&app, &task, "midtown", &indentation, 80, &mut lines);
+
+        assert_eq!(lines.len(), 1);
+        let spans = &lines[0].spans;
+        assert_eq!(spans.len(), 2);
+        // Bullet span: no indent (level 0), just "● "
+        assert_eq!(spans[0].content.as_ref(), "● ");
+        // Text span: "!42 Task 42"
+        assert_eq!(spans[1].content.as_ref(), "!42 Task 42");
+    }
+
+    #[test]
+    fn test_render_task_item_with_indent() {
+        let app = test_app();
+        let task = make_task("7", vec!["1"]);
+        // Indent level 1 = "  " (2 spaces)
+        let indentation = HashMap::from([("7".to_string(), 1)]);
+        let mut lines = Vec::new();
+
+        render_task_item(&app, &task, "midtown", &indentation, 80, &mut lines);
+
+        assert_eq!(lines.len(), 1);
+        let spans = &lines[0].spans;
+        assert_eq!(spans.len(), 2);
+        // Bullet span includes indent: "  ● "
+        assert_eq!(spans[0].content.as_ref(), "  ● ");
+        // Text span: "!7 Task 7"
+        assert_eq!(spans[1].content.as_ref(), "!7 Task 7");
+    }
+
+    #[test]
+    fn test_render_task_item_deep_indent() {
+        let app = test_app();
+        let task = make_task("99", vec![]);
+        // Indent level 3 = "      " (6 spaces)
+        let indentation = HashMap::from([("99".to_string(), 3)]);
+        let mut lines = Vec::new();
+
+        render_task_item(&app, &task, "midtown", &indentation, 80, &mut lines);
+
+        assert_eq!(lines.len(), 1);
+        let spans = &lines[0].spans;
+        // Bullet span includes 6-space indent: "      ● "
+        assert_eq!(spans[0].content.as_ref(), "      ● ");
+        assert_eq!(spans[1].content.as_ref(), "!99 Task 99");
+    }
+
+    #[test]
+    fn test_render_task_item_pending_uses_dark_gray() {
+        let app = test_app();
+        let task = make_task("1", vec![]);
+        let indentation = HashMap::from([("1".to_string(), 0)]);
+        let mut lines = Vec::new();
+
+        render_task_item(&app, &task, "midtown", &indentation, 80, &mut lines);
+
+        // Pending task (no PR) should use DarkGray
+        let bullet_style = lines[0].spans[0].style;
+        assert_eq!(bullet_style.fg, Some(Color::DarkGray));
+    }
+
+    #[test]
+    fn test_render_task_item_in_progress_uses_yellow_bullet() {
+        let app = test_app();
+        let mut task = make_task("5", vec![]);
+        task.status = TaskStatus::InProgress;
+        let indentation = HashMap::from([("5".to_string(), 0)]);
+        let mut lines = Vec::new();
+
+        render_task_item(&app, &task, "midtown", &indentation, 80, &mut lines);
+
+        // InProgress task (no PR) should use Yellow bullet, Green text
+        let bullet_style = lines[0].spans[0].style;
+        let text_style = lines[0].spans[1].style;
+        assert_eq!(bullet_style.fg, Some(Color::Yellow));
+        assert_eq!(text_style.fg, Some(Color::Green));
     }
 }

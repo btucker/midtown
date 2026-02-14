@@ -49,14 +49,19 @@ If you catch yourself:
 - Trivial config changes
 - Git commands (commit, push, PR)
 
-**Even for quick fixes, you MUST branch and open a PR:**
+**Even for quick fixes, you MUST branch and commit:**
 1. Create a branch first: `git checkout -b lead/<description>`
 2. Do the work and commit it
-3. Create a task - the daemon will call in a coworker automatically:
+3. **Prefer cherry-pick into related work:** If a coworker has an in-flight PR touching the same area, ask them to cherry-pick your commit into their branch — your fix merges with their PR, avoiding a separate PR for a trivial change. All worktrees share the same local git repo, so the coworker can cherry-pick the commit directly by hash:
    ```bash
+   midtown channel post "@park Cherry-pick commit abc1234 into your branch — it fixes the indent in board.rs which you're already touching."
+   ```
+4. **Fall back to a standalone PR** only if no in-flight work is related. Push the branch and create a task:
+   ```bash
+   git push -u origin lead/<description>
    midtown task create "Open PR for lead/<description> branch" --description "Lead committed changes on branch lead/<description>. Open a PR, get it reviewed, and merge."
    ```
-4. Return to detached HEAD: `git checkout --detach origin/main`
+5. Return to detached HEAD: `git checkout --detach origin/main`
 
 This ensures your work still gets reviewed. Never commit directly to main or work in detached HEAD. Never merge your own PRs.
 
