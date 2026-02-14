@@ -18,10 +18,10 @@ use super::effects::Effect;
 use super::helpers::format_task_prompt;
 use super::{DaemonState, snapshot};
 
-/// Check if the lead's tmux pane has changed and broadcast typing status.
+/// Check if the lead's terminal pane has changed and broadcast typing status.
 ///
-/// Captures the lead's Claude Code pane (`lead.0`), hashes the content, and
-/// compares against the previous hash. If content changed, the lead is working.
+/// Captures the lead's Claude Code pane (`lead.0`) via tmux, hashes the content,
+/// and compares against the previous hash. If content changed, the lead is working.
 /// Uses a grace period so brief pauses (reading, thinking) don't prematurely
 /// clear the indicator. Only broadcasts when the working state transitions.
 ///

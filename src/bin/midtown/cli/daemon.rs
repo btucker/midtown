@@ -423,7 +423,7 @@ fn cleanup_stale_daemon() {
     let _ = std::fs::remove_file(socket_path());
 }
 
-/// Check if the project's tmux session exists.
+/// Check if the project's terminal session exists (Zellij or tmux).
 fn session_exists(session: &str) -> bool {
     // Check Zellij first, then fall back to tmux
     if zellij_session_exists(session) {
@@ -1607,12 +1607,20 @@ pub fn handle_restart(force: bool) -> Result<Response, String> {
     })
 }
 
-/// Restart the chat TUI pane in the tmux session.
+/// Restart the chat TUI pane in the terminal session.
+///
+/// Under tmux, uses `respawn-pane -k` to atomically restart the chat pane.
+/// Under Zellij, the chat pane is managed by the layout and doesn't need
+/// explicit restart — Zellij handles pane lifecycle natively.
 fn restart_chat_pane() {
-    // Use respawn-pane -k to atomically kill the old process and start a new
-    // one, avoiding a race where send-keys characters (like 'i' in "midtown")
-    // are intercepted by the still-running TUI's input mode handler.
     if let Ok(session) = session_name() {
+        // Only restart chat pane for tmux sessions — Zellij manages panes via layout
+        if !tmux_session_exists(&session) {
+            return;
+        }
+        // Use respawn-pane -k to atomically kill the old process and start a new
+        // one, avoiding a race where send-keys characters (like 'i' in "midtown")
+        // are intercepted by the still-running TUI's input mode handler.
         let chat_pane = format!("{}:lead.1", session);
         let bin_command = midtown::config::get_bin_command();
         let chat_cmd = format!("{} chat", bin_command);
@@ -1624,7 +1632,7 @@ fn restart_chat_pane() {
 
 /// Clear stale Lead session ID file for a project.
 ///
-/// When no tmux session is running, the session-id file from a previous
+/// When no terminal session is running, the session-id file from a previous
 /// session is stale. Removing it ensures a fresh Claude Code session
 /// is created instead of resuming the old one.
 fn clear_stale_lead_session(repo: &Path) {
