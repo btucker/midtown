@@ -34,20 +34,11 @@ const POLL_INTERVAL_SECS: f64 = 2.0;
 /// Number of consecutive failures before marking daemon as disconnected.
 const DISCONNECT_THRESHOLD: u32 = 3;
 
+#[derive(Default)]
 struct MidtownPlugin {
     state: PluginState,
     rows: usize,
     cols: usize,
-}
-
-impl Default for MidtownPlugin {
-    fn default() -> Self {
-        Self {
-            state: PluginState::default(),
-            rows: 0,
-            cols: 0,
-        }
-    }
 }
 
 register_plugin!(MidtownPlugin);

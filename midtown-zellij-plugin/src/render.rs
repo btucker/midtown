@@ -73,11 +73,9 @@ fn render_main(state: &PluginState, rows: usize, cols: usize) {
     if state.tasks.is_empty() {
         println!("{DIM}  No tasks{RESET}");
     } else {
-        let mut global_idx = 0;
-        for task in &state.tasks {
-            let selected = state.section == Section::Tasks && state.task_index == global_idx;
+        for (idx, task) in state.tasks.iter().enumerate() {
+            let selected = state.section == Section::Tasks && state.task_index == idx;
             render_task(task, selected, cols);
-            global_idx += 1;
         }
     }
     println!();
@@ -178,9 +176,7 @@ fn render_coworker(cw: &CoworkerSummary, selected: bool, cols: usize) {
 fn coworker_status_icon(cw: &CoworkerSummary) -> String {
     if cw.has_usage_limit {
         format!("{RED}⚠{RESET}")
-    } else if cw.has_api_error {
-        format!("{RED}✗{RESET}")
-    } else if !cw.is_alive {
+    } else if cw.has_api_error || !cw.is_alive {
         format!("{RED}✗{RESET}")
     } else {
         match cw.status.as_str() {
