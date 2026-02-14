@@ -27,7 +27,7 @@
 //! 2. **TOCTTOU race in spawn_with_name**: The function has a check-then-act
 //!    pattern that is not atomic:
 //!    - Line 647-655: Read lock to check if coworker exists → lock released
-//!    - Lines 657-734: Worktree + tmux creation (~100ms, no lock held)
+//!    - Lines 657-734: Worktree + session creation (~100ms, no lock held)
 //!    - Line 747-750: Write lock to insert coworker
 //!
 //!    Two concurrent spawns can both pass the check before either inserts.
@@ -130,7 +130,7 @@ fn test_concurrent_name_allocation_no_overwrites() {
                 // Allocate a name (simulating what PR poll and TaskDispatch do)
                 if let Some(name) = manager.next_available_name() {
                     // Simulate the delay between allocation and insertion
-                    // (worktree creation, tmux spawn, etc.)
+                    // (worktree creation, session spawn, etc.)
                     thread::sleep(Duration::from_micros(10));
 
                     // Try to insert the coworker (with check-before-insert)
@@ -193,7 +193,7 @@ fn test_concurrent_name_allocation_no_overwrites() {
 /// 4. The second spawn overwrites the first, giving reviewer access to shared tasks
 ///
 /// Note: This test uses manual HashMap manipulation to simulate the race without
-/// actually spawning tmux windows.
+/// actually spawning sessions.
 #[test]
 fn test_spawn_race_reviewer_gets_shared_tasks() {
     let (manager, _temp_dir) = test_manager();
@@ -233,7 +233,7 @@ fn test_spawn_race_reviewer_gets_shared_tasks() {
             return;
         }
 
-        // Simulate the delay during worktree creation and tmux spawn
+        // Simulate the delay during worktree creation and session spawn
         // (lines 657-734, no lock held, ~100ms in production)
         thread::sleep(Duration::from_millis(5));
 
@@ -266,7 +266,7 @@ fn test_spawn_race_reviewer_gets_shared_tasks() {
             return;
         }
 
-        // Simulate the delay during worktree creation and tmux spawn
+        // Simulate the delay during worktree creation and session spawn
         // (slightly different timing to simulate real-world variance)
         thread::sleep(Duration::from_millis(5));
 

@@ -18,7 +18,7 @@ When you're working with Claude Code on a complex project, you might want to par
 
 Midtown provides two UIs:
 
-1. A tmux-based TUI with an IRC-style chat pane (includes mermaid diagram rendering with inline ASCII art)
+1. A Zellij-based terminal workspace with an interactive WASM plugin dashboard and IRC-style chat pane (includes mermaid diagram rendering with inline ASCII art)
 2. A web interface (meant to be run as a PWA) so you can collaborate with the lead (and the team) while on the go.
 
 Midtown makes extensive use of the new Claude Code Tasks system to manage the state of all work, create dependencies, and assign ownership.
@@ -29,6 +29,8 @@ Midtown makes extensive use of the new Claude Code Tasks system to manage the st
 
 1. Install the [GitHub CLI](https://cli.github.com/).
 2. Install [Rust & Cargo](https://doc.rust-lang.org/cargo/getting-started/installation.html).
+3. Install [Zellij](https://zellij.dev/documentation/installation) (v0.43+).
+4. Install the WASM target: `rustup target add wasm32-wasip1`.
 
 ### 1. Install
 
@@ -52,7 +54,7 @@ From your project directory:
 midtown start
 ```
 
-This starts the daemon and creates a tmux session with the Lead window.
+This starts the daemon and launches a Zellij session with the plugin dashboard, chat pane, and Lead terminal.
 
 For multi-repo projects, specify a project name and additional repos:
 
@@ -68,7 +70,7 @@ If you're in a repo that's part of a project:
 midtown attach
 ```
 
-You're now in the Lead's Claude Code instance.
+You're now in the Zellij session with the Lead's Claude Code instance.
 
 To attach to a named project from any directory:
 
@@ -84,10 +86,10 @@ The lead is just a claude code session, but it's been booted with some a [specia
 
 | Command | Description |
 |---------|-------------|
-| `midtown start` | Start the daemon and tmux session |
+| `midtown start` | Start the daemon and Zellij session |
 | `midtown stop` | Stop everything |
 | `midtown restart` | Restart the daemon |
-| `midtown attach` | Attach to the tmux session |
+| `midtown attach` | Attach to the Zellij session |
 | `midtown status` | Show system status |
 | `midtown chat` | Open the IRC-style chat TUI |
 | `midtown log [-f]` | View daemon logs |
@@ -214,7 +216,7 @@ webhook_port = 47023              # Auto-assigned if not set
 
 The `[project]` section defines:
 
-- `name` - Project name used for tmux sessions, paths, etc.
+- `name` - Project name used for Zellij sessions, paths, etc.
 - `repos` - List of repository paths belonging to the project
 - `primary_repo` - The main repo used for the daemon socket and channel
 
@@ -244,7 +246,7 @@ Content from these files is appended to the built-in system prompts. Project-lev
 
 ## Docker
 
-Midtown is available as a Docker image for containerized deployments. The image includes all runtime dependencies (tmux, git, gh CLI, Claude CLI).
+Midtown is available as a Docker image for containerized deployments. The image includes all runtime dependencies (Zellij, git, gh CLI, Claude CLI).
 
 ### Pull from Docker Hub
 

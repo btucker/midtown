@@ -18,7 +18,7 @@ use std::time::Duration;
 /// 5. Simulate coworker transitioning to stopped
 /// 6. Verify wait completes when all coworkers are stopped/stopping
 #[test]
-#[ignore] // requires tmux
+#[ignore] // requires built binary
 fn test_wait_for_coworkers_reports_status_and_completes() {
     // Clean up any previous test data
     let repo_name = format!("drain-flow-test-{}", std::process::id());
@@ -153,7 +153,7 @@ fn test_wait_for_coworkers_reports_status_and_completes() {
 
 /// Test that draining mode prevents new task assignments.
 #[test]
-#[ignore] // requires tmux
+#[ignore] // requires built binary
 fn test_draining_prevents_task_assignment() {
     // This test would require:
     // 1. Start daemon
@@ -169,7 +169,7 @@ fn test_draining_prevents_task_assignment() {
 
 /// Test timeout behavior when coworkers don't drain within the timeout window.
 #[test]
-#[ignore] // requires tmux
+#[ignore] // requires built binary
 fn test_drain_timeout_forces_shutdown() {
     // This test would verify:
     // 1. Start daemon with coworkers

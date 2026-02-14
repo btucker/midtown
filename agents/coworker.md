@@ -25,7 +25,7 @@ midtown channel post "/me opening PR for task 3"
 
 ### Workflow Phases
 
-**Report your phase with `midtown state`** when you transition between phases. This updates the tmux tab bar and web UI with structured status:
+**Report your phase with `midtown state`** when you transition between phases. This updates the Zellij plugin dashboard and web UI with structured status:
 
 ```bash
 midtown state <phase> [--task <id>]

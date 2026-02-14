@@ -50,7 +50,7 @@ webhook_port = 47023              # Auto-assigned if not set
 
 The `[project]` section defines:
 
-- `name` - Project name used for tmux sessions, paths, etc.
+- `name` - Project name used for Zellij sessions, paths, etc.
 - `repos` - List of repository paths belonging to the project
 - `primary_repo` - The main repo used for the daemon socket and channel
 

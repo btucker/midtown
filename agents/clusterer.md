@@ -156,7 +156,7 @@ Create a **project channel** when:
 |---|---|
 | `src/daemon/*.rs` (except specific modules below) | `daemon-core` |
 | `src/daemon/pr.rs`, `src/github_*.rs`, `src/webhook.rs` | `github-integration` |
-| `src/board.rs`, `src/tui.rs`, `src/tmux.rs` | `tui` |
+| `src/board.rs`, `src/tui.rs`, `midtown-zellij-plugin/**/*` | `tui` |
 | `web-app/**/*`, `src/web*.rs` | `web-interface` |
 | `src/tasks.rs`, `src/daemon/dispatch.rs` | `task-coordination` |
 | `src/channel.rs`, `src/message.rs`, `src/cursor.rs` | `channel-system` |

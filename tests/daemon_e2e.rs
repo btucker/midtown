@@ -1206,8 +1206,8 @@ fn test_daemon_rpc_kanban_data_returns_structure() {
 
 /// Test that coworker.spawn returns a valid JSON-RPC response.
 ///
-/// In test environment without tmux, spawn will fail, but should return
-/// a proper JSON-RPC error response rather than hanging or crashing.
+/// In test environment without a terminal session, spawn will fail, but should
+/// return a proper JSON-RPC error response rather than hanging or crashing.
 #[test]
 #[ignore] // Requires built binary
 fn test_daemon_rpc_coworker_spawn_returns_response() {
@@ -1220,7 +1220,7 @@ fn test_daemon_rpc_coworker_spawn_returns_response() {
         return;
     }
 
-    // In test environment without tmux, spawn will fail
+    // In test environment without a terminal session, spawn will fail
     // We verify it returns a proper JSON-RPC response (not hang/crash)
     let response = fixture.rpc_call("coworker.spawn", Some(serde_json::json!({})));
     assert!(
@@ -1229,7 +1229,7 @@ fn test_daemon_rpc_coworker_spawn_returns_response() {
     );
 
     let response = response.unwrap();
-    // Without tmux, we expect an error response
+    // Without a terminal session, we expect an error response
     // Verify it's a proper JSON-RPC error with expected structure
     if response["error"].is_object() {
         assert!(
@@ -1800,7 +1800,7 @@ fn test_daemon_installs_required_plugins() {
 
     let start_result = Command::new(&binary_path)
         .arg("start")
-        .arg("--daemon-only") // Don't create tmux session, just start daemon
+        .arg("--daemon-only") // Don't create Zellij session, just start daemon
         .current_dir(&fixture.temp_dir)
         .env("MIDTOWN_WEBHOOK_PORT", "0")
         .env("MIDTOWN_CHAT_MONITOR", "0")
@@ -2743,7 +2743,7 @@ fn test_daemon_rpc_channel_read_all_param() {
 
 /// Test coworker.nudge accepts valid params without returning invalid_params error.
 ///
-/// This verifies the RPC handler validates params correctly. The underlying tmux
+/// This verifies the RPC handler validates params correctly. The underlying
 /// operation may fail (returning -32603 internal error) if no coworker exists,
 /// but it should NOT return -32602 (invalid params) for well-formed requests.
 #[test]
@@ -2771,7 +2771,7 @@ fn test_daemon_rpc_coworker_nudge_valid_params() {
 
     // Valid params should NOT return invalid_params error (-32602).
     // The operation may return success or internal error (-32603) depending
-    // on tmux state, but never invalid_params for well-formed requests.
+    // on session state, but never invalid_params for well-formed requests.
     if let Some(error) = response["error"].as_object() {
         let code = error.get("code").and_then(|c| c.as_i64()).unwrap_or(0);
         assert_ne!(
@@ -2995,7 +2995,7 @@ fn test_daemon_rpc_task_claim_task_not_pending() {
 ///
 /// The handler validates the task exists and is pending, records an in-memory
 /// assignment, nudges the Lead, and returns a success response. The nudge to
-/// the Lead may fail (no tmux session in tests) but the RPC still succeeds.
+/// the Lead may fail (no terminal session in tests) but the RPC still succeeds.
 #[test]
 #[ignore] // Requires built binary
 fn test_daemon_rpc_task_claim_success() {

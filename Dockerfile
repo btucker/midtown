@@ -1,7 +1,7 @@
 # Dockerfile — Production image for running Midtown
 #
 # Multi-stage build: compile with Rust toolchain, ship only the binary
-# with runtime dependencies (tmux, git, gh CLI).
+# with runtime dependencies (Zellij, git, gh CLI).
 #
 # Usage:
 #   docker build -t midtown .
@@ -46,14 +46,13 @@ RUN cargo build --release
 FROM debian:bookworm-slim AS runtime
 
 # Runtime dependencies:
-# - tmux: process model for lead/coworker sessions
 # - git: worktree management
 # - curl: general use, Claude CLI install
 # - procps: process inspection (ps)
 # - jq: JSON parsing in scripts
 # - ca-certificates: HTTPS connections
+# Note: Zellij is installed separately below (not available via apt)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        tmux \
         git \
         curl \
         unzip \
@@ -70,6 +69,13 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
         > /etc/apt/sources.list.d/github-cli.list \
     && apt-get update && apt-get install -y gh \
     && rm -rf /var/lib/apt/lists/*
+
+# Zellij terminal multiplexer (installed from GitHub releases)
+RUN ARCH=$(dpkg --print-architecture) \
+    && if [ "$ARCH" = "amd64" ]; then ZELLIJ_ARCH="x86_64"; else ZELLIJ_ARCH="aarch64"; fi \
+    && curl -fsSL "https://github.com/zellij-org/zellij/releases/latest/download/zellij-${ZELLIJ_ARCH}-unknown-linux-musl.tar.gz" \
+        | tar xzf - -C /usr/local/bin/ \
+    && chmod +x /usr/local/bin/zellij
 
 # Non-root user for security and proper $HOME handling
 RUN useradd -m -s /bin/bash midtown
