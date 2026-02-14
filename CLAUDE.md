@@ -184,13 +184,13 @@ Each concern has a primary owner. The non-owner path only acts as reconciliation
 If you are the Lead, whenever a PR is merged into main, pull, rebuild, and restart so the running daemon and coworkers pick up the changes:
 
 ```bash
-git pull && cargo build --release && midtown restart
+git pull && cargo install --path . && midtown restart
 ```
 
 Post to the channel when done so the team knows the new code is live:
 
 ```bash
-midtown channel post "Pulled main, rebuilt release, and restarted midtown."
+midtown channel post "Pulled main, installed updated binary, and restarted midtown."
 ```
 
 ## Debugging & Test Fixtures
