@@ -1233,7 +1233,51 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 coworker,
             } => {
                 let mut ps = state.persistent_state.lock().await;
-                if let Err(e) = ps.worktree_registry.bind_coworker(&worktree_id, &coworker) {
+
+                // Collision guard: check if worktree is bound to a different ACTIVE coworker
+                let needs_force_rebind = if let Some(assignment) =
+                    ps.worktree_registry.get(&worktree_id)
+                {
+                    if let Some(ref current_coworker) = assignment.current_coworker {
+                        if current_coworker != &coworker {
+                            // Worktree is bound to a different coworker - check if they're active
+                            if state.session_manager.is_alive(current_coworker).await {
+                                warn!(
+                                    "WORKTREE COLLISION BLOCKED: Refusing to bind {} to worktree {} - already bound to ACTIVE coworker {}",
+                                    coworker, worktree_id, current_coworker
+                                );
+                                // Do NOT bind - this would crash both Claude Code sessions
+                                return;
+                            } else {
+                                debug!(
+                                    "Worktree {} was bound to {} but they're not active - allowing rebind to {}",
+                                    worktree_id, current_coworker, coworker
+                                );
+                                // Old coworker is dead - need force rebind
+                                true
+                            }
+                        } else {
+                            // Same coworker - idempotent, use normal bind
+                            false
+                        }
+                    } else {
+                        // No current coworker - use normal bind
+                        false
+                    }
+                } else {
+                    // Worktree doesn't exist in registry - will fail with normal bind
+                    false
+                };
+
+                // Perform the bind operation
+                let bind_result = if needs_force_rebind {
+                    ps.worktree_registry
+                        .force_rebind_coworker(&worktree_id, &coworker)
+                } else {
+                    ps.worktree_registry.bind_coworker(&worktree_id, &coworker)
+                };
+
+                if let Err(e) = bind_result {
                     warn!(
                         "Failed to bind {} to worktree {}: {}",
                         coworker, worktree_id, e

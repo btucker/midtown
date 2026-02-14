@@ -96,9 +96,45 @@ impl WorktreeRegistry {
 
     /// Bind a coworker to an existing worktree.
     ///
-    /// Enforces single-coworker-per-worktree: the old binding (if any) is
-    /// removed before the new one is set.
+    /// Enforces single-coworker-per-worktree: fails if the worktree is already
+    /// bound to a different coworker. Idempotent for the same coworker.
+    ///
+    /// This is the collision-guarded version. Use this for spawning new coworkers
+    /// to prevent double-assignment races.
     pub fn bind_coworker(&mut self, worktree_id: &str, coworker: &str) -> Result<(), String> {
+        let assignment = self
+            .assignments
+            .get_mut(worktree_id)
+            .ok_or_else(|| format!("Worktree {} not found in registry", worktree_id))?;
+
+        // Check for collision: if already bound to a different coworker, fail
+        if let Some(ref current) = assignment.current_coworker {
+            if current.to_lowercase() != coworker.to_lowercase() {
+                return Err(format!(
+                    "Worktree {} is already bound to coworker {}",
+                    worktree_id, current
+                ));
+            }
+            // Same coworker — idempotent, nothing to do
+            return Ok(());
+        }
+
+        assignment.current_coworker = Some(coworker.to_string());
+        self.coworker_index
+            .insert(coworker.to_lowercase(), worktree_id.to_string());
+        Ok(())
+    }
+
+    /// Forcibly rebind a coworker to a worktree, removing the old binding.
+    ///
+    /// Use this only when you've explicitly verified the old coworker is no longer
+    /// active. For spawn-time binding, use `bind_coworker()` which enforces
+    /// collision detection.
+    pub fn force_rebind_coworker(
+        &mut self,
+        worktree_id: &str,
+        coworker: &str,
+    ) -> Result<(), String> {
         let assignment = self
             .assignments
             .get_mut(worktree_id)
@@ -432,7 +468,7 @@ mod tests {
     }
 
     #[test]
-    fn test_registry_bind_replaces_old_coworker() {
+    fn test_registry_bind_prevents_collision() {
         let mut registry = WorktreeRegistry::new();
 
         let assignment = WorktreeAssignment {
@@ -447,8 +483,33 @@ mod tests {
 
         registry.assign_worktree(assignment).unwrap();
 
-        // Bind a different coworker — should replace
-        registry.bind_coworker("task-42-add-auth", "park").unwrap();
+        // Bind a different coworker — should fail (collision guard)
+        assert!(registry.bind_coworker("task-42-add-auth", "park").is_err());
+        // Original binding still intact
+        assert!(registry.get_by_coworker("lexington").is_some());
+        assert!(registry.get_by_coworker("park").is_none());
+    }
+
+    #[test]
+    fn test_registry_force_rebind_replaces_old_coworker() {
+        let mut registry = WorktreeRegistry::new();
+
+        let assignment = WorktreeAssignment {
+            worktree_id: "task-42-add-auth".to_string(),
+            branch_name: "task-42-add-auth".to_string(),
+            task_id: Some("42".to_string()),
+            current_coworker: Some("lexington".to_string()),
+            pr_number: None,
+            created_at: Utc::now(),
+            completed_at: None,
+        };
+
+        registry.assign_worktree(assignment).unwrap();
+
+        // Force rebind to a different coworker — should replace
+        registry
+            .force_rebind_coworker("task-42-add-auth", "park")
+            .unwrap();
         assert!(registry.get_by_coworker("lexington").is_none());
         assert!(registry.get_by_coworker("park").is_some());
     }
