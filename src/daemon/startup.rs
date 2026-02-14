@@ -13,6 +13,35 @@ use std::collections::HashMap;
 use tokio::sync::RwLock;
 use tracing::{info, warn};
 
+/// Check if the daemon is running inside a sandbox context.
+///
+/// Returns `Some(warning_message)` if sandboxing is unavailable (already nested),
+/// or `None` if sandboxing is available.
+///
+/// This prevents the crash loop from 2026-02-13 where the daemon was started
+/// from within the Lead's sandboxed tmux session, causing all coworker spawns
+/// to fail with "Already inside a sandbox — cannot nest sandbox-exec".
+#[cfg(target_os = "macos")]
+pub fn check_sandbox_context() -> Option<String> {
+    if !crate::sandbox::can_sandbox() {
+        Some(
+            "WARNING: Daemon is already inside a sandbox — cannot nest sandbox-exec. \
+             Coworker sandboxing will be disabled. This typically happens when the daemon \
+             is started from within a sandboxed tmux session. To fix: stop the daemon, \
+             exit tmux, and restart the daemon from an unsandboxed shell."
+                .to_string(),
+        )
+    } else {
+        None
+    }
+}
+
+/// Non-macOS platforms don't use sandbox-exec, so this check is a no-op.
+#[cfg(not(target_os = "macos"))]
+pub fn check_sandbox_context() -> Option<String> {
+    None
+}
+
 use crate::coworker::CoworkerManager;
 use crate::daemon::effects::Effect;
 use crate::daemon::state::DaemonPersistentState;

@@ -135,3 +135,83 @@ async fn test_recovering_coworker_names_empty_state() {
     let names = recovering_coworker_names(&persistent_state).await;
     assert!(names.is_empty());
 }
+
+/// Verify that check_sandbox_context() returns an appropriate message when
+/// the daemon is running inside a sandbox (where coworker sandboxing will fail).
+///
+/// This prevents the crash loop from 2026-02-13 where:
+/// 1. Lead ran `midtown start --daemon-only` from within tmux (sandboxed)
+/// 2. Daemon inherited the Lead's sandbox
+/// 3. All coworker spawns failed with "Already inside a sandbox — cannot nest sandbox-exec"
+#[test]
+#[cfg(target_os = "macos")]
+fn test_check_sandbox_context_when_nested() {
+    // Skip if we're already inside a sandbox (can't nest sandbox-exec)
+    if !crate::sandbox::can_sandbox() {
+        eprintln!("Skipping test: already inside a sandbox (nesting not allowed)");
+        return;
+    }
+
+    // Run the check from inside a nested sandbox to simulate the failure scenario.
+    // We spawn a child process under sandbox-exec and verify it detects the nesting.
+    let profile_content = "(version 1)(allow default)";
+    let tmp = std::env::temp_dir().join("midtown-test-startup-sandbox.sb");
+    std::fs::write(&tmp, profile_content).expect("write test profile");
+
+    let exe = std::env::current_exe().expect("current exe");
+    let output = std::process::Command::new("sandbox-exec")
+        .args(["-f", &tmp.to_string_lossy()])
+        .arg(&exe)
+        .args([
+            "--test",
+            "daemon::startup::tests::test_check_sandbox_context_detects_nesting",
+        ])
+        .arg("--exact")
+        .arg("--nocapture")
+        .output()
+        .expect("spawn sandboxed test");
+
+    let _ = std::fs::remove_file(&tmp);
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success() || stderr.contains("detected nested sandbox"),
+        "Nested sandbox detection test failed: {}",
+        stderr
+    );
+}
+
+/// Helper test: verifies check_sandbox_context() returns Some(warning) when nested.
+/// Called from test_check_sandbox_context_when_nested via sandbox-exec.
+#[test]
+#[cfg(target_os = "macos")]
+fn test_check_sandbox_context_detects_nesting() {
+    let warning = check_sandbox_context();
+
+    if !crate::sandbox::can_sandbox() {
+        // We're inside a sandbox — check_sandbox_context() should return a warning
+        assert!(
+            warning.is_some(),
+            "check_sandbox_context() should return warning when nested"
+        );
+        let msg = warning.unwrap();
+        assert!(
+            msg.contains("already inside a sandbox"),
+            "Warning should mention nested sandbox: {}",
+            msg
+        );
+        assert!(
+            msg.to_lowercase()
+                .contains("coworker sandboxing will be disabled"),
+            "Warning should mention disabled sandboxing: {}",
+            msg
+        );
+        eprintln!("detected nested sandbox correctly: {}", msg);
+    } else {
+        // Not inside a sandbox — check_sandbox_context() should return None
+        assert!(
+            warning.is_none(),
+            "check_sandbox_context() should return None when not nested"
+        );
+    }
+}
