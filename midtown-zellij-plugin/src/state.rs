@@ -13,6 +13,8 @@ pub enum View {
     Main,
     /// Read-only stream view of a specific coworker.
     CoworkerStream { name: String },
+    /// A coworker has been attached to an interactive pane.
+    CoworkerAttached { name: String },
 }
 
 /// Section in the main view that can be selected.
@@ -46,8 +48,11 @@ pub struct PluginState {
     // Error state
     pub error: Option<String>,
 
-    /// Whether we've received at least one dashboard response.
+    /// Whether we've received at least one successful dashboard response.
     pub connected: bool,
+
+    /// Number of consecutive dashboard RPC failures.
+    pub consecutive_failures: u32,
 }
 
 impl Default for PluginState {
@@ -67,6 +72,7 @@ impl Default for PluginState {
             stream_scroll_offset: 0,
             error: None,
             connected: false,
+            consecutive_failures: 0,
         }
     }
 }
@@ -75,6 +81,8 @@ impl PluginState {
     /// Update state from a dashboard response.
     pub fn update_dashboard(&mut self, dashboard: DashboardState) {
         self.connected = true;
+        self.consecutive_failures = 0;
+        self.error = None;
         self.tasks = dashboard.tasks;
         self.coworkers = dashboard.coworkers;
         self.channel_messages = dashboard.channel_messages;
@@ -94,6 +102,11 @@ impl PluginState {
     pub fn update_coworker_stream(&mut self, stream: CoworkerStreamOutput) {
         self.stream_coworker = Some(stream.coworker_name);
         self.stream_events = stream.events;
+    }
+
+    /// Record an RPC error.
+    pub fn record_error(&mut self, error: String) {
+        self.error = Some(error);
     }
 
     /// Move selection up or down in the main view.
@@ -138,14 +151,6 @@ impl PluginState {
         self.tasks.len() + self.coworkers.len()
     }
 
-    /// Get the global selection index (across both sections).
-    pub fn global_selection_index(&self) -> usize {
-        match self.section {
-            Section::Tasks => self.task_index,
-            Section::Coworkers => self.tasks.len() + self.coworker_index,
-        }
-    }
-
     /// Get the name of the currently selected coworker (if in coworkers section).
     pub fn selected_coworker_name(&self) -> Option<String> {
         if self.section == Section::Coworkers && self.coworker_index < self.coworkers.len() {
@@ -168,5 +173,148 @@ impl PluginState {
             self.stream_scroll_offset += 1;
             // Clamp handled during render
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_dashboard(tasks: usize, coworkers: usize) -> DashboardState {
+        DashboardState {
+            tasks: (0..tasks)
+                .map(|i| TaskSummary {
+                    id: format!("{}", i + 1),
+                    subject: format!("Task {}", i + 1),
+                    status: "in_progress".to_string(),
+                    owner: None,
+                    pr_number: None,
+                    pr_status: None,
+                })
+                .collect(),
+            coworkers: (0..coworkers)
+                .map(|i| CoworkerSummary {
+                    name: format!("worker{}", i),
+                    status: "developing".to_string(),
+                    current_task: None,
+                    session_id: None,
+                    model: "opus".to_string(),
+                    is_alive: true,
+                    has_usage_limit: false,
+                    has_api_error: false,
+                    last_event_at: None,
+                })
+                .collect(),
+            channel_messages: Vec::new(),
+            lead_nudge_queue: Vec::new(),
+            daemon_version: "0.5.4".to_string(),
+        }
+    }
+
+    #[test]
+    fn test_update_dashboard_sets_connected() {
+        let mut state = PluginState::default();
+        assert!(!state.connected);
+        state.update_dashboard(make_dashboard(2, 1));
+        assert!(state.connected);
+        assert_eq!(state.consecutive_failures, 0);
+        assert!(state.error.is_none());
+    }
+
+    #[test]
+    fn test_update_dashboard_clears_error() {
+        let mut state = PluginState::default();
+        state.error = Some("old error".to_string());
+        state.consecutive_failures = 5;
+        state.update_dashboard(make_dashboard(1, 1));
+        assert!(state.error.is_none());
+        assert_eq!(state.consecutive_failures, 0);
+    }
+
+    #[test]
+    fn test_move_selection_across_sections() {
+        let mut state = PluginState::default();
+        state.update_dashboard(make_dashboard(2, 2));
+        assert_eq!(state.section, Section::Tasks);
+        assert_eq!(state.task_index, 0);
+
+        // Move down through tasks
+        state.move_selection(1);
+        assert_eq!(state.section, Section::Tasks);
+        assert_eq!(state.task_index, 1);
+
+        // Move into coworkers section
+        state.move_selection(1);
+        assert_eq!(state.section, Section::Coworkers);
+        assert_eq!(state.coworker_index, 0);
+
+        // Move to second coworker
+        state.move_selection(1);
+        assert_eq!(state.section, Section::Coworkers);
+        assert_eq!(state.coworker_index, 1);
+
+        // Can't move past end
+        state.move_selection(1);
+        assert_eq!(state.coworker_index, 1);
+
+        // Move back into tasks
+        state.move_selection(-1);
+        state.move_selection(-1);
+        assert_eq!(state.section, Section::Tasks);
+        assert_eq!(state.task_index, 1);
+    }
+
+    #[test]
+    fn test_selected_coworker_name() {
+        let mut state = PluginState::default();
+        state.update_dashboard(make_dashboard(1, 2));
+
+        // In tasks section, no coworker selected
+        assert_eq!(state.selected_coworker_name(), None);
+
+        // Move to coworkers section
+        state.move_selection(1);
+        assert_eq!(state.section, Section::Coworkers);
+        assert_eq!(state.selected_coworker_name(), Some("worker0".to_string()));
+    }
+
+    #[test]
+    fn test_clamp_selection_on_dashboard_update() {
+        let mut state = PluginState::default();
+        state.update_dashboard(make_dashboard(3, 3));
+        state.task_index = 2;
+        state.section = Section::Coworkers;
+        state.coworker_index = 2;
+
+        // Dashboard update with fewer items — indices should be clamped
+        state.update_dashboard(make_dashboard(1, 1));
+        assert_eq!(state.task_index, 0);
+        assert_eq!(state.coworker_index, 0);
+    }
+
+    #[test]
+    fn test_stream_scroll() {
+        let mut state = PluginState::default();
+        state.stream_events = vec![
+            StreamEvent {
+                timestamp: chrono::Utc::now(),
+                event_type: "test".to_string(),
+                content: "event1".to_string(),
+            },
+            StreamEvent {
+                timestamp: chrono::Utc::now(),
+                event_type: "test".to_string(),
+                content: "event2".to_string(),
+            },
+        ];
+
+        assert_eq!(state.stream_scroll_offset, 0);
+        state.stream_scroll_down();
+        assert_eq!(state.stream_scroll_offset, 1);
+        state.stream_scroll_up();
+        assert_eq!(state.stream_scroll_offset, 0);
+        // Can't scroll past 0
+        state.stream_scroll_up();
+        assert_eq!(state.stream_scroll_offset, 0);
     }
 }

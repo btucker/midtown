@@ -25,7 +25,17 @@ pub fn render(state: &PluginState, rows: usize, cols: usize) {
     match &state.view {
         View::Main => render_main(state, rows, cols),
         View::CoworkerStream { name } => render_coworker_stream(state, name, rows, cols),
+        View::CoworkerAttached { name } => render_attached(name, cols),
     }
+}
+
+/// Render the attached coworker view (minimal sidebar while attached).
+fn render_attached(name: &str, cols: usize) {
+    print_header("Midtown", cols, None);
+    println!();
+    println!("{GREEN}  ⊕ Attached: {name}{RESET}");
+    println!();
+    println!("{DIM}  d: Detach{RESET}");
 }
 
 /// Render the main dashboard view.
