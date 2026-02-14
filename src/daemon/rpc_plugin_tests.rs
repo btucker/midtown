@@ -299,7 +299,7 @@ fn test_lead_nudge_queue_under_cap_no_eviction() {
 fn test_coworker_task_map_from_preloaded_tasks() {
     // Verifies that the dashboard handler correctly builds the coworker task
     // map from the already-loaded tasks slice (avoiding a duplicate read_tasks call).
-    let tasks = vec![
+    let tasks = [
         crate::tasks::Task {
             id: "1".to_string(),
             subject: "Active task".to_string(),
@@ -353,7 +353,7 @@ fn test_coworker_task_map_from_preloaded_tasks() {
     assert_eq!(coworker_tasks.len(), 1);
     assert_eq!(coworker_tasks.get("madison").unwrap(), "Active task");
     // Pending tasks and unowned tasks should not appear
-    assert!(coworker_tasks.get("park").is_none());
+    assert!(!coworker_tasks.contains_key("park"));
 }
 
 // ============================================================================
