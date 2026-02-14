@@ -348,6 +348,9 @@ fn test_zellij_plugin_compiles_to_wasm() {
         return;
     }
 
+    // Clear coverage-related environment variables that cargo-llvm-cov injects.
+    // The wasm32-wasip1 target doesn't ship profiler_builtins, so
+    // `-C instrument-coverage` causes a compilation error.
     let status = Command::new("cargo")
         .args([
             "build",
@@ -357,6 +360,13 @@ fn test_zellij_plugin_compiles_to_wasm() {
             "wasm32-wasip1",
         ])
         .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .env_remove("CARGO_ENCODED_RUSTFLAGS")
+        .env_remove("RUSTFLAGS")
+        .env_remove("RUSTC_WRAPPER")
+        .env_remove("CARGO_LLVM_COV")
+        .env_remove("CARGO_LLVM_COV_SHOW_ENV")
+        .env_remove("CARGO_LLVM_COV_TARGET_DIR")
+        .env_remove("LLVM_PROFILE_FILE")
         .status()
         .expect("Failed to run cargo build for WASM plugin");
 
