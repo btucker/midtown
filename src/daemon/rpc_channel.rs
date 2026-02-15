@@ -5,7 +5,7 @@
 
 use std::time::{Duration, Instant};
 
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info};
 
 use crate::message::{Message, MessageType};
 use crate::rpc::{RequestId, Response, RpcError};
@@ -127,36 +127,6 @@ pub(super) async fn handle_channel_post(
         drop(records); // Release write lock before acquiring read lock
     }
 
-    // Update tmux tab for coworkers when they post /me actions.
-    // Prefer structured state from daemon memory (reported via RPC) over
-    // parsing the freeform /me message text with keyword matching.
-    //
-    // Run tmux operations in spawn_blocking to avoid blocking the async
-    // runtime. This prevents RPC timeouts when tmux commands are slow.
-    if msg_type == MessageType::Action {
-        let display_status = {
-            let records = state.coworker_records.read().await;
-            records.get(from).and_then(|record| record.display_status())
-        };
-
-        let coworkers = state.coworkers.clone();
-        let from_clone = from.to_string();
-        let content_clone = content.clone();
-
-        tokio::task::spawn_blocking(move || {
-            if let Some(display) = display_status {
-                if let Err(e) = coworkers.update_status_formatted(&from_clone, &display) {
-                    debug!("Failed to update tmux tab for {}: {}", from_clone, e);
-                }
-            } else {
-                // Fallback: parse /me message text with keyword matching
-                if let Err(e) = coworkers.update_status_display(&from_clone, Some(&content_clone)) {
-                    debug!("Failed to update tmux tab for {}: {}", from_clone, e);
-                }
-            }
-        });
-    }
-
     // Nudge lead when user messages arrive (from web UI or TUI input)
     if state.is_user_sender(from) {
         // Check if user is @mentioning specific coworkers or @all
@@ -217,13 +187,6 @@ pub(super) async fn handle_channel_post(
             .is_some_and(|dn| content_lower.contains(&format!("@{}", dn.to_lowercase())));
     if has_user_mention && !state.is_user_sender(from) {
         info!("Bell notification: @user mentioned by {}", from);
-        // Run in spawn_blocking to avoid blocking the async runtime
-        let coworkers = state.coworkers.clone();
-        tokio::task::spawn_blocking(move || {
-            if let Err(e) = coworkers.notify_user() {
-                warn!("Failed to send bell notification for @user mention: {}", e);
-            }
-        });
         let display = state.user_display_name.as_deref().unwrap_or("user");
         let summary = truncate_str(&content, 100);
         state.send_push_notification(&format!("@{} from {}", display, from), &summary, "mention");
@@ -329,7 +292,7 @@ mod tests {
 
         let wm = crate::worktree::WorktreeManager::new(temp_dir.path().to_path_buf())
             .expect("worktree manager");
-        let cm = crate::coworker::CoworkerManager::new(repo_name, wm);
+        let cm = crate::coworker::CoworkerManager::new(wm);
 
         // Leak temp_dir so it survives the test
         let base_dir = temp_dir.path().to_path_buf();
@@ -422,7 +385,7 @@ mod tests {
             handle_channel_post(1_i64.into(), "user", "please check this", None, &state).await;
         assert!(response.error.is_none(), "channel.post should succeed");
 
-        let messages = state
+        let (messages, _capture) = state
             .headed_poll("lead", adapter_id, 0, 10)
             .await
             .expect("poll headed queue");
@@ -445,7 +408,7 @@ mod tests {
             handle_channel_post(2_i64.into(), "york", "@lead need a review", None, &state).await;
         assert!(response.error.is_none(), "channel.post should succeed");
 
-        let messages = state
+        let (messages, _capture) = state
             .headed_poll("lead", adapter_id, 0, 10)
             .await
             .expect("poll headed queue");

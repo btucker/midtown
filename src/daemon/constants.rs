@@ -45,13 +45,6 @@ pub use crate::github_state::PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS;
 /// How often to check for idle coworkers (30 seconds)
 pub(super) const IDLE_CHECK_INTERVAL: Duration = Duration::from_secs(30);
 
-/// How often to check lead pane activity for typing indicator (3 seconds)
-pub(super) const LEAD_TYPING_CHECK_INTERVAL: Duration = Duration::from_secs(3);
-
-/// Grace period before clearing the typing indicator after no pane changes (30 seconds).
-/// The lead may pause briefly (reading code, thinking) without having finished work.
-pub(super) const LEAD_TYPING_GRACE_PERIOD: Duration = Duration::from_secs(30);
-
 /// How often to check if channel rotation is needed (1 hour)
 pub(super) const CHANNEL_ROTATION_CHECK_INTERVAL: Duration = Duration::from_secs(3600);
 

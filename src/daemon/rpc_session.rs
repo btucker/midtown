@@ -425,33 +425,38 @@ pub(super) async fn handle_session_attach(
         }
     }
 
-    // Get session details from persistent state
-    let session_info = {
+    // Get session details from persistent state (eagerly persisted at spawn time).
+    // If session_id is empty (race between spawn and init event), backfill from
+    // session_manager which may have received the init event by now.
+    let info = {
         let persistent = state.persistent_state.lock().await;
-        persistent.headless_sessions.get(&name).cloned()
-    };
-
-    let info = match session_info {
-        Some(info) => info,
-        None => {
-            return Response::error(
-                id,
-                RpcError::new(
-                    -32603,
-                    format!(
-                        "No session ID found for coworker '{}'. \
-                         They may not be running in headless mode.",
-                        name
+        match persistent.headless_sessions.get(&name).cloned() {
+            Some(mut info) => {
+                if info.session_id.is_empty()
+                    && let Some(sid) = state.session_manager.get_session_id(&name).await
+                {
+                    info.session_id = sid;
+                }
+                info
+            }
+            None => {
+                return Response::error(
+                    id,
+                    RpcError::new(
+                        -32603,
+                        format!(
+                            "No session found for coworker '{}'. \
+                             They may not be running in headless mode.",
+                            name
+                        ),
                     ),
-                ),
-            );
+                );
+            }
         }
     };
 
-    // Check both session_manager (headless) and coworkers (legacy tmux) for running state
-    let headless_running = state.session_manager.is_alive(&name).await;
-    let tmux_running = state.coworkers.get(&name).is_some();
-    let running = headless_running || tmux_running;
+    // Check if session is currently running headless
+    let running = state.session_manager.is_alive(&name).await;
     let provider = info.provider.unwrap_or(crate::auth::AuthProvider::Claude);
     let session_id = info.session_id.clone();
     let cwd = state
@@ -468,24 +473,14 @@ pub(super) async fn handle_session_attach(
         });
 
     if running {
-        // Pause the running session (headless or tmux).
+        // Pause the running headless session.
         state.broadcast_coworker_update(&name, "attaching", None);
-        if headless_running {
-            if let Err(e) = state.session_manager.shutdown(&name).await {
-                return Response::error(
-                    id,
-                    RpcError::new(
-                        -32603,
-                        format!("Failed to pause headless session '{}': {}", name, e),
-                    ),
-                );
-            }
-        } else if let Err(e) = state.coworkers.shutdown(&name) {
+        if let Err(e) = state.session_manager.shutdown(&name).await {
             return Response::error(
                 id,
                 RpcError::new(
                     -32603,
-                    format!("Failed to pause coworker '{}': {}", name, e),
+                    format!("Failed to pause headless session '{}': {}", name, e),
                 ),
             );
         }
@@ -493,14 +488,8 @@ pub(super) async fn handle_session_attach(
         // (see #874). The attached_coworkers set provides the long-term exemption.
         state.record_coworker_stop_time(&name);
         info!(
-            "Paused running {} '{}' for attach (session={})",
-            if headless_running {
-                "headless session"
-            } else {
-                "tmux coworker"
-            },
-            name,
-            session_id
+            "Paused headless session '{}' for attach (session={})",
+            name, session_id
         );
     } else {
         info!(
@@ -654,6 +643,8 @@ pub(super) async fn handle_session_detach(
 /// Handle session.list RPC method.
 ///
 /// Returns a list of headless sessions with their status.
+/// All sessions are eagerly persisted at spawn time, so persistent state
+/// is the single source of truth.
 pub(super) async fn handle_session_list(id: RequestId, state: &DaemonState) -> Response {
     let persistent = state.persistent_state.lock().await;
     let running_coworkers: std::collections::HashSet<String> = state
@@ -717,6 +708,76 @@ pub(super) async fn handle_session_list(id: RequestId, state: &DaemonState) -> R
             "sessions": sessions,
         }),
     )
+}
+
+/// Handle session.view RPC method.
+///
+/// Returns recent output for a session. For headed sessions (attached
+/// interactively with a wrapper), captures the live PTY screen on demand.
+/// For headless sessions, returns the tail of the JSONL event log.
+pub(super) async fn handle_session_view(
+    id: RequestId,
+    target: &str,
+    state: &DaemonState,
+) -> Response {
+    let name = match resolve_attach_target(target, state).await {
+        Ok(n) => n,
+        Err(e) => return Response::error(id, RpcError::new(-32602, e)),
+    };
+
+    // Check if this session has an active headed wrapper lease.
+    // If so, request a PTY capture on demand.
+    let headed_key = DaemonState::session_key(&name);
+    let has_headed_lease = {
+        let sessions = state.headed_sessions.lock().await;
+        sessions.get(&headed_key).is_some_and(|s| s.lease.is_some())
+    };
+
+    if has_headed_lease {
+        // Request capture and wait for the wrapper to deliver it
+        match state.headed_request_capture(&name).await {
+            Ok(rx) => {
+                match tokio::time::timeout(std::time::Duration::from_secs(3), rx).await {
+                    Ok(Ok(output)) => {
+                        return Response::success(
+                            id,
+                            serde_json::json!({
+                                "success": true,
+                                "output": output,
+                                "source": "pty",
+                            }),
+                        );
+                    }
+                    _ => {
+                        // Timeout or channel closed — fall through to JSONL
+                        info!(
+                            "PTY capture timed out for '{}', falling back to JSONL",
+                            name
+                        );
+                    }
+                }
+            }
+            Err(_) => {
+                // No headed session / no lease — fall through
+            }
+        }
+    }
+
+    // Headless path: read JSONL event log
+    match state.session_manager.get_output(&name).await {
+        Some(output) => Response::success(
+            id,
+            serde_json::json!({
+                "success": true,
+                "output": output,
+                "source": "jsonl",
+            }),
+        ),
+        None => Response::error(
+            id,
+            RpcError::new(-32602, format!("No session output found for '{}'", name)),
+        ),
+    }
 }
 
 // ============================================================================

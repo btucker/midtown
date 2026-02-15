@@ -82,17 +82,36 @@ pub(super) async fn handle_poll(
         .headed_poll(session, adapter_id, after_id, limit)
         .await
     {
-        Ok(messages) => Response::success(
+        Ok((messages, capture_output)) => Response::success(
             id,
             serde_json::json!({
                 "session": session,
                 "adapter_id": adapter_id,
                 "after_id": after_id,
-                "messages": messages
+                "messages": messages,
+                "capture_output": capture_output,
             }),
         ),
         Err(e) => Response::error(id, RpcError::new(-32602, e)),
     }
+}
+
+pub(super) async fn handle_output(
+    id: RequestId,
+    session: &str,
+    output: &str,
+    state: &DaemonState,
+) -> Response {
+    state
+        .headed_deliver_output(session, output.to_string())
+        .await;
+    Response::success(
+        id,
+        serde_json::json!({
+            "session": session,
+            "ok": true,
+        }),
+    )
 }
 
 pub(super) async fn handle_ack(

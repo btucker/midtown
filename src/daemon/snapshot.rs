@@ -355,7 +355,7 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
     // ── Coworker state ──────────────────────────────────────────────────
     let active_coworkers = state.coworkers.list();
     let running_coworkers = state.coworkers.list_running();
-    let session_name = state.coworkers.session_name().to_string();
+    let session_name = format!("{}{}", crate::process::SESSION_PREFIX, state.repo_name);
 
     let coworker_snapshots: Vec<CoworkerSnapshot> = active_coworkers
         .iter()

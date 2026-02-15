@@ -85,7 +85,7 @@ fn test_manager() -> (CoworkerManager, tempfile::TempDir) {
 
     let worktree_manager = WorktreeManager::new(temp_dir.path().to_path_buf())
         .expect("Failed to create worktree manager");
-    let manager = CoworkerManager::new("midtown-race-test", worktree_manager);
+    let manager = CoworkerManager::new(worktree_manager);
 
     (manager, temp_dir)
 }

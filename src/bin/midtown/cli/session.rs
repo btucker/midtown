@@ -26,6 +26,11 @@ pub enum SessionCommand {
     },
     /// List attachable headless sessions
     List,
+    /// View a session's current output
+    View {
+        /// Session target (coworker name, task/<id>, pr/<number>, claude, etc.)
+        target: String,
+    },
 }
 
 #[derive(Args, Debug, Clone)]
@@ -233,6 +238,7 @@ pub fn handle(cmd: &SessionCommand, client: &DaemonClient) -> Result<Response, S
         SessionCommand::Attach { target } => handle_attach(target, client),
         SessionCommand::Detach { name } => client.session_detach(name),
         SessionCommand::List => client.session_list(),
+        SessionCommand::View { target } => client.session_view(target),
     }
 }
 

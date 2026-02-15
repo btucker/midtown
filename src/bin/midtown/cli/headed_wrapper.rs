@@ -149,6 +149,8 @@ struct HeadedPollMessage {
 #[derive(Debug, serde::Deserialize)]
 struct HeadedPollResult {
     messages: Vec<HeadedPollMessage>,
+    #[serde(default)]
+    capture_output: bool,
 }
 
 fn default_adapter_id(session: &str) -> String {
@@ -653,6 +655,11 @@ pub fn handle(cmd: &HeadedWrapperCommand, client: &DaemonClient) -> Result<Respo
                     last_seen_id = msg.id;
                 }
 
+                if parsed.capture_output {
+                    // RunShell has no PTY mirror — send empty so the waiter unblocks
+                    let _ = client.headed_output(session, "(no PTY output available)");
+                }
+
                 if *once {
                     break;
                 }
@@ -821,6 +828,12 @@ pub fn handle(cmd: &HeadedWrapperCommand, client: &DaemonClient) -> Result<Respo
                 }
                 if run_result.is_err() {
                     break;
+                }
+
+                // On-demand PTY capture: daemon requested the wrapper's screen
+                if parsed.capture_output {
+                    let captured = capture_output_text(&output_mirror);
+                    let _ = client.headed_output(session, &captured);
                 }
 
                 if last_heartbeat.elapsed() >= heartbeat_every {

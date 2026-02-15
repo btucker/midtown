@@ -107,6 +107,8 @@ struct HeadedSessionState {
     acked_id: u64,
     lease: Option<HeadedLease>,
     messages: VecDeque<HeadedQueuedMessage>,
+    /// Pending capture request: daemon sets this, wrapper fulfils it on next poll.
+    capture_tx: Option<tokio::sync::oneshot::Sender<String>>,
 }
 
 /// Result of daemon execution — determines what happens after the event loop exits.
@@ -404,8 +406,6 @@ pub(crate) struct DaemonState {
     persistent_state: Mutex<state::DaemonPersistentState>,
     /// Broadcast sender for pushing channel messages to WebSocket clients
     web_updates_tx: Option<tokio::sync::broadcast::Sender<WebUpdate>>,
-    /// Consolidated lead typing indicator state (pane hash, working flag, last activity).
-    lead_typing: std::sync::Mutex<trackers::LeadTypingState>,
     /// Maximum number of concurrent coworkers
     max_coworkers: usize,
     /// Web Push notification manager for sending notifications to PWA clients
@@ -733,7 +733,6 @@ impl DaemonState {
             max_coworkers,
             push_manager,
             usage_limit_nudge_at: Mutex::new(None),
-            lead_typing: std::sync::Mutex::new(trackers::LeadTypingState::default()),
             last_pr_poll_hash: Mutex::new(0),
             pr_coworker_cache: std::sync::RwLock::new(PrCoworkerCache::default()),
             pr_break_sessions: std::sync::RwLock::new(HashMap::new()),
@@ -831,6 +830,7 @@ impl DaemonState {
             crate::launch::SessionMode::ResumeSession(sid) => Some(sid.clone()),
             _ => None,
         };
+        let persisted_session_id = session_id.clone().unwrap_or_default();
         let initial_prompt = launch_config.initial_prompt.as_deref();
         self.session_manager
             .spawn(
@@ -853,6 +853,7 @@ impl DaemonState {
             .unwrap_or(crate::auth::DEFAULT_PROFILE)
             .to_string();
 
+        let working_dir_for_persist = working_dir.clone();
         if let Err(e) = self.coworkers.register(
             &slot_id,
             &name,
@@ -860,7 +861,7 @@ impl DaemonState {
             None,
             config.model.clone(),
             config.auth_provider,
-            profile,
+            profile.clone(),
         ) {
             // Race condition: another spawn beat us to registration. Clean up the
             // headless session we just created to prevent orphaned processes.
@@ -876,6 +877,40 @@ impl DaemonState {
                 );
             }
             return Err(e);
+        }
+
+        // Persist session info immediately so `session.list` and `session.attach`
+        // can find the entry without waiting for the shutdown-time save.
+        // For resumed sessions, session_id is known from config; for fresh sessions
+        // it starts empty and gets backfilled when the init StreamEvent arrives.
+        {
+            let mut ps = self.persistent_state.lock().await;
+            ps.headless_sessions.insert(
+                name.clone(),
+                crate::daemon::state::HeadlessSessionInfo {
+                    session_id: persisted_session_id,
+                    last_active: chrono::Utc::now(),
+                    purpose: config
+                        .initial_prompt
+                        .as_deref()
+                        .map(|p| p.chars().take(120).collect::<String>())
+                        .unwrap_or_default(),
+                    pid: self.session_manager.get_pid(&name).await,
+                    coworker_type: match config.role {
+                        crate::launch::CoworkerRole::Reviewer => Some("reviewer".to_string()),
+                        _ => Some("dev".to_string()),
+                    },
+                    task_id: None,
+                    pr_number: config.pr_number,
+                    working_dir: Some(working_dir_for_persist),
+                    provider: Some(config.auth_provider),
+                    profile: Some(profile),
+                    resume_on_startup: true,
+                },
+            );
+            if let Err(e) = ps.save_for_repo(&self.repo_name) {
+                warn!("Failed to save persistent state after spawn: {}", e);
+            }
         }
 
         // Insert fresh coworker record for health/workflow tracking
@@ -1179,21 +1214,24 @@ impl DaemonState {
         adapter_id: &str,
         after_id: u64,
         limit: usize,
-    ) -> Result<Vec<HeadedQueuedMessage>, String> {
+    ) -> Result<(Vec<HeadedQueuedMessage>, bool), String> {
         let key = Self::session_key(session);
         let mut sessions = self.headed_sessions.lock().await;
         let session_state = sessions.entry(key.clone()).or_default();
         let lease = Self::current_lease(session_state, &key, adapter_id)?;
         lease.last_seen = tokio::time::Instant::now();
 
+        let capture_requested = session_state.capture_tx.is_some();
+
         let capped_limit = limit.clamp(1, 200);
-        Ok(session_state
+        let messages = session_state
             .messages
             .iter()
             .filter(|m| m.id > after_id)
             .take(capped_limit)
             .cloned()
-            .collect())
+            .collect();
+        Ok((messages, capture_requested))
     }
 
     pub(crate) async fn headed_ack(
@@ -1242,6 +1280,43 @@ impl DaemonState {
             {
                 session_state.acked_id = dropped.id;
             }
+        }
+    }
+
+    /// Request a PTY capture from a headed session.
+    ///
+    /// Installs a oneshot sender. The next `headed.poll` will signal
+    /// `capture_output: true` to the wrapper, which calls `headed.output`
+    /// to deliver the content. Returns a receiver the caller awaits.
+    pub(crate) async fn headed_request_capture(
+        &self,
+        session: &str,
+    ) -> Result<tokio::sync::oneshot::Receiver<String>, String> {
+        let key = Self::session_key(session);
+        let mut sessions = self.headed_sessions.lock().await;
+        let session_state = sessions
+            .get_mut(&key)
+            .ok_or_else(|| format!("No headed session for '{}'", session))?;
+        if session_state.lease.is_none() {
+            return Err(format!("No active wrapper lease for '{}'", session));
+        }
+        // Replace any stale pending capture
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        session_state.capture_tx = Some(tx);
+        Ok(rx)
+    }
+
+    /// Deliver captured PTY output from the wrapper.
+    ///
+    /// Called by `headed.output` RPC. Sends the content to whoever is
+    /// waiting on the oneshot receiver from `headed_request_capture`.
+    pub(crate) async fn headed_deliver_output(&self, session: &str, output: String) {
+        let key = Self::session_key(session);
+        let mut sessions = self.headed_sessions.lock().await;
+        if let Some(session_state) = sessions.get_mut(&key)
+            && let Some(tx) = session_state.capture_tx.take()
+        {
+            let _ = tx.send(output);
         }
     }
 
@@ -2113,11 +2188,8 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
     }
     let listener = UnixListener::bind(&config.socket_path)?;
     info!("Listening on {}", config.socket_path.display());
-    let coworker_manager = CoworkerManager::with_additional_repos(
-        session_name,
-        worktree_manager,
-        additional_worktree_managers,
-    );
+    let coworker_manager =
+        CoworkerManager::with_additional_repos(worktree_manager, additional_worktree_managers);
 
     // Start webhook server and gh forwarder watchdog if configured
     let mut webhook_rx = None;
@@ -2244,9 +2316,6 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
 
     // Set up idle check interval
     let mut idle_check_interval = interval(IDLE_CHECK_INTERVAL);
-
-    // Set up lead typing indicator check interval
-    let mut lead_typing_interval = interval(LEAD_TYPING_CHECK_INTERVAL);
 
     // Set up lead health check interval (recreates lead window if killed).
     // Track daemon start time so we can skip health checks during the startup
@@ -2601,9 +2670,36 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                 }
 
                 // Log headless events at debug level for diagnostics.
+                // Also backfill session_id in persistent state when init events arrive.
+                let mut needs_persist_save = false;
                 for (name, session_events) in &events {
                     for event in session_events {
                         debug!(coworker = %name, event = ?event, "headless session event");
+
+                        // Backfill session_id on init event for freshly spawned sessions
+                        if let crate::headless::StreamEvent::System {
+                            subtype,
+                            session_id: Some(sid),
+                            ..
+                        } = event
+                            && subtype == "init"
+                            && !sid.is_empty()
+                        {
+                            let mut ps = state.persistent_state.lock().await;
+                            if let Some(info) = ps.headless_sessions.get_mut(name)
+                                && (info.session_id.is_empty() || info.session_id != *sid)
+                            {
+                                info!("Backfilling session_id for '{}': {}", name, sid);
+                                info.session_id = sid.clone();
+                                needs_persist_save = true;
+                            }
+                        }
+                    }
+                }
+                if needs_persist_save {
+                    let ps = state.persistent_state.lock().await;
+                    if let Err(e) = ps.save_for_repo(&state.repo_name) {
+                        warn!("Failed to save persistent state after session_id backfill: {}", e);
                     }
                 }
 
@@ -2667,27 +2763,13 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
 
             // Periodically monitor coworker sessions: idle shutdown, nudges, stuck detection
             _ = idle_check_interval.tick() => {
-                // Sync internal state with actual tmux windows first.
-                // Preserve headless session names so they don't get removed
-                // (headless coworkers have no tmux windows).
-                // Use list_alive_names() to exclude stopped sessions pending cleanup —
-                // list_names() would include them, causing sync_with_tmux to preserve
-                // stale entries in the CoworkerManager tracking map.
-                let headless_names: std::collections::HashSet<String> =
+                // Sync internal state: remove coworkers that are no longer alive
+                // in the session manager. With all sessions headless, the session
+                // manager is the source of truth for liveness.
+                let alive_names: std::collections::HashSet<String> =
                     state.session_manager.list_alive_names().await.into_iter().collect();
-                let persistent_sessions = {
-                    let ps = state.persistent_state.lock().await;
-                    ps.headless_sessions.clone()
-                };
-                if let Err(e) = state.coworkers.sync_with_tmux(&headless_names, &persistent_sessions) {
-                    warn!("Failed to sync coworker state with tmux: {}", e);
-                }
+                state.coworkers.retain_alive(&alive_names);
                 run_tick(&events::DaemonEvent::SessionMonitorTick, &state).await;
-            }
-
-            // Check lead pane activity for typing indicator
-            _ = lead_typing_interval.tick() => {
-                health::check_lead_typing(&state).await;
             }
 
             // Check if lead session is still alive; recreate if killed.

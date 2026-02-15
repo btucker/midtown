@@ -712,8 +712,8 @@ impl SessionManager {
     /// List only alive session names (excludes stopped sessions pending cleanup).
     ///
     /// Use this instead of `list_names()` when building the headless preservation
-    /// set for `sync_with_tmux()`. Using `list_names()` includes stopped sessions
-    /// that haven't been removed yet, which can cause `sync_with_tmux` to preserve
+    /// set for `retain_alive()`. Using `list_names()` includes stopped sessions
+    /// that haven't been removed yet, which can cause `retain_alive` to preserve
     /// stale entries in the CoworkerManager tracking map.
     pub async fn list_alive_names(&self) -> Vec<String> {
         let sessions = self.sessions.read().await;
@@ -823,11 +823,15 @@ impl SessionManager {
     ///
     /// This enables `midtown coworker view` to work with headless coworkers.
     pub async fn get_output(&self, name: &str) -> Option<String> {
-        // Get the log path without holding the lock during file I/O
+        // Get the log path: try active sessions first, fall back to the
+        // deterministic path for paused/attached/historical sessions.
         let log_path = {
             let sessions = self.sessions.read().await;
-            let cs = sessions.values().find(|cs| cs.name == name)?;
-            cs.output_log_path.clone()
+            sessions
+                .values()
+                .find(|cs| cs.name == name)
+                .map(|cs| cs.output_log_path.clone())
+                .unwrap_or_else(|| crate::paths::headless_output_file(&self.repo_name, name))
         };
 
         // Perform file I/O in spawn_blocking to avoid blocking the async runtime
