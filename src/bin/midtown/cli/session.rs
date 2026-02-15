@@ -349,12 +349,7 @@ fn ensure_attach_worktree(name: &str, daemon_cwd: &str) -> Result<String, String
                 .ok()
                 .and_then(|o| {
                     if o.status.success() {
-                        Some(
-                            String::from_utf8_lossy(&o.stdout)
-                                .trim()
-                                .to_string()
-                                .into(),
-                        )
+                        Some(String::from_utf8_lossy(&o.stdout).trim().to_string().into())
                     } else {
                         None
                     }
@@ -1114,5 +1109,80 @@ mod tests {
         assert_eq!(format_age_ms(999), "999ms");
         assert_eq!(format_age_ms(1_500), "1.5s");
         assert_eq!(format_age_ms(90_000), "1.5m");
+    }
+
+    #[test]
+    fn ensure_attach_worktree_lead_updates_to_head() {
+        use std::process::Command as TestCmd;
+        use tempfile::TempDir;
+
+        let temp = TempDir::new().unwrap();
+        let repo = temp.path();
+
+        // Create a git repo with an initial commit
+        TestCmd::new("git")
+            .args(["init"])
+            .current_dir(repo)
+            .output()
+            .unwrap();
+        TestCmd::new("git")
+            .args(["config", "user.email", "test@test.com"])
+            .current_dir(repo)
+            .output()
+            .unwrap();
+        TestCmd::new("git")
+            .args(["config", "user.name", "Test"])
+            .current_dir(repo)
+            .output()
+            .unwrap();
+        TestCmd::new("git")
+            .args(["commit", "--allow-empty", "-m", "init"])
+            .current_dir(repo)
+            .output()
+            .unwrap();
+
+        let manager =
+            midtown::worktree::WorktreeManager::new(repo.to_path_buf()).expect("create manager");
+
+        // Create lead worktree at initial commit
+        let wt = manager.create_lead_worktree().expect("create lead wt");
+        let initial_head = git_head(repo);
+        assert_eq!(git_head(&wt), initial_head);
+
+        // Advance HEAD
+        TestCmd::new("git")
+            .args(["commit", "--allow-empty", "-m", "second"])
+            .current_dir(repo)
+            .output()
+            .unwrap();
+        let new_head = git_head(repo);
+        assert_ne!(initial_head, new_head);
+
+        // ensure_attach_worktree for "lead" should update worktree
+        let result = ensure_attach_worktree("lead", &wt.to_string_lossy());
+        assert!(result.is_ok());
+        assert_eq!(
+            git_head(&wt),
+            new_head,
+            "ensure_attach_worktree should update lead to HEAD"
+        );
+    }
+
+    #[test]
+    fn ensure_attach_worktree_coworker_falls_back_to_daemon_cwd() {
+        // When repo detection fails (no git repo), should return daemon_cwd
+        let result = ensure_attach_worktree("park", "/tmp/some-cwd");
+        assert!(result.is_ok());
+        // Should not error — gracefully falls back
+        assert_eq!(result.unwrap(), "/tmp/some-cwd");
+    }
+
+    fn git_head(dir: &std::path::Path) -> String {
+        let out = std::process::Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
     }
 }
