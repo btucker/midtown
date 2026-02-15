@@ -89,7 +89,7 @@ pub struct LaunchCommand {
 ///
 /// Returns (ANTHROPIC_AUTH_TOKEN, ANTHROPIC_BASE_URL).
 /// Base URL defaults to https://api.z.ai/api/anthropic if not configured.
-fn zai_env_vars(profile_dir: &std::path::Path) -> std::io::Result<(String, String)> {
+pub fn zai_env_vars(profile_dir: &std::path::Path) -> std::io::Result<(String, String)> {
     let api_key_file = profile_dir.join("api_key.txt");
     let api_key = std::fs::read_to_string(&api_key_file)
         .map_err(|e| {
