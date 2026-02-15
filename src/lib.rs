@@ -137,6 +137,9 @@ pub mod mailbox;
 // Session key type for multi-session coworker identity
 pub mod session_key;
 
+// Provider-specific adapters for headed (interactive) delivery paths
+pub mod headed_adapter;
+
 // API usage data (session + weekly utilization from Anthropic OAuth API)
 pub mod usage;
 

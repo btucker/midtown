@@ -132,6 +132,7 @@ pub(super) async fn handle_dashboard(id: RequestId, state: &DaemonState) -> Resp
         coworkers: coworker_summaries,
         channel_messages,
         lead_nudge_queue,
+        lead_provider: state.coworkers.lead_provider().as_str().to_string(),
         daemon_version: env!("CARGO_PKG_VERSION").to_string(),
     };
 

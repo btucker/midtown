@@ -120,6 +120,14 @@ fn default_provider() -> AuthProvider {
     AuthProvider::Claude
 }
 
+fn default_lead_provider() -> AuthProvider {
+    std::env::var("MIDTOWN_LEAD_PROVIDER")
+        .ok()
+        .or_else(|| std::env::var("MIDTOWN_HEADED_LEAD_PROVIDER").ok())
+        .and_then(|s| s.parse::<AuthProvider>().ok())
+        .unwrap_or(AuthProvider::Claude)
+}
+
 fn default_profile() -> String {
     crate::auth::DEFAULT_PROFILE.to_string()
 }
@@ -185,6 +193,10 @@ pub struct CoworkerManager {
     /// Queue for coworker nudges. A background thread waits for each coworker's input
     /// to be stable (no typing) before delivering nudges, preventing interruption.
     coworker_nudge_tx: mpsc::Sender<CoworkerNudge>,
+    /// Provider used by the headed Lead session.
+    ///
+    /// This controls which adapter shapes headed control messages.
+    lead_provider: AuthProvider,
 }
 
 impl CoworkerManager {
@@ -215,10 +227,11 @@ impl CoworkerManager {
         // ensuring the daemon loop is never blocked and nudges arrive in FIFO order.
         let (lead_nudge_tx, lead_nudge_rx) = mpsc::channel::<String>();
         let nudge_session = session.clone();
+        let lead_provider = default_lead_provider();
         std::thread::Builder::new()
             .name("lead-nudge-queue".into())
             .spawn(move || {
-                Self::lead_nudge_worker(&nudge_session, lead_nudge_rx);
+                Self::lead_nudge_worker(&nudge_session, lead_nudge_rx, lead_provider);
             })
             .expect("Failed to spawn lead nudge worker thread");
 
@@ -252,6 +265,7 @@ impl CoworkerManager {
             discovered_on_startup: Arc::new(RwLock::new(Vec::new())),
             lead_nudge_tx,
             coworker_nudge_tx,
+            lead_provider,
         };
 
         // Discover existing coworkers from tmux on startup
@@ -275,6 +289,11 @@ impl CoworkerManager {
     /// Get a reference to the primary worktree manager.
     pub fn worktree_manager(&self) -> &WorktreeManager {
         &self.worktree_manager
+    }
+
+    /// Provider configured for headed Lead-session delivery.
+    pub fn lead_provider(&self) -> AuthProvider {
+        self.lead_provider
     }
 
     /// Take the list of coworker names discovered from tmux on startup.
@@ -937,8 +956,9 @@ impl CoworkerManager {
     ///
     /// For each nudge, waits until the lead's input prompt is empty (or 90s
     /// timeout expires), then delivers the nudge via tmux send-keys.
-    fn lead_nudge_worker(session: &str, rx: mpsc::Receiver<String>) {
+    fn lead_nudge_worker(session: &str, rx: mpsc::Receiver<String>, lead_provider: AuthProvider) {
         let target = format!("{}:lead.0", session);
+        let adapter = crate::headed_adapter::adapter_for(lead_provider);
 
         for message in rx {
             // Wait for the lead's input to be empty before sending
@@ -950,8 +970,9 @@ impl CoworkerManager {
                 );
             }
 
-            // Send keys to the lead's Claude Code pane (pane .0), NOT the chat pane (.1).
-            if let Err(e) = tmux::send_keys(session, "lead.0", &message) {
+            let payload = adapter.format_system_message(&message);
+            // Send keys to the lead's primary pane (pane .0), NOT the chat pane (.1).
+            if let Err(e) = tmux::send_keys(session, "lead.0", &payload) {
                 tracing::error!("Failed to deliver lead nudge: {}", e);
             }
         }

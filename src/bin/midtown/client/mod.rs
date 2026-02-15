@@ -552,6 +552,78 @@ impl DaemonClient {
         )
     }
 
+    // Headed wrapper intercom commands
+
+    pub fn headed_register(
+        &self,
+        session: &str,
+        adapter_id: &str,
+        provider: midtown::auth::AuthProvider,
+    ) -> Result<Value, String> {
+        self.send_raw(
+            "headed.register",
+            Some(serde_json::json!({
+                "session": session,
+                "adapter_id": adapter_id,
+                "provider": provider.as_str()
+            })),
+        )
+    }
+
+    pub fn headed_unregister(&self, session: &str, adapter_id: &str) -> Result<Value, String> {
+        self.send_raw(
+            "headed.unregister",
+            Some(serde_json::json!({
+                "session": session,
+                "adapter_id": adapter_id
+            })),
+        )
+    }
+
+    pub fn headed_heartbeat(&self, session: &str, adapter_id: &str) -> Result<Value, String> {
+        self.send_raw(
+            "headed.heartbeat",
+            Some(serde_json::json!({
+                "session": session,
+                "adapter_id": adapter_id
+            })),
+        )
+    }
+
+    pub fn headed_poll(
+        &self,
+        session: &str,
+        adapter_id: &str,
+        after_id: u64,
+        limit: usize,
+    ) -> Result<Value, String> {
+        self.send_raw(
+            "headed.poll",
+            Some(serde_json::json!({
+                "session": session,
+                "adapter_id": adapter_id,
+                "after_id": after_id,
+                "limit": limit
+            })),
+        )
+    }
+
+    pub fn headed_ack(
+        &self,
+        session: &str,
+        adapter_id: &str,
+        msg_id: u64,
+    ) -> Result<Value, String> {
+        self.send_raw(
+            "headed.ack",
+            Some(serde_json::json!({
+                "session": session,
+                "adapter_id": adapter_id,
+                "msg_id": msg_id
+            })),
+        )
+    }
+
     /// Send a JSON-RPC request with a custom timeout in seconds.
     fn send_raw_with_timeout(
         &self,

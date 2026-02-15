@@ -14,7 +14,14 @@ pub struct DashboardState {
     pub coworkers: Vec<CoworkerSummary>,
     pub channel_messages: Vec<ChannelMessage>,
     pub lead_nudge_queue: Vec<String>,
+    /// Headed lead provider name ("claude", "codex", "zai").
+    #[serde(default = "default_lead_provider")]
+    pub lead_provider: String,
     pub daemon_version: String,
+}
+
+fn default_lead_provider() -> String {
+    "claude".to_string()
 }
 
 /// Summary of a task for the plugin sidebar.

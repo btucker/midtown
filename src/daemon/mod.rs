@@ -21,6 +21,7 @@ mod rpc;
 mod rpc_auth;
 mod rpc_channel;
 mod rpc_coworker;
+mod rpc_headed;
 mod rpc_headless;
 mod rpc_insight;
 mod rpc_kanban;
@@ -52,7 +53,7 @@ pub use trackers::{
 #[doc(hidden)]
 pub use dispatch::should_recover_task_test_helper;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::File;
 use std::io::Write;
 use std::path::PathBuf;
@@ -79,6 +80,34 @@ use crate::worktree::WorktreeManager;
 #[derive(Debug, Clone)]
 pub(crate) struct TaskAssignment {
     pub task_id: String,
+}
+
+/// Max messages buffered per headed session before dropping oldest entries.
+const HEADED_SESSION_QUEUE_MAX: usize = 200;
+/// Lease timeout for headed adapters (seconds without heartbeat/poll).
+const HEADED_LEASE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub(crate) struct HeadedQueuedMessage {
+    pub id: u64,
+    pub kind: String,
+    pub text: String,
+    pub submit: bool,
+}
+
+#[derive(Debug, Clone)]
+struct HeadedLease {
+    adapter_id: String,
+    provider: crate::auth::AuthProvider,
+    last_seen: tokio::time::Instant,
+}
+
+#[derive(Debug, Default)]
+struct HeadedSessionState {
+    next_id: u64,
+    acked_id: u64,
+    lease: Option<HeadedLease>,
+    messages: VecDeque<HeadedQueuedMessage>,
 }
 
 /// Result of daemon execution — determines what happens after the event loop exits.
@@ -533,6 +562,12 @@ pub(crate) struct DaemonState {
     /// drains this queue on each poll so the plugin can deliver the nudges to
     /// the Lead's terminal pane.
     lead_nudge_queue: Mutex<Vec<String>>,
+    /// Session-scoped intercom queues for headed adapters (wrapper transport).
+    ///
+    /// Each session (e.g., "lead", "park") has an ordered queue and an
+    /// exclusive adapter lease. Adapters consume via poll+ack; the daemon
+    /// enqueues logical control messages (nudges/keys) without terminal coupling.
+    headed_sessions: Mutex<HashMap<String, HeadedSessionState>>,
     /// Ring buffer of recent stream events per coworker, for the
     /// `plugin.coworker-stream` endpoint.
     ///
@@ -725,6 +760,7 @@ impl DaemonState {
             restart_requested: std::sync::atomic::AtomicBool::new(false),
             shutdown_tx,
             lead_nudge_queue: Mutex::new(Vec::new()),
+            headed_sessions: Mutex::new(HashMap::new()),
             stream_event_buffer: std::sync::RwLock::new(HashMap::new()),
         })
     }
@@ -1013,12 +1049,213 @@ impl DaemonState {
         pending.remove(&name.to_lowercase());
     }
 
+    fn session_key(session: &str) -> String {
+        session.trim().to_ascii_lowercase()
+    }
+
+    fn lease_is_active(lease: &HeadedLease) -> bool {
+        lease.last_seen.elapsed() <= HEADED_LEASE_TIMEOUT
+    }
+
+    fn current_lease<'a>(
+        state: &'a mut HeadedSessionState,
+        session: &str,
+        adapter_id: &str,
+    ) -> Result<&'a mut HeadedLease, String> {
+        if state.lease.is_none() {
+            return Err(format!(
+                "No active headed adapter for session '{}'",
+                session
+            ));
+        }
+        if state
+            .lease
+            .as_ref()
+            .is_some_and(|l| !Self::lease_is_active(l))
+        {
+            state.lease = None;
+            return Err(format!(
+                "Headed adapter lease expired for session '{}'",
+                session
+            ));
+        }
+        let Some(lease) = state.lease.as_mut() else {
+            return Err(format!(
+                "No active headed adapter for session '{}'",
+                session
+            ));
+        };
+        if lease.adapter_id != adapter_id {
+            return Err(format!(
+                "Session '{}' is leased by adapter '{}' (not '{}')",
+                session, lease.adapter_id, adapter_id
+            ));
+        }
+        Ok(lease)
+    }
+
+    pub(crate) async fn headed_register(
+        &self,
+        session: &str,
+        adapter_id: &str,
+        provider: crate::auth::AuthProvider,
+    ) -> Result<(u64, crate::auth::AuthProvider), String> {
+        let key = Self::session_key(session);
+        let mut sessions = self.headed_sessions.lock().await;
+        let session_state = sessions.entry(key.clone()).or_default();
+
+        match session_state.lease.as_mut() {
+            None => {
+                session_state.lease = Some(HeadedLease {
+                    adapter_id: adapter_id.to_string(),
+                    provider,
+                    last_seen: tokio::time::Instant::now(),
+                });
+            }
+            Some(existing) if existing.adapter_id == adapter_id => {
+                existing.provider = provider;
+                existing.last_seen = tokio::time::Instant::now();
+            }
+            Some(existing) if !Self::lease_is_active(existing) => {
+                session_state.lease = Some(HeadedLease {
+                    adapter_id: adapter_id.to_string(),
+                    provider,
+                    last_seen: tokio::time::Instant::now(),
+                });
+            }
+            Some(existing) => {
+                return Err(format!(
+                    "Session '{}' already has active headed adapter '{}'",
+                    key, existing.adapter_id
+                ));
+            }
+        }
+
+        let lease_provider = session_state
+            .lease
+            .as_ref()
+            .map(|l| l.provider)
+            .unwrap_or(provider);
+        Ok((session_state.acked_id, lease_provider))
+    }
+
+    pub(crate) async fn headed_unregister(
+        &self,
+        session: &str,
+        adapter_id: &str,
+    ) -> Result<(), String> {
+        let key = Self::session_key(session);
+        let mut sessions = self.headed_sessions.lock().await;
+        let Some(session_state) = sessions.get_mut(&key) else {
+            return Ok(());
+        };
+        match session_state.lease.as_ref() {
+            Some(lease) if lease.adapter_id == adapter_id => {
+                session_state.lease = None;
+                Ok(())
+            }
+            Some(lease) => Err(format!(
+                "Session '{}' is leased by adapter '{}' (not '{}')",
+                key, lease.adapter_id, adapter_id
+            )),
+            None => Ok(()),
+        }
+    }
+
+    pub(crate) async fn headed_heartbeat(
+        &self,
+        session: &str,
+        adapter_id: &str,
+    ) -> Result<(), String> {
+        let key = Self::session_key(session);
+        let mut sessions = self.headed_sessions.lock().await;
+        let session_state = sessions.entry(key.clone()).or_default();
+        let lease = Self::current_lease(session_state, &key, adapter_id)?;
+        lease.last_seen = tokio::time::Instant::now();
+        Ok(())
+    }
+
+    pub(crate) async fn headed_poll(
+        &self,
+        session: &str,
+        adapter_id: &str,
+        after_id: u64,
+        limit: usize,
+    ) -> Result<Vec<HeadedQueuedMessage>, String> {
+        let key = Self::session_key(session);
+        let mut sessions = self.headed_sessions.lock().await;
+        let session_state = sessions.entry(key.clone()).or_default();
+        let lease = Self::current_lease(session_state, &key, adapter_id)?;
+        lease.last_seen = tokio::time::Instant::now();
+
+        let capped_limit = limit.clamp(1, 200);
+        Ok(session_state
+            .messages
+            .iter()
+            .filter(|m| m.id > after_id)
+            .take(capped_limit)
+            .cloned()
+            .collect())
+    }
+
+    pub(crate) async fn headed_ack(
+        &self,
+        session: &str,
+        adapter_id: &str,
+        msg_id: u64,
+    ) -> Result<u64, String> {
+        let key = Self::session_key(session);
+        let mut sessions = self.headed_sessions.lock().await;
+        let session_state = sessions.entry(key.clone()).or_default();
+        let lease = Self::current_lease(session_state, &key, adapter_id)?;
+        lease.last_seen = tokio::time::Instant::now();
+
+        if msg_id > session_state.acked_id {
+            session_state.acked_id = msg_id;
+        }
+        while session_state
+            .messages
+            .front()
+            .is_some_and(|m| m.id <= session_state.acked_id)
+        {
+            session_state.messages.pop_front();
+        }
+
+        Ok(session_state.acked_id)
+    }
+
+    pub(crate) async fn enqueue_headed_nudge(&self, session: &str, text: &str) {
+        let key = Self::session_key(session);
+        let mut sessions = self.headed_sessions.lock().await;
+        let session_state = sessions.entry(key).or_default();
+        session_state.next_id = session_state.next_id.saturating_add(1);
+        let next_id = session_state.next_id;
+
+        session_state.messages.push_back(HeadedQueuedMessage {
+            id: next_id,
+            kind: "nudge_text".to_string(),
+            text: text.to_string(),
+            submit: true,
+        });
+
+        while session_state.messages.len() > HEADED_SESSION_QUEUE_MAX {
+            if let Some(dropped) = session_state.messages.pop_front()
+                && dropped.id > session_state.acked_id
+            {
+                session_state.acked_id = dropped.id;
+            }
+        }
+    }
+
     /// Queue a nudge for the Lead and attempt tmux delivery as best-effort fallback.
     ///
     /// This is the daemon's canonical Lead nudge path. Under Zellij, tmux
     /// delivery is expected to fail (no lead tmux window) and the plugin
     /// consumes `lead_nudge_queue` via `plugin.dashboard`.
     pub(crate) async fn nudge_lead(&self, message: &str) {
+        // Queue for headed wrapper transport (session-scoped intercom).
+        self.enqueue_headed_nudge("lead", message).await;
+
         {
             let mut queue = self.lead_nudge_queue.lock().await;
             queue.push(message.to_string());

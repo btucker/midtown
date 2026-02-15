@@ -67,16 +67,36 @@ pub fn deliver_nudges(state: &PluginState, nudges: &[String]) {
     }
 }
 
+fn lead_command_markers(provider: Option<&str>) -> &'static [&'static str] {
+    match provider.unwrap_or("claude").to_ascii_lowercase().as_str() {
+        "codex" => &["codex"],
+        // z.ai runs through the Claude CLI with Anthropic-compatible env vars.
+        "zai" => &["claude"],
+        // Safe default for missing/unknown provider.
+        _ => &["claude"],
+    }
+}
+
+fn lead_command_matches(cmd: &str, provider: Option<&str>) -> bool {
+    let cmd = cmd.to_ascii_lowercase();
+    lead_command_markers(provider)
+        .iter()
+        .any(|marker| cmd.contains(marker))
+}
+
 /// Detect the Lead's pane from a PaneManifest update.
 ///
-/// The Lead's pane is identified by having a `terminal_command` containing "claude"
-/// but not being an attached coworker pane. It's the primary workspace pane.
+/// The Lead's pane is identified by matching the provider-specific command
+/// marker (`claude` for Claude/z.ai, `codex` for Codex) and not being an
+/// attached coworker pane.
 ///
-/// Heuristic: Find the largest non-plugin, non-attached terminal pane running "claude".
-/// If no claude pane found, use the focused terminal pane as fallback.
+/// Heuristic: Find the largest non-plugin, non-attached terminal pane running
+/// the expected provider command. If no command-match pane is found, use the
+/// focused terminal pane as fallback.
 pub fn detect_lead_pane(state: &mut PluginState, pane_manifest: &PaneManifest) {
     let mut best_candidate: Option<(u32, usize)> = None; // (pane_id, area)
     let mut focused_terminal: Option<u32> = None;
+    let lead_provider = state.lead_provider.as_deref();
 
     for panes in pane_manifest.panes.values() {
         for pane in panes {
@@ -101,9 +121,9 @@ pub fn detect_lead_pane(state: &mut PluginState, pane_manifest: &PaneManifest) {
                 focused_terminal = Some(pane.id);
             }
 
-            // Look for panes running "claude" (the Lead session)
+            // Look for panes running the configured Lead provider command.
             if let Some(cmd) = &pane.terminal_command
-                && cmd.contains("claude")
+                && lead_command_matches(cmd, lead_provider)
             {
                 let area = pane.pane_rows * pane.pane_columns;
                 if best_candidate.is_none_or(|(_, best_area)| area > best_area) {
@@ -113,7 +133,7 @@ pub fn detect_lead_pane(state: &mut PluginState, pane_manifest: &PaneManifest) {
         }
     }
 
-    // Use the best claude pane, or fall back to focused terminal
+    // Use the best provider-matching pane, or fall back to focused terminal.
     if let Some((pane_id, _)) = best_candidate {
         state.lead_pane_id = Some(PaneId::Terminal(pane_id));
     } else if let Some(pane_id) = focused_terminal {
@@ -160,5 +180,29 @@ pub fn detect_closed_attached_pane(
         Some(attached_name.to_string())
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_lead_command_matches_claude_default() {
+        assert!(lead_command_matches("claude --resume abc", None));
+        assert!(lead_command_matches("CLAUDE --resume abc", Some("claude")));
+        assert!(!lead_command_matches("codex resume abc", Some("claude")));
+    }
+
+    #[test]
+    fn test_lead_command_matches_codex_provider() {
+        assert!(lead_command_matches("codex resume abc", Some("codex")));
+        assert!(!lead_command_matches("claude --resume abc", Some("codex")));
+    }
+
+    #[test]
+    fn test_lead_command_matches_zai_uses_claude_cli() {
+        assert!(lead_command_matches("claude --resume abc", Some("zai")));
+        assert!(!lead_command_matches("codex resume abc", Some("zai")));
     }
 }
