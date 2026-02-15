@@ -57,6 +57,23 @@ struct AttachCandidate {
     provider: String,
     platform: String,
     cwd: String,
+    #[serde(default)]
+    running: bool,
+    #[serde(default)]
+    attached: bool,
+    #[serde(default)]
+    last_active: Option<String>,
+    #[serde(default)]
+    last_active_age_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct ResolvePayload {
+    candidates: Vec<AttachCandidate>,
+    #[serde(default)]
+    resolved_at_unix_ms: Option<u64>,
+    #[serde(default)]
+    resolved_at_monotonic_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -226,8 +243,8 @@ fn handle_attach(target: &AttachArgs, client: &DaemonClient) -> Result<Response,
 
     loop {
         // Step 1: Resolve target to attachable sessions.
-        let candidates = resolve_attach_candidates(client, &target_str)?;
-        let selected = choose_attach_candidate(&target_str, &candidates)?;
+        let resolved = resolve_attach_candidates(client, &target_str)?;
+        let selected = choose_attach_candidate(&target_str, &resolved)?;
 
         // Step 2: Ask daemon to pause the selected headless session and return session info.
         let info = match client.session_attach(&format!("name/{}", selected.name)) {
@@ -296,24 +313,21 @@ fn handle_attach(target: &AttachArgs, client: &DaemonClient) -> Result<Response,
 fn resolve_attach_candidates(
     client: &DaemonClient,
     target: &str,
-) -> Result<Vec<AttachCandidate>, String> {
+) -> Result<ResolvePayload, String> {
     let value = client.session_resolve(target)?;
-    let candidates_value = value
-        .get("candidates")
-        .cloned()
-        .ok_or("Daemon did not return candidates")?;
-    let candidates: Vec<AttachCandidate> = serde_json::from_value(candidates_value)
+    let resolved: ResolvePayload = serde_json::from_value(value)
         .map_err(|e| format!("Invalid candidates payload from daemon: {}", e))?;
-    if candidates.is_empty() {
+    if resolved.candidates.is_empty() {
         return Err(format!("No attachable sessions found for '{}'", target));
     }
-    Ok(candidates)
+    Ok(resolved)
 }
 
 fn choose_attach_candidate(
     target: &str,
-    candidates: &[AttachCandidate],
+    resolved: &ResolvePayload,
 ) -> Result<AttachCandidate, String> {
+    let candidates = &resolved.candidates;
     if candidates.len() == 1 {
         return Ok(candidates[0].clone());
     }
@@ -342,16 +356,41 @@ fn choose_attach_candidate(
         ));
     }
 
-    eprintln!("Multiple sessions match '{}'. Select one:", target);
+    eprintln!(
+        "Multiple sessions match '{}'. Select one (snapshot unix={} mono={}ms):",
+        target,
+        resolved
+            .resolved_at_unix_ms
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "n/a".to_string()),
+        resolved
+            .resolved_at_monotonic_ms
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "n/a".to_string()),
+    );
     for (idx, candidate) in candidates.iter().enumerate() {
+        let age = candidate
+            .last_active_age_ms
+            .map(format_age_ms)
+            .unwrap_or_else(|| "n/a".to_string());
+        let health = if candidate.attached {
+            "attached"
+        } else if candidate.running {
+            "running"
+        } else {
+            "paused"
+        };
         eprintln!(
-            "  {}. {} [{} via {} / {}] {}",
+            "  {}. {} [{} via {} / {}] {} ({}, last_active_age={}, at={})",
             idx + 1,
             candidate.name,
             candidate.platform,
             candidate.provider,
             candidate.session_id,
-            candidate.cwd
+            candidate.cwd,
+            health,
+            age,
+            candidate.last_active.as_deref().unwrap_or("unknown"),
         );
     }
 
@@ -381,6 +420,16 @@ fn is_attach_race_error(err: &str) -> bool {
     err.contains("is not running")
         || err.contains("No session ID found")
         || err.contains("already attached")
+}
+
+fn format_age_ms(ms: u64) -> String {
+    if ms < 1_000 {
+        return format!("{}ms", ms);
+    }
+    if ms < 60_000 {
+        return format!("{:.1}s", (ms as f64) / 1_000.0);
+    }
+    format!("{:.1}m", (ms as f64) / 60_000.0)
 }
 
 fn is_platform_session_target(target: &str) -> bool {
@@ -867,5 +916,12 @@ mod tests {
         assert!(is_platform_session_target("codex/thread-1"));
         assert!(!is_platform_session_target("name/park"));
         assert!(!is_platform_session_target("task/42"));
+    }
+
+    #[test]
+    fn format_age_ms_compacts_units() {
+        assert_eq!(format_age_ms(999), "999ms");
+        assert_eq!(format_age_ms(1_500), "1.5s");
+        assert_eq!(format_age_ms(90_000), "1.5m");
     }
 }

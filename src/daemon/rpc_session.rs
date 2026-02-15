@@ -5,6 +5,8 @@
 //! allowing interactive terminal sessions to be connected to headless coworker
 //! processes.
 
+use std::sync::OnceLock;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tracing::{info, warn};
 
 use crate::message::Message;
@@ -108,6 +110,16 @@ fn platform_for_provider(provider: Option<crate::auth::AuthProvider>) -> crate::
             crate::auth::AuthProvider::Claude
         }
     }
+}
+
+fn monotonic_now_ms() -> u64 {
+    static START: OnceLock<Instant> = OnceLock::new();
+    START
+        .get_or_init(Instant::now)
+        .elapsed()
+        .as_millis()
+        .try_into()
+        .unwrap_or(u64::MAX)
 }
 
 /// Resolve an attach target to one or more coworker names.
@@ -229,7 +241,15 @@ pub(super) async fn handle_session_resolve(
         Err(e) => return Response::error(id, RpcError::new(-32602, e)),
     };
 
+    let resolved_at_unix_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis().try_into().unwrap_or(u64::MAX))
+        .unwrap_or(0);
+    let resolved_at_monotonic_ms = monotonic_now_ms();
+
     let persistent = state.persistent_state.lock().await;
+    let now = chrono::Utc::now();
+    let attached = state.attached_coworkers.lock().unwrap().clone();
     let mut candidates: Vec<serde_json::Value> = names
         .into_iter()
         .filter_map(|name| {
@@ -237,12 +257,21 @@ pub(super) async fn handle_session_resolve(
             let info = persistent.headless_sessions.get(&name)?;
             let provider = info.provider.unwrap_or(crate::auth::AuthProvider::Claude);
             let platform = platform_for_provider(info.provider);
+            let attached_now = attached.contains(&name);
+            let last_active_age_ms = now
+                .signed_duration_since(info.last_active)
+                .num_milliseconds()
+                .max(0) as u64;
             Some(serde_json::json!({
                 "name": name,
                 "session_id": info.session_id,
                 "provider": provider.as_str(),
                 "platform": platform.as_str(),
                 "cwd": coworker.working_dir,
+                "running": true,
+                "attached": attached_now,
+                "last_active": info.last_active.to_rfc3339(),
+                "last_active_age_ms": last_active_age_ms,
             }))
         })
         .collect();
@@ -270,6 +299,8 @@ pub(super) async fn handle_session_resolve(
         id,
         serde_json::json!({
             "success": true,
+            "resolved_at_unix_ms": resolved_at_unix_ms,
+            "resolved_at_monotonic_ms": resolved_at_monotonic_ms,
             "candidates": candidates,
         }),
     )
