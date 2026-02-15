@@ -252,6 +252,11 @@ impl DaemonClient {
         self.send("coworker.spawn", Some(params))
     }
 
+    pub fn lead_spawn(&self, provider: midtown::auth::AuthProvider) -> Result<Response, String> {
+        let params = serde_json::json!({ "provider": provider.as_str() });
+        self.send("lead.spawn", Some(params))
+    }
+
     pub fn coworker_break(&self, name: &str) -> Result<Response, String> {
         self.send("coworker.break", Some(serde_json::json!({ "name": name })))
     }

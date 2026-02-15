@@ -340,20 +340,28 @@ fn handle_attach(target: &AttachArgs, client: &DaemonClient) -> Result<Response,
 /// needed via the daemon's existing worktree manager).
 ///
 /// Returns the (possibly updated) worktree path to use as the CWD.
-fn ensure_attach_worktree(name: &str, daemon_cwd: &str) -> Result<String, String> {
-    let repo_root = midtown::paths::detect_repo_name()
-        .and_then(|_| {
-            std::process::Command::new("git")
-                .args(["rev-parse", "--show-toplevel"])
-                .output()
-                .ok()
-                .and_then(|o| {
-                    if o.status.success() {
-                        Some(String::from_utf8_lossy(&o.stdout).trim().to_string().into())
-                    } else {
-                        None
-                    }
-                })
+pub(crate) fn ensure_attach_worktree(name: &str, daemon_cwd: &str) -> Result<String, String> {
+    // Resolve the main repo root from daemon_cwd (which may itself be a worktree).
+    // git-common-dir gives us the main repo's .git dir; its parent is the repo root.
+    let repo_root = std::process::Command::new("git")
+        .args(["rev-parse", "--git-common-dir"])
+        .current_dir(daemon_cwd)
+        .output()
+        .ok()
+        .and_then(|o| {
+            if o.status.success() {
+                let git_dir = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                if git_dir == ".git" {
+                    // Already in the repo root
+                    Some(std::path::PathBuf::from(daemon_cwd))
+                } else {
+                    std::path::Path::new(&git_dir)
+                        .parent()
+                        .map(|p| p.to_path_buf())
+                }
+            } else {
+                None
+            }
         })
         .unwrap_or_else(|| std::path::PathBuf::from(daemon_cwd));
 
@@ -672,7 +680,7 @@ fn usage_attach() -> &'static str {
        midtown session attach park"
 }
 
-fn build_attach_shell_command(
+pub(crate) fn build_attach_shell_command(
     cwd: &str,
     name: &str,
     provider: midtown::auth::AuthProvider,

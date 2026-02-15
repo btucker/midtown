@@ -263,35 +263,48 @@ pub async fn recover_headless_sessions(
         }
 
         // Build launch config based on coworker type and saved context
-        let mut config = match (
-            session_info.coworker_type.as_deref(),
-            session_info.task_id,
-            session_info.pr_number,
-        ) {
-            (Some("dev"), Some(task_id), _) => {
-                // Dev coworker with task assignment
-                let initial_prompt = format!(
-                    "You've been assigned task !{}. Run `midtown task view {}` for full details.",
-                    task_id, task_id
-                );
-                LaunchConfig::coworker(
-                    &name,
-                    repo_name,
-                    crate::launch::SessionMode::Fresh, // Will be overridden by ResumeCoworker effect
-                    Some(initial_prompt),
-                )
-            }
-            (Some("reviewer"), _, Some(pr_num)) => {
-                // Reviewer coworker
-                LaunchConfig::reviewer(&name, pr_num)
-            }
-            _ => {
-                // Fallback: generic dev coworker
-                warn!(
-                    "Session {} has incomplete metadata (type={:?}, task={:?}, pr={:?}), using generic config",
-                    name, session_info.coworker_type, session_info.task_id, session_info.pr_number
-                );
-                LaunchConfig::coworker(&name, repo_name, crate::launch::SessionMode::Fresh, None)
+        let mut config = if name == "lead" {
+            // Lead session — uses lead system prompt, unrestricted settings
+            LaunchConfig::lead(repo_name)
+        } else {
+            match (
+                session_info.coworker_type.as_deref(),
+                session_info.task_id,
+                session_info.pr_number,
+            ) {
+                (Some("dev"), Some(task_id), _) => {
+                    // Dev coworker with task assignment
+                    let initial_prompt = format!(
+                        "You've been assigned task !{}. Run `midtown task view {}` for full details.",
+                        task_id, task_id
+                    );
+                    LaunchConfig::coworker(
+                        &name,
+                        repo_name,
+                        crate::launch::SessionMode::Fresh, // Will be overridden by ResumeCoworker effect
+                        Some(initial_prompt),
+                    )
+                }
+                (Some("reviewer"), _, Some(pr_num)) => {
+                    // Reviewer coworker
+                    LaunchConfig::reviewer(&name, pr_num)
+                }
+                _ => {
+                    // Fallback: generic dev coworker
+                    warn!(
+                        "Session {} has incomplete metadata (type={:?}, task={:?}, pr={:?}), using generic config",
+                        name,
+                        session_info.coworker_type,
+                        session_info.task_id,
+                        session_info.pr_number
+                    );
+                    LaunchConfig::coworker(
+                        &name,
+                        repo_name,
+                        crate::launch::SessionMode::Fresh,
+                        None,
+                    )
+                }
             }
         };
 

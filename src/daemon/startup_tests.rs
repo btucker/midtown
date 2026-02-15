@@ -183,6 +183,46 @@ async fn test_recovering_coworker_names_empty_state() {
     assert!(names.is_empty());
 }
 
+#[tokio::test]
+async fn test_startup_recovery_sets_lead_role() {
+    let persistent_state = tokio::sync::Mutex::new(DaemonPersistentState::default());
+
+    {
+        let mut state = persistent_state.lock().await;
+        state.headless_sessions.insert(
+            "lead".to_string(),
+            crate::daemon::state::HeadlessSessionInfo {
+                session_id: "session-lead".to_string(),
+                last_active: chrono::Utc::now(),
+                purpose: "lead session".to_string(),
+                pid: Some(99999),
+                coworker_type: None,
+                task_id: None,
+                pr_number: None,
+                working_dir: Some("/tmp/test".to_string()),
+                provider: None,
+                profile: None,
+                resume_on_startup: true,
+            },
+        );
+    }
+
+    let effects = recover_headless_sessions(&persistent_state, "test-repo").await;
+    assert_eq!(effects.len(), 1);
+
+    match &effects[0] {
+        Effect::ResumeCoworker { name, config, .. } => {
+            assert_eq!(name, "lead");
+            assert_eq!(config.role, crate::launch::CoworkerRole::Lead);
+            assert!(
+                !config.restrict_setting_sources,
+                "Lead should have unrestricted setting sources"
+            );
+        }
+        other => panic!("Expected ResumeCoworker, got {:?}", other),
+    }
+}
+
 /// Verify that check_sandbox_context() returns an appropriate message when
 /// the daemon is running inside a sandbox (where coworker sandboxing will fail).
 ///
