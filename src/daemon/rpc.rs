@@ -12,7 +12,7 @@
 //! - `rpc_kanban` — kanban board data
 //! - `rpc_plugin` — Zellij plugin dashboard, attach/detach, coworker stream
 //! - `rpc_reminder` — reminder CRUD
-//! - `rpc_session` — session attach/detach/list
+//! - `rpc_session` — session resolve/attach/detach/list
 //! - `rpc_status` — daemon status overview
 //! - `rpc_task` — task CRUD operations
 
@@ -493,6 +493,11 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
         }
 
         // ---- Sessions ----
+        "session.resolve" => {
+            let target = require_str!(params, "target", request.id);
+            super::rpc_session::handle_session_resolve(request.id, target, state).await
+        }
+
         "session.attach" => {
             let target = require_str!(params, "target", request.id);
             super::rpc_session::handle_session_attach(request.id, target, state).await

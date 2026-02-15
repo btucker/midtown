@@ -105,7 +105,7 @@ The lead is just a claude code session, but it's been booted with some a [specia
 | `midtown coworker break <name>` | Send a coworker on break |
 | `midtown coworker list` | List active coworkers |
 | `midtown coworker view <name>` | View a coworker's output |
-| `midtown session attach name <n>` | Attach to a headless session |
+| `midtown session attach name/<n>` | Attach to a headless session |
 | `midtown session detach <name>` | Resume headless execution |
 | `midtown task create <subject> [...]` | Create a task (see [CLI reference](docs/cli.md) for all options) |
 | `midtown task list` | List tasks |

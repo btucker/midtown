@@ -420,10 +420,18 @@ impl DaemonClient {
     /// Request attaching to a headless coworker session.
     ///
     /// The daemon pauses the headless process and returns session info
-    /// (session_id, cwd, name) so the CLI can create a tmux window.
+    /// (session_id, cwd, name) so the CLI can create an interactive pane.
     pub fn session_attach(&self, target: &str) -> Result<Value, String> {
         self.send_raw(
             "session.attach",
+            Some(serde_json::json!({ "target": target })),
+        )
+    }
+
+    /// Resolve a target to one or more attachable sessions.
+    pub fn session_resolve(&self, target: &str) -> Result<Value, String> {
+        self.send_raw(
+            "session.resolve",
             Some(serde_json::json!({ "target": target })),
         )
     }

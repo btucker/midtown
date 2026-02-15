@@ -1,7 +1,8 @@
 //! Session attach/detach RPC handlers.
 //!
-//! Handles `session.attach`, `session.detach`, and `session.list` methods,
-//! allowing interactive tmux sessions to be connected to headless coworker
+//! Handles `session.resolve`, `session.attach`, `session.detach`, and
+//! `session.list` methods,
+//! allowing interactive terminal sessions to be connected to headless coworker
 //! processes.
 
 use tracing::{info, warn};
@@ -21,12 +22,58 @@ enum AttachTarget {
     Name(String),
     Task(u32),
     Pr(u64),
+    PlatformSession {
+        platform: crate::auth::AuthProvider,
+        session_id: String,
+    },
 }
 
 /// Parse an attach target string into a typed enum.
 ///
 /// Pure function — no state access. Validates format and types.
 fn parse_attach_target(target: &str) -> Result<AttachTarget, String> {
+    // New slash-delimited syntax:
+    //   name/<coworker>, task/<id>, pr/<number>, claude/<session_id>, codex/<session_id>
+    if let Some((kind, value)) = target.split_once('/') {
+        if value.is_empty() {
+            return Err(format!("Missing value in attach target '{}'", target));
+        }
+
+        return match kind.to_ascii_lowercase().as_str() {
+            "name" => Ok(AttachTarget::Name(value.to_lowercase())),
+            "task" => {
+                let id: u32 = value
+                    .parse()
+                    .map_err(|_| format!("Invalid task ID: {}", value))?;
+                Ok(AttachTarget::Task(id))
+            }
+            "pr" => {
+                let pr_num: u64 = value
+                    .parse()
+                    .map_err(|_| format!("Invalid PR number: {}", value))?;
+                Ok(AttachTarget::Pr(pr_num))
+            }
+            "claude" | "anthropic" | "antropic" => Ok(AttachTarget::PlatformSession {
+                platform: crate::auth::AuthProvider::Claude,
+                session_id: value.to_string(),
+            }),
+            "codex" | "openai" => Ok(AttachTarget::PlatformSession {
+                platform: crate::auth::AuthProvider::Codex,
+                session_id: value.to_string(),
+            }),
+            "zai" | "z.ai" => Err(
+                "Invalid platform 'zai'. Use claude/<session_id> for Anthropic/z.ai sessions."
+                    .to_string(),
+            ),
+            _ => Err(format!(
+                "Invalid target format: '{}'. Use name/<name>, task/<id>, pr/<number>, or <platform>/<session_id> where platform is claude|codex.",
+                target
+            )),
+        };
+    }
+
+    // Legacy colon-delimited syntax retained for compatibility:
+    //   name:<coworker>, task:<id>, pr:<number>
     if let Some(name) = target.strip_prefix("name:") {
         if name.is_empty() {
             return Err("Coworker name cannot be empty".to_string());
@@ -54,27 +101,48 @@ fn parse_attach_target(target: &str) -> Result<AttachTarget, String> {
     ))
 }
 
-/// Resolve an attach target to a coworker name using daemon state.
-async fn resolve_attach_target(target: &str, state: &DaemonState) -> Result<String, String> {
+fn platform_for_provider(provider: Option<crate::auth::AuthProvider>) -> crate::auth::AuthProvider {
+    match provider {
+        Some(crate::auth::AuthProvider::Codex) => crate::auth::AuthProvider::Codex,
+        Some(crate::auth::AuthProvider::Claude) | Some(crate::auth::AuthProvider::Zai) | None => {
+            crate::auth::AuthProvider::Claude
+        }
+    }
+}
+
+/// Resolve an attach target to one or more coworker names.
+async fn resolve_attach_target_candidates(
+    target: &str,
+    state: &DaemonState,
+) -> Result<Vec<String>, String> {
     let parsed = parse_attach_target(target)?;
 
-    match parsed {
-        AttachTarget::Name(name) => Ok(name),
+    let mut names = match parsed {
+        AttachTarget::Name(name) => vec![name],
         AttachTarget::Task(id) => {
             let id_str = id.to_string();
             let assignments = state.coworker_task_assignments.lock().unwrap();
-            for (coworker, assignment) in assignments.iter() {
-                if assignment.task_id == id_str {
-                    return Ok(coworker.clone());
-                }
+            let matches: Vec<String> = assignments
+                .iter()
+                .filter_map(|(coworker, assignment)| {
+                    if assignment.task_id == id_str {
+                        Some(coworker.to_lowercase())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            if matches.is_empty() {
+                return Err(format!("No coworker is assigned to task !{}", id));
             }
-            Err(format!("No coworker is assigned to task !{}", id))
+            matches
         }
         AttachTarget::Pr(pr_num) => {
+            let mut matches: Vec<String> = Vec::new();
             // Check reviewer assignments
             let persistent = state.persistent_state.lock().await;
             if let Some(reviewer) = persistent.github.get_reviewer(pr_num) {
-                return Ok(reviewer.to_lowercase());
+                matches.push(reviewer.to_lowercase());
             }
             drop(persistent);
             // Fall back to branch-name-based mapping via coworker list
@@ -85,11 +153,61 @@ async fn resolve_attach_target(target: &str, state: &DaemonState) -> Result<Stri
                     .as_ref()
                     .is_some_and(|t| t.contains(&format!("PR #{}", pr_num)))
                 {
-                    return Ok(cw.name.to_lowercase());
+                    matches.push(cw.name.to_lowercase());
                 }
             }
-            Err(format!("No coworker is working on PR #{}", pr_num))
+            if matches.is_empty() {
+                return Err(format!("No coworker is working on PR #{}", pr_num));
+            }
+            matches
         }
+        AttachTarget::PlatformSession {
+            platform,
+            session_id,
+        } => {
+            let persistent = state.persistent_state.lock().await;
+            let matches: Vec<String> = persistent
+                .headless_sessions
+                .iter()
+                .filter_map(|(name, info)| {
+                    if info.session_id != session_id {
+                        return None;
+                    }
+
+                    if platform_for_provider(info.provider) == platform {
+                        Some(name.to_lowercase())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            if matches.is_empty() {
+                return Err(format!(
+                    "No running headless session found for {}/{}",
+                    platform.as_str(),
+                    session_id
+                ));
+            }
+            matches
+        }
+    };
+
+    names.sort();
+    names.dedup();
+    Ok(names)
+}
+
+/// Resolve an attach target to exactly one coworker name.
+async fn resolve_attach_target(target: &str, state: &DaemonState) -> Result<String, String> {
+    let mut names = resolve_attach_target_candidates(target, state).await?;
+    match names.len() {
+        0 => Err(format!("No attachable sessions for target '{}'", target)),
+        1 => Ok(names.remove(0)),
+        _ => Err(format!(
+            "Multiple sessions match '{}': {}. Choose one via `midtown session attach name/<coworker>`.",
+            target,
+            names.join(", ")
+        )),
     }
 }
 
@@ -97,10 +215,70 @@ async fn resolve_attach_target(target: &str, state: &DaemonState) -> Result<Stri
 // Handlers
 // ============================================================================
 
+/// Handle session.resolve RPC method.
+///
+/// Returns attachable candidates for a target query so the CLI can present an
+/// interactive selector before calling `session.attach`.
+pub(super) async fn handle_session_resolve(
+    id: RequestId,
+    target: &str,
+    state: &DaemonState,
+) -> Response {
+    let names = match resolve_attach_target_candidates(target, state).await {
+        Ok(n) => n,
+        Err(e) => return Response::error(id, RpcError::new(-32602, e)),
+    };
+
+    let persistent = state.persistent_state.lock().await;
+    let mut candidates: Vec<serde_json::Value> = names
+        .into_iter()
+        .filter_map(|name| {
+            let coworker = state.coworkers.get(&name)?;
+            let info = persistent.headless_sessions.get(&name)?;
+            let provider = info.provider.unwrap_or(crate::auth::AuthProvider::Claude);
+            let platform = platform_for_provider(info.provider);
+            Some(serde_json::json!({
+                "name": name,
+                "session_id": info.session_id,
+                "provider": provider.as_str(),
+                "platform": platform.as_str(),
+                "cwd": coworker.working_dir,
+            }))
+        })
+        .collect();
+
+    if candidates.is_empty() {
+        return Response::error(
+            id,
+            RpcError::new(
+                -32602,
+                format!(
+                    "Target '{}' matched no currently running attachable sessions",
+                    target
+                ),
+            ),
+        );
+    }
+
+    candidates.sort_by(|a, b| {
+        let an = a.get("name").and_then(|v| v.as_str()).unwrap_or_default();
+        let bn = b.get("name").and_then(|v| v.as_str()).unwrap_or_default();
+        an.cmp(bn)
+    });
+
+    Response::success(
+        id,
+        serde_json::json!({
+            "success": true,
+            "candidates": candidates,
+        }),
+    )
+}
+
 /// Handle session.attach RPC method.
 ///
 /// Pauses the headless coworker process and returns session info so the CLI
-/// can create a tmux window with `claude --resume <session-id>`.
+/// can create an interactive pane with the matching provider CLI.
 pub(super) async fn handle_session_attach(
     id: RequestId,
     target: &str,
@@ -130,17 +308,17 @@ pub(super) async fn handle_session_attach(
         }
     }
 
-    // Get the session ID from persistent state
-    let session_id = {
+    // Get session details from persistent state
+    let session_info = {
         let persistent = state.persistent_state.lock().await;
-        persistent
-            .headless_sessions
-            .get(&name)
-            .map(|info| info.session_id.clone())
+        persistent.headless_sessions.get(&name).cloned()
     };
 
-    let session_id = match session_id {
-        Some(sid) => sid,
+    let (session_id, provider) = match session_info {
+        Some(info) => (
+            info.session_id,
+            info.provider.unwrap_or(crate::auth::AuthProvider::Claude),
+        ),
         None => {
             return Response::error(
                 id,
@@ -203,6 +381,7 @@ pub(super) async fn handle_session_attach(
             "session_id": session_id,
             "cwd": cwd,
             "name": name,
+            "provider": provider.as_str(),
         }),
     )
 }
@@ -384,9 +563,25 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_attach_target_name_slash() {
+        assert_eq!(
+            parse_attach_target("name/park").unwrap(),
+            AttachTarget::Name("park".to_string())
+        );
+    }
+
+    #[test]
     fn test_parse_attach_target_task() {
         assert_eq!(
             parse_attach_target("task:42").unwrap(),
+            AttachTarget::Task(42)
+        );
+    }
+
+    #[test]
+    fn test_parse_attach_target_task_slash() {
+        assert_eq!(
+            parse_attach_target("task/42").unwrap(),
             AttachTarget::Task(42)
         );
     }
@@ -403,6 +598,30 @@ mod tests {
             parse_attach_target("pr:123").unwrap(),
             AttachTarget::Pr(123)
         );
+    }
+
+    #[test]
+    fn test_parse_attach_target_provider_session() {
+        assert_eq!(
+            parse_attach_target("claude/abc-123").unwrap(),
+            AttachTarget::PlatformSession {
+                platform: crate::auth::AuthProvider::Claude,
+                session_id: "abc-123".to_string()
+            }
+        );
+        assert_eq!(
+            parse_attach_target("codex/thread-1").unwrap(),
+            AttachTarget::PlatformSession {
+                platform: crate::auth::AuthProvider::Codex,
+                session_id: "thread-1".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn test_parse_attach_target_rejects_zai_platform() {
+        assert!(parse_attach_target("zai/abc-123").is_err());
+        assert!(parse_attach_target("z.ai/abc-123").is_err());
     }
 
     #[test]
