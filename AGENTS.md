@@ -1,10 +1,10 @@
-# CLAUDE.md
+# AGENTS.md
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## Project Overview
 
-Midtown is a multi-Claude Code workspace manager. It coordinates a Lead (human-facing Claude Code in a Zellij terminal session) and multiple autonomous Coworkers (headless Claude Code sessions), each running in isolated git worktrees. Communication happens through an IRC-style append-only channel log. A Zellij WASM plugin provides an interactive dashboard for task/coworker monitoring and coworker attach/detach.
+Midtown is a multi-Claude Code workspace manager. It coordinates a Lead (human-facing Claude Code in a terminal session) and multiple autonomous Coworkers (headless Claude Code sessions), each running in isolated git worktrees. Communication happens through an IRC-style append-only channel log.
 
 ## Build & Development Commands
 
@@ -12,10 +12,7 @@ Midtown is a multi-Claude Code workspace manager. It coordinates a Lead (human-f
 # Build
 cargo build                     # debug build (daemon only)
 cargo build --release           # release build (daemon only)
-./scripts/build-all.sh          # build daemon + Zellij plugin + install plugin WASM
-
-# Build Zellij plugin only
-cargo build -p midtown-zellij-plugin --target wasm32-wasip1
+./scripts/build-all.sh          # build + install midtown
 
 # Test
 cargo test                      # unit + non-ignored integration tests
@@ -40,8 +37,6 @@ cargo install --path .
 **Pre-commit hooks** (cargo-husky): `cargo fmt` and `cargo clippy` run automatically on commit. If clippy fails, the commit is rejected — fix before retrying.
 
 **E2E tests** require Zellij and run with `--ignored`. CI uses `MIDTOWN_WEBHOOK_PORT=0` and `MIDTOWN_CHAT_MONITOR=0` to disable network features during testing.
-
-**Zellij plugin prerequisites**: Building the WASM plugin requires the `wasm32-wasip1` target: `rustup target add wasm32-wasip1`.
 
 **Containerized E2E tests** (canonical way to run E2E — reproducible environment):
 
@@ -99,7 +94,7 @@ Event sources (timer ticks, webhooks, RPC, signals)
 ### Nudge System
 
 Nudge decisions are made in `src/rules.rs` (`decide_interrupt_nudges`, `decide_prompt_nudges`) using `CooldownTracker` for per-coworker cooldowns and `CoworkerPhase` for deduplication (Idle → Prompted → Interrupted). Delivery is via `Effect::NudgeCoworker` / `Effect::NudgeLead` in `src/daemon/effects.rs`:
-- **Lead nudges**: Queued in `DaemonState::lead_nudge_queue` and pulled by the Zellij plugin, which delivers them to the Lead's terminal pane
+- **Lead nudges**: Delivered through headed intercom queues (`headed.register/poll/ack`) with tmux fallback
 - **Coworker nudges**: JSON streaming via `SessionManager` for headless sessions
 
 ### GitHub Integration
@@ -107,10 +102,6 @@ Nudge decisions are made in `src/rules.rs` (`decide_interrupt_nudges`, `decide_p
 - `src/webhook.rs`: Receives GitHub webhook events (PR, review, check runs), verified with HMAC-SHA256
 - PR polling (30s interval) for CI status and merge conflicts
 - `src/github_state.rs`: Persistent reviewer assignment tracking
-
-### Zellij Plugin
-
-The `midtown-zellij-plugin` crate (`midtown-zellij-plugin/`) compiles to a WASM plugin for the Zellij terminal multiplexer. It communicates with the daemon via RPC (shelling out to `midtown rpc` from a WASM worker). The plugin renders a sidebar dashboard showing tasks and coworkers, and manages the attach/detach flow for converting headless coworkers to interactive terminal panes. Shared types live in the `midtown-types` crate.
 
 ### Web Layer
 
@@ -151,7 +142,7 @@ Webhooks handle real-time GitHub events. Polling runs at a relaxed cadence (~2 m
 
 - **Initial prompt** — "Here's your mission." One-shot context at spawn time.
 - **Channel** — "Here's what's happening." Ambient team awareness, async.
-- **Nudge** (plugin-delivered for Lead, JSON streaming for coworkers) — "Pay attention now." Synchronous interrupt for session recovery, urgent PR feedback, task assignment to active coworkers.
+- **Nudge** (headed-intercom delivery for Lead, JSON streaming for coworkers) — "Pay attention now." Synchronous interrupt for session recovery, urgent PR feedback, task assignment to active coworkers.
 
 Don't nudge for information that can wait for the next channel read.
 
@@ -187,11 +178,11 @@ Each concern has a primary owner. The non-owner path only acts as reconciliation
 
 **Temp-file pattern for shell arguments**: When passing long text to the `claude` CLI (system prompts, initial prompts), write to a temp file and use `$(cat file)` in the command string. This avoids shell quoting issues. See prompt writing in `launch.rs`.
 
-**Hybrid process model**: The Lead runs in a Zellij terminal pane (defined by the KDL layout in `layouts/midtown.kdl`); Coworkers run as headless Claude Code sessions. A Zellij WASM plugin (`midtown-zellij-plugin`) provides a sidebar dashboard and handles Lead nudge delivery. Status is communicated via `/me` channel messages. Lead nudges are queued by the daemon and pulled by the plugin; coworker nudges use JSON streaming via `SessionManager`.
+**Hybrid process model**: The Lead can run in a terminal pane/window managed by a launcher; Coworkers run as headless Claude Code sessions. Status is communicated via `/me` channel messages. Lead nudges flow through headed intercom queues; coworker nudges use JSON streaming via `SessionManager`.
 
 ## Lead Maintenance
 
-If you are the Lead, whenever a PR is merged into main, pull, rebuild everything (daemon + plugin), and restart so the running daemon and coworkers pick up the changes:
+If you are the Lead, whenever a PR is merged into main, pull, rebuild, and restart so the running daemon and coworkers pick up the changes:
 
 ```bash
 git pull && ./scripts/build-all.sh && midtown restart

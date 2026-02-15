@@ -8,7 +8,6 @@ pub mod e2e;
 mod headed_wrapper;
 mod hooks;
 mod lead;
-mod plugin;
 mod pr;
 mod response;
 mod session;
@@ -22,7 +21,6 @@ pub use e2e::E2eCommand;
 pub use headed_wrapper::HeadedWrapperCommand;
 pub use hooks::HookCommand;
 // Note: daemon::get_lead_status and daemon::LEAD_SESSION available if needed
-pub use plugin::PluginCommand;
 pub use pr::PrCommand;
 pub use response::Response;
 pub use session::SessionCommand;
@@ -54,10 +52,6 @@ pub fn handle_task_local(cmd: &TaskCommand) -> Option<Result<Response, String>> 
 
 pub fn handle_status(client: &DaemonClient) -> Result<Response, String> {
     client.status()
-}
-
-pub fn handle_plugin(cmd: &PluginCommand, client: &DaemonClient) -> Result<Response, String> {
-    plugin::handle(cmd, client)
 }
 
 pub fn handle_headed_wrapper(

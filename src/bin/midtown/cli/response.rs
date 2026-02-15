@@ -16,7 +16,7 @@ pub enum Response {
     Tasks { tasks: Vec<TaskInfo> },
     /// List of PRs
     PullRequests { pull_requests: Vec<PrInfo> },
-    /// Raw JSON value (for plugin RPC passthrough)
+    /// Raw JSON value passthrough
     Json { value: serde_json::Value },
 }
 

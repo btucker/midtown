@@ -410,28 +410,48 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_user_message_queues_lead_nudge() {
+    async fn test_user_message_queues_headed_lead_nudge() {
         let state = make_test_state("midtown-test-rpc-channel-queue-user");
+        let adapter_id = "test-adapter-user";
+        state
+            .headed_register("lead", adapter_id, crate::auth::AuthProvider::Claude)
+            .await
+            .expect("register headed adapter");
+
         let response =
             handle_channel_post(1_i64.into(), "user", "please check this", None, &state).await;
         assert!(response.error.is_none(), "channel.post should succeed");
 
-        let queue = state.lead_nudge_queue.lock().await;
-        assert_eq!(queue.len(), 1);
-        assert_eq!(queue[0], "user: please check this");
+        let messages = state
+            .headed_poll("lead", adapter_id, 0, 10)
+            .await
+            .expect("poll headed queue");
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].kind, "nudge_text");
+        assert_eq!(messages[0].text, "user: please check this");
+        assert!(messages[0].submit);
     }
 
     #[tokio::test]
-    async fn test_coworker_at_lead_queues_lead_nudge() {
+    async fn test_coworker_at_lead_queues_headed_lead_nudge() {
         let state = make_test_state("midtown-test-rpc-channel-queue-coworker");
+        let adapter_id = "test-adapter-coworker";
+        state
+            .headed_register("lead", adapter_id, crate::auth::AuthProvider::Claude)
+            .await
+            .expect("register headed adapter");
+
         let response =
             handle_channel_post(2_i64.into(), "york", "@lead need a review", None, &state).await;
         assert!(response.error.is_none(), "channel.post should succeed");
 
-        let queue = state.lead_nudge_queue.lock().await;
-        assert_eq!(queue.len(), 1);
+        let messages = state
+            .headed_poll("lead", adapter_id, 0, 10)
+            .await
+            .expect("poll headed queue");
+        assert_eq!(messages.len(), 1);
         assert!(
-            queue[0].contains("york mentioned @lead"),
+            messages[0].text.contains("york mentioned @lead"),
             "queue entry should summarize coworker @lead mention"
         );
     }

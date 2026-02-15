@@ -548,7 +548,6 @@ fn escape_kdl_string(s: &str) -> String {
 /// Creates a layout with:
 /// - Left pane: midtown chat (channel TUI)
 /// - Right pane: Lead Claude Code session (launched via shell script)
-/// - Optional helper pane: Midtown Zellij plugin (nudge delivery + dashboard)
 /// - Bottom pane: built-in Zellij status bar (keybinding hints)
 ///
 /// Pane widths are configurable via `chat_pane_size` (10-90%).
@@ -558,7 +557,6 @@ fn generate_zellij_layout(
     lead_workdir: &Path,
     swap_layout: bool,
     chat_pane_size: u8,
-    plugin_wasm: Option<&Path>,
 ) -> Result<PathBuf, String> {
     let layout_dir = midtown::paths::midtown_base_dir().join("layouts");
     std::fs::create_dir_all(&layout_dir)
@@ -571,18 +569,6 @@ fn generate_zellij_layout(
 
     let chat_size = chat_pane_size.clamp(10, 90);
     let lead_size = 100u8.saturating_sub(chat_size);
-    let plugin_pane = plugin_wasm
-        .map(|p| {
-            let plugin_path = escape_kdl_string(&p.display().to_string());
-            format!(
-                r#"        pane size=1 borderless=true {{
-            plugin location="file:{plugin_path}"
-        }}
-"#,
-                plugin_path = plugin_path
-            )
-        })
-        .unwrap_or_default();
     let top_row = if swap_layout {
         format!(
             r#"pane split_direction="horizontal" {{
@@ -625,96 +611,18 @@ fn generate_zellij_layout(
     let layout = format!(
         r#"layout {{
     pane split_direction="vertical" {{
-{top_row}{plugin_pane}        pane size=2 borderless=true {{
+{top_row}        pane size=2 borderless=true {{
             plugin location="zellij:status-bar"
         }}
     }}
 }}
 "#,
-        top_row = top_row,
-        plugin_pane = plugin_pane
+        top_row = top_row
     );
 
     std::fs::write(&layout_path, layout).map_err(|e| format!("Failed to write layout: {}", e))?;
 
     Ok(layout_path)
-}
-
-/// Default install path for the Midtown Zellij plugin WASM.
-fn zellij_plugin_install_path() -> PathBuf {
-    midtown::paths::midtown_base_dir()
-        .join("plugins")
-        .join("midtown_zellij_plugin.wasm")
-}
-
-/// Ensure the Midtown Zellij plugin WASM is available.
-///
-/// Returns `Some(path)` when available, `None` when unavailable. This function
-/// never hard-fails startup; missing plugin degrades nudge delivery under Zellij.
-fn ensure_zellij_plugin_wasm(repo_root: &Path, allow_build: bool) -> Option<PathBuf> {
-    let install_path = zellij_plugin_install_path();
-    if install_path.exists() {
-        return Some(install_path);
-    }
-
-    // Try copying from local build artifacts first.
-    let candidates = [
-        repo_root.join("target/wasm32-wasip1/release/midtown_zellij_plugin.wasm"),
-        repo_root.join("target/wasm32-wasip1/debug/midtown_zellij_plugin.wasm"),
-    ];
-    for candidate in candidates {
-        if candidate.exists() {
-            if let Some(parent) = install_path.parent()
-                && std::fs::create_dir_all(parent).is_err()
-            {
-                continue;
-            }
-            if std::fs::copy(&candidate, &install_path).is_ok() {
-                return Some(install_path);
-            }
-        }
-    }
-
-    if !allow_build || !repo_root.join("Cargo.toml").exists() {
-        return None;
-    }
-
-    // Best-effort local build for developers running Midtown from source.
-    // If rustup isn't available or target install fails, we still continue startup.
-    let _ = Command::new("rustup")
-        .args(["target", "add", "wasm32-wasip1"])
-        .current_dir(repo_root)
-        .status();
-
-    let build_status = Command::new("cargo")
-        .args([
-            "build",
-            "--release",
-            "-p",
-            "midtown-zellij-plugin",
-            "--target",
-            "wasm32-wasip1",
-        ])
-        .current_dir(repo_root)
-        .status();
-
-    if !build_status.is_ok_and(|s| s.success()) {
-        return None;
-    }
-
-    let built = repo_root.join("target/wasm32-wasip1/release/midtown_zellij_plugin.wasm");
-    if !built.exists() {
-        return None;
-    }
-
-    if let Some(parent) = install_path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    if std::fs::copy(&built, &install_path).is_ok() {
-        Some(install_path)
-    } else {
-        None
-    }
 }
 
 /// Write a shell launcher script for the Lead Claude Code session.
@@ -1110,19 +1018,6 @@ pub fn handle_start(
         let lead_launcher =
             write_lead_launcher_script(&session, &lead_workdir, &project_name, &additional_repos)?;
 
-        // Ensure the Midtown Zellij plugin is available for lead nudge delivery.
-        // In test/stub mode we skip auto-build to keep startup fast and hermetic.
-        let plugin_wasm = ensure_zellij_plugin_wasm(
-            &primary_repo,
-            std::env::var("MIDTOWN_LEAD_COMMAND").is_err(),
-        );
-        if plugin_wasm.is_none() {
-            messages.push(
-                "Warning: Midtown Zellij plugin not found; lead nudges in Zellij may not be delivered"
-                    .to_string(),
-            );
-        }
-
         // Generate KDL layout for this project
         let layout_path = generate_zellij_layout(
             &project_name,
@@ -1130,7 +1025,6 @@ pub fn handle_start(
             &lead_workdir,
             effective_swap_layout,
             effective_chat_pane_size,
-            plugin_wasm.as_deref(),
         )?;
 
         // Launch Zellij in the background (detached).
@@ -2448,7 +2342,7 @@ mod tests {
         let project_name = format!("layout-default-{}", uuid::Uuid::new_v4());
 
         let layout_path =
-            generate_zellij_layout(&project_name, &launcher, temp.path(), false, 35, None).unwrap();
+            generate_zellij_layout(&project_name, &launcher, temp.path(), false, 35).unwrap();
         let content = std::fs::read_to_string(&layout_path).unwrap();
 
         let chat_idx = content.find("command \"midtown\"").unwrap();
@@ -2477,7 +2371,7 @@ mod tests {
         let project_name = format!("layout-swapped-{}", uuid::Uuid::new_v4());
 
         let layout_path =
-            generate_zellij_layout(&project_name, &launcher, temp.path(), true, 35, None).unwrap();
+            generate_zellij_layout(&project_name, &launcher, temp.path(), true, 35).unwrap();
         let content = std::fs::read_to_string(&layout_path).unwrap();
 
         let chat_idx = content.find("command \"midtown\"").unwrap();
@@ -2506,38 +2400,11 @@ mod tests {
         let project_name = format!("layout-size-{}", uuid::Uuid::new_v4());
 
         let layout_path =
-            generate_zellij_layout(&project_name, &launcher, temp.path(), false, 42, None).unwrap();
+            generate_zellij_layout(&project_name, &launcher, temp.path(), false, 42).unwrap();
         let content = std::fs::read_to_string(&layout_path).unwrap();
 
         assert!(content.contains("pane size=\"42%\""));
         assert!(content.contains("pane size=\"58%\""));
-        assert!(content.contains("plugin location=\"zellij:status-bar\""));
-
-        let _ = std::fs::remove_file(layout_path);
-    }
-
-    #[test]
-    fn test_generate_zellij_layout_with_plugin_pane() {
-        let temp = tempfile::tempdir().unwrap();
-        let launcher = temp.path().join("launcher.sh");
-        let plugin = temp.path().join("midtown_zellij_plugin.wasm");
-        std::fs::write(&launcher, "#!/bin/bash\necho ok\n").unwrap();
-        std::fs::write(&plugin, "wasm").unwrap();
-        let project_name = format!("layout-plugin-{}", uuid::Uuid::new_v4());
-
-        let layout_path = generate_zellij_layout(
-            &project_name,
-            &launcher,
-            temp.path(),
-            false,
-            35,
-            Some(&plugin),
-        )
-        .unwrap();
-        let content = std::fs::read_to_string(&layout_path).unwrap();
-
-        assert!(content.contains("plugin location=\"file:"));
-        assert!(content.contains("midtown_zellij_plugin.wasm"));
         assert!(content.contains("plugin location=\"zellij:status-bar\""));
 
         let _ = std::fs::remove_file(layout_path);
