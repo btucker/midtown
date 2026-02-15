@@ -12,7 +12,7 @@ The daemon handles:
 - GitHub webhook processing (PR events, CI status, reviews)
 - PR polling for merge conflicts and stuck conditions
 - @mention routing between team members
-- Plugin RPC endpoints for the Zellij dashboard (see below)
+- Headed wrapper intercom RPC endpoints (`headed.register/poll/ack/...`)
 
 ## Coworkers
 
@@ -89,20 +89,21 @@ The web interface is a Svelte 5 + Vite SPA served on port 47022:
   - **Desktop (≥1025px)**: Three-column Slack-inspired layout with sidebar, main channel, and toggleable detail panel for tasks, PRs, and coworker info
 - Clickable `@coworker` mentions in messages open coworker detail panel on desktop
 
-## Plugin RPC (Zellij Integration)
+## Headed Intercom RPC
 
-The daemon exposes RPC endpoints for the Zellij WASM plugin via `src/daemon/rpc_plugin.rs`. Shared types live in the `midtown-types` crate so both the daemon and the plugin can serialize/deserialize the same structures.
+Headed wrappers are adapter-neutral shims around interactive agent processes.
+Each wrapper registers a session lease with the daemon and consumes queued
+messages through a poll+ack contract.
 
 **Endpoints:**
-- `plugin.dashboard` — Returns a complete `DashboardState` snapshot (tasks, coworkers, channel messages, queued lead nudges). The plugin polls this ~1/s. Lead nudges are drained on read.
-- `plugin.attach` — Pauses a headless coworker and returns its session ID so the plugin can launch `claude --resume <id>` in a terminal pane.
-- `plugin.detach` — Resumes headless execution after the user detaches from an interactive session.
-- `plugin.coworker-stream` — Returns recent streaming events from a headless coworker's JSON stream for a read-only activity view.
+- `headed.register` — Claim or refresh an adapter lease for a session (e.g. `lead`).
+- `headed.poll` — Read queued messages after a message ID.
+- `headed.ack` — Acknowledge delivery up to a message ID (advances queue head).
+- `headed.heartbeat` / `headed.unregister` — Maintain or release lease ownership.
 
-**DaemonState fields for plugin support:**
-- `lead_nudge_queue: Mutex<Vec<String>>` — Queued lead nudges. `Effect::NudgeLead` appends here (capped at 50 entries); `plugin.dashboard` drains the queue on each poll.
-- `stream_event_buffer: RwLock<HashMap<String, Vec<BufferedStreamEvent>>>` — Ring buffer (max 100 events per coworker) of recent stream events for the coworker-stream endpoint.
-- `attached_coworkers: Mutex<HashSet<String>>` — Tracks which coworkers are currently attached via the plugin (exempted from health checks and dispatch).
+**DaemonState fields for intercom support:**
+- `headed_sessions: Mutex<HashMap<String, HeadedSessionState>>` — Per-session queue + lease.
+- `attached_coworkers: Mutex<HashSet<String>>` — Tracks interactive attach/detach state for headless coworkers.
 
 ## Reminders
 

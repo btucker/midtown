@@ -25,7 +25,6 @@ mod rpc_headed;
 mod rpc_headless;
 mod rpc_insight;
 mod rpc_kanban;
-mod rpc_plugin;
 mod rpc_reminder;
 mod rpc_session;
 mod rpc_status;
@@ -555,25 +554,12 @@ pub(crate) struct DaemonState {
     /// this channel to break the main loop.
     #[allow(dead_code)] // Used in rpc.rs via state.shutdown_tx.send()
     shutdown_tx: broadcast::Sender<()>,
-    /// Queued lead nudges for the Zellij plugin to pull.
-    ///
-    /// When `Effect::NudgeLead` fires, the message is appended here instead of
-    /// being sent directly via tmux send-keys. The `plugin.dashboard` handler
-    /// drains this queue on each poll so the plugin can deliver the nudges to
-    /// the Lead's terminal pane.
-    lead_nudge_queue: Mutex<Vec<String>>,
     /// Session-scoped intercom queues for headed adapters (wrapper transport).
     ///
     /// Each session (e.g., "lead", "park") has an ordered queue and an
     /// exclusive adapter lease. Adapters consume via poll+ack; the daemon
     /// enqueues logical control messages (nudges/keys) without terminal coupling.
     headed_sessions: Mutex<HashMap<String, HeadedSessionState>>,
-    /// Ring buffer of recent stream events per coworker, for the
-    /// `plugin.coworker-stream` endpoint.
-    ///
-    /// Keyed by coworker name (lowercase). Each coworker keeps the last N
-    /// events so the plugin can render a read-only activity view.
-    stream_event_buffer: std::sync::RwLock<HashMap<String, Vec<rpc_plugin::BufferedStreamEvent>>>,
 }
 
 impl DaemonState {
@@ -759,9 +745,7 @@ impl DaemonState {
             draining: std::sync::atomic::AtomicBool::new(false),
             restart_requested: std::sync::atomic::AtomicBool::new(false),
             shutdown_tx,
-            lead_nudge_queue: Mutex::new(Vec::new()),
             headed_sessions: Mutex::new(HashMap::new()),
-            stream_event_buffer: std::sync::RwLock::new(HashMap::new()),
         })
     }
 
@@ -1249,21 +1233,10 @@ impl DaemonState {
 
     /// Queue a nudge for the Lead and attempt tmux delivery as best-effort fallback.
     ///
-    /// This is the daemon's canonical Lead nudge path. Under Zellij, tmux
-    /// delivery is expected to fail (no lead tmux window) and the plugin
-    /// consumes `lead_nudge_queue` via `plugin.dashboard`.
+    /// This is the daemon's canonical Lead nudge path.
     pub(crate) async fn nudge_lead(&self, message: &str) {
         // Queue for headed wrapper transport (session-scoped intercom).
         self.enqueue_headed_nudge("lead", message).await;
-
-        {
-            let mut queue = self.lead_nudge_queue.lock().await;
-            queue.push(message.to_string());
-            if queue.len() > rpc_plugin::MAX_LEAD_NUDGE_QUEUE {
-                let excess = queue.len() - rpc_plugin::MAX_LEAD_NUDGE_QUEUE;
-                queue.drain(..excess);
-            }
-        }
 
         let coworkers = self.coworkers.clone();
         let message = message.to_string();
@@ -1271,10 +1244,7 @@ impl DaemonState {
             Ok(Ok(())) => {}
             Ok(Err(e)) => {
                 if e.to_string().contains("Lead session not found") {
-                    debug!(
-                        "tmux nudge_lead fallback unavailable (expected under Zellij): {}",
-                        e
-                    );
+                    debug!("tmux nudge_lead fallback unavailable: {}", e);
                 } else {
                     warn!("tmux nudge_lead fallback failed: {}", e);
                 }
@@ -2469,20 +2439,8 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                     *hh = health;
                 }
 
-                // Buffer events for the plugin.coworker-stream endpoint and
-                // log them at debug level for diagnostics.
+                // Log headless events at debug level for diagnostics.
                 for (name, session_events) in &events {
-                    // Convert StreamEvents to BufferedStreamEvents for the ring buffer
-                    let buffered: Vec<rpc_plugin::BufferedStreamEvent> = session_events
-                        .iter()
-                        .map(rpc_plugin::stream_event_to_buffered)
-                        .collect();
-                    rpc_plugin::append_to_stream_buffer(
-                        &state.stream_event_buffer,
-                        name,
-                        buffered,
-                    );
-
                     for event in session_events {
                         debug!(coworker = %name, event = ?event, "headless session event");
                     }
@@ -2509,12 +2467,11 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                     state.record_coworker_stop_time(&name);
                     // Remove from session manager tracking
                     state.session_manager.remove(&name).await;
-                    // Clean up coworker record and stream buffer
+                    // Clean up coworker record
                     {
                         let mut records = state.coworker_records.write().await;
                         records.remove(&name);
                     }
-                    rpc_plugin::remove_stream_buffer(&state.stream_event_buffer, &name);
 
                     // Format message with stderr if available
                     let message_text = if let Some(stderr_lines) = stderr_by_name.get(&name) {
