@@ -170,18 +170,20 @@ impl WorktreeManager {
         Ok(worktree_path)
     }
 
-    /// Create or reuse the lead's persistent worktree.
+    /// Create or update the lead's persistent worktree.
     ///
     /// The lead worktree lives at `~/.midtown/worktrees/<repo>/lead/` and uses
     /// detached HEAD (same as coworkers). Unlike task worktrees, this does NOT
     /// create a branch — the lead creates branches as needed for work.
     ///
-    /// Idempotent: returns the existing path if the worktree already exists.
+    /// If the worktree already exists, it is updated to the current HEAD of the
+    /// main repository so that the lead always works against up-to-date code.
     pub fn create_lead_worktree(&self) -> WorktreeResult<PathBuf> {
         let worktree_path = self.task_worktrees_base.join("lead");
 
-        // Check if worktree already exists and is valid (idempotent)
+        // If the worktree exists and is registered, update it to current HEAD
         if worktree_path.exists() && self.is_worktree_registered(&worktree_path) {
+            self.update_lead_worktree(&worktree_path)?;
             return Ok(worktree_path);
         }
 
@@ -240,6 +242,60 @@ impl WorktreeManager {
         }
 
         Ok(worktree_path)
+    }
+
+    /// Update the lead worktree to match the main repo's current HEAD.
+    ///
+    /// Runs `git checkout --detach HEAD` in the worktree, pointing it at the
+    /// same commit as the main repository's HEAD. This ensures the lead always
+    /// sees the latest code (e.g., after `git pull` in the main repo).
+    fn update_lead_worktree(&self, worktree_path: &Path) -> WorktreeResult<()> {
+        // Resolve the main repo's HEAD commit
+        let head_output = Command::new("git")
+            .current_dir(&self.repo_root)
+            .args(["rev-parse", "HEAD"])
+            .output()?;
+
+        if !head_output.status.success() {
+            return Err(WorktreeError::GitError(
+                String::from_utf8_lossy(&head_output.stderr).to_string(),
+            ));
+        }
+
+        let head_commit = String::from_utf8_lossy(&head_output.stdout)
+            .trim()
+            .to_string();
+
+        // Check if worktree is already at this commit
+        let wt_head = Command::new("git")
+            .current_dir(worktree_path)
+            .args(["rev-parse", "HEAD"])
+            .output()?;
+
+        if wt_head.status.success() {
+            let wt_commit = String::from_utf8_lossy(&wt_head.stdout).trim().to_string();
+            if wt_commit == head_commit {
+                return Ok(());
+            }
+        }
+
+        // Update to the main repo's HEAD
+        let output = Command::new("git")
+            .current_dir(worktree_path)
+            .args(["checkout", "--detach", &head_commit])
+            .output()?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+            warn!(
+                "Failed to update lead worktree to HEAD {}: {}",
+                &head_commit[..8.min(head_commit.len())],
+                stderr.trim()
+            );
+            return Err(WorktreeError::GitError(stderr));
+        }
+
+        Ok(())
     }
 
     /// Remove a coworker's worktree.
@@ -2486,6 +2542,67 @@ branch refs/heads/bob/work
             !output.status.success(),
             "Lead worktree should be in detached HEAD, not on a branch"
         );
+    }
+
+    #[test]
+    fn test_create_lead_worktree_updates_to_head() {
+        let (manager, _temp_dir) = create_test_repo();
+
+        // Create the lead worktree at the initial commit
+        let path = manager
+            .create_lead_worktree()
+            .expect("create lead worktree");
+        let initial_head = git_head_commit(manager.repo_root());
+        assert_eq!(git_head_commit(&path), initial_head);
+
+        // Advance HEAD in the main repo
+        TestCommand::new("git")
+            .args(["commit", "--allow-empty", "-m", "Second commit"])
+            .current_dir(manager.repo_root())
+            .output()
+            .expect("second commit");
+        let new_head = git_head_commit(manager.repo_root());
+        assert_ne!(initial_head, new_head, "HEAD should have advanced");
+
+        // Worktree is still at the old commit
+        assert_eq!(git_head_commit(&path), initial_head);
+
+        // Calling create_lead_worktree again should update it
+        let path2 = manager
+            .create_lead_worktree()
+            .expect("update lead worktree");
+        assert_eq!(path, path2);
+        assert_eq!(
+            git_head_commit(&path),
+            new_head,
+            "Lead worktree should now be at the new HEAD"
+        );
+    }
+
+    #[test]
+    fn test_create_lead_worktree_noop_when_already_at_head() {
+        let (manager, _temp_dir) = create_test_repo();
+
+        let path = manager
+            .create_lead_worktree()
+            .expect("create lead worktree");
+        let head = git_head_commit(manager.repo_root());
+
+        // Calling again with same HEAD should succeed without error
+        let path2 = manager
+            .create_lead_worktree()
+            .expect("update lead worktree (noop)");
+        assert_eq!(path, path2);
+        assert_eq!(git_head_commit(&path), head);
+    }
+
+    fn git_head_commit(dir: &Path) -> String {
+        let output = TestCommand::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(dir)
+            .output()
+            .expect("git rev-parse HEAD");
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
     }
 }
 

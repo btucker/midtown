@@ -69,6 +69,7 @@ fn test_headless_session_info_roundtrip() {
         working_dir: Some("/path/to/worktree".to_string()),
         provider: Some(crate::auth::AuthProvider::Codex),
         profile: Some("test-profile".to_string()),
+        resume_on_startup: true,
     };
     let json = serde_json::to_string(&info).unwrap();
     let parsed: HeadlessSessionInfo = serde_json::from_str(&json).unwrap();
@@ -98,6 +99,7 @@ fn test_headless_sessions_in_persistent_state() {
             working_dir: Some("/path/to/park-worktree".to_string()),
             provider: Some(crate::auth::AuthProvider::Claude),
             profile: Some("test-profile".to_string()),
+            resume_on_startup: true,
         },
     );
 
@@ -136,6 +138,7 @@ fn test_headless_session_info_backward_compat() {
     assert_eq!(info.pr_number, None);
     assert_eq!(info.working_dir, None);
     assert_eq!(info.provider, None); // Should default to None for old files
+    assert!(info.resume_on_startup);
 }
 
 #[test]
@@ -159,6 +162,7 @@ fn test_headless_session_provider_persistence() {
             working_dir: Some("/path/to/madison-worktree".to_string()),
             provider: Some(crate::auth::AuthProvider::Codex),
             profile: Some("test-profile".to_string()),
+            resume_on_startup: true,
         },
     );
 

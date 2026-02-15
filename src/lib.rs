@@ -140,6 +140,9 @@ pub mod session_key;
 // Provider-specific adapters for headed (interactive) delivery paths
 pub mod headed_adapter;
 
+// Platform-specific pre-launch hooks (shared by headed + headless launch paths)
+pub mod platform_launch;
+
 // API usage data (session + weekly utilization from Anthropic OAuth API)
 pub mod usage;
 

@@ -105,6 +105,56 @@ fn test_coworkers_response_includes_provider_and_profile() {
 }
 
 #[test]
+fn test_sessions_response_with_success_field() {
+    let json = r#"{
+        "success": true,
+        "sessions": [
+            {
+                "name": "park",
+                "session_id": "abc-123",
+                "status": "running",
+                "purpose": "task_work",
+                "last_active": "2026-02-16T00:00:00Z",
+                "task": "42"
+            }
+        ]
+    }"#;
+    let response: Response = serde_json::from_str(json).expect("Should parse sessions response");
+
+    match response {
+        Response::Sessions { sessions } => {
+            assert_eq!(sessions.len(), 1);
+            assert_eq!(sessions[0].name, "park");
+            assert_eq!(sessions[0].session_id, "abc-123");
+            assert_eq!(sessions[0].status, "running");
+            assert_eq!(sessions[0].task.as_deref(), Some("42"));
+        }
+        other => panic!("Expected Sessions, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_sessions_response_pretty_format() {
+    let response = Response::Sessions {
+        sessions: vec![SessionInfo {
+            name: "park".to_string(),
+            session_id: "abc-123".to_string(),
+            status: "running".to_string(),
+            purpose: Some("task_work".to_string()),
+            last_active: Some("2026-02-16T00:00:00Z".to_string()),
+            task: Some("42".to_string()),
+        }],
+    };
+
+    let pretty = response.to_pretty();
+    assert!(pretty.contains("Headless Sessions"));
+    assert!(pretty.contains("park"));
+    assert!(pretty.contains("running"));
+    assert!(pretty.contains("abc-123"));
+    assert!(pretty.contains("task:!42"));
+}
+
+#[test]
 fn test_coworkers_response_display_includes_provider_and_profile() {
     // Test that the pretty-print format includes provider:profile
     let response = Response::Coworkers {

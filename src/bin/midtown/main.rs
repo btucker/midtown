@@ -82,16 +82,8 @@ enum Commands {
         #[arg(long)]
         project: Option<String>,
     },
-    /// Start midtown (daemon + terminal session)
+    /// Start midtown services (daemon + shared webserver)
     Start {
-        /// Start daemon only, without terminal session
-        #[arg(long)]
-        daemon_only: bool,
-
-        /// Swap Zellij pane order (Lead on left, chat on right)
-        #[arg(long)]
-        swap_layout: bool,
-
         /// Project name (overrides auto-detection)
         #[arg(long)]
         project: Option<String>,
@@ -100,9 +92,9 @@ enum Commands {
         #[arg(long = "add-repo")]
         repos: Vec<std::path::PathBuf>,
     },
-    /// Stop midtown (daemon + terminal session)
+    /// Stop midtown services
     Stop {
-        /// Keep the terminal session running
+        /// Keep legacy midtown-* multiplexer sessions running if present
         #[arg(long)]
         keep_session: bool,
     },
@@ -112,10 +104,15 @@ enum Commands {
         #[arg(long)]
         force: bool,
     },
-    /// Attach to the project's terminal session
-    Attach {
-        /// Project name to attach to (default: inferred from cwd)
+    /// Launch chat in this terminal and open Lead in a split (best effort)
+    #[command(alias = "attach")]
+    View {
+        /// Project name to view (default: inferred from cwd)
         project: Option<String>,
+
+        /// Launch chat without trying to auto-create/open a Lead split
+        #[arg(long)]
+        skip_auto_split: bool,
     },
     /// Project management commands
     Project {
@@ -133,6 +130,7 @@ enum Commands {
         command: CoworkerCommand,
     },
     /// Attach/detach headless coworker sessions
+    #[command(alias = "sessions")]
     Session {
         #[command(subcommand)]
         command: SessionCommand,
@@ -144,7 +142,7 @@ enum Commands {
     },
     /// Show system status
     Status,
-    /// Headed wrapper intercom (adapter-neutral register/poll/ack loop)
+    /// Headed wrapper intercom (register/poll/ack + PTY-backed run-agent)
     HeadedWrapper {
         #[command(subcommand)]
         command: HeadedWrapperCommand,
@@ -324,8 +322,6 @@ fn main() {
 
     // Default to Start if no command provided
     let command = cli.command.unwrap_or(Commands::Start {
-        daemon_only: false,
-        swap_layout: false,
         project: None,
         repos: vec![],
     });
@@ -492,14 +488,8 @@ fn main() {
     }
 
     // Start command (starts daemon, doesn't need existing connection)
-    if let Commands::Start {
-        daemon_only,
-        swap_layout,
-        project,
-        repos,
-    } = &command
-    {
-        let result = cli::handle_start(*daemon_only, *swap_layout, project.clone(), repos.clone());
+    if let Commands::Start { project, repos } = &command {
+        let result = cli::handle_start(project.clone(), repos.clone());
         handle_result(format, result);
         return;
     }
@@ -518,9 +508,13 @@ fn main() {
         return;
     }
 
-    // Attach command (just tmux, doesn't need daemon)
-    if let Commands::Attach { project } = &command {
-        let result = cli::handle_attach(project.as_deref());
+    // View command (launches chat locally and best-effort split for Lead)
+    if let Commands::View {
+        project,
+        skip_auto_split,
+    } = &command
+    {
+        let result = cli::handle_view(project.as_deref(), *skip_auto_split);
         handle_result(format, result);
         return;
     }
@@ -924,7 +918,7 @@ fn main() {
         | Commands::Start { .. }
         | Commands::Stop { .. }
         | Commands::Restart { .. }
-        | Commands::Attach { .. }
+        | Commands::View { .. }
         | Commands::Lead { .. }
         | Commands::Project { .. }
         | Commands::Chat

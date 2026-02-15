@@ -238,12 +238,22 @@ pub fn handle(cmd: &SessionCommand, client: &DaemonClient) -> Result<Response, S
 
 /// Handle attach: resolve target -> pause headless -> open interactive pane -> auto-detach on exit.
 fn handle_attach(target: &AttachArgs, client: &DaemonClient) -> Result<Response, String> {
-    let target_str = normalize_attach_target(target)?;
+    let mut target_str = normalize_attach_target(target)?;
     let mut retried_after_race = false;
+    let mut attempted_auto_create = false;
 
     loop {
         // Step 1: Resolve target to attachable sessions.
-        let resolved = resolve_attach_candidates(client, &target_str)?;
+        let resolved = match resolve_attach_candidates(client, &target_str) {
+            Ok(resolved) => resolved,
+            Err(err) if !attempted_auto_create && should_auto_create_session(&err) => {
+                attempted_auto_create = true;
+                let created_target = create_attach_target(client, &target_str)?;
+                target_str = created_target;
+                continue;
+            }
+            Err(err) => return Err(err),
+        };
         let selected = choose_attach_candidate(&target_str, &resolved)?;
 
         // Step 2: Ask daemon to pause the selected headless session and return session info.
@@ -277,12 +287,23 @@ fn handle_attach(target: &AttachArgs, client: &DaemonClient) -> Result<Response,
                 .and_then(|v| v.as_str())
                 .unwrap_or("claude"),
         );
+        if let Err(e) = midtown::platform_launch::run_platform_prelaunch_hook(provider) {
+            eprintln!(
+                "Warning: Platform pre-launch hook failed (continuing): {}",
+                e
+            );
+        }
 
-        let shell_command = build_attach_shell_command(cwd, name, provider, session_id)?;
+        // Ensure worktree is set up before launching.
+        // For the lead, this updates the worktree to the current HEAD.
+        // For coworkers, this ensures the worktree directory exists.
+        let cwd = ensure_attach_worktree(name, cwd)?;
+
+        let shell_command = build_attach_shell_command(&cwd, name, provider, session_id)?;
         let launcher = PaneLauncher::detect();
 
         // Step 3: Launch interactive session in a pane for the current terminal host.
-        let where_opened = launcher.launch(cwd, &shell_command).map_err(|e| {
+        let where_opened = launcher.launch(&cwd, &shell_command).map_err(|e| {
             // If pane launch fails, tell daemon to resume headless.
             match client.session_detach(name) {
                 Ok(_) => eprintln!(
@@ -310,6 +331,68 @@ fn handle_attach(target: &AttachArgs, client: &DaemonClient) -> Result<Response,
     }
 }
 
+/// Ensure the worktree for an attach target exists and is up to date.
+///
+/// For the lead session, this updates the worktree to the main repo's current
+/// HEAD so the lead always works against the latest code.
+///
+/// For coworkers, this ensures the worktree directory exists (creating it if
+/// needed via the daemon's existing worktree manager).
+///
+/// Returns the (possibly updated) worktree path to use as the CWD.
+fn ensure_attach_worktree(name: &str, daemon_cwd: &str) -> Result<String, String> {
+    let repo_root = midtown::paths::detect_repo_name()
+        .and_then(|_| {
+            std::process::Command::new("git")
+                .args(["rev-parse", "--show-toplevel"])
+                .output()
+                .ok()
+                .and_then(|o| {
+                    if o.status.success() {
+                        Some(
+                            String::from_utf8_lossy(&o.stdout)
+                                .trim()
+                                .to_string()
+                                .into(),
+                        )
+                    } else {
+                        None
+                    }
+                })
+        })
+        .unwrap_or_else(|| std::path::PathBuf::from(daemon_cwd));
+
+    let manager = match midtown::worktree::WorktreeManager::new(repo_root) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("Warning: Could not init worktree manager: {}", e);
+            return Ok(daemon_cwd.to_string());
+        }
+    };
+
+    if name == "lead" {
+        match manager.create_lead_worktree() {
+            Ok(path) => return Ok(path.to_string_lossy().to_string()),
+            Err(e) => {
+                eprintln!("Warning: Failed to update lead worktree: {}", e);
+            }
+        }
+    } else {
+        // For coworkers, ensure their worktree exists
+        let wt_path = manager.worktree_path(name);
+        if !wt_path.exists() {
+            match manager.create(name) {
+                Ok(path) => return Ok(path.to_string_lossy().to_string()),
+                Err(e) => {
+                    eprintln!("Warning: Failed to create worktree for {}: {}", name, e);
+                }
+            }
+        }
+    }
+
+    Ok(daemon_cwd.to_string())
+}
+
 fn resolve_attach_candidates(
     client: &DaemonClient,
     target: &str,
@@ -321,6 +404,75 @@ fn resolve_attach_candidates(
         return Err(format!("No attachable sessions found for '{}'", target));
     }
     Ok(resolved)
+}
+
+fn should_auto_create_session(err: &str) -> bool {
+    let lower = err.to_ascii_lowercase();
+    (lower.contains("no attachable sessions")
+        || lower.contains("matched no persisted attachable sessions")
+        || lower.contains("no persisted session"))
+        && !lower.contains("invalid")
+}
+
+fn create_attach_target(client: &DaemonClient, target: &str) -> Result<String, String> {
+    let provider = provider_from_target(target);
+    eprintln!(
+        "No existing attachable session matched '{}'; creating a new {} coworker session...",
+        target,
+        provider.as_str()
+    );
+
+    let spawn_response = client.coworker_spawn(false, None, provider)?;
+    let spawned_name = extract_spawned_name(&spawn_response)?;
+
+    // Wait for the new headless session to persist a resumable session ID.
+    // This is async in the daemon (stream init event), so poll briefly.
+    let new_target = format!("name/{}", spawned_name);
+    for _ in 0..100 {
+        if resolve_attach_candidates(client, &new_target).is_ok() {
+            return Ok(new_target);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+
+    Err(format!(
+        "Spawned coworker '{}' but its session was not attachable yet. Try again in a few seconds.",
+        spawned_name
+    ))
+}
+
+fn extract_spawned_name(response: &Response) -> Result<String, String> {
+    match response {
+        Response::Coworkers { coworkers } => coworkers
+            .first()
+            .map(|c| c.name.to_lowercase())
+            .ok_or_else(|| "Spawn response contained no coworkers".to_string()),
+        Response::Json { value } => value
+            .get("coworkers")
+            .and_then(|v| v.as_array())
+            .and_then(|arr| arr.first())
+            .and_then(|cw| cw.get("name"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_lowercase())
+            .ok_or_else(|| "Spawn response JSON did not include coworker name".to_string()),
+        Response::Message { message } => message
+            .split(':')
+            .next_back()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_lowercase())
+            .ok_or_else(|| format!("Could not parse spawned coworker name from '{}'", message)),
+        _ => Err("Unexpected response type from coworker spawn".to_string()),
+    }
+}
+
+fn provider_from_target(target: &str) -> midtown::auth::AuthProvider {
+    let lower = target.to_ascii_lowercase();
+    if lower == "codex" || lower.starts_with("codex/") || lower.starts_with("openai/") {
+        midtown::auth::AuthProvider::Codex
+    } else {
+        midtown::auth::AuthProvider::Claude
+    }
 }
 
 fn choose_attach_candidate(
@@ -474,6 +626,12 @@ fn normalize_single_target(raw: &str) -> Result<String, String> {
     }
 
     let lower = raw.to_ascii_lowercase();
+    if matches!(
+        lower.as_str(),
+        "claude" | "codex" | "anthropic" | "antropic" | "openai"
+    ) {
+        return normalize_target_kind(raw);
+    }
     if matches!(lower.as_str(), "name" | "task" | "pr") {
         return Err(usage_attach().to_string());
     }
@@ -509,6 +667,8 @@ fn normalize_target_kind(kind: &str) -> Result<String, String> {
 fn usage_attach() -> &'static str {
     "Usage: midtown session attach <target>\n\
      Examples:\n\
+       midtown session attach codex\n\
+       midtown session attach claude\n\
        midtown session attach name/park\n\
        midtown session attach task/42\n\
        midtown session attach pr/123\n\
@@ -572,12 +732,19 @@ fn build_attach_shell_command(
         .join(" ");
 
     let bin_command = midtown::config::get_bin_command();
+    let wrapped_attach_cmd = format!(
+        "{} headed-wrapper run-agent --session {} --provider {} -- sh -lc {}",
+        shell_quote(&bin_command),
+        shell_quote(name),
+        provider.as_str(),
+        shell_quote(&provider_cmd),
+    );
     let detach_cmd = format!("{} session detach {}", bin_command, shell_quote(name));
 
     Ok(format!(
         "export {}; {}; status=$?; {} >/dev/null 2>&1 || true; exit $status",
         env_parts.join(" "),
-        provider_cmd,
+        wrapped_attach_cmd,
         detach_cmd
     ))
 }
@@ -810,6 +977,13 @@ mod tests {
     }
 
     #[test]
+    fn normalize_single_target_platform_only() {
+        assert_eq!(normalize_single_target("codex").unwrap(), "codex");
+        assert_eq!(normalize_single_target("openai").unwrap(), "codex");
+        assert_eq!(normalize_single_target("claude").unwrap(), "claude");
+    }
+
+    #[test]
     fn normalize_single_target_supports_slash_syntax() {
         assert_eq!(normalize_single_target("task/42").unwrap(), "task/42");
         assert_eq!(
@@ -916,6 +1090,23 @@ mod tests {
         assert!(is_platform_session_target("codex/thread-1"));
         assert!(!is_platform_session_target("name/park"));
         assert!(!is_platform_session_target("task/42"));
+        assert!(!is_platform_session_target("codex"));
+    }
+
+    #[test]
+    fn provider_from_target_platform() {
+        assert_eq!(
+            provider_from_target("codex"),
+            midtown::auth::AuthProvider::Codex
+        );
+        assert_eq!(
+            provider_from_target("codex/anything"),
+            midtown::auth::AuthProvider::Codex
+        );
+        assert_eq!(
+            provider_from_target("name/madison"),
+            midtown::auth::AuthProvider::Claude
+        );
     }
 
     #[test]
