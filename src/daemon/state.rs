@@ -21,7 +21,7 @@ use crate::worktree_registry::WorktreeRegistry;
 ///
 /// Stored in `DaemonPersistentState` to survive daemon restarts. The daemon
 /// uses these session IDs to resume coworker sessions after restart, and to
-/// support `midtown attach` (which pauses headless execution and resumes it
+/// support `midtown view` (which pauses headless execution and resumes it
 /// in an interactive terminal).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HeadlessSessionInfo {
@@ -53,6 +53,16 @@ pub struct HeadlessSessionInfo {
     /// Used to restore the correct auth profile directory on daemon restart.
     #[serde(default)]
     pub profile: Option<String>,
+    /// Whether this session should be auto-resumed when the daemon starts.
+    ///
+    /// Historical sessions remain persisted for manual attach/resume, but only
+    /// sessions marked `true` are recovered automatically during startup.
+    #[serde(default = "default_resume_on_startup")]
+    pub resume_on_startup: bool,
+}
+
+fn default_resume_on_startup() -> bool {
+    true
 }
 
 /// All persistent daemon state in one struct.
@@ -80,8 +90,11 @@ pub struct DaemonPersistentState {
     #[serde(default)]
     pub worktree_registry: WorktreeRegistry,
 
-    /// Headless session IDs for coworkers, keyed by coworker name.
-    /// Persisted so the daemon can resume sessions after restart.
+    /// Persisted headless sessions keyed by coworker name.
+    ///
+    /// Includes currently running sessions and historical sessions that are not
+    /// running. `HeadlessSessionInfo::resume_on_startup` controls whether a
+    /// persisted session should be auto-resumed at daemon startup.
     #[serde(default)]
     pub headless_sessions: HashMap<String, HeadlessSessionInfo>,
 

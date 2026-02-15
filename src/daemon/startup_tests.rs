@@ -18,6 +18,7 @@ fn test_session_info(
         working_dir: Some("/tmp/test".to_string()),
         provider: None,
         profile: None,
+        resume_on_startup: true,
     }
 }
 
@@ -127,6 +128,52 @@ async fn test_recovering_coworker_names_returns_session_names() {
     assert_eq!(names.len(), 2);
     assert!(names.contains(&"amsterdam".to_string()));
     assert!(names.contains(&"columbus".to_string()));
+}
+
+#[tokio::test]
+async fn test_recover_headless_sessions_skips_non_resumable_historical_entries() {
+    let persistent_state = tokio::sync::Mutex::new(DaemonPersistentState::default());
+
+    {
+        let mut state = persistent_state.lock().await;
+        state.headless_sessions.insert(
+            "amsterdam".to_string(),
+            test_session_info("amsterdam", Some(42)),
+        );
+        let mut historical = test_session_info("columbus", Some(43));
+        historical.resume_on_startup = false;
+        state
+            .headless_sessions
+            .insert("columbus".to_string(), historical);
+    }
+
+    let effects = recover_headless_sessions(&persistent_state, "test-repo").await;
+    assert_eq!(effects.len(), 1);
+    match &effects[0] {
+        Effect::ResumeCoworker { name, .. } => assert_eq!(name, "amsterdam"),
+        other => panic!("Expected ResumeCoworker, got {:?}", other),
+    }
+}
+
+#[tokio::test]
+async fn test_recovering_coworker_names_skips_non_resumable_historical_entries() {
+    let persistent_state = tokio::sync::Mutex::new(DaemonPersistentState::default());
+
+    {
+        let mut state = persistent_state.lock().await;
+        state.headless_sessions.insert(
+            "amsterdam".to_string(),
+            test_session_info("amsterdam", Some(42)),
+        );
+        let mut historical = test_session_info("columbus", Some(43));
+        historical.resume_on_startup = false;
+        state
+            .headless_sessions
+            .insert("columbus".to_string(), historical);
+    }
+
+    let names = recovering_coworker_names(&persistent_state).await;
+    assert_eq!(names, vec!["amsterdam".to_string()]);
 }
 
 #[tokio::test]

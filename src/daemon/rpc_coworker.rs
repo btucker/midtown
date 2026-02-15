@@ -364,30 +364,46 @@ pub(super) async fn handle_coworker_nudge(
     message: &str,
     state: &DaemonState,
 ) -> Response {
-    let coworkers = state.coworkers.clone();
-    let name_owned = name.to_string();
-    let message_owned = message.to_string();
-
-    match tokio::task::spawn_blocking(move || coworkers.nudge(&name_owned, &message_owned)).await {
-        Ok(Ok(())) => {
-            info!("Nudged coworker {}: {}", name, message);
-            Response::success(
-                id,
-                serde_json::json!({
-                    "success": true,
-                    "message": format!("Nudged coworker: {}", name),
-                }),
-            )
-        }
-        Ok(Err(e)) => {
-            error!("Failed to nudge coworker {}: {}", name, e);
-            Response::error(id, RpcError::new(-32603, e.to_string()))
-        }
-        Err(e) => {
-            error!("spawn_blocking panic while nudging {}: {}", name, e);
-            Response::error(id, RpcError::new(-32603, "Internal error".to_string()))
-        }
+    if state.coworkers.get(name).is_none() {
+        return Response::error(
+            id,
+            RpcError::new(-32602, format!("Coworker not found: {}", name)),
+        );
     }
+
+    // Always enqueue to headed intercom for wrapper-managed sessions.
+    state.enqueue_headed_nudge(name, message).await;
+
+    // Best-effort headless delivery for active headless sessions.
+    let delivered_headless = match state.session_manager.send_message(name, message).await {
+        Ok(()) => true,
+        Err(e) => {
+            let text = e.to_string();
+            if text.contains("No headless session for") || text.contains("has stopped") {
+                debug!(
+                    "No active headless session for coworker {}, queued headed nudge only",
+                    name
+                );
+            } else {
+                warn!(
+                    "Headless nudge delivery failed for coworker {} (still queued headed): {}",
+                    name, e
+                );
+            }
+            false
+        }
+    };
+
+    info!("Queued nudge for coworker {}: {}", name, message);
+    Response::success(
+        id,
+        serde_json::json!({
+            "success": true,
+            "message": format!("Nudged coworker: {}", name),
+            "queued_headed": true,
+            "delivered_headless": delivered_headless
+        }),
+    )
 }
 
 /// Handle coworker.asking RPC method.

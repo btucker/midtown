@@ -54,7 +54,7 @@ pub use dispatch::should_recover_task_test_helper;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::File;
-use std::io::Write;
+use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -693,11 +693,24 @@ impl DaemonState {
         shutdown_tx: broadcast::Sender<()>,
     ) -> crate::Result<Self> {
         // Load unified persistent state (migrates from legacy files if needed)
-        let persistent_state = state::DaemonPersistentState::load_for_repo(&repo_name)
+        let mut persistent_state = state::DaemonPersistentState::load_for_repo(&repo_name)
             .unwrap_or_else(|e| {
                 warn!("Failed to load daemon-state.json: {}, using defaults", e);
                 state::DaemonPersistentState::default()
             });
+        let backfilled = backfill_headless_sessions_from_logs(
+            &repo_name,
+            &mut persistent_state.headless_sessions,
+        );
+        if backfilled > 0 {
+            info!(
+                "Backfilled {} historical headless session(s) from headless-*.jsonl logs",
+                backfilled
+            );
+            if let Err(e) = persistent_state.save_for_repo(&repo_name) {
+                warn!("Failed saving backfilled historical sessions: {}", e);
+            }
+        }
 
         let user_display_name = config::get_user_display_name_for_project(&repo_name);
 
@@ -1231,31 +1244,12 @@ impl DaemonState {
         }
     }
 
-    /// Queue a nudge for the Lead and attempt tmux delivery as best-effort fallback.
+    /// Queue a nudge for the Lead via the headed session intercom.
     ///
-    /// This is the daemon's canonical Lead nudge path.
+    /// Delivery and input-safety checks are handled by the registered wrapper
+    /// adapter (e.g., `midtown headed-wrapper run-agent --session lead ...`).
     pub(crate) async fn nudge_lead(&self, message: &str) {
-        // Queue for headed wrapper transport (session-scoped intercom).
         self.enqueue_headed_nudge("lead", message).await;
-
-        let coworkers = self.coworkers.clone();
-        let message = message.to_string();
-        match tokio::task::spawn_blocking(move || coworkers.nudge_lead(&message)).await {
-            Ok(Ok(())) => {}
-            Ok(Err(e)) => {
-                if e.to_string().contains("Lead session not found") {
-                    debug!("tmux nudge_lead fallback unavailable: {}", e);
-                } else {
-                    warn!("tmux nudge_lead fallback failed: {}", e);
-                }
-            }
-            Err(e) => {
-                warn!(
-                    "spawn_blocking panic while attempting tmux nudge_lead fallback: {}",
-                    e
-                );
-            }
-        }
     }
 }
 
@@ -1636,6 +1630,159 @@ fn acquire_pid_lock(pid_path: &PathBuf) -> crate::Result<File> {
 ///
 /// Collects session data from SessionManager and enriches it with task/PR/purpose
 /// info from CoworkerManager and persistent state, then saves to daemon-state.json.
+fn merge_headless_sessions(
+    persisted: &mut HashMap<String, crate::daemon::state::HeadlessSessionInfo>,
+    running: HashMap<String, crate::daemon::state::HeadlessSessionInfo>,
+) -> usize {
+    // Mark existing entries as historical by default. Running entries below are
+    // overwritten with fresh metadata and `resume_on_startup=true`.
+    for info in persisted.values_mut() {
+        info.resume_on_startup = false;
+        info.pid = None;
+    }
+
+    let running_count = running.len();
+    for (name, mut info) in running {
+        info.resume_on_startup = true;
+        persisted.insert(name, info);
+    }
+
+    running_count
+}
+
+fn parse_task_id_from_workdir(working_dir: &str) -> Option<u64> {
+    let task_component = working_dir
+        .split('/')
+        .find(|segment| segment.starts_with("task-"))?;
+    let id_part = task_component
+        .strip_prefix("task-")
+        .and_then(|rest| rest.split('-').next())?;
+    id_part.parse::<u64>().ok()
+}
+
+fn infer_provider_from_model(model: Option<&str>) -> Option<crate::auth::AuthProvider> {
+    let model = model?.to_ascii_lowercase();
+    if model.contains("gpt")
+        || model.contains("codex")
+        || model.contains("o1")
+        || model.contains("o3")
+    {
+        Some(crate::auth::AuthProvider::Codex)
+    } else {
+        Some(crate::auth::AuthProvider::Claude)
+    }
+}
+
+fn parse_historical_session_info_from_log(
+    path: &std::path::Path,
+    coworker_name: &str,
+) -> Option<crate::daemon::state::HeadlessSessionInfo> {
+    let file = std::fs::File::open(path).ok()?;
+    let reader = BufReader::new(file);
+
+    let mut session_id: Option<String> = None;
+    let mut working_dir: Option<String> = None;
+    let mut provider: Option<crate::auth::AuthProvider> = None;
+
+    // Init event should be at the start, but scan a small prefix for resilience.
+    for line in reader.lines().take(32).flatten() {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else {
+            continue;
+        };
+        let is_init = value.get("type").and_then(|v| v.as_str()) == Some("system")
+            && value.get("subtype").and_then(|v| v.as_str()) == Some("init");
+        if !is_init {
+            continue;
+        }
+        session_id = value
+            .get("session_id")
+            .and_then(|v| v.as_str())
+            .map(ToString::to_string);
+        working_dir = value
+            .get("cwd")
+            .and_then(|v| v.as_str())
+            .map(ToString::to_string);
+        provider = infer_provider_from_model(value.get("model").and_then(|v| v.as_str()));
+        break;
+    }
+
+    let session_id = session_id?;
+    let metadata = std::fs::metadata(path).ok();
+    let last_active = metadata
+        .and_then(|m| m.modified().ok())
+        .map(chrono::DateTime::<chrono::Utc>::from)
+        .unwrap_or_else(chrono::Utc::now);
+    let task_id = working_dir.as_deref().and_then(parse_task_id_from_workdir);
+    let purpose = task_id
+        .map(|id| format!("task !{}", id))
+        .unwrap_or_else(|| format!("historical session for {}", coworker_name));
+
+    Some(crate::daemon::state::HeadlessSessionInfo {
+        session_id,
+        last_active,
+        purpose,
+        pid: None,
+        coworker_type: Some("dev".to_string()),
+        task_id,
+        pr_number: None,
+        working_dir,
+        provider,
+        profile: None,
+        resume_on_startup: false,
+    })
+}
+
+fn backfill_headless_sessions_from_logs(
+    repo_name: &str,
+    persisted: &mut HashMap<String, crate::daemon::state::HeadlessSessionInfo>,
+) -> usize {
+    let project_dir = crate::paths::projects_dir_for_repo(repo_name);
+    backfill_headless_sessions_from_dir(&project_dir, persisted)
+}
+
+fn backfill_headless_sessions_from_dir(
+    project_dir: &std::path::Path,
+    persisted: &mut HashMap<String, crate::daemon::state::HeadlessSessionInfo>,
+) -> usize {
+    if !persisted.is_empty() {
+        return 0;
+    }
+
+    let Ok(entries) = std::fs::read_dir(project_dir) else {
+        return 0;
+    };
+
+    let mut recovered = 0usize;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+
+        let Some(file_name) = path.file_name().and_then(|f| f.to_str()) else {
+            continue;
+        };
+        if !(file_name.starts_with("headless-") && file_name.ends_with(".jsonl")) {
+            continue;
+        }
+
+        let name = file_name
+            .trim_start_matches("headless-")
+            .trim_end_matches(".jsonl")
+            .to_lowercase();
+        if name.is_empty() {
+            continue;
+        }
+
+        if let Some(info) = parse_historical_session_info_from_log(&path, &name) {
+            persisted.insert(name, info);
+            recovered += 1;
+        }
+    }
+
+    recovered
+}
+
 async fn persist_sessions_for_restart(state: &DaemonState) -> crate::Result<()> {
     // Collect base session info (session_id, pid, last_active) from SessionManager
     let mut session_info = state.session_manager.collect_session_info().await;
@@ -1694,10 +1841,12 @@ async fn persist_sessions_for_restart(state: &DaemonState) -> crate::Result<()> 
     // Save enriched session info to persistent state
     {
         let mut persistent = state.persistent_state.lock().await;
-        persistent.headless_sessions = session_info;
+        let running_count =
+            merge_headless_sessions(&mut persistent.headless_sessions, session_info);
         persistent.save_for_repo(&state.repo_name)?;
         info!(
-            "Persisted {} session(s) for restart survival",
+            "Persisted {} running session(s); {} total session(s) retained (including historical)",
+            running_count,
             persistent.headless_sessions.len()
         );
     }

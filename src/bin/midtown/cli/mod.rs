@@ -65,14 +65,12 @@ pub fn handle_pr(cmd: &PrCommand, client: &DaemonClient) -> Result<Response, Str
     pr::handle(cmd, client)
 }
 
-/// Handle start command (no daemon required - it starts the daemon)
+/// Handle start command (no daemon required - it starts daemon/webserver services)
 pub fn handle_start(
-    daemon_only: bool,
-    swap_layout: bool,
     project: Option<String>,
     repos: Vec<std::path::PathBuf>,
 ) -> Result<Response, String> {
-    daemon::handle_start(daemon_only, swap_layout, project, repos)
+    daemon::handle_start(project, repos)
 }
 
 /// Handle stop command (no daemon required - it stops the daemon)
@@ -85,9 +83,9 @@ pub fn handle_restart(force: bool) -> Result<Response, String> {
     daemon::handle_restart(force)
 }
 
-/// Handle attach command (no daemon required - just attaches to tmux)
-pub fn handle_attach(project: Option<&str>) -> Result<Response, String> {
-    daemon::handle_attach(project)
+/// Handle view command (launches chat + best-effort lead split)
+pub fn handle_view(project: Option<&str>, skip_auto_split: bool) -> Result<Response, String> {
+    daemon::handle_view(project, skip_auto_split)
 }
 
 /// Handle project list command (no daemon required)

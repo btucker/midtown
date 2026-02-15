@@ -16,6 +16,8 @@ pub enum Response {
     Tasks { tasks: Vec<TaskInfo> },
     /// List of PRs
     PullRequests { pull_requests: Vec<PrInfo> },
+    /// List of headless sessions that can be attached
+    Sessions { sessions: Vec<SessionInfo> },
     /// Raw JSON value passthrough
     Json { value: serde_json::Value },
 }
@@ -98,6 +100,19 @@ pub struct PrInfo {
     pub title: String,
     pub author: String,
     pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionInfo {
+    pub name: String,
+    pub session_id: String,
+    pub status: String,
+    #[serde(default)]
+    pub purpose: Option<String>,
+    #[serde(default)]
+    pub last_active: Option<String>,
+    #[serde(default)]
+    pub task: Option<String>,
 }
 
 impl Response {
@@ -262,6 +277,24 @@ impl Response {
                     out.push_str(&format!(
                         "{:<10} {:10} {}\n",
                         task.id, task.status, task.subject
+                    ));
+                }
+                out.trim_end().to_string()
+            }
+            Response::Sessions { sessions } => {
+                if sessions.is_empty() {
+                    return "No attachable sessions".to_string();
+                }
+                let mut out = String::from("Headless Sessions\n─────────────────────────────\n");
+                for session in sessions {
+                    let task_suffix = session
+                        .task
+                        .as_ref()
+                        .map(|task| format!(" task:!{}", task))
+                        .unwrap_or_default();
+                    out.push_str(&format!(
+                        "{:<12} {:8} {:<20}{}\n",
+                        session.name, session.status, session.session_id, task_suffix
                     ));
                 }
                 out.trim_end().to_string()

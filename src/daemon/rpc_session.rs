@@ -24,6 +24,7 @@ enum AttachTarget {
     Name(String),
     Task(u32),
     Pr(u64),
+    Platform(crate::auth::AuthProvider),
     PlatformSession {
         platform: crate::auth::AuthProvider,
         session_id: String,
@@ -34,6 +35,23 @@ enum AttachTarget {
 ///
 /// Pure function — no state access. Validates format and types.
 fn parse_attach_target(target: &str) -> Result<AttachTarget, String> {
+    // Platform-only shorthand:
+    //   claude, codex
+    match target.to_ascii_lowercase().as_str() {
+        "claude" | "anthropic" | "antropic" => {
+            return Ok(AttachTarget::Platform(crate::auth::AuthProvider::Claude));
+        }
+        "codex" | "openai" => {
+            return Ok(AttachTarget::Platform(crate::auth::AuthProvider::Codex));
+        }
+        "zai" | "z.ai" => {
+            return Err(
+                "Invalid platform 'zai'. Use claude for Anthropic/z.ai sessions.".to_string(),
+            );
+        }
+        _ => {}
+    }
+
     // New slash-delimited syntax:
     //   name/<coworker>, task/<id>, pr/<number>, claude/<session_id>, codex/<session_id>
     if let Some((kind, value)) = target.split_once('/') {
@@ -133,17 +151,34 @@ async fn resolve_attach_target_candidates(
         AttachTarget::Name(name) => vec![name],
         AttachTarget::Task(id) => {
             let id_str = id.to_string();
-            let assignments = state.coworker_task_assignments.lock().unwrap();
-            let matches: Vec<String> = assignments
-                .iter()
-                .filter_map(|(coworker, assignment)| {
-                    if assignment.task_id == id_str {
-                        Some(coworker.to_lowercase())
-                    } else {
-                        None
-                    }
-                })
-                .collect();
+            let mut matches: Vec<String> = {
+                let assignments = state.coworker_task_assignments.lock().unwrap();
+                assignments
+                    .iter()
+                    .filter_map(|(coworker, assignment)| {
+                        if assignment.task_id == id_str {
+                            Some(coworker.to_lowercase())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect()
+            };
+
+            let persistent = state.persistent_state.lock().await;
+            matches.extend(
+                persistent
+                    .headless_sessions
+                    .iter()
+                    .filter_map(|(name, info)| {
+                        if info.task_id == Some(u64::from(id)) {
+                            Some(name.to_lowercase())
+                        } else {
+                            None
+                        }
+                    }),
+            );
+
             if matches.is_empty() {
                 return Err(format!("No coworker is assigned to task !{}", id));
             }
@@ -156,6 +191,18 @@ async fn resolve_attach_target_candidates(
             if let Some(reviewer) = persistent.github.get_reviewer(pr_num) {
                 matches.push(reviewer.to_lowercase());
             }
+            matches.extend(
+                persistent
+                    .headless_sessions
+                    .iter()
+                    .filter_map(|(name, info)| {
+                        if info.pr_number == Some(pr_num) {
+                            Some(name.to_lowercase())
+                        } else {
+                            None
+                        }
+                    }),
+            );
             drop(persistent);
             // Fall back to branch-name-based mapping via coworker list
             let coworkers = state.coworkers.list();
@@ -170,6 +217,27 @@ async fn resolve_attach_target_candidates(
             }
             if matches.is_empty() {
                 return Err(format!("No coworker is working on PR #{}", pr_num));
+            }
+            matches
+        }
+        AttachTarget::Platform(platform) => {
+            let persistent = state.persistent_state.lock().await;
+            let matches: Vec<String> = persistent
+                .headless_sessions
+                .iter()
+                .filter_map(|(name, info)| {
+                    if platform_for_provider(info.provider) == platform {
+                        Some(name.to_lowercase())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            if matches.is_empty() {
+                return Err(format!(
+                    "No persisted sessions found for platform '{}'",
+                    platform.as_str()
+                ));
             }
             matches
         }
@@ -195,7 +263,7 @@ async fn resolve_attach_target_candidates(
                 .collect();
             if matches.is_empty() {
                 return Err(format!(
-                    "No running headless session found for {}/{}",
+                    "No persisted session found for {}/{}",
                     platform.as_str(),
                     session_id
                 ));
@@ -250,14 +318,31 @@ pub(super) async fn handle_session_resolve(
     let persistent = state.persistent_state.lock().await;
     let now = chrono::Utc::now();
     let attached = state.attached_coworkers.lock().unwrap().clone();
+    let running_coworkers: std::collections::HashMap<String, crate::coworker::Coworker> = state
+        .coworkers
+        .list()
+        .into_iter()
+        .map(|cw| (cw.name.to_lowercase(), cw))
+        .collect();
     let mut candidates: Vec<serde_json::Value> = names
         .into_iter()
         .filter_map(|name| {
-            let coworker = state.coworkers.get(&name)?;
             let info = persistent.headless_sessions.get(&name)?;
+            let coworker = running_coworkers.get(&name);
             let provider = info.provider.unwrap_or(crate::auth::AuthProvider::Claude);
             let platform = platform_for_provider(info.provider);
             let attached_now = attached.contains(&name);
+            let running = coworker.is_some();
+            let cwd = coworker
+                .map(|cw| cw.working_dir.clone())
+                .or_else(|| info.working_dir.clone())
+                .unwrap_or_else(|| {
+                    state
+                        .all_repo_paths
+                        .first()
+                        .map(|p| p.to_string_lossy().to_string())
+                        .unwrap_or_default()
+                });
             let last_active_age_ms = now
                 .signed_duration_since(info.last_active)
                 .num_milliseconds()
@@ -267,8 +352,8 @@ pub(super) async fn handle_session_resolve(
                 "session_id": info.session_id,
                 "provider": provider.as_str(),
                 "platform": platform.as_str(),
-                "cwd": coworker.working_dir,
-                "running": true,
+                "cwd": cwd,
+                "running": running,
                 "attached": attached_now,
                 "last_active": info.last_active.to_rfc3339(),
                 "last_active_age_ms": last_active_age_ms,
@@ -282,7 +367,7 @@ pub(super) async fn handle_session_resolve(
             RpcError::new(
                 -32602,
                 format!(
-                    "Target '{}' matched no currently running attachable sessions",
+                    "Target '{}' matched no persisted attachable sessions",
                     target
                 ),
             ),
@@ -290,6 +375,12 @@ pub(super) async fn handle_session_resolve(
     }
 
     candidates.sort_by(|a, b| {
+        let ar = a.get("running").and_then(|v| v.as_bool()).unwrap_or(false);
+        let br = b.get("running").and_then(|v| v.as_bool()).unwrap_or(false);
+        match br.cmp(&ar) {
+            std::cmp::Ordering::Equal => {}
+            ord => return ord,
+        }
         let an = a.get("name").and_then(|v| v.as_str()).unwrap_or_default();
         let bn = b.get("name").and_then(|v| v.as_str()).unwrap_or_default();
         an.cmp(bn)
@@ -308,8 +399,11 @@ pub(super) async fn handle_session_resolve(
 
 /// Handle session.attach RPC method.
 ///
-/// Pauses the headless coworker process and returns session info so the CLI
-/// can create an interactive pane with the matching provider CLI.
+/// Attaches to a persisted session and returns session info so the CLI can
+/// open an interactive pane with the matching provider CLI.
+///
+/// If the coworker is currently running headless, the daemon pauses it first.
+/// If the coworker is not running, the persisted session is attached directly.
 pub(super) async fn handle_session_attach(
     id: RequestId,
     target: &str,
@@ -319,14 +413,6 @@ pub(super) async fn handle_session_attach(
         Ok(n) => n,
         Err(e) => return Response::error(id, RpcError::new(-32602, e)),
     };
-
-    // Verify the coworker is running
-    if state.coworkers.get(&name).is_none() {
-        return Response::error(
-            id,
-            RpcError::new(-32602, format!("Coworker '{}' is not running", name)),
-        );
-    }
 
     // Guard against double-attach
     {
@@ -345,11 +431,8 @@ pub(super) async fn handle_session_attach(
         persistent.headless_sessions.get(&name).cloned()
     };
 
-    let (session_id, provider) = match session_info {
-        Some(info) => (
-            info.session_id,
-            info.provider.unwrap_or(crate::auth::AuthProvider::Claude),
-        ),
+    let info = match session_info {
+        Some(info) => info,
         None => {
             return Response::error(
                 id,
@@ -365,27 +448,47 @@ pub(super) async fn handle_session_attach(
         }
     };
 
-    // Get working directory before shutting down
+    let running = state.coworkers.get(&name).is_some();
+    let provider = info.provider.unwrap_or(crate::auth::AuthProvider::Claude);
+    let session_id = info.session_id.clone();
     let cwd = state
         .coworkers
         .get(&name)
         .map(|cw| cw.working_dir.clone())
-        .unwrap_or_default();
+        .or(info.working_dir.clone())
+        .unwrap_or_else(|| {
+            state
+                .all_repo_paths
+                .first()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_default()
+        });
 
-    // Shut down the headless coworker (kills the process but session persists on disk)
-    state.broadcast_coworker_update(&name, "attaching", None);
-    if let Err(e) = state.coworkers.shutdown(&name) {
-        return Response::error(
-            id,
-            RpcError::new(
-                -32603,
-                format!("Failed to pause coworker '{}': {}", name, e),
-            ),
+    if running {
+        // Pause the running headless coworker (session stays resumable on disk).
+        state.broadcast_coworker_update(&name, "attaching", None);
+        if let Err(e) = state.coworkers.shutdown(&name) {
+            return Response::error(
+                id,
+                RpcError::new(
+                    -32603,
+                    format!("Failed to pause coworker '{}': {}", name, e),
+                ),
+            );
+        }
+        // Record stop time to prevent false orphan recovery during the grace period
+        // (see #874). The attached_coworkers set provides the long-term exemption.
+        state.record_coworker_stop_time(&name);
+        info!(
+            "Paused running headless coworker '{}' for attach (session={})",
+            name, session_id
+        );
+    } else {
+        info!(
+            "Attaching to persisted non-running session for '{}' (session={})",
+            name, session_id
         );
     }
-    // Record stop time to prevent false orphan recovery during the grace period
-    // (see #874). The attached_coworkers set provides the long-term exemption.
-    state.record_coworker_stop_time(&name);
 
     // Mark as attached so stuck detection and orphan recovery skip this coworker
     {
@@ -393,16 +496,16 @@ pub(super) async fn handle_session_attach(
         attached.insert(name.to_lowercase());
     }
 
-    info!(
-        "Paused headless coworker '{}' for attach (session={})",
-        name, session_id
-    );
-
     // Post to channel
+    let status_text = if running {
+        "running headless paused, interactive session active"
+    } else {
+        "resuming historical session interactively"
+    };
     let _ = state
         .send_and_broadcast_async(&Message::system(format!(
-            "Attached to {} — headless paused, interactive tmux session active",
-            name
+            "Attached to {} — {}",
+            name, status_text
         )))
         .await;
 
@@ -449,17 +552,14 @@ pub(super) async fn handle_session_detach(
         );
     }
 
-    // Get session ID from persistent state
-    let session_id = {
+    // Get session details from persistent state
+    let session_info = {
         let persistent = state.persistent_state.lock().await;
-        persistent
-            .headless_sessions
-            .get(&name)
-            .map(|info| info.session_id.clone())
+        persistent.headless_sessions.get(&name).cloned()
     };
 
-    let session_id = match session_id {
-        Some(sid) => sid,
+    let session_info = match session_info {
+        Some(info) => info,
         None => {
             return Response::error(
                 id,
@@ -470,14 +570,24 @@ pub(super) async fn handle_session_detach(
             );
         }
     };
+    let session_id = session_info.session_id.clone();
 
     // Re-spawn the coworker with the resumed session
-    let config = crate::launch::LaunchConfig::coworker(
+    let mut config = crate::launch::LaunchConfig::coworker(
         &name,
         &state.repo_name,
         crate::launch::SessionMode::ResumeSession(session_id.clone()),
         Some("You were previously running headless. The Lead attached to your session interactively and has now detached. Continue where you left off — read the channel for any updates.".to_string()),
     );
+    if let Some(ref working_dir) = session_info.working_dir {
+        config.working_dir = Some(std::path::PathBuf::from(working_dir));
+    }
+    if let Some(provider) = session_info.provider {
+        config.auth_provider = provider;
+    }
+    if let Some(ref profile) = session_info.profile {
+        config.auth_profile_dir = Some(crate::auth::profile_dir_for(config.auth_provider, profile));
+    }
 
     match state.spawn_coworker(&config).await {
         Ok(()) => {
@@ -529,7 +639,7 @@ pub(super) async fn handle_session_list(id: RequestId, state: &DaemonState) -> R
         .collect();
     let attached = state.attached_coworkers.lock().unwrap().clone();
 
-    let sessions: Vec<serde_json::Value> = persistent
+    let mut sessions: Vec<serde_json::Value> = persistent
         .headless_sessions
         .iter()
         .map(|(name, info)| {
@@ -557,6 +667,23 @@ pub(super) async fn handle_session_list(id: RequestId, state: &DaemonState) -> R
             })
         })
         .collect();
+
+    sessions.sort_by(|a, b| {
+        let status_rank = |status: &str| match status {
+            "running" => 0,
+            "attached" => 1,
+            _ => 2, // paused / historical
+        };
+        let as_status = a.get("status").and_then(|v| v.as_str()).unwrap_or("paused");
+        let bs_status = b.get("status").and_then(|v| v.as_str()).unwrap_or("paused");
+        match status_rank(as_status).cmp(&status_rank(bs_status)) {
+            std::cmp::Ordering::Equal => {}
+            ord => return ord,
+        }
+        let an = a.get("name").and_then(|v| v.as_str()).unwrap_or_default();
+        let bn = b.get("name").and_then(|v| v.as_str()).unwrap_or_default();
+        an.cmp(bn)
+    });
 
     Response::success(
         id,
@@ -646,6 +773,18 @@ mod tests {
                 platform: crate::auth::AuthProvider::Codex,
                 session_id: "thread-1".to_string()
             }
+        );
+    }
+
+    #[test]
+    fn test_parse_attach_target_platform_only() {
+        assert_eq!(
+            parse_attach_target("claude").unwrap(),
+            AttachTarget::Platform(crate::auth::AuthProvider::Claude)
+        );
+        assert_eq!(
+            parse_attach_target("openai").unwrap(),
+            AttachTarget::Platform(crate::auth::AuthProvider::Codex)
         );
     }
 

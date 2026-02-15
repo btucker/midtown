@@ -2395,6 +2395,7 @@ mod tests {
                 ),
                 provider: Some(crate::auth::AuthProvider::Claude),
                 profile: None,
+                resume_on_startup: true,
             },
         );
         persistent_sessions.insert(
@@ -2416,6 +2417,7 @@ mod tests {
                 ),
                 provider: Some(crate::auth::AuthProvider::Claude),
                 profile: None,
+                resume_on_startup: true,
             },
         );
 
@@ -2496,6 +2498,7 @@ mod tests {
                 ),
                 provider: Some(crate::auth::AuthProvider::Codex),
                 profile: Some("custom-profile@example.com".to_string()),
+                resume_on_startup: true,
             },
         );
 

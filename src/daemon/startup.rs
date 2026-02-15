@@ -209,12 +209,23 @@ pub async fn recover_headless_sessions(
 ) -> Vec<Effect> {
     let mut effects = Vec::new();
 
-    // Clone the headless_sessions map for iteration.
-    // We preserve the original map so sync_with_tmux() can restore session_ids
-    // for recovered coworkers during normal operation.
-    let sessions = {
+    // Clone only sessions that should be resumed on startup.
+    // Historical sessions remain persisted for manual `session attach`.
+    let (sessions, total_persisted) = {
         let state = persistent_state.lock().await;
-        state.headless_sessions.clone()
+        let total = state.headless_sessions.len();
+        let resumable = state
+            .headless_sessions
+            .iter()
+            .filter_map(|(name, info)| {
+                if info.resume_on_startup {
+                    Some((name.clone(), info.clone()))
+                } else {
+                    None
+                }
+            })
+            .collect::<std::collections::HashMap<_, _>>();
+        (resumable, total)
     };
 
     if sessions.is_empty() {
@@ -222,8 +233,9 @@ pub async fn recover_headless_sessions(
     }
 
     info!(
-        "Recovering {} headless session(s) from previous daemon run",
-        sessions.len()
+        "Recovering {} headless session(s) from previous daemon run ({} persisted total)",
+        sessions.len(),
+        total_persisted
     );
 
     for (name, session_info) in sessions {
@@ -331,7 +343,17 @@ pub async fn recovering_coworker_names(
     persistent_state: &tokio::sync::Mutex<DaemonPersistentState>,
 ) -> Vec<String> {
     let state = persistent_state.lock().await;
-    state.headless_sessions.keys().cloned().collect()
+    state
+        .headless_sessions
+        .iter()
+        .filter_map(|(name, info)| {
+            if info.resume_on_startup {
+                Some(name.clone())
+            } else {
+                None
+            }
+        })
+        .collect()
 }
 
 #[path = "startup_tests.rs"]

@@ -666,6 +666,7 @@ impl SessionManager {
                     working_dir: None,   // To be filled by caller
                     provider: None,      // To be filled by caller
                     profile: None,       // To be filled by caller
+                    resume_on_startup: true,
                 };
                 info_map.insert(cs.name.clone(), info);
             }

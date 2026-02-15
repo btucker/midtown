@@ -113,7 +113,7 @@ impl DaemonClient {
     /// Send a JSON-RPC request to the daemon and get a typed response.
     fn send(&self, method: &str, params: Option<Value>) -> Result<Response, String> {
         let result = self.send_raw(method, params)?;
-        serde_json::from_value(result).map_err(|e| format!("Response parse error: {}", e))
+        parse_daemon_response(result)
     }
 
     /// Send a JSON-RPC request and get the raw JSON result value.
@@ -658,5 +658,118 @@ impl DaemonClient {
         rpc_response
             .result
             .ok_or("No result in response".to_string())
+    }
+}
+
+/// Normalize daemon RPC result payloads into the CLI response enum.
+///
+/// This keeps CLI parsing resilient when daemon handlers add envelope fields
+/// like `success`, and provides a stable fallback (`Response::Json`) for
+/// unexpected payload shapes.
+fn parse_daemon_response(value: Value) -> Result<Response, String> {
+    if let Ok(parsed) = serde_json::from_value::<Response>(value.clone()) {
+        return Ok(parsed);
+    }
+
+    // Canonical message fast-path.
+    if let Some(message) = value.get("message").and_then(|v| v.as_str()) {
+        return Ok(Response::Message {
+            message: message.to_string(),
+        });
+    }
+
+    // Known collection shapes (some handlers include extra envelope fields).
+    if let Some(obj) = value.as_object() {
+        if let Some(coworkers) = obj.get("coworkers")
+            && let Ok(parsed) = serde_json::from_value::<Response>(
+                serde_json::json!({ "coworkers": coworkers.clone() }),
+            )
+        {
+            return Ok(parsed);
+        }
+        if let Some(messages) = obj.get("messages")
+            && let Ok(parsed) = serde_json::from_value::<Response>(
+                serde_json::json!({ "messages": messages.clone() }),
+            )
+        {
+            return Ok(parsed);
+        }
+        if let Some(tasks) = obj.get("tasks")
+            && let Ok(parsed) =
+                serde_json::from_value::<Response>(serde_json::json!({ "tasks": tasks.clone() }))
+        {
+            return Ok(parsed);
+        }
+        if let Some(pull_requests) = obj.get("pull_requests")
+            && let Ok(parsed) = serde_json::from_value::<Response>(
+                serde_json::json!({ "pull_requests": pull_requests.clone() }),
+            )
+        {
+            return Ok(parsed);
+        }
+        if let Some(sessions) = obj.get("sessions")
+            && let Ok(parsed) = serde_json::from_value::<Response>(
+                serde_json::json!({ "sessions": sessions.clone() }),
+            )
+        {
+            return Ok(parsed);
+        }
+    }
+
+    Ok(Response::Json { value })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_daemon_response_sessions_payload() {
+        let value = serde_json::json!({
+            "success": true,
+            "sessions": [{
+                "name": "park",
+                "session_id": "abc-123",
+                "status": "running"
+            }]
+        });
+
+        let parsed = parse_daemon_response(value).expect("parse response");
+        match parsed {
+            Response::Sessions { sessions } => {
+                assert_eq!(sessions.len(), 1);
+                assert_eq!(sessions[0].name, "park");
+                assert_eq!(sessions[0].session_id, "abc-123");
+            }
+            other => panic!("Expected Sessions, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_daemon_response_message_payload() {
+        let value = serde_json::json!({
+            "type": "message",
+            "message": "ok"
+        });
+
+        let parsed = parse_daemon_response(value).expect("parse response");
+        match parsed {
+            Response::Message { message } => assert_eq!(message, "ok"),
+            other => panic!("Expected Message, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_daemon_response_unknown_payload_falls_back_to_json() {
+        let value = serde_json::json!({
+            "foo": "bar",
+            "count": 3
+        });
+
+        let parsed = parse_daemon_response(value.clone()).expect("parse response");
+        match parsed {
+            Response::Json { value: v } => assert_eq!(v, value),
+            other => panic!("Expected Json fallback, got {:?}", other),
+        }
     }
 }
