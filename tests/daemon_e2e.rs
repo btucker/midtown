@@ -229,12 +229,17 @@ impl DaemonFixture {
     /// Returns true if the daemon started successfully and the socket is available.
     fn start_daemon(&mut self) -> bool {
         let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let candidates = [
-            manifest_dir.join("target/release/midtown"),
+        let mut candidates = Vec::new();
+        if let Some(bin) = option_env!("CARGO_BIN_EXE_midtown") {
+            candidates.push(PathBuf::from(bin));
+        }
+        candidates.extend([
+            // Prefer freshly-built debug binaries over potentially stale release binaries.
             manifest_dir.join("target/debug/midtown"),
             // cargo-llvm-cov uses a separate target directory for instrumented builds
             manifest_dir.join("target/llvm-cov-target/debug/midtown"),
-        ];
+            manifest_dir.join("target/release/midtown"),
+        ]);
 
         let binary_path = match candidates.iter().find(|p| p.exists()) {
             Some(p) => p.clone(),
@@ -691,6 +696,194 @@ fn test_daemon_channel_post_endpoint() {
         response["error"].is_null(),
         "channel.post should not return an error: {:?}",
         response["error"]
+    );
+}
+
+/// Test that @lead messages are surfaced through plugin.dashboard nudge queue.
+///
+/// This validates the headed nudge intercom contract end-to-end:
+/// `channel.post` with `@lead` -> daemon queues lead nudge -> `plugin.dashboard`
+/// returns and drains that queue.
+#[test]
+#[ignore] // Requires built binary
+fn test_plugin_dashboard_exposes_and_drains_lead_nudges() {
+    let mut fixture = match DaemonFixture::new() {
+        Some(f) => f,
+        None => return,
+    };
+
+    if !fixture.start_daemon() {
+        return;
+    }
+
+    let unique_tag = format!("dashboard-nudge-{}", std::process::id());
+    let post_params = serde_json::json!({
+        "message": format!("@lead {}", unique_tag),
+        "from": "madison"
+    });
+    let post = fixture
+        .rpc_call("channel.post", Some(post_params))
+        .expect("channel.post response");
+    assert!(post["error"].is_null(), "channel.post failed: {:?}", post);
+
+    let first = fixture
+        .rpc_call("plugin.dashboard", None)
+        .expect("plugin.dashboard response");
+    assert!(
+        first["error"].is_null(),
+        "plugin.dashboard failed: {:?}",
+        first
+    );
+    let queue = first["result"]["lead_nudge_queue"]
+        .as_array()
+        .expect("lead_nudge_queue should be an array");
+    assert!(
+        queue.iter().any(|v| {
+            v.as_str()
+                .is_some_and(|s| s.contains("madison mentioned @lead") && s.contains(&unique_tag))
+        }),
+        "Expected queued @lead nudge in plugin.dashboard, got: {:?}",
+        queue
+    );
+    assert!(
+        first["result"]["lead_provider"].is_string(),
+        "plugin.dashboard should include lead_provider"
+    );
+
+    // Queue should be drained after the first dashboard poll.
+    let second = fixture
+        .rpc_call("plugin.dashboard", None)
+        .expect("second plugin.dashboard response");
+    assert!(
+        second["error"].is_null(),
+        "second plugin.dashboard failed: {:?}",
+        second
+    );
+    let drained = second["result"]["lead_nudge_queue"]
+        .as_array()
+        .expect("lead_nudge_queue should be an array on second poll");
+    assert!(
+        drained.is_empty(),
+        "lead_nudge_queue should be drained after first plugin.dashboard poll, got: {:?}",
+        drained
+    );
+}
+
+/// Test headed wrapper intercom flow: register -> poll -> ack.
+///
+/// Validates per-session queue semantics used by adapter-neutral headed wrappers.
+#[test]
+#[ignore] // Requires built binary
+fn test_headed_intercom_register_poll_ack() {
+    let mut fixture = match DaemonFixture::new() {
+        Some(f) => f,
+        None => return,
+    };
+
+    if !fixture.start_daemon() {
+        return;
+    }
+
+    let adapter_id = format!("e2e-wrapper-{}", std::process::id());
+
+    let register = fixture.rpc_call(
+        "headed.register",
+        Some(serde_json::json!({
+            "session": "lead",
+            "adapter_id": adapter_id,
+            "provider": "claude"
+        })),
+    );
+    let register = register.expect("headed.register response");
+    assert!(
+        register["error"].is_null(),
+        "headed.register failed: {:?}",
+        register
+    );
+
+    let unique_tag = format!("headed-intercom-{}", std::process::id());
+    let post = fixture.rpc_call(
+        "channel.post",
+        Some(serde_json::json!({
+            "message": format!("@lead {}", unique_tag),
+            "from": "park"
+        })),
+    );
+    let post = post.expect("channel.post response");
+    assert!(post["error"].is_null(), "channel.post failed: {:?}", post);
+
+    let poll = fixture.rpc_call(
+        "headed.poll",
+        Some(serde_json::json!({
+            "session": "lead",
+            "adapter_id": format!("e2e-wrapper-{}", std::process::id()),
+            "after_id": 0,
+            "limit": 20
+        })),
+    );
+    let poll = poll.expect("headed.poll response");
+    assert!(poll["error"].is_null(), "headed.poll failed: {:?}", poll);
+    let messages = poll["result"]["messages"]
+        .as_array()
+        .expect("headed.poll messages should be an array");
+    assert!(
+        messages.iter().any(|m| {
+            m["text"]
+                .as_str()
+                .is_some_and(|s| s.contains("park mentioned @lead") && s.contains(&unique_tag))
+        }),
+        "Expected intercom nudge in headed.poll response, got: {:?}",
+        messages
+    );
+
+    let msg_id = messages
+        .iter()
+        .find_map(|m| {
+            m["text"].as_str().and_then(|s| {
+                if s.contains(&unique_tag) {
+                    m["id"].as_u64()
+                } else {
+                    None
+                }
+            })
+        })
+        .expect("expected msg_id for unique intercom message");
+
+    let ack = fixture.rpc_call(
+        "headed.ack",
+        Some(serde_json::json!({
+            "session": "lead",
+            "adapter_id": format!("e2e-wrapper-{}", std::process::id()),
+            "msg_id": msg_id
+        })),
+    );
+    let ack = ack.expect("headed.ack response");
+    assert!(ack["error"].is_null(), "headed.ack failed: {:?}", ack);
+
+    let poll_after_ack = fixture.rpc_call(
+        "headed.poll",
+        Some(serde_json::json!({
+            "session": "lead",
+            "adapter_id": format!("e2e-wrapper-{}", std::process::id()),
+            "after_id": 0,
+            "limit": 20
+        })),
+    );
+    let poll_after_ack = poll_after_ack.expect("headed.poll after ack response");
+    assert!(
+        poll_after_ack["error"].is_null(),
+        "headed.poll after ack failed: {:?}",
+        poll_after_ack
+    );
+    let messages_after_ack = poll_after_ack["result"]["messages"]
+        .as_array()
+        .expect("headed.poll after ack messages should be an array");
+    assert!(
+        !messages_after_ack
+            .iter()
+            .any(|m| { m["text"].as_str().is_some_and(|s| s.contains(&unique_tag)) }),
+        "Acked intercom message should not reappear in subsequent polls. got: {:?}",
+        messages_after_ack
     );
 }
 

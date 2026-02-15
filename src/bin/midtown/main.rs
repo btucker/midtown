@@ -9,8 +9,8 @@ mod cli;
 mod client;
 
 use cli::{
-    AuthCommand, ChannelCommand, CoworkerCommand, DiagramCommand, E2eCommand, HookCommand,
-    PluginCommand, PrCommand, SessionCommand, TaskCommand,
+    AuthCommand, ChannelCommand, CoworkerCommand, DiagramCommand, E2eCommand, HeadedWrapperCommand,
+    HookCommand, PluginCommand, PrCommand, SessionCommand, TaskCommand,
 };
 use client::DaemonClient;
 
@@ -148,6 +148,11 @@ enum Commands {
     Plugin {
         #[command(subcommand)]
         command: PluginCommand,
+    },
+    /// Headed wrapper intercom (adapter-neutral register/poll/ack loop)
+    HeadedWrapper {
+        #[command(subcommand)]
+        command: HeadedWrapperCommand,
     },
     /// Pull request commands
     Pr {
@@ -851,6 +856,7 @@ fn main() {
         Commands::Task { command } => cli::handle_task(command, &client),
         Commands::Status => cli::handle_status(&client),
         Commands::Plugin { command } => cli::handle_plugin(command, &client),
+        Commands::HeadedWrapper { command } => cli::handle_headed_wrapper(command, &client),
         Commands::Pr { command } => cli::handle_pr(command, &client),
         Commands::Headless {
             prompt,

@@ -172,6 +172,15 @@ The multi-project webserver serves the web UI and proxies to per-project daemons
 | `midtown e2e run full` | Run full E2E tests (requires auth) |
 | `midtown e2e capture [--label <name>]` | Capture daemon state snapshot for test fixtures |
 
+### Test Isolation
+
+Unit and integration tests should not rely on your real `~/.midtown` or `~/.claude`.
+Run tests with an isolated `HOME`:
+
+```bash
+./scripts/with-isolated-home.sh cargo test
+```
+
 ## Configuration
 
 Midtown uses two levels of config files:

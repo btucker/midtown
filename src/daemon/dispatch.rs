@@ -338,6 +338,17 @@ pub(super) fn check_and_recover_orphans(
     snap: &snapshot::WorldSnapshot,
     state: &DaemonState,
 ) -> Vec<effects::Effect> {
+    check_and_recover_orphans_with_task_lookup(snap, state, crate::tasks::read_task)
+}
+
+fn check_and_recover_orphans_with_task_lookup<F>(
+    snap: &snapshot::WorldSnapshot,
+    state: &DaemonState,
+    task_lookup: F,
+) -> Vec<effects::Effect>
+where
+    F: Fn(&str) -> Option<crate::tasks::Task>,
+{
     // Check cooldown - skip if we spawned too recently
     {
         let cooldowns = state.cooldowns.lock().unwrap();
@@ -368,7 +379,7 @@ pub(super) fn check_and_recover_orphans(
         .iter()
         .filter(|(task_id, _task_subject, _owner)| {
             // Read full task from disk to check both subject and description for PR number
-            let task = match crate::tasks::read_task(task_id) {
+            let task = match task_lookup(task_id) {
                 Some(t) => t,
                 None => return true, // Task doesn't exist on disk? Keep it for recovery attempt
             };

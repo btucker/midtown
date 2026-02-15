@@ -138,13 +138,45 @@ pub fn generate_macos_profile(writable: &[String]) -> String {
 
 /// Write a sandbox profile to a temp file and return the path.
 ///
-/// The file is written to `/tmp/midtown-sandbox-<pid>.sb` so it persists
-/// for the lifetime of the calling process.
+/// The file is written to the system temp directory using a unique filename.
 fn write_profile_to_tempfile(profile: &str) -> Result<PathBuf, String> {
-    let path = std::env::temp_dir().join(format!("midtown-sandbox-{}.sb", std::process::id()));
-    std::fs::write(&path, profile)
-        .map_err(|e| format!("Failed to write sandbox profile: {}", e))?;
-    Ok(path)
+    use std::io::Write;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    static NEXT_PROFILE_ID: AtomicU64 = AtomicU64::new(1);
+
+    let pid = std::process::id();
+    let seq = NEXT_PROFILE_ID.fetch_add(1, Ordering::Relaxed);
+    let now_nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+
+    // Use create_new to avoid cross-test/session races where parallel writers
+    // clobber or delete each other's profile file.
+    for attempt in 0..16 {
+        let path = std::env::temp_dir().join(format!(
+            "midtown-sandbox-{pid}-{seq}-{now_nanos}-{attempt}.sb"
+        ));
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(mut file) => {
+                file.write_all(profile.as_bytes())
+                    .map_err(|e| format!("Failed to write sandbox profile: {}", e))?;
+                return Ok(path);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => {
+                return Err(format!("Failed to create sandbox profile: {}", e));
+            }
+        }
+    }
+
+    Err("Failed to allocate unique sandbox profile path".to_string())
 }
 
 /// Wrap a shell command string with `sandbox-exec` for macOS tmux usage.

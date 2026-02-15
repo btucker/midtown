@@ -438,6 +438,84 @@ fn zellij_session_exists(session: &str) -> bool {
     midtown::process::zellij_session_exists(session)
 }
 
+/// Check if a Zellij session is actively running (not exited/resurrectable).
+fn zellij_running_session_exists(session: &str) -> bool {
+    midtown::process::zellij_running_session_exists(session)
+}
+
+/// Resolve Zellij's on-disk `session_info` directory using `zellij setup --check`.
+///
+/// Returns a best-effort path to the session info root, typically one of:
+/// - `<cache-dir>/<version>/session_info`
+/// - `<cache-dir>/session_info`
+fn zellij_session_info_root() -> Option<PathBuf> {
+    let output = Command::new("zellij")
+        .args(["setup", "--check"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut cache_dir: Option<PathBuf> = None;
+    let mut version: Option<String> = None;
+
+    for line in stdout.lines() {
+        if let Some(rest) = line.strip_prefix("[CACHE DIR]:") {
+            let p = rest.trim().trim_matches('"');
+            if !p.is_empty() {
+                cache_dir = Some(PathBuf::from(p));
+            }
+        } else if let Some(rest) = line.strip_prefix("[Version]:") {
+            let v = rest.trim().trim_matches('"').to_string();
+            if !v.is_empty() {
+                version = Some(v);
+            }
+        }
+    }
+
+    let cache_dir = cache_dir?;
+    if let Some(version) = version {
+        let versioned = cache_dir.join(version).join("session_info");
+        if versioned.exists() {
+            return Some(versioned);
+        }
+    }
+    Some(cache_dir.join("session_info"))
+}
+
+/// Delete an exited/resurrectable Zellij session entry.
+///
+/// Zellij can report sessions as `EXITED - attach to resurrect`; these are not
+/// killable with `kill-session` and can block Midtown startup if treated as live.
+/// We first ask Zellij to delete it, then fall back to removing stale
+/// `session_info/<name>` metadata if needed.
+fn cleanup_exited_zellij_session(session: &str) -> Result<bool, String> {
+    let _ = Command::new("zellij")
+        .args(["delete-session", "--force", session])
+        .status();
+
+    if !matches!(
+        midtown::process::zellij_session_state(session),
+        Some(midtown::process::ZellijSessionState::Exited)
+    ) {
+        return Ok(true);
+    }
+
+    if let Some(root) = zellij_session_info_root() {
+        let stale_dir = root.join(session);
+        if stale_dir.exists() {
+            std::fs::remove_dir_all(&stale_dir)
+                .map_err(|e| format!("Failed to remove stale Zellij session metadata: {}", e))?;
+        }
+    }
+
+    Ok(!matches!(
+        midtown::process::zellij_session_state(session),
+        Some(midtown::process::ZellijSessionState::Exited)
+    ))
+}
+
 /// Check if a tmux session with the given name exists.
 fn tmux_session_exists(session: &str) -> bool {
     let output = Command::new("tmux")
@@ -470,6 +548,8 @@ fn escape_kdl_string(s: &str) -> String {
 /// Creates a layout with:
 /// - Left pane: midtown chat (channel TUI)
 /// - Right pane: Lead Claude Code session (launched via shell script)
+/// - Optional helper pane: Midtown Zellij plugin (nudge delivery + dashboard)
+/// - Bottom pane: built-in Zellij status bar (keybinding hints)
 ///
 /// Pane widths are configurable via `chat_pane_size` (10-90%).
 fn generate_zellij_layout(
@@ -478,6 +558,7 @@ fn generate_zellij_layout(
     lead_workdir: &Path,
     swap_layout: bool,
     chat_pane_size: u8,
+    plugin_wasm: Option<&Path>,
 ) -> Result<PathBuf, String> {
     let layout_dir = midtown::paths::midtown_base_dir().join("layouts");
     std::fs::create_dir_all(&layout_dir)
@@ -490,9 +571,21 @@ fn generate_zellij_layout(
 
     let chat_size = chat_pane_size.clamp(10, 90);
     let lead_size = 100u8.saturating_sub(chat_size);
-    let layout = if swap_layout {
+    let plugin_pane = plugin_wasm
+        .map(|p| {
+            let plugin_path = escape_kdl_string(&p.display().to_string());
+            format!(
+                r#"        pane size=1 borderless=true {{
+            plugin location="file:{plugin_path}"
+        }}
+"#,
+                plugin_path = plugin_path
+            )
+        })
+        .unwrap_or_default();
+    let top_row = if swap_layout {
         format!(
-            r#"layout {{
+            r#"pane split_direction="horizontal" {{
     pane size="{lead_size}%" focus=true {{
         command "bash"
         args "-c" "{launcher}"
@@ -511,7 +604,7 @@ fn generate_zellij_layout(
         )
     } else {
         format!(
-            r#"layout {{
+            r#"pane split_direction="horizontal" {{
     pane size="{chat_size}%" {{
         command "midtown"
         args "chat"
@@ -529,10 +622,99 @@ fn generate_zellij_layout(
             cwd = escaped_cwd,
         )
     };
+    let layout = format!(
+        r#"layout {{
+    pane split_direction="vertical" {{
+{top_row}{plugin_pane}        pane size=2 borderless=true {{
+            plugin location="zellij:status-bar"
+        }}
+    }}
+}}
+"#,
+        top_row = top_row,
+        plugin_pane = plugin_pane
+    );
 
     std::fs::write(&layout_path, layout).map_err(|e| format!("Failed to write layout: {}", e))?;
 
     Ok(layout_path)
+}
+
+/// Default install path for the Midtown Zellij plugin WASM.
+fn zellij_plugin_install_path() -> PathBuf {
+    midtown::paths::midtown_base_dir()
+        .join("plugins")
+        .join("midtown_zellij_plugin.wasm")
+}
+
+/// Ensure the Midtown Zellij plugin WASM is available.
+///
+/// Returns `Some(path)` when available, `None` when unavailable. This function
+/// never hard-fails startup; missing plugin degrades nudge delivery under Zellij.
+fn ensure_zellij_plugin_wasm(repo_root: &Path, allow_build: bool) -> Option<PathBuf> {
+    let install_path = zellij_plugin_install_path();
+    if install_path.exists() {
+        return Some(install_path);
+    }
+
+    // Try copying from local build artifacts first.
+    let candidates = [
+        repo_root.join("target/wasm32-wasip1/release/midtown_zellij_plugin.wasm"),
+        repo_root.join("target/wasm32-wasip1/debug/midtown_zellij_plugin.wasm"),
+    ];
+    for candidate in candidates {
+        if candidate.exists() {
+            if let Some(parent) = install_path.parent()
+                && std::fs::create_dir_all(parent).is_err()
+            {
+                continue;
+            }
+            if std::fs::copy(&candidate, &install_path).is_ok() {
+                return Some(install_path);
+            }
+        }
+    }
+
+    if !allow_build || !repo_root.join("Cargo.toml").exists() {
+        return None;
+    }
+
+    // Best-effort local build for developers running Midtown from source.
+    // If rustup isn't available or target install fails, we still continue startup.
+    let _ = Command::new("rustup")
+        .args(["target", "add", "wasm32-wasip1"])
+        .current_dir(repo_root)
+        .status();
+
+    let build_status = Command::new("cargo")
+        .args([
+            "build",
+            "--release",
+            "-p",
+            "midtown-zellij-plugin",
+            "--target",
+            "wasm32-wasip1",
+        ])
+        .current_dir(repo_root)
+        .status();
+
+    if !build_status.is_ok_and(|s| s.success()) {
+        return None;
+    }
+
+    let built = repo_root.join("target/wasm32-wasip1/release/midtown_zellij_plugin.wasm");
+    if !built.exists() {
+        return None;
+    }
+
+    if let Some(parent) = install_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if std::fs::copy(&built, &install_path).is_ok() {
+        Some(install_path)
+    } else {
+        None
+    }
 }
 
 /// Write a shell launcher script for the Lead Claude Code session.
@@ -546,6 +728,11 @@ fn write_lead_launcher_script(
     project_name: &str,
     additional_repos: &[PathBuf],
 ) -> Result<PathBuf, String> {
+    let lead_provider = std::env::var("MIDTOWN_LEAD_PROVIDER")
+        .ok()
+        .and_then(|s| s.parse::<midtown::auth::AuthProvider>().ok())
+        .unwrap_or(midtown::auth::AuthProvider::Claude);
+
     let lead_dir = midtown::paths::midtown_base_dir()
         .join("lead")
         .join(project_name);
@@ -560,7 +747,8 @@ fn write_lead_launcher_script(
         .map_err(|e| format!("Failed to write lead settings: {}", e))?;
 
     // Resolve auth profile from project config
-    let auth_dir = midtown::auth::active_profile_dir_for_project(project_name);
+    let auth_dir =
+        midtown::auth::active_profile_dir_for_project_with_provider(project_name, lead_provider);
 
     let config = midtown::launch::LaunchConfig {
         name: "lead".to_string(),
@@ -575,7 +763,7 @@ fn write_lead_launcher_script(
         model: "sonnet".to_string(),
         channel: None,
         auth_profile_dir: Some(auth_dir),
-        auth_provider: midtown::auth::AuthProvider::Claude,
+        auth_provider: lead_provider,
     };
 
     let task_list_id = midtown::paths::task_list_id_for_repo(project_name);
@@ -595,8 +783,10 @@ fn write_lead_launcher_script(
     };
 
     let script_content = format!(
-        "#!/bin/bash\nexport CLAUDE_CODE_TASK_LIST_ID='{}';\n{}\n",
-        task_list_id, shell_command
+        "#!/bin/bash\nexport CLAUDE_CODE_TASK_LIST_ID='{}';\nexport MIDTOWN_HEADED_LEAD_PROVIDER='{}';\n{}\n",
+        task_list_id,
+        lead_provider.as_str(),
+        shell_command
     );
 
     let script_path = lead_dir.join("zellij-lead-launcher.sh");
@@ -879,6 +1069,26 @@ pub fn handle_start(
 
     // Step 2: Launch terminal session (unless --daemon-only)
     // Prefer Zellij when available, fall back to tmux.
+    if matches!(
+        midtown::process::zellij_session_state(&session),
+        Some(midtown::process::ZellijSessionState::Exited)
+    ) {
+        match cleanup_exited_zellij_session(&session) {
+            Ok(true) => messages.push(format!(
+                "Cleaned up exited Zellij session '{}' before startup",
+                session
+            )),
+            Ok(false) => messages.push(format!(
+                "Warning: Zellij session '{}' is exited/resurrectable and could not be fully removed",
+                session
+            )),
+            Err(e) => messages.push(format!(
+                "Warning: Failed cleaning exited Zellij session '{}': {}",
+                session, e
+            )),
+        }
+    }
+
     if daemon_only {
         messages.push("Skipping terminal session (--daemon-only)".to_string());
         emit_startup_progress(88, "skipping terminal session (--daemon-only)");
@@ -900,6 +1110,19 @@ pub fn handle_start(
         let lead_launcher =
             write_lead_launcher_script(&session, &lead_workdir, &project_name, &additional_repos)?;
 
+        // Ensure the Midtown Zellij plugin is available for lead nudge delivery.
+        // In test/stub mode we skip auto-build to keep startup fast and hermetic.
+        let plugin_wasm = ensure_zellij_plugin_wasm(
+            &primary_repo,
+            std::env::var("MIDTOWN_LEAD_COMMAND").is_err(),
+        );
+        if plugin_wasm.is_none() {
+            messages.push(
+                "Warning: Midtown Zellij plugin not found; lead nudges in Zellij may not be delivered"
+                    .to_string(),
+            );
+        }
+
         // Generate KDL layout for this project
         let layout_path = generate_zellij_layout(
             &project_name,
@@ -907,6 +1130,7 @@ pub fn handle_start(
             &lead_workdir,
             effective_swap_layout,
             effective_chat_pane_size,
+            plugin_wasm.as_deref(),
         )?;
 
         // Launch Zellij in the background (detached).
@@ -1218,19 +1442,28 @@ pub fn handle_stop(keep_session: bool) -> Result<Response, String> {
         if !keep_session && session_exists(&session) {
             // Try Zellij first, then tmux
             if zellij_session_exists(&session) {
-                // Kill the Zellij session — `zellij kill-session` sends SIGHUP to
-                // pane processes, which Claude Code may survive. Use `zellij kill-session`
-                // first, then clean up any orphaned processes.
-                let status = Command::new("zellij")
-                    .args(["kill-session", &session])
-                    .status()
-                    .map_err(|e| format!("Failed to kill Zellij session: {}", e))?;
+                if zellij_running_session_exists(&session) {
+                    // Kill the Zellij session — `zellij kill-session` sends SIGHUP to
+                    // pane processes, which Claude Code may survive. Use
+                    // `zellij kill-session` first, then clean up any orphaned processes.
+                    let status = Command::new("zellij")
+                        .args(["kill-session", &session])
+                        .status()
+                        .map_err(|e| format!("Failed to kill Zellij session: {}", e))?;
 
-                if status.success() {
-                    messages.push(format!("Stopped Zellij session '{}'", session));
+                    if status.success() {
+                        messages.push(format!("Stopped Zellij session '{}'", session));
+                    } else {
+                        messages.push(format!(
+                            "Warning: Failed to stop Zellij session '{}'",
+                            session
+                        ));
+                    }
+                } else if cleanup_exited_zellij_session(&session)? {
+                    messages.push(format!("Deleted exited Zellij session '{}'", session));
                 } else {
                     messages.push(format!(
-                        "Warning: Failed to stop Zellij session '{}'",
+                        "Warning: Failed to delete exited Zellij session '{}'",
                         session
                     ));
                 }
@@ -2215,7 +2448,7 @@ mod tests {
         let project_name = format!("layout-default-{}", uuid::Uuid::new_v4());
 
         let layout_path =
-            generate_zellij_layout(&project_name, &launcher, temp.path(), false, 35).unwrap();
+            generate_zellij_layout(&project_name, &launcher, temp.path(), false, 35, None).unwrap();
         let content = std::fs::read_to_string(&layout_path).unwrap();
 
         let chat_idx = content.find("command \"midtown\"").unwrap();
@@ -2227,6 +2460,10 @@ mod tests {
         assert!(
             content.contains("pane size=\"35%\""),
             "default layout should use configured chat size"
+        );
+        assert!(
+            content.contains("plugin location=\"zellij:status-bar\""),
+            "default layout should include bottom status bar plugin"
         );
 
         let _ = std::fs::remove_file(layout_path);
@@ -2240,7 +2477,7 @@ mod tests {
         let project_name = format!("layout-swapped-{}", uuid::Uuid::new_v4());
 
         let layout_path =
-            generate_zellij_layout(&project_name, &launcher, temp.path(), true, 35).unwrap();
+            generate_zellij_layout(&project_name, &launcher, temp.path(), true, 35, None).unwrap();
         let content = std::fs::read_to_string(&layout_path).unwrap();
 
         let chat_idx = content.find("command \"midtown\"").unwrap();
@@ -2252,6 +2489,10 @@ mod tests {
         assert!(
             content.contains("pane size=\"65%\""),
             "swapped layout should keep lead pane width as inverse chat size"
+        );
+        assert!(
+            content.contains("plugin location=\"zellij:status-bar\""),
+            "swapped layout should include bottom status bar plugin"
         );
 
         let _ = std::fs::remove_file(layout_path);
@@ -2265,11 +2506,39 @@ mod tests {
         let project_name = format!("layout-size-{}", uuid::Uuid::new_v4());
 
         let layout_path =
-            generate_zellij_layout(&project_name, &launcher, temp.path(), false, 42).unwrap();
+            generate_zellij_layout(&project_name, &launcher, temp.path(), false, 42, None).unwrap();
         let content = std::fs::read_to_string(&layout_path).unwrap();
 
         assert!(content.contains("pane size=\"42%\""));
         assert!(content.contains("pane size=\"58%\""));
+        assert!(content.contains("plugin location=\"zellij:status-bar\""));
+
+        let _ = std::fs::remove_file(layout_path);
+    }
+
+    #[test]
+    fn test_generate_zellij_layout_with_plugin_pane() {
+        let temp = tempfile::tempdir().unwrap();
+        let launcher = temp.path().join("launcher.sh");
+        let plugin = temp.path().join("midtown_zellij_plugin.wasm");
+        std::fs::write(&launcher, "#!/bin/bash\necho ok\n").unwrap();
+        std::fs::write(&plugin, "wasm").unwrap();
+        let project_name = format!("layout-plugin-{}", uuid::Uuid::new_v4());
+
+        let layout_path = generate_zellij_layout(
+            &project_name,
+            &launcher,
+            temp.path(),
+            false,
+            35,
+            Some(&plugin),
+        )
+        .unwrap();
+        let content = std::fs::read_to_string(&layout_path).unwrap();
+
+        assert!(content.contains("plugin location=\"file:"));
+        assert!(content.contains("midtown_zellij_plugin.wasm"));
+        assert!(content.contains("plugin location=\"zellij:status-bar\""));
 
         let _ = std::fs::remove_file(layout_path);
     }

@@ -138,6 +138,30 @@ fn test_midtown_start_creates_zellij_session() {
         );
     }
 
+    // Validate generated layout contract: chat pane on the left, lead on the right,
+    // and bottom keybinding hints bar enabled.
+    let layout_path = midtown::paths::midtown_base_dir()
+        .join("layouts")
+        .join(format!("{}.kdl", repo_name));
+    let layout = fs::read_to_string(&layout_path).expect("expected generated zellij layout");
+
+    let chat_idx = layout
+        .find("command \"midtown\"")
+        .expect("layout missing chat pane command");
+    let lead_idx = layout
+        .find("command \"bash\"")
+        .expect("layout missing lead pane launcher");
+    assert!(
+        chat_idx < lead_idx,
+        "default layout should keep chat left and lead right. Layout:\n{}",
+        layout
+    );
+    assert!(
+        layout.contains("plugin location=\"zellij:status-bar\""),
+        "layout should include bottom status-bar plugin for keybinding hints. Layout:\n{}",
+        layout
+    );
+
     // Best-effort cleanup so this test doesn't leak daemon/session resources.
     let _ = Command::new(&binary_path)
         .arg("stop")

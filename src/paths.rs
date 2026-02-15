@@ -31,6 +31,37 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+#[cfg(test)]
+thread_local! {
+    static TEST_MIDTOWN_BASE_DIR: std::cell::RefCell<Option<PathBuf>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn test_midtown_base_dir_override() -> Option<PathBuf> {
+    TEST_MIDTOWN_BASE_DIR.with(|slot| slot.borrow().clone())
+}
+
+#[cfg(test)]
+pub(crate) struct TestMidtownBaseDirGuard {
+    previous: Option<PathBuf>,
+}
+
+#[cfg(test)]
+impl Drop for TestMidtownBaseDirGuard {
+    fn drop(&mut self) {
+        TEST_MIDTOWN_BASE_DIR.with(|slot| {
+            slot.replace(self.previous.take());
+        });
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn set_test_midtown_base_dir(path: PathBuf) -> TestMidtownBaseDirGuard {
+    let previous = TEST_MIDTOWN_BASE_DIR.with(|slot| slot.replace(Some(path)));
+    TestMidtownBaseDirGuard { previous }
+}
+
 /// Detect the current git repository name.
 ///
 /// Uses `git rev-parse --git-common-dir` to handle worktrees correctly,
@@ -133,6 +164,11 @@ fn state_dir() -> PathBuf {
 ///
 /// Returns `~/.midtown/`.
 pub fn midtown_base_dir() -> PathBuf {
+    #[cfg(test)]
+    if let Some(override_path) = test_midtown_base_dir_override() {
+        return override_path;
+    }
+
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".midtown")

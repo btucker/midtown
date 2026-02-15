@@ -38,6 +38,7 @@ fn test_dashboard_state_serializes_to_json() {
             message_type: "user".to_string(),
         }],
         lead_nudge_queue: vec!["PR #42 needs review".to_string()],
+        lead_provider: "claude".to_string(),
         daemon_version: "0.5.4".to_string(),
     };
 
@@ -47,6 +48,7 @@ fn test_dashboard_state_serializes_to_json() {
     assert_eq!(json["coworkers"][0]["name"], "madison");
     assert_eq!(json["coworkers"][0]["is_alive"], true);
     assert_eq!(json["lead_nudge_queue"][0], "PR #42 needs review");
+    assert_eq!(json["lead_provider"], "claude");
     assert_eq!(json["daemon_version"], "0.5.4");
 }
 
@@ -57,11 +59,13 @@ fn test_dashboard_state_roundtrips() {
         coworkers: vec![],
         channel_messages: vec![],
         lead_nudge_queue: vec![],
+        lead_provider: "claude".to_string(),
         daemon_version: "0.5.4".to_string(),
     };
 
     let json = serde_json::to_string(&state).unwrap();
     let deserialized: DashboardState = serde_json::from_str(&json).unwrap();
+    assert_eq!(deserialized.lead_provider, "claude");
     assert_eq!(deserialized.daemon_version, "0.5.4");
     assert!(deserialized.tasks.is_empty());
     assert!(deserialized.coworkers.is_empty());

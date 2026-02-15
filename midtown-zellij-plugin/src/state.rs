@@ -34,6 +34,7 @@ pub struct PluginState {
     pub coworkers: Vec<CoworkerSummary>,
     pub channel_messages: Vec<ChannelMessage>,
     pub lead_nudges: Vec<String>,
+    pub lead_provider: Option<String>,
     pub daemon_version: Option<String>,
 
     // Selection state (main view)
@@ -75,6 +76,7 @@ impl Default for PluginState {
             coworkers: Vec::new(),
             channel_messages: Vec::new(),
             lead_nudges: Vec::new(),
+            lead_provider: None,
             daemon_version: None,
             section: Section::Tasks,
             task_index: 0,
@@ -102,6 +104,7 @@ impl PluginState {
         self.coworkers = dashboard.coworkers;
         self.channel_messages = dashboard.channel_messages;
         self.lead_nudges = dashboard.lead_nudge_queue;
+        self.lead_provider = Some(dashboard.lead_provider);
         self.daemon_version = Some(dashboard.daemon_version);
 
         // Clamp selection indices
@@ -239,6 +242,7 @@ mod tests {
                 .collect(),
             channel_messages: Vec::new(),
             lead_nudge_queue: Vec::new(),
+            lead_provider: "claude".to_string(),
             daemon_version: "0.5.4".to_string(),
         }
     }
@@ -261,6 +265,15 @@ mod tests {
         state.update_dashboard(make_dashboard(1, 1));
         assert!(state.error.is_none());
         assert_eq!(state.consecutive_failures, 0);
+    }
+
+    #[test]
+    fn test_update_dashboard_sets_lead_provider() {
+        let mut state = PluginState::default();
+        let mut dashboard = make_dashboard(1, 1);
+        dashboard.lead_provider = "codex".to_string();
+        state.update_dashboard(dashboard);
+        assert_eq!(state.lead_provider.as_deref(), Some("codex"));
     }
 
     #[test]

@@ -16,18 +16,18 @@ cd "$(dirname "$0")/.."
 
 case "${1:-html}" in
   --text|-t)
-    cargo llvm-cov --summary-only
+    ./scripts/with-isolated-home.sh cargo llvm-cov --summary-only
     ;;
   --lcov|-l)
-    cargo llvm-cov --lcov --output-path target/lcov.info
+    ./scripts/with-isolated-home.sh cargo llvm-cov --lcov --output-path target/lcov.info
     echo "Coverage report: target/lcov.info"
     ;;
   --html|-h|html)
-    cargo llvm-cov --html
+    ./scripts/with-isolated-home.sh cargo llvm-cov --html
     echo "Coverage report: target/llvm-cov/html/index.html"
     ;;
   --open|-o)
-    cargo llvm-cov --html --open
+    ./scripts/with-isolated-home.sh cargo llvm-cov --html --open
     ;;
   *)
     echo "Usage: $0 [--text|--lcov|--html|--open]"

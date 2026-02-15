@@ -7,6 +7,7 @@
 //! - `rpc_channel` — channel post/read
 //! - `rpc_coworker` — coworker lifecycle (spawn, break, list, view, state, nudge)
 //! - `rpc_headless` — headless execution and snapshot
+//! - `rpc_headed` — headed wrapper intercom (register/poll/ack)
 //! - `rpc_insight` — insight reporting and deduplication
 //! - `rpc_kanban` — kanban board data
 //! - `rpc_plugin` — Zellij plugin dashboard, attach/detach, coworker stream
@@ -503,6 +504,48 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
         }
 
         "session.list" => super::rpc_session::handle_session_list(request.id, state).await,
+
+        // ---- Headed wrapper intercom ----
+        "headed.register" => {
+            let session = require_str!(params, "session", request.id);
+            let adapter_id = require_str!(params, "adapter_id", request.id);
+            let provider = match parse_provider_param(params) {
+                Ok(provider) => provider,
+                Err(msg) => return Response::error(request.id, RpcError::new(-32602, msg)),
+            };
+            super::rpc_headed::handle_register(request.id, session, adapter_id, provider, state)
+                .await
+        }
+
+        "headed.unregister" => {
+            let session = require_str!(params, "session", request.id);
+            let adapter_id = require_str!(params, "adapter_id", request.id);
+            super::rpc_headed::handle_unregister(request.id, session, adapter_id, state).await
+        }
+
+        "headed.heartbeat" => {
+            let session = require_str!(params, "session", request.id);
+            let adapter_id = require_str!(params, "adapter_id", request.id);
+            super::rpc_headed::handle_heartbeat(request.id, session, adapter_id, state).await
+        }
+
+        "headed.poll" => {
+            let session = require_str!(params, "session", request.id);
+            let adapter_id = require_str!(params, "adapter_id", request.id);
+            let after_id = params.u64_param("after_id").unwrap_or(0);
+            let limit = params.u64_param("limit").map(|v| v as usize);
+            super::rpc_headed::handle_poll(request.id, session, adapter_id, after_id, limit, state)
+                .await
+        }
+
+        "headed.ack" => {
+            let session = require_str!(params, "session", request.id);
+            let adapter_id = require_str!(params, "adapter_id", request.id);
+            let Some(msg_id) = params.u64_param("msg_id") else {
+                return Response::error(request.id, RpcError::invalid_params());
+            };
+            super::rpc_headed::handle_ack(request.id, session, adapter_id, msg_id, state).await
+        }
 
         // ---- Plugin (Zellij) ----
         "plugin.dashboard" => super::rpc_plugin::handle_dashboard(request.id, state).await,
