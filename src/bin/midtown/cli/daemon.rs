@@ -2212,12 +2212,8 @@ mod tests {
         let test_cmd = "echo test-lead-command";
         // SAFETY: test is single-threaded for this env var
         unsafe { std::env::set_var("MIDTOWN_LEAD_COMMAND", test_cmd) };
-        let result = build_lead_launch_command(
-            "lead",
-            Path::new("/tmp/test-worktree"),
-            "test-project",
-            &[],
-        );
+        let result =
+            build_lead_launch_command("lead", Path::new("/tmp/test-worktree"), "test-project", &[]);
         unsafe { std::env::remove_var("MIDTOWN_LEAD_COMMAND") };
 
         let cmd = result.expect("build_lead_launch_command should succeed");
