@@ -118,6 +118,8 @@ struct DaemonFixture {
     repo_name: String,
     /// Path to the daemon socket
     socket_path: PathBuf,
+    /// Per-fixture state directory (used as XDG_STATE_HOME)
+    state_dir: PathBuf,
     /// Path to the daemon PID file
     pid_path: PathBuf,
     /// Daemon process handle (if started)
@@ -175,16 +177,9 @@ impl DaemonFixture {
             .stderr(Stdio::null())
             .status();
 
-        // Compute socket and PID paths
-        // These match the paths from midtown::paths
-        let state_dir = std::env::var("XDG_STATE_HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| {
-                dirs::home_dir()
-                    .unwrap_or_else(|| PathBuf::from("."))
-                    .join(".local")
-                    .join("state")
-            });
+        // Use a short XDG_STATE_HOME to avoid UNIX socket path-length limits
+        // (SUN_LEN) on systems with long temporary directory prefixes.
+        let state_dir = PathBuf::from("/tmp").join(format!("ms-{}", &repo_name));
         let socket_path = state_dir
             .join("midtown")
             .join(&repo_name)
@@ -217,6 +212,7 @@ impl DaemonFixture {
             project_dir,
             repo_name,
             socket_path,
+            state_dir,
             pid_path,
             daemon_process: None,
             tasks_dir,
@@ -266,6 +262,8 @@ impl DaemonFixture {
             .env("MIDTOWN_WEBHOOK_PORT", "0")
             // Disable chat monitor for cleaner tests
             .env("MIDTOWN_CHAT_MONITOR", "0")
+            // Keep socket paths short and deterministic for e2e.
+            .env("XDG_STATE_HOME", &self.state_dir)
             .spawn();
 
         match child {
@@ -408,6 +406,7 @@ impl Drop for DaemonFixture {
         if let Some(parent) = self.socket_path.parent() {
             let _ = fs::remove_dir(parent);
         }
+        let _ = fs::remove_dir_all(&self.state_dir);
 
         // Clean up the entire project directory (~/.midtown/projects/<name>/)
         // This includes config.toml, daemon.pid, channel.jsonl, cursors/, etc.

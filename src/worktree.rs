@@ -387,7 +387,7 @@ impl WorktreeManager {
             for line in stdout.lines() {
                 if line.starts_with("worktree ")
                     && let Some(worktree_path) = line.strip_prefix("worktree ")
-                    && Path::new(worktree_path) == path
+                    && paths_match(Path::new(worktree_path), path)
                 {
                     return true;
                 }
@@ -1407,10 +1407,48 @@ fn parse_worktree_list(output: &str, worktrees_base: &Path) -> Vec<WorktreeInfo>
     worktrees
 }
 
+/// Normalize a path for stable matching across canonical and non-canonical forms.
+///
+/// On macOS temp directories are often referenced as both `/var/...` and
+/// `/private/var/...`. Git worktree commands usually emit canonicalized
+/// `/private/...` paths, while config-derived paths may use `/var/...`.
+fn normalize_path_for_matching(path: &Path) -> PathBuf {
+    let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let normalized = canonical.components().collect::<PathBuf>();
+
+    #[cfg(unix)]
+    {
+        let s = normalized.to_string_lossy();
+        if s == "/private/var" {
+            return PathBuf::from("/var");
+        }
+        if let Some(rest) = s.strip_prefix("/private/var/") {
+            return PathBuf::from("/var").join(rest);
+        }
+    }
+
+    normalized
+}
+
+/// Return true when two paths refer to the same normalized location.
+fn paths_match(left: &Path, right: &Path) -> bool {
+    normalize_path_for_matching(left) == normalize_path_for_matching(right)
+}
+
+/// Return true when `path` is under `base` after normalization.
+fn path_is_under_base(path: &Path, base: &Path) -> bool {
+    let normalized_path = normalize_path_for_matching(path);
+    let normalized_base = normalize_path_for_matching(base);
+    normalized_path.starts_with(&normalized_base)
+}
+
 /// Check if a worktree path is under our management and extract coworker name.
 fn check_coworker_worktree(path: &Path, worktrees_base: &Path) -> (bool, Option<String>) {
-    if path.starts_with(worktrees_base) {
-        let relative = path.strip_prefix(worktrees_base).ok();
+    let normalized_path = normalize_path_for_matching(path);
+    let normalized_base = normalize_path_for_matching(worktrees_base);
+
+    if path_is_under_base(path, worktrees_base) {
+        let relative = normalized_path.strip_prefix(&normalized_base).ok();
         let coworker_name = relative
             .and_then(|p| p.components().next())
             .and_then(|c| c.as_os_str().to_str())

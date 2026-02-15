@@ -1161,7 +1161,7 @@ bin_command = "custom-command"
         assert_eq!(merged.bin_command(), "custom"); // Overridden
         assert_eq!(merged.chat_layout(), ChatLayout::Auto); // From global
         assert_eq!(merged.chat_min_width(), 200); // Overridden
-        assert_eq!(merged.zellij_swap_layout(), false); // From global
+        assert!(!merged.zellij_swap_layout()); // From global
         assert_eq!(merged.zellij_chat_pane_size(), 35); // From global
         assert_eq!(merged.max_coworkers(), Some(8)); // From global
         assert_eq!(merged.personality(), Personality::Fun); // From global
