@@ -355,6 +355,15 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
             super::rpc_coworker::handle_coworker_asking(request.id, name, question, state).await
         }
 
+        // ---- Lead lifecycle ----
+        "lead.spawn" => {
+            let provider = match parse_provider_param(params) {
+                Ok(provider) => provider,
+                Err(msg) => return Response::error(request.id, RpcError::new(-32602, msg)),
+            };
+            super::rpc_coworker::handle_lead_spawn(request.id, state, provider).await
+        }
+
         // ---- Status / kanban ----
         "status" => super::rpc_status::handle_status(request.id, state).await,
 

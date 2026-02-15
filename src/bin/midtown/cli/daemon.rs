@@ -387,86 +387,6 @@ fn tmux_session_exists(session: &str) -> bool {
     }
 }
 
-/// Build the shell command used to launch the headed Lead session.
-///
-/// This inlines env exports and wrapper wiring so split launchers can execute
-/// one command without creating intermediate launcher files on disk.
-fn build_lead_launch_command(
-    _session: &str,
-    lead_workdir: &Path,
-    project_name: &str,
-    additional_repos: &[PathBuf],
-) -> Result<String, String> {
-    let lead_provider = std::env::var("MIDTOWN_LEAD_PROVIDER")
-        .ok()
-        .and_then(|s| s.parse::<midtown::auth::AuthProvider>().ok())
-        .unwrap_or(midtown::auth::AuthProvider::Claude);
-    if let Err(e) = midtown::platform_launch::run_platform_prelaunch_hook(lead_provider) {
-        eprintln!(
-            "Warning: Platform pre-launch hook failed (continuing): {}",
-            e
-        );
-    }
-
-    // Build the lead shell command with settings/auth context.
-    let prompt_file = midtown::settings::write_lead_prompt_file()
-        .map_err(|e| format!("Failed to write lead prompt: {}", e))?;
-    let settings_file = midtown::settings::write_lead_settings_file()
-        .map_err(|e| format!("Failed to write lead settings: {}", e))?;
-
-    // Resolve auth profile from project config
-    let auth_dir =
-        midtown::auth::active_profile_dir_for_project_with_provider(project_name, lead_provider);
-
-    let config = midtown::launch::LaunchConfig {
-        name: "lead".to_string(),
-        session_mode: midtown::launch::SessionMode::Fresh,
-        role: midtown::launch::CoworkerRole::Coworker,
-        initial_prompt: None,
-        additional_dirs: additional_repos.to_vec(),
-        restrict_setting_sources: false,
-        pr_number: None,
-        team_name: None,
-        working_dir: None,
-        model: "sonnet".to_string(),
-        channel: None,
-        auth_profile_dir: Some(auth_dir),
-        auth_provider: lead_provider,
-    };
-
-    let task_list_id = midtown::paths::task_list_id_for_repo(project_name);
-
-    // Allow tests/CI to override the lead command (claude isn't available in CI)
-    let shell_command = if let Ok(test_cmd) = std::env::var("MIDTOWN_LEAD_COMMAND") {
-        test_cmd
-    } else {
-        let launch = config.to_shell_command(
-            &settings_file,
-            &prompt_file,
-            None,
-            lead_workdir,
-            project_name,
-        );
-        launch.shell_command
-    };
-
-    let bin_command = midtown::config::get_bin_command();
-    let lead_cwd = shell_quote(&lead_workdir.to_string_lossy());
-    let wrapped_command = format!(
-        "{} headed-wrapper run-agent --session lead --provider {} --cwd {} -- sh -lc {}",
-        shell_quote(&bin_command),
-        lead_provider.as_str(),
-        lead_cwd,
-        shell_quote(&shell_command),
-    );
-    Ok(format!(
-        "export CLAUDE_CODE_TASK_LIST_ID={}; export MIDTOWN_HEADED_LEAD_PROVIDER={}; exec {}",
-        shell_quote(&task_list_id),
-        shell_quote(lead_provider.as_str()),
-        wrapped_command,
-    ))
-}
-
 /// Find the git repository root by walking up the directory tree.
 ///
 /// Looks for a `.git` directory or file (worktrees use a file) starting
@@ -584,27 +504,6 @@ fn update_project_config(
         .map_err(|e| format!("Failed to save project config: {}", e))
 }
 
-/// Create or reuse the lead worktree, falling back to the main repo path on error.
-///
-/// This helper encapsulates lead worktree creation shared across launch paths.
-///
-/// Returns the lead worktree path on success, or the original repo path as fallback.
-fn create_or_reuse_lead_worktree(repo: &Path) -> Result<PathBuf, String> {
-    let worktree_manager = midtown::worktree::WorktreeManager::new(repo.to_path_buf())
-        .map_err(|e| format!("Failed to initialize worktree manager: {}", e))?;
-
-    worktree_manager
-        .create_lead_worktree()
-        .map_err(|e| {
-            eprintln!(
-                "Warning: Failed to create lead worktree, falling back to main repo: {}",
-                e
-            );
-            e
-        })
-        .or_else(|_| Ok(repo.to_path_buf()))
-}
-
 /// Handle `midtown start` command.
 ///
 /// Starts Midtown services for the current project (daemon + shared webserver).
@@ -676,9 +575,19 @@ pub fn handle_start(project: Option<String>, repos: Vec<PathBuf>) -> Result<Resp
         }
     }
 
-    // Step 2: Terminal launch now lives in `midtown view`.
-    emit_startup_progress(88, "terminal launch deferred to `midtown view`");
-    messages.push("Terminal launch is handled by `midtown view`".to_string());
+    // Step 2: Spawn the Lead as a headless session (idempotent).
+    emit_startup_progress(88, "spawning headless lead session");
+    let lead_provider = std::env::var("MIDTOWN_LEAD_PROVIDER")
+        .ok()
+        .and_then(|s| s.parse::<midtown::auth::AuthProvider>().ok())
+        .unwrap_or(midtown::auth::AuthProvider::Claude);
+    match DaemonClient::connect() {
+        Ok(client) => match client.lead_spawn(lead_provider) {
+            Ok(_) => messages.push("Lead session running".to_string()),
+            Err(e) => messages.push(format!("Warning: Failed to spawn lead: {}", e)),
+        },
+        Err(e) => messages.push(format!("Warning: Could not connect to daemon: {}", e)),
+    }
 
     // Step 3: Auto-launch shared webserver if not running
     if !webserver_is_running() {
@@ -1666,7 +1575,8 @@ fn launch_lead_split(host: AttachHost, cwd: &str, shell_command: &str) -> Result
 
 /// Handle `midtown view` command.
 ///
-/// Starts `midtown chat` in the current terminal and auto-creates a split for Lead.
+/// Starts `midtown chat` in the current terminal and auto-creates a split
+/// that attaches to the Lead's headless session.
 pub fn handle_view(project: Option<&str>, skip_auto_split: bool) -> Result<Response, String> {
     let ctx = resolve_attach_context(project)?;
 
@@ -1680,23 +1590,87 @@ pub fn handle_view(project: Option<&str>, skip_auto_split: bool) -> Result<Respo
         )
     })?;
 
-    // Ensure daemon is running for this project.
+    // Ensure daemon + lead are running for this project.
     if !daemon_is_running() {
         handle_start(Some(ctx.project_name.clone()), ctx.additional_repos.clone())?;
         std::thread::sleep(std::time::Duration::from_millis(150));
     }
 
-    let lead_workdir = create_or_reuse_lead_worktree(&ctx.primary_repo)?;
-    let lead_shell_command = build_lead_launch_command(
-        "lead",
-        &lead_workdir,
-        &ctx.project_name,
-        &ctx.additional_repos,
-    )?;
-    let host = AttachHost::detect();
-    let lead_cwd = lead_workdir.to_string_lossy().to_string();
+    // Attach to the headless lead session via the daemon RPC.
+    let client =
+        DaemonClient::connect().map_err(|e| format!("Failed to connect to daemon: {}", e))?;
 
-    if !skip_auto_split && let Err(e) = launch_lead_split(host, &lead_cwd, &lead_shell_command) {
+    // Wait for lead session to become attachable (it may still be initializing).
+    let mut attach_info = None;
+    for _ in 0..50 {
+        match client.session_attach("name/lead") {
+            Ok(info) => {
+                attach_info = Some(info);
+                break;
+            }
+            Err(e) if e.contains("No session ID found") || e.contains("matched no persisted") => {
+                // Lead session not yet registered — wait and retry
+                std::thread::sleep(std::time::Duration::from_millis(200));
+                continue;
+            }
+            Err(e) if e.contains("already attached") => {
+                // Lead is already attached somewhere else — build a fresh attach command
+                // by resolving session info without pausing.
+                break;
+            }
+            Err(e) => {
+                if let Some(cwd) = original_cwd {
+                    let _ = std::env::set_current_dir(cwd);
+                }
+                return Err(format!("Failed to attach to lead session: {}", e));
+            }
+        }
+    }
+
+    let info = match attach_info {
+        Some(info) => info,
+        None => {
+            if let Some(cwd) = original_cwd {
+                let _ = std::env::set_current_dir(cwd);
+            }
+            return Err(
+                "Lead session not available for attach. Try again in a few seconds.".to_string(),
+            );
+        }
+    };
+
+    let session_id = info
+        .get("session_id")
+        .and_then(|v| v.as_str())
+        .ok_or("Daemon did not return session_id")?;
+    let cwd = info
+        .get("cwd")
+        .and_then(|v| v.as_str())
+        .ok_or("Daemon did not return cwd")?;
+    let provider_str = info
+        .get("provider")
+        .and_then(|v| v.as_str())
+        .unwrap_or("claude");
+    let provider = provider_str
+        .parse::<midtown::auth::AuthProvider>()
+        .unwrap_or(midtown::auth::AuthProvider::Claude);
+
+    if let Err(e) = midtown::platform_launch::run_platform_prelaunch_hook(provider) {
+        eprintln!(
+            "Warning: Platform pre-launch hook failed (continuing): {}",
+            e
+        );
+    }
+
+    let cwd = super::session::ensure_attach_worktree("lead", cwd)?;
+    let lead_shell_command =
+        super::session::build_attach_shell_command(&cwd, "lead", provider, session_id)?;
+
+    let host = AttachHost::detect();
+
+    if !skip_auto_split && let Err(e) = launch_lead_split(host, &cwd, &lead_shell_command) {
+        // Detach so the lead resumes headless
+        let _ = client.session_detach("lead");
         if let Some(cwd) = original_cwd {
             let _ = std::env::set_current_dir(cwd);
         }
@@ -2203,29 +2177,6 @@ mod tests {
         assert!(
             is_working,
             "Status 'idle' doesn't exist in CoworkerStatus — if it appeared, it would be conservatively treated as 'working' (safe default for unknown statuses)"
-        );
-    }
-
-    #[test]
-    fn test_build_lead_launch_command_includes_cwd() {
-        // Set env so build_lead_launch_command uses the test override path
-        let test_cmd = "echo test-lead-command";
-        // SAFETY: test is single-threaded for this env var
-        unsafe { std::env::set_var("MIDTOWN_LEAD_COMMAND", test_cmd) };
-        let result =
-            build_lead_launch_command("lead", Path::new("/tmp/test-worktree"), "test-project", &[]);
-        unsafe { std::env::remove_var("MIDTOWN_LEAD_COMMAND") };
-
-        let cmd = result.expect("build_lead_launch_command should succeed");
-        assert!(
-            cmd.contains("--cwd"),
-            "Lead launch command should contain --cwd flag, got: {}",
-            cmd
-        );
-        assert!(
-            cmd.contains("/tmp/test-worktree"),
-            "Lead launch command should contain the worktree path, got: {}",
-            cmd
         );
     }
 }

@@ -448,7 +448,10 @@ pub(super) async fn handle_session_attach(
         }
     };
 
-    let running = state.coworkers.get(&name).is_some();
+    // Check both session_manager (headless) and coworkers (legacy tmux) for running state
+    let headless_running = state.session_manager.is_alive(&name).await;
+    let tmux_running = state.coworkers.get(&name).is_some();
+    let running = headless_running || tmux_running;
     let provider = info.provider.unwrap_or(crate::auth::AuthProvider::Claude);
     let session_id = info.session_id.clone();
     let cwd = state
@@ -465,9 +468,19 @@ pub(super) async fn handle_session_attach(
         });
 
     if running {
-        // Pause the running headless coworker (session stays resumable on disk).
+        // Pause the running session (headless or tmux).
         state.broadcast_coworker_update(&name, "attaching", None);
-        if let Err(e) = state.coworkers.shutdown(&name) {
+        if headless_running {
+            if let Err(e) = state.session_manager.shutdown(&name).await {
+                return Response::error(
+                    id,
+                    RpcError::new(
+                        -32603,
+                        format!("Failed to pause headless session '{}': {}", name, e),
+                    ),
+                );
+            }
+        } else if let Err(e) = state.coworkers.shutdown(&name) {
             return Response::error(
                 id,
                 RpcError::new(
@@ -480,8 +493,14 @@ pub(super) async fn handle_session_attach(
         // (see #874). The attached_coworkers set provides the long-term exemption.
         state.record_coworker_stop_time(&name);
         info!(
-            "Paused running headless coworker '{}' for attach (session={})",
-            name, session_id
+            "Paused running {} '{}' for attach (session={})",
+            if headless_running {
+                "headless session"
+            } else {
+                "tmux coworker"
+            },
+            name,
+            session_id
         );
     } else {
         info!(
@@ -572,13 +591,19 @@ pub(super) async fn handle_session_detach(
     };
     let session_id = session_info.session_id.clone();
 
-    // Re-spawn the coworker with the resumed session
-    let mut config = crate::launch::LaunchConfig::coworker(
-        &name,
-        &state.repo_name,
-        crate::launch::SessionMode::ResumeSession(session_id.clone()),
-        Some("You were previously running headless. The Lead attached to your session interactively and has now detached. Continue where you left off — read the channel for any updates.".to_string()),
-    );
+    // Re-spawn with the resumed session, using the correct role for the lead
+    let mut config = if name == "lead" {
+        let mut c = crate::launch::LaunchConfig::lead(&state.repo_name);
+        c.session_mode = crate::launch::SessionMode::ResumeSession(session_id.clone());
+        c
+    } else {
+        crate::launch::LaunchConfig::coworker(
+            &name,
+            &state.repo_name,
+            crate::launch::SessionMode::ResumeSession(session_id.clone()),
+            Some("You were previously running headless. The Lead attached to your session interactively and has now detached. Continue where you left off — read the channel for any updates.".to_string()),
+        )
+    };
     if let Some(ref working_dir) = session_info.working_dir {
         config.working_dir = Some(std::path::PathBuf::from(working_dir));
     }

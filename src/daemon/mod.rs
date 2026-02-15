@@ -815,6 +815,7 @@ impl DaemonState {
                 agent_id: crate::mailbox::agent_id(&name, team_name),
                 agent_type: match config.role {
                     crate::launch::CoworkerRole::Reviewer => "reviewer".to_string(),
+                    crate::launch::CoworkerRole::Lead => "lead".to_string(),
                     crate::launch::CoworkerRole::Coworker => "coworker".to_string(),
                 },
             };
@@ -1244,12 +1245,23 @@ impl DaemonState {
         }
     }
 
-    /// Queue a nudge for the Lead via the headed session intercom.
+    /// Nudge the Lead session.
     ///
-    /// Delivery and input-safety checks are handled by the registered wrapper
-    /// adapter (e.g., `midtown headed-wrapper run-agent --session lead ...`).
+    /// First tries the headless session_manager path (lead running headless).
+    /// Falls back to the headed intercom queue (lead attached interactively).
     pub(crate) async fn nudge_lead(&self, message: &str) {
-        self.enqueue_headed_nudge("lead", message).await;
+        if self.session_manager.is_alive("lead").await {
+            if let Err(e) = self.session_manager.send_message("lead", message).await {
+                tracing::debug!(
+                    "Failed to nudge lead via session_manager ({}), falling back to headed intercom",
+                    e
+                );
+                self.enqueue_headed_nudge("lead", message).await;
+            }
+        } else {
+            // Lead is attached interactively — use headed intercom
+            self.enqueue_headed_nudge("lead", message).await;
+        }
     }
 }
 

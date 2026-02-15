@@ -101,6 +101,47 @@ pub(super) async fn handle_coworker_spawn(
     }
 }
 
+/// Handle lead.spawn RPC method.
+///
+/// Spawns the Lead as a headless session. Idempotent — returns success
+/// if the lead is already running.
+pub(super) async fn handle_lead_spawn(
+    id: RequestId,
+    state: &DaemonState,
+    provider: crate::auth::AuthProvider,
+) -> Response {
+    // Idempotent: if lead is already running, return success
+    if state.session_manager.is_alive("lead").await {
+        return Response::success(
+            id,
+            serde_json::json!({
+                "success": true,
+                "message": "Lead already running",
+            }),
+        );
+    }
+
+    let mut config = crate::launch::LaunchConfig::lead(&state.repo_name);
+    config.auth_provider = provider;
+
+    match state.spawn_coworker(&config).await {
+        Ok(()) => {
+            info!("Spawned headless lead session");
+            Response::success(
+                id,
+                serde_json::json!({
+                    "success": true,
+                    "message": "Spawned headless lead session",
+                }),
+            )
+        }
+        Err(e) => {
+            error!("Failed to spawn lead: {}", e);
+            Response::error(id, RpcError::new(-32603, e.to_string()))
+        }
+    }
+}
+
 /// Handle coworker.break RPC method.
 pub(super) async fn handle_coworker_break(
     id: RequestId,

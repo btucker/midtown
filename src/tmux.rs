@@ -1223,6 +1223,7 @@ pub fn spawn_claude(
     // Reviewers get a specialized prompt that includes reviewer.md instructions.
     let system_prompt = match config.role {
         CoworkerRole::Reviewer => crate::agents::reviewer_system_prompt(&config.name),
+        CoworkerRole::Lead => crate::agents::lead_system_prompt(),
         CoworkerRole::Coworker => crate::agents::coworker_system_prompt(&config.name),
     };
 
@@ -1236,6 +1237,7 @@ pub fn spawn_claude(
             agent_id: crate::mailbox::agent_id(&config.name, team_name),
             agent_type: match config.role {
                 CoworkerRole::Reviewer => "reviewer".to_string(),
+                CoworkerRole::Lead => "lead".to_string(),
                 CoworkerRole::Coworker => "coworker".to_string(),
             },
         };
