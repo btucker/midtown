@@ -379,14 +379,6 @@ pub(super) async fn handle_coworker_report_state(
             .unwrap_or_default()
     };
 
-    // Update tmux tab display
-    if let Err(e) = state
-        .coworkers
-        .update_status_formatted(name, &status_display)
-    {
-        debug!("Failed to update tmux tab for {}: {}", name, e);
-    }
-
     info!("Coworker {} reported state: {}", name, status_display);
     Response::success(
         id,
@@ -460,16 +452,8 @@ pub(super) async fn handle_coworker_asking(
         error!("Failed to post question to channel: {}", e);
     }
 
-    // Mark the coworker as waiting for feedback in tmux tab and nudge the Lead.
-    let coworkers = state.coworkers.clone();
-    let name_owned = name.to_string();
+    // Nudge the Lead about the question.
     let nudge_message = format!("{} is asking: {}", name, question);
-
-    tokio::task::spawn_blocking(move || {
-        if let Err(e) = coworkers.update_status_display(&name_owned, Some("waiting for feedback")) {
-            debug!("Failed to update tmux tab for {}: {}", name_owned, e);
-        }
-    });
     state.nudge_lead(&nudge_message).await;
 
     info!("Coworker {} asking: {}", name, question);

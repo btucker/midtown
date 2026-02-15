@@ -332,7 +332,7 @@ pub async fn recover_headless_sessions(
         });
     }
 
-    // NOTE: We preserve headless_sessions in persistent state so sync_with_tmux()
+    // NOTE: We preserve headless_sessions in persistent state so retain_alive()
     // can restore session_ids for recovered coworkers. The map will be overwritten
     // at the next shutdown with fresh data.
     //

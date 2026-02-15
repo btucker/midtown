@@ -1,58 +1,7 @@
 use super::*;
 
-#[test]
-fn test_determine_lead_working_pane_changed() {
-    let now = Instant::now();
-    let grace = Duration::from_secs(30);
-    assert!(determine_lead_working(true, None, now, grace));
-    assert!(determine_lead_working(true, Some(now), now, grace));
-}
-
-#[test]
-fn test_determine_lead_working_within_grace_period() {
-    let now = Instant::now();
-    let grace = Duration::from_secs(30);
-    let last_activity = now - Duration::from_secs(10);
-    assert!(determine_lead_working(
-        false,
-        Some(last_activity),
-        now,
-        grace
-    ));
-}
-
-#[test]
-fn test_determine_lead_working_grace_period_expired() {
-    let now = Instant::now();
-    let grace = Duration::from_secs(30);
-    let last_activity = now - Duration::from_secs(31);
-    assert!(!determine_lead_working(
-        false,
-        Some(last_activity),
-        now,
-        grace
-    ));
-}
-
-#[test]
-fn test_determine_lead_working_no_activity_ever() {
-    let now = Instant::now();
-    let grace = Duration::from_secs(30);
-    assert!(!determine_lead_working(false, None, now, grace));
-}
-
-#[test]
-fn test_determine_lead_working_exactly_at_grace_boundary() {
-    let now = Instant::now();
-    let grace = Duration::from_secs(30);
-    let last_activity = now - Duration::from_secs(30);
-    assert!(!determine_lead_working(
-        false,
-        Some(last_activity),
-        now,
-        grace
-    ));
-}
+// determine_lead_working tests removed — the function was part of the
+// tmux-based lead typing detection which has been removed.
 
 /// Test that usage limit expiry nudges only target Running coworkers.
 ///

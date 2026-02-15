@@ -518,6 +518,11 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
 
         "session.list" => super::rpc_session::handle_session_list(request.id, state).await,
 
+        "session.view" => {
+            let target = require_str!(params, "target", request.id);
+            super::rpc_session::handle_session_view(request.id, target, state).await
+        }
+
         // ---- Headed wrapper intercom ----
         "headed.register" => {
             let session = require_str!(params, "session", request.id);
@@ -558,6 +563,12 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
                 return Response::error(request.id, RpcError::invalid_params());
             };
             super::rpc_headed::handle_ack(request.id, session, adapter_id, msg_id, state).await
+        }
+
+        "headed.output" => {
+            let session = require_str!(params, "session", request.id);
+            let output = require_str!(params, "output", request.id);
+            super::rpc_headed::handle_output(request.id, session, output, state).await
         }
 
         _ => {

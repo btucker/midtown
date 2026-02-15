@@ -549,7 +549,9 @@ where
 ///
 /// The caller is responsible for the initial startup delay and executing effects.
 pub(super) async fn gather_discovered_coworker_nudges(state: &DaemonState) -> Vec<Effect> {
-    let discovered = state.coworkers.take_discovered_on_startup();
+    // With all sessions now headless, there's no tmux discovery.
+    // Session recovery is handled by the startup module using persistent state.
+    let discovered: Vec<String> = vec![];
     if discovered.is_empty() {
         return vec![];
     }
@@ -1007,9 +1009,9 @@ pub(super) async fn gather_orphan_cleanup_data(
             let mut cleaned = Vec::new();
             let mut remaining = Vec::new();
             for name in to_check {
-                // Guard against tmux race: coworker may exist in tmux but
-                // not yet be in the daemon's internal map.
-                if coworkers.has_tmux_window(&name) {
+                // Guard against race: coworker may be actively running but
+                // not yet reflected in the orphan detection path.
+                if coworkers.get(&name).is_some() {
                     remaining.push(name);
                     continue;
                 }

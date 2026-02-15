@@ -107,21 +107,6 @@ impl PrIssueTracker {
 }
 
 // ---------------------------------------------------------------------------
-// LeadTypingState
-// ---------------------------------------------------------------------------
-
-/// Consolidated state for the lead's typing indicator.
-///
-/// Groups pane hash and last-activity timestamp into a single struct so that
-/// `check_lead_typing` can acquire one lock instead of three. The `working`
-/// state is derived from `last_activity` (within grace period), not stored.
-#[derive(Default)]
-pub(crate) struct LeadTypingState {
-    pub pane_hash: u64,
-    pub last_activity: Option<Instant>,
-}
-
-// ---------------------------------------------------------------------------
 // StuckConditionType
 // ---------------------------------------------------------------------------
 

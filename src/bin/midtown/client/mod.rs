@@ -453,6 +453,20 @@ impl DaemonClient {
         self.send("session.list", None)
     }
 
+    /// View a session's current output (PTY for headed, JSONL for headless).
+    pub fn session_view(&self, target: &str) -> Result<Response, String> {
+        let result = self.send_raw(
+            "session.view",
+            Some(serde_json::json!({ "target": target })),
+        )?;
+        let output = result
+            .get("output")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        Ok(Response::message(output))
+    }
+
     // Status command
 
     pub fn status(&self) -> Result<Response, String> {
@@ -605,6 +619,16 @@ impl DaemonClient {
                 "session": session,
                 "adapter_id": adapter_id,
                 "msg_id": msg_id
+            })),
+        )
+    }
+
+    pub fn headed_output(&self, session: &str, output: &str) -> Result<Value, String> {
+        self.send_raw(
+            "headed.output",
+            Some(serde_json::json!({
+                "session": session,
+                "output": output
             })),
         )
     }

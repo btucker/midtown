@@ -232,34 +232,22 @@ pub(super) async fn handle_auth_switch(
     // lead session. Today lead is Claude-backed; other providers leave lead
     // untouched instead of reporting a relaunch failure.
     let lead_relaunch_status = if provider == crate::auth::AuthProvider::Claude {
-        let session = state.coworkers.session_name().to_string();
-        let workdir = state
-            .all_repo_paths
-            .first()
-            .cloned()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .to_string();
-        let project_name = state.repo_name.clone();
-        let additional_dirs: Vec<std::path::PathBuf> =
-            state.all_repo_paths.iter().skip(1).cloned().collect();
-
-        let lead_result = tokio::task::spawn_blocking(move || {
-            crate::tmux::spawn_lead(&session, &workdir, &project_name, &additional_dirs)
-        })
-        .await;
-
-        match lead_result {
-            Ok(Ok(())) => {
+        // Shut down the existing headless lead session if running
+        if state.session_manager.is_alive("lead").await {
+            let _ = state.session_manager.shutdown("lead").await;
+            state.coworkers.deregister("lead");
+        }
+        let mut lead_config = crate::launch::LaunchConfig::lead(&state.repo_name);
+        lead_config.auth_profile_dir = Some(crate::auth::active_profile_dir_for_project(
+            &state.repo_name,
+        ));
+        match state.spawn_coworker(&lead_config).await {
+            Ok(()) => {
                 info!("Re-launched lead with auth profile '{}'", profile);
                 LeadRelaunchStatus::Relaunched
             }
-            Ok(Err(e)) => {
-                warn!("Failed to re-launch lead: {}", e);
-                LeadRelaunchStatus::Failed
-            }
             Err(e) => {
-                warn!("spawn_blocking panic while re-launching lead: {}", e);
+                warn!("Failed to re-launch lead: {}", e);
                 LeadRelaunchStatus::Failed
             }
         }
