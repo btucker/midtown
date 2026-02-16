@@ -3558,3 +3558,213 @@ fn test_orphan_recovery_marks_task_in_flight() {
         "Task !999999 should be marked in-flight after orphan recovery"
     );
 }
+
+// ======================================================================
+// Stale task cleanup tests
+// ======================================================================
+
+#[test]
+fn test_stale_task_cleanup_false_positive_task_about_merged_pr() {
+    // Reproduces the false positive where a task ABOUT a merged PR (e.g., analyzing a bug
+    // that occurred during that PR) gets auto-completed because the PR number appears in
+    // the task description.
+    //
+    // Expected: Task should NOT be auto-completed (it has no explicit pr field set)
+    // Actual (before fix): Task gets auto-completed because description mentions "PR #1153"
+
+    use crate::tasks::{Task, TaskStatus};
+    use std::time::SystemTime;
+
+    let task = Task {
+        id: "1310".to_string(),
+        subject: "Fix bug from PR #1153".to_string(), // PR number in subject to trigger pattern matching
+        description: Some(
+            "Bug: When PR #1153 opened, the daemon queued a reviewer to spawn 45s later. \
+             But when it tried, CI was still running so no reviewer spawned. When CI went \
+             green, the daemon never re-evaluated the PR. The fix is to re-evaluate when \
+             CI status changes."
+                .to_string(),
+        ),
+        status: TaskStatus::Pending,
+        owner: Some("pleasant".to_string()),
+        blocked_by: vec![],
+        channel: None,
+        pr: None, // No explicit pr field - this task is ABOUT PR #1153, not FOR it
+        created_at: Some(SystemTime::now()),
+    };
+
+    let snap = snapshot::WorldSnapshot {
+        pending_tasks_with_owners: vec![(
+            task.id.clone(),
+            task.subject.clone(),
+            task.owner.clone().unwrap(),
+        )],
+        pending_tasks_without_owners: vec![],
+        all_tasks: vec![task],
+        merged_pr_numbers: [1153u64].into_iter().collect(), // PR #1153 is merged
+        is_at_dev_limit: false,
+        active_names: HashSet::new(),
+        active_session_ids: HashSet::new(),
+        running_coworkers: vec![],
+        active_coworkers: vec![],
+        coworker_snapshots: vec![],
+        session_name: "midtown-test".to_string(),
+        coworker_start_times: HashMap::new(),
+        coworker_stop_times: HashMap::new(),
+        headless_process_health: HashMap::new(),
+        attached_coworkers: HashSet::new(),
+        in_progress_tasks: vec![],
+        busy_coworkers: HashSet::new(),
+        coworker_task_assignments: HashMap::new(),
+        task_channel: HashMap::new(),
+        task_model_map: HashMap::new(),
+        task_plan_map: HashMap::new(),
+        task_execution_skill_map: HashMap::new(),
+        coworkers_with_open_prs: HashSet::new(),
+        coworkers_with_merged_prs: HashSet::new(),
+        ci_passed_pr_coworkers: HashSet::new(),
+        review_feedback_pr_coworkers: HashSet::new(),
+        open_prs_data: vec![],
+        github_open_pr_task_ids: HashMap::new(),
+        pending_task_owners: HashSet::new(),
+        tasks_with_open_prs: HashMap::new(),
+        pr_task_associations: HashMap::new(),
+        active_reviewers: HashSet::new(),
+        reviewer_pr_assignments: HashMap::new(),
+        reviewed_prs: HashSet::new(),
+        prs_needing_review: 0,
+        reviewer_restart_counts: HashMap::new(),
+        reviewer_escalations_posted: HashSet::new(),
+        coworkers_with_unblocked_deps: HashSet::new(),
+        usage_limit_nudge_scheduled: false,
+        usage_limit_nudge_at: None,
+        usage_limited_coworkers: HashSet::new(),
+        api_error_coworkers: HashSet::new(),
+        auth_error_coworkers: HashSet::new(),
+        tool_name_conflict_coworkers: HashSet::new(),
+        channel_messages: vec![],
+        archived_channels: HashSet::new(),
+        daemon_logs: vec![],
+        tasks_with_worktrees: HashSet::new(),
+        task_worktree_map: HashMap::new(),
+        worktree_registry: crate::worktree_registry::WorktreeRegistry::default(),
+        worktree_branch_owners: HashMap::new(),
+        merged_pr_branches: HashMap::new(),
+        is_at_coworker_limit: false,
+        now_utc: chrono::Utc::now(),
+        repo_name: "test-repo".to_string(),
+        github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
+        freshly_fetched_rate_limit: None,
+    };
+
+    let state = make_test_state();
+    let effects = spawn_for_pending_tasks(&snap, &state);
+
+    // Should NOT auto-complete the task. The task is about a bug that occurred during
+    // PR #1153, not a task whose work is in PR #1153.
+    let has_complete = effects
+        .iter()
+        .any(|e| matches!(e, Effect::CompleteTask { task_id, .. } if task_id == "1310"));
+
+    assert!(
+        !has_complete,
+        "Task !1310 should NOT be auto-completed - it's about PR #1153, not for it"
+    );
+}
+
+#[test]
+fn test_stale_task_cleanup_correct_behavior_with_explicit_pr_field() {
+    // Task with explicit pr field set should be auto-completed when that PR merges.
+
+    use crate::tasks::{Task, TaskStatus};
+    use std::time::SystemTime;
+
+    let task = Task {
+        id: "42".to_string(),
+        subject: "Add auth endpoint".to_string(),
+        description: None,
+        status: TaskStatus::Pending,
+        owner: Some("park".to_string()),
+        blocked_by: vec![],
+        channel: None,
+        pr: Some(123), // Explicit pr field - this task's work is IN PR #123
+        created_at: Some(SystemTime::now()),
+    };
+
+    let snap = snapshot::WorldSnapshot {
+        pending_tasks_with_owners: vec![(
+            task.id.clone(),
+            task.subject.clone(),
+            task.owner.clone().unwrap(),
+        )],
+        pending_tasks_without_owners: vec![],
+        all_tasks: vec![task],
+        merged_pr_numbers: [123u64].into_iter().collect(), // PR #123 is merged
+        is_at_dev_limit: false,
+        active_names: HashSet::new(),
+        active_session_ids: HashSet::new(),
+        running_coworkers: vec![],
+        active_coworkers: vec![],
+        coworker_snapshots: vec![],
+        session_name: "midtown-test".to_string(),
+        coworker_start_times: HashMap::new(),
+        coworker_stop_times: HashMap::new(),
+        headless_process_health: HashMap::new(),
+        attached_coworkers: HashSet::new(),
+        in_progress_tasks: vec![],
+        busy_coworkers: HashSet::new(),
+        coworker_task_assignments: HashMap::new(),
+        task_channel: HashMap::new(),
+        task_model_map: HashMap::new(),
+        task_plan_map: HashMap::new(),
+        task_execution_skill_map: HashMap::new(),
+        coworkers_with_open_prs: HashSet::new(),
+        coworkers_with_merged_prs: HashSet::new(),
+        ci_passed_pr_coworkers: HashSet::new(),
+        review_feedback_pr_coworkers: HashSet::new(),
+        open_prs_data: vec![],
+        github_open_pr_task_ids: HashMap::new(),
+        pending_task_owners: HashSet::new(),
+        tasks_with_open_prs: HashMap::new(),
+        pr_task_associations: HashMap::new(),
+        active_reviewers: HashSet::new(),
+        reviewer_pr_assignments: HashMap::new(),
+        reviewed_prs: HashSet::new(),
+        prs_needing_review: 0,
+        reviewer_restart_counts: HashMap::new(),
+        reviewer_escalations_posted: HashSet::new(),
+        coworkers_with_unblocked_deps: HashSet::new(),
+        usage_limit_nudge_scheduled: false,
+        usage_limit_nudge_at: None,
+        usage_limited_coworkers: HashSet::new(),
+        api_error_coworkers: HashSet::new(),
+        auth_error_coworkers: HashSet::new(),
+        tool_name_conflict_coworkers: HashSet::new(),
+        channel_messages: vec![],
+        archived_channels: HashSet::new(),
+        daemon_logs: vec![],
+        tasks_with_worktrees: HashSet::new(),
+        task_worktree_map: HashMap::new(),
+        worktree_registry: crate::worktree_registry::WorktreeRegistry::default(),
+        worktree_branch_owners: HashMap::new(),
+        merged_pr_branches: HashMap::new(),
+        is_at_coworker_limit: false,
+        now_utc: chrono::Utc::now(),
+        repo_name: "test-repo".to_string(),
+        github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
+        freshly_fetched_rate_limit: None,
+    };
+
+    let state = make_test_state();
+    let effects = spawn_for_pending_tasks(&snap, &state);
+
+    // SHOULD auto-complete the task because task.pr == 123 and PR #123 is merged
+    let has_complete = effects
+        .iter()
+        .any(|e| matches!(e, Effect::CompleteTask { task_id, .. } if task_id == "42"));
+
+    assert!(
+        has_complete,
+        "Task !42 should be auto-completed - its explicit pr field matches merged PR #123"
+    );
+}
