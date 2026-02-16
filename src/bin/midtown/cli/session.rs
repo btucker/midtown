@@ -742,10 +742,11 @@ pub(crate) fn build_attach_shell_command(
 
     let bin_command = midtown::config::get_bin_command();
     let wrapped_attach_cmd = format!(
-        "{} headed-wrapper run-agent --session {} --provider {} -- sh -lc {}",
+        "{} headed-wrapper run-agent --session {} --provider {} --cwd {} -- sh -lc {}",
         shell_quote(&bin_command),
         shell_quote(name),
         provider.as_str(),
+        shell_quote(cwd),
         shell_quote(&provider_cmd),
     );
     let detach_cmd = format!("{} session detach {}", bin_command, shell_quote(name));
