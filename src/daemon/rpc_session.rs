@@ -658,9 +658,8 @@ pub(super) async fn handle_session_detach(
     if let Some(provider) = session_info.provider {
         config.auth_provider = provider;
     }
-    if let Some(ref profile) = session_info.profile {
-        config.auth_profile_dir = Some(crate::auth::profile_dir_for(config.auth_provider, profile));
-    }
+    // Don't restore auth_profile_dir from persisted profile name — let
+    // spawn_coworker() re-resolve from project config (authoritative source).
 
     match state.spawn_coworker(&config).await {
         Ok(()) => {
