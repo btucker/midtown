@@ -1229,7 +1229,7 @@ fn resolve_attach_context(project: Option<&str>) -> Result<AttachContext, String
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum AttachHost {
+pub(super) enum AttachHost {
     Tmux,
     Zellij,
     Ghostty,
@@ -1238,7 +1238,7 @@ enum AttachHost {
 }
 
 impl AttachHost {
-    fn detect() -> Self {
+    pub(super) fn detect() -> Self {
         if std::env::var("ZELLIJ").is_ok() {
             return Self::Zellij;
         }
@@ -1481,7 +1481,11 @@ end tell"#,
     Ok(status.success())
 }
 
-fn launch_lead_split(host: AttachHost, cwd: &str, shell_command: &str) -> Result<String, String> {
+pub(super) fn launch_lead_split(
+    host: AttachHost,
+    cwd: &str,
+    shell_command: &str,
+) -> Result<String, String> {
     match host {
         AttachHost::Tmux => {
             let status = Command::new("tmux")

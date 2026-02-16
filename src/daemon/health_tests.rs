@@ -396,3 +396,140 @@ fn check_for_stale_worktrees_generates_only_cleanup_effect() {
         "first effect should be CleanupStaleWorktree"
     );
 }
+
+/// Helper to build a minimal empty WorldSnapshot for ensure_lead_alive tests.
+fn empty_snap() -> snapshot::WorldSnapshot {
+    use std::collections::{HashMap, HashSet};
+    snapshot::WorldSnapshot {
+        active_coworkers: vec![],
+        running_coworkers: vec![],
+        coworker_snapshots: vec![],
+        active_names: HashSet::new(),
+        active_session_ids: HashSet::new(),
+        session_name: "test".to_string(),
+        coworker_start_times: HashMap::new(),
+        coworker_stop_times: HashMap::new(),
+        headless_process_health: HashMap::new(),
+        attached_coworkers: HashSet::new(),
+        busy_coworkers: HashSet::new(),
+        in_progress_tasks: vec![],
+        pending_tasks_without_owners: vec![],
+        pending_tasks_with_owners: vec![],
+        all_tasks: vec![],
+        task_channel: HashMap::new(),
+        task_model_map: HashMap::new(),
+        task_plan_map: HashMap::new(),
+        task_execution_skill_map: HashMap::new(),
+        coworkers_with_open_prs: HashSet::new(),
+        coworkers_with_merged_prs: HashSet::new(),
+        merged_pr_numbers: HashSet::new(),
+        ci_passed_pr_coworkers: HashSet::new(),
+        review_feedback_pr_coworkers: HashSet::new(),
+        open_prs_data: vec![],
+        github_open_pr_task_ids: HashMap::new(),
+        pending_task_owners: HashSet::new(),
+        tasks_with_open_prs: HashMap::new(),
+        pr_task_associations: HashMap::new(),
+        active_reviewers: HashSet::new(),
+        reviewer_pr_assignments: HashMap::new(),
+        reviewed_prs: HashSet::new(),
+        prs_needing_review: 0,
+        reviewer_restart_counts: HashMap::new(),
+        reviewer_escalations_posted: HashSet::new(),
+        coworkers_with_unblocked_deps: HashSet::new(),
+        usage_limit_nudge_scheduled: false,
+        usage_limit_nudge_at: None,
+        usage_limited_coworkers: HashSet::new(),
+        api_error_coworkers: HashSet::new(),
+        auth_error_coworkers: HashSet::new(),
+        tool_name_conflict_coworkers: HashSet::new(),
+        coworker_task_assignments: HashMap::new(),
+        channel_messages: vec![],
+        archived_channels: HashSet::new(),
+        daemon_logs: vec![],
+        tasks_with_worktrees: HashSet::new(),
+        task_worktree_map: HashMap::new(),
+        worktree_branch_owners: HashMap::new(),
+        worktree_registry: crate::worktree_registry::WorktreeRegistry::default(),
+        merged_pr_branches: HashMap::new(),
+        is_at_coworker_limit: false,
+        is_at_dev_limit: false,
+        now_utc: chrono::Utc::now(),
+        repo_name: "test-repo".to_string(),
+        github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
+        freshly_fetched_rate_limit: None,
+    }
+}
+
+#[test]
+fn ensure_lead_alive_respawns_missing_lead() {
+    let snap = empty_snap();
+    let effects = ensure_lead_alive(&snap);
+    assert_eq!(effects.len(), 1, "Should spawn lead when missing");
+    assert!(
+        matches!(&effects[0], Effect::SpawnCoworker(config) if config.name == "lead"),
+        "Should spawn a lead config"
+    );
+}
+
+#[test]
+fn ensure_lead_alive_no_op_when_lead_registered() {
+    use crate::coworker::{Coworker, CoworkerStatus};
+    let mut snap = empty_snap();
+    snap.active_coworkers.push(Coworker {
+        slot_id: uuid::Uuid::new_v4().to_string(),
+        name: "lead".to_string(),
+        status: CoworkerStatus::Running,
+        working_dir: "/tmp/test".to_string(),
+        started_at: chrono::Utc::now(),
+        current_task: None,
+        session_id: None,
+        model: "sonnet".to_string(),
+        provider: crate::auth::AuthProvider::Claude,
+        profile: crate::auth::DEFAULT_PROFILE.to_string(),
+    });
+    let effects = ensure_lead_alive(&snap);
+    assert!(effects.is_empty(), "Should not respawn when lead is alive");
+}
+
+#[test]
+fn ensure_lead_alive_cooldown_prevents_respawn_loop() {
+    let mut snap = empty_snap();
+    // Lead stopped 1 minute ago — within the 5-minute cooldown
+    snap.coworker_stop_times.insert(
+        "lead".to_string(),
+        chrono::Utc::now() - chrono::Duration::minutes(1),
+    );
+    let effects = ensure_lead_alive(&snap);
+    assert!(
+        effects.is_empty(),
+        "Should not respawn during cooldown period"
+    );
+}
+
+#[test]
+fn ensure_lead_alive_respawns_after_cooldown() {
+    let mut snap = empty_snap();
+    // Lead stopped 10 minutes ago — past the 5-minute cooldown
+    snap.coworker_stop_times.insert(
+        "lead".to_string(),
+        chrono::Utc::now() - chrono::Duration::minutes(10),
+    );
+    let effects = ensure_lead_alive(&snap);
+    assert_eq!(
+        effects.len(),
+        1,
+        "Should respawn lead after cooldown expires"
+    );
+}
+
+#[test]
+fn ensure_lead_alive_skips_when_attached() {
+    let mut snap = empty_snap();
+    snap.attached_coworkers.insert("lead".to_string());
+    let effects = ensure_lead_alive(&snap);
+    assert!(
+        effects.is_empty(),
+        "Should not spawn headless lead when attached interactively"
+    );
+}

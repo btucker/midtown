@@ -897,6 +897,54 @@ pub(super) async fn check_and_respawn_dead_processes(
     effects
 }
 
+/// Ensure the lead session is always running.
+///
+/// The lead is the human-facing session that should never be permanently down.
+/// If the lead is not in `active_coworkers` (dead and deregistered), respawn it.
+/// Uses `coworker_stop_times` as a cooldown to prevent rapid respawn loops.
+pub(super) fn ensure_lead_alive(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
+    // Check if lead is already registered (any status)
+    let lead_registered = snap
+        .active_coworkers
+        .iter()
+        .any(|c| c.name.eq_ignore_ascii_case("lead"));
+
+    if lead_registered {
+        return vec![];
+    }
+
+    // Check if lead is currently attached interactively — if so, the daemon
+    // shouldn't spawn a headless lead that would conflict.
+    if snap.attached_coworkers.contains("lead") {
+        return vec![];
+    }
+
+    // Cooldown: if the lead was recently stopped (within 5 minutes), don't
+    // respawn yet to prevent crash loops. The lead may have been stopped for
+    // a good reason (e.g., auth error, attach/detach cycle).
+    if let Some(stop_time) = snap.coworker_stop_times.get("lead") {
+        let since_stop = snap.now_utc.signed_duration_since(*stop_time);
+        if since_stop < chrono::Duration::from_std(MINIMUM_COWORKER_LIFETIME).unwrap_or_default() {
+            debug!(
+                "Lead respawn cooldown: stopped {}s ago (need {}s)",
+                since_stop.num_seconds(),
+                MINIMUM_COWORKER_LIFETIME.as_secs()
+            );
+            return vec![];
+        }
+    }
+
+    warn!("Lead session is not running — respawning");
+
+    let mut config = crate::launch::LaunchConfig::lead(&snap.repo_name);
+    let lead_wt = crate::paths::lead_worktree_path(&snap.repo_name);
+    if lead_wt.exists() {
+        config.working_dir = Some(lead_wt);
+    }
+
+    vec![Effect::SpawnCoworker(config)]
+}
+
 pub(super) async fn check_and_fire_reminders(
     snap: &snapshot::WorldSnapshot,
     state: &DaemonState,

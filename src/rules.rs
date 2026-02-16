@@ -226,12 +226,18 @@ pub(crate) fn decide_idle_shutdowns(ctx: &IdleShutdownContext<'_>) -> Vec<Shutdo
     ctx.coworkers
         .iter()
         .filter(|cw| {
+            let name = &cw.name;
+
+            // The lead session should never be idle-shutdown — it's the
+            // human-facing session that must always be running.
+            if name.eq_ignore_ascii_case("lead") {
+                return false;
+            }
+
             // Young coworkers are protected regardless of other state.
             if ctx.now_utc.signed_duration_since(cw.started_at) < min_lifetime {
                 return false;
             }
-
-            let name = &cw.name;
 
             // A coworker is protected from break if any of these hold:
             let protected_by_open_pr = hashset_contains_icase(ctx.coworkers_with_open_prs, name)
@@ -1308,6 +1314,15 @@ mod tests {
             decisions.len(),
             1,
             "coworker with CI-passed PR but no review feedback should still go on break"
+        );
+    }
+
+    #[test]
+    fn idle_shutdown_never_shuts_down_the_lead() {
+        let decisions = IdleShutdownCtx::one("lead").run();
+        assert!(
+            decisions.is_empty(),
+            "The lead session should never be idle-shutdown"
         );
     }
 

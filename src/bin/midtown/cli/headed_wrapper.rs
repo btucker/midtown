@@ -761,23 +761,23 @@ pub fn handle(cmd: &HeadedWrapperCommand, client: &DaemonClient) -> Result<Respo
                     }
                 }
 
-                let polled =
+                // Poll daemon for nudges. Tolerate transient connection failures
+                // (e.g., daemon restart) — just skip the poll cycle and retry next
+                // iteration. The interactive session should survive daemon restarts.
+                let parsed: HeadedPollResult =
                     match client.headed_poll(session, &adapter_id, last_seen_id, *batch_limit) {
-                        Ok(value) => value,
-                        Err(e) => {
-                            run_result = Err(e);
-                            break;
+                        Ok(value) => match serde_json::from_value(value) {
+                            Ok(parsed) => parsed,
+                            Err(_) => {
+                                std::thread::sleep(Duration::from_secs(1));
+                                continue;
+                            }
+                        },
+                        Err(_) => {
+                            std::thread::sleep(Duration::from_secs(1));
+                            continue;
                         }
                     };
-                let parsed: HeadedPollResult = match serde_json::from_value(polled)
-                    .map_err(|e| format!("Invalid headed.poll response: {}", e))
-                {
-                    Ok(parsed) => parsed,
-                    Err(e) => {
-                        run_result = Err(e);
-                        break;
-                    }
-                };
 
                 for msg in parsed.messages {
                     let safe = if session.eq_ignore_ascii_case("lead") {
@@ -819,9 +819,12 @@ pub fn handle(cmd: &HeadedWrapperCommand, client: &DaemonClient) -> Result<Respo
                         break;
                     }
 
+                    // Ack is best-effort — if daemon is temporarily unreachable
+                    // (e.g., restarting), don't kill the interactive session.
+                    // We still advance last_seen_id so the next poll skips
+                    // already-delivered messages.
                     if let Err(e) = client.headed_ack(session, &adapter_id, msg.id) {
-                        run_result = Err(e);
-                        break;
+                        info!("headed_ack failed (will retry next cycle): {}", e);
                     }
                     last_seen_id = msg.id;
                     last_nudge_text = Some(payload);
