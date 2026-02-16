@@ -1240,7 +1240,8 @@ impl App {
 
         // Try daemon RPC first (ensures parity with web UI)
         if let Ok(client) = crate::client::DaemonClient::connect()
-            && let Ok(crate::cli::Response::Json { value }) = client.channel_list(self.show_archived_channels)
+            && let Ok(crate::cli::Response::Json { value }) =
+                client.channel_list(self.show_archived_channels)
             && let Some(channels_value) = value.get("channels")
             && let Ok(channels) =
                 serde_json::from_value::<Vec<midtown::ChannelInfo>>(channels_value.clone())

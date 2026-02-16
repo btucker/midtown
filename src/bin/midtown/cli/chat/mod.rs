@@ -510,7 +510,8 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                         EventResult::Continue
                     } else if app.focused_pane == FocusedPane::Board {
                         // When board is focused and Enter is pressed, check if a task is selected
-                        if let Some(app::BoardSelection::Task(_channel, task_id)) = &app.board_selection
+                        if let Some(app::BoardSelection::Task(_channel, task_id)) =
+                            &app.board_selection
                             && let Some(task) = app.tasks.iter().find(|t| &t.id == task_id)
                             && let Some(ref owner) = task.owner
                         {
@@ -772,18 +773,15 @@ fn attach_coworker_split(coworker_name: &str) {
         }
     };
 
-    let shell_command = match super::session::build_attach_shell_command(
-        &cwd,
-        coworker_name,
-        provider,
-        session_id,
-    ) {
-        Ok(cmd) => cmd,
-        Err(_) => {
-            let _ = client.session_detach(coworker_name);
-            return;
-        }
-    };
+    let shell_command =
+        match super::session::build_attach_shell_command(&cwd, coworker_name, provider, session_id)
+        {
+            Ok(cmd) => cmd,
+            Err(_) => {
+                let _ = client.session_detach(coworker_name);
+                return;
+            }
+        };
 
     let host = super::daemon::AttachHost::detect();
     if super::daemon::launch_lead_split(host, &cwd, &shell_command).is_err() {
