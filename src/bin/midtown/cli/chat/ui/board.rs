@@ -237,7 +237,7 @@ fn render_task_item(
 }
 
 /// Draw the coworker status section (bottom of board sidebar)
-fn draw_coworker_status(f: &mut Frame, app: &App, area: Rect) {
+fn draw_coworker_status(f: &mut Frame, app: &mut App, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -245,6 +245,9 @@ fn draw_coworker_status(f: &mut Frame, app: &App, area: Rect) {
             Constraint::Min(0),    // Table rows
         ])
         .split(area);
+
+    // Get the spinner character before borrowing app.coworkers
+    let spinner = app.spinner_char();
 
     // Filter out idle coworkers - only show those actively working
     let active_coworkers: Vec<_> = app
@@ -291,16 +294,11 @@ fn draw_coworker_status(f: &mut Frame, app: &App, area: Rect) {
                     .map(|pr| format!("#{}", pr))
                     .unwrap_or_default(),
             ));
-            // Progress bar column
+            // Spinner + progress percentage column
             cells.push(Cell::from(
                 cw.progress
-                    .map(|p| {
-                        let bar_width = 10;
-                        let filled = (p as usize * bar_width) / 100;
-                        let empty = bar_width - filled;
-                        format!("[{}{}] {}%", "█".repeat(filled), "░".repeat(empty), p)
-                    })
-                    .unwrap_or_default(),
+                    .map(|p| format!("{} {}%", spinner, p))
+                    .unwrap_or_else(|| spinner.to_string()),
             ));
 
             Row::new(cells)
@@ -313,7 +311,7 @@ fn draw_coworker_status(f: &mut Frame, app: &App, area: Rect) {
         Constraint::Length(6),
         Constraint::Length(6),
         Constraint::Length(5),
-        Constraint::Length(17), // Progress bar: "[██████░░░░] 60%"
+        Constraint::Length(7), // Spinner + progress: "⠋ 60%"
     ];
 
     let table = Table::new(rows, widths)
