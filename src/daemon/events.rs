@@ -73,7 +73,18 @@ pub async fn evaluate_tick(
         }
         DaemonEvent::TaskDispatchTick => {
             let mut effects = Vec::new();
-            effects.extend(super::dispatch::reconcile_tasks_in_review(snap));
+            // Bug #1317 fix: Removed reconcile_tasks_in_review().
+            // Previously, when a coworker opened a PR and went idle, this function would
+            // unassign the task (clear owner). This broke the ownership chain — if CI failed
+            // or review feedback arrived, orphan recovery would spawn a DIFFERENT coworker
+            // instead of the original author who has context.
+            //
+            // New behavior: Task stays assigned to the original coworker even when they're idle.
+            // If the PR needs more work, the daemon respawns the SAME coworker who has the full
+            // session context for that PR. The coworker going idle already frees the process slot
+            // — we don't need to strip task ownership too.
+            //
+            // effects.extend(super::dispatch::reconcile_tasks_in_review(snap));
             effects.extend(super::dispatch::reset_orphaned_tasks(snap));
             effects.extend(super::dispatch::check_for_duplicate_task_workers(snap));
             effects.extend(super::dispatch::check_and_recover_orphans(snap, state));
