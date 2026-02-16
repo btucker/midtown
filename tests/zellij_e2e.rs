@@ -1,9 +1,10 @@
 // Stub test file for CI compatibility.
-// This test file was deleted in this PR, but the CI workflow on main still references it.
-// GitHub Actions uses the workflow from the base branch for pull_request events,
-// so we need this stub to prevent CI failures until the workflow is updated.
+// The Zellij plugin was removed in this branch (codex/zellij-layout-configurable),
+// but a merge from main brought back the full test implementation.
+// Since the plugin doesn't exist in this branch, we use a stub to prevent CI failures.
 //
-// This file will be removed once this PR merges and the workflow is updated.
+// This file will be removed when this branch merges and the workflow is updated,
+// or when the Zellij plugin is re-added.
 
 #[test]
 #[ignore]

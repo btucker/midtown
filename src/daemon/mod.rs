@@ -1111,27 +1111,29 @@ impl DaemonState {
         session: &str,
         adapter_id: &str,
     ) -> Result<&'a mut HeadedLease, String> {
-        // Check if lease exists and is still active
-        match &state.lease {
-            None => {
-                return Err(format!(
-                    "No active headed adapter for session '{}'",
-                    session
-                ));
-            }
-            Some(lease) if !Self::lease_is_active(lease) => {
-                state.lease = None;
-                return Err(format!(
-                    "Headed adapter lease expired for session '{}'",
-                    session
-                ));
-            }
-            Some(_) => {} // lease exists and is active, continue
+        if state.lease.is_none() {
+            return Err(format!(
+                "No active headed adapter for session '{}'",
+                session
+            ));
         }
-
-        // At this point we know lease.is_some() and is active
-        let lease = state.lease.as_mut().unwrap();
-
+        if state
+            .lease
+            .as_ref()
+            .is_some_and(|l| !Self::lease_is_active(l))
+        {
+            state.lease = None;
+            return Err(format!(
+                "Headed adapter lease expired for session '{}'",
+                session
+            ));
+        }
+        let Some(lease) = state.lease.as_mut() else {
+            return Err(format!(
+                "No active headed adapter for session '{}'",
+                session
+            ));
+        };
         if lease.adapter_id != adapter_id {
             return Err(format!(
                 "Session '{}' is leased by adapter '{}' (not '{}')",
