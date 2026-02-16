@@ -698,28 +698,31 @@ pub(crate) fn build_attach_shell_command(
     let profile_dir =
         midtown::auth::active_profile_dir_for_project_with_provider(&repo_name, provider);
 
-    let mut env_parts = vec![
-        format!("MIDTOWN_AGENT={}", shell_quote(name)),
-        "DISABLE_AUTOUPDATER=1".to_string(),
-    ];
+    // Determine role based on name
+    let role = if name == "lead" {
+        midtown::launch::CoworkerRole::Lead
+    } else {
+        midtown::launch::CoworkerRole::Coworker
+    };
 
-    match provider {
-        midtown::auth::AuthProvider::Claude | midtown::auth::AuthProvider::Codex => {
-            let env_var = provider.env_var();
-            if !env_var.is_empty() {
-                env_parts.push(format!(
-                    "{}={}",
-                    env_var,
-                    shell_quote(&profile_dir.display().to_string())
-                ));
-            }
-        }
-        midtown::auth::AuthProvider::Zai => {
-            let (api_key, base_url) = read_zai_env_vars(&profile_dir)?;
-            env_parts.push(format!("ANTHROPIC_AUTH_TOKEN={}", shell_quote(&api_key)));
-            env_parts.push(format!("ANTHROPIC_BASE_URL={}", shell_quote(&base_url)));
-        }
-    }
+    // Get team name for this repo
+    let team_name = Some(midtown::mailbox::team_name_for_repo(&repo_name));
+
+    // Build common env vars using the shared function
+    let env_map = midtown::launch::build_agent_env_vars(
+        name,
+        &role,
+        &team_name,
+        &None, // channel not set for attach sessions
+        provider,
+        &profile_dir,
+    );
+
+    // Convert HashMap to shell-quoted env var assignments (key=value format, with shell_quote on values)
+    let env_parts: Vec<String> = env_map
+        .iter()
+        .map(|(k, v)| format!("{}={}", k, shell_quote(v)))
+        .collect();
 
     let sandbox_config = midtown::config::get_project_sandbox_config(&repo_name);
     let writable =
@@ -802,45 +805,6 @@ fn provider_resume_command(
             session_id.to_string(),
         ]),
     }
-}
-
-fn read_zai_env_vars(profile_dir: &Path) -> Result<(String, String), String> {
-    let api_key_file = profile_dir.join("api_key.txt");
-    let api_key = std::fs::read_to_string(&api_key_file)
-        .map_err(|e| {
-            format!(
-                "Failed to read z.ai API key from {}: {}",
-                api_key_file.display(),
-                e
-            )
-        })?
-        .trim()
-        .to_string();
-
-    if api_key.is_empty() {
-        return Err(format!(
-            "z.ai API key is empty in {}",
-            api_key_file.display()
-        ));
-    }
-
-    let base_url_file = profile_dir.join("base_url.txt");
-    let base_url = if base_url_file.exists() {
-        std::fs::read_to_string(&base_url_file)
-            .map_err(|e| {
-                format!(
-                    "Failed to read z.ai base URL from {}: {}",
-                    base_url_file.display(),
-                    e
-                )
-            })?
-            .trim()
-            .to_string()
-    } else {
-        "https://api.z.ai/api/anthropic".to_string()
-    };
-
-    Ok((api_key, base_url))
 }
 
 fn parse_provider(raw: &str) -> midtown::auth::AuthProvider {

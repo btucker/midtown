@@ -125,6 +125,80 @@ pub fn zai_env_vars(profile_dir: &std::path::Path) -> std::io::Result<(String, S
     Ok((api_key, base_url))
 }
 
+/// Build environment variables common to all agent sessions (headless and interactive).
+///
+/// Returns a HashMap of env var name -> value that should be set for any Claude Code
+/// agent session. This includes:
+/// - `MIDTOWN_AGENT`: Agent name
+/// - `DISABLE_AUTOUPDATER`: Always set to "1"
+/// - Auth provider env vars (CLAUDE_CONFIG_DIR, ANTHROPIC_AUTH_TOKEN, etc.)
+/// - `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS`: Set when team_name is present
+/// - `CLAUDE_CODE_TASK_LIST_ID`: Set for Lead sessions to share task list
+/// - `MIDTOWN_CHANNEL`: Set when channel is specified
+///
+/// Callers should add mode-specific env vars on top of these as needed.
+pub fn build_agent_env_vars(
+    name: &str,
+    role: &CoworkerRole,
+    team_name: &Option<String>,
+    channel: &Option<String>,
+    auth_provider: crate::auth::AuthProvider,
+    auth_profile_dir: &std::path::Path,
+) -> std::collections::HashMap<String, String> {
+    let mut env = std::collections::HashMap::new();
+
+    env.insert("MIDTOWN_AGENT".to_string(), name.to_string());
+    env.insert("DISABLE_AUTOUPDATER".to_string(), "1".to_string());
+
+    // Set auth-provider-specific env vars
+    match auth_provider {
+        crate::auth::AuthProvider::Zai => {
+            // z.ai uses API key + base URL, no config dir
+            match zai_env_vars(auth_profile_dir) {
+                Ok((api_key, base_url)) => {
+                    env.insert("ANTHROPIC_AUTH_TOKEN".to_string(), api_key);
+                    env.insert("ANTHROPIC_BASE_URL".to_string(), base_url);
+                }
+                Err(e) => {
+                    eprintln!("Warning: failed to load z.ai credentials: {}", e);
+                }
+            }
+        }
+        _ => {
+            // Claude and Codex use config dir env var
+            let env_var = auth_provider.env_var();
+            if !env_var.is_empty() {
+                env.insert(
+                    env_var.to_string(),
+                    auth_profile_dir.to_string_lossy().to_string(),
+                );
+            }
+        }
+    }
+
+    // Set default channel for routing coworker messages
+    if let Some(ch) = channel {
+        env.insert("MIDTOWN_CHANNEL".to_string(), ch.clone());
+    }
+
+    // Must be a real shell env var — Claude Code blocklists this from settings.json
+    if team_name.is_some() {
+        env.insert(
+            "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS".to_string(),
+            "1".to_string(),
+        );
+    }
+
+    // Lead shares the project task list with coworkers via this env var
+    if *role == CoworkerRole::Lead
+        && let Some(team) = team_name
+    {
+        env.insert("CLAUDE_CODE_TASK_LIST_ID".to_string(), team.clone());
+    }
+
+    env
+}
+
 impl LaunchConfig {
     /// Create a config for a standard coworker.
     ///
@@ -289,52 +363,20 @@ impl LaunchConfig {
             (None, None)
         };
 
-        // Build env vars for the coworker process
-        let mut env = std::collections::HashMap::new();
-        env.insert("MIDTOWN_AGENT".to_string(), self.name.clone());
-
-        // Set auth-provider-specific env vars
+        // Build env vars for the coworker process using the shared function
         let config_dir = self
             .auth_profile_dir
             .clone()
             .unwrap_or_else(|| crate::auth::current_profile_dir_for(self.auth_provider));
 
-        match self.auth_provider {
-            crate::auth::AuthProvider::Zai => {
-                // z.ai uses API key + base URL, no config dir
-                match zai_env_vars(&config_dir) {
-                    Ok((api_key, base_url)) => {
-                        env.insert("ANTHROPIC_AUTH_TOKEN".to_string(), api_key);
-                        env.insert("ANTHROPIC_BASE_URL".to_string(), base_url);
-                    }
-                    Err(e) => {
-                        eprintln!("Warning: failed to load z.ai credentials: {}", e);
-                    }
-                }
-            }
-            _ => {
-                // Claude and Codex use config dir env var
-                let env_var = self.auth_provider.env_var();
-                if !env_var.is_empty() {
-                    env.insert(
-                        env_var.to_string(),
-                        config_dir.to_string_lossy().to_string(),
-                    );
-                }
-            }
-        }
-
-        // Set default channel for routing coworker messages
-        if let Some(ref ch) = self.channel {
-            env.insert("MIDTOWN_CHANNEL".to_string(), ch.clone());
-        }
-
-        // Lead shares the project task list with coworkers via this env var
-        if self.role == CoworkerRole::Lead
-            && let Some(ref team) = self.team_name
-        {
-            env.insert("CLAUDE_CODE_TASK_LIST_ID".to_string(), team.clone());
-        }
+        let env = build_agent_env_vars(
+            &self.name,
+            &self.role,
+            &self.team_name,
+            &self.channel,
+            self.auth_provider,
+            &config_dir,
+        );
 
         HeadlessConfig {
             model: self.model.clone(),
@@ -382,53 +424,27 @@ impl LaunchConfig {
         project_name: &str,
     ) -> LaunchCommand {
         // -- Environment variables --
-        let mut env_parts = vec![
-            format!("MIDTOWN_AGENT='{}'", self.name),
-            "DISABLE_AUTOUPDATER=1".to_string(),
-        ];
-
-        // Set auth-provider-specific env vars
+        // Get common env vars from shared function
         let config_dir = self
             .auth_profile_dir
             .clone()
             .unwrap_or_else(|| crate::auth::current_profile_dir_for(self.auth_provider));
 
-        match self.auth_provider {
-            crate::auth::AuthProvider::Zai => {
-                // z.ai uses API key + base URL, no config dir
-                match zai_env_vars(&config_dir) {
-                    Ok((api_key, base_url)) => {
-                        env_parts.push(format!("ANTHROPIC_AUTH_TOKEN='{}'", api_key));
-                        env_parts.push(format!("ANTHROPIC_BASE_URL='{}'", base_url));
-                    }
-                    Err(e) => {
-                        eprintln!("Warning: failed to load z.ai credentials: {}", e);
-                    }
-                }
-            }
-            _ => {
-                // Claude and Codex use config dir env var
-                let env_var = self.auth_provider.env_var();
-                if !env_var.is_empty() {
-                    env_parts.push(format!("{}='{}'", env_var, config_dir.display()));
-                }
-            }
-        }
+        let env_map = build_agent_env_vars(
+            &self.name,
+            &self.role,
+            &self.team_name,
+            &self.channel,
+            self.auth_provider,
+            &config_dir,
+        );
 
-        // Must be a real shell env var — Claude Code blocklists this from settings.json
-        if self.team_name.is_some() {
-            env_parts.push("CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1".to_string());
-        }
-        // Lead shares the project task list with coworkers via this env var
-        if self.role == CoworkerRole::Lead
-            && let Some(ref team) = self.team_name
-        {
-            env_parts.push(format!("CLAUDE_CODE_TASK_LIST_ID='{}'", team));
-        }
-        // Set default channel for routing coworker messages
-        if let Some(ref ch) = self.channel {
-            env_parts.push(format!("MIDTOWN_CHANNEL='{}'", ch));
-        }
+        // Convert HashMap to shell export format (key='value')
+        let env_parts: Vec<String> = env_map
+            .iter()
+            .map(|(k, v)| format!("{}='{}'", k, v))
+            .collect();
+
         let env_export = format!("export {}", env_parts.join(" "));
 
         // -- Claude CLI arguments (as structured Vec, not format! interpolation) --
@@ -768,6 +784,7 @@ mod tests {
             std::path::Path::new("/tmp/test-repo"),
             "midtown",
         );
+        eprintln!("Shell command: {}", result.shell_command);
         assert!(
             result
                 .shell_command
@@ -778,7 +795,9 @@ mod tests {
         assert!(
             result
                 .shell_command
-                .contains("CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1")
+                .contains("CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS='1'"),
+            "Shell command should contain CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS='1', got: {}",
+            result.shell_command
         );
     }
 

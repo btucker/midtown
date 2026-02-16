@@ -101,3 +101,43 @@ fn test_provider_resume_command_structure() {
         last_arg
     );
 }
+
+#[test]
+fn test_lead_attach_sets_task_list_id() {
+    let result = build_attach_shell_command(
+        "/tmp/test-cwd",
+        "lead",
+        midtown::auth::AuthProvider::Claude,
+        "session-123",
+    );
+
+    assert!(result.is_ok(), "build_attach_shell_command should succeed");
+    let command = result.unwrap();
+
+    // Lead should have CLAUDE_CODE_TASK_LIST_ID set
+    assert!(
+        command.contains("CLAUDE_CODE_TASK_LIST_ID="),
+        "Lead attach command should set CLAUDE_CODE_TASK_LIST_ID env var, got: {}",
+        command
+    );
+}
+
+#[test]
+fn test_coworker_attach_no_task_list_id() {
+    let result = build_attach_shell_command(
+        "/tmp/test-cwd",
+        "park",
+        midtown::auth::AuthProvider::Claude,
+        "session-456",
+    );
+
+    assert!(result.is_ok(), "build_attach_shell_command should succeed");
+    let command = result.unwrap();
+
+    // Coworkers should NOT have CLAUDE_CODE_TASK_LIST_ID set
+    assert!(
+        !command.contains("CLAUDE_CODE_TASK_LIST_ID="),
+        "Coworker attach command should not set CLAUDE_CODE_TASK_LIST_ID env var, got: {}",
+        command
+    );
+}
