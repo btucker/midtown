@@ -324,11 +324,11 @@ pub async fn recover_headless_sessions(
             config.auth_provider = provider;
         }
 
-        // Restore auth profile directory if persisted
-        if let Some(ref profile) = session_info.profile {
-            config.auth_profile_dir =
-                Some(crate::auth::profile_dir_for(config.auth_provider, profile));
-        }
+        // Re-resolve auth profile from project config rather than relying on
+        // the persisted profile name, which may be stale or incorrectly extracted
+        // (e.g., "claude" instead of "info@user.com" due to a prior path-extraction bug).
+        // The project config is the authoritative source for auth profiles.
+        config.auth_profile_dir = None; // Let spawn_coworker() re-resolve from project config
 
         // Create resume effect
         effects.push(Effect::ResumeCoworker {
