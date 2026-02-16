@@ -47,8 +47,7 @@ jobs:
         include:
           - test: daemon_e2e
             flags: "--ignored --test-threads=1 --skip installs_required_plugins"
-          - test: zellij_start_e2e
-            flags: "--ignored --test-threads=1"
+          # zellij_start_e2e removed - midtown start no longer creates Zellij sessions (use midtown view)
           # tmux_e2e removed - this PR deletes tmux.rs and all tmux integration
           - test: full_stack_e2e
             flags: "--ignored --test-threads=1 --skip nudge_reaches_real_claude"
@@ -98,17 +97,6 @@ jobs:
 
       - name: Install WASM target
         run: rustup target add wasm32-wasip1
-
-      - name: Install Zellij
-        if: matrix.test == 'zellij_start_e2e'
-        run: |
-          ZELLIJ_VERSION=0.43.1
-          curl -fsSL "https://github.com/zellij-org/zellij/releases/download/v${ZELLIJ_VERSION}/zellij-x86_64-unknown-linux-musl.tar.gz" -o /tmp/zellij.tar.gz
-          tar -xzf /tmp/zellij.tar.gz -C /tmp
-          ZELLIJ_BIN="$(find /tmp -maxdepth 3 -type f -name zellij | head -n 1)"
-          test -n "${ZELLIJ_BIN}"
-          sudo install "${ZELLIJ_BIN}" /usr/local/bin/zellij
-          zellij --version
 
       - name: Install Claude Code
         run: curl -fsSL https://claude.ai/install.sh | bash
