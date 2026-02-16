@@ -94,9 +94,15 @@ pub fn write_coworker_settings_file() -> crate::Result<PathBuf> {
 
 /// Build lead settings from agents/common-settings.json + agents/lead-settings.json.
 ///
-/// Merges base settings and replaces `{bin}` placeholders.
+/// Merges base settings, replaces `{bin}` placeholders, and adds user's enabled plugins.
 pub fn lead_settings_json() -> serde_json::Value {
-    load_settings(DEFAULT_LEAD_SETTINGS)
+    let mut settings = load_settings(DEFAULT_LEAD_SETTINGS);
+
+    // Add user's plugins from ~/.claude/settings.json
+    let user_plugins = read_user_plugins().unwrap_or_default();
+    settings["enabledPlugins"] = user_plugins;
+
+    settings
 }
 
 /// Write Lead settings to a file and return the path.
