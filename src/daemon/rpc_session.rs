@@ -575,10 +575,12 @@ pub(super) async fn handle_session_detach(
         attached.remove(&name);
     }
 
-    // Idempotency guard: if the coworker is already running, skip re-spawn.
+    // Idempotency guard: if the headless session is already alive, skip re-spawn.
     // This prevents the race between manual detach and background auto-detach
-    // from spawning duplicate processes.
-    if state.coworkers.get(&name).is_some() {
+    // from spawning duplicate processes. Uses session_manager (headless liveness)
+    // rather than coworkers.get() (registration), because the coworker stays
+    // registered during interactive attach — only the headless session is paused.
+    if state.session_manager.is_alive(&name).await {
         info!("Coworker '{}' already running — detach is a no-op", name);
         return Response::success(
             id,
