@@ -637,6 +637,37 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                 app.mouse_scroll_down();
                 EventResult::Continue
             }
+            MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
+                // Handle left mouse button clicks
+                let x = mouse.column;
+                let y = mouse.row;
+
+                // Check if click is in the input area
+                if let Some(input_rect) = app.input_area
+                    && x >= input_rect.x
+                    && x < input_rect.x + input_rect.width
+                    && y >= input_rect.y
+                    && y < input_rect.y + input_rect.height
+                {
+                    // Click in input area - focus it
+                    app.focused_pane = FocusedPane::InputBar;
+                    return EventResult::Continue;
+                }
+
+                // Check if click is in the board area
+                if let Some(board_rect) = app.board_area
+                    && x >= board_rect.x
+                    && x < board_rect.x + board_rect.width
+                    && y >= board_rect.y
+                    && y < board_rect.y + board_rect.height
+                {
+                    // Click in board area - focus it
+                    app.focused_pane = FocusedPane::Board;
+                    return EventResult::Continue;
+                }
+
+                EventResult::Continue
+            }
             _ => EventResult::Continue,
         },
         _ => EventResult::Continue,

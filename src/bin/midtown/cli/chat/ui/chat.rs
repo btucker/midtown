@@ -24,6 +24,9 @@ pub fn draw_chat_panel(f: &mut Frame, app: &mut App, area: Rect) {
         .constraints([Constraint::Min(5), Constraint::Length(input_bar_height)])
         .split(area);
 
+    // Store input area for click detection
+    app.input_area = Some(chunks[1]);
+
     draw_chat_messages(f, app, chunks[0]);
     draw_input_bar(f, app, chunks[1]);
 

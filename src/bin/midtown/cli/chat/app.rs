@@ -296,6 +296,12 @@ pub struct App {
     pub show_archived_channels: bool,
     /// Spinner animation frame counter for coworker progress display
     spinner_frame: usize,
+    /// List of all available channels (including empty ones)
+    pub available_channels: Vec<midtown::ChannelInfo>,
+    /// Last rendered board panel area (for click detection)
+    pub board_area: Option<ratatui::layout::Rect>,
+    /// Last rendered input bar area (for click detection)
+    pub input_area: Option<ratatui::layout::Rect>,
 }
 
 /// Autocomplete state for @mentions, #channels, and !task-ids
@@ -419,6 +425,9 @@ impl App {
             channel_switcher: ChannelSwitcherState::default(),
             show_archived_channels: false,
             spinner_frame: 0,
+            available_channels: Vec::new(),
+            board_area: None,
+            input_area: None,
         };
 
         // Initial load
@@ -619,6 +628,9 @@ impl App {
 
         // Poll for completed mermaid renders
         self.mermaid_cache.poll_completed();
+
+        // Refresh available channels list
+        self.refresh_available_channels();
 
         // Refresh unread counts for channels
         self.refresh_unread_counts();
@@ -1216,6 +1228,20 @@ impl App {
     ///
     /// For each channel, compares the total message count with the cursor position
     /// for the "chat-tui" agent to determine how many messages are unread.
+    /// Refresh the list of available channels from the filesystem
+    pub fn refresh_available_channels(&mut self) {
+        // Get the base directory from the current channel if available
+        let base_dir = match &self.channel {
+            Some(ch) => ch.base_dir().to_path_buf(),
+            None => return, // No channel, can't read channel list
+        };
+
+        // List all available channels (based on current filter setting)
+        if let Ok(channels) = Channel::list(&base_dir, self.show_archived_channels) {
+            self.available_channels = channels;
+        }
+    }
+
     pub fn refresh_unread_counts(&mut self) {
         self.channel_unread_counts.clear();
 
