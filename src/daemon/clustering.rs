@@ -59,3 +59,7 @@ pub fn apply_clustering_diff(diff: ClusteringDiff) -> Vec<Effect> {
 #[path = "clustering_tests.rs"]
 #[cfg(test)]
 mod tests;
+
+#[path = "clustering_integration_tests.rs"]
+#[cfg(test)]
+mod integration_tests;
