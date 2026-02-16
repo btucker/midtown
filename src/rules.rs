@@ -130,6 +130,9 @@ pub(crate) struct CoworkerRecord {
     pub task_id: Option<u32>,
     /// When the workflow phase was last updated via RPC.
     pub workflow_updated_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// Progress percentage (0-100) reported by the coworker.
+    /// Set via RPC when coworker calls `midtown state <phase> --progress <0-100>`.
+    pub progress: Option<u8>,
 }
 
 impl CoworkerRecord {
@@ -159,10 +162,12 @@ pub(crate) fn set_workflow(
     name: &str,
     phase: crate::coworker_state::WorkflowPhase,
     task_id: Option<u32>,
+    progress: Option<u8>,
 ) {
     let record = records.entry(name.to_string()).or_default();
     record.workflow_phase = Some(phase);
     record.task_id = task_id;
+    record.progress = progress;
     record.workflow_updated_at = Some(chrono::Utc::now());
 }
 

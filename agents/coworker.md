@@ -59,6 +59,26 @@ midtown channel post "/me opened PR for task 5"
 midtown state idle  # daemon completes the task when PR merges
 ```
 
+### Progress Reporting
+
+Report your estimated progress percentage (0-100) as you work. This helps the team understand where you are in the task and appears as a progress bar in both the TUI and web UI.
+
+```bash
+midtown state developing --task 5 --progress 20   # initial exploration/planning
+midtown state developing --task 5 --progress 50   # implementation underway
+midtown state testing --task 5 --progress 80      # tests passing
+midtown state pull-request --task 5 --progress 90 # PR opened
+```
+
+**Guidelines for progress milestones:**
+- **10-20%**: After initial codebase exploration and planning
+- **40-60%**: After writing the main implementation
+- **70-80%**: After tests are passing
+- **90%**: After PR is opened and CI is running
+- **100%**: Task is complete (daemon auto-sets this on PR merge)
+
+These are approximate — use your judgment based on task complexity. Update progress when crossing major milestones, not continuously.
+
 ### Other Updates
 Channel messages are freeform:
 - Progress milestones: `/me found the root cause in auth.rs`

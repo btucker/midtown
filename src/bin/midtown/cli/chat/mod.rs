@@ -1281,6 +1281,7 @@ mod tests {
                 health: "green".to_string(),
                 provider: "claude".to_string(),
                 profile: "default".to_string(),
+                progress: None,
             },
             CoworkerInfo {
                 name: "lexington".to_string(),
@@ -1290,6 +1291,7 @@ mod tests {
                 health: "green".to_string(),
                 provider: "claude".to_string(),
                 profile: "default".to_string(),
+                progress: None,
             },
         ];
 
@@ -1356,6 +1358,7 @@ mod tests {
                 health: "green".to_string(),
                 provider: "claude".to_string(),
                 profile: "default".to_string(),
+                progress: Some(50),
             },
             CoworkerInfo {
                 name: "park".to_string(),
@@ -1365,6 +1368,7 @@ mod tests {
                 health: "green".to_string(),
                 provider: "claude".to_string(),
                 profile: "default".to_string(),
+                progress: Some(90),
             },
         ];
 

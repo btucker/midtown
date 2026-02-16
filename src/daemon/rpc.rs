@@ -336,8 +336,9 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
             let name = require_str!(params, "name", request.id);
             let phase = require_str!(params, "phase", request.id);
             let task_id = params.u64_param("task_id").map(|v| v as u32);
+            let progress = params.u64_param("progress").map(|v| v as u8);
             super::rpc_coworker::handle_coworker_report_state(
-                request.id, name, phase, task_id, state,
+                request.id, name, phase, task_id, progress, state,
             )
             .await
         }

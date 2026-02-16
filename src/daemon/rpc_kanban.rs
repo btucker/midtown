@@ -241,6 +241,7 @@ pub(crate) async fn handle_kanban_data(id: RequestId, state: &DaemonState) -> Re
                     "health": health_color,
                     "provider": cw.provider.as_str(),
                     "profile": cw.profile,
+                    "progress": record.and_then(|r| r.progress),
                 }))
             })
             .collect::<Vec<_>>()
@@ -271,9 +272,9 @@ const KANBAN_CACHE_TTL: Duration = Duration::from_secs(30);
 ///
 /// The hash includes:
 /// - Coworker count
-/// - Each coworker's name and task_id
+/// - Each coworker's name, task_id, and progress
 ///
-/// When any of these change (coworker spawns/shuts down, task assigned, phase changes),
+/// When any of these change (coworker spawns/shuts down, task assigned, phase changes, progress updates),
 /// the hash changes and the cache misses, ensuring fresh data is fetched.
 fn compute_coworker_state_hash(coworker_records: &HashMap<String, CoworkerRecord>) -> u64 {
     use std::collections::hash_map::DefaultHasher;
@@ -281,8 +282,8 @@ fn compute_coworker_state_hash(coworker_records: &HashMap<String, CoworkerRecord
 
     let mut hasher = DefaultHasher::new();
 
-    // Collect (name, task_id) tuples and sort by name for deterministic hashing
-    let mut state: Vec<(&String, Option<u32>)> = coworker_records
+    // Collect (name, task_id, progress) tuples and sort by name for deterministic hashing
+    let mut state: Vec<(&String, Option<u32>, Option<u8>)> = coworker_records
         .iter()
         .filter_map(|(name, record)| {
             // Skip idle coworkers (they don't appear in the kanban response)
@@ -294,15 +295,16 @@ fn compute_coworker_state_hash(coworker_records: &HashMap<String, CoworkerRecord
                 return None;
             }
 
-            Some((name, record.task_id))
+            Some((name, record.task_id, record.progress))
         })
         .collect();
 
     state.sort_by(|a, b| a.0.cmp(b.0));
 
-    for (name, task_id) in state {
+    for (name, task_id, progress) in state {
         name.hash(&mut hasher);
         task_id.hash(&mut hasher);
+        progress.hash(&mut hasher);
     }
 
     hasher.finish()

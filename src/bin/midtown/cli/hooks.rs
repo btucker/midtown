@@ -623,7 +623,7 @@ fn handle_task_hook() -> Result<Response, String> {
                 });
 
             if let Some(phase_str) = phase_str {
-                let _ = client.coworker_report_state(&agent, phase_str, task_id_num);
+                let _ = client.coworker_report_state(&agent, phase_str, task_id_num, None);
             }
         }
 

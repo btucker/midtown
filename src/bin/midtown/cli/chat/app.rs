@@ -68,6 +68,8 @@ pub struct CoworkerInfo {
     pub provider: String,
     /// Profile name for multi-account support
     pub profile: String,
+    /// Progress percentage (0-100) if reported
+    pub progress: Option<u8>,
 }
 
 /// Info about a repo in a multi-repo project
@@ -2204,6 +2206,7 @@ fn fetch_kanban_data_via_rpc() -> Option<(
                         .and_then(|v| v.as_str())
                         .map(|s| s.to_string())
                         .unwrap_or_else(midtown::auth::current_profile);
+                    let progress = cw.get("progress").and_then(|v| v.as_u64()).map(|p| p as u8);
 
                     Some(CoworkerInfo {
                         name,
@@ -2213,6 +2216,7 @@ fn fetch_kanban_data_via_rpc() -> Option<(
                         health,
                         provider,
                         profile,
+                        progress,
                     })
                 })
                 .collect()
