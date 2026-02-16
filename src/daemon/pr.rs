@@ -2452,6 +2452,137 @@ pub(super) async fn process_pending_review_spawns(
     all_effects
 }
 
+/// Handle CI completion for reviewer spawn retry.
+///
+/// When CI passes on a PR, check if the PR needs a reviewer spawned.
+/// This handles the case where the initial pending spawn (45s after PR opened)
+/// was skipped for any reason (coworker limit, CI pending, etc.), and now that
+/// CI is green, we should retry the spawn.
+///
+/// Triggered by webhook `ci_check_passed` events.
+pub(super) async fn handle_ci_completion_for_review_spawn(
+    state: &DaemonState,
+    ci_check: &crate::webhook::CiCheckPassed,
+) {
+    // Extract PR number from target (format: "PR #123")
+    let pr_number = match ci_check.target.strip_prefix("PR #") {
+        Some(num_str) => match num_str.parse::<u64>() {
+            Ok(num) => num,
+            Err(_) => {
+                debug!(
+                    "CI check target '{}' is not a PR reference, skipping review spawn check",
+                    ci_check.target
+                );
+                return;
+            }
+        },
+        None => {
+            // Not a PR (e.g., "main" branch) - no review needed
+            debug!(
+                "CI check target '{}' is not a PR, skipping review spawn check",
+                ci_check.target
+            );
+            return;
+        }
+    };
+
+    debug!(
+        "CI passed for PR #{} - checking if reviewer spawn is needed",
+        pr_number
+    );
+
+    // Build branch → coworker map for task-based branch lookup
+    let branch_owners: std::collections::HashMap<String, String> = {
+        let ps = state.persistent_state.lock().await;
+        ps.worktree_registry
+            .all_assignments()
+            .iter()
+            .filter_map(|(_, a)| {
+                a.current_coworker
+                    .as_ref()
+                    .map(|coworker| (a.branch_name.clone(), coworker.clone()))
+            })
+            .collect()
+    };
+
+    // Fetch PR data to check if it needs review
+    let output = match tokio::process::Command::new("gh")
+        .args([
+            "pr",
+            "view",
+            &pr_number.to_string(),
+            "--json",
+            "number,mergeable,statusCheckRollup,headRefName,reviewDecision,title,isDraft,createdAt,state",
+        ])
+        .output()
+        .await
+    {
+        Ok(output) => output,
+        Err(e) => {
+            warn!(
+                "CI completion: Failed to fetch PR #{} for review spawn check: {}",
+                pr_number, e
+            );
+            return;
+        }
+    };
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        warn!(
+            "CI completion: gh pr view #{} failed: {}",
+            pr_number, stderr
+        );
+        return;
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let pr: serde_json::Value = match serde_json::from_str(&stdout) {
+        Ok(pr) => pr,
+        Err(e) => {
+            warn!(
+                "CI completion: Failed to parse PR #{} JSON: {}",
+                pr_number, e
+            );
+            return;
+        }
+    };
+
+    // Check if PR is still open
+    let pr_state = pr.get("state").and_then(|s| s.as_str()).unwrap_or("");
+    if pr_state != "OPEN" {
+        debug!(
+            "CI completion: PR #{} is no longer open (state={}), skipping review spawn",
+            pr_number, pr_state
+        );
+        return;
+    }
+
+    // Use the existing spawn logic (handles all conditions: draft, age, review status, assignment, etc.)
+    // Use Webhook source since this was triggered by a webhook event (CI completion).
+    let effects = collect_reviewer_effects_with_source(
+        Some(&branch_owners),
+        state,
+        &[pr],
+        crate::github_state::AssignmentSource::Webhook,
+    )
+    .await;
+
+    if !effects.is_empty() {
+        info!(
+            "CI completion triggered reviewer spawn for PR #{} ({} effects)",
+            pr_number,
+            effects.len()
+        );
+        crate::daemon::effects::execute_effects(effects, state).await;
+    } else {
+        debug!(
+            "CI completion: PR #{} does not need reviewer spawn (already assigned or reviewed)",
+            pr_number
+        );
+    }
+}
+
 /// Uncached check for Claude review on a PR (makes GitHub API calls).
 ///
 /// Fetches both reviews and comments in a single API call to reduce GitHub API usage.
@@ -3375,3 +3506,7 @@ mod tests;
 #[path = "pr_review_feedback_tests.rs"]
 #[cfg(test)]
 mod review_feedback_tests;
+
+#[path = "pr_ci_retry_tests.rs"]
+#[cfg(test)]
+mod ci_retry_tests;

@@ -2454,6 +2454,16 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                 let is_ci_check_passed = webhook_event.ci_check_passed.is_some();
                 if let Some(ci_check) = webhook_event.ci_check_passed {
                     debug!("Buffering CI success for batching: {} on {}", ci_check.check_name, ci_check.target);
+
+                    // Check if this CI completion should trigger a reviewer spawn (retry logic).
+                    // When the initial pending spawn (45s after PR opens) was skipped for any reason
+                    // (coworker limit, CI pending, etc.), retry when CI becomes green.
+                    let state_clone = Arc::clone(&state);
+                    let ci_check_clone = ci_check.clone();
+                    tokio::spawn(async move {
+                        pr::handle_ci_completion_for_review_spawn(&state_clone, &ci_check_clone).await;
+                    });
+
                     let mut buffer = state.ci_notification_buffer.lock().await;
                     buffer.add(ci_check);
                 } else if let Err(e) = state.send_and_broadcast_async(&webhook_event.message).await {
