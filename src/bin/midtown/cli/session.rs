@@ -760,12 +760,19 @@ pub(crate) fn build_attach_shell_command(
 
 fn provider_resume_command(provider: midtown::auth::AuthProvider, session_id: &str) -> Vec<String> {
     match provider {
-        midtown::auth::AuthProvider::Claude | midtown::auth::AuthProvider::Zai => vec![
-            "claude".to_string(),
-            "--resume".to_string(),
-            session_id.to_string(),
-            "--dangerously-skip-permissions".to_string(),
-        ],
+        midtown::auth::AuthProvider::Claude | midtown::auth::AuthProvider::Zai => {
+            // Use --continue instead of --resume <id>. --continue resumes the
+            // most recent session in the CWD, or starts fresh if none exists.
+            // This handles the case where the headless session was too new to
+            // have saved any conversation data (no user turns = nothing on disk).
+            // The session_id is kept for logging but not used in the command.
+            let _ = session_id;
+            vec![
+                "claude".to_string(),
+                "--continue".to_string(),
+                "--dangerously-skip-permissions".to_string(),
+            ]
+        }
         midtown::auth::AuthProvider::Codex => vec![
             "codex".to_string(),
             "--resume".to_string(),
@@ -1078,8 +1085,7 @@ mod tests {
             provider_resume_command(midtown::auth::AuthProvider::Claude, "abc"),
             vec![
                 "claude".to_string(),
-                "--resume".to_string(),
-                "abc".to_string(),
+                "--continue".to_string(),
                 "--dangerously-skip-permissions".to_string(),
             ]
         );
