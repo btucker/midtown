@@ -9,6 +9,7 @@
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use chrono::{DateTime, Datelike, TimeZone, Utc};
 use tokio::sync::RwLock;
@@ -134,6 +135,10 @@ pub struct CoworkerSession {
     pub has_pending_tool: bool,
     /// Whether the session hit "Tool names must be unique" (unrecoverable, needs fresh restart).
     pub has_tool_name_conflict: bool,
+    /// Whether this session was spawned as a `--resume` (vs fresh).
+    /// Used to detect failed resume attempts: if a resume session exits quickly,
+    /// the session_id is stale and should be cleared for fresh spawn.
+    pub is_resume: bool,
     /// File handle for writing stream events to JSONL log.
     /// Used for debugging and `midtown coworker view`.
     output_log: Option<std::fs::File>,
@@ -183,6 +188,7 @@ impl CoworkerSession {
             has_running_subagent: false,
             has_pending_tool: false,
             has_tool_name_conflict: false,
+            is_resume: false,
             output_log,
             output_log_path,
         }
@@ -262,17 +268,17 @@ impl SessionManager {
             });
         }
 
+        let is_resume = config.resume_session_id.is_some();
         let mut sessions = self.sessions.write().await;
-        sessions.insert(
+        let mut cs = CoworkerSession::new(
             slot_id.to_string(),
-            CoworkerSession::new(
-                slot_id.to_string(),
-                name.to_string(),
-                session,
-                &self.repo_name,
-                session_id.clone(),
-            ),
+            name.to_string(),
+            session,
+            &self.repo_name,
+            session_id.clone(),
         );
+        cs.is_resume = is_resume;
+        sessions.insert(slot_id.to_string(), cs);
 
         if let Some(ref sid) = session_id {
             info!(
@@ -321,8 +327,8 @@ impl SessionManager {
 
     /// Shut down a coworker session (by name, finds first match).
     ///
-    /// Kills the child process. The Claude Code session persists on disk
-    /// (when `persist_session: true`) and can be resumed later.
+    /// Kills the child process immediately via SIGKILL. Use `graceful_shutdown`
+    /// when the session needs to persist state before dying (e.g., for attach).
     ///
     /// Returns the session ID (if known) for potential resume.
     pub async fn shutdown(&self, name: &str) -> Result<Option<String>, crate::Error> {
@@ -348,6 +354,70 @@ impl SessionManager {
             "Shut down headless session '{}' (session_id={:?})",
             name, session_id
         );
+        Ok(session_id)
+    }
+
+    /// Gracefully shut down a session, giving it time to persist state.
+    ///
+    /// Closes stdin so the Claude process can save its session, then waits
+    /// up to `timeout` for it to exit. Falls back to SIGKILL if it doesn't
+    /// exit in time. Used by the attach flow to ensure `--resume` works.
+    pub async fn graceful_shutdown(
+        &self,
+        name: &str,
+        timeout: Duration,
+    ) -> Result<Option<String>, crate::Error> {
+        let mut sessions = self.sessions.write().await;
+        let slot_id = sessions
+            .values()
+            .find(|cs| cs.name == name)
+            .map(|cs| cs.slot_id.clone())
+            .ok_or_else(|| crate::Error::Rpc {
+                code: -32602,
+                message: format!("No headless session for '{}'", name),
+            })?;
+        let mut cs = sessions
+            .remove(&slot_id)
+            .expect("slot_id found by name must exist in sessions map");
+
+        let session_id = cs.session_id.clone();
+
+        // Close stdin so the Claude process receives EOF and can persist state.
+        if let Some(ref mut session) = cs.session {
+            session.close_stdin();
+        }
+
+        // Drop the write lock while waiting for exit, so we don't block other operations.
+        drop(sessions);
+
+        // Wait for the process to exit gracefully (it should save session data on EOF).
+        if let Some(ref mut session) = cs.session {
+            match tokio::time::timeout(timeout, session.wait()).await {
+                Ok(Ok(_status)) => {
+                    info!(
+                        "Gracefully shut down headless session '{}' (session_id={:?})",
+                        name, session_id
+                    );
+                }
+                Ok(Err(e)) => {
+                    warn!(
+                        "Error waiting for session '{}' to exit: {}. Force-killing.",
+                        name, e
+                    );
+                }
+                Err(_) => {
+                    warn!(
+                        "Session '{}' did not exit within {:?}. Force-killing.",
+                        name, timeout
+                    );
+                }
+            }
+        }
+
+        // Mark as detach_on_drop=false (the default) so Drop kills if still alive.
+        // Just dropping cs will trigger the cleanup.
+        drop(cs);
+
         Ok(session_id)
     }
 
@@ -784,6 +854,25 @@ impl SessionManager {
         }
 
         newly_stopped
+    }
+
+    /// Check if a session was a failed resume attempt.
+    ///
+    /// Returns `true` if the session was spawned with `--resume` and exited
+    /// within 30 seconds of spawn — meaning the resume itself failed (stale
+    /// session_id, no conversation on disk). Sessions that ran longer are
+    /// assumed to have valid data on disk that could be resumed next time.
+    pub async fn was_failed_resume(&self, name: &str) -> bool {
+        let sessions = self.sessions.read().await;
+        let cs = match sessions.values().find(|cs| cs.name == name) {
+            Some(cs) => cs,
+            None => return false,
+        };
+        if !cs.is_resume {
+            return false;
+        }
+        let age = Utc::now() - cs.started_at;
+        age < chrono::Duration::seconds(30)
     }
 
     /// Remove a stopped session entry (cleanup after the coworker is fully shut down, by name).
