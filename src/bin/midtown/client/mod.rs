@@ -219,6 +219,17 @@ impl DaemonClient {
         self.send("channel.read", Some(serde_json::json!({ "all": all })))
     }
 
+    /// List all available channels from the daemon.
+    ///
+    /// This fetches channels from the daemon's HTTP API (same as web UI),
+    /// ensuring TUI and web UI show the same channel list.
+    pub fn channel_list(&self, include_archived: bool) -> Result<Response, String> {
+        self.send(
+            "channel.list",
+            Some(serde_json::json!({ "include_archived": include_archived })),
+        )
+    }
+
     // Reminder commands
 
     pub fn reminder_create(&self, trigger: &str, message: &str) -> Result<Response, String> {

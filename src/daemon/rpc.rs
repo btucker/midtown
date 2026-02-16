@@ -383,6 +383,11 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
             super::rpc_channel::handle_channel_read(request.id, all, state)
         }
 
+        "channel.list" => {
+            let include_archived = params.bool_or("include_archived", false);
+            super::rpc_channel::handle_channel_list(request.id, include_archived, state)
+        }
+
         // ---- Tasks ----
         "task.create" => {
             let subject = require_str!(params, "subject", request.id);

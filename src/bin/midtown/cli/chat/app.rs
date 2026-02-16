@@ -192,7 +192,6 @@ pub enum BoardSelection {
     /// A channel header (channel name)
     Channel(String),
     /// A task within a channel (channel name, task ID)
-    #[allow(dead_code)]
     Task(String, String),
 }
 
@@ -828,9 +827,14 @@ impl App {
             tasks_by_channel.entry(channel_key).or_default().push(task);
         }
 
-        // Build selection list: channel headers only (no tasks)
-        for channel_name in tasks_by_channel.keys() {
+        // Build selection list: channel headers followed by their tasks
+        for (channel_name, tasks) in &tasks_by_channel {
+            // Add channel header
             selections.push(BoardSelection::Channel(channel_name.clone()));
+            // Add tasks under this channel
+            for task in tasks {
+                selections.push(BoardSelection::Task(channel_name.clone(), task.id.clone()));
+            }
         }
 
         selections
@@ -1224,24 +1228,42 @@ impl App {
         }
     }
 
-    /// Calculate unread message counts for all channels
+    /// Refresh the list of available channels from the daemon.
     ///
-    /// For each channel, compares the total message count with the cursor position
-    /// for the "chat-tui" agent to determine how many messages are unread.
-    /// Refresh the list of available channels from the filesystem
+    /// This fetches channels from the daemon's RPC interface (same as web UI),
+    /// ensuring TUI and web UI show the same channel list.
     pub fn refresh_available_channels(&mut self) {
-        // Get the base directory from the current channel if available
+        // Skip in test mode to avoid daemon communication
+        if self.test_mode {
+            return;
+        }
+
+        // Try daemon RPC first (ensures parity with web UI)
+        if let Ok(client) = crate::client::DaemonClient::connect()
+            && let Ok(crate::cli::Response::Json { value }) = client.channel_list(self.show_archived_channels)
+            && let Some(channels_value) = value.get("channels")
+            && let Ok(channels) =
+                serde_json::from_value::<Vec<midtown::ChannelInfo>>(channels_value.clone())
+        {
+            self.available_channels = channels;
+            return;
+        }
+
+        // Fallback to direct filesystem access if daemon is unavailable
         let base_dir = match &self.channel {
             Some(ch) => ch.base_dir().to_path_buf(),
-            None => return, // No channel, can't read channel list
+            None => return,
         };
 
-        // List all available channels (based on current filter setting)
         if let Ok(channels) = Channel::list(&base_dir, self.show_archived_channels) {
             self.available_channels = channels;
         }
     }
 
+    /// Calculate unread message counts for all channels
+    ///
+    /// For each channel, compares the total message count with the cursor position
+    /// for the "chat-tui" agent to determine how many messages are unread.
     pub fn refresh_unread_counts(&mut self) {
         self.channel_unread_counts.clear();
 
@@ -2523,6 +2545,9 @@ pub(super) mod tests {
             channel_switcher: ChannelSwitcherState::default(),
             show_archived_channels: false,
             spinner_frame: 0,
+            available_channels: Vec::new(),
+            board_area: None,
+            input_area: None,
         }
     }
 
@@ -3242,34 +3267,45 @@ pub(super) mod tests {
         // Initial state: no selection
         assert_eq!(app.board_selection, None);
 
-        // Navigate down - should select first channel
+        // Navigate down - should select first item (features channel)
         app.board_selection_down();
         assert!(
             matches!(
                 &app.board_selection,
                 Some(BoardSelection::Channel(ch)) if ch == "features"
             ),
-            "First down should select first channel"
+            "First down should select first channel (features)"
         );
 
-        // Navigate down again - should select next channel (midtown)
+        // Navigate down again - should select first task under features channel
+        app.board_selection_down();
+        assert!(
+            matches!(
+                &app.board_selection,
+                Some(BoardSelection::Task(ch, id)) if ch == "features" && id == "3"
+            ),
+            "Second down should select first task under features channel"
+        );
+
+        // Navigate down again - should select midtown channel
         app.board_selection_down();
         assert!(
             matches!(
                 &app.board_selection,
                 Some(BoardSelection::Channel(ch)) if ch == "midtown"
             ),
-            "Second down should select second channel"
+            "Third down should select midtown channel"
         );
 
-        // Navigate up - should go back to first channel
+        // Navigate up twice - should go back to first channel
+        app.board_selection_up();
         app.board_selection_up();
         assert!(
             matches!(
                 &app.board_selection,
                 Some(BoardSelection::Channel(ch)) if ch == "features"
             ),
-            "Up should go back to first channel"
+            "Up twice should go back to first channel"
         );
     }
 
