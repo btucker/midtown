@@ -13,13 +13,13 @@ use crate::cli::Response;
 use crate::client::DaemonClient;
 use tracing::{debug, info};
 
-const LEAD_INPUT_WAIT_TIMEOUT: Duration = Duration::from_secs(90);
 const COWORKER_INPUT_MAX_WAIT: Duration = Duration::from_secs(120);
 const COWORKER_INPUT_STABLE_DURATION: Duration = Duration::from_secs(20);
 const NUDGE_POLL_INTERVAL: Duration = Duration::from_secs(3);
 const SUBMIT_RETRY_ATTEMPTS: usize = 3;
 const SUBMIT_RETRY_DELAY: Duration = Duration::from_millis(200);
 const SUBMIT_PROCESS_DELAY: Duration = Duration::from_millis(120);
+const PAYLOAD_SETTLE_DELAY: Duration = Duration::from_millis(80);
 const OUTPUT_MIRROR_MAX_BYTES: usize = 256 * 1024;
 const OUTPUT_MIRROR_MAX_LINES: usize = 500;
 
@@ -161,6 +161,7 @@ type SharedWriter = Arc<Mutex<Box<dyn std::io::Write + Send>>>;
 type SharedInputState = Arc<Mutex<InputState>>;
 type SharedOutputMirror = Arc<Mutex<OutputMirror>>;
 
+#[cfg(test)]
 #[derive(Debug, Clone)]
 struct InputSnapshot {
     current_input: String,
@@ -277,6 +278,7 @@ fn update_input_state(state: &SharedInputState, bytes: &[u8]) {
     }
 }
 
+#[cfg(test)]
 fn snapshot_input_state(state: &SharedInputState) -> InputSnapshot {
     match state.lock() {
         Ok(guard) => InputSnapshot {
@@ -451,6 +453,7 @@ fn is_nudge_stuck(content: &str, nudge_text: &str) -> bool {
     false
 }
 
+#[cfg(test)]
 fn wait_for_empty_input(input_state: &SharedInputState, timeout: Duration) -> bool {
     let start = Instant::now();
 
@@ -780,28 +783,21 @@ pub fn handle(cmd: &HeadedWrapperCommand, client: &DaemonClient) -> Result<Respo
                     };
 
                 for msg in parsed.messages {
-                    let safe = if session.eq_ignore_ascii_case("lead") {
-                        wait_for_empty_input(&input_state, LEAD_INPUT_WAIT_TIMEOUT)
-                    } else {
-                        wait_for_nudge_safe(
-                            &output_mirror,
-                            last_nudge_text.as_deref(),
-                            COWORKER_INPUT_STABLE_DURATION,
-                            COWORKER_INPUT_MAX_WAIT,
-                        )
-                    };
+                    // For all sessions (lead and coworkers), check the PTY output
+                    // for the ❯ prompt to know when Claude is ready for input.
+                    // Without this, nudges get injected while Claude is thinking
+                    // and the submit fails because there's no active input field.
+                    let safe = wait_for_nudge_safe(
+                        &output_mirror,
+                        last_nudge_text.as_deref(),
+                        COWORKER_INPUT_STABLE_DURATION,
+                        COWORKER_INPUT_MAX_WAIT,
+                    );
                     if !safe {
-                        if session.eq_ignore_ascii_case("lead") {
-                            info!(
-                                "Lead input still active after {}s, nudging anyway",
-                                LEAD_INPUT_WAIT_TIMEOUT.as_secs()
-                            );
-                        } else {
-                            info!(
-                                "Coworker input still active after {}s, nudging anyway",
-                                COWORKER_INPUT_MAX_WAIT.as_secs()
-                            );
-                        }
+                        info!(
+                            "Input still active after {}s, nudging anyway",
+                            COWORKER_INPUT_MAX_WAIT.as_secs()
+                        );
                     }
 
                     let payload =
@@ -810,6 +806,13 @@ pub fn handle(cmd: &HeadedWrapperCommand, client: &DaemonClient) -> Result<Respo
                     if let Err(e) = write_payload_to_pty(&shared_writer, &payload) {
                         run_result = Err(e);
                         break;
+                    }
+                    // Give Claude Code's TUI time to process the text before
+                    // sending Enter — without this, \r arrives in the same
+                    // read buffer as the payload and is treated as a newline
+                    // character in the input rather than a submit action.
+                    if msg.submit {
+                        std::thread::sleep(PAYLOAD_SETTLE_DELAY);
                     }
                     if msg.submit
                         && let Err(e) =

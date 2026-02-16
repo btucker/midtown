@@ -189,7 +189,7 @@ impl LaunchConfig {
             name: "lead".to_string(),
             session_mode: SessionMode::Fresh,
             role: CoworkerRole::Lead,
-            initial_prompt: None,
+            initial_prompt: Some("Read the channel for context, then post to the channel that you're online and ready.".to_string()),
             additional_dirs: vec![],
             restrict_setting_sources: false,
             pr_number: None,
@@ -317,6 +317,13 @@ impl LaunchConfig {
             env.insert("MIDTOWN_CHANNEL".to_string(), ch.clone());
         }
 
+        // Lead shares the project task list with coworkers via this env var
+        if self.role == CoworkerRole::Lead
+            && let Some(ref team) = self.team_name
+        {
+            env.insert("CLAUDE_CODE_TASK_LIST_ID".to_string(), team.clone());
+        }
+
         HeadlessConfig {
             model: self.model.clone(),
             system_prompt,
@@ -399,6 +406,12 @@ impl LaunchConfig {
         // Must be a real shell env var — Claude Code blocklists this from settings.json
         if self.team_name.is_some() {
             env_parts.push("CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1".to_string());
+        }
+        // Lead shares the project task list with coworkers via this env var
+        if self.role == CoworkerRole::Lead
+            && let Some(ref team) = self.team_name
+        {
+            env_parts.push(format!("CLAUDE_CODE_TASK_LIST_ID='{}'", team));
         }
         // Set default channel for routing coworker messages
         if let Some(ref ch) = self.channel {
@@ -976,7 +989,10 @@ mod tests {
         assert_eq!(config.name, "lead");
         assert_eq!(config.role, CoworkerRole::Lead);
         assert!(!config.restrict_setting_sources);
-        assert!(config.initial_prompt.is_none());
+        assert!(
+            config.initial_prompt.is_some(),
+            "Lead should have an initial prompt for session_id init"
+        );
         assert!(config.pr_number.is_none());
         assert_eq!(config.team_name, Some("midtown-myrepo".to_string()));
         assert_eq!(config.model, "sonnet");
