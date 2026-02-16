@@ -2261,87 +2261,6 @@ fn make_reconcile_snapshot(
     }
 }
 
-#[test]
-fn test_reconcile_tasks_in_review_inactive_owner_emits_unassign() {
-    // Task !42 is in_progress, owned by york, has open PR, york is NOT active
-    let in_progress = vec![(
-        "42".to_string(),
-        "Fix auth bug".to_string(),
-        "york".to_string(),
-    )];
-    let mut tasks_with_open_prs = HashMap::new();
-    tasks_with_open_prs.insert("42".to_string(), 100u64);
-    let active_names = HashSet::new(); // york is NOT active
-
-    let snap = make_reconcile_snapshot(in_progress, tasks_with_open_prs, active_names);
-    let effects = reconcile_tasks_in_review(&snap);
-
-    assert_eq!(effects.len(), 1);
-    match &effects[0] {
-        Effect::UnassignTask { task_id, repo_name } => {
-            assert_eq!(task_id, "42");
-            assert_eq!(repo_name, "test-repo");
-        }
-        other => panic!("Expected UnassignTask, got {:?}", other),
-    }
-}
-
-#[test]
-fn test_reconcile_tasks_in_review_active_owner_no_effect() {
-    // Task !42 is in_progress, owned by york, has open PR, york IS active
-    let in_progress = vec![(
-        "42".to_string(),
-        "Fix auth bug".to_string(),
-        "york".to_string(),
-    )];
-    let mut tasks_with_open_prs = HashMap::new();
-    tasks_with_open_prs.insert("42".to_string(), 100u64);
-    let mut active_names = HashSet::new();
-    active_names.insert("york".to_string());
-
-    let snap = make_reconcile_snapshot(in_progress, tasks_with_open_prs, active_names);
-    let effects = reconcile_tasks_in_review(&snap);
-
-    assert!(effects.is_empty(), "Should not unassign active coworker");
-}
-
-#[test]
-fn test_reconcile_tasks_in_review_no_pr_no_effect() {
-    // Task !42 is in_progress, owned by york, NO open PR, york is NOT active
-    let in_progress = vec![(
-        "42".to_string(),
-        "Fix auth bug".to_string(),
-        "york".to_string(),
-    )];
-    let tasks_with_open_prs = HashMap::new(); // No PR
-    let active_names = HashSet::new();
-
-    let snap = make_reconcile_snapshot(in_progress, tasks_with_open_prs, active_names);
-    let effects = reconcile_tasks_in_review(&snap);
-
-    assert!(
-        effects.is_empty(),
-        "Should not unassign task without open PR"
-    );
-}
-
-#[test]
-fn test_reconcile_tasks_in_review_empty_owner_skipped() {
-    // Task !42 is in_progress with empty owner (already unassigned)
-    let in_progress = vec![("42".to_string(), "Fix auth bug".to_string(), "".to_string())];
-    let mut tasks_with_open_prs = HashMap::new();
-    tasks_with_open_prs.insert("42".to_string(), 100u64);
-    let active_names = HashSet::new();
-
-    let snap = make_reconcile_snapshot(in_progress, tasks_with_open_prs, active_names);
-    let effects = reconcile_tasks_in_review(&snap);
-
-    assert!(
-        effects.is_empty(),
-        "Should not unassign already-unowned task"
-    );
-}
-
 // ======================================================================
 // reset_orphaned_tasks tests
 // ======================================================================
@@ -3766,5 +3685,93 @@ fn test_stale_task_cleanup_correct_behavior_with_explicit_pr_field() {
     assert!(
         has_complete,
         "Task !42 should be auto-completed - its explicit pr field matches merged PR #123"
+    );
+}
+
+// ============================================================================
+// Bug !1317: Double-assignment of tasks with open PRs
+// ============================================================================
+//
+// Bug scenario: When a coworker opens a PR and goes idle, reconcile_tasks_in_review()
+// unassigns the task (clears owner, sets status to pending). On the next tick,
+// pending task dispatch picks it up and assigns it to a different coworker,
+// creating duplicate work on the same PR.
+//
+// Root cause: pending_tasks_without_owners dispatch path did not check
+// tasks_with_open_prs or github_open_pr_task_ids before assigning.
+//
+// Fix: Added PR checks in spawn_for_pending_tasks() Case 2 to skip tasks that
+// already have open PRs.
+
+#[test]
+fn test_should_recover_task_skips_tasks_with_open_pr_in_tasks_with_open_prs() {
+    // Orphan recovery also needs to skip tasks with open PRs (separate path from pending dispatch).
+    use crate::tasks::{Task, TaskStatus};
+
+    let task = Task {
+        id: "1313".to_string(),
+        subject: "Implement feature X".to_string(),
+        description: None,
+        status: TaskStatus::InProgress,
+        owner: Some("lexington".to_string()),
+        blocked_by: vec![],
+        channel: None,
+        pr: None, // PR association tracked in tasks_with_open_prs instead
+        created_at: None,
+    };
+
+    let merged_prs = HashSet::new(); // PR #1156 is NOT merged
+    let mut tasks_with_open_prs = HashMap::new();
+    tasks_with_open_prs.insert("1313".to_string(), 1156u64); // Task has open PR #1156
+    let github_open_pr_task_ids = HashMap::new();
+
+    let result = should_recover_task(
+        &task,
+        &merged_prs,
+        std::path::Path::new("."),
+        &tasks_with_open_prs,
+        &github_open_pr_task_ids,
+    );
+
+    assert!(
+        !result,
+        "Should NOT recover task !1313 - it has open PR #1156 in tasks_with_open_prs"
+    );
+}
+
+#[test]
+fn test_should_recover_task_skips_tasks_with_open_pr_in_github_open_pr_task_ids() {
+    // Defense-in-depth: Even if tasks_with_open_prs is empty (stale),
+    // github_open_pr_task_ids should prevent recovery.
+    use crate::tasks::{Task, TaskStatus};
+
+    let task = Task {
+        id: "1313".to_string(),
+        subject: "Implement feature X".to_string(),
+        description: None,
+        status: TaskStatus::InProgress,
+        owner: Some("lexington".to_string()),
+        blocked_by: vec![],
+        channel: None,
+        pr: None,
+        created_at: None,
+    };
+
+    let merged_prs = HashSet::new();
+    let tasks_with_open_prs = HashMap::new(); // Empty (stale after daemon restart)
+    let mut github_open_pr_task_ids = HashMap::new();
+    github_open_pr_task_ids.insert("1313".to_string(), 1156u64); // Found via GitHub PR title
+
+    let result = should_recover_task(
+        &task,
+        &merged_prs,
+        std::path::Path::new("."),
+        &tasks_with_open_prs,
+        &github_open_pr_task_ids,
+    );
+
+    assert!(
+        !result,
+        "Should NOT recover task !1313 - it has open PR #1156 via github_open_pr_task_ids"
     );
 }

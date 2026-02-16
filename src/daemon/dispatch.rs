@@ -1833,52 +1833,6 @@ pub(super) fn build_description_based_completion_effects(
 // Task unassignment for PRs in review
 // ============================================================================
 
-/// Find tasks that should be unassigned because their PR is in review.
-///
-/// A task is "in review" when:
-/// 1. It's in_progress with an owner
-/// 2. Its task_id appears in `tasks_with_open_prs` (has a PrAuthorSession)
-/// 3. The owner is NOT active (not in active_names)
-///
-/// Returns `UnassignTask` effects for each such task. This is a pure decision
-/// function — reads snapshot data and returns effects without performing I/O.
-///
-/// Runs every tick to handle timing races between PR detection and idle shutdown:
-/// - PR detected before idle → unassigned on next tick after shutdown
-/// - PR detected after idle → unassigned when PrAuthorSession is stored
-pub(super) fn reconcile_tasks_in_review(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
-    let mut effects = vec![];
-
-    for (task_id, _subject, owner) in &snap.in_progress_tasks {
-        let owner_clean = owner.trim().trim_matches('"').to_lowercase();
-        if owner_clean.is_empty() {
-            continue;
-        }
-
-        // Only consider tasks with an associated open PR
-        if !snap.tasks_with_open_prs.contains_key(task_id) {
-            continue;
-        }
-
-        // Only unassign if the owner is NOT active (already shut down / on break)
-        if snap.active_names.contains(&owner_clean) {
-            continue;
-        }
-
-        debug!(
-            "Task !{} has open PR and owner {} is inactive — unassigning",
-            task_id, owner_clean
-        );
-
-        effects.push(Effect::UnassignTask {
-            task_id: task_id.clone(),
-            repo_name: snap.repo_name.clone(),
-        });
-    }
-
-    effects
-}
-
 // Test helper function exposed for integration tests
 #[doc(hidden)]
 pub fn should_recover_task_test_helper(
