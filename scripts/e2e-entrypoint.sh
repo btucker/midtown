@@ -112,6 +112,10 @@ run_coordination_tests() {
             --skip test_mailbox_fallback \
             "${test_args[@]}"
 
+    run_bg "zellij_e2e" \
+        cargo test --release --test zellij_e2e -- --ignored --test-threads=1 \
+            "${test_args[@]}"
+
     wait_all
 
     if [ "${FAILED}" -ne 0 ]; then
