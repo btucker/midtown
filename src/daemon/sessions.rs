@@ -32,6 +32,7 @@ pub(super) fn is_auth_error(error_msg: &str) -> bool {
         || lowercase.contains("authentication_error")
         || lowercase.contains("invalid authentication")
         || (lowercase.contains("401") && lowercase.contains("unauthorized"))
+        || lowercase.contains("not logged in")
 }
 
 /// Parse usage limit messages to extract reset time.
