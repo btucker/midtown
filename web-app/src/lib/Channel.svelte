@@ -424,7 +424,7 @@
           ? `${inputText.trim()}\n\n[Attached: ${result.path}]`
           : `[Attached file: ${result.filename}]\nPlease read: ${result.path}`
 
-        sendMessage(message)
+        sendMessage(message, $activeChannel)
         inputText = ''
         pendingFile = null
       } else {
@@ -432,7 +432,7 @@
         return
       }
     } else if (inputText.trim()) {
-      sendMessage(inputText.trim())
+      sendMessage(inputText.trim(), $activeChannel)
       inputText = ''
     }
   }

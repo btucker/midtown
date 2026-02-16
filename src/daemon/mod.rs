@@ -2632,12 +2632,13 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                 }
             } => {
                 let content = &mobile_post.content;
+                let channel = mobile_post.channel.as_deref();
                 let sender = state.user_display_name.as_deref().unwrap_or("user");
                 rpc_channel::handle_channel_post(
                     RequestId::Null,
                     sender,
                     content,
-                    None, // No channel specified - use default
+                    channel,
                     &state,
                 ).await;
             }
