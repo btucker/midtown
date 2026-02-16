@@ -34,15 +34,17 @@ use ui::Hyperlink;
 
 /// Keyboard enhancement flags for the kitty keyboard protocol.
 ///
-/// These flags enable unambiguous decoding of modifier key combinations
-/// like Shift+Enter. Without them, terminals send ambiguous escape sequences
+/// `DISAMBIGUATE_ESCAPE_CODES` ensures special keys (Enter, Esc, etc.) use
+/// unique CSI u sequences so crossterm can reliably decode modifier combinations
+/// like Shift+Enter. Without this flag, terminals send ambiguous escape sequences
 /// that crossterm may decode as incorrect characters (e.g., 'j' for Shift+Enter).
 ///
-/// - `DISAMBIGUATE_ESCAPE_CODES`: Ensures special keys use unique codes
-/// - `REPORT_ALL_KEYS_AS_ESCAPE_CODES`: Ensures modifier state is reported
+/// Note: `REPORT_ALL_KEYS_AS_ESCAPE_CODES` was intentionally removed because it
+/// causes ALL keys (including regular text) to report as escape codes with the
+/// base (lowercase) key plus modifier flags. This breaks shifted character input
+/// (capitals, symbols) since the terminal no longer performs character translation.
 const KEYBOARD_ENHANCEMENT_FLAGS: KeyboardEnhancementFlags =
-    KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
-        .union(KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES);
+    KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES;
 
 /// Convert a character index to a byte index in a UTF-8 string.
 ///
@@ -607,6 +609,14 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                 // All other character input: if channel switcher is showing, input to it
                 // Otherwise auto-focus InputBar and insert
                 KeyCode::Char(c) => {
+                    // With the kitty keyboard protocol, Shift+letter reports the
+                    // lowercase base key plus a SHIFT modifier. Convert alphabetic
+                    // chars to uppercase when SHIFT is the only modifier held.
+                    let c = if key.modifiers == KeyModifiers::SHIFT && c.is_ascii_lowercase() {
+                        c.to_ascii_uppercase()
+                    } else {
+                        c
+                    };
                     if app.channel_switcher.show {
                         app.channel_switcher_input(c);
                         EventResult::Continue
@@ -1552,6 +1562,33 @@ mod tests {
             app.input_cursor, original_cursor,
             "Input cursor should be preserved on creation failure"
         );
+    }
+
+    /// Regression test: Shift+letter should insert uppercase character.
+    ///
+    /// With the kitty keyboard protocol (REPORT_ALL_KEYS_AS_ESCAPE_CODES),
+    /// Shift+A is reported as KeyCode::Char('a') + KeyModifiers::SHIFT.
+    /// The handler must convert to uppercase rather than inserting lowercase.
+    #[test]
+    fn test_shift_letter_inserts_uppercase() {
+        let mut app = test_app();
+
+        // Simulate kitty protocol: Shift+A = lowercase 'a' + SHIFT modifier
+        let event = Event::Key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::SHIFT));
+        handle_event(&mut app, event);
+
+        assert_eq!(app.input_text, "A", "Shift+a should insert uppercase 'A'");
+    }
+
+    /// Regression test: plain letter without Shift should insert lowercase.
+    #[test]
+    fn test_plain_letter_inserts_lowercase() {
+        let mut app = test_app();
+
+        let event = key_press(KeyCode::Char('a'));
+        handle_event(&mut app, event);
+
+        assert_eq!(app.input_text, "a", "Plain 'a' should insert lowercase 'a'");
     }
 }
 
