@@ -132,7 +132,7 @@ pub fn detect_repo_name() -> Option<String> {
 /// 2. Git repository directory name (from `detect_repo_name()`)
 ///
 /// This is the canonical way to get the project name for use in
-/// tmux session names, display labels, etc.
+/// session names, display labels, etc.
 pub fn detect_project_name() -> Option<String> {
     let repo_name = detect_repo_name()?;
 

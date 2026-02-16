@@ -156,7 +156,7 @@ pub(super) async fn route_mentions(state: &DaemonState, msg: &Message) {
 
 /// Route an @all broadcast: nudge every running coworker and the lead, except the sender.
 async fn route_at_all(state: &DaemonState, msg: &Message) {
-    // Only nudge Running coworkers — Stopping/Starting coworkers have no tmux window.
+    // Only nudge Running coworkers — Stopping/Starting coworkers have no active session.
     let running_coworkers = state.coworkers.list_running();
     let nudge_text = format!("{} said: {}", msg.from, msg.content);
 

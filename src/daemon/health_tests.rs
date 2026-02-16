@@ -1,14 +1,10 @@
 use super::*;
 
-// determine_lead_working tests removed — the function was part of the
-// tmux-based lead typing detection which has been removed.
-
 /// Test that usage limit expiry nudges only target Running coworkers.
 ///
 /// Regression test: the function previously iterated `snap.active_coworkers`
-/// (all statuses) to generate NudgeCoworker effects. Nudges target tmux
-/// windows via send-keys, so Stopping/Starting coworkers (no window) would
-/// cause "can't find window" errors.
+/// (all statuses) to generate NudgeCoworker effects. Nudges should only
+/// target Running coworkers with active sessions.
 #[test]
 fn test_usage_limit_nudge_only_targets_running_coworkers() {
     use crate::coworker::{Coworker, CoworkerStatus};
@@ -399,38 +395,4 @@ fn check_for_stale_worktrees_generates_only_cleanup_effect() {
         matches!(&effects[0], Effect::CleanupStaleWorktree { worktree_id } if worktree_id == "task-99-fix-bug"),
         "first effect should be CleanupStaleWorktree"
     );
-}
-
-/// Test that zellij_session_alive returns false for a non-existent session.
-///
-/// This validates the Zellij session detection logic regardless of whether
-/// Zellij is installed. When Zellij is not available, the command fails and
-/// the function correctly returns false.
-#[test]
-fn test_zellij_session_alive_nonexistent() {
-    // A random session name that definitely doesn't exist
-    assert!(
-        !zellij_session_alive("midtown-nonexistent-test-session-xyz"),
-        "Non-existent session should not be alive"
-    );
-}
-
-/// Test that check_and_respawn_lead handles missing tmux gracefully when
-/// Zellij is not running either.
-///
-/// In environments without tmux AND without Zellij (e.g., CI), the health
-/// check should not panic — it should return false (no shutdown needed).
-#[test]
-fn test_check_and_respawn_lead_no_multiplexer_no_panic() {
-    // Use a session name that doesn't exist in either multiplexer.
-    // This should not panic even if neither tmux nor Zellij is available.
-    let result = check_and_respawn_lead(
-        "midtown-nonexistent-test-session",
-        std::path::Path::new("/tmp"),
-        "nonexistent",
-        &[],
-    );
-    // We just verify it doesn't panic. The return value depends on whether
-    // tmux/Zellij are installed, so we don't assert a specific value.
-    let _ = result;
 }

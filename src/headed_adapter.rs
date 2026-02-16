@@ -1,7 +1,7 @@
 //! Provider-specific adapters for headed (interactive terminal) agents.
 //!
 //! Headless remains the default execution model. This module only affects
-//! headed message delivery paths (eg, lead nudges via tmux/Zellij panes).
+//! headed message delivery paths (eg, lead nudges via headed intercom).
 
 use crate::auth::AuthProvider;
 

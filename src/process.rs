@@ -7,7 +7,7 @@
 
 use std::process::Command;
 
-/// Prefix for all midtown tmux/Zellij sessions.
+/// Prefix for all midtown sessions.
 pub const SESSION_PREFIX: &str = "midtown-";
 
 /// Zellij session lifecycle state as reported by `zellij list-sessions`.

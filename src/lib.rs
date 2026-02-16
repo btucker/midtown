@@ -10,8 +10,7 @@
 //! - **Channels**: Append-only message logs for agent coordination
 //! - **Cursors**: Per-agent position tracking in message streams
 //! - **Worktrees**: Git worktree isolation for coworkers
-//! - **Coworkers**: Agent session management via tmux
-//! - **Tmux**: Low-level tmux session operations
+//! - **Coworkers**: Agent session management (headless sessions)
 //!
 //! ## Quick Start
 //!
@@ -61,9 +60,8 @@ mod channel;
 mod cursor;
 mod message;
 
-// Coworker management (nux)
+// Coworker management
 pub mod coworker;
-pub mod tmux;
 
 // Process management (orphan cleanup, PID tracking, Zellij detection)
 pub mod process;
@@ -122,10 +120,10 @@ pub mod push;
 // Randomized daemon event messages
 pub mod daemon_messages;
 
-// Headless Claude Code executor (JSON streaming, no tmux)
+// Headless Claude Code executor (JSON streaming)
 pub mod headless;
 
-// Unified launch configuration for Claude Code sessions (tmux + headless)
+// Unified launch configuration for Claude Code sessions
 pub mod launch;
 
 // Lightweight filesystem sandbox (sandbox-exec on macOS, bwrap on Linux)

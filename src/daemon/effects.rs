@@ -46,7 +46,7 @@ pub enum Effect {
         #[allow(dead_code)]
         session_id: Option<String>,
     },
-    /// Nudge the Lead by sending a message to their tmux pane.
+    /// Nudge the Lead by sending a message via headed intercom or session manager.
     NudgeLead { message: String },
     /// Resume a stopped headless coworker session.
     ///
@@ -61,11 +61,7 @@ pub enum Effect {
     ///
     /// Uses the filesystem-based inbox (`~/.claude/teams/{team}/inboxes/{name}.json`)
     /// for non-urgent messages like task assignments and PR feedback. The coworker
-    /// polls its inbox between turns, so delivery is not immediate but avoids the
-    /// terminal corruption risks of tmux send-keys.
-    ///
-    /// Phase 1: Used alongside tmux nudges for task assignment to idle coworkers.
-    /// As mailbox reliability is confirmed, more nudge paths can migrate here.
+    /// polls its inbox between turns, so delivery is not immediate.
     DeliverMailboxMessage {
         name: String,
         message: String,
@@ -469,7 +465,7 @@ async fn shutdown_coworker_impl(name: &str, message: &str, state: &DaemonState) 
     }
     info!(coworker = %name, "SHUTDOWN_COWORKER: headless session stopped");
 
-    // Remove from CoworkerManager tracking (without touching tmux)
+    // Remove from CoworkerManager tracking
     state.coworkers.deregister(name);
     // Record stop time for workflow features that need to track coworker lifecycle
     {

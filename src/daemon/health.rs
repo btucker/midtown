@@ -3,13 +3,12 @@
 //! These functions detect and respond to coworker health issues:
 //! idle shutdown, stuck processes, usage limits, and reminder firing.
 //! Health state is read from structured `ProcessHealth` data (populated
-//! by the session management layer from headless stream events) instead
-//! of parsing raw tmux pane content.
+//! by the session management layer from headless stream events).
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Duration;
 
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
 use crate::{config, daemon_messages};
 
@@ -17,74 +16,6 @@ use super::constants::*;
 use super::effects::Effect;
 use super::helpers::format_task_prompt;
 use super::{DaemonState, snapshot};
-
-/// Check if the terminal multiplexer session is still alive.
-///
-/// All sessions (lead + coworkers) are now headless. The terminal multiplexer
-/// (Zellij or tmux) is only needed for the interactive attach UI.
-/// If neither Zellij nor tmux session is alive, signals daemon shutdown.
-///
-/// This runs on a blocking thread since it calls external commands.
-///
-/// Returns `true` if the terminal server is gone (daemon should shut down),
-/// `false` otherwise.
-pub(super) fn check_and_respawn_lead(
-    session: &str,
-    _workdir: &Path,
-    _project_name: &str,
-    _additional_dirs: &[PathBuf],
-) -> bool {
-    // Check Zellij first — if a Zellij session exists, that's our multiplexer.
-    if zellij_session_alive(session) {
-        debug!(
-            session = %session,
-            "LEAD_HEALTH: Zellij session is alive"
-        );
-        return false;
-    }
-
-    // Zellij session is NOT alive. Check if Zellij is available — if so,
-    // we know the session was launched with Zellij and has since been closed.
-    let zellij_available = crate::process::zellij_is_available();
-
-    // Now check tmux session.
-    let tmux_session_alive = matches!(
-        std::process::Command::new("tmux")
-            .args(["has-session", "-t", session])
-            .output(),
-        Ok(o) if o.status.success()
-    );
-
-    // If neither Zellij nor tmux session is alive, signal shutdown.
-    if !tmux_session_alive {
-        if zellij_available {
-            error!(
-                "Zellij session '{}' is no longer running. The daemon cannot operate without a \
-                 terminal multiplexer session. Run `midtown start` to restart.",
-                session
-            );
-            return true;
-        }
-        error!(
-            "No terminal multiplexer session found. The daemon cannot operate without a terminal \
-             multiplexer. Run `midtown start` to restart."
-        );
-        return true;
-    }
-
-    debug!(
-        session = %session,
-        "LEAD_HEALTH: tmux session is alive"
-    );
-
-    false // Terminal multiplexer is running normally
-}
-
-/// Check if a Zellij session with the given name is alive.
-/// Delegates to the shared implementation in `crate::tmux`.
-fn zellij_session_alive(session: &str) -> bool {
-    crate::process::zellij_session_exists(session)
-}
 
 /// Check for idle coworkers and send them on a break after the idle timeout.
 ///
@@ -653,7 +584,7 @@ pub(super) fn maybe_nudge_usage_limit_expiry(snap: &snapshot::WorldSnapshot) -> 
         },
     ];
 
-    // Only nudge Running coworkers — Stopping/Starting coworkers have no tmux window.
+    // Only nudge Running coworkers — Stopping/Starting coworkers have no active session.
     for cw in &snap.running_coworkers {
         effects.push(Effect::NudgeCoworker {
             name: cw.name.clone(),
@@ -876,7 +807,7 @@ pub(super) fn check_and_restart_tool_name_conflicts(snap: &snapshot::WorldSnapsh
 
 /// Detect headless coworkers whose process has exited unexpectedly and restart them.
 ///
-/// Unlike tmux-based zombie detection (blank pane), this checks if the headless
+/// This checks if the headless
 /// process has terminated (exit_code is set, is_alive is false) while the coworker
 /// still has work assigned.
 pub(super) async fn check_and_respawn_dead_processes(

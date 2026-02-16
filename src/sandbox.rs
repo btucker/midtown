@@ -179,7 +179,7 @@ fn write_profile_to_tempfile(profile: &str) -> Result<PathBuf, String> {
     Err("Failed to allocate unique sandbox profile path".to_string())
 }
 
-/// Wrap a shell command string with `sandbox-exec` for macOS tmux usage.
+/// Wrap a shell command string with `sandbox-exec` for macOS.
 ///
 /// Writes the SBPL profile to a temp file and returns a new shell command:
 /// `sandbox-exec -f <profile> sh -c '<original_cmd>'`
@@ -189,7 +189,7 @@ pub fn wrap_shell_command_macos(cmd: &str, writable: &[String]) -> Result<String
     let profile = generate_macos_profile(writable);
     let profile_path = write_profile_to_tempfile(&profile)?;
 
-    // The command string is already meant for `sh -c` via tmux, so we wrap
+    // The command string is already meant for `sh -c`, so we wrap
     // the entire thing in sandbox-exec. We use exec to replace the shell
     // with sandbox-exec so there's no extra process layer.
     Ok(format!(

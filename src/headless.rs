@@ -2,7 +2,7 @@
 //!
 //! Spawns `claude -p --verbose --output-format stream-json` as a child process
 //! and communicates via stdin/stdout NDJSON. This provides a lightweight
-//! alternative to tmux-based coworkers for structured AI tasks (workflow steps,
+//! executor for structured AI tasks (workflow steps,
 //! structured outputs, one-shot queries).
 //!
 //! ## Protocol

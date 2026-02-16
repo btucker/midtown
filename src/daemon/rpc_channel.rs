@@ -52,7 +52,7 @@ fn extract_review_note_pr(message: &str) -> Option<u64> {
 ///
 /// Supports IRC-style `/me` actions. If the message starts with `/me `,
 /// the prefix is stripped and the message is stored as an Action type.
-/// For coworkers, the action text is also reflected in their tmux tab name.
+/// For coworkers, the action text is also reflected in the web UI status.
 ///
 /// Also detects feedback requests from coworkers and nudges the Lead.
 ///

@@ -227,7 +227,7 @@ async fn test_startup_recovery_sets_lead_role() {
 /// the daemon is running inside a sandbox (where coworker sandboxing will fail).
 ///
 /// This prevents the crash loop from 2026-02-13 where:
-/// 1. Lead ran `midtown start --daemon-only` from within tmux (sandboxed)
+/// 1. Lead ran `midtown start --daemon-only` from within a sandboxed session
 /// 2. Daemon inherited the Lead's sandbox
 /// 3. All coworker spawns failed with "Already inside a sandbox — cannot nest sandbox-exec"
 #[test]

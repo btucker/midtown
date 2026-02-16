@@ -452,7 +452,7 @@ pub(crate) struct DaemonState {
     /// pending task and generate duplicate `AssignAndSpawn` effects. The race occurs
     /// because:
     /// 1. Tick 1 evaluates, sees pending task, generates `AssignAndSpawn`
-    /// 2. Effects start executing (disk write + tmux spawn takes time)
+    /// 2. Effects start executing (disk write + spawn takes time)
     /// 3. Tick 2 fires, collects snapshot that still shows task as pending
     /// 4. Tick 2 generates another `AssignAndSpawn` for the same task
     ///
@@ -512,10 +512,10 @@ pub(crate) struct DaemonState {
     /// and process status. Read by `collect_world_snapshot()` for the health decision
     /// functions in `rules.rs`.
     pub(crate) headless_health: std::sync::RwLock<HashMap<String, snapshot::ProcessHealth>>,
-    /// Coworkers currently in "attached" state (interactive tmux session).
+    /// Coworkers currently in "attached" state (interactive session).
     ///
     /// When the Lead attaches to a headless coworker via `midtown session attach`,
-    /// the headless process is killed and replaced with an interactive tmux window.
+    /// the headless process is paused and replaced with an interactive session.
     /// During this period, the coworker must be exempt from stuck detection and
     /// orphan recovery. Entries are added on attach, removed on detach.
     attached_coworkers: std::sync::Mutex<HashSet<String>>,
@@ -1993,7 +1993,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
         .init();
 
     // Check for sandbox nesting early — prevents crash loop when daemon
-    // is started from within a sandboxed tmux session (2026-02-13 incident).
+    // is started from within a sandboxed session (2026-02-13 incident).
     if let Some(warning) = startup::check_sandbox_context() {
         warn!("{}", warning);
         // Log to stderr as well so it's visible when daemon is started interactively
@@ -2082,18 +2082,6 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
     let full_project_config = crate::config::load_full_project_config(&repo_name);
 
     // Derive project name: explicit --project flag > config.toml [project].name > repo name.
-    // This must match what the CLI uses (resolve_project_name) so the Lead session
-    // and daemon agree on the task list ID and tmux session name.
-    let project_name = config
-        .project_name
-        .clone()
-        .or_else(|| {
-            full_project_config
-                .as_ref()
-                .and_then(|c| c.project.name().map(|s| s.to_string()))
-        })
-        .unwrap_or_else(|| repo_name.clone());
-
     // Create channel router for the repo
     let channel_base_dir = crate::paths::projects_dir_for_repo(&repo_name);
     let channel_router = crate::ChannelRouter::new(&channel_base_dir, "midtown");
@@ -2124,8 +2112,6 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
     // shared with the web server (for the /api/status endpoint).
     // Worktree initialization happens BEFORE socket binding so the daemon is
     // fully ready when clients can connect (tests rely on this ordering).
-    let session_name = format!("midtown-{}", project_name);
-
     // Build list of all repo paths for multi-repo PR fetching.
     // Built early because it's needed by the web server, daemon state, and lead health checks.
     let all_repo_paths: Vec<PathBuf> = {
@@ -2141,9 +2127,6 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
         paths
     };
 
-    // Capture lead-specific values for health monitoring in the main loop.
-    // These are cloned here because session_name is moved into CoworkerManager.
-    let lead_session_name = session_name.clone();
     let worktree_manager =
         WorktreeManager::new(config.workdir.clone()).map_err(|e| crate::Error::Rpc {
             code: -32603,
@@ -2151,30 +2134,12 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
         })?;
 
     // Create the lead worktree (or reuse existing one)
-    let lead_workdir = match worktree_manager.create_lead_worktree() {
-        Ok(path) => {
-            info!("Lead worktree ready at {}", path.display());
-            path
-        }
-        Err(e) => {
-            warn!(
-                "Failed to create lead worktree, falling back to main repo: {}",
-                e
-            );
-            config.workdir.clone()
-        }
-    };
-    let lead_project_name = project_name.clone();
-    // Include the main repo as an additional dir so the lead can reference it.
-    // Also include any other repos from the project config.
-    let lead_additional_dirs: Vec<PathBuf> = {
-        let mut dirs = vec![config.workdir.clone()];
-        for path in &all_repo_paths {
-            if *path != config.workdir && *path != lead_workdir {
-                dirs.push(path.clone());
-            }
-        }
-        dirs
+    match worktree_manager.create_lead_worktree() {
+        Ok(path) => info!("Lead worktree ready at {}", path.display()),
+        Err(e) => warn!(
+            "Failed to create lead worktree, falling back to main repo: {}",
+            e
+        ),
     };
 
     // For multi-repo projects, create worktree managers for additional repos
@@ -2317,13 +2282,6 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
     // Set up idle check interval
     let mut idle_check_interval = interval(IDLE_CHECK_INTERVAL);
 
-    // Set up lead health check interval (recreates lead window if killed).
-    // Track daemon start time so we can skip health checks during the startup
-    // grace period, preventing races with `midtown restart` where the daemon
-    // tries to respawn a lead window before the tmux session is fully settled.
-    let mut lead_health_interval = interval(LEAD_HEALTH_CHECK_INTERVAL);
-    let daemon_start_instant = tokio::time::Instant::now();
-
     // Timer for periodic PR polling (integrated into main loop to prevent spawn races)
     let mut pr_poll_interval =
         tokio::time::interval(std::time::Duration::from_secs(config.pr_poll_interval_secs));
@@ -2371,8 +2329,8 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
     channel_rotation_interval.tick().await;
 
     // Timer for periodic orphan process cleanup (every 5 minutes)
-    // This catches claude processes that were orphaned when tmux sessions were
-    // killed directly without going through `midtown stop`.
+    // This catches claude processes that were orphaned without going through
+    // `midtown stop`.
     let mut orphan_process_interval = interval(std::time::Duration::from_secs(300));
     // Run cleanup immediately on startup, before the interval timer begins.
     // Orphans from a crashed/restarted daemon need to be killed before we
@@ -2401,7 +2359,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
     // Skip the first tick (which fires immediately)
     ci_notification_flush_interval.tick().await;
 
-    // Nudge any coworkers discovered from tmux to continue their tasks.
+    // Nudge any coworkers discovered on startup to continue their tasks.
     // This runs once at startup after the daemon has fully initialized.
     // Data gathering + pure decision → effects executed in background task.
     {
@@ -2772,27 +2730,6 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                 run_tick(&events::DaemonEvent::SessionMonitorTick, &state).await;
             }
 
-            // Check if lead session is still alive; recreate if killed.
-            // Supports both Zellij (session-level check) and tmux (window-level check).
-            // Skip during the startup grace period to avoid races with
-            // `midtown restart` where the lead window is still settling.
-            _ = lead_health_interval.tick() => {
-                if daemon_start_instant.elapsed() >= LEAD_HEALTH_CHECK_STARTUP_GRACE {
-                    let session = lead_session_name.clone();
-                    let workdir = lead_workdir.clone();
-                    let project = lead_project_name.clone();
-                    let additional = lead_additional_dirs.clone();
-                    let terminal_server_gone = tokio::task::spawn_blocking(move || {
-                        health::check_and_respawn_lead(&session, &workdir, &project, &additional)
-                    }).await.unwrap_or(false);
-
-                    if terminal_server_gone {
-                        error!("Terminal multiplexer died unexpectedly. Daemon shutting down.");
-                        let _ = shutdown_tx.send(());
-                        break;
-                    }
-                }
-            }
 
             // Periodic task dispatch: orphan recovery, duplicate detection, spawning, cleanup
             _ = orphan_check_interval.tick() => {
@@ -2847,7 +2784,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
             }
 
             // Periodic orphan process cleanup: kill claude processes that were
-            // orphaned (PPID=1) when tmux sessions were killed directly.
+            // orphaned (PPID=1) when sessions were killed directly.
             _ = orphan_process_interval.tick() => {
                 // Only kill truly orphaned processes (PPID=1) to avoid killing
                 // claude sessions the user started manually or in other projects.

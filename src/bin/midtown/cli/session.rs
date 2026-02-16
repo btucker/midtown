@@ -751,7 +751,7 @@ pub(crate) fn build_attach_shell_command(
     let detach_cmd = format!("{} session detach {}", bin_command, shell_quote(name));
 
     Ok(format!(
-        "export {}; {}; status=$?; {} >/dev/null 2>&1 || true; exit $status",
+        "export {}; {}; _midtown_rc=$?; {} >/dev/null 2>&1 || true; exit $_midtown_rc",
         env_parts.join(" "),
         wrapped_attach_cmd,
         detach_cmd
