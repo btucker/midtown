@@ -1151,12 +1151,25 @@ pub(super) fn spawn_for_pending_tasks(
     // with pre-existing tasks or tasks where the Lead manually set an owner.
     let pending_with_owners = &snap.pending_tasks_with_owners;
     for (task_id, task_subject, owner) in pending_with_owners.iter() {
-        // Skip tasks whose referenced PR is already merged. These are stale —
-        // the work is done (PR merged) but the task wasn't auto-completed.
-        if let Some(pr_num_str) = crate::tasks::extract_pr_number(task_subject)
-            && let Ok(pr_num) = pr_num_str.parse::<u64>()
-            && snap.merged_pr_numbers.contains(&pr_num)
-        {
+        // Skip tasks whose explicit PR field references a merged PR.
+        // This indicates the task's work is IN that PR (not just about it).
+        // Pattern matching task descriptions would cause false positives when
+        // tasks reference merged PRs for context (e.g., "Fix bug from PR #123").
+        let task_pr_merged = snap
+            .all_tasks
+            .iter()
+            .find(|t| &t.id == task_id)
+            .and_then(|t| t.pr)
+            .map(|pr_num| snap.merged_pr_numbers.contains(&pr_num))
+            .unwrap_or(false);
+
+        if task_pr_merged {
+            let pr_num = snap
+                .all_tasks
+                .iter()
+                .find(|t| &t.id == task_id)
+                .and_then(|t| t.pr)
+                .unwrap(); // Safe: we just checked it exists
             info!(
                 "Auto-completing stale task !{}: PR #{} has been merged",
                 task_id, pr_num
@@ -1418,9 +1431,11 @@ pub(super) fn spawn_for_pending_tasks(
             continue;
         }
 
-        // Skip tasks whose referenced PR is already merged.
-        if let Some(pr_num_str) = crate::tasks::extract_pr_number_from_task(task)
-            && let Ok(pr_num) = pr_num_str.parse::<u64>()
+        // Skip tasks whose explicit PR field references a merged PR.
+        // This indicates the task's work is IN that PR (not just about it).
+        // Pattern matching task descriptions would cause false positives when
+        // tasks reference merged PRs for context (e.g., "Fix bug from PR #123").
+        if let Some(pr_num) = task.pr
             && snap.merged_pr_numbers.contains(&pr_num)
         {
             info!(
