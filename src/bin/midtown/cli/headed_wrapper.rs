@@ -475,44 +475,61 @@ fn wait_for_empty_input(input_state: &SharedInputState, timeout: Duration) -> bo
     }
 }
 
-fn wait_for_nudge_safe(
+fn wait_for_nudge_safe_with_input_state(
+    input_state: &SharedInputState,
     output_mirror: &SharedOutputMirror,
     last_nudge_text: Option<&str>,
     stable_duration: Duration,
     max_wait: Duration,
 ) -> bool {
     let start = Instant::now();
-    let mut last_input: Option<String> = None;
-    let mut last_change_time = Instant::now();
 
     loop {
-        let content = capture_output_text(output_mirror);
-        let current_input = get_input_text(&content);
+        // Primary signal: check InputState (stdin side) for active typing
+        let (current_input, last_change) = {
+            match input_state.lock() {
+                Ok(guard) => (guard.current_input.clone(), guard.last_change),
+                Err(_) => (String::new(), Instant::now()),
+            }
+        };
 
-        if current_input.as_deref().is_none_or(|v| v.trim().is_empty()) {
-            debug!("Input empty, safe to nudge");
+        // If InputState shows empty input, safe to nudge immediately
+        if current_input.trim().is_empty() {
+            debug!("InputState empty, safe to nudge");
             return true;
         }
 
-        if let (Some(input), Some(last_nudge)) = (&current_input, last_nudge_text) {
+        // Check if the current input matches the last nudge (safe to overwrite)
+        if let Some(last_nudge) = last_nudge_text {
             let check_len = last_nudge.floor_char_boundary(last_nudge.len().min(30));
-            if check_len > 0 && input.starts_with(&last_nudge[..check_len]) {
-                debug!("Input contains last nudge text, safe to overwrite");
+            if check_len > 0 && current_input.starts_with(&last_nudge[..check_len]) {
+                debug!("InputState contains last nudge text, safe to overwrite");
                 return true;
             }
         }
 
-        if current_input != last_input {
-            last_change_time = Instant::now();
-            last_input = current_input;
-        } else if last_change_time.elapsed() >= stable_duration {
+        // If input has been stable (no keystrokes) for stable_duration, safe to append
+        if last_change.elapsed() >= stable_duration {
             debug!(
-                "Input stable for {}s, safe to append",
+                "InputState stable for {}s, safe to append",
                 stable_duration.as_secs()
             );
             return true;
         }
 
+        // Fallback: check OutputMirror (stdout side) as a secondary signal
+        // This handles cases where InputState might not be tracking correctly
+        let content = capture_output_text(output_mirror);
+        let output_input = get_input_text(&content);
+
+        if output_input.as_deref().is_none_or(|v| v.trim().is_empty())
+            && current_input.trim().is_empty()
+        {
+            debug!("Both InputState and OutputMirror show no input, safe to nudge");
+            return true;
+        }
+
+        // Max wait exceeded — nudge anyway to prevent indefinite blocking
         if start.elapsed() >= max_wait {
             info!(
                 "Nudge wait timed out after {}s with active user input",
@@ -521,7 +538,10 @@ fn wait_for_nudge_safe(
             return false;
         }
 
-        std::thread::sleep(NUDGE_POLL_INTERVAL);
+        // Sleep for a short interval to avoid busy-waiting, but not so long that
+        // we miss the stable_duration threshold. Use min(stable_duration / 4, NUDGE_POLL_INTERVAL).
+        let poll_interval = stable_duration.div_f32(4.0).min(NUDGE_POLL_INTERVAL);
+        std::thread::sleep(poll_interval);
     }
 }
 
@@ -783,11 +803,12 @@ pub fn handle(cmd: &HeadedWrapperCommand, client: &DaemonClient) -> Result<Respo
                     };
 
                 for msg in parsed.messages {
-                    // For all sessions (lead and coworkers), check the PTY output
-                    // for the ❯ prompt to know when Claude is ready for input.
-                    // Without this, nudges get injected while Claude is thinking
-                    // and the submit fails because there's no active input field.
-                    let safe = wait_for_nudge_safe(
+                    // For all sessions (lead and coworkers), check InputState (stdin side)
+                    // as the primary signal to know when the user is typing. OutputMirror
+                    // (stdout side) is used as a fallback. Without this, nudges get
+                    // injected while the user is actively typing and interrupt their work.
+                    let safe = wait_for_nudge_safe_with_input_state(
+                        &input_state,
                         &output_mirror,
                         last_nudge_text.as_deref(),
                         COWORKER_INPUT_STABLE_DURATION,
@@ -888,7 +909,7 @@ mod tests {
     use super::{
         InputState, OutputMirror, SharedInputState, SharedOutputMirror, apply_submit_key,
         get_input_text, is_nudge_stuck, trim_trailing_linebreaks, update_input_state,
-        wait_for_empty_input, wait_for_nudge_safe,
+        wait_for_empty_input, wait_for_nudge_safe_with_input_state,
     };
 
     #[test]
@@ -947,15 +968,81 @@ mod tests {
 
     #[test]
     fn wait_for_nudge_safe_overwrites_last_nudge_immediately() {
+        let input_state: SharedInputState = Arc::new(Mutex::new(InputState::default()));
         let mirror: SharedOutputMirror = Arc::new(Mutex::new(OutputMirror::default()));
+
+        // InputState contains the last nudge text
+        update_input_state(&input_state, b"github said: check ci");
+
         {
             let mut guard = mirror.lock().expect("mirror lock");
             guard.ingest("❯ github said: check ci\n".as_bytes());
         }
 
-        let safe = wait_for_nudge_safe(
+        let safe = wait_for_nudge_safe_with_input_state(
+            &input_state,
             &mirror,
             Some("github said: check ci"),
+            Duration::from_secs(20),
+            Duration::from_secs(1),
+        );
+        assert!(safe);
+    }
+
+    #[test]
+    fn wait_for_nudge_safe_respects_active_input_state() {
+        let input_state: SharedInputState = Arc::new(Mutex::new(InputState::default()));
+        let mirror: SharedOutputMirror = Arc::new(Mutex::new(OutputMirror::default()));
+
+        // User is actively typing (recent keystroke, non-empty input)
+        update_input_state(&input_state, b"hello");
+
+        {
+            let mut guard = mirror.lock().expect("mirror lock");
+            // OutputMirror might not have caught up yet — empty or showing old prompt
+            guard.ingest("❯ \n".as_bytes());
+        }
+
+        // Simulate continued typing in a background thread
+        let input_state_clone = Arc::clone(&input_state);
+        let typing_thread = std::thread::spawn(move || {
+            // Keep typing every 50ms for 400ms (total)
+            for _ in 0..8 {
+                std::thread::sleep(Duration::from_millis(50));
+                update_input_state(&input_state_clone, b"x");
+            }
+        });
+
+        // Should wait because InputState shows active typing
+        let safe = wait_for_nudge_safe_with_input_state(
+            &input_state,
+            &mirror,
+            None,
+            Duration::from_millis(150),
+            Duration::from_millis(500),
+        );
+
+        typing_thread.join().unwrap();
+
+        // Should time out waiting for input to stabilize
+        assert!(!safe);
+    }
+
+    #[test]
+    fn wait_for_nudge_safe_allows_nudge_when_input_empty() {
+        let input_state: SharedInputState = Arc::new(Mutex::new(InputState::default()));
+        let mirror: SharedOutputMirror = Arc::new(Mutex::new(OutputMirror::default()));
+
+        {
+            let mut guard = mirror.lock().expect("mirror lock");
+            guard.ingest("❯ \n".as_bytes());
+        }
+
+        // Input state is empty — safe to nudge immediately
+        let safe = wait_for_nudge_safe_with_input_state(
+            &input_state,
+            &mirror,
+            None,
             Duration::from_secs(20),
             Duration::from_secs(1),
         );
