@@ -236,6 +236,11 @@ pub(super) fn handle_channel_read(
     since: Option<&str>,
     state: &DaemonState,
 ) -> Response {
+    info!(
+        "channel.read called with all={}, last={:?}, since={:?}",
+        all, last, since
+    );
+
     // Read from the default (main) channel
     let default_channel = match state.channel_router.default_channel() {
         Ok(ch) => ch,
@@ -247,8 +252,16 @@ pub(super) fn handle_channel_read(
 
     let messages = if let Some(n) = last {
         // Use --last flag: read last N messages
+        info!("Reading last {} messages", n);
         match default_channel.read_last_n_messages(n) {
-            Ok((msgs, _)) => msgs,
+            Ok((msgs, _)) => {
+                info!(
+                    "read_last_n_messages({}) returned {} messages",
+                    n,
+                    msgs.len()
+                );
+                msgs
+            }
             Err(e) => {
                 error!("Failed to read last {} messages: {}", n, e);
                 return Response::error(id, RpcError::new(-32603, e.to_string()));
@@ -525,5 +538,50 @@ mod tests {
         assert_eq!(parse_duration("5x"), None);
         assert_eq!(parse_duration("abc"), None);
         assert_eq!(parse_duration("5.5m"), None); // floats not supported
+    }
+
+    #[tokio::test]
+    async fn test_channel_read_with_last_parameter() {
+        let state = make_test_state("midtown-test-channel-read-last");
+
+        // Post 10 messages to the channel
+        for i in 1..=10 {
+            let msg = format!("Test message {}", i);
+            let _response = handle_channel_post(i.into(), "test", &msg, None, &state).await;
+        }
+
+        // Request last 3 messages
+        let response = handle_channel_read(999.into(), false, Some(3), None, &state);
+
+        // Verify we got exactly 3 messages
+        assert!(response.error.is_none(), "channel.read should succeed");
+        let result = response.result.unwrap();
+        let messages = result["messages"].as_array().unwrap();
+        assert_eq!(
+            messages.len(),
+            3,
+            "Expected 3 messages, got {}",
+            messages.len()
+        );
+
+        // Verify they are the last 3 messages
+        assert!(
+            messages[0]["message"]
+                .as_str()
+                .unwrap()
+                .contains("message 8")
+        );
+        assert!(
+            messages[1]["message"]
+                .as_str()
+                .unwrap()
+                .contains("message 9")
+        );
+        assert!(
+            messages[2]["message"]
+                .as_str()
+                .unwrap()
+                .contains("message 10")
+        );
     }
 }
