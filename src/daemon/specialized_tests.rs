@@ -150,8 +150,8 @@ fn test_specialized_error_display() {
     let err = SpecializedError::ParseError("Invalid JSON".to_string());
     assert_eq!(err.to_string(), "Response parsing failed: Invalid JSON");
 
-    let err = SpecializedError::SessionError;
-    assert_eq!(err.to_string(), "Session returned error");
+    let err = SpecializedError::SessionError("test error".to_string());
+    assert_eq!(err.to_string(), "Session returned error: test error");
 
     let err = SpecializedError::Timeout(Duration::from_secs(120));
     assert_eq!(err.to_string(), "Session timed out after 120s");
