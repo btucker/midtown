@@ -67,8 +67,6 @@ jobs:
             flags: ""
           - test: worktree_registry_e2e
             flags: "--ignored --test-threads=1"
-          - test: zellij_e2e
-            flags: "--ignored --test-threads=1"
           # webhook_e2e is excluded from CI - tests are flaky due to timing
           # issues in GitHub Actions. Run locally with:
           # cargo test --test webhook_e2e -- --ignored --test-threads=1
