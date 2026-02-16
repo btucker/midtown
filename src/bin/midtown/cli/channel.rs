@@ -18,6 +18,12 @@ pub enum ChannelCommand {
         /// Show all messages (not just recent)
         #[arg(long)]
         all: bool,
+        /// Show only the last N messages
+        #[arg(long)]
+        last: Option<usize>,
+        /// Show messages from the last duration (e.g., 5m, 1h, 30s)
+        #[arg(long)]
+        since: Option<String>,
     },
 }
 
@@ -26,6 +32,8 @@ pub fn handle(cmd: &ChannelCommand, client: &DaemonClient) -> Result<Response, S
         ChannelCommand::Post { message, channel } => {
             client.channel_post(message, channel.as_deref())
         }
-        ChannelCommand::Read { all } => client.channel_read(*all),
+        ChannelCommand::Read { all, last, since } => {
+            client.channel_read(*all, last.as_ref(), since.as_deref())
+        }
     }
 }

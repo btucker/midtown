@@ -50,6 +50,7 @@ trait ParamExt {
     fn bool_or(&self, key: &str, default: bool) -> bool;
     fn str_or<'a>(&'a self, key: &str, default: &'a str) -> &'a str;
     fn u64_param(&self, key: &str) -> Option<u64>;
+    fn usize_param(&self, key: &str) -> Option<usize>;
     fn str_array_param(&self, key: &str) -> Option<Vec<String>>;
 }
 
@@ -70,6 +71,12 @@ impl ParamExt for Option<&serde_json::Value> {
 
     fn u64_param(&self, key: &str) -> Option<u64> {
         self.and_then(|p| p.get(key)).and_then(|v| v.as_u64())
+    }
+
+    fn usize_param(&self, key: &str) -> Option<usize> {
+        self.and_then(|p| p.get(key))
+            .and_then(|v| v.as_u64())
+            .and_then(|n| usize::try_from(n).ok())
     }
 
     fn str_array_param(&self, key: &str) -> Option<Vec<String>> {
@@ -379,7 +386,9 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
 
         "channel.read" => {
             let all = params.bool_or("all", false);
-            super::rpc_channel::handle_channel_read(request.id, all, state)
+            let last = params.usize_param("last");
+            let since = params.str_param("since");
+            super::rpc_channel::handle_channel_read(request.id, all, last, since, state)
         }
 
         // ---- Tasks ----
