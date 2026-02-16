@@ -553,6 +553,10 @@ impl HeadlessSession {
         // Clear inherited daemon env vars, then re-apply from config.env
         // so coworker-specific values (MIDTOWN_AGENT) take effect.
         cmd.env_remove("MIDTOWN_AGENT");
+        // Prevent Claude Code's nested session detection from killing spawned sessions.
+        // The daemon may run inside a Claude Code session (e.g., the lead), which sets
+        // CLAUDECODE in the environment. Child sessions inherit it and refuse to start.
+        cmd.env_remove("CLAUDECODE");
         cmd.env("DISABLE_AUTOUPDATER", "1");
 
         // Agent teams requires this env var
