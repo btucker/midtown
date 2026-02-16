@@ -43,7 +43,7 @@ fn test_midtown_base_dir_override() -> Option<PathBuf> {
 }
 
 #[cfg(test)]
-pub(crate) struct TestMidtownBaseDirGuard {
+pub struct TestMidtownBaseDirGuard {
     previous: Option<PathBuf>,
 }
 
@@ -57,7 +57,7 @@ impl Drop for TestMidtownBaseDirGuard {
 }
 
 #[cfg(test)]
-pub(crate) fn set_test_midtown_base_dir(path: PathBuf) -> TestMidtownBaseDirGuard {
+pub fn set_test_midtown_base_dir(path: PathBuf) -> TestMidtownBaseDirGuard {
     let previous = TEST_MIDTOWN_BASE_DIR.with(|slot| slot.replace(Some(path)));
     TestMidtownBaseDirGuard { previous }
 }
@@ -246,6 +246,16 @@ pub fn lead_worktree_path(repo: &str) -> PathBuf {
 pub fn lead_dir_for_repo(repo: &str) -> PathBuf {
     auto_migrate(repo);
     midtown_base_dir().join("lead").join(repo)
+}
+
+/// Get the lead system prompt file path for a specific repository.
+///
+/// Returns `~/.midtown/lead/<repo>/system-prompt.txt`.
+///
+/// This file stores the lead's system prompt (lead.md + common.md)
+/// so it can be re-applied when attaching to a headless lead session.
+pub fn lead_system_prompt_file(repo: &str) -> PathBuf {
+    lead_dir_for_repo(repo).join("system-prompt.txt")
 }
 
 /// Get the Lead session ID file path for a specific repository.

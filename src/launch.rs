@@ -254,12 +254,24 @@ impl LaunchConfig {
     /// session mode to `persist_session` / `resume_session_id` fields.
     ///
     /// `project_name` is used to load sandbox configuration.
+    ///
+    /// For Lead role: saves the system prompt to `~/.midtown/lead/<repo>/system-prompt.txt`
+    /// so it can be re-applied when attaching to the headless session.
     pub fn to_headless_config(&self, project_name: &str) -> HeadlessConfig {
         let system_prompt = match self.role {
             CoworkerRole::Reviewer => crate::agents::reviewer_system_prompt(&self.name),
             CoworkerRole::Lead => crate::agents::lead_system_prompt(),
             CoworkerRole::Coworker => crate::agents::coworker_system_prompt(&self.name),
         };
+
+        // Save the lead system prompt to disk for attach resumption
+        if self.role == CoworkerRole::Lead {
+            let prompt_file = crate::paths::lead_system_prompt_file(project_name);
+            if let Some(parent) = prompt_file.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let _ = std::fs::write(&prompt_file, &system_prompt);
+        }
 
         let (persist_session, resume_session_id) = match &self.session_mode {
             SessionMode::Fresh => (true, None),
@@ -1008,3 +1020,7 @@ mod tests {
         assert_eq!(headless.agent_name, Some("lead".to_string()));
     }
 }
+
+#[path = "launch_tests.rs"]
+#[cfg(test)]
+mod launch_tests;
