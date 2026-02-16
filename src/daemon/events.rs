@@ -213,7 +213,7 @@ pub async fn evaluate_tick(
     }
 }
 
-/// Deduplicate spawn effects by coworker name.
+/// Deduplicate spawn effects by coworker name and task ID.
 ///
 /// Multiple independent decision functions (orphan recovery, pending task spawn,
 /// dead process respawn, PR call-in) can each decide to spawn the same coworker
@@ -221,12 +221,17 @@ pub async fn evaluate_tick(
 /// ones trigger `on_success` callbacks (since the idempotent guard returns Ok),
 /// posting duplicate "Called in" messages.
 ///
+/// Also prevents double-spawn for the same task: orphan recovery might spawn
+/// "amsterdam" for task 123, while task dispatch spawns "york" for the same task
+/// in the same tick. This function deduplicates by BOTH coworker name AND task ID.
+///
 /// Handles all spawn-like effect variants: `SpawnCoworker`,
 /// `SpawnCoworkerWithCallbacks`, `AssignAndSpawn`, and `ResumeCoworker`.
-/// Keeps the first spawn effect for each coworker name, drops duplicates.
+/// Keeps the first spawn effect for each coworker name and task ID, drops duplicates.
 /// Non-spawn effects are always preserved.
 fn dedup_spawn_effects(effects: Vec<Effect>) -> Vec<Effect> {
-    let mut seen_spawns: HashSet<String> = HashSet::new();
+    let mut seen_coworker_names: HashSet<String> = HashSet::new();
+    let mut seen_task_ids: HashSet<String> = HashSet::new();
     let mut result: Vec<Effect> = Vec::new();
     let mut registry_effects: Vec<Effect> = Vec::new();
 
@@ -239,9 +244,43 @@ fn dedup_spawn_effects(effects: Vec<Effect>) -> Vec<Effect> {
             _ => None,
         };
 
+        // Extract task ID if this is a task-related spawn
+        let task_id = match &effect {
+            Effect::AssignAndSpawn { task_id, .. } => Some(task_id.clone()),
+            Effect::SpawnCoworkerWithCallbacks { on_success, .. } => {
+                // Look for RecordTaskAssignment in on_success callbacks
+                on_success.iter().find_map(|e| {
+                    if let Effect::RecordTaskAssignment { task_id, .. } = e {
+                        Some(task_id.clone())
+                    } else {
+                        None
+                    }
+                })
+            }
+            _ => None,
+        };
+
         if let Some(name) = spawn_name {
-            if seen_spawns.contains(&name) {
-                tracing::debug!("Deduplicated duplicate spawn effect for '{}'", name);
+            // Check if we've already seen this coworker name
+            let duplicate_by_name = seen_coworker_names.contains(&name);
+            // Check if we've already seen this task ID (if task-related)
+            let duplicate_by_task = task_id
+                .as_ref()
+                .is_some_and(|tid| seen_task_ids.contains(tid));
+
+            if duplicate_by_name || duplicate_by_task {
+                let reason = if duplicate_by_name && duplicate_by_task {
+                    format!(
+                        "coworker '{}' and task '{}'",
+                        name,
+                        task_id.as_ref().unwrap()
+                    )
+                } else if duplicate_by_name {
+                    format!("coworker '{}'", name)
+                } else {
+                    format!("task '{}'", task_id.as_ref().unwrap())
+                };
+                tracing::debug!("Deduplicated duplicate spawn effect for {}", reason);
 
                 // Extract and preserve registry effects from the dropped spawn
                 let on_success_effects = match effect {
@@ -304,7 +343,10 @@ fn dedup_spawn_effects(effects: Vec<Effect>) -> Vec<Effect> {
 
             registry_effects.extend(extracted_registry);
             result.push(modified_effect);
-            seen_spawns.insert(name);
+            seen_coworker_names.insert(name);
+            if let Some(tid) = task_id {
+                seen_task_ids.insert(tid);
+            }
         } else {
             result.push(effect);
         }
