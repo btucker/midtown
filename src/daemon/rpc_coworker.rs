@@ -124,6 +124,13 @@ pub(super) async fn handle_lead_spawn(
     let mut config = crate::launch::LaunchConfig::lead(&state.repo_name);
     config.auth_provider = provider;
 
+    // Use the canonical lead worktree path so spawn_coworker uses it
+    // instead of falling through to the legacy coworker-named path.
+    let lead_wt = crate::paths::lead_worktree_path(&state.repo_name);
+    if lead_wt.exists() {
+        config.working_dir = Some(lead_wt);
+    }
+
     match state.spawn_coworker(&config).await {
         Ok(()) => {
             info!("Spawned headless lead session");
@@ -397,13 +404,6 @@ pub(super) async fn handle_coworker_nudge(
     message: &str,
     state: &DaemonState,
 ) -> Response {
-    if state.coworkers.get(name).is_none() {
-        return Response::error(
-            id,
-            RpcError::new(-32602, format!("Coworker not found: {}", name)),
-        );
-    }
-
     // Always enqueue to headed intercom for wrapper-managed sessions.
     state.enqueue_headed_nudge(name, message).await;
 

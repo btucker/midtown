@@ -307,8 +307,15 @@ pub async fn recover_headless_sessions(
             }
         };
 
-        // Restore working directory if available
-        if let Some(ref working_dir) = session_info.working_dir {
+        // Restore working directory. For the lead, always use the canonical
+        // lead worktree path (~/.midtown/worktrees/<repo>/lead) rather than
+        // the persisted path, which may be stale (e.g., legacy coworker path).
+        if name == "lead" {
+            let lead_wt = crate::paths::lead_worktree_path(repo_name);
+            if lead_wt.exists() {
+                config.working_dir = Some(lead_wt);
+            }
+        } else if let Some(ref working_dir) = session_info.working_dir {
             config.working_dir = Some(std::path::PathBuf::from(working_dir));
         }
 

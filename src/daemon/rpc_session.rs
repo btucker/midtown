@@ -497,9 +497,14 @@ pub(super) async fn handle_session_attach(
     };
 
     if running {
-        // Pause the running headless session.
+        // Gracefully pause the running headless session, giving Claude time to
+        // persist its session state so `--resume` works in the interactive pane.
         state.broadcast_coworker_update(&name, "attaching", None);
-        if let Err(e) = state.session_manager.shutdown(&name).await {
+        if let Err(e) = state
+            .session_manager
+            .graceful_shutdown(&name, std::time::Duration::from_secs(5))
+            .await
+        {
             return Response::error(
                 id,
                 RpcError::new(
@@ -604,20 +609,39 @@ pub(super) async fn handle_session_detach(
     };
     let session_id = session_info.session_id.clone();
 
-    // Re-spawn with the resumed session, using the correct role for the lead
+    // Re-spawn: resume if we have a valid session_id, otherwise spawn fresh.
+    // Session_id can be empty if the previous session exited before init or
+    // if the stale session_id was cleared after a failed resume attempt.
+    let session_mode = if session_id.is_empty() {
+        info!(
+            "No valid session_id for '{}', spawning fresh instead of resuming",
+            name
+        );
+        crate::launch::SessionMode::Fresh
+    } else {
+        crate::launch::SessionMode::ResumeSession(session_id.clone())
+    };
+
     let mut config = if name == "lead" {
         let mut c = crate::launch::LaunchConfig::lead(&state.repo_name);
-        c.session_mode = crate::launch::SessionMode::ResumeSession(session_id.clone());
+        c.session_mode = session_mode;
         c
     } else {
         crate::launch::LaunchConfig::coworker(
             &name,
             &state.repo_name,
-            crate::launch::SessionMode::ResumeSession(session_id.clone()),
+            session_mode,
             Some("You were previously running headless. The Lead attached to your session interactively and has now detached. Continue where you left off — read the channel for any updates.".to_string()),
         )
     };
-    if let Some(ref working_dir) = session_info.working_dir {
+    // For the lead, always use the canonical lead worktree path.
+    // For coworkers, restore from persisted working_dir.
+    if name == "lead" {
+        let lead_wt = crate::paths::lead_worktree_path(&state.repo_name);
+        if lead_wt.exists() {
+            config.working_dir = Some(lead_wt);
+        }
+    } else if let Some(ref working_dir) = session_info.working_dir {
         config.working_dir = Some(std::path::PathBuf::from(working_dir));
     }
     if let Some(provider) = session_info.provider {

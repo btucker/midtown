@@ -577,8 +577,18 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 session_id,
                 mut config,
             } => {
-                // Override session mode to resume the saved session
-                config.session_mode = crate::launch::SessionMode::ResumeSession(session_id);
+                // Resume the saved session if we have a valid session_id,
+                // otherwise spawn fresh (session_id may have been cleared
+                // after a failed resume attempt).
+                if session_id.is_empty() {
+                    info!(
+                        "No valid session_id for '{}', spawning fresh instead of resuming",
+                        name
+                    );
+                    config.session_mode = crate::launch::SessionMode::Fresh;
+                } else {
+                    config.session_mode = crate::launch::SessionMode::ResumeSession(session_id);
+                }
                 match state.spawn_coworker(&config).await {
                     Ok(_) => {
                         info!("Resumed coworker {} successfully", name);

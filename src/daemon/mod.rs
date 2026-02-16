@@ -2678,6 +2678,11 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                 // Handle stopped sessions: deregister, record stop time, post to channel
                 for name in all_stopped {
                     warn!("Headless session '{}' exited unexpectedly", name);
+
+                    // Check if this was a failed resume attempt BEFORE removing
+                    // the session (remove deletes it from the map).
+                    let failed_resume = state.session_manager.was_failed_resume(&name).await;
+
                     state.coworkers.deregister(&name);
                     state.record_coworker_stop_time(&name);
                     // Remove from session manager tracking
@@ -2686,6 +2691,28 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                     {
                         let mut records = state.coworker_records.write().await;
                         records.remove(&name);
+                    }
+
+                    // Only clear session_id when the resume itself failed
+                    // (session died within 30s of a resume spawn). This means
+                    // the session data doesn't exist on disk and retrying the
+                    // same session_id would loop. Sessions that ran longer
+                    // likely have valid data on disk — keep their session_id
+                    // so the next spawn can try to resume them.
+                    if failed_resume {
+                        let mut ps = state.persistent_state.lock().await;
+                        if let Some(info) = ps.headless_sessions.get_mut(&name)
+                            && !info.session_id.is_empty()
+                        {
+                            info!(
+                                "Clearing stale session_id for '{}' after failed resume (was: {})",
+                                name, info.session_id
+                            );
+                            info.session_id.clear();
+                        }
+                        if let Err(e) = ps.save_for_repo(&state.repo_name) {
+                            warn!("Failed to save persistent state after clearing session_id: {}", e);
+                        }
                     }
 
                     // Format message with stderr if available
