@@ -359,9 +359,9 @@ impl SessionManager {
 
     /// Gracefully shut down a session, giving it time to persist state.
     ///
-    /// Closes stdin so the Claude process can save its session, then waits
-    /// up to `timeout` for it to exit. Falls back to SIGKILL if it doesn't
-    /// exit in time. Used by the attach flow to ensure `--resume` works.
+    /// Sends SIGTERM so Claude Code can save its session, then waits up to
+    /// `timeout` for it to exit. Falls back to SIGKILL only as a last resort.
+    /// Used by the attach flow to ensure `--resume` works in the interactive pane.
     pub async fn graceful_shutdown(
         &self,
         name: &str,
@@ -382,15 +382,23 @@ impl SessionManager {
 
         let session_id = cs.session_id.clone();
 
-        // Close stdin so the Claude process receives EOF and can persist state.
-        if let Some(ref mut session) = cs.session {
-            session.close_stdin();
+        // Send SIGTERM so Claude Code saves session state and exits cleanly.
+        // SIGTERM is the standard graceful-shutdown signal; Claude Code handles
+        // it by persisting conversation history before exiting.
+        if let Some(ref session) = cs.session
+            && let Some(pid) = session.pid()
+        {
+            let _ = std::process::Command::new("kill")
+                .arg(pid.to_string())
+                .stderr(std::process::Stdio::null())
+                .status();
+            info!("Sent SIGTERM to session '{}' (pid={})", name, pid);
         }
 
         // Drop the write lock while waiting for exit, so we don't block other operations.
         drop(sessions);
 
-        // Wait for the process to exit gracefully (it should save session data on EOF).
+        // Wait for the process to exit gracefully after SIGTERM.
         if let Some(ref mut session) = cs.session {
             match tokio::time::timeout(timeout, session.wait()).await {
                 Ok(Ok(_status)) => {
@@ -407,15 +415,14 @@ impl SessionManager {
                 }
                 Err(_) => {
                     warn!(
-                        "Session '{}' did not exit within {:?}. Force-killing.",
+                        "Session '{}' did not exit within {:?} after SIGTERM. Force-killing.",
                         name, timeout
                     );
                 }
             }
         }
 
-        // Mark as detach_on_drop=false (the default) so Drop kills if still alive.
-        // Just dropping cs will trigger the cleanup.
+        // Drop triggers HeadlessSession::Drop which SIGKILL's if still alive.
         drop(cs);
 
         Ok(session_id)

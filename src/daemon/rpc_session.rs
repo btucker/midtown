@@ -475,12 +475,18 @@ pub(super) async fn handle_session_attach(
     let provider = info.provider.unwrap_or(crate::auth::AuthProvider::Claude);
     let session_id = info.session_id.clone();
     let cwd = if name == "lead" {
-        // Lead always attaches in the primary repo root, not a coworker worktree.
-        state
-            .all_repo_paths
-            .first()
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_default()
+        // Lead attaches in the lead worktree (where the headless session runs),
+        // so `claude --resume` finds the session data (stored per-CWD).
+        let lead_wt = crate::paths::lead_worktree_path(&state.repo_name);
+        if lead_wt.exists() {
+            lead_wt.to_string_lossy().to_string()
+        } else {
+            state
+                .all_repo_paths
+                .first()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_default()
+        }
     } else {
         state
             .coworkers
@@ -502,7 +508,7 @@ pub(super) async fn handle_session_attach(
         state.broadcast_coworker_update(&name, "attaching", None);
         if let Err(e) = state
             .session_manager
-            .graceful_shutdown(&name, std::time::Duration::from_secs(5))
+            .graceful_shutdown(&name, std::time::Duration::from_secs(10))
             .await
         {
             return Response::error(
@@ -513,6 +519,10 @@ pub(super) async fn handle_session_attach(
                 ),
             );
         }
+        // Deregister from CoworkerManager so prepare_spawn() won't reject the
+        // re-spawn on detach with "already running". The headless session is gone;
+        // spawn_coworker() will re-register when the new session starts.
+        state.coworkers.deregister(&name);
         // Record stop time to prevent false orphan recovery during the grace period
         // (see #874). The attached_coworkers set provides the long-term exemption.
         state.record_coworker_stop_time(&name);
