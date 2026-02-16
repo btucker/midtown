@@ -438,7 +438,7 @@ impl HeadlessSession {
                 } else {
                     // Fresh mode: -p with system prompt
                     cmd.arg("-p");
-                    cmd.arg("--system-prompt").arg(&config.system_prompt);
+                    cmd.arg("--append-system-prompt").arg(&config.system_prompt);
 
                     if let Some(ref schema) = config.json_schema {
                         let schema_str = serde_json::to_string(schema).map_err(|e| {
