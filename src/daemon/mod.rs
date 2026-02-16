@@ -52,6 +52,12 @@ pub use trackers::{
 #[doc(hidden)]
 pub use dispatch::should_recover_task_test_helper;
 
+// Test helpers for clustering integration tests
+#[doc(hidden)]
+pub use clustering::apply_clustering_diff;
+#[doc(hidden)]
+pub use effects::Effect;
+
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
@@ -1288,6 +1294,17 @@ impl DaemonState {
             if let Some(dropped) = session_state.messages.pop_front()
                 && dropped.id > session_state.acked_id
             {
+                warn!(
+                    "Headed session queue exceeded {} messages - dropped message #{} (kind: {}, text: {})",
+                    HEADED_SESSION_QUEUE_MAX,
+                    dropped.id,
+                    dropped.kind,
+                    if dropped.text.len() > 100 {
+                        format!("{}...", &dropped.text[..100])
+                    } else {
+                        dropped.text.clone()
+                    }
+                );
                 session_state.acked_id = dropped.id;
             }
         }
@@ -2691,6 +2708,9 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
 
                     // Check if this was a failed resume attempt BEFORE removing
                     // the session (remove deletes it from the map).
+                    // SAFETY: This check must happen before any cleanup operations
+                    // that could remove the session from the map. All daemon event
+                    // handling is single-threaded, so no concurrent remove() is possible.
                     let failed_resume = state.session_manager.was_failed_resume(&name).await;
 
                     state.coworkers.deregister(&name);
