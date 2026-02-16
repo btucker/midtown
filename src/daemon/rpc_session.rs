@@ -621,14 +621,13 @@ pub(super) async fn handle_session_detach(
     };
     let session_id = session_info.session_id.clone();
 
-    // Re-spawn: resume if we have a valid session_id, otherwise spawn fresh.
-    // Session_id can be empty if the previous session exited before init or
-    // if the stale session_id was cleared after a failed resume attempt.
-    let session_mode = if session_id.is_empty() {
-        info!(
-            "No valid session_id for '{}', spawning fresh instead of resuming",
-            name
-        );
+    // Lead uses --continue (Resume) because the interactive attach also uses
+    // --continue, which may create a new session. --continue picks up whatever
+    // the most recent session is in the CWD.
+    // Coworkers use --resume <id> since their interactive sessions use explicit IDs.
+    let session_mode = if name == "lead" {
+        crate::launch::SessionMode::Resume
+    } else if session_id.is_empty() {
         crate::launch::SessionMode::Fresh
     } else {
         crate::launch::SessionMode::ResumeSession(session_id.clone())
