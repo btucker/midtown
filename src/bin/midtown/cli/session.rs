@@ -791,13 +791,32 @@ fn provider_resume_command(
             std::fs::write(&temp_file, system_prompt)
                 .map_err(|e| format!("Failed to write system prompt to temp file: {}", e))?;
 
-            Ok(vec![
+            // Write settings file and get path
+            let settings_file = if name == "lead" {
+                midtown::settings::write_lead_settings_file()
+                    .map_err(|e| format!("Failed to write lead settings file: {}", e))?
+            } else {
+                midtown::settings::write_coworker_settings_file()
+                    .map_err(|e| format!("Failed to write coworker settings file: {}", e))?
+            };
+
+            let mut args = vec![
                 "claude".to_string(),
                 "--continue".to_string(),
                 "--dangerously-skip-permissions".to_string(),
+                "--settings".to_string(),
+                settings_file.display().to_string(),
                 "--append-system-prompt".to_string(),
                 format!("\"$(cat {})\"", temp_file.display()),
-            ])
+            ];
+
+            // For coworker attach sessions, restrict setting sources to match headless config
+            if name != "lead" {
+                args.push("--setting-sources".to_string());
+                args.push("project,local".to_string());
+            }
+
+            Ok(args)
         }
         midtown::auth::AuthProvider::Codex => Ok(vec![
             "codex".to_string(),
@@ -1068,16 +1087,18 @@ mod tests {
 
     #[test]
     fn provider_resume_command_is_provider_specific() {
-        // Test Claude provider includes system prompt
+        // Test Claude provider includes system prompt and settings
         let claude_cmd =
             provider_resume_command(midtown::auth::AuthProvider::Claude, "abc", "lead")
                 .expect("should succeed");
         assert_eq!(claude_cmd[0], "claude");
         assert_eq!(claude_cmd[1], "--continue");
         assert_eq!(claude_cmd[2], "--dangerously-skip-permissions");
-        assert_eq!(claude_cmd[3], "--append-system-prompt");
+        assert_eq!(claude_cmd[3], "--settings");
+        // claude_cmd[4] is the settings file path
+        assert_eq!(claude_cmd[5], "--append-system-prompt");
         assert!(
-            claude_cmd[4].contains("$(cat"),
+            claude_cmd[6].contains("$(cat"),
             "Should include temp file reference"
         );
 
