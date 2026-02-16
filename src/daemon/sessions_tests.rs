@@ -19,6 +19,12 @@ fn test_is_auth_error_detects_401_unauthorized() {
 }
 
 #[test]
+fn test_is_auth_error_detects_not_logged_in() {
+    let msg = "Not logged in · Please run /login";
+    assert!(is_auth_error(msg));
+}
+
+#[test]
 fn test_is_auth_error_ignores_usage_limit() {
     let msg = "You've hit your usage limit";
     assert!(!is_auth_error(msg));
@@ -52,6 +58,7 @@ async fn insert_test_session(sm: &SessionManager, name: &str, status: SessionSta
             has_running_subagent: false,
             has_pending_tool: false,
             has_tool_name_conflict: false,
+            is_resume: false,
             output_log: None,
             output_log_path: PathBuf::new(),
         },
@@ -223,6 +230,7 @@ async fn test_spawn_with_session_id_sets_session_id_immediately() {
                 has_running_subagent: false,
                 has_pending_tool: false,
                 has_tool_name_conflict: false,
+                is_resume: false,
                 output_log: None,
                 output_log_path: PathBuf::new(),
             },

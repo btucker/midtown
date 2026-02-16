@@ -9,8 +9,8 @@ mod cli;
 mod client;
 
 use cli::{
-    AuthCommand, ChannelCommand, CoworkerCommand, DiagramCommand, E2eCommand, HookCommand,
-    PluginCommand, PrCommand, SessionCommand, TaskCommand,
+    AuthCommand, ChannelCommand, CoworkerCommand, DiagramCommand, E2eCommand, HeadedWrapperCommand,
+    HookCommand, PrCommand, SessionCommand, TaskCommand,
 };
 use client::DaemonClient;
 
@@ -82,12 +82,8 @@ enum Commands {
         #[arg(long)]
         project: Option<String>,
     },
-    /// Start midtown (daemon + tmux session)
+    /// Start midtown services (daemon + shared webserver)
     Start {
-        /// Start daemon only, without tmux session
-        #[arg(long)]
-        daemon_only: bool,
-
         /// Project name (overrides auto-detection)
         #[arg(long)]
         project: Option<String>,
@@ -96,9 +92,9 @@ enum Commands {
         #[arg(long = "add-repo")]
         repos: Vec<std::path::PathBuf>,
     },
-    /// Stop midtown (daemon + tmux session)
+    /// Stop midtown services
     Stop {
-        /// Keep the tmux session running
+        /// Keep legacy midtown-* multiplexer sessions running if present
         #[arg(long)]
         keep_session: bool,
     },
@@ -108,10 +104,15 @@ enum Commands {
         #[arg(long)]
         force: bool,
     },
-    /// Attach to the project's tmux session
-    Attach {
-        /// Project name to attach to (default: inferred from cwd)
+    /// Launch chat in this terminal and open Lead in a split (best effort)
+    #[command(alias = "attach")]
+    View {
+        /// Project name to view (default: inferred from cwd)
         project: Option<String>,
+
+        /// Launch chat without trying to auto-create/open a Lead split
+        #[arg(long)]
+        skip_auto_split: bool,
     },
     /// Project management commands
     Project {
@@ -129,6 +130,7 @@ enum Commands {
         command: CoworkerCommand,
     },
     /// Attach/detach headless coworker sessions
+    #[command(alias = "sessions")]
     Session {
         #[command(subcommand)]
         command: SessionCommand,
@@ -140,10 +142,10 @@ enum Commands {
     },
     /// Show system status
     Status,
-    /// Zellij plugin communication (JSON interface for WASM plugin)
-    Plugin {
+    /// Headed wrapper intercom (register/poll/ack + PTY-backed run-agent)
+    HeadedWrapper {
         #[command(subcommand)]
-        command: PluginCommand,
+        command: HeadedWrapperCommand,
     },
     /// Pull request commands
     Pr {
@@ -320,7 +322,6 @@ fn main() {
 
     // Default to Start if no command provided
     let command = cli.command.unwrap_or(Commands::Start {
-        daemon_only: false,
         project: None,
         repos: vec![],
     });
@@ -487,13 +488,8 @@ fn main() {
     }
 
     // Start command (starts daemon, doesn't need existing connection)
-    if let Commands::Start {
-        daemon_only,
-        project,
-        repos,
-    } = &command
-    {
-        let result = cli::handle_start(*daemon_only, project.clone(), repos.clone());
+    if let Commands::Start { project, repos } = &command {
+        let result = cli::handle_start(project.clone(), repos.clone());
         handle_result(format, result);
         return;
     }
@@ -512,9 +508,13 @@ fn main() {
         return;
     }
 
-    // Attach command (just tmux, doesn't need daemon)
-    if let Commands::Attach { project } = &command {
-        let result = cli::handle_attach(project.as_deref());
+    // View command (launches chat locally and best-effort split for Lead)
+    if let Commands::View {
+        project,
+        skip_auto_split,
+    } = &command
+    {
+        let result = cli::handle_view(project.as_deref(), *skip_auto_split);
         handle_result(format, result);
         return;
     }
@@ -789,30 +789,81 @@ fn main() {
 
         // Use project-aware resolution when inside a project
         let project = midtown::paths::detect_repo_name().unwrap_or_default();
+
+        // Determine which provider to use for this project
+        let provider = if project.is_empty() {
+            // No project detected - use Claude as default
+            midtown::auth::AuthProvider::Claude
+        } else if let Some(config) = midtown::config::FullProjectConfig::load(&project) {
+            // Check if project has a ZAI profile configured
+            if config
+                .project
+                .auth_profiles
+                .as_ref()
+                .is_some_and(|m| m.contains_key("zai"))
+            {
+                midtown::auth::AuthProvider::Zai
+            } else {
+                midtown::auth::AuthProvider::Claude
+            }
+        } else {
+            midtown::auth::AuthProvider::Claude
+        };
+
         let (profile, profile_dir) = if project.is_empty() {
             (
-                midtown::auth::current_profile(),
-                midtown::auth::current_profile_dir(),
+                midtown::auth::current_profile_for(provider),
+                midtown::auth::current_profile_dir_for(provider),
             )
         } else {
-            let p = midtown::auth::active_profile_for_project(&project);
-            let d = midtown::auth::profile_dir(&p);
+            let p = midtown::auth::active_profile_for_project_with_provider(&project, provider);
+            let d = midtown::auth::profile_dir_for(provider, &p);
             (p, d)
         };
 
         // Ensure the profile directory exists
         if !profile_dir.exists() {
             eprintln!(
-                "Error: Auth profile '{}' has no config directory at {}",
+                "Error: Auth profile '{}' for {} has no config directory at {}",
                 profile,
+                provider,
                 profile_dir.display()
             );
-            eprintln!("Run `midtown auth login {}` first.", profile);
+            eprintln!(
+                "Run `midtown auth --provider {} login {}` first.",
+                provider, profile
+            );
             std::process::exit(1);
         }
 
         let mut cmd = std::process::Command::new("claude");
-        cmd.env("CLAUDE_CONFIG_DIR", &profile_dir);
+
+        // Set provider-specific environment variables
+        match provider {
+            midtown::auth::AuthProvider::Zai => {
+                // z.ai uses ANTHROPIC_AUTH_TOKEN and ANTHROPIC_BASE_URL
+                match midtown::launch::zai_env_vars(&profile_dir) {
+                    Ok((api_key, base_url)) => {
+                        cmd.env("ANTHROPIC_AUTH_TOKEN", &api_key);
+                        cmd.env("ANTHROPIC_BASE_URL", &base_url);
+                        // Set default model mappings for z.ai (GLM models)
+                        cmd.env("ANTHROPIC_DEFAULT_OPUS_MODEL", "GLM-5");
+                        cmd.env("ANTHROPIC_DEFAULT_SONNET_MODEL", "GLM-4.7");
+                    }
+                    Err(e) => {
+                        eprintln!("Error: Failed to load z.ai credentials: {}", e);
+                        std::process::exit(1);
+                    }
+                }
+            }
+            midtown::auth::AuthProvider::Codex => {
+                cmd.env("CODEX_HOME", &profile_dir);
+            }
+            midtown::auth::AuthProvider::Claude => {
+                cmd.env("CLAUDE_CONFIG_DIR", &profile_dir);
+            }
+        }
+
         cmd.args(args);
 
         let err = cmd.exec();
@@ -844,7 +895,7 @@ fn main() {
         Commands::Session { command } => cli::handle_session(command, &client),
         Commands::Task { command } => cli::handle_task(command, &client),
         Commands::Status => cli::handle_status(&client),
-        Commands::Plugin { command } => cli::handle_plugin(command, &client),
+        Commands::HeadedWrapper { command } => cli::handle_headed_wrapper(command, &client),
         Commands::Pr { command } => cli::handle_pr(command, &client),
         Commands::Headless {
             prompt,
@@ -867,7 +918,7 @@ fn main() {
         | Commands::Start { .. }
         | Commands::Stop { .. }
         | Commands::Restart { .. }
-        | Commands::Attach { .. }
+        | Commands::View { .. }
         | Commands::Lead { .. }
         | Commands::Project { .. }
         | Commands::Chat

@@ -21,7 +21,6 @@ use crate::clustering::ClusteringDiff;
 ///
 /// The diff must be validated before calling this function (use `ClusteringDiff::validate()`).
 /// Invalid diffs may result in inconsistent effects.
-#[allow(dead_code)] // Not yet wired to daemon event loop
 pub fn apply_clustering_diff(diff: ClusteringDiff) -> Vec<Effect> {
     let mut effects = Vec::new();
 

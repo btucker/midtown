@@ -45,13 +45,6 @@ pub use crate::github_state::PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS;
 /// How often to check for idle coworkers (30 seconds)
 pub(super) const IDLE_CHECK_INTERVAL: Duration = Duration::from_secs(30);
 
-/// How often to check lead pane activity for typing indicator (3 seconds)
-pub(super) const LEAD_TYPING_CHECK_INTERVAL: Duration = Duration::from_secs(3);
-
-/// Grace period before clearing the typing indicator after no pane changes (30 seconds).
-/// The lead may pause briefly (reading code, thinking) without having finished work.
-pub(super) const LEAD_TYPING_GRACE_PERIOD: Duration = Duration::from_secs(30);
-
 /// How often to check if channel rotation is needed (1 hour)
 pub(super) const CHANNEL_ROTATION_CHECK_INTERVAL: Duration = Duration::from_secs(3600);
 
@@ -60,14 +53,6 @@ pub(super) const CHANNEL_ROTATION_MAX_AGE_HOURS: u64 = 24;
 
 /// How many minutes of recent messages to retain after rotation (60 minutes)
 pub(super) const CHANNEL_ROTATION_RETAIN_MINUTES: i64 = 60;
-
-/// How often to check if the lead window is still alive (10 seconds)
-pub(super) const LEAD_HEALTH_CHECK_INTERVAL: Duration = Duration::from_secs(10);
-
-/// Grace period after daemon startup before the lead health check activates (30 seconds).
-/// Prevents races where a freshly started daemon (e.g., after `midtown restart`)
-/// tries to respawn the lead window before the tmux session is fully settled.
-pub(super) const LEAD_HEALTH_CHECK_STARTUP_GRACE: Duration = Duration::from_secs(30);
 
 /// Interval for task dispatch and orphaned worktree cleanup tick (5 seconds).
 /// Tradeoff: Tasks get assigned faster and orphan recovery happens sooner vs. more frequent

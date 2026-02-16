@@ -7,6 +7,8 @@
 //!    [default]
 //!    bin_command = "midtown"
 //!    chat_layout = "auto"
+//!    zellij_swap_layout = false
+//!    zellij_chat_pane_size = 35
 //!    max_coworkers = 8
 //!
 //!    [plugins]
@@ -38,6 +40,7 @@
 //!    [default]
 //!    max_coworkers = 4
 //!    chat_layout = "split"
+//!    zellij_swap_layout = true
 //!    personality = "fun"  # "normal" (default), "fun", or "wild"
 //!
 //!    [daemon]
@@ -89,7 +92,7 @@ pub enum ChatLayout {
 /// `repos` defaults to `[primary_repo]` and `primary_repo` is inferred from workdir.
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct ProjectMetadata {
-    /// Project name (e.g., "midtown"). Used for tmux session names, paths, etc.
+    /// Project name (e.g., "midtown"). Used for session names, paths, etc.
     #[serde(default)]
     pub name: Option<String>,
 
@@ -303,6 +306,14 @@ pub struct ProjectConfig {
     #[serde(default)]
     pub chat_min_width: Option<u16>,
 
+    /// Whether to swap Zellij pane order (Lead left, chat right) (default: false)
+    #[serde(default)]
+    pub zellij_swap_layout: Option<bool>,
+
+    /// Zellij chat pane width percentage (10-90, default: 35)
+    #[serde(default)]
+    pub zellij_chat_pane_size: Option<u8>,
+
     /// Maximum number of concurrent coworkers (default: 8)
     #[serde(default)]
     pub max_coworkers: Option<usize>,
@@ -326,6 +337,8 @@ impl ProjectConfig {
                 .or_else(|| self.bin_command.clone()),
             chat_layout: other.chat_layout.or(self.chat_layout),
             chat_min_width: other.chat_min_width.or(self.chat_min_width),
+            zellij_swap_layout: other.zellij_swap_layout.or(self.zellij_swap_layout),
+            zellij_chat_pane_size: other.zellij_chat_pane_size.or(self.zellij_chat_pane_size),
             max_coworkers: other.max_coworkers.or(self.max_coworkers),
             personality: other.personality.or(self.personality),
             user_display_name: other
@@ -350,6 +363,20 @@ impl ProjectConfig {
     /// Get chat_min_width with fallback to default.
     pub fn chat_min_width(&self) -> u16 {
         self.chat_min_width.unwrap_or(160)
+    }
+
+    /// Get whether Zellij layout should be swapped with fallback to default.
+    pub fn zellij_swap_layout(&self) -> bool {
+        self.zellij_swap_layout.unwrap_or(false)
+    }
+
+    /// Get Zellij chat pane width percentage with fallback to default.
+    ///
+    /// Values outside 10-90 are treated as invalid and replaced with 35.
+    pub fn zellij_chat_pane_size(&self) -> u8 {
+        self.zellij_chat_pane_size
+            .filter(|size| (10..=90).contains(size))
+            .unwrap_or(35)
     }
 
     /// Get max_coworkers, or None if not configured (falls back to daemon default).
@@ -677,6 +704,12 @@ impl GlobalConfig {
 # Minimum terminal width (columns) before auto layout switches to bottom
 # chat_min_width = 160
 
+# Swap Zellij pane order (Lead left, chat right)
+# zellij_swap_layout = false
+
+# Zellij chat pane width percentage (10-90)
+# zellij_chat_pane_size = 35
+
 # Maximum concurrent coworkers
 # max_coworkers = 8
 
@@ -744,6 +777,8 @@ fn load_project_config(project_name: &str) -> Option<ProjectConfig> {
         if full.default.bin_command.is_some()
             || full.default.chat_layout.is_some()
             || full.default.chat_min_width.is_some()
+            || full.default.zellij_swap_layout.is_some()
+            || full.default.zellij_chat_pane_size.is_some()
             || full.default.max_coworkers.is_some()
             || full.default.personality.is_some()
             || full.project.name.is_some()
@@ -1103,6 +1138,8 @@ bin_command = "custom-command"
             bin_command: Some("midtown".to_string()),
             chat_layout: Some(ChatLayout::Auto),
             chat_min_width: Some(160),
+            zellij_swap_layout: Some(false),
+            zellij_chat_pane_size: Some(35),
             max_coworkers: Some(8),
             personality: Some(Personality::Fun),
             user_display_name: None,
@@ -1112,6 +1149,8 @@ bin_command = "custom-command"
             bin_command: Some("custom".to_string()),
             chat_layout: None, // Not overridden
             chat_min_width: Some(200),
+            zellij_swap_layout: None,
+            zellij_chat_pane_size: None,
             max_coworkers: None, // Not overridden
             personality: None,   // Not overridden
             user_display_name: None,
@@ -1122,6 +1161,8 @@ bin_command = "custom-command"
         assert_eq!(merged.bin_command(), "custom"); // Overridden
         assert_eq!(merged.chat_layout(), ChatLayout::Auto); // From global
         assert_eq!(merged.chat_min_width(), 200); // Overridden
+        assert!(!merged.zellij_swap_layout()); // From global
+        assert_eq!(merged.zellij_chat_pane_size(), 35); // From global
         assert_eq!(merged.max_coworkers(), Some(8)); // From global
         assert_eq!(merged.personality(), Personality::Fun); // From global
     }
@@ -1132,6 +1173,8 @@ bin_command = "custom-command"
             bin_command: Some("midtown".to_string()),
             chat_layout: None,
             chat_min_width: None,
+            zellij_swap_layout: None,
+            zellij_chat_pane_size: None,
             max_coworkers: Some(8),
             personality: None,
             user_display_name: None,
@@ -1141,6 +1184,8 @@ bin_command = "custom-command"
             bin_command: None,
             chat_layout: None,
             chat_min_width: None,
+            zellij_swap_layout: None,
+            zellij_chat_pane_size: None,
             max_coworkers: Some(4),
             personality: None,
             user_display_name: None,
@@ -1171,6 +1216,33 @@ bin_command = "custom-command"
         let config = ProjectConfig::default();
         assert_eq!(config.chat_layout(), ChatLayout::Auto);
         assert_eq!(config.chat_min_width(), 160);
+    }
+
+    #[test]
+    fn test_zellij_layout_defaults() {
+        let config = ProjectConfig::default();
+        assert!(!config.zellij_swap_layout());
+        assert_eq!(config.zellij_chat_pane_size(), 35);
+    }
+
+    #[test]
+    fn test_zellij_layout_parse() {
+        let toml = r#"
+zellij_swap_layout = true
+zellij_chat_pane_size = 42
+"#;
+        let config: ProjectConfig = toml::from_str(toml).unwrap();
+        assert!(config.zellij_swap_layout());
+        assert_eq!(config.zellij_chat_pane_size(), 42);
+    }
+
+    #[test]
+    fn test_zellij_chat_pane_size_invalid_falls_back() {
+        let config = ProjectConfig {
+            zellij_chat_pane_size: Some(99),
+            ..ProjectConfig::default()
+        };
+        assert_eq!(config.zellij_chat_pane_size(), 35);
     }
 
     #[test]
@@ -1403,6 +1475,8 @@ personality = "normal"
             bin_command: None,
             chat_layout: None,
             chat_min_width: None,
+            zellij_swap_layout: None,
+            zellij_chat_pane_size: None,
             max_coworkers: None,
             personality: Some(Personality::Normal),
             user_display_name: None,
@@ -1411,6 +1485,8 @@ personality = "normal"
             bin_command: None,
             chat_layout: None,
             chat_min_width: None,
+            zellij_swap_layout: None,
+            zellij_chat_pane_size: None,
             max_coworkers: None,
             personality: Some(Personality::Wild),
             user_display_name: None,
@@ -1831,6 +1907,8 @@ name = "solo"
         assert!(template.contains("personality"));
         assert!(template.contains("webhook_port"));
         assert!(template.contains("chat_layout"));
+        assert!(template.contains("zellij_swap_layout"));
+        assert!(template.contains("zellij_chat_pane_size"));
         assert!(template.contains("github_user"));
     }
 

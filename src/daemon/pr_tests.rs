@@ -35,7 +35,7 @@ fn make_test_state(repo_name: &str) -> DaemonState {
 
     let wm = crate::worktree::WorktreeManager::new(temp_dir.path().to_path_buf())
         .expect("worktree manager");
-    let cm = crate::coworker::CoworkerManager::new(repo_name, wm);
+    let cm = crate::coworker::CoworkerManager::new(wm);
 
     // Leak temp_dir so it survives the test
     let base_dir = temp_dir.path().to_path_buf();

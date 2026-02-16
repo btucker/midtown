@@ -44,6 +44,29 @@ fn claude_available() -> bool {
         .unwrap_or(false)
 }
 
+/// Find the midtown binary, checking CARGO_BIN_EXE_midtown and common target directories.
+/// Returns None if no binary is found.
+fn find_midtown_binary() -> Option<PathBuf> {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let mut candidates = Vec::new();
+
+    // First check CARGO_BIN_EXE_midtown (set by cargo when running tests)
+    if let Some(bin) = option_env!("CARGO_BIN_EXE_midtown") {
+        candidates.push(PathBuf::from(bin));
+    }
+
+    // Fallback to common binary locations
+    candidates.extend([
+        // cargo-llvm-cov uses a separate target directory for instrumented builds
+        manifest_dir.join("target/llvm-cov-target/debug/midtown"),
+        // Prefer debug over release to avoid timing-dependent test failures
+        manifest_dir.join("target/debug/midtown"),
+        manifest_dir.join("target/release/midtown"),
+    ]);
+
+    candidates.iter().find(|p| p.exists()).cloned()
+}
+
 /// Kill any orphaned test daemons and tmux sessions from previous runs.
 fn cleanup_orphaned_test_daemons() {
     // Kill any lingering daemon processes
@@ -197,24 +220,19 @@ impl FullStackFixture {
     }
 
     fn start_daemon(&mut self) -> bool {
-        let binary_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("target")
-            .join("release")
-            .join("midtown");
-
-        if !binary_path.exists() {
-            eprintln!(
-                "Release binary not found at {:?}. Run `cargo build --release` first.",
-                binary_path
-            );
-            return false;
-        }
+        let binary_path = match find_midtown_binary() {
+            Some(path) => path,
+            None => {
+                eprintln!("No midtown binary found. Run `cargo build` first.");
+                return false;
+            }
+        };
 
         let _ = fs::remove_file(&self.socket_path);
         let _ = fs::remove_file(&self.pid_path);
 
-        // Use `midtown start` which creates both daemon AND tmux session with lead.
-        // Note: `midtown daemon` only starts the daemon process without the tmux session.
+        // Use `midtown start` which creates daemon + headless lead session.
+        // Note: tmux/Zellij sessions are created via `midtown view`, not `start`.
         let spawn_start = std::time::Instant::now();
         let child = Command::new(&binary_path)
             .arg("start")
@@ -415,102 +433,19 @@ fn window_exists(session: &str, window: &str) -> bool {
 /// Start daemon, verify lead window appears and claude TUI renders
 /// (pane has output within 60s).
 ///
-/// This test verifies the full daemon → tmux → Claude Code launch path.
-/// The daemon creates a tmux session and spawns a "lead" window running
-/// Claude Code. We verify the window exists and has visible TUI output.
+/// OBSOLETE: This test verified tmux session creation for the lead, but
+/// the lead is now a headless session (no tmux/Zellij windows). Interactive
+/// terminal UX is now provided by `midtown view`.
 ///
-/// Requires real Claude Code to be installed and authenticated. When
-/// MIDTOWN_LEAD_COMMAND is set (stub mode), this test is skipped since
-/// stub commands don't produce TUI output.
+/// The daemon's `midtown start` now creates a headless lead session. Tmux/Zellij
+/// sessions are only created when the user runs `midtown view` to attach.
 ///
-/// ## Performance characteristics:
-/// - Local: ~20s (binary must be pre-built)
-/// - CI: ~60-90s
-///
-/// CI is 2.5-3x slower due to: shared CPU resources, partial Rust cache,
-/// and Claude CLI startup overhead in container environment. The 300s
-/// timeout provides ~1.5x safety margin over typical CI runtime.
+/// Skipped because the lead is now headless as of the headless lead lifecycle refactor.
 #[test]
 #[ignore]
 #[timeout(300_000)] // 5 minutes: provides 1.5x safety margin over typical CI runtime (180-210s)
 fn test_daemon_spawns_lead_with_real_claude() {
-    let test_start = std::time::Instant::now();
-
-    // Skip when using a stub command - this test requires real Claude TUI output
-    if std::env::var("MIDTOWN_LEAD_COMMAND").is_ok() {
-        eprintln!("MIDTOWN_LEAD_COMMAND is set (stub mode), skipping real Claude test");
-        return;
-    }
-
-    if !tmux_available() {
-        eprintln!("tmux not available, skipping");
-        return;
-    }
-
-    // Verify claude CLI is installed before proceeding
-    if !claude_available() {
-        eprintln!("claude CLI not available, skipping real Claude test");
-        return;
-    }
-
-    let setup_start = std::time::Instant::now();
-    let mut fixture = match FullStackFixture::new() {
-        Some(f) => f,
-        None => return,
-    };
-    eprintln!("[TIMING] Fixture setup took {:?}", setup_start.elapsed());
-
-    let daemon_start = std::time::Instant::now();
-    if !fixture.start_daemon() {
-        return;
-    }
-    eprintln!("[TIMING] start_daemon() took {:?}", daemon_start.elapsed());
-
-    let session = fixture.tmux_session_name();
-
-    // Wait for the lead window to appear (up to 60s)
-    let window_wait_start = std::time::Instant::now();
-    let mut lead_found = false;
-    for _ in 0..60 {
-        thread::sleep(Duration::from_secs(1));
-        if window_exists(&session, "lead") {
-            lead_found = true;
-            break;
-        }
-    }
-    eprintln!(
-        "[TIMING] Waiting for lead window took {:?}",
-        window_wait_start.elapsed()
-    );
-
-    assert!(
-        lead_found,
-        "Lead window should appear in tmux session '{}' within 60s",
-        session
-    );
-
-    // Verify the lead pane has visible output (TUI rendered)
-    let tui_wait_start = std::time::Instant::now();
-    let mut has_output = false;
-    for _ in 0..30 {
-        thread::sleep(Duration::from_secs(1));
-        if let Some(content) = capture_pane(&session, "lead")
-            && midtown::tmux::content_has_output(&content)
-        {
-            has_output = true;
-            break;
-        }
-    }
-    eprintln!(
-        "[TIMING] Waiting for TUI output took {:?}",
-        tui_wait_start.elapsed()
-    );
-    eprintln!("[TIMING] TOTAL test duration: {:?}", test_start.elapsed());
-
-    assert!(
-        has_output,
-        "Lead pane should have visible TUI output within 90s of daemon start"
-    );
+    eprintln!("SKIPPED: Lead is now headless (use `midtown view` to create interactive sessions)");
 }
 
 /// Spawn coworker via RPC, verify its tmux window appears and has TUI output.
@@ -556,6 +491,7 @@ fn test_nudge_reaches_real_claude() {
     };
 
     if !fixture.start_daemon() {
+        eprintln!("Skipping: daemon failed to start (no binary?)");
         return;
     }
 
@@ -632,18 +568,13 @@ fn test_web_ui_connects() {
     };
 
     // Start daemon WITHOUT disabling the webhook port so we get an HTTP server
-    let binary_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("target")
-        .join("release")
-        .join("midtown");
-
-    if !binary_path.exists() {
-        eprintln!(
-            "Release binary not found at {:?}. Run `cargo build --release` first.",
-            binary_path
-        );
-        return;
-    }
+    let binary_path = match find_midtown_binary() {
+        Some(path) => path,
+        None => {
+            eprintln!("No midtown binary found. Run `cargo build` first.");
+            return;
+        }
+    };
 
     let _ = fs::remove_file(&fixture.socket_path);
     let _ = fs::remove_file(&fixture.pid_path);
@@ -800,9 +731,10 @@ fn test_worktree_isolation() {
         None => return,
     };
 
-    if !fixture.start_daemon() {
-        return;
-    }
+    assert!(
+        fixture.start_daemon(),
+        "Fixture failed to start daemon via `midtown start`"
+    );
 
     // Spawn a coworker via RPC. The daemon assigns names from the avenue pool,
     // so we don't specify a name - just check the returned name.

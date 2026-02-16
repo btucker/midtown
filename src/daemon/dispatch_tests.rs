@@ -1,5 +1,19 @@
 use super::*;
 
+fn in_progress_task_for_lookup(task_id: &str, subject: &str, owner: &str) -> crate::tasks::Task {
+    crate::tasks::Task {
+        id: task_id.to_string(),
+        subject: subject.to_string(),
+        status: crate::tasks::TaskStatus::InProgress,
+        owner: Some(owner.to_string()),
+        description: None,
+        blocked_by: vec![],
+        channel: None,
+        pr: None,
+        created_at: None,
+    }
+}
+
 #[test]
 fn test_duplicate_worker_sorting_by_start_time() {
     use chrono::{Duration, Utc};
@@ -1785,7 +1799,17 @@ fn test_orphan_recovery_reuses_existing_task_worktree() {
     };
 
     let state = make_test_state();
-    let effects = check_and_recover_orphans(&snap, &state);
+    let effects = check_and_recover_orphans_with_task_lookup(&snap, &state, |task_id| {
+        if task_id == "42" {
+            Some(in_progress_task_for_lookup(
+                "42",
+                "Add auth endpoint",
+                "lexington",
+            ))
+        } else {
+            None
+        }
+    });
 
     // Pre-spawn effects (EnsureWorktree) are top-level, then SpawnCoworkerWithCallbacks
     assert!(
@@ -1920,7 +1944,17 @@ fn test_orphan_recovery_creates_new_worktree_when_none_exists() {
     };
 
     let state = make_test_state();
-    let effects = check_and_recover_orphans(&snap, &state);
+    let effects = check_and_recover_orphans_with_task_lookup(&snap, &state, |task_id| {
+        if task_id == "42" {
+            Some(in_progress_task_for_lookup(
+                "42",
+                "Add auth endpoint",
+                "lexington",
+            ))
+        } else {
+            None
+        }
+    });
 
     // Pre-spawn effects (EnsureWorktree, RegisterWorktreeAssignment) are top-level,
     // followed by SpawnCoworkerWithCallbacks with post-spawn effects in on_success.
@@ -2782,7 +2816,7 @@ fn make_test_state() -> DaemonState {
 
     let wm = crate::worktree::WorktreeManager::new(temp_dir.path().to_path_buf())
         .expect("worktree manager");
-    let cm = crate::coworker::CoworkerManager::new("test-session", wm);
+    let cm = crate::coworker::CoworkerManager::new(wm);
 
     // Leak temp_dir so it survives the test
     let base_dir = temp_dir.path().to_path_buf();
@@ -3481,7 +3515,17 @@ fn test_orphan_recovery_marks_task_in_flight() {
     };
 
     let state = make_test_state();
-    let effects = check_and_recover_orphans(&snap, &state);
+    let effects = check_and_recover_orphans_with_task_lookup(&snap, &state, |task_id| {
+        if task_id == "1264" {
+            Some(in_progress_task_for_lookup(
+                "1264",
+                "Test task",
+                "lexington",
+            ))
+        } else {
+            None
+        }
+    });
 
     // Should have SpawnCoworkerWithCallbacks effect
     let spawn_effect = effects

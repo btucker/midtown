@@ -46,7 +46,7 @@ pub enum Effect {
         #[allow(dead_code)]
         session_id: Option<String>,
     },
-    /// Nudge the Lead by sending a message to their tmux pane.
+    /// Nudge the Lead by sending a message via headed intercom or session manager.
     NudgeLead { message: String },
     /// Resume a stopped headless coworker session.
     ///
@@ -61,11 +61,7 @@ pub enum Effect {
     ///
     /// Uses the filesystem-based inbox (`~/.claude/teams/{team}/inboxes/{name}.json`)
     /// for non-urgent messages like task assignments and PR feedback. The coworker
-    /// polls its inbox between turns, so delivery is not immediate but avoids the
-    /// terminal corruption risks of tmux send-keys.
-    ///
-    /// Phase 1: Used alongside tmux nudges for task assignment to idle coworkers.
-    /// As mailbox reliability is confirmed, more nudge paths can migrate here.
+    /// polls its inbox between turns, so delivery is not immediate.
     DeliverMailboxMessage {
         name: String,
         message: String,
@@ -469,7 +465,7 @@ async fn shutdown_coworker_impl(name: &str, message: &str, state: &DaemonState) 
     }
     info!(coworker = %name, "SHUTDOWN_COWORKER: headless session stopped");
 
-    // Remove from CoworkerManager tracking (without touching tmux)
+    // Remove from CoworkerManager tracking
     state.coworkers.deregister(name);
     // Record stop time for workflow features that need to track coworker lifecycle
     {
@@ -574,36 +570,25 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 }
             }
             Effect::NudgeLead { message } => {
-                // Queue the nudge for the Zellij plugin to pull via plugin.dashboard.
-                // Also attempt tmux delivery as a fallback for non-Zellij sessions.
-                //
-                // Cap at MAX_LEAD_NUDGE_QUEUE to prevent unbounded growth when the
-                // plugin is not running (e.g., standard tmux mode). Oldest entries
-                // are evicted when the cap is reached.
-                {
-                    let mut queue = state.lead_nudge_queue.lock().await;
-                    queue.push(message.clone());
-                    if queue.len() > super::rpc_plugin::MAX_LEAD_NUDGE_QUEUE {
-                        let excess = queue.len() - super::rpc_plugin::MAX_LEAD_NUDGE_QUEUE;
-                        queue.drain(..excess);
-                    }
-                }
-                if let Err(e) = state.coworkers.nudge_lead(&message) {
-                    // Expected to fail when running under Zellij (no tmux session).
-                    // The plugin will deliver the nudge instead.
-                    debug!(
-                        "tmux nudge_lead fallback failed (expected under Zellij): {}",
-                        e
-                    );
-                }
+                state.nudge_lead(&message).await;
             }
             Effect::ResumeCoworker {
                 name,
                 session_id,
                 mut config,
             } => {
-                // Override session mode to resume the saved session
-                config.session_mode = crate::launch::SessionMode::ResumeSession(session_id);
+                // Resume the saved session if we have a valid session_id,
+                // otherwise spawn fresh (session_id may have been cleared
+                // after a failed resume attempt).
+                if session_id.is_empty() {
+                    info!(
+                        "No valid session_id for '{}', spawning fresh instead of resuming",
+                        name
+                    );
+                    config.session_mode = crate::launch::SessionMode::Fresh;
+                } else {
+                    config.session_mode = crate::launch::SessionMode::ResumeSession(session_id);
+                }
                 match state.spawn_coworker(&config).await {
                     Ok(_) => {
                         info!("Resumed coworker {} successfully", name);

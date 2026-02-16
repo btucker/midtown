@@ -145,8 +145,8 @@ pub enum SpecializedError {
     #[error("Response parsing failed: {0}")]
     ParseError(String),
 
-    #[error("Session returned error")]
-    SessionError,
+    #[error("Session returned error: {0}")]
+    SessionError(String),
 
     #[error("Session timed out after {0:?}")]
     Timeout(Duration),
@@ -341,7 +341,13 @@ impl SpecializedCoworker {
         let _ = session.wait().await;
 
         if is_error {
-            return Err(SpecializedError::SessionError);
+            let error_msg = result_text.unwrap_or_else(|| "Unknown error".to_string());
+            warn!(
+                "{}: session returned error: {}",
+                role.role_name(),
+                error_msg
+            );
+            return Err(SpecializedError::SessionError(error_msg));
         }
 
         let Some(raw) = result_text else {

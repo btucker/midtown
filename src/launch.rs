@@ -1,11 +1,8 @@
 //! Unified launch configuration for Claude Code sessions.
 //!
 //! `LaunchConfig` is the single source of truth for how to launch a Claude CLI
-//! process, whether in a tmux window (Lead) or as a headless session (coworkers).
-//!
-//! All spawn paths construct a `LaunchConfig`, then call either:
-//! - `to_shell_command()` — for tmux-based launch (Lead, legacy path)
-//! - `to_headless_config()` — for headless launch (coworkers, v2 path)
+//! process as a headless session. All spawn paths construct a `LaunchConfig`
+//! and call `to_headless_config()` to produce a `HeadlessConfig`.
 
 use std::path::PathBuf;
 
@@ -30,13 +27,15 @@ pub enum CoworkerRole {
     Coworker,
     /// PR reviewer — uses coworker.md + common.md + reviewer.md
     Reviewer,
+    /// Lead — uses lead.md + common.md, unrestricted settings
+    Lead,
 }
 
 /// All configuration needed to launch a Claude CLI process.
 ///
 /// This is the single source of truth for how Claude gets launched. All spawn
 /// paths (fresh coworker, resumed coworker, reviewer, lead) construct one of
-/// these and pass it to either `spawn_claude()` (tmux) or headless spawn.
+/// these and pass it to `to_headless_config()` for headless spawn.
 #[derive(Debug, Clone)]
 pub struct LaunchConfig {
     /// Coworker name (or "lead" for the lead instance).
@@ -52,8 +51,7 @@ pub struct LaunchConfig {
     /// If true, pass `--setting-sources project,local` to restrict settings.
     /// Coworkers use this to exclude user-level settings; the lead does not.
     pub restrict_setting_sources: bool,
-    /// PR number for reviewer coworkers. Used to set the initial tmux window
-    /// name to "review#PR" so reviewers are visually distinct from developers.
+    /// PR number for reviewer coworkers.
     pub pr_number: Option<u64>,
     /// Agent teams team name. When set, adds `--agent-id`, `--agent-name`,
     /// and `--team-name` CLI flags to enable the Claude Code agent teams
@@ -89,7 +87,7 @@ pub struct LaunchCommand {
 ///
 /// Returns (ANTHROPIC_AUTH_TOKEN, ANTHROPIC_BASE_URL).
 /// Base URL defaults to https://api.z.ai/api/anthropic if not configured.
-fn zai_env_vars(profile_dir: &std::path::Path) -> std::io::Result<(String, String)> {
+pub fn zai_env_vars(profile_dir: &std::path::Path) -> std::io::Result<(String, String)> {
     let api_key_file = profile_dir.join("api_key.txt");
     let api_key = std::fs::read_to_string(&api_key_file)
         .map_err(|e| {
@@ -180,6 +178,30 @@ impl LaunchConfig {
         }
     }
 
+    /// Create a config for the Lead session.
+    ///
+    /// The Lead uses `lead_system_prompt()`, has unrestricted setting sources,
+    /// and runs as a headless session that can be attached/detached like coworkers.
+    pub fn lead(repo_name: impl Into<String>) -> Self {
+        let repo = repo_name.into();
+        let team = crate::mailbox::team_name_for_repo(&repo);
+        LaunchConfig {
+            name: "lead".to_string(),
+            session_mode: SessionMode::Fresh,
+            role: CoworkerRole::Lead,
+            initial_prompt: None,
+            additional_dirs: vec![],
+            restrict_setting_sources: false,
+            pr_number: None,
+            team_name: Some(team),
+            working_dir: None,
+            model: "sonnet".to_string(),
+            channel: None,
+            auth_profile_dir: None,
+            auth_provider: crate::auth::AuthProvider::Claude,
+        }
+    }
+
     /// Create a config for PR handoff — a coworker taking over another's PR.
     ///
     /// This resumes the original author's Claude session to preserve full context
@@ -235,6 +257,7 @@ impl LaunchConfig {
     pub fn to_headless_config(&self, project_name: &str) -> HeadlessConfig {
         let system_prompt = match self.role {
             CoworkerRole::Reviewer => crate::agents::reviewer_system_prompt(&self.name),
+            CoworkerRole::Lead => crate::agents::lead_system_prompt(),
             CoworkerRole::Coworker => crate::agents::coworker_system_prompt(&self.name),
         };
 
@@ -319,7 +342,7 @@ impl LaunchConfig {
         }
     }
 
-    /// Build the full shell command string for launching Claude in a tmux pane.
+    /// Build the full shell command string for launching Claude in a terminal pane.
     ///
     /// `settings_file` and `prompt_file` are pre-written files containing the
     /// Claude settings JSON and system prompt markdown. `initial_prompt_file`
@@ -675,7 +698,7 @@ mod tests {
         assert_eq!(retry.initial_prompt, Some("task prompt".to_string()));
     }
 
-    // --- Shell command tests (tmux path) ---
+    // --- Shell command tests ---
 
     #[test]
     fn test_shell_command_fresh_session() {
@@ -913,5 +936,59 @@ mod tests {
             config.auth_provider, original_provider,
             "Auth provider should be unchanged when model string is empty"
         );
+    }
+
+    // --- Lead role tests ---
+
+    #[test]
+    fn test_headless_config_lead_role_uses_lead_prompt() {
+        let config = LaunchConfig::lead("myrepo");
+        let headless = config.to_headless_config("midtown");
+
+        // Lead should use lead_system_prompt (not coworker)
+        assert!(
+            !headless.system_prompt.is_empty(),
+            "Lead should have a non-empty system prompt"
+        );
+        // Verify it's the lead prompt by checking it doesn't contain coworker-specific text
+        // (lead prompt and coworker prompt are structurally different)
+        assert_eq!(config.role, CoworkerRole::Lead);
+    }
+
+    #[test]
+    fn test_lead_config_unrestricted_settings() {
+        let config = LaunchConfig::lead("myrepo");
+        let headless = config.to_headless_config("midtown");
+
+        assert!(
+            !config.restrict_setting_sources,
+            "Lead should not restrict setting sources"
+        );
+        assert_eq!(
+            headless.setting_sources, None,
+            "Lead headless config should have unrestricted setting sources"
+        );
+    }
+
+    #[test]
+    fn test_launch_config_lead_factory() {
+        let config = LaunchConfig::lead("myrepo");
+        assert_eq!(config.name, "lead");
+        assert_eq!(config.role, CoworkerRole::Lead);
+        assert!(!config.restrict_setting_sources);
+        assert!(config.initial_prompt.is_none());
+        assert!(config.pr_number.is_none());
+        assert_eq!(config.team_name, Some("midtown-myrepo".to_string()));
+        assert_eq!(config.model, "sonnet");
+    }
+
+    #[test]
+    fn test_lead_config_has_team_name() {
+        let config = LaunchConfig::lead("myrepo");
+        let headless = config.to_headless_config("midtown");
+
+        assert_eq!(headless.team_name, Some("midtown-myrepo".to_string()));
+        assert_eq!(headless.agent_id, Some("lead@midtown-myrepo".to_string()));
+        assert_eq!(headless.agent_name, Some("lead".to_string()));
     }
 }

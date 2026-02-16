@@ -3,256 +3,19 @@
 //! These functions detect and respond to coworker health issues:
 //! idle shutdown, stuck processes, usage limits, and reminder firing.
 //! Health state is read from structured `ProcessHealth` data (populated
-//! by the session management layer from headless stream events) instead
-//! of parsing raw tmux pane content.
+//! by the session management layer from headless stream events).
 
-use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::path::PathBuf;
+use std::time::Duration;
 
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
-use crate::{config, daemon_messages, web};
+use crate::{config, daemon_messages};
 
 use super::constants::*;
 use super::effects::Effect;
 use super::helpers::format_task_prompt;
 use super::{DaemonState, snapshot};
-
-/// Check if the lead's tmux pane has changed and broadcast typing status.
-///
-/// Captures the lead's Claude Code pane (`lead.0`), hashes the content, and
-/// compares against the previous hash. If content changed, the lead is working.
-/// Uses a grace period so brief pauses (reading, thinking) don't prematurely
-/// clear the indicator. Only broadcasts when the working state transitions.
-///
-/// Under Zellij, pane capture is not available (no tmux session), so this
-/// function returns early. The Zellij plugin handles typing detection natively.
-pub(super) async fn check_lead_typing(state: &DaemonState) {
-    let tx = match state.web_updates_tx {
-        Some(ref tx) => tx,
-        None => return,
-    };
-
-    let session = format!("{}{}", crate::process::SESSION_PREFIX, state.repo_name);
-
-    // Check if the tmux session exists before trying to capture pane content.
-    // Under Zellij, there's no tmux session, so we skip pane-based typing detection.
-    // The Zellij plugin handles typing indicators natively.
-    let session_check = session.clone();
-    let tmux_alive = tokio::task::spawn_blocking(move || {
-        std::process::Command::new("tmux")
-            .args(["has-session", "-t", &session_check])
-            .output()
-            .is_ok_and(|o| o.status.success())
-    })
-    .await
-    .unwrap_or(false);
-    if !tmux_alive {
-        return;
-    }
-
-    let target = format!("{}:lead.0", session);
-
-    let content =
-        match tokio::task::spawn_blocking(move || crate::tmux::capture_pane(&target)).await {
-            Ok(Some(text)) => text,
-            _ => return,
-        };
-
-    // Hash the pane content for cheap comparison
-    use std::hash::{Hash, Hasher};
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    content.hash(&mut hasher);
-    let new_hash = hasher.finish();
-
-    let now = Instant::now();
-
-    // Single lock for all lead typing state — `working` is derived, not stored
-    let (is_working, prev_working) = {
-        let mut lt = state.lead_typing.lock().unwrap();
-        let pane_changed = lt.pane_hash != 0 && new_hash != lt.pane_hash;
-        lt.pane_hash = new_hash;
-
-        // Derive previous working state from old last_activity (before update)
-        let prev_working =
-            determine_lead_working(false, lt.last_activity, now, LEAD_TYPING_GRACE_PERIOD);
-
-        if pane_changed {
-            lt.last_activity = Some(now);
-        }
-
-        let is_working = determine_lead_working(
-            pane_changed,
-            lt.last_activity,
-            now,
-            LEAD_TYPING_GRACE_PERIOD,
-        );
-
-        (is_working, prev_working)
-    };
-
-    if is_working != prev_working {
-        web::broadcast_lead_typing(tx, is_working);
-    }
-}
-
-/// Check if the lead terminal session is still alive and respawn it if not.
-///
-/// Supports both Zellij and tmux sessions:
-/// - **Zellij**: Checks if the Zellij session exists via `zellij list-sessions`.
-///   The lead pane is managed by Zellij's layout, so no window-level checking is needed.
-///   If the Zellij session is gone, signals daemon shutdown.
-/// - **tmux**: Checks if the tmux session and lead window exist. If the session exists
-///   but the lead window is gone, recreates it using `spawn_lead`.
-///
-/// This runs on a blocking thread since it calls external commands.
-///
-/// Returns `true` if the terminal server is gone (daemon should shut down),
-/// `false` otherwise.
-pub(super) fn check_and_respawn_lead(
-    session: &str,
-    workdir: &Path,
-    project_name: &str,
-    additional_dirs: &[PathBuf],
-) -> bool {
-    // Check Zellij first — if a Zellij session exists, that's our multiplexer.
-    if zellij_session_alive(session) {
-        debug!(
-            session = %session,
-            "LEAD_HEALTH: Zellij session is alive"
-        );
-        return false; // Zellij manages panes via layout, no respawn needed
-    }
-
-    // Zellij session is NOT alive. Check if Zellij is available — if so,
-    // we know the session was launched with Zellij and has since been closed.
-    let zellij_available = crate::process::zellij_is_available();
-
-    // Now check tmux session.
-    let tmux_session_alive = match std::process::Command::new("tmux")
-        .args(["has-session", "-t", session])
-        .output()
-    {
-        Ok(o) if o.status.success() => true,
-        Ok(o) => {
-            let stderr = String::from_utf8_lossy(&o.stderr);
-            if stderr.contains("no server running") {
-                // No tmux server running at all
-                false
-            } else {
-                // tmux server running but session doesn't exist
-                false
-            }
-        }
-        Err(_) => {
-            // tmux binary not available
-            false
-        }
-    };
-
-    // If neither Zellij nor tmux session is alive, signal shutdown.
-    if !tmux_session_alive {
-        if zellij_available {
-            // Zellij is installed but session is gone — user closed it.
-            error!(
-                "Zellij session '{}' is no longer running. The daemon cannot operate without a \
-                 terminal multiplexer session. Run `midtown start` to restart.",
-                session
-            );
-            return true;
-        }
-        // No Zellij, no tmux — signal daemon to shut down
-        error!(
-            "No terminal multiplexer session found. The daemon cannot operate without a terminal \
-             multiplexer. Run `midtown start` to restart."
-        );
-        return true;
-    }
-
-    // tmux session exists — check how many lead windows are present.
-    // Using count_windows_by_name instead of window_exists to detect
-    // duplicates that can accumulate from restart races.
-    let lead_check = crate::tmux::count_windows_by_name(session, "lead");
-    let all_windows = crate::tmux::list_windows(session).unwrap_or_default();
-    debug!(
-        session = %session,
-        lead_check = ?lead_check,
-        all_windows = ?all_windows,
-        window_count = all_windows.len(),
-        "LEAD_HEALTH: checking lead window status"
-    );
-
-    match lead_check {
-        Ok((0, _)) => {
-            warn!(
-                session = %session,
-                all_windows = ?all_windows,
-                "LEAD_HEALTH: Lead window missing, will respawn"
-            );
-            match crate::tmux::spawn_lead(
-                session,
-                &workdir.to_string_lossy(),
-                project_name,
-                additional_dirs,
-            ) {
-                Ok(()) => info!("LEAD_HEALTH: Successfully respawned lead window"),
-                Err(e) => error!("LEAD_HEALTH: Failed to respawn lead window: {}", e),
-            }
-        }
-        Ok((1, ids)) => {
-            debug!(
-                session = %session,
-                lead_id = ?ids.first(),
-                "LEAD_HEALTH: exactly one lead window, all good"
-            );
-        }
-        Ok((n, ids)) => {
-            // Multiple lead windows detected — kill all but the first one
-            warn!(
-                session = %session,
-                lead_count = n,
-                lead_ids = ?ids,
-                all_windows = ?all_windows,
-                "LEAD_HEALTH: Found duplicate lead windows, cleaning up extras"
-            );
-            for id in ids.iter().skip(1) {
-                let target = format!("{}:{}", session, id);
-                info!(target = %target, "LEAD_HEALTH: Killing duplicate lead window");
-                let _ = crate::tmux::kill_window_by_target(&target);
-            }
-        }
-        Err(e) => {
-            warn!(error = %e, "LEAD_HEALTH: Failed to check lead window status");
-        }
-    }
-
-    false // Terminal multiplexer is running normally
-}
-
-/// Check if a Zellij session with the given name is alive.
-/// Delegates to the shared implementation in `crate::tmux`.
-fn zellij_session_alive(session: &str) -> bool {
-    crate::process::zellij_session_exists(session)
-}
-
-/// Pure decision function: is the lead still working?
-///
-/// Returns `true` if the pane just changed, or if the last activity was within
-/// the grace period. Returns `false` only after sustained inactivity.
-pub(super) fn determine_lead_working(
-    pane_changed: bool,
-    last_activity: Option<Instant>,
-    now: Instant,
-    grace_period: Duration,
-) -> bool {
-    if pane_changed {
-        return true;
-    }
-    match last_activity {
-        Some(last) => now.duration_since(last) < grace_period,
-        None => false,
-    }
-}
 
 /// Check for idle coworkers and send them on a break after the idle timeout.
 ///
@@ -821,7 +584,7 @@ pub(super) fn maybe_nudge_usage_limit_expiry(snap: &snapshot::WorldSnapshot) -> 
         },
     ];
 
-    // Only nudge Running coworkers — Stopping/Starting coworkers have no tmux window.
+    // Only nudge Running coworkers — Stopping/Starting coworkers have no active session.
     for cw in &snap.running_coworkers {
         effects.push(Effect::NudgeCoworker {
             name: cw.name.clone(),
@@ -1044,7 +807,7 @@ pub(super) fn check_and_restart_tool_name_conflicts(snap: &snapshot::WorldSnapsh
 
 /// Detect headless coworkers whose process has exited unexpectedly and restart them.
 ///
-/// Unlike tmux-based zombie detection (blank pane), this checks if the headless
+/// This checks if the headless
 /// process has terminated (exit_code is set, is_alive is false) while the coworker
 /// still has work assigned.
 pub(super) async fn check_and_respawn_dead_processes(

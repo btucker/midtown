@@ -2,7 +2,7 @@
 //!
 //! Handles `coworker.*` methods: spawn, break, list, view, report-state,
 //! nudge, and asking. These are tightly coupled to the coworker management
-//! subsystem (worktrees, headless sessions, tmux tabs).
+//! subsystem (worktrees, headless sessions).
 
 use tracing::{debug, error, info, warn};
 
@@ -96,6 +96,54 @@ pub(super) async fn handle_coworker_spawn(
         }
         Err(e) => {
             error!("Failed to spawn coworker: {}", e);
+            Response::error(id, RpcError::new(-32603, e.to_string()))
+        }
+    }
+}
+
+/// Handle lead.spawn RPC method.
+///
+/// Spawns the Lead as a headless session. Idempotent — returns success
+/// if the lead is already running.
+pub(super) async fn handle_lead_spawn(
+    id: RequestId,
+    state: &DaemonState,
+    provider: crate::auth::AuthProvider,
+) -> Response {
+    // Idempotent: if lead is already running, return success
+    if state.session_manager.is_alive("lead").await {
+        return Response::success(
+            id,
+            serde_json::json!({
+                "success": true,
+                "message": "Lead already running",
+            }),
+        );
+    }
+
+    let mut config = crate::launch::LaunchConfig::lead(&state.repo_name);
+    config.auth_provider = provider;
+
+    // Use the canonical lead worktree path so spawn_coworker uses it
+    // instead of falling through to the legacy coworker-named path.
+    let lead_wt = crate::paths::lead_worktree_path(&state.repo_name);
+    if lead_wt.exists() {
+        config.working_dir = Some(lead_wt);
+    }
+
+    match state.spawn_coworker(&config).await {
+        Ok(()) => {
+            info!("Spawned headless lead session");
+            Response::success(
+                id,
+                serde_json::json!({
+                    "success": true,
+                    "message": "Spawned headless lead session",
+                }),
+            )
+        }
+        Err(e) => {
+            error!("Failed to spawn lead: {}", e);
             Response::error(id, RpcError::new(-32603, e.to_string()))
         }
     }
@@ -222,7 +270,7 @@ pub(super) async fn handle_coworker_view(
 /// Handle coworker.report-state RPC method.
 ///
 /// Stores the coworker's workflow phase in daemon memory and updates the
-/// tmux tab display. When a coworker reports `Idle`, they are immediately
+/// web UI status. When a coworker reports `Idle`, they are immediately
 /// sent on break. When they report `Completed`, task cleanup is handled.
 pub(super) async fn handle_coworker_report_state(
     id: RequestId,
@@ -338,14 +386,6 @@ pub(super) async fn handle_coworker_report_state(
             .unwrap_or_default()
     };
 
-    // Update tmux tab display
-    if let Err(e) = state
-        .coworkers
-        .update_status_formatted(name, &status_display)
-    {
-        debug!("Failed to update tmux tab for {}: {}", name, e);
-    }
-
     info!("Coworker {} reported state: {}", name, status_display);
     Response::success(
         id,
@@ -364,30 +404,39 @@ pub(super) async fn handle_coworker_nudge(
     message: &str,
     state: &DaemonState,
 ) -> Response {
-    let coworkers = state.coworkers.clone();
-    let name_owned = name.to_string();
-    let message_owned = message.to_string();
+    // Always enqueue to headed intercom for wrapper-managed sessions.
+    state.enqueue_headed_nudge(name, message).await;
 
-    match tokio::task::spawn_blocking(move || coworkers.nudge(&name_owned, &message_owned)).await {
-        Ok(Ok(())) => {
-            info!("Nudged coworker {}: {}", name, message);
-            Response::success(
-                id,
-                serde_json::json!({
-                    "success": true,
-                    "message": format!("Nudged coworker: {}", name),
-                }),
-            )
-        }
-        Ok(Err(e)) => {
-            error!("Failed to nudge coworker {}: {}", name, e);
-            Response::error(id, RpcError::new(-32603, e.to_string()))
-        }
+    // Best-effort headless delivery for active headless sessions.
+    let delivered_headless = match state.session_manager.send_message(name, message).await {
+        Ok(()) => true,
         Err(e) => {
-            error!("spawn_blocking panic while nudging {}: {}", name, e);
-            Response::error(id, RpcError::new(-32603, "Internal error".to_string()))
+            let text = e.to_string();
+            if text.contains("No headless session for") || text.contains("has stopped") {
+                debug!(
+                    "No active headless session for coworker {}, queued headed nudge only",
+                    name
+                );
+            } else {
+                warn!(
+                    "Headless nudge delivery failed for coworker {} (still queued headed): {}",
+                    name, e
+                );
+            }
+            false
         }
-    }
+    };
+
+    info!("Queued nudge for coworker {}: {}", name, message);
+    Response::success(
+        id,
+        serde_json::json!({
+            "success": true,
+            "message": format!("Nudged coworker: {}", name),
+            "queued_headed": true,
+            "delivered_headless": delivered_headless
+        }),
+    )
 }
 
 /// Handle coworker.asking RPC method.
@@ -403,19 +452,9 @@ pub(super) async fn handle_coworker_asking(
         error!("Failed to post question to channel: {}", e);
     }
 
-    // Mark the coworker as waiting for feedback in tmux tab and nudge the Lead.
-    let coworkers = state.coworkers.clone();
-    let name_owned = name.to_string();
+    // Nudge the Lead about the question.
     let nudge_message = format!("{} is asking: {}", name, question);
-
-    tokio::task::spawn_blocking(move || {
-        if let Err(e) = coworkers.update_status_display(&name_owned, Some("waiting for feedback")) {
-            debug!("Failed to update tmux tab for {}: {}", name_owned, e);
-        }
-        if let Err(e) = coworkers.nudge("Lead", &nudge_message) {
-            debug!("Failed to nudge Lead: {}", e);
-        }
-    });
+    state.nudge_lead(&nudge_message).await;
 
     info!("Coworker {} asking: {}", name, question);
     Response::success(

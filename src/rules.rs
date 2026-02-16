@@ -141,7 +141,7 @@ impl CoworkerRecord {
         }
     }
 
-    /// Format for tmux tab display (e.g. "dev#42", "test#7").
+    /// Format for status display (e.g. "dev#42", "test#7").
     ///
     /// Note: Task ID 0 is treated as "no task" since it's often used as a
     /// placeholder for taskless work (e.g., PR reviews without a formal task).
@@ -519,7 +519,7 @@ fn resolve_pr_handoff(
     // Owner is either active-but-busy or inactive. Try handoff first;
     // fallback depends on whether the owner is active:
     // - Active but busy → nudge (spawning an active coworker fails)
-    // - Inactive → spawn (they need a new tmux window)
+    // - Inactive → spawn (they need a new session)
     if !is_active && at_dev_limit {
         return PrAction::Skip {
             reason: format!(
@@ -788,7 +788,7 @@ impl OrphanRecoveryContext<'_> {
     ///
     /// Returns `true` if any of these conditions hold:
     /// - Owner is active (running session)
-    /// - Owner is attached (interactive tmux mode)
+    /// - Owner is attached (interactive session)
     /// - Owner recently stopped (within grace period — task may not be marked done yet)
     /// - Owner has an open PR awaiting review without feedback (recovery would loop)
     fn should_skip_owner(&self, owner_lower: &str) -> bool {
@@ -1464,7 +1464,7 @@ mod tests {
     fn review_complete_nudges_when_owner_active_but_busy() {
         // york is active but not idle — should nudge, not spawn.
         // Spawning an already-active coworker fails ("call-in failed")
-        // because they already have a tmux window.
+        // because they already have a running session.
         let action = decide_review_complete_action(
             "york",
             &active(&["york", "amsterdam"]),
@@ -1670,7 +1670,7 @@ mod tests {
     fn pr_handoff_nudges_owner_when_active_busy_no_idle() {
         // york is active but busy, no idle coworkers — should nudge, not spawn.
         // Spawning an already-active coworker fails ("call-in failed") because
-        // they already have a tmux window.
+        // they already have a running session.
         let session = make_session_context("york", 42);
         let action = decide_pr_issue_action_with_handoff(
             "york",
@@ -2354,7 +2354,7 @@ mod tests {
         assert!(
             decisions.is_empty(),
             "madison should NOT be sent on break when she has review feedback on her PR. \
-             This caused the break/respawn loop in bug #756 (4 duplicate tmux windows). \
+             This caused the break/respawn loop in bug #756 (4 duplicate sessions). \
              Decisions: {:?}",
             decisions
         );

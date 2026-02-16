@@ -329,7 +329,7 @@ fn should_recover_task(
 /// Check for orphaned tasks and auto-recover coworkers.
 ///
 /// An orphaned task is one that is `in_progress` but the owning coworker
-/// is no longer active (no tmux window). If the coworker's worktree still
+/// is no longer active (no running session). If the coworker's worktree still
 /// exists, we respawn them and nudge them to resume work.
 ///
 /// Rate limiting: Only spawns ONE coworker per tick with a cooldown between
@@ -338,6 +338,17 @@ pub(super) fn check_and_recover_orphans(
     snap: &snapshot::WorldSnapshot,
     state: &DaemonState,
 ) -> Vec<effects::Effect> {
+    check_and_recover_orphans_with_task_lookup(snap, state, crate::tasks::read_task)
+}
+
+fn check_and_recover_orphans_with_task_lookup<F>(
+    snap: &snapshot::WorldSnapshot,
+    state: &DaemonState,
+    task_lookup: F,
+) -> Vec<effects::Effect>
+where
+    F: Fn(&str) -> Option<crate::tasks::Task>,
+{
     // Check cooldown - skip if we spawned too recently
     {
         let cooldowns = state.cooldowns.lock().unwrap();
@@ -368,7 +379,7 @@ pub(super) fn check_and_recover_orphans(
         .iter()
         .filter(|(task_id, _task_subject, _owner)| {
             // Read full task from disk to check both subject and description for PR number
-            let task = match crate::tasks::read_task(task_id) {
+            let task = match task_lookup(task_id) {
                 Some(t) => t,
                 None => return true, // Task doesn't exist on disk? Keep it for recovery attempt
             };
@@ -531,67 +542,26 @@ pub(super) fn check_and_recover_orphans(
 
 /// Gather data and build effects for nudging coworkers discovered on daemon startup.
 ///
-/// After a daemon restart, existing coworkers are found in tmux but they may
-/// be stuck waiting for input or idle. This function checks if each discovered
-/// coworker has an assigned task (in_progress with them as owner) or a reviewer
-/// assignment (in github-state.json), and returns nudge effects.
+/// Gather data and build effects for nudging coworkers discovered on daemon startup.
 ///
-/// The caller is responsible for the initial startup delay and executing effects.
-pub(super) async fn gather_discovered_coworker_nudges(state: &DaemonState) -> Vec<Effect> {
-    let discovered = state.coworkers.take_discovered_on_startup();
-    if discovered.is_empty() {
-        return vec![];
-    }
-
-    info!(
-        "Checking {} discovered coworker(s) for tasks to resume",
-        discovered.len()
-    );
-
-    // Small delay to let things settle after daemon startup
-    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-
-    // Get in_progress tasks with owners and channels
-    let in_progress = crate::tasks::read_tasks()
-        .into_iter()
-        .filter(|t| t.status == crate::tasks::TaskStatus::InProgress)
-        .collect::<Vec<_>>();
-
-    // Build a map of owner -> (task_id, task_subject, channel)
-    let mut owner_tasks: HashMap<String, (String, String, Option<String>)> = HashMap::new();
-    for task in &in_progress {
-        if let Some(ref owner) = task.owner {
-            let owner_lower = owner.trim().trim_matches('"').to_lowercase();
-            if !owner_lower.is_empty() {
-                owner_tasks.insert(
-                    owner_lower,
-                    (task.id.clone(), task.subject.clone(), task.channel.clone()),
-                );
-            }
-        }
-    }
-
-    // Check reviewer assignments from daemon-state.json
-    let reviewer_prs: HashMap<String, u64> = {
-        let ps = state.persistent_state.lock().await;
-        discovered
-            .iter()
-            .filter_map(|name| {
-                ps.github
-                    .pr_for_reviewer(name)
-                    .map(|pr| (name.to_lowercase(), pr))
-            })
-            .collect()
-    };
-
-    // Build effects using pure decision function
-    decide_discovered_coworker_nudges(&discovered, &owner_tasks, &reviewer_prs)
+/// After a daemon restart, session recovery is handled by the startup module
+/// using persistent state. This function is a no-op kept for API compatibility.
+///
+/// Historical note: This used to scan for running coworkers and nudge them
+/// to resume work. That logic now lives in the startup module.
+pub(super) async fn gather_discovered_coworker_nudges(_state: &DaemonState) -> Vec<Effect> {
+    // Session recovery is handled by the startup module using persistent state.
+    vec![]
 }
 
 /// Build effects for nudging discovered coworkers based on their task/review assignments.
 ///
 /// Pure function: takes immutable data, returns effects. All I/O (nudging,
 /// channel posting) flows through Effect variants.
+///
+/// NOTE: This function is now only used by tests. It was part of the old session
+/// recovery system that has been replaced by the startup module.
+#[cfg(test)]
 fn decide_discovered_coworker_nudges(
     discovered: &[String],
     owner_tasks: &HashMap<String, (String, String, Option<String>)>,
@@ -996,9 +966,9 @@ pub(super) async fn gather_orphan_cleanup_data(
             let mut cleaned = Vec::new();
             let mut remaining = Vec::new();
             for name in to_check {
-                // Guard against tmux race: coworker may exist in tmux but
-                // not yet be in the daemon's internal map.
-                if coworkers.has_tmux_window(&name) {
+                // Guard against race: coworker may be actively running but
+                // not yet reflected in the orphan detection path.
+                if coworkers.get(&name).is_some() {
                     remaining.push(name);
                     continue;
                 }
@@ -1268,7 +1238,7 @@ pub(super) fn spawn_for_pending_tasks(
                     &format!("You have pending task !{}: {}. Get started!", tid, subj),
                 );
                 // Deliver via mailbox (non-urgent task assignment to idle coworker).
-                // Also send via tmux as fallback in case mailbox isn't polled.
+                // Deliver via mailbox for non-urgent task assignment.
                 effects.push(Effect::DeliverMailboxMessage {
                     name: o.clone(),
                     message: nudge_msg.clone(),

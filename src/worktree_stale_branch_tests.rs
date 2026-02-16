@@ -288,9 +288,13 @@ fn test_create_task_worktree_with_stale_branch_and_stale_worktree_ref() {
         .output()
         .expect("list worktrees");
     let stdout = String::from_utf8_lossy(&output.stdout);
+    let expected_suffix = format!(".midtown/worktrees/{}/{}", manager.repo_name(), worktree_id);
     assert!(
-        stdout.contains(wt_path.to_str().unwrap()),
-        "Git should still reference the deleted worktree path"
+        stdout
+            .lines()
+            .filter_map(|line| line.strip_prefix("worktree "))
+            .any(|listed_path| listed_path.ends_with(&expected_suffix)),
+        "Git should still reference the deleted worktree path (by suffix)"
     );
 
     // Step 4: Recreate — should handle both stale branch and stale ref

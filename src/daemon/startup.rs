@@ -2,7 +2,6 @@
 //!
 //! Handles recovery of coworker tracking across daemon restarts.
 //! When the daemon starts:
-//! - Discovers running coworkers from tmux and creates minimal records for health monitoring
 //! - Recovers headless coworker sessions from persisted state and resumes them with --resume
 //! - Cleans up zombie processes from previous daemon runs (orphaned PPID=1 processes)
 //!
@@ -19,7 +18,7 @@ use tracing::{info, warn};
 /// or `None` if sandboxing is available.
 ///
 /// This prevents the crash loop from 2026-02-13 where the daemon was started
-/// from within the Lead's sandboxed tmux session, causing all coworker spawns
+/// from within a sandboxed session, causing all coworker spawns
 /// to fail with "Already inside a sandbox — cannot nest sandbox-exec".
 #[cfg(target_os = "macos")]
 pub fn check_sandbox_context() -> Option<String> {
@@ -27,8 +26,8 @@ pub fn check_sandbox_context() -> Option<String> {
         Some(
             "WARNING: Daemon is already inside a sandbox — cannot nest sandbox-exec. \
              Coworker sandboxing will be disabled. This typically happens when the daemon \
-             is started from within a sandboxed tmux session. To fix: stop the daemon, \
-             exit tmux, and restart the daemon from an unsandboxed shell."
+             is started from within a sandboxed session. To fix: stop the daemon and \
+             restart from an unsandboxed shell."
                 .to_string(),
         )
     } else {
@@ -48,7 +47,7 @@ use crate::daemon::state::DaemonPersistentState;
 use crate::launch::LaunchConfig;
 use crate::rules::CoworkerRecord;
 
-/// Create tracking records for coworkers discovered in the tmux session.
+/// Create tracking records for coworkers discovered on startup.
 ///
 /// For each running coworker, creates a minimal `CoworkerRecord` so the
 /// daemon can monitor their health. Workflow phase and task ID will be
@@ -209,12 +208,23 @@ pub async fn recover_headless_sessions(
 ) -> Vec<Effect> {
     let mut effects = Vec::new();
 
-    // Clone the headless_sessions map for iteration.
-    // We preserve the original map so sync_with_tmux() can restore session_ids
-    // for recovered coworkers during normal operation.
-    let sessions = {
+    // Clone only sessions that should be resumed on startup.
+    // Historical sessions remain persisted for manual `session attach`.
+    let (sessions, total_persisted) = {
         let state = persistent_state.lock().await;
-        state.headless_sessions.clone()
+        let total = state.headless_sessions.len();
+        let resumable = state
+            .headless_sessions
+            .iter()
+            .filter_map(|(name, info)| {
+                if info.resume_on_startup {
+                    Some((name.clone(), info.clone()))
+                } else {
+                    None
+                }
+            })
+            .collect::<std::collections::HashMap<_, _>>();
+        (resumable, total)
     };
 
     if sessions.is_empty() {
@@ -222,8 +232,9 @@ pub async fn recover_headless_sessions(
     }
 
     info!(
-        "Recovering {} headless session(s) from previous daemon run",
-        sessions.len()
+        "Recovering {} headless session(s) from previous daemon run ({} persisted total)",
+        sessions.len(),
+        total_persisted
     );
 
     for (name, session_info) in sessions {
@@ -251,40 +262,60 @@ pub async fn recover_headless_sessions(
         }
 
         // Build launch config based on coworker type and saved context
-        let mut config = match (
-            session_info.coworker_type.as_deref(),
-            session_info.task_id,
-            session_info.pr_number,
-        ) {
-            (Some("dev"), Some(task_id), _) => {
-                // Dev coworker with task assignment
-                let initial_prompt = format!(
-                    "You've been assigned task !{}. Run `midtown task view {}` for full details.",
-                    task_id, task_id
-                );
-                LaunchConfig::coworker(
-                    &name,
-                    repo_name,
-                    crate::launch::SessionMode::Fresh, // Will be overridden by ResumeCoworker effect
-                    Some(initial_prompt),
-                )
-            }
-            (Some("reviewer"), _, Some(pr_num)) => {
-                // Reviewer coworker
-                LaunchConfig::reviewer(&name, pr_num)
-            }
-            _ => {
-                // Fallback: generic dev coworker
-                warn!(
-                    "Session {} has incomplete metadata (type={:?}, task={:?}, pr={:?}), using generic config",
-                    name, session_info.coworker_type, session_info.task_id, session_info.pr_number
-                );
-                LaunchConfig::coworker(&name, repo_name, crate::launch::SessionMode::Fresh, None)
+        let mut config = if name == "lead" {
+            // Lead session — uses lead system prompt, unrestricted settings
+            LaunchConfig::lead(repo_name)
+        } else {
+            match (
+                session_info.coworker_type.as_deref(),
+                session_info.task_id,
+                session_info.pr_number,
+            ) {
+                (Some("dev"), Some(task_id), _) => {
+                    // Dev coworker with task assignment
+                    let initial_prompt = format!(
+                        "You've been assigned task !{}. Run `midtown task view {}` for full details.",
+                        task_id, task_id
+                    );
+                    LaunchConfig::coworker(
+                        &name,
+                        repo_name,
+                        crate::launch::SessionMode::Fresh, // Will be overridden by ResumeCoworker effect
+                        Some(initial_prompt),
+                    )
+                }
+                (Some("reviewer"), _, Some(pr_num)) => {
+                    // Reviewer coworker
+                    LaunchConfig::reviewer(&name, pr_num)
+                }
+                _ => {
+                    // Fallback: generic dev coworker
+                    warn!(
+                        "Session {} has incomplete metadata (type={:?}, task={:?}, pr={:?}), using generic config",
+                        name,
+                        session_info.coworker_type,
+                        session_info.task_id,
+                        session_info.pr_number
+                    );
+                    LaunchConfig::coworker(
+                        &name,
+                        repo_name,
+                        crate::launch::SessionMode::Fresh,
+                        None,
+                    )
+                }
             }
         };
 
-        // Restore working directory if available
-        if let Some(ref working_dir) = session_info.working_dir {
+        // Restore working directory. For the lead, always use the canonical
+        // lead worktree path (~/.midtown/worktrees/<repo>/lead) rather than
+        // the persisted path, which may be stale (e.g., legacy coworker path).
+        if name == "lead" {
+            let lead_wt = crate::paths::lead_worktree_path(repo_name);
+            if lead_wt.exists() {
+                config.working_dir = Some(lead_wt);
+            }
+        } else if let Some(ref working_dir) = session_info.working_dir {
             config.working_dir = Some(std::path::PathBuf::from(working_dir));
         }
 
@@ -293,11 +324,11 @@ pub async fn recover_headless_sessions(
             config.auth_provider = provider;
         }
 
-        // Restore auth profile directory if persisted
-        if let Some(ref profile) = session_info.profile {
-            config.auth_profile_dir =
-                Some(crate::auth::profile_dir_for(config.auth_provider, profile));
-        }
+        // Re-resolve auth profile from project config rather than relying on
+        // the persisted profile name, which may be stale or incorrectly extracted
+        // (e.g., "claude" instead of "info@user.com" due to a prior path-extraction bug).
+        // The project config is the authoritative source for auth profiles.
+        config.auth_profile_dir = None; // Let spawn_coworker() re-resolve from project config
 
         // Create resume effect
         effects.push(Effect::ResumeCoworker {
@@ -307,7 +338,7 @@ pub async fn recover_headless_sessions(
         });
     }
 
-    // NOTE: We preserve headless_sessions in persistent state so sync_with_tmux()
+    // NOTE: We preserve headless_sessions in persistent state so retain_alive()
     // can restore session_ids for recovered coworkers. The map will be overwritten
     // at the next shutdown with fresh data.
     //
@@ -331,7 +362,17 @@ pub async fn recovering_coworker_names(
     persistent_state: &tokio::sync::Mutex<DaemonPersistentState>,
 ) -> Vec<String> {
     let state = persistent_state.lock().await;
-    state.headless_sessions.keys().cloned().collect()
+    state
+        .headless_sessions
+        .iter()
+        .filter_map(|(name, info)| {
+            if info.resume_on_startup {
+                Some(name.clone())
+            } else {
+                None
+            }
+        })
+        .collect()
 }
 
 #[path = "startup_tests.rs"]

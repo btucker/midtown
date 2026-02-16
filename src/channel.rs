@@ -919,9 +919,12 @@ impl Channel {
 ///
 /// ```
 /// use midtown::{ChannelRouter, Message};
-/// use std::path::PathBuf;
 ///
-/// let base_dir = PathBuf::from("/tmp/test");
+/// let unique = std::time::SystemTime::now()
+///     .duration_since(std::time::UNIX_EPOCH)
+///     .unwrap()
+///     .as_nanos();
+/// let base_dir = std::env::temp_dir().join(format!("midtown-channel-router-doc-{unique}"));
 /// let router = ChannelRouter::new(base_dir, "midtown");
 ///
 /// // Send to main channel (uses default repo name)

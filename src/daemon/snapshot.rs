@@ -118,7 +118,7 @@ pub struct WorldSnapshot {
     pub headless_process_health: HashMap<String, ProcessHealth>,
 
     // ── Attached coworkers ───────────────────────────────────────────
-    /// Coworkers currently in "attached" state (interactive tmux session).
+    /// Coworkers currently in "attached" state (interactive session).
     /// Must be excluded from stuck detection and orphan recovery.
     pub attached_coworkers: HashSet<String>,
 
@@ -349,13 +349,13 @@ impl WorldSnapshot {
 /// Collect a full world snapshot from the daemon state.
 ///
 /// This is the single place where we read from `DaemonState` and external
-/// sources (tmux, task storage, GitHub CLI). Called once per tick, before
+/// sources (task storage, GitHub CLI). Called once per tick, before
 /// any evaluation functions.
 pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
     // ── Coworker state ──────────────────────────────────────────────────
     let active_coworkers = state.coworkers.list();
     let running_coworkers = state.coworkers.list_running();
-    let session_name = state.coworkers.session_name().to_string();
+    let session_name = format!("{}{}", crate::process::SESSION_PREFIX, state.repo_name);
 
     let coworker_snapshots: Vec<CoworkerSnapshot> = active_coworkers
         .iter()
@@ -366,7 +366,7 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
         })
         .collect();
 
-    // Include both tmux-era running coworkers AND alive headless sessions
+    // Include running coworkers and alive headless sessions
     let mut active_names: HashSet<String> = running_coworkers
         .iter()
         .map(|cw| cw.name.to_lowercase())

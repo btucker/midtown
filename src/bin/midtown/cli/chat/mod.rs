@@ -57,6 +57,14 @@ fn char_index_to_byte_index(s: &str, char_idx: usize) -> usize {
 
 /// Run the chat TUI
 pub fn run() -> Result<(), String> {
+    run_with_ready_hook(|| ())
+}
+
+/// Run the chat TUI and invoke a hook once terminal setup is complete.
+pub fn run_with_ready_hook<F>(on_ready: F) -> Result<(), String>
+where
+    F: FnOnce(),
+{
     // Setup terminal
     enable_raw_mode().map_err(|e| format!("Failed to enable raw mode: {}", e))?;
     let mut stdout = io::stdout();
@@ -76,6 +84,7 @@ pub fn run() -> Result<(), String> {
 
     // Create app state
     let mut app = App::new();
+    on_ready();
 
     // Run the async main loop using tokio
     let result = tokio::runtime::Builder::new_current_thread()
@@ -269,7 +278,7 @@ fn open_diagram_in_browser(app: &App, idx: usize) {
 /// - End: \x1b]8;;\x07
 ///
 /// Requirements for clickable links:
-/// - tmux 3.4+ with `allow-passthrough on`
+/// - tmux 3.4+ with `allow-passthrough on` (if running in tmux)
 /// - Terminal with OSC 8 support (iTerm2, kitty, WezTerm, etc.)
 fn render_hyperlinks<W: io::Write>(
     backend: &mut CrosstermBackend<W>,

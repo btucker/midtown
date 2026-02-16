@@ -18,6 +18,8 @@ Project settings take precedence over global defaults. All fields are optional.
 bin_command = "midtown"         # CLI command to invoke midtown
 chat_layout = "auto"            # "auto", "split", or "window"
 chat_min_width = 160            # Min terminal width for split layout (auto mode)
+zellij_swap_layout = false      # Lead left + chat right when true
+zellij_chat_pane_size = 35      # Chat pane width percentage (10-90)
 max_coworkers = 10              # Maximum concurrent coworkers
 
 [daemon]
@@ -43,6 +45,8 @@ primary_repo = "/path/to/backend"
 [default]
 bin_command = "cargo run --release --"
 max_coworkers = 4
+zellij_swap_layout = true       # Project-specific override
+zellij_chat_pane_size = 40      # Wider chat for this project
 
 [daemon]
 webhook_port = 47023              # Auto-assigned if not set

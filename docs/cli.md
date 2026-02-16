@@ -6,7 +6,7 @@
 
 | Command | Description |
 |---------|-------------|
-| `midtown start [--project <name>] [--add-repo <path>]` | Start the daemon and Zellij session |
+| `midtown start [--swap-layout] [--project <name>] [--add-repo <path>]` | Start the daemon and Zellij session |
 | `midtown stop [--keep-session]` | Stop the daemon (optionally keep Zellij session) |
 | `midtown restart` | Restart the daemon |
 | `midtown attach [<project>]` | Attach to the project's Zellij session |
@@ -36,9 +36,11 @@ Attach to a headless coworker's session in an interactive terminal pane for debu
 
 | Command | Description |
 |---------|-------------|
-| `midtown session attach name <coworker>` | Attach to a coworker by name |
-| `midtown session attach task <id>` | Attach to the coworker working on a task |
-| `midtown session attach pr <number>` | Attach to the coworker working on a PR |
+| `midtown session attach name/<coworker>` | Attach to a coworker by name |
+| `midtown session attach task/<id>` | Attach to the coworker working on a task |
+| `midtown session attach pr/<number>` | Attach to the coworker working on a PR |
+| `midtown session attach claude/<session_id>` | Attach by Claude platform session ID |
+| `midtown session attach codex/<session_id>` | Attach by Codex platform session ID |
 | `midtown session detach <name>` | Detach and resume headless execution |
 | `midtown session list` | List headless sessions with status |
 

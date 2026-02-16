@@ -7,8 +7,15 @@
 
 use std::process::Command;
 
-/// Prefix for all midtown tmux/Zellij sessions.
+/// Prefix for all midtown sessions.
 pub const SESSION_PREFIX: &str = "midtown-";
+
+/// Zellij session lifecycle state as reported by `zellij list-sessions`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ZellijSessionState {
+    Running,
+    Exited,
+}
 
 /// Check if a process is still alive.
 pub fn is_pid_alive(pid: u32) -> bool {
@@ -291,12 +298,25 @@ pub fn terminate_session_processes(session: &str) {
     }
 }
 
-/// Check if a Zellij session with the given name exists.
+fn parse_zellij_session_state(session: &str, line: &str) -> Option<ZellijSessionState> {
+    let name = line.split_whitespace().next()?;
+    if name != session {
+        return None;
+    }
+    if line.contains("(EXITED") {
+        Some(ZellijSessionState::Exited)
+    } else {
+        Some(ZellijSessionState::Running)
+    }
+}
+
+/// Get Zellij session state for a specific session name.
 ///
-/// Runs `zellij list-sessions --no-formatting` and checks if any line
-/// starts with the given session name (sessions may have extra info after
-/// whitespace).
-pub fn zellij_session_exists(session: &str) -> bool {
+/// Parses `zellij list-sessions --no-formatting` output and returns:
+/// - `Some(Running)` for active sessions
+/// - `Some(Exited)` for resurrectable sessions
+/// - `None` if not found
+pub fn zellij_session_state(session: &str) -> Option<ZellijSessionState> {
     let output = Command::new("zellij")
         .args(["list-sessions", "--no-formatting"])
         .output();
@@ -306,10 +326,20 @@ pub fn zellij_session_exists(session: &str) -> bool {
             let stdout = String::from_utf8_lossy(&o.stdout);
             stdout
                 .lines()
-                .any(|line| line.split_whitespace().next() == Some(session))
+                .find_map(|line| parse_zellij_session_state(session, line))
         }
-        _ => false,
+        _ => None,
     }
+}
+
+/// Check if a Zellij session with the given name exists (running or exited).
+pub fn zellij_session_exists(session: &str) -> bool {
+    zellij_session_state(session).is_some()
+}
+
+/// Check if a Zellij session with the given name is actively running.
+pub fn zellij_running_session_exists(session: &str) -> bool {
+    zellij_session_state(session) == Some(ZellijSessionState::Running)
 }
 
 /// Check if Zellij is available on the system.
@@ -320,4 +350,33 @@ pub fn zellij_is_available() -> bool {
         .stderr(std::process::Stdio::null())
         .status()
         .is_ok_and(|s| s.success())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_session_state_running() {
+        let line = "midtown-midtown [Created 2m ago]";
+        assert_eq!(
+            parse_zellij_session_state("midtown-midtown", line),
+            Some(ZellijSessionState::Running)
+        );
+    }
+
+    #[test]
+    fn parse_session_state_exited() {
+        let line = "midtown-midtown [Created 33m 29s ago] (EXITED - attach to resurrect)";
+        assert_eq!(
+            parse_zellij_session_state("midtown-midtown", line),
+            Some(ZellijSessionState::Exited)
+        );
+    }
+
+    #[test]
+    fn parse_session_state_mismatch() {
+        let line = "midtown-other [Created 1m ago]";
+        assert_eq!(parse_zellij_session_state("midtown-midtown", line), None);
+    }
 }

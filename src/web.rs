@@ -1554,17 +1554,9 @@ async fn handle_client_message(text: &str, state: &Arc<WebState>) -> Result<(), 
                 ));
             }
 
-            let coworkers = state
-                .coworkers
-                .as_ref()
-                .ok_or_else(|| "Coworker manager not available".to_string())?;
-
-            // Use immediate nudge for web UI - user expects instant delivery
-            coworkers
-                .nudge_lead_immediate(&message)
-                .map_err(|e| format!("Failed to nudge lead: {}", e))?;
-
-            info!("Immediate nudge sent to {} via web UI: {}", target, message);
+            // Nudge delivery via tmux has been removed. Lead nudges now
+            // flow through the headed intercom queue, not the web UI.
+            return Err("Lead nudge via web UI is no longer supported (tmux removed)".to_string());
         }
         ClientMessage::SendKey { target, key } => {
             // Validate target name
@@ -1580,15 +1572,12 @@ async fn handle_client_message(text: &str, state: &Arc<WebState>) -> Result<(), 
                 return Err("Only 'Escape' key is supported".to_string());
             }
 
-            let coworkers = state
-                .coworkers
-                .as_ref()
-                .ok_or_else(|| "Coworker manager not available".to_string())?;
-
-            coworkers
-                .send_key(&target, &key)
-                .map_err(|e| format!("Failed to send key to {}: {}", target, e))?;
-            info!("Sent {} key to {} via web UI", key, target);
+            // send_key via tmux has been removed. All coworkers are
+            // headless and controlled through SessionManager.
+            return Err(format!(
+                "Send key to {} via web UI is no longer supported (tmux removed)",
+                target
+            ));
         }
     }
 
@@ -1883,7 +1872,7 @@ mod tests {
 
         let worktree_manager = WorktreeManager::new(temp_dir.path().to_path_buf())
             .expect("Failed to create worktree manager");
-        let coworkers = CoworkerManager::new("midtown-test", worktree_manager);
+        let coworkers = CoworkerManager::new(worktree_manager);
 
         let state = Arc::new(WebState {
             config: WebConfig::default(),
@@ -1944,7 +1933,7 @@ mod tests {
 
         let worktree_manager = WorktreeManager::new(temp_dir.path().to_path_buf())
             .expect("Failed to create worktree manager");
-        let coworkers = CoworkerManager::new("midtown-test", worktree_manager);
+        let coworkers = CoworkerManager::new(worktree_manager);
 
         let state = Arc::new(WebState {
             config: WebConfig::default(),

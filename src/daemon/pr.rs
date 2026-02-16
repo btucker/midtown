@@ -1440,7 +1440,7 @@ fn should_escalate(prior_nudges: u32) -> bool {
 /// Convert a stuck condition nudge message into effects (system message only).
 ///
 /// The message should contain "@lead" which the chat monitor will detect and
-/// route to the lead via tmux nudge. We don't return NudgeLead here because
+/// route to the lead via headed intercom. We don't return NudgeLead here because
 /// that would cause double delivery (the channel @mention routing already
 /// handles it).
 fn stuck_nudge_effects(message: &str) -> Vec<Effect> {

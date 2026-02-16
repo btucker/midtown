@@ -3,7 +3,6 @@
 //! These commands manage the midtown daemon and Lead session.
 
 use std::os::unix::net::UnixStream;
-use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -79,23 +78,11 @@ fn socket_path() -> PathBuf {
     midtown::paths::daemon_socket()
 }
 
-/// Check if the Claude CLI is installed and executable.
-fn claude_cli_available() -> bool {
-    Command::new("claude")
-        .arg("--version")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
-}
-
-/// The official Claude plugins marketplace on GitHub.
-const OFFICIAL_MARKETPLACE: &str = "anthropics/claude-plugins-official";
-const OFFICIAL_MARKETPLACE_NAME: &str = "claude-plugins-official";
-
 /// Track whether a progress line is currently displayed (needs clearing before other output).
 static PROGRESS_LINE_ACTIVE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+#[cfg(target_os = "macos")]
+static ACCESSIBILITY_SETTINGS_OPENED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
 /// Clear the in-progress gauge line so subsequent output (errors, warnings) doesn't overlap it.
@@ -210,133 +197,6 @@ fn ratatui_to_crossterm_color(color: ratatui::style::Color) -> Option<crossterm:
     }
 }
 
-/// Ensure the official marketplace is configured and required plugins are installed.
-///
-/// Plugin setup is best-effort — failures are logged but don't block startup.
-/// The Claude CLI may not be authenticated yet (e.g. fresh container), in which
-/// case plugin commands will fail gracefully.
-fn ensure_plugins_installed() -> Result<(), String> {
-    use midtown::daemon::REQUIRED_PLUGINS;
-
-    if REQUIRED_PLUGINS.is_empty() {
-        return Ok(());
-    }
-
-    // First ensure marketplace is configured
-    if let Err(e) = ensure_marketplace_configured() {
-        eprintln!("Warning: Could not configure plugin marketplace: {}", e);
-        return Ok(());
-    }
-
-    // Get list of installed plugins
-    let installed = match get_installed_plugins() {
-        Ok(list) => list,
-        Err(e) => {
-            eprintln!("Warning: Could not list plugins: {}", e);
-            return Ok(());
-        }
-    };
-
-    // Find missing plugins
-    let missing: Vec<_> = REQUIRED_PLUGINS
-        .iter()
-        .filter(|p| !installed.contains(**p))
-        .collect();
-
-    if missing.is_empty() {
-        return Ok(());
-    }
-
-    eprintln!("Installing {} required plugins...", missing.len());
-
-    // Install missing plugins
-    for plugin in missing {
-        eprint!("  Installing {}... ", plugin);
-        match install_plugin(plugin) {
-            Ok(()) => eprintln!("done"),
-            Err(e) => eprintln!("failed: {}", e),
-        }
-    }
-
-    Ok(())
-}
-
-/// Ensure the official Claude plugins marketplace is configured.
-fn ensure_marketplace_configured() -> Result<(), String> {
-    let output = Command::new("claude")
-        .args(["plugin", "marketplace", "list"])
-        .output()
-        .map_err(|e| format!("Failed to run claude plugin marketplace list: {}", e))?;
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-
-    // Check if official marketplace is in the list
-    if stdout.contains(OFFICIAL_MARKETPLACE_NAME) {
-        return Ok(());
-    }
-
-    // Add the official marketplace
-    eprintln!("Adding official Claude plugins marketplace...");
-    let output = Command::new("claude")
-        .args(["plugin", "marketplace", "add", OFFICIAL_MARKETPLACE])
-        .output()
-        .map_err(|e| format!("Failed to run claude plugin marketplace add: {}", e))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("Failed to add marketplace: {}", stderr));
-    }
-
-    Ok(())
-}
-
-/// Get list of installed plugin IDs.
-fn get_installed_plugins() -> Result<std::collections::HashSet<String>, String> {
-    let output = Command::new("claude")
-        .args(["plugin", "list", "--json"])
-        .output()
-        .map_err(|e| format!("Failed to run claude plugin list: {}", e))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("claude plugin list failed: {}", stderr));
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let trimmed = stdout.trim();
-
-    // Empty output means no plugins installed (e.g. fresh container)
-    if trimmed.is_empty() {
-        return Ok(std::collections::HashSet::new());
-    }
-
-    // Parse JSON output - it's an array of objects with "id" field
-    let plugins: Vec<serde_json::Value> = serde_json::from_str(trimmed)
-        .map_err(|e| format!("Failed to parse plugin list JSON: {}", e))?;
-
-    let ids: std::collections::HashSet<String> = plugins
-        .iter()
-        .filter_map(|p| p.get("id").and_then(|id| id.as_str()).map(String::from))
-        .collect();
-
-    Ok(ids)
-}
-
-/// Install a plugin by name.
-fn install_plugin(name: &str) -> Result<(), String> {
-    let output = Command::new("claude")
-        .args(["plugin", "install", name])
-        .output()
-        .map_err(|e| format!("Failed to run claude plugin install: {}", e))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(stderr.trim().to_string());
-    }
-
-    Ok(())
-}
-
 /// Check if the daemon is running by attempting to connect to its socket.
 fn daemon_is_running() -> bool {
     let path = socket_path();
@@ -438,6 +298,84 @@ fn zellij_session_exists(session: &str) -> bool {
     midtown::process::zellij_session_exists(session)
 }
 
+/// Check if a Zellij session is actively running (not exited/resurrectable).
+fn zellij_running_session_exists(session: &str) -> bool {
+    midtown::process::zellij_running_session_exists(session)
+}
+
+/// Resolve Zellij's on-disk `session_info` directory using `zellij setup --check`.
+///
+/// Returns a best-effort path to the session info root, typically one of:
+/// - `<cache-dir>/<version>/session_info`
+/// - `<cache-dir>/session_info`
+fn zellij_session_info_root() -> Option<PathBuf> {
+    let output = Command::new("zellij")
+        .args(["setup", "--check"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut cache_dir: Option<PathBuf> = None;
+    let mut version: Option<String> = None;
+
+    for line in stdout.lines() {
+        if let Some(rest) = line.strip_prefix("[CACHE DIR]:") {
+            let p = rest.trim().trim_matches('"');
+            if !p.is_empty() {
+                cache_dir = Some(PathBuf::from(p));
+            }
+        } else if let Some(rest) = line.strip_prefix("[Version]:") {
+            let v = rest.trim().trim_matches('"').to_string();
+            if !v.is_empty() {
+                version = Some(v);
+            }
+        }
+    }
+
+    let cache_dir = cache_dir?;
+    if let Some(version) = version {
+        let versioned = cache_dir.join(version).join("session_info");
+        if versioned.exists() {
+            return Some(versioned);
+        }
+    }
+    Some(cache_dir.join("session_info"))
+}
+
+/// Delete an exited/resurrectable Zellij session entry.
+///
+/// Zellij can report sessions as `EXITED - attach to resurrect`; these are not
+/// killable with `kill-session` and can block Midtown startup if treated as live.
+/// We first ask Zellij to delete it, then fall back to removing stale
+/// `session_info/<name>` metadata if needed.
+fn cleanup_exited_zellij_session(session: &str) -> Result<bool, String> {
+    let _ = Command::new("zellij")
+        .args(["delete-session", "--force", session])
+        .status();
+
+    if !matches!(
+        midtown::process::zellij_session_state(session),
+        Some(midtown::process::ZellijSessionState::Exited)
+    ) {
+        return Ok(true);
+    }
+
+    if let Some(root) = zellij_session_info_root() {
+        let stale_dir = root.join(session);
+        if stale_dir.exists() {
+            std::fs::remove_dir_all(&stale_dir)
+                .map_err(|e| format!("Failed to remove stale Zellij session metadata: {}", e))?;
+        }
+    }
+
+    Ok(!matches!(
+        midtown::process::zellij_session_state(session),
+        Some(midtown::process::ZellijSessionState::Exited)
+    ))
+}
+
 /// Check if a tmux session with the given name exists.
 fn tmux_session_exists(session: &str) -> bool {
     let output = Command::new("tmux")
@@ -448,171 +386,6 @@ fn tmux_session_exists(session: &str) -> bool {
         Ok(o) => o.status.success(),
         Err(_) => false,
     }
-}
-
-/// Check if Zellij is available on the system.
-/// Delegates to the shared implementation in `midtown::process`.
-fn zellij_is_available() -> bool {
-    midtown::process::zellij_is_available()
-}
-
-/// Escape a string for use inside KDL double-quoted strings.
-///
-/// KDL uses the same escape sequences as JSON strings, so we need to escape
-/// backslashes and double quotes. This prevents paths with special characters
-/// from producing invalid KDL.
-fn escape_kdl_string(s: &str) -> String {
-    s.replace('\\', "\\\\").replace('"', "\\\"")
-}
-
-/// Generate a KDL layout file for the Zellij session.
-///
-/// Creates a layout with:
-/// - Left pane (25%): Midtown sidebar plugin
-/// - Middle pane (25%): midtown chat (channel TUI)
-/// - Right pane (50%): Lead Claude Code session (launched via shell script)
-fn generate_zellij_layout(
-    project_name: &str,
-    lead_launcher: &Path,
-    lead_workdir: &Path,
-) -> Result<PathBuf, String> {
-    let layout_dir = midtown::paths::midtown_base_dir().join("layouts");
-    std::fs::create_dir_all(&layout_dir)
-        .map_err(|e| format!("Failed to create layout dir: {}", e))?;
-
-    let layout_path = layout_dir.join(format!("{}.kdl", project_name));
-    let plugin_path = midtown::paths::midtown_base_dir()
-        .join("plugins")
-        .join("midtown_zellij_plugin.wasm");
-
-    // Escape paths for KDL string interpolation
-    let escaped_launcher = escape_kdl_string(&lead_launcher.display().to_string());
-    let escaped_cwd = escape_kdl_string(&lead_workdir.display().to_string());
-
-    // Check if the plugin WASM file exists; if not, use a simpler layout
-    // without the plugin pane (graceful degradation).
-    let layout = if plugin_path.exists() {
-        let escaped_plugin = escape_kdl_string(&plugin_path.display().to_string());
-        format!(
-            r#"layout {{
-    pane size="25%" {{
-        plugin location="file:{plugin_path}"
-    }}
-    pane size="25%" {{
-        command "midtown"
-        args "chat"
-    }}
-    pane size="50%" focus=true {{
-        command "bash"
-        args "-c" "{launcher}"
-        cwd "{cwd}"
-    }}
-}}
-"#,
-            plugin_path = escaped_plugin,
-            launcher = escaped_launcher,
-            cwd = escaped_cwd,
-        )
-    } else {
-        format!(
-            r#"layout {{
-    pane size="30%" {{
-        command "midtown"
-        args "chat"
-    }}
-    pane size="70%" focus=true {{
-        command "bash"
-        args "-c" "{launcher}"
-        cwd "{cwd}"
-    }}
-}}
-"#,
-            launcher = escaped_launcher,
-            cwd = escaped_cwd,
-        )
-    };
-
-    std::fs::write(&layout_path, layout).map_err(|e| format!("Failed to write layout: {}", e))?;
-
-    Ok(layout_path)
-}
-
-/// Write a shell launcher script for the Lead Claude Code session.
-///
-/// The launcher script sets environment variables and execs claude with
-/// the appropriate flags. This is used by Zellij's KDL layout to start
-/// the Lead pane.
-fn write_lead_launcher_script(
-    _session: &str,
-    lead_workdir: &Path,
-    project_name: &str,
-    additional_repos: &[PathBuf],
-) -> Result<PathBuf, String> {
-    let lead_dir = midtown::paths::midtown_base_dir()
-        .join("lead")
-        .join(project_name);
-    std::fs::create_dir_all(&lead_dir).map_err(|e| format!("Failed to create lead dir: {}", e))?;
-
-    // Reuse existing tmux infrastructure to build the lead shell command.
-    // spawn_lead writes prompt/settings files and constructs the command;
-    // we extract just the command string for the launcher script.
-    let prompt_file = midtown::settings::write_lead_prompt_file()
-        .map_err(|e| format!("Failed to write lead prompt: {}", e))?;
-    let settings_file = midtown::settings::write_lead_settings_file()
-        .map_err(|e| format!("Failed to write lead settings: {}", e))?;
-
-    // Resolve auth profile from project config
-    let auth_dir = midtown::auth::active_profile_dir_for_project(project_name);
-
-    let config = midtown::launch::LaunchConfig {
-        name: "lead".to_string(),
-        session_mode: midtown::launch::SessionMode::Fresh,
-        role: midtown::launch::CoworkerRole::Coworker,
-        initial_prompt: None,
-        additional_dirs: additional_repos.to_vec(),
-        restrict_setting_sources: false,
-        pr_number: None,
-        team_name: None,
-        working_dir: None,
-        model: "sonnet".to_string(),
-        channel: None,
-        auth_profile_dir: Some(auth_dir),
-        auth_provider: midtown::auth::AuthProvider::Claude,
-    };
-
-    let task_list_id = midtown::paths::task_list_id_for_repo(project_name);
-
-    // Allow tests/CI to override the lead command (claude isn't available in CI)
-    let shell_command = if let Ok(test_cmd) = std::env::var("MIDTOWN_LEAD_COMMAND") {
-        test_cmd
-    } else {
-        let launch = config.to_shell_command(
-            &settings_file,
-            &prompt_file,
-            None,
-            lead_workdir,
-            project_name,
-        );
-        launch.shell_command
-    };
-
-    let script_content = format!(
-        "#!/bin/bash\nexport CLAUDE_CODE_TASK_LIST_ID='{}';\n{}\n",
-        task_list_id, shell_command
-    );
-
-    let script_path = lead_dir.join("zellij-lead-launcher.sh");
-    std::fs::write(&script_path, &script_content)
-        .map_err(|e| format!("Failed to write launcher script: {}", e))?;
-
-    // Make the script executable
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755));
-    }
-
-    Ok(script_path)
 }
 
 /// Find the git repository root by walking up the directory tree.
@@ -666,15 +439,6 @@ fn repo_root() -> Result<PathBuf, String> {
     let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
 
     Ok(PathBuf::from(path))
-}
-
-/// Get the path to the Lead session ID file for a project.
-fn lead_session_file(repo: &Path) -> PathBuf {
-    let repo_name = repo
-        .file_name()
-        .map(|s: &std::ffi::OsStr| s.to_string_lossy().to_string())
-        .unwrap_or_else(|| "unknown".to_string());
-    midtown::paths::lead_session_file_for_repo(&repo_name)
 }
 
 /// Resolve additional repo paths from CLI flags, falling back to saved config.
@@ -741,46 +505,11 @@ fn update_project_config(
         .map_err(|e| format!("Failed to save project config: {}", e))
 }
 
-/// Create or reuse the lead worktree, falling back to the main repo path on error.
-///
-/// This helper encapsulates the worktree creation logic shared between
-/// `handle_start()` and `ensure_lead_has_settings()`.
-///
-/// Returns the lead worktree path on success, or the original repo path as fallback.
-fn create_or_reuse_lead_worktree(repo: &Path) -> Result<PathBuf, String> {
-    let worktree_manager = midtown::worktree::WorktreeManager::new(repo.to_path_buf())
-        .map_err(|e| format!("Failed to initialize worktree manager: {}", e))?;
-
-    worktree_manager
-        .create_lead_worktree()
-        .map_err(|e| {
-            eprintln!(
-                "Warning: Failed to create lead worktree, falling back to main repo: {}",
-                e
-            );
-            e
-        })
-        .or_else(|_| Ok(repo.to_path_buf()))
-}
-
 /// Handle `midtown start` command.
 ///
-/// 1. Starts the daemon (if not running)
-/// 2. Creates a terminal session for the project (Zellij preferred, tmux fallback)
-/// 3. Launches Claude Code with Lead config in that session
-///
-/// When Zellij is available, creates a Zellij session with a KDL layout containing
-/// a sidebar plugin, chat pane, and lead pane. When Zellij is not installed, falls
-/// back to the legacy tmux-based session with status bar hooks and chat pane.
-///
-/// Claude Code processes run inside a lightweight filesystem sandbox
-/// (sandbox-exec on macOS, bwrap on Linux) that restricts writes to
-/// the project directory, ~/.midtown, ~/.claude, and temp directories.
-pub fn handle_start(
-    daemon_only: bool,
-    project: Option<String>,
-    repos: Vec<PathBuf>,
-) -> Result<Response, String> {
+/// Starts Midtown services for the current project (daemon + shared webserver).
+/// Interactive terminal UX now lives in `midtown view`.
+pub fn handle_start(project: Option<String>, repos: Vec<PathBuf>) -> Result<Response, String> {
     // Validate explicit project name if provided
     if let Some(ref name) = project {
         validate_project_name(name)?;
@@ -795,30 +524,7 @@ pub fn handle_start(
             .unwrap_or_else(|| "default".to_string())
     });
     let additional_repos = resolve_repos(&repos, &project_name);
-    let session = session_name_for(&Some(project_name.clone()))?;
-    emit_startup_progress(
-        5,
-        &format!(
-            "starting project '{}'{}",
-            project_name,
-            if daemon_only { " (daemon-only)" } else { "" }
-        ),
-    );
-
-    // Verify Claude CLI is installed (unless using a stub command or daemon-only mode)
-    if !daemon_only && std::env::var("MIDTOWN_LEAD_COMMAND").is_err() && !claude_cli_available() {
-        clear_startup_progress();
-        return Err(
-            "Claude CLI is not installed. Install it with: curl -fsSL https://claude.ai/install.sh | bash"
-                .to_string(),
-        );
-    }
-
-    // Ensure required plugins are installed (unless using a stub command)
-    if std::env::var("MIDTOWN_LEAD_COMMAND").is_err() {
-        emit_startup_progress(55, "checking required Claude plugins");
-        ensure_plugins_installed()?;
-    }
+    emit_startup_progress(5, &format!("starting project '{}'", project_name));
 
     let mut messages = Vec::new();
 
@@ -870,157 +576,18 @@ pub fn handle_start(
         }
     }
 
-    // Step 2: Launch terminal session (unless --daemon-only)
-    // Prefer Zellij when available, fall back to tmux.
-    if daemon_only {
-        messages.push("Skipping terminal session (--daemon-only)".to_string());
-        emit_startup_progress(88, "skipping terminal session (--daemon-only)");
-    } else if session_exists(&session) {
-        messages.push(format!("Session '{}' already exists", session));
-        emit_startup_progress(88, &format!("session '{}' already exists", session));
-    } else if zellij_is_available() {
-        // --- Zellij path ---
-        emit_startup_progress(88, "creating Zellij session");
-
-        // Clear stale task ID mappings from previous sessions
-        midtown::tasks::clear_lead_task_id_map(&project_name);
-
-        // Create lead worktree (or reuse existing one)
-        emit_startup_progress(90, "creating lead worktree");
-        let lead_workdir = create_or_reuse_lead_worktree(&primary_repo)?;
-
-        // Write launcher script for the Lead Claude Code session
-        let lead_launcher =
-            write_lead_launcher_script(&session, &lead_workdir, &project_name, &additional_repos)?;
-
-        // Generate KDL layout for this project
-        let layout_path = generate_zellij_layout(&project_name, &lead_launcher, &lead_workdir)?;
-
-        // Launch Zellij in the background (detached)
-        let status = Command::new("zellij")
-            .args([
-                "--session",
-                &session,
-                "--layout",
-                &layout_path.to_string_lossy(),
-            ])
-            .current_dir(&lead_workdir)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .map_err(|e| format!("Failed to create Zellij session: {}", e))?;
-
-        if !status.success() {
-            clear_startup_progress();
-            return Err(format!("Failed to create Zellij session '{}'", session));
-        }
-
-        // Write marker file indicating Lead was initialized by midtown
-        let marker_path = lead_initialized_marker(&primary_repo);
-        if let Some(parent) = marker_path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        let _ = std::fs::write(&marker_path, env!("CARGO_PKG_VERSION"));
-
-        messages.push(format!("Started Lead session in '{}' (Zellij)", session));
-        emit_startup_progress(93, "lead session started (Zellij)");
-    } else {
-        // --- tmux path (legacy) ---
-        let display_name = project_name.to_uppercase();
-        emit_startup_progress(88, "creating tmux session");
-
-        // Create empty tmux session (no command — spawn_lead creates the window)
-        let status = Command::new("tmux")
-            .args([
-                "new-session",
-                "-d",
-                "-s",
-                &session,
-                "-c",
-                &primary_repo.to_string_lossy(),
-            ])
-            .status()
-            .map_err(|e| format!("Failed to create session: {}", e))?;
-
-        if !status.success() {
-            clear_startup_progress();
-            return Err(format!("Failed to create tmux session '{}'", session));
-        }
-
-        // Create lead worktree (or reuse existing one) so the lead session
-        // starts in the worktree instead of the main repo.
-        emit_startup_progress(90, "creating lead worktree");
-        let lead_workdir = create_or_reuse_lead_worktree(&primary_repo)?;
-
-        // Use spawn_lead() to create the Lead window with proper config,
-        // auth profile, settings, and system prompt.
-        midtown::tmux::spawn_lead(
-            &session,
-            &lead_workdir.to_string_lossy(),
-            &project_name,
-            &additional_repos,
-        )
-        .map_err(|e| format!("Failed to spawn lead: {}", e))?;
-
-        // Kill the default empty window created by new-session (window 0)
-        // spawn_lead creates its own "lead" window, so the default is redundant.
-        let _ = Command::new("tmux")
-            .args(["kill-window", "-t", &format!("{}:0", session)])
-            .status();
-
-        // Configure tmux session-level options (status bar, titles, passthrough)
-        let _ = Command::new("tmux")
-            .args(["set-option", "-t", &session, "allow-passthrough", "on"])
-            .status();
-
-        let _ = Command::new("tmux")
-            .args([
-                "set-option",
-                "-t",
-                &session,
-                "status-style",
-                "bg=colour236,fg=yellow",
-            ])
-            .status();
-
-        let _ = Command::new("tmux")
-            .args([
-                "set-option",
-                "-t",
-                &session,
-                "status-left",
-                &format!(" {} ", display_name),
-            ])
-            .status();
-
-        let _ = Command::new("tmux")
-            .args(["set-option", "-t", &session, "set-titles", "on"])
-            .status();
-        let _ = Command::new("tmux")
-            .args([
-                "set-option",
-                "-t",
-                &session,
-                "set-titles-string",
-                &format!("Midtown: {}", display_name),
-            ])
-            .status();
-
-        let _ = midtown::tmux::setup_status_bar_hook(&session);
-
-        // Set up chat TUI (split pane or separate window based on config)
-        midtown::tmux::setup_chat_pane(&session);
-
-        // Write marker file indicating Lead was initialized by midtown
-        let marker_path = lead_initialized_marker(&primary_repo);
-        if let Some(parent) = marker_path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        let _ = std::fs::write(&marker_path, env!("CARGO_PKG_VERSION"));
-
-        messages.push(format!("Started Lead session in '{}' (tmux)", session));
-        emit_startup_progress(93, "lead session started");
+    // Step 2: Spawn the Lead as a headless session (idempotent).
+    emit_startup_progress(88, "spawning headless lead session");
+    let lead_provider = std::env::var("MIDTOWN_LEAD_PROVIDER")
+        .ok()
+        .and_then(|s| s.parse::<midtown::auth::AuthProvider>().ok())
+        .unwrap_or(midtown::auth::AuthProvider::Claude);
+    match DaemonClient::connect() {
+        Ok(client) => match client.lead_spawn(lead_provider) {
+            Ok(_) => messages.push("Lead session running".to_string()),
+            Err(e) => messages.push(format!("Warning: Failed to spawn lead: {}", e)),
+        },
+        Err(e) => messages.push(format!("Warning: Could not connect to daemon: {}", e)),
     }
 
     // Step 3: Auto-launch shared webserver if not running
@@ -1042,8 +609,7 @@ pub fn handle_start(
     }
 
     // Build response message
-    let attach_hint = "Attach with: midtown attach".to_string();
-    messages.push(attach_hint);
+    messages.push("Open view with: midtown view".to_string());
     emit_startup_progress(100, "startup complete");
 
     Ok(Response::Message {
@@ -1181,19 +747,28 @@ pub fn handle_stop(keep_session: bool) -> Result<Response, String> {
         if !keep_session && session_exists(&session) {
             // Try Zellij first, then tmux
             if zellij_session_exists(&session) {
-                // Kill the Zellij session — `zellij kill-session` sends SIGHUP to
-                // pane processes, which Claude Code may survive. Use `zellij kill-session`
-                // first, then clean up any orphaned processes.
-                let status = Command::new("zellij")
-                    .args(["kill-session", &session])
-                    .status()
-                    .map_err(|e| format!("Failed to kill Zellij session: {}", e))?;
+                if zellij_running_session_exists(&session) {
+                    // Kill the Zellij session — `zellij kill-session` sends SIGHUP to
+                    // pane processes, which Claude Code may survive. Use
+                    // `zellij kill-session` first, then clean up any orphaned processes.
+                    let status = Command::new("zellij")
+                        .args(["kill-session", &session])
+                        .status()
+                        .map_err(|e| format!("Failed to kill Zellij session: {}", e))?;
 
-                if status.success() {
-                    messages.push(format!("Stopped Zellij session '{}'", session));
+                    if status.success() {
+                        messages.push(format!("Stopped Zellij session '{}'", session));
+                    } else {
+                        messages.push(format!(
+                            "Warning: Failed to stop Zellij session '{}'",
+                            session
+                        ));
+                    }
+                } else if cleanup_exited_zellij_session(&session)? {
+                    messages.push(format!("Deleted exited Zellij session '{}'", session));
                 } else {
                     messages.push(format!(
-                        "Warning: Failed to stop Zellij session '{}'",
+                        "Warning: Failed to delete exited Zellij session '{}'",
                         session
                     ));
                 }
@@ -1499,8 +1074,7 @@ fn wait_for_coworkers_to_drain(timeout_secs: u64) -> Result<(), String> {
 
 /// Handle `midtown restart` command.
 ///
-/// Gracefully restarts the daemon and webserver while preserving the tmux
-/// session and all running Claude processes (Lead and coworkers).
+/// Gracefully restarts the daemon and webserver while preserving coworker state.
 ///
 /// When `force` is false (default):
 /// - Waits for all coworkers to finish their current work and reach stopped state
@@ -1524,9 +1098,8 @@ pub fn handle_restart(force: bool) -> Result<Response, String> {
     // 2. Re-exec itself with --foreground, preserving its original process
     //    context. This is critical on macOS: the daemon was initially launched
     //    from an unsandboxed CLI, so re-exec preserves that unsandboxed state.
-    //    If instead we stopped and re-spawned from the Lead's sandboxed tmux
-    //    pane, the new daemon would inherit the sandbox, causing sandbox-exec
-    //    nesting failures when spawning coworkers.
+    //    If instead we stopped and re-spawned from a sandboxed agent process,
+    //    the new daemon would inherit the sandbox and break coworker spawning.
     let client =
         DaemonClient::connect().map_err(|e| format!("Failed to connect to daemon: {}", e))?;
 
@@ -1551,11 +1124,10 @@ pub fn handle_restart(force: bool) -> Result<Response, String> {
             std::thread::sleep(poll_interval);
         }
 
-        let result = handle_start(true, None, vec![])?;
-        restart_chat_pane();
+        let result = handle_start(None, vec![])?;
         return match result {
             Response::Message { message } => Ok(Response::Message {
-                message: format!("{} (legacy restart). Attach with: midtown attach", message),
+                message: format!("{} (legacy restart). Open view with: midtown view", message),
             }),
             other => Ok(other),
         };
@@ -1595,104 +1167,526 @@ pub fn handle_restart(force: bool) -> Result<Response, String> {
     // Restart the webserver
     launch_webserver().map_err(|e| format!("Failed to restart webserver: {}", e))?;
 
-    // Restart the chat pane to pick up code changes
-    restart_chat_pane();
-
-    let session = session_name().unwrap_or_else(|_| "midtown".to_string());
     Ok(Response::Message {
-        message: format!(
-            "Daemon exec-restarted. Resumed Lead session in '{}'. Attach with: midtown attach",
-            session
-        ),
+        message: "Daemon exec-restarted. Reopen with: midtown view".to_string(),
     })
 }
 
-/// Restart the chat TUI pane in the tmux session.
-fn restart_chat_pane() {
-    // Use respawn-pane -k to atomically kill the old process and start a new
-    // one, avoiding a race where send-keys characters (like 'i' in "midtown")
-    // are intercepted by the still-running TUI's input mode handler.
-    if let Ok(session) = session_name() {
-        let chat_pane = format!("{}:lead.1", session);
-        let bin_command = midtown::config::get_bin_command();
-        let chat_cmd = format!("{} chat", bin_command);
-        let _ = Command::new("tmux")
-            .args(["respawn-pane", "-k", "-t", &chat_pane, &chat_cmd])
-            .status();
+#[derive(Clone)]
+struct AttachContext {
+    project_name: String,
+    primary_repo: PathBuf,
+    additional_repos: Vec<PathBuf>,
+}
+
+fn resolve_attach_context(project: Option<&str>) -> Result<AttachContext, String> {
+    if let Some(name) = project {
+        validate_project_name(name)?;
+        let full = midtown::config::load_full_project_config(name).ok_or_else(|| {
+            format!(
+                "Unknown project '{}'. Start it first with `midtown start`.",
+                name
+            )
+        })?;
+        let primary_repo = full
+            .project
+            .primary_repo()
+            .map(PathBuf::from)
+            .ok_or_else(|| {
+                format!(
+                    "Project '{}' has no primary repo configured. Run `midtown start` from that repo first.",
+                    name
+                )
+            })?;
+        let primary_str = primary_repo.to_string_lossy().to_string();
+        let additional_repos = full
+            .project
+            .repos()
+            .into_iter()
+            .filter(|repo| *repo != primary_str)
+            .map(PathBuf::from)
+            .collect();
+        return Ok(AttachContext {
+            project_name: name.to_string(),
+            primary_repo,
+            additional_repos,
+        });
+    }
+
+    let primary_repo = repo_root()?;
+    let project_name = resolve_project_name(&None).unwrap_or_else(|| {
+        primary_repo
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| "default".to_string())
+    });
+    let additional_repos = resolve_repos(&[], &project_name);
+    Ok(AttachContext {
+        project_name,
+        primary_repo,
+        additional_repos,
+    })
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AttachHost {
+    Tmux,
+    Zellij,
+    Ghostty,
+    ITerm,
+    Unknown,
+}
+
+impl AttachHost {
+    fn detect() -> Self {
+        if std::env::var("ZELLIJ").is_ok() {
+            return Self::Zellij;
+        }
+        if std::env::var("TMUX").is_ok() {
+            return Self::Tmux;
+        }
+
+        let term_program = std::env::var("TERM_PROGRAM")
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        if term_program == "ghostty" {
+            return Self::Ghostty;
+        }
+        if term_program == "iterm.app" {
+            return Self::ITerm;
+        }
+
+        let lc_terminal = std::env::var("LC_TERMINAL")
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        if lc_terminal == "iterm2" {
+            return Self::ITerm;
+        }
+
+        Self::Unknown
     }
 }
 
-/// Clear stale Lead session ID file for a project.
-///
-/// When no tmux session is running, the session-id file from a previous
-/// session is stale. Removing it ensures a fresh Claude Code session
-/// is created instead of resuming the old one.
-fn clear_stale_lead_session(repo: &Path) {
-    let session_file = lead_session_file(repo);
-    if session_file.exists() {
-        let _ = std::fs::remove_file(&session_file);
+fn shell_quote(input: &str) -> String {
+    let escaped = input.replace('\'', "'\"'\"'");
+    format!("'{}'", escaped)
+}
+
+fn escape_applescript_string(input: &str) -> String {
+    input.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+fn parse_ghostty_keybind_for_action(list_keybinds_output: &str, action: &str) -> Option<String> {
+    for line in list_keybinds_output.lines() {
+        let trimmed = line.trim();
+        let Some(rest) = trimmed.strip_prefix("keybind = ") else {
+            continue;
+        };
+        let Some((binding, bound_action)) = rest.split_once('=') else {
+            continue;
+        };
+        if bound_action.trim() == action {
+            return Some(binding.trim().to_string());
+        }
+    }
+    None
+}
+
+#[cfg(target_os = "macos")]
+fn is_accessibility_permission_error(stderr: &str) -> bool {
+    let lower = stderr.to_ascii_lowercase();
+    lower.contains("not allowed to send keystrokes") || lower.contains("(1002)")
+}
+
+#[cfg(target_os = "macos")]
+fn is_automation_permission_error(stderr: &str) -> bool {
+    let lower = stderr.to_ascii_lowercase();
+    lower.contains("not authorized to send apple events") || lower.contains("(-1743)")
+}
+
+#[cfg(target_os = "macos")]
+fn maybe_open_permission_settings(stderr: &str) -> Option<String> {
+    let needs_accessibility = is_accessibility_permission_error(stderr);
+    let needs_automation = is_automation_permission_error(stderr);
+    if !needs_accessibility && !needs_automation {
+        return None;
+    }
+
+    if !ACCESSIBILITY_SETTINGS_OPENED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        if needs_accessibility {
+            let _ = Command::new("open")
+                .arg(
+                    "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
+                )
+                .status();
+        }
+        if needs_automation {
+            let _ = Command::new("open")
+                .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_Automation")
+                .status();
+        }
+    }
+
+    Some(
+        "Ghostty does not expose a direct API to run commands in a new split, so Midtown uses \
+macOS System Events to send your split keybinding and type the Lead command. \
+This can require both Accessibility ('control your computer') and Automation permission. \
+Opened the relevant System Settings privacy panes. \
+If Ghostty does not appear automatically, use '+' in Accessibility to add Ghostty.app \
+and the app running `midtown`, then rerun `midtown view`."
+            .to_string(),
+    )
+}
+
+fn trigger_ghostty_keybinding(binding: &str) -> Result<bool, String> {
+    #[cfg(target_os = "macos")]
+    {
+        let mut modifiers: Vec<&str> = Vec::new();
+        let mut key_token: Option<String> = None;
+
+        for token in binding
+            .split('+')
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+        {
+            match token.to_ascii_lowercase().as_str() {
+                "super" | "cmd" | "command" => modifiers.push("command down"),
+                "shift" => modifiers.push("shift down"),
+                "alt" | "option" => modifiers.push("option down"),
+                "ctrl" | "control" => modifiers.push("control down"),
+                other => {
+                    if key_token.is_some() {
+                        return Ok(false);
+                    }
+                    key_token = Some(other.to_string());
+                }
+            }
+        }
+
+        let Some(key_token) = key_token else {
+            return Ok(false);
+        };
+
+        let using_clause = if modifiers.is_empty() {
+            String::new()
+        } else {
+            format!(" using {{{}}}", modifiers.join(", "))
+        };
+
+        let key_event = if key_token == "enter" {
+            format!(
+                "tell application \"System Events\" to key code 36{}",
+                using_clause
+            )
+        } else {
+            let key_text = if let Some(digit) = key_token.strip_prefix("digit_") {
+                if digit.len() == 1 {
+                    digit.to_string()
+                } else {
+                    return Ok(false);
+                }
+            } else if key_token.chars().count() == 1 {
+                key_token
+            } else {
+                return Ok(false);
+            };
+
+            format!(
+                "tell application \"System Events\" to keystroke \"{}\"{}",
+                escape_applescript_string(&key_text),
+                using_clause
+            )
+        };
+        let script = format!(
+            "tell application \"Ghostty\" to activate\n\
+             delay 0.05\n\
+             {}\n\
+             delay 0.05",
+            key_event
+        );
+
+        let output = Command::new("osascript")
+            .args(["-e", &script])
+            .output()
+            .map_err(|e| format!("Failed to trigger Ghostty keybinding via osascript: {}", e))?;
+        if output.status.success() {
+            return Ok(true);
+        }
+
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if let Some(msg) = maybe_open_permission_settings(&stderr) {
+            return Err(msg);
+        }
+
+        Ok(false)
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = binding;
+        Ok(false)
     }
 }
 
-/// Handle `midtown attach` command.
+fn trigger_ghostty_split_action() -> Result<bool, String> {
+    if let Ok(output) = Command::new("ghostty").arg("+list-keybinds").output()
+        && output.status.success()
+    {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        for action in ["new_split:right", "new_split_right", "new_split"] {
+            if let Some(binding) = parse_ghostty_keybind_for_action(&stdout, action)
+                && trigger_ghostty_keybinding(&binding)?
+            {
+                return Ok(true);
+            }
+        }
+    }
+
+    for action in ["new_split_right", "new_split:right", "new_split"] {
+        let status = Command::new("ghostty")
+            .args(["+action", action])
+            .status()
+            .map_err(|e| format!("Failed to run ghostty split action '{}': {}", action, e))?;
+        if status.success() {
+            return Ok(true);
+        }
+    }
+
+    Ok(false)
+}
+
+fn launch_iterm_split(cwd: &str, shell_command: &str) -> Result<bool, String> {
+    let typed_cmd = format!("cd {} && {}", shell_quote(cwd), shell_command);
+    let script = format!(
+        r#"tell application \"iTerm2\"
+    if (count of windows) = 0 then
+        create window with default profile
+    end if
+    tell current window
+        tell current session
+            set newSession to (split horizontally with default profile)
+            tell newSession
+                write text \"{}\"
+            end tell
+        end tell
+    end tell
+end tell"#,
+        escape_applescript_string(&typed_cmd)
+    );
+
+    let status = Command::new("osascript")
+        .args(["-e", &script])
+        .status()
+        .map_err(|e| format!("Failed to run osascript for iTerm split: {}", e))?;
+    Ok(status.success())
+}
+
+fn launch_lead_split(host: AttachHost, cwd: &str, shell_command: &str) -> Result<String, String> {
+    match host {
+        AttachHost::Tmux => {
+            let status = Command::new("tmux")
+                .args(["split-window", "-h", "-c", cwd, "sh", "-lc", shell_command])
+                .status()
+                .map_err(|e| format!("Failed to run tmux split-window: {}", e))?;
+            if !status.success() {
+                return Err("tmux split-window failed".to_string());
+            }
+            Ok("tmux split pane".to_string())
+        }
+        AttachHost::Zellij => {
+            let status = Command::new("zellij")
+                .args([
+                    "action",
+                    "new-pane",
+                    "-d",
+                    "right",
+                    "--cwd",
+                    cwd,
+                    "--",
+                    "sh",
+                    "-lc",
+                    shell_command,
+                ])
+                .status()
+                .map_err(|e| format!("Failed to run zellij action new-pane: {}", e))?;
+            if !status.success() {
+                return Err("zellij action new-pane failed".to_string());
+            }
+            Ok("zellij split pane".to_string())
+        }
+        AttachHost::Ghostty => {
+            if !trigger_ghostty_split_action()? {
+                return Err(
+                    "ghostty split action failed (tried keybind dispatch and known action names)"
+                        .to_string(),
+                );
+            }
+
+            #[cfg(target_os = "macos")]
+            {
+                std::thread::sleep(std::time::Duration::from_millis(150));
+                let typed_cmd = format!("cd {} && {}", shell_quote(cwd), shell_command);
+                let script = format!(
+                    "tell application \"Ghostty\" to activate\n\
+                     delay 0.05\n\
+                     tell application \"System Events\" to keystroke \"{}\"\n\
+                     tell application \"System Events\" to key code 36",
+                    escape_applescript_string(&typed_cmd)
+                );
+                let output = Command::new("osascript")
+                    .args(["-e", &script])
+                    .output()
+                    .map_err(|e| format!("Failed to dispatch lead command to Ghostty: {}", e))?;
+                if !output.status.success() {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    if let Some(msg) = maybe_open_permission_settings(&stderr) {
+                        return Err(msg);
+                    }
+                    return Err(format!(
+                        "Ghostty split opened but failed to send lead command: {}",
+                        stderr.trim()
+                    ));
+                }
+                Ok("ghostty split pane".to_string())
+            }
+
+            #[cfg(not(target_os = "macos"))]
+            {
+                Err(
+                    "Ghostty split command injection is currently only supported on macOS"
+                        .to_string(),
+                )
+            }
+        }
+        AttachHost::ITerm => {
+            if cfg!(target_os = "macos") && launch_iterm_split(cwd, shell_command)? {
+                return Ok("iTerm split pane".to_string());
+            }
+            Err("iTerm split launch failed".to_string())
+        }
+        AttachHost::Unknown => Err(
+            "Unsupported terminal host for automatic split. Use zellij/tmux/ghostty/iTerm."
+                .to_string(),
+        ),
+    }
+}
+
+/// Handle `midtown view` command.
 ///
-/// Attaches to the project's terminal session (Zellij or tmux).
-/// If the session doesn't exist, it is automatically created first.
-/// If the session exists but Lead wasn't started with midtown settings, reinitialize it.
-pub fn handle_attach(project: Option<&str>) -> Result<Response, String> {
-    let session = match project {
-        // Explicit project name: construct session name directly
-        Some(name) => format!("midtown-{}", name),
-        // No project: infer from cwd
-        None => session_name()?,
-    };
+/// Starts `midtown chat` in the current terminal and auto-creates a split
+/// that attaches to the Lead's headless session.
+pub fn handle_view(project: Option<&str>, skip_auto_split: bool) -> Result<Response, String> {
+    let ctx = resolve_attach_context(project)?;
 
-    // For cwd-based attach, we can get the repo root for stale session cleanup
-    let repo = if project.is_none() {
-        repo_root().ok()
-    } else {
-        None
-    };
+    // Ensure project-scoped socket resolution uses the target project's repo root.
+    let original_cwd = std::env::current_dir().ok();
+    std::env::set_current_dir(&ctx.primary_repo).map_err(|e| {
+        format!(
+            "Failed to switch to project repo '{}': {}",
+            ctx.primary_repo.display(),
+            e
+        )
+    })?;
 
-    // Auto-create session if it doesn't exist
-    if !session_exists(&session) {
-        if project.is_some() {
-            // Named project: don't auto-create, just error
-            return Err(format!(
-                "No session '{}' found. Start the project first with 'midtown start'.",
-                session
-            ));
-        }
+    // Ensure daemon + lead are running for this project.
+    if !daemon_is_running() {
+        handle_start(Some(ctx.project_name.clone()), ctx.additional_repos.clone())?;
+        std::thread::sleep(std::time::Duration::from_millis(150));
+    }
 
-        // No active session means Lead is not running.
-        // Clear any stale session-id file so we start a fresh
-        // Claude Code session instead of resuming the old one.
-        if let Some(ref repo) = repo {
-            clear_stale_lead_session(repo);
-        }
+    // Attach to the headless lead session via the daemon RPC.
+    let client =
+        DaemonClient::connect().map_err(|e| format!("Failed to connect to daemon: {}", e))?;
 
-        // Start midtown (daemon + terminal session)
-        handle_start(false, None, vec![])?;
-
-        // Wait briefly for the session to be ready
-        std::thread::sleep(std::time::Duration::from_millis(200));
-    } else if let Some(ref repo) = repo {
-        // Session exists - ensure Lead has proper settings (tmux only)
-        if tmux_session_exists(&session) {
-            ensure_lead_has_settings(&session, repo)?;
+    // Wait for lead session to become attachable (it may still be initializing).
+    let mut attach_info = None;
+    for _ in 0..50 {
+        match client.session_attach("name/lead") {
+            Ok(info) => {
+                attach_info = Some(info);
+                break;
+            }
+            Err(e) if e.contains("No session ID found") || e.contains("matched no persisted") => {
+                // Lead session not yet registered — wait and retry
+                std::thread::sleep(std::time::Duration::from_millis(200));
+                continue;
+            }
+            Err(e) if e.contains("already attached") => {
+                // Lead is already attached somewhere else — build a fresh attach command
+                // by resolving session info without pausing.
+                break;
+            }
+            Err(e) => {
+                if let Some(cwd) = original_cwd {
+                    let _ = std::env::set_current_dir(cwd);
+                }
+                return Err(format!("Failed to attach to lead session: {}", e));
+            }
         }
     }
 
-    // Attach to the session — try Zellij first, then tmux
-    if zellij_session_exists(&session) {
-        let err = Command::new("zellij").args(["attach", &session]).exec();
-        // If we get here, exec failed
-        Err(format!("Failed to attach to Zellij session: {}", err))
-    } else {
-        let err = Command::new("tmux").args(["attach", "-t", &session]).exec();
-        // If we get here, exec failed
-        Err(format!("Failed to attach to tmux session: {}", err))
+    let info = match attach_info {
+        Some(info) => info,
+        None => {
+            if let Some(cwd) = original_cwd {
+                let _ = std::env::set_current_dir(cwd);
+            }
+            return Err(
+                "Lead session not available for attach. Try again in a few seconds.".to_string(),
+            );
+        }
+    };
+
+    let session_id = info
+        .get("session_id")
+        .and_then(|v| v.as_str())
+        .ok_or("Daemon did not return session_id")?;
+    let cwd = info
+        .get("cwd")
+        .and_then(|v| v.as_str())
+        .ok_or("Daemon did not return cwd")?;
+    let provider_str = info
+        .get("provider")
+        .and_then(|v| v.as_str())
+        .unwrap_or("claude");
+    let provider = provider_str
+        .parse::<midtown::auth::AuthProvider>()
+        .unwrap_or(midtown::auth::AuthProvider::Claude);
+
+    if let Err(e) = midtown::platform_launch::run_platform_prelaunch_hook(provider) {
+        eprintln!(
+            "Warning: Platform pre-launch hook failed (continuing): {}",
+            e
+        );
     }
+
+    let cwd = super::session::ensure_attach_worktree("lead", cwd)?;
+    let lead_shell_command =
+        super::session::build_attach_shell_command(&cwd, "lead", provider, session_id)?;
+
+    let host = AttachHost::detect();
+
+    if !skip_auto_split && let Err(e) = launch_lead_split(host, &cwd, &lead_shell_command) {
+        // Detach so the lead resumes headless
+        let _ = client.session_detach("lead");
+        if let Some(cwd) = original_cwd {
+            let _ = std::env::set_current_dir(cwd);
+        }
+        return Err(format!(
+            "Failed to create Lead split. Chat was not started.\n{}\n\n\
+If you want chat without automatic split creation, run:\n  midtown view --skip-auto-split",
+            e
+        ));
+    }
+
+    let chat_result = super::chat::run();
+
+    if let Some(cwd) = original_cwd {
+        let _ = std::env::set_current_dir(cwd);
+    }
+
+    chat_result?;
+    Ok(Response::message("Exited chat session"))
 }
 
 /// List all known projects and their running status.
@@ -1769,57 +1763,6 @@ fn is_daemon_running(pid_file: &Path) -> bool {
             true
         }
     }
-}
-
-/// Ensure the Lead pane has proper midtown settings.
-/// Checks for a marker file; if missing, uses spawn_lead() to restart with settings.
-fn ensure_lead_has_settings(session: &str, repo: &Path) -> Result<(), String> {
-    let marker_path = lead_initialized_marker(repo);
-
-    // Check if Lead was properly initialized
-    if marker_path.exists() {
-        // Check marker version matches current
-        let marker_version = std::fs::read_to_string(&marker_path).unwrap_or_default();
-        if marker_version.trim() == env!("CARGO_PKG_VERSION") {
-            return Ok(()); // Already initialized with current version
-        }
-    }
-
-    // Need to reinitialize Lead with proper settings
-    eprintln!("Reinitializing Lead with midtown settings...");
-
-    let repo_name = repo
-        .file_name()
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_else(|| "default".to_string());
-
-    // Create lead worktree (or reuse existing one) so the lead session
-    // starts in the worktree instead of the main repo.
-    let lead_workdir = create_or_reuse_lead_worktree(repo)?;
-
-    // spawn_lead kills existing lead windows and creates a fresh one
-    midtown::tmux::spawn_lead(session, &lead_workdir.to_string_lossy(), &repo_name, &[])
-        .map_err(|e| format!("Failed to re-launch lead: {}", e))?;
-
-    // Set up chat pane (split or separate window based on config)
-    midtown::tmux::setup_chat_pane(session);
-
-    // Write the marker file
-    if let Some(parent) = marker_path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    let _ = std::fs::write(&marker_path, env!("CARGO_PKG_VERSION"));
-
-    Ok(())
-}
-
-/// Path to the marker file indicating Lead was initialized by midtown.
-fn lead_initialized_marker(repo: &Path) -> PathBuf {
-    let repo_name = repo
-        .file_name()
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_else(|| "unknown".to_string());
-    midtown::paths::lead_dir_for_repo(&repo_name).join("lead-initialized")
 }
 
 /// Get session status for status command enhancement.
@@ -2039,35 +1982,6 @@ mod tests {
     }
 
     #[test]
-    fn test_handle_start_clears_stale_session_id() {
-        let temp = TempDir::new().unwrap();
-        let unique_name = format!("test-project-{}", uuid::Uuid::new_v4());
-        let repo_path = temp.path().join(&unique_name);
-        std::fs::create_dir_all(&repo_path).unwrap();
-
-        // Simulate a stale session-id file from a previous session
-        let session_file = lead_session_file(&repo_path);
-        if let Some(parent) = session_file.parent() {
-            std::fs::create_dir_all(parent).unwrap();
-        }
-        std::fs::write(&session_file, "old-session-id-12345").unwrap();
-        assert!(session_file.exists());
-
-        // clear_stale_lead_session should remove the stale file
-        clear_stale_lead_session(&repo_path);
-
-        assert!(
-            !session_file.exists(),
-            "Stale session-id file should be deleted when no tmux session is running"
-        );
-
-        // Clean up parent dir
-        if let Some(parent) = session_file.parent() {
-            let _ = std::fs::remove_dir(parent);
-        }
-    }
-
-    #[test]
     fn test_resolve_project_name_explicit() {
         let result = resolve_project_name(&Some("my-project".to_string()));
         assert_eq!(result, Some("my-project".to_string()));
@@ -2163,11 +2077,62 @@ mod tests {
     }
 
     #[test]
-    fn test_claude_cli_available_returns_bool() {
-        // This test verifies the function runs without panicking.
-        // The actual result depends on whether claude is installed in the test environment.
-        let _result: bool = claude_cli_available();
-        // If we get here without panicking, the function works correctly
+    fn test_parse_ghostty_keybind_for_action_finds_binding() {
+        let output = "keybind = super+shift+d=new_split:down\nkeybind = super+d=new_split:right\n";
+        assert_eq!(
+            parse_ghostty_keybind_for_action(output, "new_split:right"),
+            Some("super+d".to_string())
+        );
+    }
+
+    #[test]
+    fn test_parse_ghostty_keybind_for_action_returns_none_when_missing() {
+        let output = "keybind = super+shift+d=new_split:down\n";
+        assert_eq!(
+            parse_ghostty_keybind_for_action(output, "new_split:right"),
+            None
+        );
+    }
+
+    #[test]
+    fn test_ghostty_split_action_works_when_running_inside_ghostty() {
+        let term_program = std::env::var("TERM_PROGRAM")
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        if term_program != "ghostty" {
+            eprintln!("Skipping: not running inside Ghostty.");
+            return;
+        }
+        if std::env::var("MIDTOWN_RUN_GHOSTTY_SPLIT_TEST").unwrap_or_default() != "1" {
+            eprintln!("Skipping: set MIDTOWN_RUN_GHOSTTY_SPLIT_TEST=1 to enable.");
+            return;
+        }
+
+        let status = trigger_ghostty_split_action().expect("ghostty split action dispatch failed");
+        assert!(
+            status,
+            "Expected a Ghostty split action/keybind to succeed when running inside Ghostty."
+        );
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn test_accessibility_permission_error_detection() {
+        assert!(is_accessibility_permission_error(
+            "System Events got an error: osascript is not allowed to send keystrokes. (1002)"
+        ));
+        assert!(is_automation_permission_error(
+            "Not authorized to send Apple events to System Events. (-1743)"
+        ));
+        assert!(is_accessibility_permission_error(
+            "System Events got an error: osascript is not allowed to send keystrokes. (1002)"
+        ));
+        assert!(!is_automation_permission_error(
+            "failed to initialize ghostty error=error.InvalidAction"
+        ));
+        assert!(!is_accessibility_permission_error(
+            "failed to initialize ghostty error=error.InvalidAction"
+        ));
     }
 
     #[test]

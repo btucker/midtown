@@ -118,6 +118,8 @@ struct DaemonFixture {
     repo_name: String,
     /// Path to the daemon socket
     socket_path: PathBuf,
+    /// Per-fixture state directory (used as XDG_STATE_HOME)
+    state_dir: PathBuf,
     /// Path to the daemon PID file
     pid_path: PathBuf,
     /// Daemon process handle (if started)
@@ -175,16 +177,9 @@ impl DaemonFixture {
             .stderr(Stdio::null())
             .status();
 
-        // Compute socket and PID paths
-        // These match the paths from midtown::paths
-        let state_dir = std::env::var("XDG_STATE_HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| {
-                dirs::home_dir()
-                    .unwrap_or_else(|| PathBuf::from("."))
-                    .join(".local")
-                    .join("state")
-            });
+        // Use a short XDG_STATE_HOME to avoid UNIX socket path-length limits
+        // (SUN_LEN) on systems with long temporary directory prefixes.
+        let state_dir = PathBuf::from("/tmp").join(format!("ms-{}", &repo_name));
         let socket_path = state_dir
             .join("midtown")
             .join(&repo_name)
@@ -217,6 +212,7 @@ impl DaemonFixture {
             project_dir,
             repo_name,
             socket_path,
+            state_dir,
             pid_path,
             daemon_process: None,
             tasks_dir,
@@ -229,12 +225,17 @@ impl DaemonFixture {
     /// Returns true if the daemon started successfully and the socket is available.
     fn start_daemon(&mut self) -> bool {
         let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let candidates = [
-            manifest_dir.join("target/release/midtown"),
+        let mut candidates = Vec::new();
+        if let Some(bin) = option_env!("CARGO_BIN_EXE_midtown") {
+            candidates.push(PathBuf::from(bin));
+        }
+        candidates.extend([
+            // Prefer freshly-built debug binaries over potentially stale release binaries.
             manifest_dir.join("target/debug/midtown"),
             // cargo-llvm-cov uses a separate target directory for instrumented builds
             manifest_dir.join("target/llvm-cov-target/debug/midtown"),
-        ];
+            manifest_dir.join("target/release/midtown"),
+        ]);
 
         let binary_path = match candidates.iter().find(|p| p.exists()) {
             Some(p) => p.clone(),
@@ -261,6 +262,8 @@ impl DaemonFixture {
             .env("MIDTOWN_WEBHOOK_PORT", "0")
             // Disable chat monitor for cleaner tests
             .env("MIDTOWN_CHAT_MONITOR", "0")
+            // Keep socket paths short and deterministic for e2e.
+            .env("XDG_STATE_HOME", &self.state_dir)
             .spawn();
 
         match child {
@@ -403,6 +406,7 @@ impl Drop for DaemonFixture {
         if let Some(parent) = self.socket_path.parent() {
             let _ = fs::remove_dir(parent);
         }
+        let _ = fs::remove_dir_all(&self.state_dir);
 
         // Clean up the entire project directory (~/.midtown/projects/<name>/)
         // This includes config.toml, daemon.pid, channel.jsonl, cursors/, etc.
@@ -691,6 +695,124 @@ fn test_daemon_channel_post_endpoint() {
         response["error"].is_null(),
         "channel.post should not return an error: {:?}",
         response["error"]
+    );
+}
+
+/// Test headed wrapper intercom flow: register -> poll -> ack.
+///
+/// Validates per-session queue semantics used by adapter-neutral headed wrappers.
+#[test]
+#[ignore] // Requires built binary
+fn test_headed_intercom_register_poll_ack() {
+    let mut fixture = match DaemonFixture::new() {
+        Some(f) => f,
+        None => return,
+    };
+
+    if !fixture.start_daemon() {
+        return;
+    }
+
+    let adapter_id = format!("e2e-wrapper-{}", std::process::id());
+
+    let register = fixture.rpc_call(
+        "headed.register",
+        Some(serde_json::json!({
+            "session": "lead",
+            "adapter_id": adapter_id,
+            "provider": "claude"
+        })),
+    );
+    let register = register.expect("headed.register response");
+    assert!(
+        register["error"].is_null(),
+        "headed.register failed: {:?}",
+        register
+    );
+
+    let unique_tag = format!("headed-intercom-{}", std::process::id());
+    let post = fixture.rpc_call(
+        "channel.post",
+        Some(serde_json::json!({
+            "message": format!("@lead {}", unique_tag),
+            "from": "park"
+        })),
+    );
+    let post = post.expect("channel.post response");
+    assert!(post["error"].is_null(), "channel.post failed: {:?}", post);
+
+    let poll = fixture.rpc_call(
+        "headed.poll",
+        Some(serde_json::json!({
+            "session": "lead",
+            "adapter_id": format!("e2e-wrapper-{}", std::process::id()),
+            "after_id": 0,
+            "limit": 20
+        })),
+    );
+    let poll = poll.expect("headed.poll response");
+    assert!(poll["error"].is_null(), "headed.poll failed: {:?}", poll);
+    let messages = poll["result"]["messages"]
+        .as_array()
+        .expect("headed.poll messages should be an array");
+    assert!(
+        messages.iter().any(|m| {
+            m["text"]
+                .as_str()
+                .is_some_and(|s| s.contains("park mentioned @lead") && s.contains(&unique_tag))
+        }),
+        "Expected intercom nudge in headed.poll response, got: {:?}",
+        messages
+    );
+
+    let msg_id = messages
+        .iter()
+        .find_map(|m| {
+            m["text"].as_str().and_then(|s| {
+                if s.contains(&unique_tag) {
+                    m["id"].as_u64()
+                } else {
+                    None
+                }
+            })
+        })
+        .expect("expected msg_id for unique intercom message");
+
+    let ack = fixture.rpc_call(
+        "headed.ack",
+        Some(serde_json::json!({
+            "session": "lead",
+            "adapter_id": format!("e2e-wrapper-{}", std::process::id()),
+            "msg_id": msg_id
+        })),
+    );
+    let ack = ack.expect("headed.ack response");
+    assert!(ack["error"].is_null(), "headed.ack failed: {:?}", ack);
+
+    let poll_after_ack = fixture.rpc_call(
+        "headed.poll",
+        Some(serde_json::json!({
+            "session": "lead",
+            "adapter_id": format!("e2e-wrapper-{}", std::process::id()),
+            "after_id": 0,
+            "limit": 20
+        })),
+    );
+    let poll_after_ack = poll_after_ack.expect("headed.poll after ack response");
+    assert!(
+        poll_after_ack["error"].is_null(),
+        "headed.poll after ack failed: {:?}",
+        poll_after_ack
+    );
+    let messages_after_ack = poll_after_ack["result"]["messages"]
+        .as_array()
+        .expect("headed.poll after ack messages should be an array");
+    assert!(
+        !messages_after_ack
+            .iter()
+            .any(|m| { m["text"].as_str().is_some_and(|s| s.contains(&unique_tag)) }),
+        "Acked intercom message should not reappear in subsequent polls. got: {:?}",
+        messages_after_ack
     );
 }
 
@@ -1816,12 +1938,10 @@ fn test_daemon_installs_required_plugins() {
         }
         Ok(output) => {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            eprintln!("midtown start failed: {}", stderr);
-            return;
+            panic!("midtown start failed: {}", stderr);
         }
         Err(e) => {
-            eprintln!("Failed to run midtown start: {}", e);
-            return;
+            panic!("Failed to run midtown start: {}", e);
         }
     }
 
@@ -3466,4 +3586,451 @@ fn test_daemon_starts_even_if_lead_worktree_creation_fails() {
         fixture.start_daemon(),
         "Daemon should start even if lead worktree creation fails"
     );
+}
+
+// ============================================================================
+// Headless lead lifecycle E2E tests
+// ============================================================================
+
+/// Test that `lead.spawn` RPC returns a proper JSON-RPC response.
+///
+/// In the test environment without a real Claude CLI, the spawn may fail,
+/// but should return a well-formed response (not hang or crash).
+#[test]
+#[ignore] // Requires built binary
+fn test_daemon_rpc_lead_spawn_returns_response() {
+    let mut fixture = match DaemonFixture::new() {
+        Some(f) => f,
+        None => return,
+    };
+
+    if !fixture.start_daemon() {
+        return;
+    }
+
+    let response = fixture.rpc_call("lead.spawn", Some(serde_json::json!({})));
+    assert!(
+        response.is_some(),
+        "Should receive response from lead.spawn"
+    );
+
+    let response = response.unwrap();
+    // In test env, we accept either success or a well-formed error
+    if response["error"].is_object() {
+        assert!(
+            response["error"]["code"].is_number(),
+            "Error should have numeric code"
+        );
+        assert!(
+            response["error"]["message"].is_string(),
+            "Error should have message string"
+        );
+    } else {
+        assert!(
+            response["result"]["success"].as_bool() == Some(true),
+            "Success response should have success: true"
+        );
+    }
+}
+
+/// Test that `lead.spawn` is idempotent — calling twice returns success both times.
+///
+/// The second call should detect the lead is already running (or already failed)
+/// and return without crashing or hanging.
+#[test]
+#[ignore] // Requires built binary
+fn test_daemon_rpc_lead_spawn_idempotent() {
+    let mut fixture = match DaemonFixture::new() {
+        Some(f) => f,
+        None => return,
+    };
+
+    if !fixture.start_daemon() {
+        return;
+    }
+
+    let response1 = fixture.rpc_call("lead.spawn", Some(serde_json::json!({})));
+    assert!(response1.is_some(), "First lead.spawn should respond");
+
+    // Small delay to let any async state settle
+    thread::sleep(Duration::from_millis(500));
+
+    let response2 = fixture.rpc_call("lead.spawn", Some(serde_json::json!({})));
+    assert!(response2.is_some(), "Second lead.spawn should respond");
+
+    // Both calls should return well-formed JSON-RPC responses (not crash)
+    let r1 = response1.unwrap();
+    let r2 = response2.unwrap();
+    assert!(
+        r1["result"].is_object() || r1["error"].is_object(),
+        "First response should be well-formed JSON-RPC"
+    );
+    assert!(
+        r2["result"].is_object() || r2["error"].is_object(),
+        "Second response should be well-formed JSON-RPC"
+    );
+}
+
+/// Test that `session.list` returns the lead after `lead.spawn`.
+///
+/// After spawning the lead, session.list should include a "lead" entry
+/// with proper session metadata.
+#[test]
+#[ignore] // Requires built binary
+fn test_daemon_rpc_session_list_includes_lead_after_spawn() {
+    let mut fixture = match DaemonFixture::new() {
+        Some(f) => f,
+        None => return,
+    };
+
+    if !fixture.start_daemon() {
+        return;
+    }
+
+    // Spawn the lead
+    let spawn = fixture.rpc_call("lead.spawn", Some(serde_json::json!({})));
+    assert!(spawn.is_some(), "lead.spawn should respond");
+    let spawn = spawn.unwrap();
+
+    // If spawn failed (no claude CLI in test env), skip the rest
+    if spawn["error"].is_object() {
+        eprintln!(
+            "Skipping session.list lead check: lead.spawn failed in test env: {:?}",
+            spawn["error"]["message"]
+        );
+        return;
+    }
+
+    // Give the session manager time to register the session
+    thread::sleep(Duration::from_millis(1000));
+
+    // List sessions
+    let list = fixture.rpc_call("session.list", None);
+    assert!(list.is_some(), "session.list should respond");
+
+    let list = list.unwrap();
+    let sessions = list["result"]["sessions"]
+        .as_array()
+        .expect("sessions should be an array");
+
+    // Find the lead session
+    let lead_session = sessions.iter().find(|s| s["name"].as_str() == Some("lead"));
+    assert!(
+        lead_session.is_some(),
+        "session.list should include 'lead' after spawn. Got sessions: {:?}",
+        sessions
+    );
+
+    let lead = lead_session.unwrap();
+    assert!(
+        lead["session_id"].is_string(),
+        "Lead session should have a session_id"
+    );
+    assert!(
+        lead["status"].as_str() == Some("running") || lead["status"].as_str() == Some("paused"),
+        "Lead should be running or paused, got: {:?}",
+        lead["status"]
+    );
+}
+
+/// Test that `session.attach("name/lead")` returns session info for the lead.
+///
+/// After spawning the lead, attaching should pause the headless session
+/// and return the session_id, cwd, and provider needed to open an interactive session.
+#[test]
+#[ignore] // Requires built binary
+fn test_daemon_rpc_session_attach_lead() {
+    let mut fixture = match DaemonFixture::new() {
+        Some(f) => f,
+        None => return,
+    };
+
+    if !fixture.start_daemon() {
+        return;
+    }
+
+    // Spawn the lead
+    let spawn = fixture.rpc_call("lead.spawn", Some(serde_json::json!({})));
+    assert!(spawn.is_some(), "lead.spawn should respond");
+    let spawn = spawn.unwrap();
+    if spawn["error"].is_object() {
+        eprintln!(
+            "Skipping session.attach lead: lead.spawn failed: {:?}",
+            spawn["error"]["message"]
+        );
+        return;
+    }
+
+    // Give the session time to register
+    thread::sleep(Duration::from_millis(1000));
+
+    // Attach to the lead
+    let attach = fixture.rpc_call(
+        "session.attach",
+        Some(serde_json::json!({"target": "name/lead"})),
+    );
+    assert!(attach.is_some(), "session.attach should respond");
+
+    let attach = attach.unwrap();
+    if attach["error"].is_object() {
+        // Acceptable in test environments where session manager may not fully work
+        eprintln!(
+            "session.attach returned error (acceptable in test env): {:?}",
+            attach["error"]
+        );
+        return;
+    }
+
+    let result = &attach["result"];
+    assert_eq!(
+        result["name"].as_str(),
+        Some("lead"),
+        "Attached session name should be 'lead'"
+    );
+    assert!(
+        result["session_id"].is_string(),
+        "Attach response should include session_id"
+    );
+    assert!(
+        result["provider"].is_string(),
+        "Attach response should include provider"
+    );
+    assert!(
+        result["cwd"].is_string(),
+        "Attach response should include cwd"
+    );
+}
+
+/// Test that `session.attach` followed by `session.detach` for the lead
+/// completes the full attach/detach lifecycle.
+///
+/// This exercises the core lifecycle: spawn → attach (pause) → detach (resume).
+#[test]
+#[ignore] // Requires built binary
+fn test_daemon_rpc_lead_attach_detach_lifecycle() {
+    let mut fixture = match DaemonFixture::new() {
+        Some(f) => f,
+        None => return,
+    };
+
+    if !fixture.start_daemon() {
+        return;
+    }
+
+    // Step 1: Spawn the lead
+    let spawn = fixture.rpc_call("lead.spawn", Some(serde_json::json!({})));
+    assert!(spawn.is_some(), "lead.spawn should respond");
+    let spawn = spawn.unwrap();
+    if spawn["error"].is_object() {
+        eprintln!(
+            "Skipping lifecycle test: lead.spawn failed: {:?}",
+            spawn["error"]["message"]
+        );
+        return;
+    }
+
+    thread::sleep(Duration::from_millis(1000));
+
+    // Step 2: Attach to the lead (pauses headless session)
+    let attach = fixture.rpc_call(
+        "session.attach",
+        Some(serde_json::json!({"target": "name/lead"})),
+    );
+    assert!(attach.is_some(), "session.attach should respond");
+    let attach = attach.unwrap();
+    if attach["error"].is_object() {
+        eprintln!(
+            "Skipping lifecycle test: session.attach failed: {:?}",
+            attach["error"]
+        );
+        return;
+    }
+
+    // Verify session.list shows "attached" status
+    thread::sleep(Duration::from_millis(500));
+    let list = fixture.rpc_call("session.list", None);
+    if let Some(list) = list
+        && let Some(sessions) = list["result"]["sessions"].as_array()
+        && let Some(lead) = sessions.iter().find(|s| s["name"].as_str() == Some("lead"))
+    {
+        assert_eq!(
+            lead["status"].as_str(),
+            Some("attached"),
+            "Lead should show as 'attached' after session.attach"
+        );
+    }
+
+    // Step 3: Detach the lead (resumes headless session)
+    let detach = fixture.rpc_call("session.detach", Some(serde_json::json!({"name": "lead"})));
+    assert!(detach.is_some(), "session.detach should respond");
+
+    let detach = detach.unwrap();
+    // Detach may fail to re-spawn in test env (no claude CLI), but should
+    // return a well-formed response
+    if detach["error"].is_object() {
+        assert!(
+            detach["error"]["code"].is_number(),
+            "Detach error should have numeric code"
+        );
+        assert!(
+            detach["error"]["message"].is_string(),
+            "Detach error should have message"
+        );
+    } else {
+        assert!(
+            detach["result"]["success"].as_bool() == Some(true),
+            "Detach should succeed"
+        );
+    }
+}
+
+/// Test that `session.attach` on a non-existent session returns a proper error.
+#[test]
+#[ignore] // Requires built binary
+fn test_daemon_rpc_session_attach_nonexistent_returns_error() {
+    let mut fixture = match DaemonFixture::new() {
+        Some(f) => f,
+        None => return,
+    };
+
+    if !fixture.start_daemon() {
+        return;
+    }
+
+    let response = fixture.rpc_call(
+        "session.attach",
+        Some(serde_json::json!({"target": "name/nonexistent"})),
+    );
+    assert!(response.is_some(), "session.attach should respond");
+
+    let response = response.unwrap();
+    assert!(
+        response["error"].is_object(),
+        "Attaching to nonexistent session should return error"
+    );
+    assert!(
+        response["error"]["code"].is_number(),
+        "Error should have numeric code"
+    );
+}
+
+/// Test that double-attach to the same lead returns an error.
+///
+/// If the lead is already attached, a second attach should fail with
+/// a clear error rather than deadlocking or corrupting state.
+#[test]
+#[ignore] // Requires built binary
+fn test_daemon_rpc_session_double_attach_returns_error() {
+    let mut fixture = match DaemonFixture::new() {
+        Some(f) => f,
+        None => return,
+    };
+
+    if !fixture.start_daemon() {
+        return;
+    }
+
+    // Spawn and attach the lead
+    let spawn = fixture.rpc_call("lead.spawn", Some(serde_json::json!({})));
+    if spawn.is_none() || spawn.as_ref().unwrap()["error"].is_object() {
+        eprintln!("Skipping: lead.spawn failed in test env");
+        return;
+    }
+    thread::sleep(Duration::from_millis(1000));
+
+    let attach1 = fixture.rpc_call(
+        "session.attach",
+        Some(serde_json::json!({"target": "name/lead"})),
+    );
+    if attach1.is_none() || attach1.as_ref().unwrap()["error"].is_object() {
+        eprintln!("Skipping: first attach failed in test env");
+        return;
+    }
+
+    // Second attach should fail (already attached)
+    let attach2 = fixture.rpc_call(
+        "session.attach",
+        Some(serde_json::json!({"target": "name/lead"})),
+    );
+    assert!(attach2.is_some(), "Second attach should respond");
+
+    let attach2 = attach2.unwrap();
+    assert!(
+        attach2["error"].is_object(),
+        "Double-attach should return error, got: {:?}",
+        attach2
+    );
+    let msg = attach2["error"]["message"].as_str().unwrap_or("");
+    assert!(
+        msg.contains("already attached"),
+        "Error should mention 'already attached', got: {}",
+        msg
+    );
+}
+
+/// Test that `session.detach` is idempotent — detaching a non-attached session returns success.
+#[test]
+#[ignore] // Requires built binary
+fn test_daemon_rpc_session_detach_idempotent() {
+    let mut fixture = match DaemonFixture::new() {
+        Some(f) => f,
+        None => return,
+    };
+
+    if !fixture.start_daemon() {
+        return;
+    }
+
+    // Detach a name that was never attached — should not crash or hang
+    let response = fixture.rpc_call("session.detach", Some(serde_json::json!({"name": "lead"})));
+    assert!(
+        response.is_some(),
+        "session.detach should respond even for non-attached names"
+    );
+
+    // Should return either success (no-op) or a well-formed error
+    let response = response.unwrap();
+    assert!(
+        response["result"].is_object() || response["error"].is_object(),
+        "Response should be well-formed JSON-RPC"
+    );
+}
+
+/// Test that `session.list` returns an empty array when no sessions exist.
+#[test]
+#[ignore] // Requires built binary
+fn test_daemon_rpc_session_list_empty() {
+    let mut fixture = match DaemonFixture::new() {
+        Some(f) => f,
+        None => return,
+    };
+
+    if !fixture.start_daemon() {
+        return;
+    }
+
+    let response = fixture.rpc_call("session.list", None);
+    assert!(response.is_some(), "session.list should respond");
+
+    let response = response.unwrap();
+    assert!(
+        response["result"]["success"].as_bool() == Some(true),
+        "session.list should succeed"
+    );
+    let sessions = response["result"]["sessions"]
+        .as_array()
+        .expect("sessions should be an array");
+    // In a fresh daemon, there may be no sessions (lead may not have spawned in test env)
+    // Just verify the structure is correct
+    for session in sessions {
+        assert!(session["name"].is_string(), "Each session should have name");
+        assert!(
+            session["session_id"].is_string(),
+            "Each session should have session_id"
+        );
+        assert!(
+            session["status"].is_string(),
+            "Each session should have status"
+        );
+    }
 }

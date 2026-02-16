@@ -70,11 +70,8 @@ pub(super) async fn chat_monitor_loop(
                                         && msg.content.to_lowercase().contains("@lead")
                                     {
                                         let nudge_text = format!("{}: {}", msg.from, msg.content);
-                                        if let Err(e) = state.coworkers.nudge_lead(&nudge_text) {
-                                            warn!("Failed to nudge lead for @lead in {} message: {}", msg.from, e);
-                                        } else {
-                                            info!("Nudged lead about @lead mention in {} message", msg.from);
-                                        }
+                                        state.nudge_lead(&nudge_text).await;
+                                        info!("Nudged lead about @lead mention in {} message", msg.from);
                                         state.send_push_notification(
                                             &format!("@lead from {}", msg.from),
                                             &msg.content,
@@ -159,7 +156,7 @@ pub(super) async fn route_mentions(state: &DaemonState, msg: &Message) {
 
 /// Route an @all broadcast: nudge every running coworker and the lead, except the sender.
 async fn route_at_all(state: &DaemonState, msg: &Message) {
-    // Only nudge Running coworkers — Stopping/Starting coworkers have no tmux window.
+    // Only nudge Running coworkers — Stopping/Starting coworkers have no active session.
     let running_coworkers = state.coworkers.list_running();
     let nudge_text = format!("{} said: {}", msg.from, msg.content);
 
@@ -171,11 +168,8 @@ async fn route_at_all(state: &DaemonState, msg: &Message) {
 
     // Nudge the lead (unless the lead sent the message)
     if !msg.from.eq_ignore_ascii_case("lead") {
-        if let Err(e) = state.coworkers.nudge_lead(&nudge_text) {
-            warn!("Failed to nudge lead for @all: {}", e);
-        } else {
-            info!("Nudged lead for @all from {}", msg.from);
-        }
+        state.nudge_lead(&nudge_text).await;
+        info!("Nudged lead for @all from {}", msg.from);
     }
 
     // Nudge all running coworkers (except the sender)

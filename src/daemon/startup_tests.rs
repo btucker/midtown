@@ -18,6 +18,7 @@ fn test_session_info(
         working_dir: Some("/tmp/test".to_string()),
         provider: None,
         profile: None,
+        resume_on_startup: true,
     }
 }
 
@@ -130,17 +131,103 @@ async fn test_recovering_coworker_names_returns_session_names() {
 }
 
 #[tokio::test]
+async fn test_recover_headless_sessions_skips_non_resumable_historical_entries() {
+    let persistent_state = tokio::sync::Mutex::new(DaemonPersistentState::default());
+
+    {
+        let mut state = persistent_state.lock().await;
+        state.headless_sessions.insert(
+            "amsterdam".to_string(),
+            test_session_info("amsterdam", Some(42)),
+        );
+        let mut historical = test_session_info("columbus", Some(43));
+        historical.resume_on_startup = false;
+        state
+            .headless_sessions
+            .insert("columbus".to_string(), historical);
+    }
+
+    let effects = recover_headless_sessions(&persistent_state, "test-repo").await;
+    assert_eq!(effects.len(), 1);
+    match &effects[0] {
+        Effect::ResumeCoworker { name, .. } => assert_eq!(name, "amsterdam"),
+        other => panic!("Expected ResumeCoworker, got {:?}", other),
+    }
+}
+
+#[tokio::test]
+async fn test_recovering_coworker_names_skips_non_resumable_historical_entries() {
+    let persistent_state = tokio::sync::Mutex::new(DaemonPersistentState::default());
+
+    {
+        let mut state = persistent_state.lock().await;
+        state.headless_sessions.insert(
+            "amsterdam".to_string(),
+            test_session_info("amsterdam", Some(42)),
+        );
+        let mut historical = test_session_info("columbus", Some(43));
+        historical.resume_on_startup = false;
+        state
+            .headless_sessions
+            .insert("columbus".to_string(), historical);
+    }
+
+    let names = recovering_coworker_names(&persistent_state).await;
+    assert_eq!(names, vec!["amsterdam".to_string()]);
+}
+
+#[tokio::test]
 async fn test_recovering_coworker_names_empty_state() {
     let persistent_state = tokio::sync::Mutex::new(DaemonPersistentState::default());
     let names = recovering_coworker_names(&persistent_state).await;
     assert!(names.is_empty());
 }
 
+#[tokio::test]
+async fn test_startup_recovery_sets_lead_role() {
+    let persistent_state = tokio::sync::Mutex::new(DaemonPersistentState::default());
+
+    {
+        let mut state = persistent_state.lock().await;
+        state.headless_sessions.insert(
+            "lead".to_string(),
+            crate::daemon::state::HeadlessSessionInfo {
+                session_id: "session-lead".to_string(),
+                last_active: chrono::Utc::now(),
+                purpose: "lead session".to_string(),
+                pid: Some(99999),
+                coworker_type: None,
+                task_id: None,
+                pr_number: None,
+                working_dir: Some("/tmp/test".to_string()),
+                provider: None,
+                profile: None,
+                resume_on_startup: true,
+            },
+        );
+    }
+
+    let effects = recover_headless_sessions(&persistent_state, "test-repo").await;
+    assert_eq!(effects.len(), 1);
+
+    match &effects[0] {
+        Effect::ResumeCoworker { name, config, .. } => {
+            assert_eq!(name, "lead");
+            assert_eq!(config.role, crate::launch::CoworkerRole::Lead);
+            assert!(
+                !config.restrict_setting_sources,
+                "Lead should have unrestricted setting sources"
+            );
+        }
+        other => panic!("Expected ResumeCoworker, got {:?}", other),
+    }
+}
+
 /// Verify that check_sandbox_context() returns an appropriate message when
 /// the daemon is running inside a sandbox (where coworker sandboxing will fail).
 ///
 /// This prevents the crash loop from 2026-02-13 where:
-/// 1. Lead ran `midtown start --daemon-only` from within tmux (sandboxed)
+/// 1. Lead ran `midtown start --daemon-only` from within a sandboxed session
 /// 2. Daemon inherited the Lead's sandbox
 /// 3. All coworker spawns failed with "Already inside a sandbox — cannot nest sandbox-exec"
 #[test]

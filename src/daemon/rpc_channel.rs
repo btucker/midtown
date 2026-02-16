@@ -5,7 +5,7 @@
 
 use std::time::{Duration, Instant};
 
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info};
 
 use crate::message::{Message, MessageType};
 use crate::rpc::{RequestId, Response, RpcError};
@@ -52,7 +52,7 @@ fn extract_review_note_pr(message: &str) -> Option<u64> {
 ///
 /// Supports IRC-style `/me` actions. If the message starts with `/me `,
 /// the prefix is stripped and the message is stored as an Action type.
-/// For coworkers, the action text is also reflected in their tmux tab name.
+/// For coworkers, the action text is also reflected in the web UI status.
 ///
 /// Also detects feedback requests from coworkers and nudges the Lead.
 ///
@@ -127,36 +127,6 @@ pub(super) async fn handle_channel_post(
         drop(records); // Release write lock before acquiring read lock
     }
 
-    // Update tmux tab for coworkers when they post /me actions.
-    // Prefer structured state from daemon memory (reported via RPC) over
-    // parsing the freeform /me message text with keyword matching.
-    //
-    // Run tmux operations in spawn_blocking to avoid blocking the async
-    // runtime. This prevents RPC timeouts when tmux commands are slow.
-    if msg_type == MessageType::Action {
-        let display_status = {
-            let records = state.coworker_records.read().await;
-            records.get(from).and_then(|record| record.display_status())
-        };
-
-        let coworkers = state.coworkers.clone();
-        let from_clone = from.to_string();
-        let content_clone = content.clone();
-
-        tokio::task::spawn_blocking(move || {
-            if let Some(display) = display_status {
-                if let Err(e) = coworkers.update_status_formatted(&from_clone, &display) {
-                    debug!("Failed to update tmux tab for {}: {}", from_clone, e);
-                }
-            } else {
-                // Fallback: parse /me message text with keyword matching
-                if let Err(e) = coworkers.update_status_display(&from_clone, Some(&content_clone)) {
-                    debug!("Failed to update tmux tab for {}: {}", from_clone, e);
-                }
-            }
-        });
-    }
-
     // Nudge lead when user messages arrive (from web UI or TUI input)
     if state.is_user_sender(from) {
         // Check if user is @mentioning specific coworkers or @all
@@ -174,13 +144,7 @@ pub(super) async fn handle_channel_post(
         if !has_coworker_mentions || has_lead_mention {
             let nudge_msg = format!("user: {}", content);
             info!("Nudging Lead about user message");
-            // Run in spawn_blocking to avoid blocking the async runtime
-            let coworkers = state.coworkers.clone();
-            tokio::task::spawn_blocking(move || {
-                if let Err(e) = coworkers.nudge_lead(&nudge_msg) {
-                    warn!("Failed to nudge Lead about user message: {}", e);
-                }
-            });
+            state.nudge_lead(&nudge_msg).await;
         } else {
             info!("Skipping Lead nudge — user message routed directly to mentioned coworker(s)");
         }
@@ -207,14 +171,7 @@ pub(super) async fn handle_channel_post(
 
             let nudge_msg = format!("{} mentioned @lead: {}", from, summary);
             info!("Nudging Lead about @lead mention from {}", from);
-
-            // Nudge the Lead window (spawn_blocking to avoid blocking async runtime)
-            let coworkers = state.coworkers.clone();
-            tokio::task::spawn_blocking(move || {
-                if let Err(e) = coworkers.nudge_lead(&nudge_msg) {
-                    warn!("Failed to nudge Lead about @lead mention: {}", e);
-                }
-            });
+            state.nudge_lead(&nudge_msg).await;
 
             // Send push notification to mobile PWA
             state.send_push_notification(&format!("@lead from {}", from), &summary, "mention");
@@ -230,13 +187,6 @@ pub(super) async fn handle_channel_post(
             .is_some_and(|dn| content_lower.contains(&format!("@{}", dn.to_lowercase())));
     if has_user_mention && !state.is_user_sender(from) {
         info!("Bell notification: @user mentioned by {}", from);
-        // Run in spawn_blocking to avoid blocking the async runtime
-        let coworkers = state.coworkers.clone();
-        tokio::task::spawn_blocking(move || {
-            if let Err(e) = coworkers.notify_user() {
-                warn!("Failed to send bell notification for @user mention: {}", e);
-            }
-        });
         let display = state.user_display_name.as_deref().unwrap_or("user");
         let summary = truncate_str(&content, 100);
         state.send_push_notification(&format!("@{} from {}", display, from), &summary, "mention");
@@ -315,6 +265,55 @@ pub(super) fn handle_channel_read(id: RequestId, all: bool, state: &DaemonState)
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::Command;
+
+    fn make_test_state(repo_name: &str) -> DaemonState {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        Command::new("git")
+            .args(["init"])
+            .current_dir(temp_dir.path())
+            .output()
+            .expect("git init");
+        Command::new("git")
+            .args(["config", "user.email", "test@example.com"])
+            .current_dir(temp_dir.path())
+            .output()
+            .expect("git config");
+        Command::new("git")
+            .args(["config", "user.name", "Test"])
+            .current_dir(temp_dir.path())
+            .output()
+            .expect("git config");
+        Command::new("git")
+            .args(["commit", "--allow-empty", "-m", "init"])
+            .current_dir(temp_dir.path())
+            .output()
+            .expect("git commit");
+
+        let wm = crate::worktree::WorktreeManager::new(temp_dir.path().to_path_buf())
+            .expect("worktree manager");
+        let cm = crate::coworker::CoworkerManager::new(wm);
+
+        // Leak temp_dir so it survives the test
+        let base_dir = temp_dir.path().to_path_buf();
+        std::mem::forget(temp_dir);
+
+        let channel_router = crate::ChannelRouter::new(&base_dir, "midtown");
+        let (shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(1);
+        DaemonState::new(
+            "/tmp/test.sock".into(),
+            cm,
+            repo_name.to_string(),
+            vec![base_dir],
+            channel_router,
+            None,
+            10,
+            None,
+            "main".to_string(),
+            shutdown_tx,
+        )
+        .expect("daemon state")
+    }
 
     #[test]
     fn test_unescape_shell_artifacts_exclamation() {
@@ -370,6 +369,53 @@ mod tests {
         assert_eq!(
             extract_review_note_pr("@lead [Review Note] PR #9999: edge case"),
             Some(9999)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_user_message_queues_headed_lead_nudge() {
+        let state = make_test_state("midtown-test-rpc-channel-queue-user");
+        let adapter_id = "test-adapter-user";
+        state
+            .headed_register("lead", adapter_id, crate::auth::AuthProvider::Claude)
+            .await
+            .expect("register headed adapter");
+
+        let response =
+            handle_channel_post(1_i64.into(), "user", "please check this", None, &state).await;
+        assert!(response.error.is_none(), "channel.post should succeed");
+
+        let (messages, _capture) = state
+            .headed_poll("lead", adapter_id, 0, 10)
+            .await
+            .expect("poll headed queue");
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].kind, "nudge_text");
+        assert_eq!(messages[0].text, "user: please check this");
+        assert!(messages[0].submit);
+    }
+
+    #[tokio::test]
+    async fn test_coworker_at_lead_queues_headed_lead_nudge() {
+        let state = make_test_state("midtown-test-rpc-channel-queue-coworker");
+        let adapter_id = "test-adapter-coworker";
+        state
+            .headed_register("lead", adapter_id, crate::auth::AuthProvider::Claude)
+            .await
+            .expect("register headed adapter");
+
+        let response =
+            handle_channel_post(2_i64.into(), "york", "@lead need a review", None, &state).await;
+        assert!(response.error.is_none(), "channel.post should succeed");
+
+        let (messages, _capture) = state
+            .headed_poll("lead", adapter_id, 0, 10)
+            .await
+            .expect("poll headed queue");
+        assert_eq!(messages.len(), 1);
+        assert!(
+            messages[0].text.contains("york mentioned @lead"),
+            "queue entry should summarize coworker @lead mention"
         );
     }
 }

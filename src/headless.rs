@@ -2,7 +2,7 @@
 //!
 //! Spawns `claude -p --verbose --output-format stream-json` as a child process
 //! and communicates via stdin/stdout NDJSON. This provides a lightweight
-//! alternative to tmux-based coworkers for structured AI tasks (workflow steps,
+//! executor for structured AI tasks (workflow steps,
 //! structured outputs, one-shot queries).
 //!
 //! ## Protocol
@@ -382,6 +382,10 @@ impl HeadlessSession {
     /// - **Resume session** (`resume_session_id: Some(id)`): Uses `--resume <id>`,
     ///   omits `--system-prompt` and `--json-schema`.
     pub fn spawn(config: &HeadlessConfig) -> std::io::Result<Self> {
+        if let Err(e) = crate::platform_launch::run_platform_prelaunch_hook(config.auth_provider) {
+            warn!("Platform pre-launch hook failed (continuing): {}", e);
+        }
+
         let is_resume = config.resume_session_id.is_some();
         let mut cmd = match config.auth_provider {
             crate::auth::AuthProvider::Claude | crate::auth::AuthProvider::Zai => {

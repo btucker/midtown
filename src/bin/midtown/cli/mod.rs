@@ -5,9 +5,9 @@ mod coworker;
 mod daemon;
 mod diagram;
 pub mod e2e;
+mod headed_wrapper;
 mod hooks;
 mod lead;
-mod plugin;
 mod pr;
 mod response;
 mod session;
@@ -18,9 +18,9 @@ pub use channel::ChannelCommand;
 pub use coworker::CoworkerCommand;
 pub use diagram::DiagramCommand;
 pub use e2e::E2eCommand;
+pub use headed_wrapper::HeadedWrapperCommand;
 pub use hooks::HookCommand;
 // Note: daemon::get_lead_status and daemon::LEAD_SESSION available if needed
-pub use plugin::PluginCommand;
 pub use pr::PrCommand;
 pub use response::Response;
 pub use session::SessionCommand;
@@ -54,21 +54,23 @@ pub fn handle_status(client: &DaemonClient) -> Result<Response, String> {
     client.status()
 }
 
-pub fn handle_plugin(cmd: &PluginCommand, client: &DaemonClient) -> Result<Response, String> {
-    plugin::handle(cmd, client)
+pub fn handle_headed_wrapper(
+    cmd: &HeadedWrapperCommand,
+    client: &DaemonClient,
+) -> Result<Response, String> {
+    headed_wrapper::handle(cmd, client)
 }
 
 pub fn handle_pr(cmd: &PrCommand, client: &DaemonClient) -> Result<Response, String> {
     pr::handle(cmd, client)
 }
 
-/// Handle start command (no daemon required - it starts the daemon)
+/// Handle start command (no daemon required - it starts daemon/webserver services)
 pub fn handle_start(
-    daemon_only: bool,
     project: Option<String>,
     repos: Vec<std::path::PathBuf>,
 ) -> Result<Response, String> {
-    daemon::handle_start(daemon_only, project, repos)
+    daemon::handle_start(project, repos)
 }
 
 /// Handle stop command (no daemon required - it stops the daemon)
@@ -81,9 +83,9 @@ pub fn handle_restart(force: bool) -> Result<Response, String> {
     daemon::handle_restart(force)
 }
 
-/// Handle attach command (no daemon required - just attaches to tmux)
-pub fn handle_attach(project: Option<&str>) -> Result<Response, String> {
-    daemon::handle_attach(project)
+/// Handle view command (launches chat + best-effort lead split)
+pub fn handle_view(project: Option<&str>, skip_auto_split: bool) -> Result<Response, String> {
+    daemon::handle_view(project, skip_auto_split)
 }
 
 /// Handle project list command (no daemon required)
@@ -104,7 +106,7 @@ pub fn handle_chat() -> Result<(), String> {
 /// Handle `midtown state <phase> [--task <id>]` — reports coworker state via daemon RPC.
 ///
 /// Called explicitly by coworkers to report their workflow phase.
-/// Sends state to the daemon which stores it in memory and updates tmux tab display.
+/// Sends state to the daemon which stores it in memory and updates web UI status.
 pub fn handle_state(
     phase: midtown::coworker_state::WorkflowPhase,
     task_id: Option<u32>,

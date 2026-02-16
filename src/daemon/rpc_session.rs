@@ -1,9 +1,12 @@
 //! Session attach/detach RPC handlers.
 //!
-//! Handles `session.attach`, `session.detach`, and `session.list` methods,
-//! allowing interactive tmux sessions to be connected to headless coworker
+//! Handles `session.resolve`, `session.attach`, `session.detach`, and
+//! `session.list` methods,
+//! allowing interactive terminal sessions to be connected to headless coworker
 //! processes.
 
+use std::sync::OnceLock;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tracing::{info, warn};
 
 use crate::message::Message;
@@ -21,12 +24,76 @@ enum AttachTarget {
     Name(String),
     Task(u32),
     Pr(u64),
+    Platform(crate::auth::AuthProvider),
+    PlatformSession {
+        platform: crate::auth::AuthProvider,
+        session_id: String,
+    },
 }
 
 /// Parse an attach target string into a typed enum.
 ///
 /// Pure function — no state access. Validates format and types.
 fn parse_attach_target(target: &str) -> Result<AttachTarget, String> {
+    // Platform-only shorthand:
+    //   claude, codex
+    match target.to_ascii_lowercase().as_str() {
+        "claude" | "anthropic" | "antropic" => {
+            return Ok(AttachTarget::Platform(crate::auth::AuthProvider::Claude));
+        }
+        "codex" | "openai" => {
+            return Ok(AttachTarget::Platform(crate::auth::AuthProvider::Codex));
+        }
+        "zai" | "z.ai" => {
+            return Err(
+                "Invalid platform 'zai'. Use claude for Anthropic/z.ai sessions.".to_string(),
+            );
+        }
+        _ => {}
+    }
+
+    // New slash-delimited syntax:
+    //   name/<coworker>, task/<id>, pr/<number>, claude/<session_id>, codex/<session_id>
+    if let Some((kind, value)) = target.split_once('/') {
+        if value.is_empty() {
+            return Err(format!("Missing value in attach target '{}'", target));
+        }
+
+        return match kind.to_ascii_lowercase().as_str() {
+            "name" => Ok(AttachTarget::Name(value.to_lowercase())),
+            "task" => {
+                let id: u32 = value
+                    .parse()
+                    .map_err(|_| format!("Invalid task ID: {}", value))?;
+                Ok(AttachTarget::Task(id))
+            }
+            "pr" => {
+                let pr_num: u64 = value
+                    .parse()
+                    .map_err(|_| format!("Invalid PR number: {}", value))?;
+                Ok(AttachTarget::Pr(pr_num))
+            }
+            "claude" | "anthropic" | "antropic" => Ok(AttachTarget::PlatformSession {
+                platform: crate::auth::AuthProvider::Claude,
+                session_id: value.to_string(),
+            }),
+            "codex" | "openai" => Ok(AttachTarget::PlatformSession {
+                platform: crate::auth::AuthProvider::Codex,
+                session_id: value.to_string(),
+            }),
+            "zai" | "z.ai" => Err(
+                "Invalid platform 'zai'. Use claude/<session_id> for Anthropic/z.ai sessions."
+                    .to_string(),
+            ),
+            _ => Err(format!(
+                "Invalid target format: '{}'. Use name/<name>, task/<id>, pr/<number>, or <platform>/<session_id> where platform is claude|codex.",
+                target
+            )),
+        };
+    }
+
+    // Legacy colon-delimited syntax retained for compatibility:
+    //   name:<coworker>, task:<id>, pr:<number>
     if let Some(name) = target.strip_prefix("name:") {
         if name.is_empty() {
             return Err("Coworker name cannot be empty".to_string());
@@ -54,28 +121,88 @@ fn parse_attach_target(target: &str) -> Result<AttachTarget, String> {
     ))
 }
 
-/// Resolve an attach target to a coworker name using daemon state.
-async fn resolve_attach_target(target: &str, state: &DaemonState) -> Result<String, String> {
+fn platform_for_provider(provider: Option<crate::auth::AuthProvider>) -> crate::auth::AuthProvider {
+    match provider {
+        Some(crate::auth::AuthProvider::Codex) => crate::auth::AuthProvider::Codex,
+        Some(crate::auth::AuthProvider::Claude) | Some(crate::auth::AuthProvider::Zai) | None => {
+            crate::auth::AuthProvider::Claude
+        }
+    }
+}
+
+fn monotonic_now_ms() -> u64 {
+    static START: OnceLock<Instant> = OnceLock::new();
+    START
+        .get_or_init(Instant::now)
+        .elapsed()
+        .as_millis()
+        .try_into()
+        .unwrap_or(u64::MAX)
+}
+
+/// Resolve an attach target to one or more coworker names.
+async fn resolve_attach_target_candidates(
+    target: &str,
+    state: &DaemonState,
+) -> Result<Vec<String>, String> {
     let parsed = parse_attach_target(target)?;
 
-    match parsed {
-        AttachTarget::Name(name) => Ok(name),
+    let mut names = match parsed {
+        AttachTarget::Name(name) => vec![name],
         AttachTarget::Task(id) => {
             let id_str = id.to_string();
-            let assignments = state.coworker_task_assignments.lock().unwrap();
-            for (coworker, assignment) in assignments.iter() {
-                if assignment.task_id == id_str {
-                    return Ok(coworker.clone());
-                }
+            let mut matches: Vec<String> = {
+                let assignments = state.coworker_task_assignments.lock().unwrap();
+                assignments
+                    .iter()
+                    .filter_map(|(coworker, assignment)| {
+                        if assignment.task_id == id_str {
+                            Some(coworker.to_lowercase())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect()
+            };
+
+            let persistent = state.persistent_state.lock().await;
+            matches.extend(
+                persistent
+                    .headless_sessions
+                    .iter()
+                    .filter_map(|(name, info)| {
+                        if info.task_id == Some(u64::from(id)) {
+                            Some(name.to_lowercase())
+                        } else {
+                            None
+                        }
+                    }),
+            );
+
+            if matches.is_empty() {
+                return Err(format!("No coworker is assigned to task !{}", id));
             }
-            Err(format!("No coworker is assigned to task !{}", id))
+            matches
         }
         AttachTarget::Pr(pr_num) => {
+            let mut matches: Vec<String> = Vec::new();
             // Check reviewer assignments
             let persistent = state.persistent_state.lock().await;
             if let Some(reviewer) = persistent.github.get_reviewer(pr_num) {
-                return Ok(reviewer.to_lowercase());
+                matches.push(reviewer.to_lowercase());
             }
+            matches.extend(
+                persistent
+                    .headless_sessions
+                    .iter()
+                    .filter_map(|(name, info)| {
+                        if info.pr_number == Some(pr_num) {
+                            Some(name.to_lowercase())
+                        } else {
+                            None
+                        }
+                    }),
+            );
             drop(persistent);
             // Fall back to branch-name-based mapping via coworker list
             let coworkers = state.coworkers.list();
@@ -85,11 +212,82 @@ async fn resolve_attach_target(target: &str, state: &DaemonState) -> Result<Stri
                     .as_ref()
                     .is_some_and(|t| t.contains(&format!("PR #{}", pr_num)))
                 {
-                    return Ok(cw.name.to_lowercase());
+                    matches.push(cw.name.to_lowercase());
                 }
             }
-            Err(format!("No coworker is working on PR #{}", pr_num))
+            if matches.is_empty() {
+                return Err(format!("No coworker is working on PR #{}", pr_num));
+            }
+            matches
         }
+        AttachTarget::Platform(platform) => {
+            let persistent = state.persistent_state.lock().await;
+            let matches: Vec<String> = persistent
+                .headless_sessions
+                .iter()
+                .filter_map(|(name, info)| {
+                    if platform_for_provider(info.provider) == platform {
+                        Some(name.to_lowercase())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            if matches.is_empty() {
+                return Err(format!(
+                    "No persisted sessions found for platform '{}'",
+                    platform.as_str()
+                ));
+            }
+            matches
+        }
+        AttachTarget::PlatformSession {
+            platform,
+            session_id,
+        } => {
+            let persistent = state.persistent_state.lock().await;
+            let matches: Vec<String> = persistent
+                .headless_sessions
+                .iter()
+                .filter_map(|(name, info)| {
+                    if info.session_id != session_id {
+                        return None;
+                    }
+
+                    if platform_for_provider(info.provider) == platform {
+                        Some(name.to_lowercase())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            if matches.is_empty() {
+                return Err(format!(
+                    "No persisted session found for {}/{}",
+                    platform.as_str(),
+                    session_id
+                ));
+            }
+            matches
+        }
+    };
+
+    names.sort();
+    names.dedup();
+    Ok(names)
+}
+
+/// Resolve an attach target to exactly one coworker name.
+async fn resolve_attach_target(target: &str, state: &DaemonState) -> Result<String, String> {
+    let mut names = resolve_attach_target_candidates(target, state).await?;
+    match names.len() {
+        0 => Err(format!("No attachable sessions for target '{}'", target)),
+        1 => Ok(names.remove(0)),
+        _ => Err(format!(
+            "Multiple sessions match '{}': {}. Choose one via `midtown session attach name/<coworker>`.",
+            target,
+            names.join(", ")
+        )),
     }
 }
 
@@ -97,10 +295,115 @@ async fn resolve_attach_target(target: &str, state: &DaemonState) -> Result<Stri
 // Handlers
 // ============================================================================
 
+/// Handle session.resolve RPC method.
+///
+/// Returns attachable candidates for a target query so the CLI can present an
+/// interactive selector before calling `session.attach`.
+pub(super) async fn handle_session_resolve(
+    id: RequestId,
+    target: &str,
+    state: &DaemonState,
+) -> Response {
+    let names = match resolve_attach_target_candidates(target, state).await {
+        Ok(n) => n,
+        Err(e) => return Response::error(id, RpcError::new(-32602, e)),
+    };
+
+    let resolved_at_unix_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis().try_into().unwrap_or(u64::MAX))
+        .unwrap_or(0);
+    let resolved_at_monotonic_ms = monotonic_now_ms();
+
+    let persistent = state.persistent_state.lock().await;
+    let now = chrono::Utc::now();
+    let attached = state.attached_coworkers.lock().unwrap().clone();
+    let running_coworkers: std::collections::HashMap<String, crate::coworker::Coworker> = state
+        .coworkers
+        .list()
+        .into_iter()
+        .map(|cw| (cw.name.to_lowercase(), cw))
+        .collect();
+    let mut candidates: Vec<serde_json::Value> = names
+        .into_iter()
+        .filter_map(|name| {
+            let info = persistent.headless_sessions.get(&name)?;
+            let coworker = running_coworkers.get(&name);
+            let provider = info.provider.unwrap_or(crate::auth::AuthProvider::Claude);
+            let platform = platform_for_provider(info.provider);
+            let attached_now = attached.contains(&name);
+            let running = coworker.is_some();
+            let cwd = coworker
+                .map(|cw| cw.working_dir.clone())
+                .or_else(|| info.working_dir.clone())
+                .unwrap_or_else(|| {
+                    state
+                        .all_repo_paths
+                        .first()
+                        .map(|p| p.to_string_lossy().to_string())
+                        .unwrap_or_default()
+                });
+            let last_active_age_ms = now
+                .signed_duration_since(info.last_active)
+                .num_milliseconds()
+                .max(0) as u64;
+            Some(serde_json::json!({
+                "name": name,
+                "session_id": info.session_id,
+                "provider": provider.as_str(),
+                "platform": platform.as_str(),
+                "cwd": cwd,
+                "running": running,
+                "attached": attached_now,
+                "last_active": info.last_active.to_rfc3339(),
+                "last_active_age_ms": last_active_age_ms,
+            }))
+        })
+        .collect();
+
+    if candidates.is_empty() {
+        return Response::error(
+            id,
+            RpcError::new(
+                -32602,
+                format!(
+                    "Target '{}' matched no persisted attachable sessions",
+                    target
+                ),
+            ),
+        );
+    }
+
+    candidates.sort_by(|a, b| {
+        let ar = a.get("running").and_then(|v| v.as_bool()).unwrap_or(false);
+        let br = b.get("running").and_then(|v| v.as_bool()).unwrap_or(false);
+        match br.cmp(&ar) {
+            std::cmp::Ordering::Equal => {}
+            ord => return ord,
+        }
+        let an = a.get("name").and_then(|v| v.as_str()).unwrap_or_default();
+        let bn = b.get("name").and_then(|v| v.as_str()).unwrap_or_default();
+        an.cmp(bn)
+    });
+
+    Response::success(
+        id,
+        serde_json::json!({
+            "success": true,
+            "resolved_at_unix_ms": resolved_at_unix_ms,
+            "resolved_at_monotonic_ms": resolved_at_monotonic_ms,
+            "candidates": candidates,
+        }),
+    )
+}
+
 /// Handle session.attach RPC method.
 ///
-/// Pauses the headless coworker process and returns session info so the CLI
-/// can create a tmux window with `claude --resume <session-id>`.
+/// Attaches to a persisted session and returns session info so the CLI can
+/// open an interactive pane with the matching provider CLI.
+///
+/// If the coworker is currently running headless, the daemon pauses it first.
+/// If the coworker is not running, the persisted session is attached directly.
 pub(super) async fn handle_session_attach(
     id: RequestId,
     target: &str,
@@ -110,14 +413,6 @@ pub(super) async fn handle_session_attach(
         Ok(n) => n,
         Err(e) => return Response::error(id, RpcError::new(-32602, e)),
     };
-
-    // Verify the coworker is running
-    if state.coworkers.get(&name).is_none() {
-        return Response::error(
-            id,
-            RpcError::new(-32602, format!("Coworker '{}' is not running", name)),
-        );
-    }
 
     // Guard against double-attach
     {
@@ -130,53 +425,117 @@ pub(super) async fn handle_session_attach(
         }
     }
 
-    // Get the session ID from persistent state
-    let session_id = {
+    // Get session details from persistent state (eagerly persisted at spawn time).
+    // If session_id is empty (race between spawn and init event), backfill from
+    // session_manager which may have received the init event by now.
+    let info = {
         let persistent = state.persistent_state.lock().await;
-        persistent
-            .headless_sessions
-            .get(&name)
-            .map(|info| info.session_id.clone())
-    };
-
-    let session_id = match session_id {
-        Some(sid) => sid,
-        None => {
-            return Response::error(
-                id,
-                RpcError::new(
-                    -32603,
-                    format!(
-                        "No session ID found for coworker '{}'. \
-                         They may not be running in headless mode.",
-                        name
+        match persistent.headless_sessions.get(&name).cloned() {
+            Some(mut info) => {
+                if info.session_id.is_empty()
+                    && let Some(sid) = state.session_manager.get_session_id(&name).await
+                {
+                    info.session_id = sid;
+                }
+                info
+            }
+            None => {
+                return Response::error(
+                    id,
+                    RpcError::new(
+                        -32603,
+                        format!(
+                            "No session found for coworker '{}'. \
+                             They may not be running in headless mode.",
+                            name
+                        ),
                     ),
-                ),
-            );
+                );
+            }
         }
     };
 
-    // Get working directory before shutting down
-    let cwd = state
-        .coworkers
-        .get(&name)
-        .map(|cw| cw.working_dir.clone())
-        .unwrap_or_default();
-
-    // Shut down the headless coworker (kills the process but session persists on disk)
-    state.broadcast_coworker_update(&name, "attaching", None);
-    if let Err(e) = state.coworkers.shutdown(&name) {
+    // If session_id is still empty after backfill, the session hasn't initialized yet.
+    // Return a retryable error so callers (e.g. `midtown view`) can wait and retry.
+    if info.session_id.is_empty() {
         return Response::error(
             id,
             RpcError::new(
                 -32603,
-                format!("Failed to pause coworker '{}': {}", name, e),
+                format!(
+                    "No session ID found for '{}' yet — session still initializing",
+                    name
+                ),
             ),
         );
     }
-    // Record stop time to prevent false orphan recovery during the grace period
-    // (see #874). The attached_coworkers set provides the long-term exemption.
-    state.record_coworker_stop_time(&name);
+
+    // Check if session is currently running headless
+    let running = state.session_manager.is_alive(&name).await;
+    let provider = info.provider.unwrap_or(crate::auth::AuthProvider::Claude);
+    let session_id = info.session_id.clone();
+    let cwd = if name == "lead" {
+        // Lead attaches in the lead worktree (where the headless session runs),
+        // so `claude --resume` finds the session data (stored per-CWD).
+        let lead_wt = crate::paths::lead_worktree_path(&state.repo_name);
+        if lead_wt.exists() {
+            lead_wt.to_string_lossy().to_string()
+        } else {
+            state
+                .all_repo_paths
+                .first()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_default()
+        }
+    } else {
+        state
+            .coworkers
+            .get(&name)
+            .map(|cw| cw.working_dir.clone())
+            .or(info.working_dir.clone())
+            .unwrap_or_else(|| {
+                state
+                    .all_repo_paths
+                    .first()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_default()
+            })
+    };
+
+    if running {
+        // Gracefully pause the running headless session, giving Claude time to
+        // persist its session state so `--resume` works in the interactive pane.
+        state.broadcast_coworker_update(&name, "attaching", None);
+        if let Err(e) = state
+            .session_manager
+            .graceful_shutdown(&name, std::time::Duration::from_secs(10))
+            .await
+        {
+            return Response::error(
+                id,
+                RpcError::new(
+                    -32603,
+                    format!("Failed to pause headless session '{}': {}", name, e),
+                ),
+            );
+        }
+        // Deregister from CoworkerManager so prepare_spawn() won't reject the
+        // re-spawn on detach with "already running". The headless session is gone;
+        // spawn_coworker() will re-register when the new session starts.
+        state.coworkers.deregister(&name);
+        // Record stop time to prevent false orphan recovery during the grace period
+        // (see #874). The attached_coworkers set provides the long-term exemption.
+        state.record_coworker_stop_time(&name);
+        info!(
+            "Paused headless session '{}' for attach (session={})",
+            name, session_id
+        );
+    } else {
+        info!(
+            "Attaching to persisted non-running session for '{}' (session={})",
+            name, session_id
+        );
+    }
 
     // Mark as attached so stuck detection and orphan recovery skip this coworker
     {
@@ -184,16 +543,16 @@ pub(super) async fn handle_session_attach(
         attached.insert(name.to_lowercase());
     }
 
-    info!(
-        "Paused headless coworker '{}' for attach (session={})",
-        name, session_id
-    );
-
     // Post to channel
+    let status_text = if running {
+        "running headless paused, interactive session active"
+    } else {
+        "resuming historical session interactively"
+    };
     let _ = state
         .send_and_broadcast_async(&Message::system(format!(
-            "Attached to {} — headless paused, interactive tmux session active",
-            name
+            "Attached to {} — {}",
+            name, status_text
         )))
         .await;
 
@@ -203,6 +562,7 @@ pub(super) async fn handle_session_attach(
             "session_id": session_id,
             "cwd": cwd,
             "name": name,
+            "provider": provider.as_str(),
         }),
     )
 }
@@ -225,10 +585,12 @@ pub(super) async fn handle_session_detach(
         attached.remove(&name);
     }
 
-    // Idempotency guard: if the coworker is already running, skip re-spawn.
+    // Idempotency guard: if the headless session is already alive, skip re-spawn.
     // This prevents the race between manual detach and background auto-detach
-    // from spawning duplicate processes.
-    if state.coworkers.get(&name).is_some() {
+    // from spawning duplicate processes. Uses session_manager (headless liveness)
+    // rather than coworkers.get() (registration), because the coworker stays
+    // registered during interactive attach — only the headless session is paused.
+    if state.session_manager.is_alive(&name).await {
         info!("Coworker '{}' already running — detach is a no-op", name);
         return Response::success(
             id,
@@ -239,17 +601,14 @@ pub(super) async fn handle_session_detach(
         );
     }
 
-    // Get session ID from persistent state
-    let session_id = {
+    // Get session details from persistent state
+    let session_info = {
         let persistent = state.persistent_state.lock().await;
-        persistent
-            .headless_sessions
-            .get(&name)
-            .map(|info| info.session_id.clone())
+        persistent.headless_sessions.get(&name).cloned()
     };
 
-    let session_id = match session_id {
-        Some(sid) => sid,
+    let session_info = match session_info {
+        Some(info) => info,
         None => {
             return Response::error(
                 id,
@@ -260,14 +619,47 @@ pub(super) async fn handle_session_detach(
             );
         }
     };
+    let session_id = session_info.session_id.clone();
 
-    // Re-spawn the coworker with the resumed session
-    let config = crate::launch::LaunchConfig::coworker(
-        &name,
-        &state.repo_name,
-        crate::launch::SessionMode::ResumeSession(session_id.clone()),
-        Some("You were previously running headless. The Lead attached to your session interactively and has now detached. Continue where you left off — read the channel for any updates.".to_string()),
-    );
+    // Lead uses --continue (Resume) because the interactive attach also uses
+    // --continue, which may create a new session. --continue picks up whatever
+    // the most recent session is in the CWD.
+    // Coworkers use --resume <id> since their interactive sessions use explicit IDs.
+    let session_mode = if name == "lead" {
+        crate::launch::SessionMode::Resume
+    } else if session_id.is_empty() {
+        crate::launch::SessionMode::Fresh
+    } else {
+        crate::launch::SessionMode::ResumeSession(session_id.clone())
+    };
+
+    let mut config = if name == "lead" {
+        let mut c = crate::launch::LaunchConfig::lead(&state.repo_name);
+        c.session_mode = session_mode;
+        c
+    } else {
+        crate::launch::LaunchConfig::coworker(
+            &name,
+            &state.repo_name,
+            session_mode,
+            Some("You were previously running headless. The Lead attached to your session interactively and has now detached. Continue where you left off — read the channel for any updates.".to_string()),
+        )
+    };
+    // For the lead, always use the canonical lead worktree path.
+    // For coworkers, restore from persisted working_dir.
+    if name == "lead" {
+        let lead_wt = crate::paths::lead_worktree_path(&state.repo_name);
+        if lead_wt.exists() {
+            config.working_dir = Some(lead_wt);
+        }
+    } else if let Some(ref working_dir) = session_info.working_dir {
+        config.working_dir = Some(std::path::PathBuf::from(working_dir));
+    }
+    if let Some(provider) = session_info.provider {
+        config.auth_provider = provider;
+    }
+    // Don't restore auth_profile_dir from persisted profile name — let
+    // spawn_coworker() re-resolve from project config (authoritative source).
 
     match state.spawn_coworker(&config).await {
         Ok(()) => {
@@ -309,6 +701,8 @@ pub(super) async fn handle_session_detach(
 /// Handle session.list RPC method.
 ///
 /// Returns a list of headless sessions with their status.
+/// All sessions are eagerly persisted at spawn time, so persistent state
+/// is the single source of truth.
 pub(super) async fn handle_session_list(id: RequestId, state: &DaemonState) -> Response {
     let persistent = state.persistent_state.lock().await;
     let running_coworkers: std::collections::HashSet<String> = state
@@ -319,7 +713,7 @@ pub(super) async fn handle_session_list(id: RequestId, state: &DaemonState) -> R
         .collect();
     let attached = state.attached_coworkers.lock().unwrap().clone();
 
-    let sessions: Vec<serde_json::Value> = persistent
+    let mut sessions: Vec<serde_json::Value> = persistent
         .headless_sessions
         .iter()
         .map(|(name, info)| {
@@ -348,6 +742,23 @@ pub(super) async fn handle_session_list(id: RequestId, state: &DaemonState) -> R
         })
         .collect();
 
+    sessions.sort_by(|a, b| {
+        let status_rank = |status: &str| match status {
+            "running" => 0,
+            "attached" => 1,
+            _ => 2, // paused / historical
+        };
+        let as_status = a.get("status").and_then(|v| v.as_str()).unwrap_or("paused");
+        let bs_status = b.get("status").and_then(|v| v.as_str()).unwrap_or("paused");
+        match status_rank(as_status).cmp(&status_rank(bs_status)) {
+            std::cmp::Ordering::Equal => {}
+            ord => return ord,
+        }
+        let an = a.get("name").and_then(|v| v.as_str()).unwrap_or_default();
+        let bn = b.get("name").and_then(|v| v.as_str()).unwrap_or_default();
+        an.cmp(bn)
+    });
+
     Response::success(
         id,
         serde_json::json!({
@@ -355,6 +766,76 @@ pub(super) async fn handle_session_list(id: RequestId, state: &DaemonState) -> R
             "sessions": sessions,
         }),
     )
+}
+
+/// Handle session.view RPC method.
+///
+/// Returns recent output for a session. For headed sessions (attached
+/// interactively with a wrapper), captures the live PTY screen on demand.
+/// For headless sessions, returns the tail of the JSONL event log.
+pub(super) async fn handle_session_view(
+    id: RequestId,
+    target: &str,
+    state: &DaemonState,
+) -> Response {
+    let name = match resolve_attach_target(target, state).await {
+        Ok(n) => n,
+        Err(e) => return Response::error(id, RpcError::new(-32602, e)),
+    };
+
+    // Check if this session has an active headed wrapper lease.
+    // If so, request a PTY capture on demand.
+    let headed_key = DaemonState::session_key(&name);
+    let has_headed_lease = {
+        let sessions = state.headed_sessions.lock().await;
+        sessions.get(&headed_key).is_some_and(|s| s.lease.is_some())
+    };
+
+    if has_headed_lease {
+        // Request capture and wait for the wrapper to deliver it
+        match state.headed_request_capture(&name).await {
+            Ok(rx) => {
+                match tokio::time::timeout(std::time::Duration::from_secs(3), rx).await {
+                    Ok(Ok(output)) => {
+                        return Response::success(
+                            id,
+                            serde_json::json!({
+                                "success": true,
+                                "output": output,
+                                "source": "pty",
+                            }),
+                        );
+                    }
+                    _ => {
+                        // Timeout or channel closed — fall through to JSONL
+                        info!(
+                            "PTY capture timed out for '{}', falling back to JSONL",
+                            name
+                        );
+                    }
+                }
+            }
+            Err(_) => {
+                // No headed session / no lease — fall through
+            }
+        }
+    }
+
+    // Headless path: read JSONL event log
+    match state.session_manager.get_output(&name).await {
+        Some(output) => Response::success(
+            id,
+            serde_json::json!({
+                "success": true,
+                "output": output,
+                "source": "jsonl",
+            }),
+        ),
+        None => Response::error(
+            id,
+            RpcError::new(-32602, format!("No session output found for '{}'", name)),
+        ),
+    }
 }
 
 // ============================================================================
@@ -384,9 +865,25 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_attach_target_name_slash() {
+        assert_eq!(
+            parse_attach_target("name/park").unwrap(),
+            AttachTarget::Name("park".to_string())
+        );
+    }
+
+    #[test]
     fn test_parse_attach_target_task() {
         assert_eq!(
             parse_attach_target("task:42").unwrap(),
+            AttachTarget::Task(42)
+        );
+    }
+
+    #[test]
+    fn test_parse_attach_target_task_slash() {
+        assert_eq!(
+            parse_attach_target("task/42").unwrap(),
             AttachTarget::Task(42)
         );
     }
@@ -403,6 +900,42 @@ mod tests {
             parse_attach_target("pr:123").unwrap(),
             AttachTarget::Pr(123)
         );
+    }
+
+    #[test]
+    fn test_parse_attach_target_provider_session() {
+        assert_eq!(
+            parse_attach_target("claude/abc-123").unwrap(),
+            AttachTarget::PlatformSession {
+                platform: crate::auth::AuthProvider::Claude,
+                session_id: "abc-123".to_string()
+            }
+        );
+        assert_eq!(
+            parse_attach_target("codex/thread-1").unwrap(),
+            AttachTarget::PlatformSession {
+                platform: crate::auth::AuthProvider::Codex,
+                session_id: "thread-1".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn test_parse_attach_target_platform_only() {
+        assert_eq!(
+            parse_attach_target("claude").unwrap(),
+            AttachTarget::Platform(crate::auth::AuthProvider::Claude)
+        );
+        assert_eq!(
+            parse_attach_target("openai").unwrap(),
+            AttachTarget::Platform(crate::auth::AuthProvider::Codex)
+        );
+    }
+
+    #[test]
+    fn test_parse_attach_target_rejects_zai_platform() {
+        assert!(parse_attach_target("zai/abc-123").is_err());
+        assert!(parse_attach_target("z.ai/abc-123").is_err());
     }
 
     #[test]
