@@ -9,5 +9,5 @@
 #[ignore]
 fn test_stub_for_ci_compatibility() {
     // This test intentionally does nothing.
-    // It exists only to prevent CI from failing when trying to run --test zellij_e2e
+    // It exists only to prevent CI from failing when trying to run --test tmux_e2e
 }
