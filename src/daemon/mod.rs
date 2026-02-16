@@ -1105,29 +1105,27 @@ impl DaemonState {
         session: &str,
         adapter_id: &str,
     ) -> Result<&'a mut HeadedLease, String> {
-        if state.lease.is_none() {
-            return Err(format!(
-                "No active headed adapter for session '{}'",
-                session
-            ));
+        // Check if lease exists and is still active
+        match &state.lease {
+            None => {
+                return Err(format!(
+                    "No active headed adapter for session '{}'",
+                    session
+                ));
+            }
+            Some(lease) if !Self::lease_is_active(lease) => {
+                state.lease = None;
+                return Err(format!(
+                    "Headed adapter lease expired for session '{}'",
+                    session
+                ));
+            }
+            Some(_) => {} // lease exists and is active, continue
         }
-        if state
-            .lease
-            .as_ref()
-            .is_some_and(|l| !Self::lease_is_active(l))
-        {
-            state.lease = None;
-            return Err(format!(
-                "Headed adapter lease expired for session '{}'",
-                session
-            ));
-        }
-        let Some(lease) = state.lease.as_mut() else {
-            return Err(format!(
-                "No active headed adapter for session '{}'",
-                session
-            ));
-        };
+
+        // At this point we know lease.is_some() and is active
+        let lease = state.lease.as_mut().unwrap();
+
         if lease.adapter_id != adapter_id {
             return Err(format!(
                 "Session '{}' is leased by adapter '{}' (not '{}')",
@@ -1288,6 +1286,17 @@ impl DaemonState {
             if let Some(dropped) = session_state.messages.pop_front()
                 && dropped.id > session_state.acked_id
             {
+                warn!(
+                    "Headed session queue exceeded {} messages - dropped message #{} (kind: {}, text: {})",
+                    HEADED_SESSION_QUEUE_MAX,
+                    dropped.id,
+                    dropped.kind,
+                    if dropped.text.len() > 100 {
+                        format!("{}...", &dropped.text[..100])
+                    } else {
+                        dropped.text.clone()
+                    }
+                );
                 session_state.acked_id = dropped.id;
             }
         }
@@ -2691,6 +2700,9 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
 
                     // Check if this was a failed resume attempt BEFORE removing
                     // the session (remove deletes it from the map).
+                    // SAFETY: This check must happen before any cleanup operations
+                    // that could remove the session from the map. All daemon event
+                    // handling is single-threaded, so no concurrent remove() is possible.
                     let failed_resume = state.session_manager.was_failed_resume(&name).await;
 
                     state.coworkers.deregister(&name);

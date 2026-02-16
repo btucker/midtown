@@ -545,66 +545,23 @@ where
 /// Gather data and build effects for nudging coworkers discovered on daemon startup.
 ///
 /// After a daemon restart, session recovery is handled by the startup module
-/// using persistent state. This function checks if each recovered coworker has
-/// an assigned task or reviewer assignment and returns nudge effects.
+/// using persistent state. This function is a no-op kept for API compatibility.
 ///
-/// The caller is responsible for the initial startup delay and executing effects.
-pub(super) async fn gather_discovered_coworker_nudges(state: &DaemonState) -> Vec<Effect> {
+/// Historical note: This used to scan for running coworkers and nudge them
+/// to resume work. That logic now lives in the startup module.
+pub(super) async fn gather_discovered_coworker_nudges(_state: &DaemonState) -> Vec<Effect> {
     // Session recovery is handled by the startup module using persistent state.
-    let discovered: Vec<String> = vec![];
-    if discovered.is_empty() {
-        return vec![];
-    }
-
-    info!(
-        "Checking {} discovered coworker(s) for tasks to resume",
-        discovered.len()
-    );
-
-    // Small delay to let things settle after daemon startup
-    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-
-    // Get in_progress tasks with owners and channels
-    let in_progress = crate::tasks::read_tasks()
-        .into_iter()
-        .filter(|t| t.status == crate::tasks::TaskStatus::InProgress)
-        .collect::<Vec<_>>();
-
-    // Build a map of owner -> (task_id, task_subject, channel)
-    let mut owner_tasks: HashMap<String, (String, String, Option<String>)> = HashMap::new();
-    for task in &in_progress {
-        if let Some(ref owner) = task.owner {
-            let owner_lower = owner.trim().trim_matches('"').to_lowercase();
-            if !owner_lower.is_empty() {
-                owner_tasks.insert(
-                    owner_lower,
-                    (task.id.clone(), task.subject.clone(), task.channel.clone()),
-                );
-            }
-        }
-    }
-
-    // Check reviewer assignments from daemon-state.json
-    let reviewer_prs: HashMap<String, u64> = {
-        let ps = state.persistent_state.lock().await;
-        discovered
-            .iter()
-            .filter_map(|name| {
-                ps.github
-                    .pr_for_reviewer(name)
-                    .map(|pr| (name.to_lowercase(), pr))
-            })
-            .collect()
-    };
-
-    // Build effects using pure decision function
-    decide_discovered_coworker_nudges(&discovered, &owner_tasks, &reviewer_prs)
+    vec![]
 }
 
 /// Build effects for nudging discovered coworkers based on their task/review assignments.
 ///
 /// Pure function: takes immutable data, returns effects. All I/O (nudging,
 /// channel posting) flows through Effect variants.
+///
+/// NOTE: This function is now only used by tests. It was part of the old session
+/// recovery system that has been replaced by the startup module.
+#[cfg(test)]
 fn decide_discovered_coworker_nudges(
     discovered: &[String],
     owner_tasks: &HashMap<String, (String, String, Option<String>)>,
