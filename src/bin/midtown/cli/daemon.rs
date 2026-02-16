@@ -81,6 +81,7 @@ fn socket_path() -> PathBuf {
 /// Track whether a progress line is currently displayed (needs clearing before other output).
 static PROGRESS_LINE_ACTIVE: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
+#[cfg(target_os = "macos")]
 static ACCESSIBILITY_SETTINGS_OPENED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
@@ -1291,11 +1292,13 @@ fn parse_ghostty_keybind_for_action(list_keybinds_output: &str, action: &str) ->
     None
 }
 
+#[cfg(target_os = "macos")]
 fn is_accessibility_permission_error(stderr: &str) -> bool {
     let lower = stderr.to_ascii_lowercase();
     lower.contains("not allowed to send keystrokes") || lower.contains("(1002)")
 }
 
+#[cfg(target_os = "macos")]
 fn is_automation_permission_error(stderr: &str) -> bool {
     let lower = stderr.to_ascii_lowercase();
     lower.contains("not authorized to send apple events") || lower.contains("(-1743)")
@@ -1333,11 +1336,6 @@ If Ghostty does not appear automatically, use '+' in Accessibility to add Ghostt
 and the app running `midtown`, then rerun `midtown view`."
             .to_string(),
     )
-}
-
-#[cfg(not(target_os = "macos"))]
-fn maybe_open_permission_settings(_stderr: &str) -> Option<String> {
-    None
 }
 
 fn trigger_ghostty_keybinding(binding: &str) -> Result<bool, String> {
@@ -2118,6 +2116,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "macos")]
     fn test_accessibility_permission_error_detection() {
         assert!(is_accessibility_permission_error(
             "System Events got an error: osascript is not allowed to send keystrokes. (1002)"
