@@ -133,6 +133,7 @@ impl Default for WebConfig {
 /// A mobile channel post to be forwarded to the daemon for processing.
 pub struct MobileChannelPost {
     pub content: String,
+    pub channel: Option<String>,
 }
 
 /// Shared state for WebSocket connections
@@ -259,7 +260,11 @@ pub struct ErrorData {
 pub enum ClientMessage {
     /// Send a message to the channel (to lead)
     #[serde(rename = "send_message")]
-    SendMessage { content: String },
+    SendMessage {
+        content: String,
+        #[serde(default)]
+        channel: Option<String>,
+    },
     /// Request full channel history
     #[serde(rename = "get_history")]
     GetHistory,
@@ -1512,13 +1517,14 @@ async fn handle_client_message(text: &str, state: &Arc<WebState>) -> Result<(), 
         serde_json::from_str(text).map_err(|e| format!("Invalid message format: {}", e))?;
 
     match msg {
-        ClientMessage::SendMessage { content } => {
+        ClientMessage::SendMessage { content, channel } => {
             // Forward to the daemon for processing (handles channel write,
             // WebSocket broadcast, and side-effects like nudging the Lead)
             state
                 .channel_post_tx
                 .send(MobileChannelPost {
                     content: content.clone(),
+                    channel: channel.clone(),
                 })
                 .await
                 .map_err(|e| format!("Failed to forward message to daemon: {}", e))?;
@@ -1648,8 +1654,22 @@ mod tests {
         let json = r#"{"type": "send_message", "content": "Hello world"}"#;
         let msg: ClientMessage = serde_json::from_str(json).unwrap();
         match msg {
-            ClientMessage::SendMessage { content } => {
+            ClientMessage::SendMessage { content, channel } => {
                 assert_eq!(content, "Hello world");
+                assert_eq!(channel, None); // No channel specified
+            }
+            _ => panic!("Expected SendMessage"),
+        }
+    }
+
+    #[test]
+    fn test_client_message_parsing_with_channel() {
+        let json = r#"{"type": "send_message", "content": "Hello", "channel": "auth-refactor"}"#;
+        let msg: ClientMessage = serde_json::from_str(json).unwrap();
+        match msg {
+            ClientMessage::SendMessage { content, channel } => {
+                assert_eq!(content, "Hello");
+                assert_eq!(channel, Some("auth-refactor".to_string()));
             }
             _ => panic!("Expected SendMessage"),
         }
@@ -1682,6 +1702,7 @@ mod tests {
             .try_recv()
             .expect("expected a mobile channel post");
         assert_eq!(post.content, "hello from mobile");
+        assert_eq!(post.channel, None); // No channel specified, should default to None
     }
 
     #[test]

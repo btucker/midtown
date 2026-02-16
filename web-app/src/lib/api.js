@@ -441,14 +441,17 @@ function handleUpdate(update) {
 }
 
 // Send a message to the lead via WebSocket
-export function sendMessage(content) {
+export function sendMessage(content, channel = null) {
   if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(
-      JSON.stringify({
-        type: 'send_message',
-        content,
-      })
-    )
+    const message = {
+      type: 'send_message',
+      content,
+    }
+    // Include channel if specified (null/undefined means use default)
+    if (channel) {
+      message.channel = channel
+    }
+    ws.send(JSON.stringify(message))
   } else {
     console.error('WebSocket not connected')
   }
