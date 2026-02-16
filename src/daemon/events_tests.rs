@@ -264,3 +264,143 @@ fn dedup_preserves_registry_effects_from_dropped_spawns() {
         "Second task's worktree should be registered"
     );
 }
+
+#[test]
+fn dedup_prevents_double_spawn_for_same_task() {
+    // Bug: Orphan recovery spawns "amsterdam" for task 123, then task dispatch
+    // spawns "york" for the same task in the same tick. Dedup only checks coworker
+    // name, so both spawns go through.
+    use crate::worktree_registry::WorktreeAssignment;
+
+    let config_amsterdam = LaunchConfig {
+        name: "amsterdam".to_string(),
+        session_mode: SessionMode::Fresh,
+        role: CoworkerRole::Coworker,
+        initial_prompt: None,
+        additional_dirs: vec![],
+        restrict_setting_sources: false,
+        pr_number: None,
+        team_name: None,
+        working_dir: None,
+        model: "sonnet".to_string(),
+        channel: None,
+        auth_profile_dir: None,
+        auth_provider: crate::auth::AuthProvider::Claude,
+    };
+
+    let config_york = LaunchConfig {
+        name: "york".to_string(),
+        session_mode: SessionMode::Fresh,
+        role: CoworkerRole::Coworker,
+        initial_prompt: None,
+        additional_dirs: vec![],
+        restrict_setting_sources: false,
+        pr_number: None,
+        team_name: None,
+        working_dir: None,
+        model: "sonnet".to_string(),
+        channel: None,
+        auth_profile_dir: None,
+        auth_provider: crate::auth::AuthProvider::Claude,
+    };
+
+    // Orphan recovery spawns amsterdam for task 123
+    let orphan_spawn = Effect::SpawnCoworkerWithCallbacks {
+        config: config_amsterdam,
+        on_success: vec![
+            Effect::RecordTaskAssignment {
+                coworker: "amsterdam".to_string(),
+                task_id: "123".to_string(),
+            },
+            Effect::RegisterWorktreeAssignment {
+                assignment: WorktreeAssignment {
+                    worktree_id: "task-123-foo".to_string(),
+                    branch_name: "task-123-foo".to_string(),
+                    task_id: Some("123".to_string()),
+                    current_coworker: None,
+                    pr_number: None,
+                    created_at: chrono::Utc::now(),
+                    completed_at: None,
+                },
+            },
+        ],
+        on_failure: vec![],
+    };
+
+    // Task dispatch spawns york for task 123 (same task, different coworker)
+    let dispatch_spawn = Effect::AssignAndSpawn {
+        task_id: "123".to_string(),
+        owner: "york".to_string(),
+        repo_name: "test".to_string(),
+        config: config_york,
+        on_success: vec![Effect::RegisterWorktreeAssignment {
+            assignment: WorktreeAssignment {
+                worktree_id: "task-123-bar".to_string(),
+                branch_name: "task-123-bar".to_string(),
+                task_id: Some("123".to_string()),
+                current_coworker: None,
+                pr_number: None,
+                created_at: chrono::Utc::now(),
+                completed_at: None,
+            },
+        }],
+        on_failure: vec![],
+    };
+
+    let effects = vec![orphan_spawn, dispatch_spawn];
+    let deduped = dedup_spawn_effects(effects);
+
+    // EXPECTED: Only ONE spawn effect should remain (the first one)
+    let spawn_count = deduped
+        .iter()
+        .filter(|e| {
+            matches!(
+                e,
+                Effect::AssignAndSpawn { .. }
+                    | Effect::SpawnCoworker(_)
+                    | Effect::SpawnCoworkerWithCallbacks { .. }
+            )
+        })
+        .count();
+    assert_eq!(
+        spawn_count, 1,
+        "Should have only one spawn for task 123 (got {} spawns)",
+        spawn_count
+    );
+
+    // Both worktree assignments should be preserved
+    let registry_count = deduped
+        .iter()
+        .filter(|e| matches!(e, Effect::RegisterWorktreeAssignment { .. }))
+        .count();
+    assert_eq!(
+        registry_count, 2,
+        "Both worktree registrations should be preserved"
+    );
+
+    // The task assignment from the kept spawn should be preserved (in its on_success callbacks)
+    let task_assignments: Vec<&str> = deduped
+        .iter()
+        .flat_map(|e| match e {
+            Effect::RecordTaskAssignment { task_id, .. } => vec![task_id.as_str()],
+            Effect::SpawnCoworkerWithCallbacks { on_success, .. }
+            | Effect::AssignAndSpawn { on_success, .. } => on_success
+                .iter()
+                .filter_map(|sub| {
+                    if let Effect::RecordTaskAssignment { task_id, .. } = sub {
+                        Some(task_id.as_str())
+                    } else {
+                        None
+                    }
+                })
+                .collect(),
+            _ => vec![],
+        })
+        .collect();
+    assert_eq!(
+        task_assignments.len(),
+        1,
+        "Should have exactly one task assignment for task 123 (from the kept spawn's callbacks)"
+    );
+    assert_eq!(task_assignments[0], "123");
+}
