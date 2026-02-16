@@ -1616,9 +1616,10 @@ pub fn handle_view(project: Option<&str>, skip_auto_split: bool) -> Result<Respo
                 continue;
             }
             Err(e) if e.contains("already attached") => {
-                // Lead is already attached somewhere else — build a fresh attach command
-                // by resolving session info without pausing.
-                break;
+                // Previous view session exited without detaching — clean up and retry
+                let _ = client.session_detach("lead");
+                std::thread::sleep(std::time::Duration::from_millis(200));
+                continue;
             }
             Err(e) => {
                 if let Some(cwd) = original_cwd {
@@ -1684,6 +1685,11 @@ If you want chat without automatic split creation, run:\n  midtown view --skip-a
     }
 
     let chat_result = super::chat::run();
+
+    // Always detach on exit so the daemon resumes headless mode.
+    // Without this, a normal exit leaves the lead in `attached_coworkers`
+    // and subsequent `midtown view` calls fail with "already attached".
+    let _ = client.session_detach("lead");
 
     if let Some(cwd) = original_cwd {
         let _ = std::env::set_current_dir(cwd);
