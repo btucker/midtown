@@ -44,6 +44,33 @@ fn extract_review_note_pr(message: &str) -> Option<u64> {
     num_str.parse().ok()
 }
 
+/// Parse a duration string like "5m", "1h", "30s" into a Duration.
+///
+/// Returns None if the format is invalid.
+fn parse_duration(s: &str) -> Option<Duration> {
+    let s = s.trim();
+    if s.is_empty() {
+        return None;
+    }
+
+    // Extract number and unit
+    let unit_pos = s
+        .chars()
+        .position(|c| !c.is_ascii_digit())
+        .unwrap_or(s.len());
+    let (num_str, unit) = s.split_at(unit_pos);
+
+    let num: u64 = num_str.parse().ok()?;
+
+    match unit {
+        "s" | "sec" | "second" | "seconds" => Some(Duration::from_secs(num)),
+        "m" | "min" | "minute" | "minutes" => Some(Duration::from_secs(num * 60)),
+        "h" | "hr" | "hour" | "hours" => Some(Duration::from_secs(num * 3600)),
+        "d" | "day" | "days" => Some(Duration::from_secs(num * 86400)),
+        _ => None,
+    }
+}
+
 // ============================================================================
 // Handlers
 // ============================================================================
@@ -202,7 +229,13 @@ pub(super) async fn handle_channel_post(
 }
 
 /// Handle channel.read RPC method.
-pub(super) fn handle_channel_read(id: RequestId, all: bool, state: &DaemonState) -> Response {
+pub(super) fn handle_channel_read(
+    id: RequestId,
+    all: bool,
+    last: Option<usize>,
+    since: Option<&str>,
+    state: &DaemonState,
+) -> Response {
     // Read from the default (main) channel
     let default_channel = match state.channel_router.default_channel() {
         Ok(ch) => ch,
@@ -212,7 +245,43 @@ pub(super) fn handle_channel_read(id: RequestId, all: bool, state: &DaemonState)
         }
     };
 
-    let messages = if all {
+    let messages = if let Some(n) = last {
+        // Use --last flag: read last N messages
+        match default_channel.read_last_n_messages(n) {
+            Ok((msgs, _)) => msgs,
+            Err(e) => {
+                error!("Failed to read last {} messages: {}", n, e);
+                return Response::error(id, RpcError::new(-32603, e.to_string()));
+            }
+        }
+    } else if let Some(duration_str) = since {
+        // Use --since flag: filter messages by timestamp
+        let duration = match parse_duration(duration_str) {
+            Some(d) => d,
+            None => {
+                return Response::error(
+                    id,
+                    RpcError::new(
+                        -32602,
+                        format!(
+                            "Invalid duration format: '{}'. Use format like '5m', '1h', '30s'",
+                            duration_str
+                        ),
+                    ),
+                );
+            }
+        };
+
+        let cutoff = chrono::Utc::now() - chrono::Duration::from_std(duration).unwrap();
+
+        match default_channel.read_all() {
+            Ok(msgs) => msgs.into_iter().filter(|m| m.timestamp >= cutoff).collect(),
+            Err(e) => {
+                error!("Failed to read channel: {}", e);
+                return Response::error(id, RpcError::new(-32603, e.to_string()));
+            }
+        }
+    } else if all {
         // Read all messages
         match default_channel.read_all() {
             Ok(msgs) => msgs,
@@ -417,5 +486,44 @@ mod tests {
             messages[0].text.contains("york mentioned @lead"),
             "queue entry should summarize coworker @lead mention"
         );
+    }
+
+    #[test]
+    fn test_parse_duration_seconds() {
+        assert_eq!(parse_duration("30s"), Some(Duration::from_secs(30)));
+        assert_eq!(parse_duration("5sec"), Some(Duration::from_secs(5)));
+        assert_eq!(parse_duration("10second"), Some(Duration::from_secs(10)));
+        assert_eq!(parse_duration("15seconds"), Some(Duration::from_secs(15)));
+    }
+
+    #[test]
+    fn test_parse_duration_minutes() {
+        assert_eq!(parse_duration("5m"), Some(Duration::from_secs(300)));
+        assert_eq!(parse_duration("10min"), Some(Duration::from_secs(600)));
+        assert_eq!(parse_duration("2minute"), Some(Duration::from_secs(120)));
+        assert_eq!(parse_duration("3minutes"), Some(Duration::from_secs(180)));
+    }
+
+    #[test]
+    fn test_parse_duration_hours() {
+        assert_eq!(parse_duration("1h"), Some(Duration::from_secs(3600)));
+        assert_eq!(parse_duration("2hr"), Some(Duration::from_secs(7200)));
+        assert_eq!(parse_duration("3hour"), Some(Duration::from_secs(10800)));
+        assert_eq!(parse_duration("4hours"), Some(Duration::from_secs(14400)));
+    }
+
+    #[test]
+    fn test_parse_duration_days() {
+        assert_eq!(parse_duration("1d"), Some(Duration::from_secs(86400)));
+        assert_eq!(parse_duration("2day"), Some(Duration::from_secs(172800)));
+        assert_eq!(parse_duration("3days"), Some(Duration::from_secs(259200)));
+    }
+
+    #[test]
+    fn test_parse_duration_invalid() {
+        assert_eq!(parse_duration(""), None);
+        assert_eq!(parse_duration("5x"), None);
+        assert_eq!(parse_duration("abc"), None);
+        assert_eq!(parse_duration("5.5m"), None); // floats not supported
     }
 }
