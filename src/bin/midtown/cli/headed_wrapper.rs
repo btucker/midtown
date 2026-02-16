@@ -764,6 +764,22 @@ pub fn handle(cmd: &HeadedWrapperCommand, client: &DaemonClient) -> Result<Respo
                     }
                 }
 
+                // Check for terminal resize events
+                if crossterm::event::poll(Duration::from_millis(0)).unwrap_or(false)
+                    && let Ok(crossterm::event::Event::Resize(new_cols, new_rows)) =
+                        crossterm::event::read()
+                {
+                    let new_size = portable_pty::PtySize {
+                        rows: new_rows,
+                        cols: new_cols,
+                        pixel_width: 0,
+                        pixel_height: 0,
+                    };
+                    if let Err(e) = pty_pair.master.resize(new_size) {
+                        debug!("Failed to resize PTY: {}", e);
+                    }
+                }
+
                 // Poll daemon for nudges. Tolerate transient connection failures
                 // (e.g., daemon restart) — just skip the poll cycle and retry next
                 // iteration. The interactive session should survive daemon restarts.
