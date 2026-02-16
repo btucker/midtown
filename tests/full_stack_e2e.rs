@@ -231,8 +231,8 @@ impl FullStackFixture {
         let _ = fs::remove_file(&self.socket_path);
         let _ = fs::remove_file(&self.pid_path);
 
-        // Use `midtown start` which creates both daemon AND tmux session with lead.
-        // Note: `midtown daemon` only starts the daemon process without the tmux session.
+        // Use `midtown start` which creates daemon + headless lead session.
+        // Note: tmux/Zellij sessions are created via `midtown view`, not `start`.
         let spawn_start = std::time::Instant::now();
         let child = Command::new(&binary_path)
             .arg("start")
@@ -433,103 +433,19 @@ fn window_exists(session: &str, window: &str) -> bool {
 /// Start daemon, verify lead window appears and claude TUI renders
 /// (pane has output within 60s).
 ///
-/// This test verifies the full daemon → tmux → Claude Code launch path.
-/// The daemon creates a tmux session and spawns a "lead" window running
-/// Claude Code. We verify the window exists and has visible TUI output.
+/// OBSOLETE: This test verified tmux session creation for the lead, but
+/// the lead is now a headless session (no tmux/Zellij windows). Interactive
+/// terminal UX is now provided by `midtown view`.
 ///
-/// Requires real Claude Code to be installed and authenticated. When
-/// MIDTOWN_LEAD_COMMAND is set (stub mode), this test is skipped since
-/// stub commands don't produce TUI output.
+/// The daemon's `midtown start` now creates a headless lead session. Tmux/Zellij
+/// sessions are only created when the user runs `midtown view` to attach.
 ///
-/// ## Performance characteristics:
-/// - Local: ~20s (binary must be pre-built)
-/// - CI: ~60-90s
-///
-/// CI is 2.5-3x slower due to: shared CPU resources, partial Rust cache,
-/// and Claude CLI startup overhead in container environment. The 300s
-/// timeout provides ~1.5x safety margin over typical CI runtime.
+/// Skipped because the lead is now headless as of the headless lead lifecycle refactor.
 #[test]
 #[ignore]
 #[timeout(300_000)] // 5 minutes: provides 1.5x safety margin over typical CI runtime (180-210s)
 fn test_daemon_spawns_lead_with_real_claude() {
-    let test_start = std::time::Instant::now();
-
-    // Skip when using a stub command - this test requires real Claude TUI output
-    if std::env::var("MIDTOWN_LEAD_COMMAND").is_ok() {
-        eprintln!("MIDTOWN_LEAD_COMMAND is set (stub mode), skipping real Claude test");
-        return;
-    }
-
-    if !tmux_available() {
-        eprintln!("tmux not available, skipping");
-        return;
-    }
-
-    // Verify claude CLI is installed before proceeding
-    if !claude_available() {
-        eprintln!("claude CLI not available, skipping real Claude test");
-        return;
-    }
-
-    let setup_start = std::time::Instant::now();
-    let mut fixture = match FullStackFixture::new() {
-        Some(f) => f,
-        None => return,
-    };
-    eprintln!("[TIMING] Fixture setup took {:?}", setup_start.elapsed());
-
-    let daemon_start = std::time::Instant::now();
-    if !fixture.start_daemon() {
-        eprintln!("Skipping: daemon failed to start (no binary?)");
-        return;
-    }
-    eprintln!("[TIMING] start_daemon() took {:?}", daemon_start.elapsed());
-
-    let session = fixture.tmux_session_name();
-
-    // Wait for the lead window to appear (up to 60s)
-    let window_wait_start = std::time::Instant::now();
-    let mut lead_found = false;
-    for _ in 0..60 {
-        thread::sleep(Duration::from_secs(1));
-        if window_exists(&session, "lead") {
-            lead_found = true;
-            break;
-        }
-    }
-    eprintln!(
-        "[TIMING] Waiting for lead window took {:?}",
-        window_wait_start.elapsed()
-    );
-
-    assert!(
-        lead_found,
-        "Lead window should appear in tmux session '{}' within 60s",
-        session
-    );
-
-    // Verify the lead pane has visible output (TUI rendered)
-    let tui_wait_start = std::time::Instant::now();
-    let mut has_output = false;
-    for _ in 0..30 {
-        thread::sleep(Duration::from_secs(1));
-        if let Some(content) = capture_pane(&session, "lead")
-            && content.lines().any(|l| !l.trim().is_empty())
-        {
-            has_output = true;
-            break;
-        }
-    }
-    eprintln!(
-        "[TIMING] Waiting for TUI output took {:?}",
-        tui_wait_start.elapsed()
-    );
-    eprintln!("[TIMING] TOTAL test duration: {:?}", test_start.elapsed());
-
-    assert!(
-        has_output,
-        "Lead pane should have visible TUI output within 90s of daemon start"
-    );
+    eprintln!("SKIPPED: Lead is now headless (use `midtown view` to create interactive sessions)");
 }
 
 /// Spawn coworker via RPC, verify its tmux window appears and has TUI output.
