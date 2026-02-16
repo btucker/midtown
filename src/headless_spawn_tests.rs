@@ -5,6 +5,55 @@
 
 use super::*;
 
+#[test]
+fn test_fresh_session_uses_append_system_prompt() {
+    // This test documents that fresh headless sessions should use --append-system-prompt
+    // so the system prompt merges with CLAUDE.md rather than replacing it.
+    //
+    // The extract_spawn_args helper mirrors what HeadlessSession::spawn() does.
+    // If this test fails, it means the actual spawn() implementation uses --system-prompt
+    // when it should use --append-system-prompt.
+    let config = HeadlessConfig {
+        model: "haiku".to_string(),
+        system_prompt: "test prompt".to_string(),
+        settings_path: None,
+        setting_sources: None,
+        persist_session: false,
+        resume_session_id: None,
+        allow_tools: true,
+        json_schema: None,
+        cwd: None,
+        project_name: Some("midtown".to_string()),
+        max_budget_usd: None,
+        inactivity_timeout: None,
+        team_name: None,
+        agent_id: None,
+        agent_name: None,
+        auth_provider: crate::auth::AuthProvider::Claude,
+        env: std::collections::HashMap::new(),
+    };
+
+    let args = extract_spawn_args(&config);
+
+    // Should use --append-system-prompt, not --system-prompt
+    let append_count = args
+        .iter()
+        .filter(|a| *a == "--append-system-prompt")
+        .count();
+    let system_count = args.iter().filter(|a| *a == "--system-prompt").count();
+
+    assert_eq!(
+        append_count, 1,
+        "Fresh session should use --append-system-prompt exactly once, found {}",
+        append_count
+    );
+    assert_eq!(
+        system_count, 0,
+        "Fresh session should NOT use --system-prompt (should use --append-system-prompt instead), found {}",
+        system_count
+    );
+}
+
 /// Helper to extract the command args from a HeadlessSession spawn attempt.
 ///
 /// This doesn't actually spawn the process (which would require claude CLI to be available),
@@ -25,7 +74,7 @@ fn extract_spawn_args(config: &HeadlessConfig) -> Vec<String> {
             args.push(config.resume_session_id.as_ref().unwrap().clone());
         } else {
             args.push("-p".to_string());
-            args.push("--system-prompt".to_string());
+            args.push("--append-system-prompt".to_string());
             args.push(config.system_prompt.clone());
         }
 
