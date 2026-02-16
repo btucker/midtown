@@ -1,11 +1,8 @@
 //! Unified launch configuration for Claude Code sessions.
 //!
 //! `LaunchConfig` is the single source of truth for how to launch a Claude CLI
-//! process, whether in a tmux window (Lead) or as a headless session (coworkers).
-//!
-//! All spawn paths construct a `LaunchConfig`, then call either:
-//! - `to_shell_command()` — for tmux-based launch (Lead, legacy path)
-//! - `to_headless_config()` — for headless launch (coworkers, v2 path)
+//! process as a headless session. All spawn paths construct a `LaunchConfig`
+//! and call `to_headless_config()` to produce a `HeadlessConfig`.
 
 use std::path::PathBuf;
 
@@ -38,7 +35,7 @@ pub enum CoworkerRole {
 ///
 /// This is the single source of truth for how Claude gets launched. All spawn
 /// paths (fresh coworker, resumed coworker, reviewer, lead) construct one of
-/// these and pass it to either `spawn_claude()` (tmux) or headless spawn.
+/// these and pass it to `to_headless_config()` for headless spawn.
 #[derive(Debug, Clone)]
 pub struct LaunchConfig {
     /// Coworker name (or "lead" for the lead instance).
@@ -54,8 +51,7 @@ pub struct LaunchConfig {
     /// If true, pass `--setting-sources project,local` to restrict settings.
     /// Coworkers use this to exclude user-level settings; the lead does not.
     pub restrict_setting_sources: bool,
-    /// PR number for reviewer coworkers. Used to set the initial tmux window
-    /// name to "review#PR" so reviewers are visually distinct from developers.
+    /// PR number for reviewer coworkers.
     pub pr_number: Option<u64>,
     /// Agent teams team name. When set, adds `--agent-id`, `--agent-name`,
     /// and `--team-name` CLI flags to enable the Claude Code agent teams
@@ -346,7 +342,7 @@ impl LaunchConfig {
         }
     }
 
-    /// Build the full shell command string for launching Claude in a tmux pane.
+    /// Build the full shell command string for launching Claude in a terminal pane.
     ///
     /// `settings_file` and `prompt_file` are pre-written files containing the
     /// Claude settings JSON and system prompt markdown. `initial_prompt_file`
@@ -702,7 +698,7 @@ mod tests {
         assert_eq!(retry.initial_prompt, Some("task prompt".to_string()));
     }
 
-    // --- Shell command tests (tmux path) ---
+    // --- Shell command tests ---
 
     #[test]
     fn test_shell_command_fresh_session() {

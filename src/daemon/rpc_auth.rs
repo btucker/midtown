@@ -197,8 +197,7 @@ pub(super) async fn handle_auth_switch(
 
         // Shut down the headless session (async), then deregister from tracking (sync).
         // This matches the correct shutdown sequence in rpc_coworker.rs (handle_coworker_break).
-        // Using the old coworkers.shutdown() would attempt to kill tmux windows instead of
-        // headless sessions, causing the sessions to remain alive with stale credentials.
+        // Use session_manager.shutdown() to properly stop headless sessions.
         if let Err(e) = state.session_manager.shutdown(name).await {
             warn!("Failed to shut down headless session for {}: {}", name, e);
         }

@@ -1,8 +1,7 @@
 //! Session manager for headless coworker processes.
 //!
 //! `SessionManager` owns running `HeadlessSession` instances and provides the
-//! daemon with spawn/nudge/shutdown/health primitives. It replaces the tmux-based
-//! coworker process management for headless execution.
+//! daemon with spawn/nudge/shutdown/health primitives.
 //!
 //! The manager runs within the daemon's async runtime. Each coworker session is
 //! a child process communicating via stdin/stdout JSON streams.
@@ -292,7 +291,6 @@ impl SessionManager {
     /// Send a message (nudge) to a running coworker session (by name).
     ///
     /// This writes to the session's stdin via the stream-json input protocol.
-    /// Unlike tmux send-keys, this doesn't require waiting for input stability.
     /// Finds the first session matching the name.
     pub async fn send_message(&self, name: &str, message: &str) -> Result<(), crate::Error> {
         let mut sessions = self.sessions.write().await;

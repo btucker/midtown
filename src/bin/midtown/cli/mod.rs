@@ -106,7 +106,7 @@ pub fn handle_chat() -> Result<(), String> {
 /// Handle `midtown state <phase> [--task <id>]` — reports coworker state via daemon RPC.
 ///
 /// Called explicitly by coworkers to report their workflow phase.
-/// Sends state to the daemon which stores it in memory and updates tmux tab display.
+/// Sends state to the daemon which stores it in memory and updates web UI status.
 pub fn handle_state(
     phase: midtown::coworker_state::WorkflowPhase,
     task_id: Option<u32>,

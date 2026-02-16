@@ -92,7 +92,7 @@ pub enum ChatLayout {
 /// `repos` defaults to `[primary_repo]` and `primary_repo` is inferred from workdir.
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct ProjectMetadata {
-    /// Project name (e.g., "midtown"). Used for tmux session names, paths, etc.
+    /// Project name (e.g., "midtown"). Used for session names, paths, etc.
     #[serde(default)]
     pub name: Option<String>,
 

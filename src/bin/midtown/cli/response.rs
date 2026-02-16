@@ -34,7 +34,7 @@ pub struct StatusResponse {
     /// Lead session name (usually "midtown-lead")
     #[serde(skip_serializing_if = "Option::is_none")]
     pub lead_session: Option<String>,
-    /// Whether the Lead tmux session is active
+    /// Whether the Lead session is active
     #[serde(skip_serializing_if = "Option::is_none")]
     pub lead_session_active: Option<bool>,
     /// Full status info (optional, for expanded status command)

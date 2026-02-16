@@ -1045,7 +1045,7 @@ fn test_real_claude_coworker_has_agent_teams_setup() {
     for _ in 0..30 {
         thread::sleep(Duration::from_secs(1));
         if let Some(content) = capture_pane(&session, coworker_name)
-            && midtown::tmux::content_has_output(&content)
+            && content.lines().any(|l| !l.trim().is_empty())
         {
             has_output = true;
             break;

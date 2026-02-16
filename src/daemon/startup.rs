@@ -2,7 +2,6 @@
 //!
 //! Handles recovery of coworker tracking across daemon restarts.
 //! When the daemon starts:
-//! - Discovers running coworkers from tmux and creates minimal records for health monitoring
 //! - Recovers headless coworker sessions from persisted state and resumes them with --resume
 //! - Cleans up zombie processes from previous daemon runs (orphaned PPID=1 processes)
 //!
@@ -19,7 +18,7 @@ use tracing::{info, warn};
 /// or `None` if sandboxing is available.
 ///
 /// This prevents the crash loop from 2026-02-13 where the daemon was started
-/// from within the Lead's sandboxed tmux session, causing all coworker spawns
+/// from within a sandboxed session, causing all coworker spawns
 /// to fail with "Already inside a sandbox — cannot nest sandbox-exec".
 #[cfg(target_os = "macos")]
 pub fn check_sandbox_context() -> Option<String> {
@@ -27,8 +26,8 @@ pub fn check_sandbox_context() -> Option<String> {
         Some(
             "WARNING: Daemon is already inside a sandbox — cannot nest sandbox-exec. \
              Coworker sandboxing will be disabled. This typically happens when the daemon \
-             is started from within a sandboxed tmux session. To fix: stop the daemon, \
-             exit tmux, and restart the daemon from an unsandboxed shell."
+             is started from within a sandboxed session. To fix: stop the daemon and \
+             restart from an unsandboxed shell."
                 .to_string(),
         )
     } else {
@@ -48,7 +47,7 @@ use crate::daemon::state::DaemonPersistentState;
 use crate::launch::LaunchConfig;
 use crate::rules::CoworkerRecord;
 
-/// Create tracking records for coworkers discovered in the tmux session.
+/// Create tracking records for coworkers discovered on startup.
 ///
 /// For each running coworker, creates a minimal `CoworkerRecord` so the
 /// daemon can monitor their health. Workflow phase and task ID will be

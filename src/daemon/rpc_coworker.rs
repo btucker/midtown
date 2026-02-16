@@ -2,7 +2,7 @@
 //!
 //! Handles `coworker.*` methods: spawn, break, list, view, report-state,
 //! nudge, and asking. These are tightly coupled to the coworker management
-//! subsystem (worktrees, headless sessions, tmux tabs).
+//! subsystem (worktrees, headless sessions).
 
 use tracing::{debug, error, info, warn};
 
@@ -263,7 +263,7 @@ pub(super) async fn handle_coworker_view(
 /// Handle coworker.report-state RPC method.
 ///
 /// Stores the coworker's workflow phase in daemon memory and updates the
-/// tmux tab display. When a coworker reports `Idle`, they are immediately
+/// web UI status. When a coworker reports `Idle`, they are immediately
 /// sent on break. When they report `Completed`, task cleanup is handled.
 pub(super) async fn handle_coworker_report_state(
     id: RequestId,

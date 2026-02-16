@@ -496,7 +496,7 @@ fn test_daemon_spawns_lead_with_real_claude() {
     for _ in 0..30 {
         thread::sleep(Duration::from_secs(1));
         if let Some(content) = capture_pane(&session, "lead")
-            && midtown::tmux::content_has_output(&content)
+            && content.lines().any(|l| !l.trim().is_empty())
         {
             has_output = true;
             break;

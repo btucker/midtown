@@ -329,7 +329,7 @@ fn should_recover_task(
 /// Check for orphaned tasks and auto-recover coworkers.
 ///
 /// An orphaned task is one that is `in_progress` but the owning coworker
-/// is no longer active (no tmux window). If the coworker's worktree still
+/// is no longer active (no running session). If the coworker's worktree still
 /// exists, we respawn them and nudge them to resume work.
 ///
 /// Rate limiting: Only spawns ONE coworker per tick with a cooldown between
@@ -542,14 +542,14 @@ where
 
 /// Gather data and build effects for nudging coworkers discovered on daemon startup.
 ///
-/// After a daemon restart, existing coworkers are found in tmux but they may
-/// be stuck waiting for input or idle. This function checks if each discovered
-/// coworker has an assigned task (in_progress with them as owner) or a reviewer
-/// assignment (in github-state.json), and returns nudge effects.
+/// Gather data and build effects for nudging coworkers discovered on daemon startup.
+///
+/// After a daemon restart, session recovery is handled by the startup module
+/// using persistent state. This function checks if each recovered coworker has
+/// an assigned task or reviewer assignment and returns nudge effects.
 ///
 /// The caller is responsible for the initial startup delay and executing effects.
 pub(super) async fn gather_discovered_coworker_nudges(state: &DaemonState) -> Vec<Effect> {
-    // With all sessions now headless, there's no tmux discovery.
     // Session recovery is handled by the startup module using persistent state.
     let discovered: Vec<String> = vec![];
     if discovered.is_empty() {
@@ -1281,7 +1281,7 @@ pub(super) fn spawn_for_pending_tasks(
                     &format!("You have pending task !{}: {}. Get started!", tid, subj),
                 );
                 // Deliver via mailbox (non-urgent task assignment to idle coworker).
-                // Also send via tmux as fallback in case mailbox isn't polled.
+                // Deliver via mailbox for non-urgent task assignment.
                 effects.push(Effect::DeliverMailboxMessage {
                     name: o.clone(),
                     message: nudge_msg.clone(),

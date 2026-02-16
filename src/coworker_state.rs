@@ -2,13 +2,11 @@
 //!
 //! Coworkers report their workflow phase and current task via daemon RPC
 //! (`coworker.report-state`). The daemon stores state in memory and uses it
-//! to update tmux tab names and web UI status.
+//! to update web UI status.
 
 use serde::{Deserialize, Serialize};
 
-/// Workflow phases that map to tmux tab abbreviations.
-///
-/// Each variant has a fixed abbreviation used for the tmux tab display.
+/// Workflow phases for coworker status tracking.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, clap::ValueEnum)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkflowPhase {
@@ -31,7 +29,7 @@ pub enum WorkflowPhase {
 }
 
 impl WorkflowPhase {
-    /// Get the tmux tab abbreviation for this phase.
+    /// Get the short abbreviation for this phase.
     pub fn abbreviation(&self) -> &'static str {
         match self {
             Self::Claiming => "claim",

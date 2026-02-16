@@ -462,10 +462,18 @@ mod tests {
             "PID file should be detected as locked while we hold the lock"
         );
 
-        // Verify the unlock path works too
-        drop(pid_file); // releases lock
+        // Verify the unlock path works too — retry briefly for OS lock release
+        drop(pid_file);
+        let mut unlocked = false;
+        for _ in 0..10 {
+            if !is_pid_locked(&pid_path) {
+                unlocked = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
         assert!(
-            !is_pid_locked(&pid_path),
+            unlocked,
             "PID file should be detected as unlocked after dropping the File handle"
         );
     }

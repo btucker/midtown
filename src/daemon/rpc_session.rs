@@ -455,22 +455,46 @@ pub(super) async fn handle_session_attach(
         }
     };
 
+    // If session_id is still empty after backfill, the session hasn't initialized yet.
+    // Return a retryable error so callers (e.g. `midtown view`) can wait and retry.
+    if info.session_id.is_empty() {
+        return Response::error(
+            id,
+            RpcError::new(
+                -32603,
+                format!(
+                    "No session ID found for '{}' yet — session still initializing",
+                    name
+                ),
+            ),
+        );
+    }
+
     // Check if session is currently running headless
     let running = state.session_manager.is_alive(&name).await;
     let provider = info.provider.unwrap_or(crate::auth::AuthProvider::Claude);
     let session_id = info.session_id.clone();
-    let cwd = state
-        .coworkers
-        .get(&name)
-        .map(|cw| cw.working_dir.clone())
-        .or(info.working_dir.clone())
-        .unwrap_or_else(|| {
-            state
-                .all_repo_paths
-                .first()
-                .map(|p| p.to_string_lossy().to_string())
-                .unwrap_or_default()
-        });
+    let cwd = if name == "lead" {
+        // Lead always attaches in the primary repo root, not a coworker worktree.
+        state
+            .all_repo_paths
+            .first()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default()
+    } else {
+        state
+            .coworkers
+            .get(&name)
+            .map(|cw| cw.working_dir.clone())
+            .or(info.working_dir.clone())
+            .unwrap_or_else(|| {
+                state
+                    .all_repo_paths
+                    .first()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_default()
+            })
+    };
 
     if running {
         // Pause the running headless session.

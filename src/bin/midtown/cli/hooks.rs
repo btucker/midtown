@@ -357,7 +357,7 @@ fn handle_idle_hook() -> Result<Response, String> {
     let channel =
         midtown::Channel::for_repo(&repo).map_err(|e| format!("Failed to open channel: {}", e))?;
 
-    // Coworkers have MIDTOWN_AGENT set to their name at spawn time (see tmux.rs).
+    // Coworkers have MIDTOWN_AGENT set to their name at spawn time (see launch.rs).
     // Lead sessions don't have this set, so default to "lead".
     let agent = std::env::var("MIDTOWN_AGENT").unwrap_or_else(|_| "lead".to_string());
     let personality = midtown::config::get_personality();
@@ -525,7 +525,7 @@ fn handle_task_hook() -> Result<Response, String> {
     let context: serde_json::Value =
         serde_json::from_str(&input).map_err(|e| format!("Failed to parse JSON: {}", e))?;
 
-    // Coworkers have MIDTOWN_AGENT set to their name at spawn time (see tmux.rs).
+    // Coworkers have MIDTOWN_AGENT set to their name at spawn time (see launch.rs).
     // Lead sessions don't have this set, so default to "lead".
     let agent = std::env::var("MIDTOWN_AGENT").unwrap_or_else(|_| "lead".to_string());
 
@@ -815,7 +815,7 @@ fn handle_ask_hook() -> Result<Response, String> {
     let context: serde_json::Value =
         serde_json::from_str(&input).map_err(|e| format!("Failed to parse JSON: {}", e))?;
 
-    // Coworkers have MIDTOWN_AGENT set to their name at spawn time (see tmux.rs).
+    // Coworkers have MIDTOWN_AGENT set to their name at spawn time (see launch.rs).
     // Lead sessions don't have this set, so default to "lead".
     let agent = std::env::var("MIDTOWN_AGENT").unwrap_or_else(|_| "lead".to_string());
 
