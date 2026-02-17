@@ -588,10 +588,10 @@ async fn test_reviewer_spawns_when_worktree_exists_but_no_current_coworker() {
 
     let effects = collect_reviewer_effects_with_source(
         Some(&branch_owners),
+        &registry,
         &state,
         &[pr_json],
         crate::github_state::AssignmentSource::PollingFallback,
-        Some(&registry),
     )
     .await;
 

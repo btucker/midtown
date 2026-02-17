@@ -30,7 +30,7 @@ mod rpc_session;
 mod rpc_status;
 mod rpc_task;
 pub(crate) mod sessions;
-pub(crate) mod snapshot;
+pub mod snapshot;
 mod specialized;
 mod startup;
 pub(crate) mod state;
