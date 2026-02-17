@@ -2,6 +2,13 @@ use ratatui::style::{Color, Modifier, Style};
 
 use super::{from_str, inline};
 
+// ── table helper ──────────────────────────────────────────────────────────────
+
+/// Collect the full string content of a ratatui Line.
+fn line_content(line: &ratatui::text::Line<'_>) -> String {
+    line.spans.iter().map(|s| s.content.as_ref()).collect()
+}
+
 fn base() -> Style {
     Style::default().fg(Color::White)
 }
@@ -271,4 +278,140 @@ fn test_from_str_table_row() {
             content
         );
     }
+}
+
+// ── table column alignment tests ───────────────────────────────────────────────
+
+#[test]
+fn test_table_columns_are_padded_to_equal_widths() {
+    // Header "Feature" is 7 chars, "Status" is 6 chars, "Owner" is 5 chars.
+    // Data row "Universal events pipeline" is 25 chars — forces that column wider.
+    let md =
+        "| Feature | Status | Owner |\n|---|---|---|\n| Universal events pipeline | Done | alice |";
+    let text = from_str(md, base());
+
+    // Find the header line (contains "Feature")
+    let header_line = text
+        .lines
+        .iter()
+        .find(|l| line_content(l).contains("Feature"));
+    // Find the data line (contains "Universal")
+    let data_line = text
+        .lines
+        .iter()
+        .find(|l| line_content(l).contains("Universal"));
+
+    assert!(header_line.is_some(), "Should have a header line");
+    assert!(data_line.is_some(), "Should have a data line");
+
+    let header_content = line_content(header_line.unwrap());
+    let data_content = line_content(data_line.unwrap());
+
+    // Both rows must have the same total rendered width (padding makes them equal)
+    assert_eq!(
+        header_content.chars().count(),
+        data_content.chars().count(),
+        "Header and data rows should have equal rendered width. header={:?} data={:?}",
+        header_content,
+        data_content
+    );
+}
+
+#[test]
+fn test_table_rule_width_matches_table_width() {
+    let md = "| Feature | Status |\n|---|---|\n| Universal events pipeline | Done |";
+    let text = from_str(md, base());
+
+    let header_line = text
+        .lines
+        .iter()
+        .find(|l| line_content(l).contains("Feature"));
+    let rule_line = text.lines.iter().find(|l| {
+        let c = line_content(l);
+        c.contains('\u{2500}') && !c.contains("Feature") && !c.contains("Universal")
+    });
+
+    assert!(header_line.is_some(), "Should have a header line");
+    assert!(rule_line.is_some(), "Should have a table rule line");
+
+    let header_width = line_content(header_line.unwrap()).chars().count();
+    let rule_width = line_content(rule_line.unwrap()).chars().count();
+
+    assert_eq!(
+        header_width, rule_width,
+        "TableRule width ({}) should match header row width ({})",
+        rule_width, header_width
+    );
+}
+
+#[test]
+fn test_table_header_row_is_bold() {
+    let md = "| Col A | Col B |\n|---|---|\n| a | b |";
+    let text = from_str(md, base());
+
+    // Header row (first TableRow) should have bold spans for cell content
+    let header_line = text
+        .lines
+        .iter()
+        .find(|l| line_content(l).contains("Col A"));
+    assert!(header_line.is_some(), "Should have a header line");
+
+    let header_line = header_line.unwrap();
+    let has_bold = header_line
+        .spans
+        .iter()
+        .any(|s| s.style.add_modifier.contains(Modifier::BOLD));
+    assert!(
+        has_bold,
+        "Header row should have at least one bold span. spans: {:?}",
+        header_line
+            .spans
+            .iter()
+            .map(|s| (&s.content, s.style.add_modifier))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn test_table_alignment_right() {
+    // Right-aligned column: content should be right-padded with spaces on left
+    let md = "| Name | Count |\n|---|---:|\n| Alice | 42 |";
+    let text = from_str(md, base());
+
+    let data_line = text
+        .lines
+        .iter()
+        .find(|l| line_content(l).contains("Alice"));
+    assert!(data_line.is_some(), "Should have a data line");
+
+    let data_content = line_content(data_line.unwrap());
+    // In right-aligned column, "42" should be preceded by spaces within its cell
+    // The second cell content should have leading spaces before "42"
+    // We check by finding where "42" appears and verifying a space precedes it
+    let idx = data_content.find("42").expect("Should contain '42'");
+    assert!(
+        idx > 0 && data_content.as_bytes()[idx - 1] == b' ',
+        "Right-aligned '42' should be preceded by a space. content={:?}",
+        data_content
+    );
+}
+
+#[test]
+fn test_table_alignment_center() {
+    let md = "| Name | Count |\n|---|:---:|\n| Hi | 5 |";
+    let text = from_str(md, base());
+
+    let data_line = text.lines.iter().find(|l| line_content(l).contains("Hi"));
+    assert!(data_line.is_some(), "Should have a data line");
+
+    let data_content = line_content(data_line.unwrap());
+    // Center-aligned "5" in a wider column should have spaces on both sides
+    let idx = data_content.find('5').expect("Should contain '5'");
+    let before = idx > 0 && data_content.as_bytes()[idx - 1] == b' ';
+    let after = data_content.len() > idx + 1 && data_content.as_bytes()[idx + 1] == b' ';
+    assert!(
+        before || after,
+        "Center-aligned '5' should have surrounding spaces. content={:?}",
+        data_content
+    );
 }
