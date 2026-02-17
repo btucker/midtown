@@ -19,12 +19,12 @@ fn test_extract_tool_calls_single_tool_use() {
         extra: json!(null),
     }];
 
-    let items = extract_tool_calls(&events, "lexington");
+    let items = extract_tool_calls(&events);
     assert_eq!(items.len(), 1);
 
     let item = &items[0];
     assert!(matches!(item.kind, ItemKind::ToolCall));
-    assert!(matches!(item.status, ItemStatus::InProgress));
+    assert!(matches!(item.status, ItemStatus::Completed));
     assert_eq!(item.content.len(), 1);
 
     match &item.content[0] {
@@ -64,7 +64,7 @@ fn test_extract_tool_calls_multiple_tool_uses() {
         extra: json!(null),
     }];
 
-    let items = extract_tool_calls(&events, "park");
+    let items = extract_tool_calls(&events);
     assert_eq!(items.len(), 2);
 
     match &items[0].content[0] {
@@ -97,7 +97,7 @@ fn test_extract_tool_calls_text_only_no_items() {
         extra: json!(null),
     }];
 
-    let items = extract_tool_calls(&events, "madison");
+    let items = extract_tool_calls(&events);
     assert!(items.is_empty());
 }
 
@@ -120,7 +120,7 @@ fn test_extract_tool_calls_mixed_content() {
         extra: json!(null),
     }];
 
-    let items = extract_tool_calls(&events, "broadway");
+    let items = extract_tool_calls(&events);
     assert_eq!(items.len(), 1);
 
     match &items[0].content[0] {
@@ -155,7 +155,7 @@ fn test_extract_tool_calls_non_assistant_events() {
         },
     ];
 
-    let items = extract_tool_calls(&events, "amsterdam");
+    let items = extract_tool_calls(&events);
     assert!(items.is_empty());
 }
 
@@ -163,26 +163,6 @@ fn test_extract_tool_calls_non_assistant_events() {
 fn test_extract_tool_calls_empty_events() {
     let events: Vec<StreamEvent> = vec![];
 
-    let items = extract_tool_calls(&events, "columbus");
+    let items = extract_tool_calls(&events);
     assert!(items.is_empty());
-}
-
-#[test]
-fn test_extract_tool_calls_agent_name_propagated() {
-    let events = vec![StreamEvent::Assistant {
-        message: json!({
-            "content": [{
-                "type": "tool_use",
-                "id": "call_abc",
-                "name": "Grep",
-                "input": {"pattern": "fn main"}
-            }]
-        }),
-        session_id: None,
-        extra: json!(null),
-    }];
-
-    let items = extract_tool_calls(&events, "riverside");
-    assert_eq!(items.len(), 1);
-    assert_eq!(items[0].agent_name, "riverside");
 }

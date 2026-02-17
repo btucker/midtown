@@ -21,8 +21,6 @@ pub struct UniversalItem {
     pub status: ItemStatus,
     /// When this item was created/observed.
     pub timestamp: DateTime<Utc>,
-    /// Name of the agent that produced this item.
-    pub agent_name: String,
 }
 
 /// The kind of universal item.

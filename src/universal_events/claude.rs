@@ -16,7 +16,7 @@ mod tests;
 /// and produces a `UniversalItem` for every `tool_use` block found.
 ///
 /// Non-assistant events and non-tool-use content blocks are skipped.
-pub fn extract_tool_calls(events: &[StreamEvent], agent_name: &str) -> Vec<UniversalItem> {
+pub fn extract_tool_calls(events: &[StreamEvent]) -> Vec<UniversalItem> {
     let mut items = Vec::new();
 
     for event in events {
@@ -49,9 +49,8 @@ pub fn extract_tool_calls(events: &[StreamEvent], agent_name: &str) -> Vec<Unive
                             input,
                             call_id,
                         }],
-                        status: ItemStatus::InProgress,
+                        status: ItemStatus::Completed,
                         timestamp: chrono::Utc::now(),
-                        agent_name: agent_name.to_string(),
                     });
                 }
             }
