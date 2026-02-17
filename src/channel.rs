@@ -488,9 +488,35 @@ impl Channel {
         let mut cursor = Cursor::load_or_create(&self.base_dir, &self.channel_name, agent)?;
 
         let file = File::open(&self.channel_file)?;
-        // Try to acquire shared lock without blocking
-        file.try_lock_shared()
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::WouldBlock, e.to_string()))?;
+
+        // Try to acquire shared lock with bounded retries to handle lock contention.
+        let mut acquired = false;
+        for attempt in 0..10 {
+            match file.try_lock_shared() {
+                Ok(()) => {
+                    acquired = true;
+                    break;
+                }
+                Err(_) if attempt < 9 => {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+                Err(e) => {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::WouldBlock,
+                        format!("Failed to acquire shared lock after 500ms: {}", e),
+                    )
+                    .into());
+                }
+            }
+        }
+
+        if !acquired {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "Failed to acquire shared lock after 500ms",
+            )
+            .into());
+        }
 
         let mut reader = BufReader::new(file);
 
@@ -596,8 +622,36 @@ impl Channel {
         }
 
         let file = File::open(&self.channel_file)?;
-        file.try_lock_shared()
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::WouldBlock, e.to_string()))?;
+
+        // Try to acquire shared lock with bounded retries to handle lock contention.
+        // This prevents failures when a writer is still releasing its exclusive lock.
+        let mut acquired = false;
+        for attempt in 0..10 {
+            match file.try_lock_shared() {
+                Ok(()) => {
+                    acquired = true;
+                    break;
+                }
+                Err(_) if attempt < 9 => {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+                Err(e) => {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::WouldBlock,
+                        format!("Failed to acquire shared lock after 500ms: {}", e),
+                    )
+                    .into());
+                }
+            }
+        }
+
+        if !acquired {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "Failed to acquire shared lock after 500ms",
+            )
+            .into());
+        }
 
         let file_size = file.metadata()?.len();
         if file_size == 0 {
@@ -671,8 +725,35 @@ impl Channel {
         }
 
         let file = File::open(&self.channel_file)?;
-        file.try_lock_shared()
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::WouldBlock, e.to_string()))?;
+
+        // Try to acquire shared lock with bounded retries to handle lock contention.
+        let mut acquired = false;
+        for attempt in 0..10 {
+            match file.try_lock_shared() {
+                Ok(()) => {
+                    acquired = true;
+                    break;
+                }
+                Err(_) if attempt < 9 => {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+                Err(e) => {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::WouldBlock,
+                        format!("Failed to acquire shared lock after 500ms: {}", e),
+                    )
+                    .into());
+                }
+            }
+        }
+
+        if !acquired {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "Failed to acquire shared lock after 500ms",
+            )
+            .into());
+        }
 
         // Estimate where to start reading
         let estimated_bytes = (n as u64) * 300;
