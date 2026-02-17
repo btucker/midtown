@@ -34,7 +34,7 @@ use super::{DaemonState, snapshot};
 /// Also enforces a minimum lifetime check - coworkers must be alive for at least
 /// 5 minutes before they can be sent on a break. This prevents spawn storms where
 /// coworkers are rapidly sent on breaks.
-pub(super) fn check_and_shutdown_idle_coworkers(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
+pub fn check_and_shutdown_idle_coworkers(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
     if snap.active_coworkers.is_empty() {
         return vec![];
     }
@@ -305,7 +305,7 @@ pub(super) async fn check_and_restart_stuck_coworkers(
 /// PR assignments instead of in-progress tasks. Implements backoff via
 /// `restart_count` — after `MAX_REVIEWER_RESTARTS`, posts an escalation
 /// warning and stops retrying.
-pub(super) fn check_and_restart_stuck_reviewers(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
+pub fn check_and_restart_stuck_reviewers(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
     if snap.active_coworkers.is_empty() {
         return vec![];
     }
@@ -486,7 +486,7 @@ pub(super) fn check_and_restart_stuck_reviewers(snap: &snapshot::WorldSnapshot) 
 /// will be stuck. We detect it from any coworker's ProcessHealth flag and
 /// schedule a nudge based on the parsed reset time (if available) or a default
 /// of 15 minutes.
-pub(super) fn check_for_usage_limits(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
+pub fn check_for_usage_limits(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
     if snap.usage_limit_nudge_scheduled {
         return vec![];
     }

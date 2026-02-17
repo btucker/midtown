@@ -59,6 +59,23 @@ pub use clustering::apply_clustering_diff;
 #[doc(hidden)]
 pub use effects::Effect;
 
+// Test helpers for E2E tests with captured snapshots
+// Note: Only exporting pure functions that take &WorldSnapshot and return Vec<Effect>.
+// Functions that take &DaemonState are not exported because:
+// 1. DaemonState is pub(crate) which causes privacy warnings
+// 2. Those functions often mutate state, making them harder to test in isolation
+// 3. Pure functions are the gold standard for testing
+#[doc(hidden)]
+pub use dispatch::reset_orphaned_tasks;
+#[doc(hidden)]
+pub use events::DaemonEvent;
+#[doc(hidden)]
+pub use health::{
+    check_and_restart_stuck_reviewers, check_and_shutdown_idle_coworkers, check_for_usage_limits,
+};
+#[doc(hidden)]
+pub use pr::{collect_merged_pr_cleanup_effects, reconcile_orphaned_prs};
+
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
