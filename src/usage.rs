@@ -17,7 +17,6 @@ use crate::auth::AuthProvider;
 
 const CODEX_APP_SERVER_RPC_TIMEOUT: Duration = Duration::from_secs(3);
 const CODEX_EXEC_JSON_TIMEOUT: Duration = Duration::from_secs(4);
-const CODEX_STATUS_FALLBACK_TIMEOUT: Duration = Duration::from_secs(3);
 const PROVIDER_STATUS_TIMEOUT: Duration = Duration::from_secs(8);
 
 /// Usage data from provider rate-limit endpoints.
@@ -672,20 +671,7 @@ fn fetch_codex_usage_for_profile(profile: &str) -> Option<UsageData> {
     if let Some(snapshot) = fetch_codex_rate_limits_via_exec_json(profile) {
         return snapshot_to_usage(snapshot, profile);
     }
-
-    let profile_dir = crate::auth::profile_dir_for(AuthProvider::Codex, profile);
-    let mut command = Command::new("codex");
-    command
-        .args(["exec", "--skip-git-repo-check", "/status"])
-        .env("CODEX_HOME", &profile_dir);
-    let output = run_command_with_timeout(command, CODEX_STATUS_FALLBACK_TIMEOUT)?;
-
-    let text = format!(
-        "{}\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    parse_status_text_to_usage(&text, AuthProvider::Codex, profile)
+    None
 }
 
 fn push_unique_url(urls: &mut Vec<String>, url: String) {
@@ -751,6 +737,29 @@ struct JsonUsageCandidate {
     reset: Option<DateTime<Utc>>,
     duration_minutes: Option<i64>,
     path: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ZaiMonitorResponse {
+    code: Option<i64>,
+    success: Option<bool>,
+    data: Option<ZaiMonitorData>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ZaiMonitorData {
+    limits: Option<Vec<ZaiMonitorLimit>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ZaiMonitorLimit {
+    #[serde(rename = "type")]
+    limit_type: Option<String>,
+    percentage: Option<f64>,
+    #[serde(rename = "nextResetTime")]
+    next_reset_time: Option<i64>,
+    unit: Option<i64>,
+    number: Option<i64>,
 }
 
 fn normalize_percent(value: f64) -> Option<f64> {
@@ -857,6 +866,8 @@ fn extract_reset_from_map(
         "resetAt",
         "next_reset_at",
         "nextResetAt",
+        "next_reset_time",
+        "nextResetTime",
         "expires_at",
         "expiresAt",
     ];
@@ -963,7 +974,113 @@ fn closest_duration_candidate(
         .map(|(idx, _)| idx)
 }
 
+fn find_candidate_by_reset(
+    candidates: &[JsonUsageCandidate],
+    latest: bool,
+    exclude: Option<usize>,
+) -> Option<usize> {
+    let mut best: Option<(usize, i64)> = None;
+    for (idx, candidate) in candidates.iter().enumerate() {
+        if Some(idx) == exclude {
+            continue;
+        }
+        let Some(reset) = candidate.reset else {
+            continue;
+        };
+        let ts = reset.timestamp_millis();
+        match best {
+            None => best = Some((idx, ts)),
+            Some((_, best_ts)) if latest && ts > best_ts => best = Some((idx, ts)),
+            Some((_, best_ts)) if !latest && ts < best_ts => best = Some((idx, ts)),
+            _ => {}
+        }
+    }
+    best.map(|(idx, _)| idx)
+}
+
+fn zai_duration_guess_minutes(unit: Option<i64>, number: Option<i64>) -> Option<i64> {
+    let unit = unit?;
+    let number = number?;
+    if number <= 0 {
+        return None;
+    }
+
+    match unit {
+        // Observed for TOKENS_LIMIT session windows (number=5 => 5 hours).
+        3 => Some(number * 60),
+        // Observed for TOKENS_LIMIT long windows (number=1 => weekly bucket).
+        6 => Some(number * 10080),
+        _ => None,
+    }
+}
+
+fn parse_zai_monitor_tokens_shape(body: &str, profile: &str) -> Option<UsageData> {
+    let response: ZaiMonitorResponse = serde_json::from_str(body).ok()?;
+    if response.success == Some(false) {
+        return None;
+    }
+    if let Some(code) = response.code
+        && code != 200
+    {
+        return None;
+    }
+
+    let limits = response.data?.limits?;
+    let mut candidates = Vec::new();
+    for limit in limits {
+        let Some(limit_type) = limit.limit_type.as_deref() else {
+            continue;
+        };
+        if !limit_type.eq_ignore_ascii_case("TOKENS_LIMIT") {
+            continue;
+        }
+        let Some(util) = limit.percentage.and_then(normalize_percent) else {
+            continue;
+        };
+        let reset = limit
+            .next_reset_time
+            .and_then(DateTime::from_timestamp_millis);
+        let duration_minutes = zai_duration_guess_minutes(limit.unit, limit.number);
+        candidates.push(JsonUsageCandidate {
+            util,
+            reset,
+            duration_minutes,
+            path: "data.limits".to_string(),
+        });
+    }
+
+    if candidates.is_empty() {
+        return None;
+    }
+
+    let session_idx = find_candidate_by_reset(&candidates, false, None)
+        .or_else(|| closest_duration_candidate(&candidates, 300, None))
+        .unwrap_or(0);
+
+    let week_idx = find_candidate_by_reset(&candidates, true, Some(session_idx))
+        .or_else(|| closest_duration_candidate(&candidates, 10080, Some(session_idx)))
+        .unwrap_or(session_idx);
+
+    let session = &candidates[session_idx];
+    let week = &candidates[week_idx];
+    Some(UsageData {
+        session_util: session.util,
+        session_resets: session.reset,
+        week_util: week.util,
+        week_resets: week.reset,
+        account_email: None,
+        provider: AuthProvider::Zai,
+        profile_name: profile.to_string(),
+        cache_age_seconds: None,
+        cache_stale: false,
+    })
+}
+
 fn parse_zai_monitor_usage_response(body: &str, profile: &str) -> Option<UsageData> {
+    if let Some(parsed) = parse_zai_monitor_tokens_shape(body, profile) {
+        return Some(parsed);
+    }
+
     let parsed: serde_json::Value = serde_json::from_str(body).ok()?;
     let mut candidates = Vec::new();
     collect_json_usage_candidates(&parsed, "", &mut candidates);
@@ -1007,11 +1124,7 @@ fn fetch_zai_usage_via_monitor_endpoint(
         let Ok(resp) = client
             .get(&url)
             .header("Accept", "application/json")
-            .header("Content-Type", "application/json")
             .header("Authorization", format!("Bearer {}", api_key))
-            .header("x-api-key", api_key)
-            .header("api-key", api_key)
-            .header("anthropic-api-key", api_key)
             .timeout(Duration::from_secs(10))
             .send()
         else {
@@ -1268,5 +1381,50 @@ mod tests {
         let usage = parse_zai_monitor_usage_response(body, "zai-profile").unwrap();
         assert_eq!(usage.session_util, 25.0);
         assert_eq!(usage.week_util, 25.0);
+    }
+
+    #[test]
+    fn test_parse_zai_monitor_usage_response_tokens_shape() {
+        let body = r#"{
+            "code": 200,
+            "success": true,
+            "data": {
+                "limits": [
+                    {
+                        "type": "TOKENS_LIMIT",
+                        "unit": 3,
+                        "number": 5,
+                        "percentage": 9,
+                        "nextResetTime": 1771356939204
+                    },
+                    {
+                        "type": "TOKENS_LIMIT",
+                        "unit": 6,
+                        "number": 1,
+                        "percentage": 56,
+                        "nextResetTime": 1771508900998
+                    },
+                    {
+                        "type": "TIME_LIMIT",
+                        "unit": 5,
+                        "number": 1,
+                        "percentage": 1,
+                        "nextResetTime": 1773323300996
+                    }
+                ]
+            }
+        }"#;
+
+        let usage = parse_zai_monitor_usage_response(body, "zai-profile").unwrap();
+        assert_eq!(usage.session_util, 9.0);
+        assert_eq!(usage.week_util, 56.0);
+        assert_eq!(
+            usage.session_resets,
+            DateTime::from_timestamp_millis(1771356939204)
+        );
+        assert_eq!(
+            usage.week_resets,
+            DateTime::from_timestamp_millis(1771508900998)
+        );
     }
 }
