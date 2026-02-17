@@ -683,3 +683,63 @@ fn test_reconcile_orphaned_prs_does_not_create_duplicates() {
          to be created every 30 seconds."
     );
 }
+
+/// Bug: reconcile_orphaned_prs checks all_tasks including completed tasks.
+///
+/// Scenario: A merge task was created, marked completed (mistakenly or due to some edge case),
+/// but the PR never actually merged and is still open. The dedup check prevents creating
+/// a new merge task because it finds the completed task.
+///
+/// Expected: Only active (pending/in_progress) merge tasks should block creating new ones.
+/// Completed tasks should not prevent reconciliation.
+#[test]
+fn test_reconcile_orphaned_prs_ignores_completed_merge_tasks() {
+    use super::super::snapshot::minimal_snapshot_for_test;
+    use crate::tasks::{Task, TaskStatus};
+
+    // Simulate PR #42 that meets all orphan criteria
+    let pr_data = json!({
+        "number": 43,
+        "title": "Add logging feature",
+        "headRefName": "park/add-logging",
+        "isDraft": false,
+        "statusCheckRollup": {
+            "state": "SUCCESS"
+        }
+    });
+
+    let mut snap = minimal_snapshot_for_test();
+    snap.open_prs_data = vec![pr_data];
+    snap.reviewed_prs.insert(43);
+
+    // Simulate a completed merge task exists for this PR
+    // (perhaps it was mistakenly completed, or there was a race condition)
+    let completed_merge_task = Task {
+        id: "1002".to_string(),
+        subject: "Merge PR #43 — reviewed, CI green".to_string(),
+        status: TaskStatus::Completed, // Task is completed
+        owner: None,
+        description: Some("PR #43 (Add logging feature) has been reviewed...".to_string()),
+        blocked_by: vec![],
+        channel: None,
+        pr: Some(43), // Associated with PR #43
+        created_at: None,
+    };
+
+    snap.all_tasks = vec![completed_merge_task];
+
+    // Call reconcile_orphaned_prs
+    let effects = reconcile_orphaned_prs(&snap);
+
+    // Should create a new merge task because the existing one is completed
+    let create_task_count = effects
+        .iter()
+        .filter(|e| matches!(e, Effect::CreateTask { .. }))
+        .count();
+    assert_eq!(
+        create_task_count, 1,
+        "Should create a new merge task when the existing merge task is completed. \
+         BUG: Currently skips creation because all_tasks check includes completed tasks, \
+         leaving the PR stuck without an active merge task."
+    );
+}
