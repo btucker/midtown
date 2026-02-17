@@ -2,6 +2,9 @@ use std::path::PathBuf;
 
 use tracing::{debug, info, warn};
 
+/// Maximum number of tool call/result items retained per agent in `recent_tool_items`.
+const MAX_TOOL_ITEMS_PER_AGENT: usize = 20;
+
 use super::DaemonState;
 use super::trackers::PrIssueType;
 use crate::message::Message;
@@ -663,6 +666,15 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 if let Err(e) = state.send_and_broadcast_async(&msg).await {
                     warn!("Failed to post channel message: {}", e);
                 }
+
+                // Clear tool activity for this agent when they post a channel message.
+                // A channel post signals the end of a work phase — the activity strip should reset.
+                // Skip system senders (midtown, lead) since they don't have tool activity.
+                let skip = matches!(sender.to_lowercase().as_str(), "midtown" | "lead" | "user");
+                if !skip {
+                    let mut tool_map = state.recent_tool_items.write().unwrap();
+                    tool_map.remove(&sender.to_lowercase());
+                }
             }
             Effect::BroadcastCoworkerUpdate {
                 name,
@@ -672,6 +684,18 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 state.broadcast_coworker_update(&name, &status, current_task.as_deref());
             }
             Effect::BroadcastUniversalItems { agent_name, items } => {
+                // Store items in DaemonState for TUI RPC consumers (kanban.data).
+                {
+                    let mut tool_map = state.recent_tool_items.write().unwrap();
+                    let entry = tool_map.entry(agent_name.to_lowercase()).or_default();
+                    entry.extend(items.iter().cloned());
+                    // Cap to avoid unbounded growth.
+                    if entry.len() > MAX_TOOL_ITEMS_PER_AGENT {
+                        let drain_count = entry.len() - MAX_TOOL_ITEMS_PER_AGENT;
+                        entry.drain(..drain_count);
+                    }
+                }
+                // Also broadcast via WebSocket for web UI consumers.
                 state.broadcast_web_update(crate::web::WebUpdate::UniversalItems(
                     crate::web::UniversalItemsData { agent_name, items },
                 ));

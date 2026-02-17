@@ -592,6 +592,15 @@ pub(crate) struct DaemonState {
     /// exclusive adapter lease. Adapters consume via poll+ack; the daemon
     /// enqueues logical control messages (nudges/keys) without terminal coupling.
     headed_sessions: Mutex<HashMap<String, HeadedSessionState>>,
+    /// Recent tool call/result items per agent, keyed by lowercase agent name.
+    ///
+    /// Updated by `BroadcastUniversalItems` effects as stream events arrive.
+    /// Capped at `MAX_TOOL_ITEMS_PER_AGENT` per agent to bound memory.
+    /// Cleared when a channel message from the agent is posted (work phase done).
+    /// Exposed via `kanban.data` RPC (live, not cached) so the TUI can display
+    /// per-coworker tool activity alongside chat messages.
+    pub(crate) recent_tool_items:
+        std::sync::RwLock<HashMap<String, Vec<crate::universal_events::UniversalItem>>>,
 }
 
 impl DaemonState {
@@ -834,6 +843,7 @@ impl DaemonState {
             restart_requested: std::sync::atomic::AtomicBool::new(false),
             shutdown_tx,
             headed_sessions: Mutex::new(HashMap::new()),
+            recent_tool_items: std::sync::RwLock::new(HashMap::new()),
         })
     }
 

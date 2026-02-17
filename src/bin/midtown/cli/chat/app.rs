@@ -51,6 +51,9 @@ struct KanbanData {
     max_coworkers: usize,
     /// Whether the headless lead session is actively working
     lead_working: bool,
+    /// Recent tool call activity per agent: agent name → list of semantic headers.
+    /// Populated from kanban.data RPC `tool_activity` field (live, not cached).
+    tool_activity: HashMap<String, Vec<String>>,
 }
 
 /// Coworker status information for the TUI board sidebar
@@ -230,6 +233,10 @@ pub struct App {
     pub coworkers: Vec<CoworkerInfo>,
     /// Whether the headless lead session is actively working
     pub lead_working: bool,
+    /// Recent tool call activity per agent, keyed by lowercase agent name.
+    /// Contains human-readable semantic headers (e.g., "$ git status", "read src/lib.rs").
+    /// Updated from kanban.data RPC (live, not cached). Cleared when agent posts a message.
+    pub tool_activity: HashMap<String, Vec<String>>,
     /// Maximum number of coworkers allowed
     pub max_coworkers: usize,
     /// Repository name with owner (e.g., "btucker/midtown")
@@ -428,6 +435,7 @@ impl App {
             merged_prs: Vec::new(),
             coworkers: Vec::new(),
             lead_working: false,
+            tool_activity: HashMap::new(),
             max_coworkers: 10, // Default, will be updated from daemon
             repo_name,
             kanban_last_refresh: Instant::now() - KANBAN_REFRESH_INTERVAL, // Force initial refresh
@@ -534,6 +542,7 @@ impl App {
                     self.merged_prs = data.merged_prs;
                     self.coworkers = data.coworkers;
                     self.lead_working = data.lead_working;
+                    self.tool_activity = data.tool_activity;
                     self.max_coworkers = data.max_coworkers;
                     // Update repo info from daemon if available
                     if !data.repos.is_empty() {
@@ -695,7 +704,7 @@ impl App {
         self.kanban_receiver = Some(rx);
 
         thread::spawn(move || {
-            let (prs, merged_prs, repos, coworkers, max_coworkers, lead_working) =
+            let (prs, merged_prs, repos, coworkers, max_coworkers, lead_working, tool_activity) =
                 fetch_kanban_data_via_rpc().unwrap_or_else(|| {
                     (
                         fetch_prs(),
@@ -704,6 +713,7 @@ impl App {
                         Vec::new(),
                         10,
                         false,
+                        HashMap::new(),
                     )
                 });
             // Ignore send error if receiver dropped (app closed)
@@ -714,6 +724,7 @@ impl App {
                 coworkers,
                 max_coworkers,
                 lead_working,
+                tool_activity,
             });
         });
     }
@@ -2186,6 +2197,7 @@ fn fetch_kanban_data_via_rpc() -> Option<(
     Vec<CoworkerInfo>,
     usize,
     bool,
+    HashMap<String, Vec<String>>,
 )> {
     use crate::client::DaemonClient;
 
@@ -2386,6 +2398,23 @@ fn fetch_kanban_data_via_rpc() -> Option<(
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
+    // Parse tool_activity: { agent_name: [UniversalItem, ...] } → { agent_name: [semantic_header, ...] }
+    let tool_activity: HashMap<String, Vec<String>> = data
+        .get("tool_activity")
+        .and_then(|v| v.as_object())
+        .map(|obj| {
+            obj.iter()
+                .map(|(agent, items)| {
+                    let headers: Vec<String> = items
+                        .as_array()
+                        .map(|arr| arr.iter().filter_map(extract_semantic_header).collect())
+                        .unwrap_or_default();
+                    (agent.clone(), headers)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
     Some((
         prs,
         merged_prs,
@@ -2393,7 +2422,38 @@ fn fetch_kanban_data_via_rpc() -> Option<(
         coworkers,
         max_coworkers,
         lead_working,
+        tool_activity,
     ))
+}
+
+/// Extract a human-readable label from a serialized `UniversalItem`.
+///
+/// For `ToolCall` content parts, returns the `semantic_header`.
+/// For `ToolResult` parts, returns "✓ result" or "✗ error".
+/// Returns `None` if no recognizable content is found.
+fn extract_semantic_header(item: &serde_json::Value) -> Option<String> {
+    let content = item.get("content")?.as_array()?;
+    for part in content {
+        if let Some(call) = part.get("ToolCall") {
+            let header = call
+                .get("semantic_header")
+                .and_then(|v| v.as_str())
+                .unwrap_or_else(|| call.get("name").and_then(|v| v.as_str()).unwrap_or("?"));
+            return Some(header.to_string());
+        }
+        if let Some(result) = part.get("ToolResult") {
+            let is_error = result
+                .get("is_error")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            return Some(if is_error {
+                "\u{2717} error".to_string()
+            } else {
+                "\u{2713} ok".to_string()
+            });
+        }
+    }
+    None
 }
 
 /// Cache for default branch names, keyed by repo full name (or empty string for current repo).
@@ -2625,6 +2685,7 @@ pub(super) mod tests {
             merged_prs: Vec::new(),
             coworkers: Vec::new(),
             lead_working: false,
+            tool_activity: HashMap::new(),
             max_coworkers: 10, // Test default
             repo_name: "test".to_string(),
             kanban_last_refresh: Instant::now(),

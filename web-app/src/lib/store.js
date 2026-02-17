@@ -124,3 +124,8 @@ export const isWideScreen = writable(false)
 
 // Whether to show archived channels in the channel list (default: false)
 export const showArchivedChannels = writable(false)
+
+// Recent tool call activity per agent name.
+// Format: { 'amsterdam': [{ item_id, kind, content, status, timestamp }, ...], ... }
+// Each array holds the most recent items (capped at MAX_TOOL_ITEMS_PER_AGENT) for display.
+export const agentToolItems = writable({})

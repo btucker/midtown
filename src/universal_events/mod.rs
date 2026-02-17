@@ -30,6 +30,8 @@ pub enum ItemKind {
     Message,
     /// A tool/function call.
     ToolCall,
+    /// The result of a tool/function call.
+    ToolResult,
 }
 
 /// A content block within a universal item.
@@ -37,11 +39,19 @@ pub enum ItemKind {
 pub enum ContentPart {
     /// Plain text content.
     Text { text: String },
-    /// A tool invocation with name, input arguments, and provider call ID.
+    /// A tool invocation with name, input arguments, provider call ID, and a human-readable header.
     ToolCall {
         name: String,
         input: serde_json::Value,
         call_id: String,
+        /// Human-readable summary of the tool call (e.g., `$ git status`, `read src/main.rs`).
+        semantic_header: String,
+    },
+    /// The result of a tool invocation, matched by call ID.
+    ToolResult {
+        call_id: String,
+        output: String,
+        is_error: bool,
     },
 }
 

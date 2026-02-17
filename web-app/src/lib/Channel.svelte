@@ -1,10 +1,11 @@
 <script>
-  import { messages, messagesByChannel, activeChannel, channels, coworkers, leadTyping, kanbanData, repoStatus, repoStatuses, daemonStatus, detailPanelData, isWideScreen } from './store.js'
+  import { messages, messagesByChannel, activeChannel, channels, coworkers, leadTyping, kanbanData, repoStatus, repoStatuses, daemonStatus, detailPanelData, isWideScreen, agentToolItems } from './store.js'
   import { sendMessage, uploadFile } from './api.js'
   import { tick, onMount } from 'svelte'
   import MermaidDiagram from './MermaidDiagram.svelte'
   import { parseSegments, hasMermaid, renderContent } from './markdown.js'
   import Autocomplete from './Autocomplete.svelte'
+  import ToolActivity from './ToolActivity.svelte'
   import * as Dialog from '$lib/components/ui/dialog'
 
   let inputText = $state('')
@@ -615,6 +616,19 @@
           {/if}
         {/each}
       {/if}
+
+      <!-- Tool call activity strips — one per active coworker with recent tool calls -->
+      {#each Object.entries($agentToolItems) as [agentName, toolItems]}
+        {#if toolItems.length > 0}
+          <div class="mt-[3px]">
+            <div class="flex items-center gap-[7px] whitespace-nowrap overflow-hidden text-ellipsis">
+              <span class="font-bold text-[0.85rem]" style="color: {getSenderColor(agentName)}">{agentName}</span>
+              <span class="text-[#3a6a3a] text-[0.78rem] select-none">working…</span>
+            </div>
+            <ToolActivity {agentName} items={toolItems} />
+          </div>
+        {/if}
+      {/each}
 
       {#if $leadTyping}
         <div class="flex items-center gap-[7px] py-[5px] mt-[5px] opacity-70">
