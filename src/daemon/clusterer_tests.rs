@@ -126,9 +126,11 @@ fn test_clusterer_role_basics() {
 
 #[test]
 fn test_record_clusterer_success_resets_failure_count() {
-    let mut ps = DaemonPersistentState::default();
-    ps.clusterer_session_id = Some("old-session".to_string());
-    ps.clusterer_consecutive_failures = 2;
+    let mut ps = DaemonPersistentState {
+        clusterer_session_id: Some("old-session".to_string()),
+        clusterer_consecutive_failures: 2,
+        ..Default::default()
+    };
 
     record_clusterer_success(&mut ps, Some("new-session".to_string()));
 
@@ -138,9 +140,10 @@ fn test_record_clusterer_success_resets_failure_count() {
 
 #[test]
 fn test_record_clusterer_failure_increments_counter() {
-    let mut ps = DaemonPersistentState::default();
-    ps.clusterer_session_id = Some("session-abc".to_string());
-    ps.clusterer_consecutive_failures = 0;
+    let mut ps = DaemonPersistentState {
+        clusterer_session_id: Some("session-abc".to_string()),
+        ..Default::default()
+    };
 
     record_clusterer_failure(&mut ps);
 
@@ -151,9 +154,11 @@ fn test_record_clusterer_failure_increments_counter() {
 
 #[test]
 fn test_record_clusterer_failure_clears_session_id_at_threshold() {
-    let mut ps = DaemonPersistentState::default();
-    ps.clusterer_session_id = Some("dead-session".to_string());
-    ps.clusterer_consecutive_failures = MAX_CONSECUTIVE_FAILURES - 1;
+    let mut ps = DaemonPersistentState {
+        clusterer_session_id: Some("dead-session".to_string()),
+        clusterer_consecutive_failures: MAX_CONSECUTIVE_FAILURES - 1,
+        ..Default::default()
+    };
 
     record_clusterer_failure(&mut ps);
 
@@ -167,9 +172,10 @@ fn test_record_clusterer_failure_clears_session_id_at_threshold() {
 
 #[test]
 fn test_record_clusterer_failure_does_not_reset_past_threshold() {
-    let mut ps = DaemonPersistentState::default();
-    ps.clusterer_session_id = None; // already cleared
-    ps.clusterer_consecutive_failures = MAX_CONSECUTIVE_FAILURES;
+    let mut ps = DaemonPersistentState {
+        clusterer_consecutive_failures: MAX_CONSECUTIVE_FAILURES,
+        ..Default::default()
+    };
 
     // Another failure should not panic or overflow
     record_clusterer_failure(&mut ps);
@@ -183,9 +189,11 @@ fn test_record_clusterer_failure_does_not_reset_past_threshold() {
 
 #[test]
 fn test_record_clusterer_success_with_no_session_id() {
-    let mut ps = DaemonPersistentState::default();
-    ps.clusterer_session_id = Some("old-session".to_string());
-    ps.clusterer_consecutive_failures = 3;
+    let mut ps = DaemonPersistentState {
+        clusterer_session_id: Some("old-session".to_string()),
+        clusterer_consecutive_failures: 3,
+        ..Default::default()
+    };
 
     // Success with None session_id (fresh session that didn't return an ID)
     record_clusterer_success(&mut ps, None);
