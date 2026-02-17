@@ -16,9 +16,9 @@ use std::time::Duration;
 use crossterm::{
     cursor::MoveTo,
     event::{
-        DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyCode, KeyEventKind,
-        KeyModifiers, KeyboardEnhancementFlags, MouseEventKind, PopKeyboardEnhancementFlags,
-        PushKeyboardEnhancementFlags,
+        DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+        Event, EventStream, KeyCode, KeyEventKind, KeyModifiers, KeyboardEnhancementFlags,
+        MouseEventKind, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
     },
     execute,
     style::{Color as CrosstermColor, Print, ResetColor, SetForegroundColor},
@@ -72,11 +72,14 @@ where
     let mut stdout = io::stdout();
 
     // Enable keyboard enhancement flags for proper Shift+Enter detection.
-    // See KEYBOARD_ENHANCEMENT_FLAGS for details.
+    // EnableBracketedPaste wraps pasted text in escape markers so crossterm
+    // delivers it as Event::Paste(text) instead of individual characters.
+    // See KEYBOARD_ENHANCEMENT_FLAGS for details on the keyboard flags.
     execute!(
         stdout,
         EnterAlternateScreen,
         EnableMouseCapture,
+        EnableBracketedPaste,
         PushKeyboardEnhancementFlags(KEYBOARD_ENHANCEMENT_FLAGS)
     )
     .map_err(|e| format!("Failed to enter alternate screen: {}", e))?;
@@ -101,6 +104,7 @@ where
         terminal.backend_mut(),
         LeaveAlternateScreen,
         DisableMouseCapture,
+        DisableBracketedPaste,
         PopKeyboardEnhancementFlags
     );
     let _ = terminal.show_cursor();
@@ -496,10 +500,13 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                 }
                 // Enter: select channel switcher item if showing, or autocomplete item if showing,
                 // execute /channel create command, auto-focus InputBar, or send message
-                // Shift+Enter: insert newline
+                // Shift+Enter or Alt+Enter: insert newline
+                // (Alt+Enter works universally; Shift+Enter requires kitty keyboard protocol)
                 KeyCode::Enter => {
-                    if key.modifiers.contains(KeyModifiers::SHIFT) {
-                        // Shift+Enter inserts a newline
+                    if key.modifiers.contains(KeyModifiers::SHIFT)
+                        || key.modifiers.contains(KeyModifiers::ALT)
+                    {
+                        // Shift+Enter or Alt+Enter inserts a newline
                         auto_focus_and_insert_char(app, '\n');
                         EventResult::Continue
                     } else if app.channel_switcher.show {
@@ -732,6 +739,13 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
             }
             _ => EventResult::Continue,
         },
+        Event::Paste(text) => {
+            // Bracketed paste: insert the entire pasted string at cursor position.
+            // Newlines in the pasted text are preserved as-is (they display as
+            // line breaks in the multi-line input and are sent as part of the message).
+            auto_focus_and_insert_str(app, &text);
+            EventResult::Continue
+        }
         _ => EventResult::Continue,
     }
 }
@@ -763,6 +777,24 @@ fn auto_focus_and_insert_char(app: &mut App, c: char) {
     app.input_cursor += 1;
 
     // Detect autocomplete trigger
+    app.detect_autocomplete_trigger();
+}
+
+/// Auto-focus the InputBar and insert a string at the cursor position.
+///
+/// Used for bracketed paste events where the terminal delivers the full
+/// pasted text at once, preserving embedded newlines as input line breaks.
+fn auto_focus_and_insert_str(app: &mut App, s: &str) {
+    use app::FocusedPane;
+
+    if app.focused_pane != FocusedPane::InputBar {
+        app.focused_pane = FocusedPane::InputBar;
+    }
+
+    let byte_idx = char_index_to_byte_index(&app.input_text, app.input_cursor);
+    app.input_text.insert_str(byte_idx, s);
+    app.input_cursor += s.chars().count();
+
     app.detect_autocomplete_trigger();
 }
 
@@ -1683,6 +1715,88 @@ mod tests {
             app.input_cursor, original_cursor,
             "Input cursor should be preserved on creation failure"
         );
+    }
+
+    #[test]
+    fn test_paste_inserts_text_at_cursor() {
+        let mut app = test_app();
+
+        let event = Event::Paste("hello world".to_string());
+        handle_event(&mut app, event);
+
+        assert_eq!(app.input_text, "hello world");
+        assert_eq!(app.input_cursor, 11);
+    }
+
+    #[test]
+    fn test_paste_preserves_newlines() {
+        let mut app = test_app();
+
+        let event = Event::Paste("line1\nline2\nline3".to_string());
+        handle_event(&mut app, event);
+
+        assert_eq!(app.input_text, "line1\nline2\nline3");
+        assert_eq!(app.input_cursor, 17);
+    }
+
+    #[test]
+    fn test_paste_inserts_at_middle_of_existing_text() {
+        use app::FocusedPane;
+        let mut app = test_app();
+        app.focused_pane = FocusedPane::InputBar;
+        app.input_text = "helo".to_string();
+        app.input_cursor = 2; // cursor between 'he' and 'lo'
+
+        let event = Event::Paste("l".to_string());
+        handle_event(&mut app, event);
+
+        assert_eq!(app.input_text, "hello");
+        assert_eq!(app.input_cursor, 3);
+    }
+
+    #[test]
+    fn test_paste_auto_focuses_input_bar() {
+        use app::FocusedPane;
+        let mut app = test_app();
+        app.focused_pane = FocusedPane::Chat;
+
+        let event = Event::Paste("hello".to_string());
+        handle_event(&mut app, event);
+
+        assert_eq!(app.focused_pane, FocusedPane::InputBar);
+    }
+
+    #[test]
+    fn test_paste_empty_string_is_noop() {
+        let mut app = test_app();
+
+        let event = Event::Paste(String::new());
+        handle_event(&mut app, event);
+
+        assert_eq!(app.input_text, "");
+        assert_eq!(app.input_cursor, 0);
+    }
+
+    #[test]
+    fn test_alt_enter_inserts_newline() {
+        let mut app = test_app();
+
+        let event = Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT));
+        handle_event(&mut app, event);
+
+        assert_eq!(app.input_text, "\n");
+        assert_eq!(app.input_cursor, 1);
+    }
+
+    #[test]
+    fn test_shift_enter_inserts_newline() {
+        let mut app = test_app();
+
+        let event = Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT));
+        handle_event(&mut app, event);
+
+        assert_eq!(app.input_text, "\n");
+        assert_eq!(app.input_cursor, 1);
     }
 
     /// Regression test: Shift+letter should insert uppercase character.
