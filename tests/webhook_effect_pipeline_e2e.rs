@@ -313,11 +313,6 @@ impl WebhookEffectFixture {
             "id": 1
         });
 
-        eprintln!(
-            "Sending RPC request: {}",
-            serde_json::to_string_pretty(&request).unwrap()
-        );
-
         // Send request
         let request_line = format!("{}\n", request);
         stream.write_all(request_line.as_bytes()).ok()?;
@@ -336,20 +331,15 @@ impl WebhookEffectFixture {
     fn read_channel_messages(&self) -> Vec<String> {
         let response = self.rpc_call("channel.read", Some(serde_json::json!({"all": true})));
 
-        eprintln!("RPC response: {:?}", response);
-
         if let Some(response) = response
             && let Some(messages) = response["result"]["messages"].as_array()
         {
-            let msgs: Vec<String> = messages
+            return messages
                 .iter()
                 .filter_map(|m| m["message"].as_str().map(String::from))
                 .collect();
-            eprintln!("Parsed {} messages from RPC", msgs.len());
-            return msgs;
         }
 
-        eprintln!("No messages in RPC response");
         Vec::new()
     }
 
@@ -460,15 +450,13 @@ impl Drop for WebhookEffectFixture {
         }
 
         // Clean up test directories
-        // TEMPORARILY DISABLED for debugging - leave temp dirs for inspection
-        // let _ = fs::remove_dir_all(&self.temp_dir);
-        // let _ = fs::remove_dir_all(&self.project_dir);
-        // let _ = fs::remove_dir_all(&self.tasks_dir);
-        // let _ = fs::remove_dir_all(self.coworkers_dir());
-        // if let Some(parent) = self.socket_path.parent() {
-        //     let _ = fs::remove_dir_all(parent);
-        // }
-        eprintln!("Test temp dir preserved at: {:?}", self.temp_dir);
+        let _ = fs::remove_dir_all(&self.temp_dir);
+        let _ = fs::remove_dir_all(&self.project_dir);
+        let _ = fs::remove_dir_all(&self.tasks_dir);
+        let _ = fs::remove_dir_all(self.coworkers_dir());
+        if let Some(parent) = self.socket_path.parent() {
+            let _ = fs::remove_dir_all(parent);
+        }
     }
 }
 
@@ -835,53 +823,26 @@ fn test_full_pr_lifecycle_webhook_effects() {
     let status = fixture
         .send_webhook("pull_request", pr_merged_payload)
         .expect("Failed to send webhook");
-    eprintln!("PR merged webhook response status: {}", status);
     assert_eq!(status, 200);
 
     // Give daemon time to process (longer for second webhook in sequence)
     thread::sleep(Duration::from_millis(2000));
 
-    // Debug: print daemon logs
-    let daemon_log = fixture.temp_dir.join("daemon.log");
-    if let Ok(log_content) = fs::read_to_string(&daemon_log) {
-        eprintln!("=== Daemon log (last 50 lines) ===");
-        for line in log_content
-            .lines()
-            .rev()
-            .take(50)
-            .collect::<Vec<_>>()
-            .iter()
-            .rev()
-        {
-            eprintln!("{}", line);
-        }
-    }
-
-    // Debug: print all messages
-    let messages = fixture.read_channel_messages();
-    eprintln!("All channel messages after PR #101 merged:");
-    for (i, msg) in messages.iter().enumerate() {
-        eprintln!("  {}: {}", i, msg);
-    }
-
     // Verify PR merged message
     assert!(
-        fixture.channel_contains("merged PR #101"),
-        "PR merged message should appear. Messages: {:?}",
-        messages
+        fixture.wait_for_channel_message("merged PR #101", 5000),
+        "PR merged message should appear"
     );
 
     // Verify merge notification
     assert!(
-        fixture.channel_contains("PR #101 merged into main"),
-        "Merge notification should be posted. Messages: {:?}",
-        messages
+        fixture.wait_for_channel_message("PR #101 merged into main", 5000),
+        "Merge notification should be posted"
     );
 
     // Verify task auto-completion (daemon creates task structure automatically)
     assert!(
-        fixture.channel_contains("✅ Auto-completed task !51"),
-        "Task should be auto-completed after PR merge. Messages: {:?}",
-        messages
+        fixture.wait_for_channel_message("✅ Auto-completed task !51", 5000),
+        "Task should be auto-completed after PR merge"
     );
 }
