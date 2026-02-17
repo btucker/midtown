@@ -3,7 +3,7 @@
 //! Handles recovery of coworker tracking across daemon restarts.
 //! When the daemon starts:
 //! - Recovers headless coworker sessions from persisted state and resumes them with --resume
-//! - Cleans up zombie processes from previous daemon runs (orphaned PPID=1 processes)
+//! - Cleans up zombie processes from previous daemon runs (orphaned PPID=1 or children of stale daemons)
 //!
 //! Workflow state is recovered when coworkers report via RPC.
 
