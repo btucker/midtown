@@ -505,6 +505,152 @@ fn update_project_config(
         .map_err(|e| format!("Failed to save project config: {}", e))
 }
 
+/// Ensure the official Claude plugins marketplace is configured.
+///
+/// Returns true if marketplace is configured (or was successfully added), false on failure.
+fn ensure_official_marketplace() -> bool {
+    // Check if any marketplace is configured
+    let output = match Command::new("claude")
+        .args(["plugin", "marketplace", "list"])
+        .output()
+    {
+        Ok(o) => o,
+        Err(e) => {
+            eprintln!("Failed to check marketplace configuration: {}", e);
+            return false;
+        }
+    };
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // If output contains "claude-plugins-official", marketplace is already configured
+    if stdout.contains("claude-plugins-official") {
+        return true;
+    }
+
+    // If output contains "No marketplaces configured", we need to add it
+    if !stdout.contains("No marketplaces configured") {
+        // Some other marketplace exists, but not the official one - still add it
+        // (or if output is unexpected, try adding anyway)
+    }
+
+    // Add the official marketplace
+    emit_startup_progress(8, "adding official plugins marketplace");
+    let output = match Command::new("claude")
+        .args([
+            "plugin",
+            "marketplace",
+            "add",
+            "https://github.com/anthropics/claude-plugins-official",
+        ])
+        .output()
+    {
+        Ok(o) => o,
+        Err(e) => {
+            eprintln!("Failed to add official marketplace: {}", e);
+            return false;
+        }
+    };
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        eprintln!("Failed to add official marketplace: {}", stderr);
+        return false;
+    }
+
+    true
+}
+
+/// Install a Claude Code plugin via `claude plugin install`.
+///
+/// Returns true on success, false on failure (logs error but doesn't block startup).
+fn install_plugin(plugin_id: &str) -> bool {
+    let output = match Command::new("claude")
+        .args(["plugin", "install", plugin_id])
+        .output()
+    {
+        Ok(o) => o,
+        Err(e) => {
+            eprintln!("Failed to run claude plugin install {}: {}", plugin_id, e);
+            return false;
+        }
+    };
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        eprintln!("Failed to install plugin {}: {}", plugin_id, stderr);
+        return false;
+    }
+
+    true
+}
+
+/// Check and install required Claude Code plugins.
+///
+/// Non-blocking: logs errors but doesn't stop startup if installation fails.
+fn ensure_required_plugins() {
+    // Ensure official marketplace is configured first
+    if !ensure_official_marketplace() {
+        eprintln!(
+            "Warning: Could not configure official marketplace. Plugin installation may fail."
+        );
+        // Continue anyway - some plugins might be installed already
+    }
+
+    // Get list of installed plugins
+    let output = match Command::new("claude")
+        .args(["plugin", "list", "--json"])
+        .output()
+    {
+        Ok(o) => o,
+        Err(e) => {
+            eprintln!("Warning: Failed to check installed plugins: {}", e);
+            return;
+        }
+    };
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        eprintln!("Warning: Failed to list plugins: {}", stderr);
+        return;
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // Parse JSON output - it's an array of objects with "id" field
+    let plugins: Vec<serde_json::Value> = match serde_json::from_str(&stdout) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("Warning: Failed to parse plugin list JSON: {}", e);
+            return;
+        }
+    };
+
+    let installed: std::collections::HashSet<String> = plugins
+        .iter()
+        .filter_map(|p| p.get("id").and_then(|id| id.as_str()).map(String::from))
+        .collect();
+
+    // Find missing plugins (use canonical list from daemon)
+    let missing: Vec<_> = midtown::daemon::REQUIRED_PLUGINS
+        .iter()
+        .filter(|p| !installed.contains(**p))
+        .collect();
+
+    if missing.is_empty() {
+        return;
+    }
+
+    // Install missing plugins with incremental progress indicators
+    let total_missing = missing.len();
+    for (i, plugin_id) in missing.iter().enumerate() {
+        // Spread progress from 10% to 60% based on plugin index
+        let progress = 10 + ((50 * (i + 1)) / total_missing.max(1)) as u16;
+        emit_startup_progress(progress, &format!("installing plugin {}", plugin_id));
+        install_plugin(plugin_id);
+    }
+}
+
 /// Handle `midtown start` command.
 ///
 /// Starts Midtown services for the current project (daemon + shared webserver).
@@ -525,6 +671,9 @@ pub fn handle_start(project: Option<String>, repos: Vec<PathBuf>) -> Result<Resp
     });
     let additional_repos = resolve_repos(&repos, &project_name);
     emit_startup_progress(5, &format!("starting project '{}'", project_name));
+
+    // Check and install required plugins before starting daemon
+    ensure_required_plugins();
 
     let mut messages = Vec::new();
 
