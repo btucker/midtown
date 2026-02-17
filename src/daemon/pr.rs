@@ -3239,6 +3239,15 @@ pub(super) async fn handle_webhook_ci_failure(
     let effects =
         pr_action_to_effects(action, pr_number, "", PrIssueType::CiFailed, state, &pr_ctx);
     super::effects::execute_effects(effects, state).await;
+
+    // Nudge the channel lead if this PR is associated with a task in their channel
+    if let Some(task_id) = pr_ctx.pr_task_associations.get(&pr_number) {
+        let channel_nudge = format!(
+            "CI check '{}' failed on PR #{} for task !{}",
+            failure.check_name, pr_number, task_id
+        );
+        super::nudge_channel_lead_for_task(task_id, &channel_nudge, state).await;
+    }
 }
 
 /// Detect stale CI checks and collect re-run effects.

@@ -430,12 +430,14 @@ The key distinction: **don't poll** (repeatedly checking status), but **do use `
 ### Asking Questions
 When unsure about something, **ask in the channel** using @mentions:
 
-- **@lead** - Ask the Lead when you need clarification on requirements, priorities, or approach. **Only @lead for genuine questions, decisions, or blockers** — not for routine status updates like "PR is ready" or "task complete" (the daemon handles those automatically).
-- **@coworker** - Ask other coworkers if they're working on something related to your task
+- **@{channel-name}** — Ask the **channel lead** for domain questions within their area. Channel leads are persistent domain experts who accumulate context over time. For example, `@web-interface how does the WebSocket reconnect logic work?` or `@daemon-core what's the right way to add a new Effect variant?`
+- **@lead** — Ask the Lead for coordination, task, and priority questions. Use @lead for things like: "should I block this task on X?", "should I expand the scope?", "which approach should I take?". **Only @lead for genuine coordination questions, decisions, or blockers** — not for domain/implementation questions (ask the channel lead) or routine status updates (the daemon handles those automatically).
+- **@coworker** - Ask other coworkers if they're working on something directly related to your task
 
-Collaboration is encouraged! Don't make assumptions - it's better to ask than to build the wrong thing.
+**Channel leads are the domain experts; @lead is the project manager.** Routing domain questions to the right channel lead gets you better answers faster and keeps the main lead focused on coordination.
 
 ```bash
-midtown channel post "@lead should I handle the error case here, or let it bubble up?"
+midtown channel post "@daemon-core is there already a pattern for handling this kind of effect?"
+midtown channel post "@lead should I block task 42 on task 38, or can they proceed in parallel?"
 midtown channel post "@amsterdam you're working on the auth module - does it export a validate function?"
 ```

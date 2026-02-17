@@ -167,6 +167,28 @@ fn apply_task_channel_mapping(
     }
 }
 
+/// Resolve the channel lead to notify for a newly created task.
+///
+/// Returns the channel name if a channel lead session exists for the task's channel,
+/// or `None` if the task is on the main channel ("midtown"), has no channel mapping,
+/// or has no registered channel lead.
+///
+/// This is a pure function (no I/O) to keep it testable.
+fn resolve_channel_lead_for_task(
+    task_id: &str,
+    task_channel: &HashMap<String, String>,
+    channel_lead_sessions: &HashMap<String, String>,
+) -> Option<String> {
+    let channel_name = task_channel
+        .get(task_id)
+        .map(|s| s.as_str())
+        .unwrap_or("midtown");
+    if channel_name == "midtown" || !channel_lead_sessions.contains_key(channel_name) {
+        return None;
+    }
+    Some(channel_name.to_string())
+}
+
 /// Invoke the clusterer to produce a ClusteringDiff for a new task.
 ///
 /// Builds a ClustererRequest with the task ID, subject, description, and current
@@ -448,6 +470,32 @@ pub(super) async fn handle_task_create(
     let msg = Message::text("lead", format!("created task: {}", subject));
     if let Err(e) = state.send_and_broadcast_async(&msg).await {
         warn!("Failed to post task creation to channel: {}", e);
+    }
+
+    // Nudge the channel lead for the task's channel (if one exists).
+    // Read from persistent state AFTER clustering effects have been applied so we
+    // get the final channel assignment, not the provisional "midtown" fallback.
+    let channel_lead_to_nudge = {
+        let ps = state.persistent_state.lock().await;
+        resolve_channel_lead_for_task(&task_id, &ps.task_channel, &ps.channel_lead_sessions)
+    };
+    if let Some(channel_name) = channel_lead_to_nudge {
+        let nudge_msg = format!("New task !{}: {}", task_id, subject);
+        if let Err(e) = state
+            .session_manager
+            .send_message(&channel_name, &nudge_msg)
+            .await
+        {
+            debug!(
+                "Failed to nudge channel lead '{}' for new task !{}: {}",
+                channel_name, task_id, e
+            );
+        } else {
+            info!(
+                "Nudged channel lead '{}' about new task !{}",
+                channel_name, task_id
+            );
+        }
     }
 
     info!("Created task !{}: {}", task_id, subject);
@@ -888,5 +936,66 @@ mod tests {
         let changed = apply_task_model_mapping(&mut map, "42", None, true).unwrap();
         assert!(!changed);
         assert!(map.is_empty());
+    }
+
+    // -------------------------------------------------------------------------
+    // resolve_channel_lead_for_task tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_resolve_channel_lead_returns_channel_when_lead_exists() {
+        let mut task_channel = HashMap::new();
+        task_channel.insert("42".to_string(), "daemon-core".to_string());
+        let mut channel_lead_sessions = HashMap::new();
+        channel_lead_sessions.insert("daemon-core".to_string(), "session-abc".to_string());
+
+        let result = resolve_channel_lead_for_task("42", &task_channel, &channel_lead_sessions);
+        assert_eq!(result, Some("daemon-core".to_string()));
+    }
+
+    #[test]
+    fn test_resolve_channel_lead_skips_midtown_channel() {
+        let mut task_channel = HashMap::new();
+        task_channel.insert("42".to_string(), "midtown".to_string());
+        let mut channel_lead_sessions = HashMap::new();
+        channel_lead_sessions.insert("midtown".to_string(), "session-abc".to_string());
+
+        // Main "midtown" channel has no channel lead
+        let result = resolve_channel_lead_for_task("42", &task_channel, &channel_lead_sessions);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_resolve_channel_lead_skips_when_no_lead_session() {
+        let mut task_channel = HashMap::new();
+        task_channel.insert("42".to_string(), "daemon-core".to_string());
+        // No channel lead session registered
+        let channel_lead_sessions = HashMap::new();
+
+        let result = resolve_channel_lead_for_task("42", &task_channel, &channel_lead_sessions);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_resolve_channel_lead_skips_when_no_channel_mapping() {
+        // Task has no channel mapping — defaults to "midtown"
+        let task_channel = HashMap::new();
+        let mut channel_lead_sessions = HashMap::new();
+        channel_lead_sessions.insert("daemon-core".to_string(), "session-abc".to_string());
+
+        let result = resolve_channel_lead_for_task("42", &task_channel, &channel_lead_sessions);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_resolve_channel_lead_skips_when_no_lead_for_this_channel() {
+        let mut task_channel = HashMap::new();
+        task_channel.insert("42".to_string(), "web-interface".to_string());
+        let mut channel_lead_sessions = HashMap::new();
+        // Lead exists for a different channel, not for "web-interface"
+        channel_lead_sessions.insert("daemon-core".to_string(), "session-abc".to_string());
+
+        let result = resolve_channel_lead_for_task("42", &task_channel, &channel_lead_sessions);
+        assert_eq!(result, None);
     }
 }
