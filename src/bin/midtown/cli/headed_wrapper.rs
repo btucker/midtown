@@ -724,10 +724,7 @@ pub fn handle(cmd: &HeadedWrapperCommand, client: &DaemonClient) -> Result<Respo
                     match client.headed_poll(session, &adapter_id, last_seen_id, *batch_limit) {
                         Ok(polled) => serde_json::from_value(polled)
                             .map_err(|e| format!("Invalid headed.poll response: {}", e))?,
-                        Err(e)
-                            if e.contains("No active headed adapter")
-                                || e.contains("lease expired") =>
-                        {
+                        Err(e) if is_lease_error(&e) => {
                             // Daemon restarted and lost our adapter lease — re-register
                             debug!("Adapter lease lost, re-registering: {}", e);
                             if let Err(reg_err) =
@@ -913,10 +910,7 @@ pub fn handle(cmd: &HeadedWrapperCommand, client: &DaemonClient) -> Result<Respo
                                 continue;
                             }
                         },
-                        Err(e)
-                            if e.contains("No active headed adapter")
-                                || e.contains("lease expired") =>
-                        {
+                        Err(e) if is_lease_error(&e) => {
                             // Daemon restarted and lost our adapter lease — re-register
                             debug!("Adapter lease lost, re-registering: {}", e);
                             if let Err(reg_err) =
@@ -1030,6 +1024,12 @@ pub fn handle(cmd: &HeadedWrapperCommand, client: &DaemonClient) -> Result<Respo
             }
         }
     }
+}
+
+/// Returns true if an error string indicates the adapter lease is missing or expired.
+/// This happens when the daemon restarts and loses all in-memory adapter lease state.
+pub(crate) fn is_lease_error(err: &str) -> bool {
+    err.contains("No active headed adapter") || err.contains("lease expired")
 }
 
 #[path = "headed_wrapper_tests.rs"]
