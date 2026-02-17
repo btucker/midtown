@@ -1404,7 +1404,15 @@ pub(super) fn spawn_for_pending_tasks(
     // Use running coworkers from snapshot, not all coworkers from internal map.
     // The internal map includes stopped coworkers until they're cleaned up, which
     // incorrectly blocks task dispatch when all coworkers are stopped.
-    let current_coworker_count = snap.running_coworkers.len();
+    // Exclude the lead: a headless lead session counts as "running" in the
+    // CoworkerManager but is not a dev/reviewer slot. Including it would consume
+    // one of the 6 dev slots (dev_cap = max_coworkers - REVIEW_HEADROOM), causing
+    // the daemon to under-spawn by one coworker whenever the lead runs headless.
+    let current_coworker_count = snap
+        .running_coworkers
+        .iter()
+        .filter(|cw| !cw.name.eq_ignore_ascii_case("lead"))
+        .count();
 
     for task in pending_unowned.iter() {
         // Re-check dev limit after each spawn decision, accounting for spawns queued this tick.

@@ -658,15 +658,33 @@ impl DaemonState {
     }
 
     /// Check if the daemon is at the maximum coworker limit (absolute cap).
+    ///
+    /// The lead is excluded: a headless lead session registers in CoworkerManager
+    /// but is not a dev/reviewer slot and must not consume capacity.
     fn is_at_coworker_limit(&self) -> bool {
-        self.coworkers.list_running().len() >= self.max_coworkers
+        let non_lead_count = self
+            .coworkers
+            .list_running()
+            .iter()
+            .filter(|cw| !cw.name.eq_ignore_ascii_case("lead"))
+            .count();
+        non_lead_count >= self.max_coworkers
     }
 
     /// Check if the daemon is at the dev coworker limit.
     /// Reserves `REVIEW_HEADROOM` slots for reviewers, but always allows at least 1 dev slot.
+    ///
+    /// The lead is excluded: a headless lead session registers in CoworkerManager
+    /// but is not a dev/reviewer slot and must not consume capacity.
     fn is_at_dev_limit(&self) -> bool {
         let dev_cap = self.max_coworkers.saturating_sub(REVIEW_HEADROOM).max(1);
-        self.coworkers.list_running().len() >= dev_cap
+        let non_lead_count = self
+            .coworkers
+            .list_running()
+            .iter()
+            .filter(|cw| !cw.name.eq_ignore_ascii_case("lead"))
+            .count();
+        non_lead_count >= dev_cap
     }
 
     /// Check if a coworker slot is available for spawning.
