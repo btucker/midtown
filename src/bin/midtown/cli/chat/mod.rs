@@ -389,16 +389,149 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
 
     match event {
         Event::Key(key) if key.kind == KeyEventKind::Press => {
-            // Handle Ctrl+key combinations first (before character input catch-all)
+            // Handle Alt+key combinations (emacs word movement), only when in InputBar
+            if key.modifiers.contains(KeyModifiers::ALT)
+                && app.focused_pane == FocusedPane::InputBar
+            {
+                match key.code {
+                    KeyCode::Char('b') => {
+                        // Alt+B: move back one word
+                        let chars: Vec<char> = app.input_text.chars().collect();
+                        let mut pos = app.input_cursor;
+                        // Skip whitespace going left
+                        while pos > 0 && chars[pos - 1].is_whitespace() {
+                            pos -= 1;
+                        }
+                        // Skip non-whitespace going left
+                        while pos > 0 && !chars[pos - 1].is_whitespace() {
+                            pos -= 1;
+                        }
+                        app.input_cursor = pos;
+                        return EventResult::Continue;
+                    }
+                    KeyCode::Char('f') => {
+                        // Alt+F: move forward one word (to end of current word)
+                        let chars: Vec<char> = app.input_text.chars().collect();
+                        let len = chars.len();
+                        let mut pos = app.input_cursor;
+                        // Skip non-whitespace going right
+                        while pos < len && !chars[pos].is_whitespace() {
+                            pos += 1;
+                        }
+                        app.input_cursor = pos;
+                        return EventResult::Continue;
+                    }
+                    _ => {}
+                }
+                // Alt key not handled — fall through
+            }
+
+            // Handle Ctrl+key combinations (before character input catch-all)
             if key.modifiers.contains(KeyModifiers::CONTROL) {
                 match key.code {
                     KeyCode::Char('q') => return EventResult::Exit,
                     KeyCode::Char('s') => return EventResult::ToggleMouseCapture,
                     KeyCode::Char('k') => {
-                        app.toggle_channel_switcher();
+                        // Context-sensitive: kill to end of line when in InputBar,
+                        // otherwise toggle channel switcher (existing behavior)
+                        if app.focused_pane == FocusedPane::InputBar {
+                            let char_count = app.input_text.chars().count();
+                            if app.input_cursor < char_count {
+                                let byte_idx =
+                                    char_index_to_byte_index(&app.input_text, app.input_cursor);
+                                let killed = app.input_text[byte_idx..].to_string();
+                                app.input_text.truncate(byte_idx);
+                                app.kill_ring = Some(killed);
+                            }
+                        } else {
+                            app.toggle_channel_switcher();
+                        }
                         return EventResult::Continue;
                     }
-                    KeyCode::Char('a') => return EventResult::ToggleArchivedChannels,
+                    KeyCode::Char('a') => {
+                        // Context-sensitive: move to beginning of line when in InputBar,
+                        // otherwise toggle archived channels (existing behavior)
+                        if app.focused_pane == FocusedPane::InputBar {
+                            app.input_cursor = 0;
+                        } else {
+                            return EventResult::ToggleArchivedChannels;
+                        }
+                        return EventResult::Continue;
+                    }
+                    KeyCode::Char('e') => {
+                        // Ctrl+E: move to end of line (only in InputBar)
+                        if app.focused_pane == FocusedPane::InputBar {
+                            app.input_cursor = app.input_text.chars().count();
+                        }
+                        return EventResult::Continue;
+                    }
+                    KeyCode::Char('u') => {
+                        // Ctrl+U: kill to beginning of line (only in InputBar)
+                        if app.focused_pane == FocusedPane::InputBar && app.input_cursor > 0 {
+                            let byte_idx =
+                                char_index_to_byte_index(&app.input_text, app.input_cursor);
+                            let killed = app.input_text[..byte_idx].to_string();
+                            app.input_text = app.input_text[byte_idx..].to_string();
+                            app.kill_ring = Some(killed);
+                            app.input_cursor = 0;
+                        }
+                        return EventResult::Continue;
+                    }
+                    KeyCode::Char('w') => {
+                        // Ctrl+W: kill previous word (only in InputBar)
+                        if app.focused_pane == FocusedPane::InputBar && app.input_cursor > 0 {
+                            let chars: Vec<char> = app.input_text.chars().collect();
+                            let mut pos = app.input_cursor;
+                            // Skip whitespace going left
+                            while pos > 0 && chars[pos - 1].is_whitespace() {
+                                pos -= 1;
+                            }
+                            // Skip non-whitespace going left
+                            while pos > 0 && !chars[pos - 1].is_whitespace() {
+                                pos -= 1;
+                            }
+                            let word_start = pos;
+                            let start_byte = char_index_to_byte_index(&app.input_text, word_start);
+                            let end_byte =
+                                char_index_to_byte_index(&app.input_text, app.input_cursor);
+                            let killed = app.input_text[start_byte..end_byte].to_string();
+                            app.input_text = format!(
+                                "{}{}",
+                                &app.input_text[..start_byte],
+                                &app.input_text[end_byte..]
+                            );
+                            app.kill_ring = Some(killed);
+                            app.input_cursor = word_start;
+                        }
+                        return EventResult::Continue;
+                    }
+                    KeyCode::Char('b') => {
+                        // Ctrl+B: move back one character (only in InputBar)
+                        if app.focused_pane == FocusedPane::InputBar && app.input_cursor > 0 {
+                            app.input_cursor -= 1;
+                        }
+                        return EventResult::Continue;
+                    }
+                    KeyCode::Char('f') => {
+                        // Ctrl+F: move forward one character (only in InputBar)
+                        if app.focused_pane == FocusedPane::InputBar
+                            && app.input_cursor < app.input_text.chars().count()
+                        {
+                            app.input_cursor += 1;
+                        }
+                        return EventResult::Continue;
+                    }
+                    KeyCode::Char('d') => {
+                        // Ctrl+D: delete character under cursor (only in InputBar)
+                        if app.focused_pane == FocusedPane::InputBar
+                            && app.input_cursor < app.input_text.chars().count()
+                        {
+                            let byte_idx =
+                                char_index_to_byte_index(&app.input_text, app.input_cursor);
+                            app.input_text.remove(byte_idx);
+                        }
+                        return EventResult::Continue;
+                    }
                     KeyCode::Char('l') => return EventResult::AttachLead,
                     _ => {}
                 }
@@ -2096,6 +2229,152 @@ mod tests {
         assert_eq!(app.board_selection, None);
         // Selected channel should not change
         assert_eq!(app.selected_channel, "midtown");
+    }
+
+    fn ctrl_key(code: KeyCode) -> Event {
+        Event::Key(KeyEvent::new(code, KeyModifiers::CONTROL))
+    }
+
+    fn alt_key(code: KeyCode) -> Event {
+        Event::Key(KeyEvent::new(code, KeyModifiers::ALT))
+    }
+
+    #[test]
+    fn test_ctrl_a_moves_to_beginning() {
+        use app::FocusedPane;
+        let mut app = test_app();
+        app.focused_pane = FocusedPane::InputBar;
+        app.input_text = "hello world".to_string();
+        app.input_cursor = 5;
+
+        handle_event(&mut app, ctrl_key(KeyCode::Char('a')));
+        assert_eq!(app.input_cursor, 0);
+    }
+
+    #[test]
+    fn test_ctrl_e_moves_to_end() {
+        use app::FocusedPane;
+        let mut app = test_app();
+        app.focused_pane = FocusedPane::InputBar;
+        app.input_text = "hello world".to_string();
+        app.input_cursor = 0;
+
+        handle_event(&mut app, ctrl_key(KeyCode::Char('e')));
+        assert_eq!(app.input_cursor, 11);
+    }
+
+    #[test]
+    fn test_ctrl_k_kills_to_end_when_input_focused() {
+        use app::FocusedPane;
+        let mut app = test_app();
+        app.focused_pane = FocusedPane::InputBar;
+        app.input_text = "hello world".to_string();
+        app.input_cursor = 5;
+
+        handle_event(&mut app, ctrl_key(KeyCode::Char('k')));
+        assert_eq!(app.input_text, "hello");
+        assert_eq!(app.input_cursor, 5);
+        assert_eq!(app.kill_ring, Some(" world".to_string()));
+    }
+
+    #[test]
+    fn test_ctrl_k_toggles_channel_switcher_when_not_in_input() {
+        use app::FocusedPane;
+        let mut app = test_app();
+        app.focused_pane = FocusedPane::Chat;
+
+        handle_event(&mut app, ctrl_key(KeyCode::Char('k')));
+        // Channel switcher should be toggled (channel_switcher.show)
+        assert!(app.channel_switcher.show);
+    }
+
+    #[test]
+    fn test_ctrl_u_kills_to_beginning() {
+        use app::FocusedPane;
+        let mut app = test_app();
+        app.focused_pane = FocusedPane::InputBar;
+        app.input_text = "hello world".to_string();
+        app.input_cursor = 5;
+
+        handle_event(&mut app, ctrl_key(KeyCode::Char('u')));
+        assert_eq!(app.input_text, " world");
+        assert_eq!(app.input_cursor, 0);
+        assert_eq!(app.kill_ring, Some("hello".to_string()));
+    }
+
+    #[test]
+    fn test_ctrl_w_kills_previous_word() {
+        use app::FocusedPane;
+        let mut app = test_app();
+        app.focused_pane = FocusedPane::InputBar;
+        app.input_text = "hello world".to_string();
+        app.input_cursor = 11;
+
+        handle_event(&mut app, ctrl_key(KeyCode::Char('w')));
+        assert_eq!(app.input_text, "hello ");
+        assert_eq!(app.input_cursor, 6);
+        assert_eq!(app.kill_ring, Some("world".to_string()));
+    }
+
+    #[test]
+    fn test_ctrl_b_moves_back_one_char() {
+        use app::FocusedPane;
+        let mut app = test_app();
+        app.focused_pane = FocusedPane::InputBar;
+        app.input_text = "hello".to_string();
+        app.input_cursor = 3;
+
+        handle_event(&mut app, ctrl_key(KeyCode::Char('b')));
+        assert_eq!(app.input_cursor, 2);
+    }
+
+    #[test]
+    fn test_ctrl_f_moves_forward_one_char() {
+        use app::FocusedPane;
+        let mut app = test_app();
+        app.focused_pane = FocusedPane::InputBar;
+        app.input_text = "hello".to_string();
+        app.input_cursor = 3;
+
+        handle_event(&mut app, ctrl_key(KeyCode::Char('f')));
+        assert_eq!(app.input_cursor, 4);
+    }
+
+    #[test]
+    fn test_ctrl_d_deletes_char_under_cursor() {
+        use app::FocusedPane;
+        let mut app = test_app();
+        app.focused_pane = FocusedPane::InputBar;
+        app.input_text = "hello".to_string();
+        app.input_cursor = 2;
+
+        handle_event(&mut app, ctrl_key(KeyCode::Char('d')));
+        assert_eq!(app.input_text, "helo");
+        assert_eq!(app.input_cursor, 2);
+    }
+
+    #[test]
+    fn test_alt_b_moves_back_one_word() {
+        use app::FocusedPane;
+        let mut app = test_app();
+        app.focused_pane = FocusedPane::InputBar;
+        app.input_text = "hello world".to_string();
+        app.input_cursor = 11;
+
+        handle_event(&mut app, alt_key(KeyCode::Char('b')));
+        assert_eq!(app.input_cursor, 6);
+    }
+
+    #[test]
+    fn test_alt_f_moves_forward_one_word() {
+        use app::FocusedPane;
+        let mut app = test_app();
+        app.focused_pane = FocusedPane::InputBar;
+        app.input_text = "hello world".to_string();
+        app.input_cursor = 0;
+
+        handle_event(&mut app, alt_key(KeyCode::Char('f')));
+        assert_eq!(app.input_cursor, 5);
     }
 }
 
