@@ -161,3 +161,57 @@ fn test_alt_f_skips_whitespace_before_word() {
     handle_event(&mut app, alt_key(KeyCode::Char('f')));
     assert_eq!(app.input_cursor, 11); // end of "world"
 }
+
+// Kill/delete operations call detect_autocomplete_trigger() so autocomplete
+// state stays consistent when text is removed beneath a visible dropdown.
+#[test]
+fn test_ctrl_k_dismisses_autocomplete() {
+    use app::FocusedPane;
+    let mut app = test_app();
+    app.focused_pane = FocusedPane::InputBar;
+    app.autocomplete.show = true;
+    app.input_text = "hello".to_string();
+    app.input_cursor = 0;
+
+    handle_event(&mut app, ctrl_key(KeyCode::Char('k')));
+    assert!(!app.autocomplete.show);
+}
+
+#[test]
+fn test_ctrl_u_dismisses_autocomplete() {
+    use app::FocusedPane;
+    let mut app = test_app();
+    app.focused_pane = FocusedPane::InputBar;
+    app.autocomplete.show = true;
+    app.input_text = "hello".to_string();
+    app.input_cursor = 5;
+
+    handle_event(&mut app, ctrl_key(KeyCode::Char('u')));
+    assert!(!app.autocomplete.show);
+}
+
+#[test]
+fn test_ctrl_w_dismisses_autocomplete() {
+    use app::FocusedPane;
+    let mut app = test_app();
+    app.focused_pane = FocusedPane::InputBar;
+    app.autocomplete.show = true;
+    app.input_text = "hello world".to_string();
+    app.input_cursor = 11;
+
+    handle_event(&mut app, ctrl_key(KeyCode::Char('w')));
+    assert!(!app.autocomplete.show);
+}
+
+#[test]
+fn test_ctrl_d_dismisses_autocomplete() {
+    use app::FocusedPane;
+    let mut app = test_app();
+    app.focused_pane = FocusedPane::InputBar;
+    app.autocomplete.show = true;
+    app.input_text = "hello".to_string();
+    app.input_cursor = 0;
+
+    handle_event(&mut app, ctrl_key(KeyCode::Char('d')));
+    assert!(!app.autocomplete.show);
+}
