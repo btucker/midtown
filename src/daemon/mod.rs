@@ -2699,6 +2699,34 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                     }
                 }
 
+                // Post headless lead output to the main channel so user has visibility
+                if let Some(lead_events) = events.get("lead") {
+                    for event in lead_events {
+                        if let crate::headless::StreamEvent::Assistant { message, .. } = event {
+                            // Extract text content from Assistant message
+                            if let Some(content) = message.get("content")
+                                && let Some(arr) = content.as_array()
+                            {
+                                let mut text_parts = Vec::new();
+                                for block in arr {
+                                    if block.get("type").and_then(|t| t.as_str()) == Some("text")
+                                        && let Some(text) = block.get("text").and_then(|t| t.as_str())
+                                    {
+                                        text_parts.push(text);
+                                    }
+                                }
+                                if !text_parts.is_empty() {
+                                    let combined_text = text_parts.join("");
+                                    let msg = crate::message::Message::text("lead", combined_text);
+                                    if let Err(e) = state.send_and_broadcast_async(&msg).await {
+                                        warn!("Failed to post lead output to channel: {}", e);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
                 // Defense-in-depth: check process liveness via try_wait() to catch
                 // sessions where the process exited but drain_events didn't detect it
                 // (e.g., pipe buffering issues, partial reads, timing races).
