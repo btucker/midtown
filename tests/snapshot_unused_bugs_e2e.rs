@@ -38,16 +38,14 @@ fn test_duplicate_task_assignment_1142() {
         println!("  Effect: {:?}", effect);
     }
 
-    // For duplicate task assignment, we expect either:
-    // - ResetTaskToPending or PostSystemMessage effects
-    // - Or empty if the snapshot shows state after detection
-    assert!(
-        effects.is_empty()
-            || effects.iter().any(|e| matches!(
-                e,
-                Effect::PostSystemMessage { .. } | Effect::ResetTaskToPending { .. }
-            )),
-        "Expected task reset or warning for duplicate assignment or empty after detection"
+    // Task 1142 is assigned to "columbus" who stopped 7 seconds ago (within the 40-second grace period).
+    // The function should return empty effects during the grace period (orphan recovery handles it).
+    // After the grace period, reset_orphaned_tasks would return ResetTaskToPending.
+    assert_eq!(
+        effects.len(),
+        0,
+        "Expected no effects during grace period (columbus stopped 7s ago, grace period is 40s), got {:?}",
+        effects
     );
 }
 
@@ -76,14 +74,17 @@ fn test_coworker_break_task_orphaned() {
         println!("  Effect: {:?}", effect);
     }
 
-    // Orphaned tasks should generate ResetTaskToPending effects
-    let has_reset = effects
-        .iter()
-        .any(|e| matches!(e, Effect::ResetTaskToPending { .. }));
-
+    // Task 1142 is assigned to "amsterdam" who is not in active_names
+    // (active_names = [columbus, broadway, york, park, vernon, pleasant])
+    // So reset_orphaned_tasks should return ResetTaskToPending for task 1142
+    assert_eq!(effects.len(), 1, "Expected exactly one effect");
     assert!(
-        has_reset || effects.is_empty(),
-        "Expected ResetTaskToPending effect or empty if already handled"
+        matches!(
+            &effects[0],
+            Effect::ResetTaskToPending { task_id, .. } if task_id == "1142"
+        ),
+        "Expected ResetTaskToPending for task 1142, got {:?}",
+        effects[0]
     );
 }
 
@@ -384,13 +385,13 @@ fn test_reviewer_not_spawning_20260211() {
         pr_effects.len()
     );
 
-    let has_spawn = pr_effects
-        .iter()
-        .any(|e| matches!(e, Effect::SpawnCoworker { .. }));
-
-    assert!(
-        has_spawn || pr_effects.is_empty(),
-        "Expected SpawnCoworker for reviewer or empty if already assigned"
+    // Snapshot shows prs_needing_review: 0 and empty reviewer_pr_assignments
+    // So reconcile_orphaned_prs should return empty (no orphaned PRs to recover)
+    assert_eq!(
+        pr_effects.len(),
+        0,
+        "Expected no effects when no PRs need review, got {:?}",
+        pr_effects
     );
 }
 
