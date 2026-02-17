@@ -85,7 +85,7 @@ pub use pr::{collect_merged_pr_cleanup_effects, reconcile_orphaned_prs};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read as _, Seek, SeekFrom, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use fs2::FileExt;
@@ -1768,7 +1768,7 @@ fn validate_github_repo_access(github_user: &str, workdir: &PathBuf) -> crate::R
 /// The lock is held for the lifetime of the returned File handle.
 ///
 /// Returns an error if another daemon is already running (lock already held).
-fn acquire_pid_lock(pid_path: &PathBuf) -> crate::Result<File> {
+fn acquire_pid_lock(pid_path: &PathBuf, workdir: &Path) -> crate::Result<File> {
     // Ensure parent directory exists
     if let Some(parent) = pid_path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -1793,7 +1793,7 @@ fn acquire_pid_lock(pid_path: &PathBuf) -> crate::Result<File> {
             if let Ok(old_pid) = old_contents.trim().parse::<u32>()
                 && old_pid != std::process::id()
             {
-                startup::kill_stale_daemon(old_pid);
+                startup::kill_stale_daemon(old_pid, workdir);
             }
 
             // Write our PID. After read_to_string, the cursor is at EOF.
@@ -2176,7 +2176,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
     }
 
     // Acquire exclusive lock on PID file to enforce singleton behavior
-    let pid_file = acquire_pid_lock(&config.pid_file_path)?;
+    let pid_file = acquire_pid_lock(&config.pid_file_path, &config.workdir)?;
     info!("Acquired PID lock: {}", config.pid_file_path.display());
 
     // Ensure parent directory exists for socket

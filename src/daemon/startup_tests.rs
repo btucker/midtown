@@ -245,8 +245,9 @@ fn test_is_stale_midtown_daemon_returns_false_for_nonexistent_pid() {
 
 #[test]
 fn test_verify_midtown_process_returns_false_for_nonexistent_pid() {
+    let workdir = std::path::Path::new("/tmp/test-project");
     assert!(
-        !verify_midtown_process(99999),
+        !verify_midtown_process(99999, workdir),
         "Non-existent PID should not verify as midtown"
     );
 }
@@ -254,8 +255,9 @@ fn test_verify_midtown_process_returns_false_for_nonexistent_pid() {
 #[test]
 fn test_verify_midtown_process_returns_false_for_non_midtown_process() {
     // PID 1 (launchd/init) is definitely not a midtown process
+    let workdir = std::path::Path::new("/tmp/test-project");
     assert!(
-        !verify_midtown_process(1),
+        !verify_midtown_process(1, workdir),
         "PID 1 (init/launchd) should not verify as midtown"
     );
 }
@@ -266,14 +268,16 @@ fn test_kill_stale_daemon_skips_non_midtown_process() {
     // This test verifies that kill_stale_daemon doesn't attempt to kill
     // non-midtown processes (it just logs and returns).
     // If it incorrectly tried to kill PID 1, the test environment would error.
-    kill_stale_daemon(1);
+    let workdir = std::path::PathBuf::from("/tmp/test-project");
+    kill_stale_daemon(1, &workdir);
     // If we get here without panic/error, the function correctly skipped PID 1
 }
 
 #[test]
 fn test_kill_stale_daemon_skips_own_pid() {
     // Should be a no-op when called with our own PID
-    kill_stale_daemon(std::process::id());
+    let workdir = std::path::PathBuf::from("/tmp/test-project");
+    kill_stale_daemon(std::process::id(), &workdir);
 }
 
 // --- Tests for recoverable_session_pids and zombie exclusion ---

@@ -16,18 +16,22 @@ use tracing::{info, warn};
 ///
 /// Called after successfully acquiring the PID lock. Since we hold the exclusive
 /// lock, the old process is definitively stale. This function:
-/// 1. Verifies the process command contains "midtown" (avoids killing PID-reused processes)
+/// 1. Verifies the process command contains "midtown" and references the same project workdir
+///    (avoids killing PID-reused processes or daemons for other projects)
 /// 2. Sends SIGTERM for graceful shutdown
 /// 3. Polls up to 3 seconds for the process to exit
 /// 4. Sends SIGKILL as a last resort
-pub fn kill_stale_daemon(pid: u32) {
+///
+/// `project_workdir` is used to scope the verification to this project — a midtown daemon
+/// for a different project should not be killed even if it happens to reuse the stale PID.
+pub fn kill_stale_daemon(pid: u32, project_workdir: &std::path::Path) {
     if pid == std::process::id() {
         return;
     }
 
-    if !verify_midtown_process(pid) {
+    if !verify_midtown_process(pid, project_workdir) {
         info!(
-            "Stale PID {} is not a midtown process (PID reused or already exited), skipping",
+            "Stale PID {} is not this project's midtown process (PID reused or already exited), skipping",
             pid
         );
         return;
@@ -72,13 +76,27 @@ pub fn is_stale_midtown_daemon(pid: u32, current_daemon_pid: u32) -> bool {
         return false;
     }
 
-    verify_midtown_process(pid)
+    // Use a minimal verify — any midtown process that isn't us and isn't the
+    // current daemon PID is a stale daemon parent. We don't need project-scoping
+    // here because we're checking PPID of claude children, not killing midtown directly.
+    let output = match std::process::Command::new("ps")
+        .args(["-p", &pid.to_string(), "-o", "args="])
+        .output()
+    {
+        Ok(output) if output.status.success() => output,
+        _ => return false,
+    };
+
+    String::from_utf8_lossy(&output.stdout).contains("midtown")
 }
 
-/// Check if a PID belongs to a midtown process.
+/// Check if a PID belongs to this project's midtown daemon process.
 ///
-/// Returns true if the process exists and its command line contains "midtown".
-pub fn verify_midtown_process(pid: u32) -> bool {
+/// Returns true if the process exists, its command line contains "midtown",
+/// and its command line references the given `project_workdir`. This prevents
+/// accidentally killing a midtown daemon for a different project if the stale
+/// PID is reused by another midtown process.
+pub fn verify_midtown_process(pid: u32, project_workdir: &std::path::Path) -> bool {
     let output = match std::process::Command::new("ps")
         .args(["-p", &pid.to_string(), "-o", "args="])
         .output()
@@ -92,7 +110,15 @@ pub fn verify_midtown_process(pid: u32) -> bool {
     }
 
     let cmdline = String::from_utf8_lossy(&output.stdout);
-    cmdline.contains("midtown")
+    if !cmdline.contains("midtown") {
+        return false;
+    }
+
+    // Verify the process is associated with the same project by checking
+    // that its cmdline references the project workdir. The daemon is launched
+    // with `--workdir <repo>`, so the workdir path appears in its args.
+    let workdir_str = project_workdir.to_string_lossy();
+    cmdline.contains(workdir_str.as_ref())
 }
 
 /// Check if a process exists (is still running).
@@ -246,7 +272,11 @@ pub fn kill_zombie_claude_processes(
 
         // Kill if truly orphaned (PPID=1)
         if ppid == Some(1) {
-            zombie_pids.push(pid);
+            // Verify PID still belongs to a claude process before marking for kill.
+            // Between pgrep and now, the PID could have been recycled.
+            if verify_claude_process(pid) {
+                zombie_pids.push(pid);
+            }
             continue;
         }
 
@@ -258,7 +288,10 @@ pub fn kill_zombie_claude_processes(
                 "Process {} has stale midtown daemon parent {} (not current {})",
                 pid, parent_pid, current_daemon_pid
             );
-            zombie_pids.push(pid);
+            // Verify PID still belongs to a claude process before marking for kill.
+            if verify_claude_process(pid) {
+                zombie_pids.push(pid);
+            }
         }
     }
 
@@ -277,8 +310,15 @@ pub fn kill_zombie_claude_processes(
             .output();
     }
 
-    // Wait up to 2 seconds for processes to exit gracefully
-    std::thread::sleep(std::time::Duration::from_secs(2));
+    // Poll up to 2 seconds for processes to exit gracefully, exiting early if all die.
+    // This mirrors kill_stale_daemon's responsive wait strategy.
+    for _ in 0..20 {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        if zombie_pids.iter().all(|pid| !process_exists(*pid)) {
+            info!("All zombie processes exited after SIGTERM");
+            return;
+        }
+    }
 
     // SIGKILL any survivors
     for pid in &zombie_pids {
