@@ -1374,6 +1374,7 @@ mod tests {
                 provider: "claude".to_string(),
                 profile: "default".to_string(),
                 progress: None,
+                time_estimate: None,
             },
             CoworkerInfo {
                 name: "lexington".to_string(),
@@ -1384,6 +1385,7 @@ mod tests {
                 provider: "claude".to_string(),
                 profile: "default".to_string(),
                 progress: None,
+                time_estimate: None,
             },
         ];
 
@@ -1451,6 +1453,7 @@ mod tests {
                 provider: "claude".to_string(),
                 profile: "default".to_string(),
                 progress: Some(50),
+                time_estimate: None,
             },
             CoworkerInfo {
                 name: "park".to_string(),
@@ -1461,6 +1464,7 @@ mod tests {
                 provider: "claude".to_string(),
                 profile: "default".to_string(),
                 progress: Some(90),
+                time_estimate: None,
             },
         ];
 

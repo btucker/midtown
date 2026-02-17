@@ -133,6 +133,9 @@ pub(crate) struct CoworkerRecord {
     /// Progress percentage (0-100) reported by the coworker.
     /// Set via RPC when coworker calls `midtown state <phase> --progress <0-100>`.
     pub progress: Option<u8>,
+    /// History of progress updates for time estimation (last 5 updates).
+    /// Each entry is (progress_percentage, timestamp).
+    pub progress_history: Vec<(u8, chrono::DateTime<chrono::Utc>)>,
 }
 
 impl CoworkerRecord {
@@ -154,6 +157,65 @@ impl CoworkerRecord {
             _ => phase.abbreviation().to_string(),
         })
     }
+
+    /// Estimate remaining time in seconds based on recent progress pace.
+    ///
+    /// Uses linear extrapolation from the most recent progress updates.
+    /// Returns None if insufficient data or progress hasn't changed.
+    pub fn estimated_time_remaining(&self) -> Option<u64> {
+        let current_progress = self.progress?;
+
+        // Need at least 100% - current progress to complete
+        if current_progress >= 100 {
+            return Some(0);
+        }
+
+        // Need at least 2 data points to calculate a rate
+        if self.progress_history.len() < 2 {
+            return None;
+        }
+
+        // Use the most recent two points for rate calculation
+        let recent = &self.progress_history[self.progress_history.len() - 1];
+        let prev = &self.progress_history[self.progress_history.len() - 2];
+
+        let progress_delta = recent.0.saturating_sub(prev.0);
+        if progress_delta == 0 {
+            // No progress change - can't estimate
+            return None;
+        }
+
+        let time_delta_secs = (recent.1 - prev.1).num_seconds();
+        if time_delta_secs <= 0 {
+            return None;
+        }
+
+        // Calculate rate: percentage points per second
+        let rate = progress_delta as f64 / time_delta_secs as f64;
+
+        // Calculate remaining percentage
+        let remaining = 100 - current_progress;
+
+        // Estimate time: remaining / rate
+        let estimated_secs = (remaining as f64 / rate).round() as u64;
+
+        Some(estimated_secs)
+    }
+
+    /// Format time remaining as a human-readable string (e.g., "~3m", "~30s").
+    pub fn format_time_remaining(&self) -> Option<String> {
+        let secs = self.estimated_time_remaining()?;
+
+        if secs < 60 {
+            Some(format!("~{}s", secs))
+        } else if secs < 3600 {
+            let mins = secs / 60;
+            Some(format!("~{}m", mins))
+        } else {
+            let hours = secs / 3600;
+            Some(format!("~{}h", hours))
+        }
+    }
 }
 
 /// Update the workflow phase for a coworker (from RPC state report).
@@ -170,14 +232,28 @@ pub(crate) fn set_workflow(
 ) {
     let record = records.entry(name.to_string()).or_default();
     let phase_changed = record.workflow_phase != Some(phase);
+    let now = chrono::Utc::now();
+
     record.workflow_phase = Some(phase);
     record.task_id = task_id;
+
     match progress {
-        Some(p) => record.progress = Some(p),
-        None if phase_changed => record.progress = None,
+        Some(p) => {
+            record.progress = Some(p);
+            // Add to progress history for time estimation
+            record.progress_history.push((p, now));
+            // Keep only the last 5 updates
+            if record.progress_history.len() > 5 {
+                record.progress_history.remove(0);
+            }
+        }
+        None if phase_changed => {
+            record.progress = None;
+            record.progress_history.clear();
+        }
         None => {} // preserve existing progress within same phase
     }
-    record.workflow_updated_at = Some(chrono::Utc::now());
+    record.workflow_updated_at = Some(now);
 }
 
 // ---------------------------------------------------------------------------
