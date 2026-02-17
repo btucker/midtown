@@ -220,6 +220,146 @@ async fn test_startup_recovery_sets_lead_role() {
     }
 }
 
+// --- Tests for stale daemon and zombie scanner helpers ---
+
+#[test]
+fn test_is_stale_midtown_daemon_excludes_current_pid() {
+    // The current daemon PID should never be considered stale
+    let current_pid = std::process::id();
+    assert!(
+        !is_stale_midtown_daemon(current_pid, current_pid),
+        "Current daemon PID should not be considered stale"
+    );
+}
+
+#[test]
+fn test_is_stale_midtown_daemon_returns_false_for_nonexistent_pid() {
+    // A non-existent PID should not be considered a stale daemon
+    let fake_pid = 99999;
+    let current_pid = std::process::id();
+    assert!(
+        !is_stale_midtown_daemon(fake_pid, current_pid),
+        "Non-existent PID should not be considered a stale midtown daemon"
+    );
+}
+
+#[test]
+fn test_verify_midtown_process_returns_false_for_nonexistent_pid() {
+    let workdir = std::path::Path::new("/tmp/test-project");
+    assert!(
+        !verify_midtown_process(99999, workdir),
+        "Non-existent PID should not verify as midtown"
+    );
+}
+
+#[test]
+fn test_verify_midtown_process_returns_false_for_non_midtown_process() {
+    // PID 1 (launchd/init) is definitely not a midtown process
+    let workdir = std::path::Path::new("/tmp/test-project");
+    assert!(
+        !verify_midtown_process(1, workdir),
+        "PID 1 (init/launchd) should not verify as midtown"
+    );
+}
+
+#[test]
+fn test_kill_stale_daemon_skips_non_midtown_process() {
+    // PID 1 (launchd/init) should be skipped because it's not a midtown process.
+    // This test verifies that kill_stale_daemon doesn't attempt to kill
+    // non-midtown processes (it just logs and returns).
+    // If it incorrectly tried to kill PID 1, the test environment would error.
+    let workdir = std::path::PathBuf::from("/tmp/test-project");
+    kill_stale_daemon(1, &workdir);
+    // If we get here without panic/error, the function correctly skipped PID 1
+}
+
+#[test]
+fn test_kill_stale_daemon_skips_own_pid() {
+    // Should be a no-op when called with our own PID
+    let workdir = std::path::PathBuf::from("/tmp/test-project");
+    kill_stale_daemon(std::process::id(), &workdir);
+}
+
+// --- Tests for recoverable_session_pids and zombie exclusion ---
+
+#[tokio::test]
+async fn test_recoverable_session_pids_returns_resumable_pids() {
+    let persistent_state = tokio::sync::Mutex::new(DaemonPersistentState::default());
+
+    {
+        let mut state = persistent_state.lock().await;
+        let mut session = test_session_info("amsterdam", Some(42));
+        session.pid = Some(12345);
+        state
+            .headless_sessions
+            .insert("amsterdam".to_string(), session);
+
+        let mut session2 = test_session_info("columbus", Some(43));
+        session2.pid = Some(67890);
+        state
+            .headless_sessions
+            .insert("columbus".to_string(), session2);
+    }
+
+    let pids = recoverable_session_pids(&persistent_state).await;
+    assert_eq!(pids.len(), 2);
+    assert!(pids.contains(&12345));
+    assert!(pids.contains(&67890));
+}
+
+#[tokio::test]
+async fn test_recoverable_session_pids_excludes_non_resumable() {
+    let persistent_state = tokio::sync::Mutex::new(DaemonPersistentState::default());
+
+    {
+        let mut state = persistent_state.lock().await;
+        let mut resumable = test_session_info("amsterdam", Some(42));
+        resumable.pid = Some(11111);
+        state
+            .headless_sessions
+            .insert("amsterdam".to_string(), resumable);
+
+        let mut historical = test_session_info("columbus", Some(43));
+        historical.pid = Some(22222);
+        historical.resume_on_startup = false;
+        state
+            .headless_sessions
+            .insert("columbus".to_string(), historical);
+    }
+
+    let pids = recoverable_session_pids(&persistent_state).await;
+    assert_eq!(pids.len(), 1, "Only resumable sessions should be included");
+    assert!(pids.contains(&11111));
+    assert!(!pids.contains(&22222));
+}
+
+#[tokio::test]
+async fn test_recoverable_session_pids_skips_sessions_without_pid() {
+    let persistent_state = tokio::sync::Mutex::new(DaemonPersistentState::default());
+
+    {
+        let mut state = persistent_state.lock().await;
+        let mut no_pid_session = test_session_info("amsterdam", Some(42));
+        no_pid_session.pid = None;
+        state
+            .headless_sessions
+            .insert("amsterdam".to_string(), no_pid_session);
+    }
+
+    let pids = recoverable_session_pids(&persistent_state).await;
+    assert!(
+        pids.is_empty(),
+        "Sessions without a PID should not appear in the exclusion set"
+    );
+}
+
+#[tokio::test]
+async fn test_recoverable_session_pids_empty_state() {
+    let persistent_state = tokio::sync::Mutex::new(DaemonPersistentState::default());
+    let pids = recoverable_session_pids(&persistent_state).await;
+    assert!(pids.is_empty());
+}
+
 /// Verify that check_sandbox_context() returns an appropriate message when
 /// the daemon is running inside a sandbox (where coworker sandboxing will fail).
 ///

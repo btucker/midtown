@@ -84,8 +84,8 @@ pub use pr::{collect_merged_pr_cleanup_effects, reconcile_orphaned_prs};
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::File;
-use std::io::{BufRead, BufReader, Write};
-use std::path::PathBuf;
+use std::io::{BufRead, BufReader, Read as _, Seek, SeekFrom, Write};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use fs2::FileExt;
@@ -1767,7 +1767,7 @@ fn validate_github_repo_access(github_user: &str, workdir: &PathBuf) -> crate::R
 /// The lock is held for the lifetime of the returned File handle.
 ///
 /// Returns an error if another daemon is already running (lock already held).
-fn acquire_pid_lock(pid_path: &PathBuf) -> crate::Result<File> {
+fn acquire_pid_lock(pid_path: &PathBuf, workdir: &Path) -> crate::Result<File> {
     // Ensure parent directory exists
     if let Some(parent) = pid_path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -1784,9 +1784,23 @@ fn acquire_pid_lock(pid_path: &PathBuf) -> crate::Result<File> {
     // Try to acquire an exclusive lock (non-blocking)
     match file.try_lock_exclusive() {
         Ok(()) => {
-            // We got the lock - write our PID
+            // We got the lock. Before writing our PID, read and kill any stale daemon.
+            // This handles the case where the old daemon lost the lock (e.g., worktree
+            // build replaced the binary) but didn't exit, keeping its children alive.
+            let mut old_contents = String::new();
+            let _ = file.read_to_string(&mut old_contents);
+            if let Ok(old_pid) = old_contents.trim().parse::<u32>()
+                && old_pid != std::process::id()
+            {
+                startup::kill_stale_daemon(old_pid, workdir);
+            }
+
+            // Write our PID. After read_to_string, the cursor is at EOF.
+            // Seek back to the start before truncating so there are no null
+            // bytes between the (now-zero) cursor and the written PID.
             let pid = std::process::id();
-            file.set_len(0)?; // Truncate any old content
+            file.seek(SeekFrom::Start(0))?;
+            file.set_len(0)?;
             writeln!(file, "{}", pid)?;
             file.sync_all()?;
             Ok(file)
@@ -2161,7 +2175,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
     }
 
     // Acquire exclusive lock on PID file to enforce singleton behavior
-    let pid_file = acquire_pid_lock(&config.pid_file_path)?;
+    let pid_file = acquire_pid_lock(&config.pid_file_path, &config.workdir)?;
     info!("Acquired PID lock: {}", config.pid_file_path.display());
 
     // Ensure parent directory exists for socket
@@ -2336,10 +2350,17 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
     // Recover coworker workflow state from their state files across daemon restarts.
     startup::recover_coworker_records(&repo_name, &state.coworkers, &state.coworker_records).await;
 
+    // Collect PIDs of sessions we intend to recover BEFORE running the zombie scanner.
+    // The scanner must skip these — they are intentionally detached processes that
+    // will die naturally from broken pipes. Killing them before recover_headless_sessions
+    // runs defeats session survival across daemon restarts.
+    let session_pids_to_preserve = startup::recoverable_session_pids(&state.persistent_state).await;
+
     // Kill any zombie Claude headless processes left from crashes or unclean shutdowns.
-    // This only kills truly orphaned (PPID=1) processes from crashes — NOT processes
-    // that were intentionally detached during a clean daemon restart.
-    startup::kill_zombie_claude_processes();
+    // Kills processes that are truly orphaned (PPID=1) OR are children of a stale
+    // midtown daemon (a midtown process that is not the current daemon).
+    // Excludes session-survival PIDs collected above.
+    startup::kill_zombie_claude_processes(std::process::id(), &session_pids_to_preserve);
 
     // CRITICAL: Restore task assignments from disk BEFORE session recovery.
     // This must happen first so that the in-memory coworker_task_assignments map

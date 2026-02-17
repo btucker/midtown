@@ -3,14 +3,133 @@
 //! Handles recovery of coworker tracking across daemon restarts.
 //! When the daemon starts:
 //! - Recovers headless coworker sessions from persisted state and resumes them with --resume
-//! - Cleans up zombie processes from previous daemon runs (orphaned PPID=1 processes)
+//! - Cleans up zombie processes from previous daemon runs (orphaned PPID=1 or children of stale daemons)
 //!
 //! Workflow state is recovered when coworkers report via RPC.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use tokio::sync::RwLock;
 use tracing::{info, warn};
+
+/// Kill a stale daemon process that lost its PID lock but didn't exit.
+///
+/// Called after successfully acquiring the PID lock. Since we hold the exclusive
+/// lock, the old process is definitively stale. This function:
+/// 1. Verifies the process command contains "midtown" and references the same project workdir
+///    (avoids killing PID-reused processes or daemons for other projects)
+/// 2. Sends SIGTERM for graceful shutdown
+/// 3. Polls up to 3 seconds for the process to exit
+/// 4. Sends SIGKILL as a last resort
+///
+/// `project_workdir` is used to scope the verification to this project — a midtown daemon
+/// for a different project should not be killed even if it happens to reuse the stale PID.
+pub fn kill_stale_daemon(pid: u32, project_workdir: &std::path::Path) {
+    if pid == std::process::id() {
+        return;
+    }
+
+    if !verify_midtown_process(pid, project_workdir) {
+        info!(
+            "Stale PID {} is not this project's midtown process (PID reused or already exited), skipping",
+            pid
+        );
+        return;
+    }
+
+    info!(
+        "Killing stale daemon process {} (lost PID lock but still running)",
+        pid
+    );
+
+    // SIGTERM first for graceful shutdown
+    let _ = std::process::Command::new("kill")
+        .arg(pid.to_string())
+        .output();
+
+    // Poll up to 3 seconds for the process to die
+    for _ in 0..30 {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        if !process_exists(pid) {
+            info!("Stale daemon {} exited after SIGTERM", pid);
+            return;
+        }
+    }
+
+    // Still alive — SIGKILL
+    warn!(
+        "Stale daemon {} didn't exit after SIGTERM, sending SIGKILL",
+        pid
+    );
+    let _ = std::process::Command::new("kill")
+        .args(["-9", &pid.to_string()])
+        .output();
+}
+
+/// Check if a process is a stale midtown daemon (not the current one).
+///
+/// Returns true if:
+/// - pid != current_daemon_pid
+/// - The process command line contains "midtown"
+pub fn is_stale_midtown_daemon(pid: u32, current_daemon_pid: u32) -> bool {
+    if pid == current_daemon_pid {
+        return false;
+    }
+
+    // Use a minimal verify — any midtown process that isn't us and isn't the
+    // current daemon PID is a stale daemon parent. We don't need project-scoping
+    // here because we're checking PPID of claude children, not killing midtown directly.
+    let output = match std::process::Command::new("ps")
+        .args(["-p", &pid.to_string(), "-o", "args="])
+        .output()
+    {
+        Ok(output) if output.status.success() => output,
+        _ => return false,
+    };
+
+    String::from_utf8_lossy(&output.stdout).contains("midtown")
+}
+
+/// Check if a PID belongs to this project's midtown daemon process.
+///
+/// Returns true if the process exists, its command line contains "midtown",
+/// and its command line references the given `project_workdir`. This prevents
+/// accidentally killing a midtown daemon for a different project if the stale
+/// PID is reused by another midtown process.
+pub fn verify_midtown_process(pid: u32, project_workdir: &std::path::Path) -> bool {
+    let output = match std::process::Command::new("ps")
+        .args(["-p", &pid.to_string(), "-o", "args="])
+        .output()
+    {
+        Ok(output) => output,
+        Err(_) => return false,
+    };
+
+    if !output.status.success() {
+        return false;
+    }
+
+    let cmdline = String::from_utf8_lossy(&output.stdout);
+    if !cmdline.contains("midtown") {
+        return false;
+    }
+
+    // Verify the process is associated with the same project by checking
+    // that its cmdline references the project workdir. The daemon is launched
+    // with `--workdir <repo>`, so the workdir path appears in its args.
+    let workdir_str = project_workdir.to_string_lossy();
+    cmdline.contains(workdir_str.as_ref())
+}
+
+/// Check if a process exists (is still running).
+fn process_exists(pid: u32) -> bool {
+    // kill -0 checks if process exists without sending a signal
+    std::process::Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
 
 /// Check if the daemon is running inside a sandbox context.
 ///
@@ -73,11 +192,20 @@ pub async fn recover_coworker_records(
 /// Scan for and kill any orphaned Claude headless processes not tracked by the daemon.
 ///
 /// This cleanup runs on daemon startup to remove zombie processes left behind
-/// from crashes or unclean shutdowns. Only kills processes that:
+/// from crashes or unclean shutdowns. Kills processes that:
 /// - Match the midtown settings pattern (scoped to this installation)
-/// - Are truly orphaned (PPID=1)
+/// - Are truly orphaned (PPID=1), OR
+/// - Are children of a stale midtown daemon (parent is a midtown process that isn't the current daemon)
 /// - Are not tmux processes
-pub fn kill_zombie_claude_processes() {
+///
+/// `session_pids_to_preserve` is an exclusion list of PIDs belonging to headless
+/// sessions that should be recovered on startup. These processes are intentionally
+/// detached and will die naturally from broken pipes — killing them defeats the
+/// purpose of session survival across daemon restarts.
+pub fn kill_zombie_claude_processes(
+    current_daemon_pid: u32,
+    session_pids_to_preserve: &HashSet<u32>,
+) {
     info!("Scanning for zombie Claude headless processes...");
 
     // Use the same pattern as the rest of the codebase to scope to this midtown installation
@@ -109,12 +237,18 @@ pub fn kill_zombie_claude_processes() {
         return;
     }
 
-    // Filter to only truly orphaned processes (PPID=1) and exclude tmux
+    // Filter to orphaned processes or children of stale daemons, excluding tmux
     let mut zombie_pids = Vec::new();
     for pid in candidate_pids {
-        // Check if process is orphaned (PPID=1)
-        let ppid = get_ppid(pid);
-        if ppid != Some(1) {
+        // Skip PIDs belonging to sessions we intend to recover. These processes
+        // are intentionally detached — they will die naturally from the broken
+        // pipe when their stdin/stdout is closed. Killing them defeats session
+        // survival across daemon restarts.
+        if session_pids_to_preserve.contains(&pid) {
+            info!(
+                "Skipping session-survival process {} (will be recovered with --resume)",
+                pid
+            );
             continue;
         }
 
@@ -134,7 +268,31 @@ pub fn kill_zombie_claude_processes() {
             continue;
         }
 
-        zombie_pids.push(pid);
+        let ppid = get_ppid(pid);
+
+        // Kill if truly orphaned (PPID=1)
+        if ppid == Some(1) {
+            // Verify PID still belongs to a claude process before marking for kill.
+            // Between pgrep and now, the PID could have been recycled.
+            if verify_claude_process(pid) {
+                zombie_pids.push(pid);
+            }
+            continue;
+        }
+
+        // Kill if parent is a stale midtown daemon
+        if let Some(parent_pid) = ppid
+            && is_stale_midtown_daemon(parent_pid, current_daemon_pid)
+        {
+            info!(
+                "Process {} has stale midtown daemon parent {} (not current {})",
+                pid, parent_pid, current_daemon_pid
+            );
+            // Verify PID still belongs to a claude process before marking for kill.
+            if verify_claude_process(pid) {
+                zombie_pids.push(pid);
+            }
+        }
     }
 
     if zombie_pids.is_empty() {
@@ -146,11 +304,33 @@ pub fn kill_zombie_claude_processes() {
         zombie_pids.len()
     );
     for pid in &zombie_pids {
-        info!("Killing zombie process: {}", pid);
+        info!("Sending SIGTERM to zombie process: {}", pid);
         let _ = std::process::Command::new("kill")
-            .arg("-9")
             .arg(pid.to_string())
             .output();
+    }
+
+    // Poll up to 2 seconds for processes to exit gracefully, exiting early if all die.
+    // This mirrors kill_stale_daemon's responsive wait strategy.
+    for _ in 0..20 {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        if zombie_pids.iter().all(|pid| !process_exists(*pid)) {
+            info!("All zombie processes exited after SIGTERM");
+            return;
+        }
+    }
+
+    // SIGKILL any survivors
+    for pid in &zombie_pids {
+        if process_exists(*pid) {
+            warn!(
+                "Zombie process {} didn't exit after SIGTERM, sending SIGKILL",
+                pid
+            );
+            let _ = std::process::Command::new("kill")
+                .args(["-9", &pid.to_string()])
+                .output();
+        }
     }
 }
 
@@ -372,6 +552,23 @@ pub async fn recovering_coworker_names(
                 None
             }
         })
+        .collect()
+}
+
+/// Collect PIDs of headless sessions that should be recovered on startup.
+///
+/// These PIDs must be excluded from the zombie scanner — the sessions are
+/// intentionally detached and will die naturally from broken pipes. Killing
+/// them before `recover_headless_sessions` runs defeats session survival.
+pub async fn recoverable_session_pids(
+    persistent_state: &tokio::sync::Mutex<DaemonPersistentState>,
+) -> HashSet<u32> {
+    let state = persistent_state.lock().await;
+    state
+        .headless_sessions
+        .values()
+        .filter(|info| info.resume_on_startup)
+        .filter_map(|info| info.pid)
         .collect()
 }
 
