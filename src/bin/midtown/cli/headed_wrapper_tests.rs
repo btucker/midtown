@@ -3,8 +3,8 @@ use std::time::Duration;
 
 use super::{
     InputState, OutputMirror, SharedInputState, SharedOutputMirror, apply_submit_key,
-    draw_status_bar, get_input_text, is_nudge_stuck, trim_trailing_linebreaks, update_input_state,
-    wait_for_empty_input, wait_for_nudge_safe_with_input_state,
+    format_status_text, get_input_text, is_nudge_stuck, trim_trailing_linebreaks,
+    update_input_state, wait_for_empty_input, wait_for_nudge_safe_with_input_state,
 };
 
 #[test]
@@ -144,66 +144,46 @@ fn wait_for_nudge_safe_allows_nudge_when_input_empty() {
     assert!(safe);
 }
 
-// Tests for draw_status_bar function
-
 #[test]
-fn draw_status_bar_truncates_long_paths_with_ellipsis() {
-    // Test that when the status text is longer than terminal width, it gets truncated
-    let session = "park";
-    let long_path = "/very/long/path/that/exceeds/terminal/width/for/sure/and/should/be/truncated";
-    let terminal_width = 40;
-    let status_row = 20;
-
-    // This should not panic and should handle truncation gracefully
-    let result = draw_status_bar(session, long_path, terminal_width, status_row);
-    assert!(result.is_ok());
+fn status_text_fits_within_width() {
+    let result = format_status_text("session-1", "/home/user/project", 80);
+    assert_eq!(result, "session-1 | Worktree: /home/user/project");
+    assert!(result.len() <= 80);
 }
 
 #[test]
-fn draw_status_bar_handles_short_text() {
-    // Test that short text works without truncation
-    let session = "lead";
-    let cwd = "/home/user";
-    let terminal_width = 80;
-    let status_row = 20;
-
-    let result = draw_status_bar(session, cwd, terminal_width, status_row);
-    assert!(result.is_ok());
+fn status_text_truncates_with_ellipsis() {
+    let result = format_status_text("session-1", "/home/user/very/long/path", 30);
+    assert!(result.ends_with("..."));
+    assert!(result.len() <= 30);
 }
 
 #[test]
-fn draw_status_bar_handles_multibyte_char_boundaries() {
-    // Test that truncation respects UTF-8 character boundaries
-    let session = "lexington";
-    let cwd_with_emoji = "/home/user/projects/🚀midtown/work";
-    let terminal_width = 30; // Force truncation in the middle of the emoji region
-    let status_row = 20;
-
-    // Should not panic even when truncating near multibyte characters
-    let result = draw_status_bar(session, cwd_with_emoji, terminal_width, status_row);
-    assert!(result.is_ok());
+fn status_text_truncates_on_char_boundary() {
+    // Multi-byte character (🚀 = 4 bytes) to verify floor_char_boundary
+    let result = format_status_text("s", "/🚀café/résumé", 20);
+    assert!(result.ends_with("..."));
+    // Result is valid UTF-8 (implicit — String type enforces this)
 }
 
 #[test]
-fn draw_status_bar_handles_zero_width_terminal() {
-    // Edge case: terminal width is 0 (shouldn't happen in practice but should be safe)
-    let session = "madison";
-    let cwd = "/home";
-    let terminal_width = 0;
-    let status_row = 20;
-
-    let result = draw_status_bar(session, cwd, terminal_width, status_row);
-    assert!(result.is_ok());
+fn status_text_zero_width_returns_empty() {
+    let result = format_status_text("session", "/path", 0);
+    assert_eq!(result, "");
 }
 
 #[test]
-fn draw_status_bar_handles_very_narrow_terminal() {
-    // Test with terminal width smaller than the ellipsis
-    let session = "york";
-    let cwd = "/very/long/path";
-    let terminal_width = 2; // Less than "..." length
-    let status_row = 20;
+fn status_text_tiny_width_returns_empty() {
+    // Width 2 means available=0 after reserving 3 for "..."
+    let result = format_status_text("session", "/path", 2);
+    assert_eq!(result, "");
+}
 
-    let result = draw_status_bar(session, cwd, terminal_width, status_row);
-    assert!(result.is_ok());
+#[test]
+fn status_text_exact_fit_no_truncation() {
+    let text = "s | Worktree: /p";
+    let exact_len = text.len();
+    let result = format_status_text("s", "/p", exact_len);
+    assert_eq!(result, text);
+    assert!(!result.contains("..."));
 }

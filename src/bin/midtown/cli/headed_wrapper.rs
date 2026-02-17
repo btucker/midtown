@@ -351,20 +351,13 @@ fn capture_output_text(mirror: &SharedOutputMirror) -> String {
     }
 }
 
-fn draw_status_bar(
-    session: &str,
-    cwd: &str,
-    terminal_width: u16,
-    status_row: u16,
-) -> Result<(), String> {
-    let mut stdout = std::io::stdout();
-
-    // Format: "{session} | Worktree: {cwd}"
+/// Build the status bar display string, truncating with "..." if it exceeds
+/// `max_width`. Uses `floor_char_boundary` to avoid splitting multi-byte chars.
+fn format_status_text(session: &str, cwd: &str, max_width: usize) -> String {
     let status_text = format!("{} | Worktree: {}", session, cwd);
 
-    // Truncate if needed
-    let display_text = if status_text.len() > terminal_width as usize {
-        let available = terminal_width.saturating_sub(3) as usize; // Reserve space for "..."
+    if status_text.len() > max_width {
+        let available = max_width.saturating_sub(3); // Reserve space for "..."
         if available > 0 {
             format!(
                 "{}...",
@@ -375,7 +368,18 @@ fn draw_status_bar(
         }
     } else {
         status_text
-    };
+    }
+}
+
+fn draw_status_bar(
+    session: &str,
+    cwd: &str,
+    terminal_width: u16,
+    status_row: u16,
+) -> Result<(), String> {
+    let mut stdout = std::io::stdout();
+
+    let display_text = format_status_text(session, cwd, terminal_width as usize);
 
     // Move to status bar row, clear the line, draw in gray, then return cursor to (0, 0)
     stdout
