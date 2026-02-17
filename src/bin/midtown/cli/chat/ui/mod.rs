@@ -46,6 +46,9 @@ pub struct Hyperlink {
 /// Gutter width for timestamp: " HH:MM " = 7 chars
 const TIMESTAMP_GUTTER_WIDTH: usize = 7;
 
+/// Maximum sidebar width in terminal columns (including left and right borders)
+const MAX_SIDEBAR_WIDTH: u16 = 40;
+
 /// Calculate height for repo status lines (1 per repo, minimum 1)
 fn repo_status_height(app: &App) -> u16 {
     let count = app.repo_statuses.len();
@@ -92,12 +95,11 @@ pub fn draw(f: &mut Frame, app: &mut App) -> Vec<Hyperlink> {
     app.layout_width = main_area.width;
     app.main_area_y = main_area.y;
     app.main_area_bottom = main_area.y + main_area.height;
+    // Cap sidebar at MAX_SIDEBAR_WIDTH columns; any remaining space goes to main content.
+    let sidebar_width = (main_area.width * sidebar_pct / 100).min(MAX_SIDEBAR_WIDTH);
     let horizontal_chunks = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage(sidebar_pct),
-            Constraint::Percentage(100 - sidebar_pct),
-        ])
+        .constraints([Constraint::Length(sidebar_width), Constraint::Min(0)])
         .split(main_area);
 
     // Track divider X position: the last column of the sidebar panel (its right border)
