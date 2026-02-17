@@ -3279,6 +3279,16 @@ pub(super) mod tests {
                     blocked_by: vec![],
                 },
             ],
+            available_channels: vec![
+                midtown::ChannelInfo {
+                    name: "features".to_string(),
+                    is_archived: false,
+                },
+                midtown::ChannelInfo {
+                    name: "midtown".to_string(),
+                    is_archived: false,
+                },
+            ],
             ..test_app()
         };
 
