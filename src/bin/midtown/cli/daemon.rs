@@ -631,19 +631,8 @@ fn ensure_required_plugins() {
         .filter_map(|p| p.get("id").and_then(|id| id.as_str()).map(String::from))
         .collect();
 
-    // Required plugins from daemon/mod.rs
-    let required = [
-        "superpowers@claude-plugins-official",
-        "code-review@claude-plugins-official",
-        "pr-review-toolkit@claude-plugins-official",
-        "commit-commands@claude-plugins-official",
-        "feature-dev@claude-plugins-official",
-        "explanatory-output-style@claude-plugins-official",
-        "code-simplifier@claude-plugins-official",
-    ];
-
-    // Find missing plugins
-    let missing: Vec<_> = required
+    // Find missing plugins (use canonical list from daemon)
+    let missing: Vec<_> = midtown::daemon::REQUIRED_PLUGINS
         .iter()
         .filter(|p| !installed.contains(**p))
         .collect();
@@ -652,9 +641,12 @@ fn ensure_required_plugins() {
         return;
     }
 
-    // Install missing plugins
-    for plugin_id in &missing {
-        emit_startup_progress(10, &format!("installing plugin {}", plugin_id));
+    // Install missing plugins with incremental progress indicators
+    let total_missing = missing.len();
+    for (i, plugin_id) in missing.iter().enumerate() {
+        // Spread progress from 10% to 60% based on plugin index
+        let progress = 10 + ((50 * (i + 1)) / total_missing.max(1)) as u16;
+        emit_startup_progress(progress, &format!("installing plugin {}", plugin_id));
         install_plugin(plugin_id);
     }
 }
