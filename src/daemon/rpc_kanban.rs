@@ -242,6 +242,7 @@ pub(crate) async fn handle_kanban_data(id: RequestId, state: &DaemonState) -> Re
                     "provider": cw.provider.as_str(),
                     "profile": cw.profile,
                     "progress": record.and_then(|r| r.progress),
+                    "time_estimate": record.and_then(|r| r.format_time_remaining()),
                 }))
             })
             .collect::<Vec<_>>()

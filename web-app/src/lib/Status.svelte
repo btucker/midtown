@@ -1,6 +1,26 @@
 <script>
   import { coworkers, daemonStatus } from './store.js'
   import { fetchStatus } from './api.js'
+  import { onMount, onDestroy } from 'svelte'
+
+  // Braille spinner animation
+  const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
+  let spinnerFrame = $state(0)
+  let spinnerInterval
+
+  onMount(() => {
+    spinnerInterval = setInterval(() => {
+      spinnerFrame = (spinnerFrame + 1) % SPINNER_FRAMES.length
+    }, 100)
+  })
+
+  onDestroy(() => {
+    if (spinnerInterval) clearInterval(spinnerInterval)
+  })
+
+  function getSpinner() {
+    return SPINNER_FRAMES[spinnerFrame]
+  }
 
   function getStatusColor(status) {
     switch (status?.toLowerCase()) {
@@ -28,6 +48,19 @@
       })
     } catch {
       return 'Unknown'
+    }
+  }
+
+  function getHealthColor(health) {
+    switch (health?.toLowerCase()) {
+      case 'green':
+        return '#5faf5f'
+      case 'yellow':
+        return '#d7af5f'
+      case 'red':
+        return '#af5f5f'
+      default:
+        return '#5faf5f'
     }
   }
 
@@ -63,57 +96,18 @@
     {:else}
       <div class="flex flex-col gap-2">
         {#each $coworkers as cw}
-          <div class="p-3 bg-[#262626] rounded-lg">
-            <div class="flex justify-between items-center mb-2">
-              <span class="font-semibold capitalize">{cw.name}</span>
-              <div class="flex gap-1 items-center">
-                {#if cw.health}
-                  <span
-                    class="text-base w-5 h-5 rounded-full flex items-center justify-center text-[#1c1c1c] font-bold"
-                    style="background: {cw.health === 'green' ? '#5faf5f' : cw.health === 'yellow' ? '#d7af5f' : '#af5f5f'}"
-                  >
-                    &bull;
-                  </span>
-                {/if}
-                <span class="text-[0.7rem] px-2 py-0.5 rounded-xl bg-[#3a3a3a] text-[#a8a8a8] capitalize">
-                  {cw.model || 'unknown'}
-                </span>
-              </div>
-            </div>
-            <div class="flex flex-col gap-1 mt-2">
-              {#if cw.task_id}
-                <div class="flex gap-2 text-[0.8rem]">
-                  <span class="text-[#585858] min-w-[50px]">Task:</span>
-                  <span class="text-[#a8a8a8] font-mono">!{cw.task_id}</span>
-                </div>
-              {/if}
-              {#if cw.phase}
-                <div class="flex gap-2 text-[0.8rem]">
-                  <span class="text-[#585858] min-w-[50px]">Phase:</span>
-                  <span class="text-[#a8a8a8] font-mono">{cw.phase}</span>
-                </div>
-              {/if}
-              {#if cw.pr_number}
-                <div class="flex gap-2 text-[0.8rem]">
-                  <span class="text-[#585858] min-w-[50px]">PR:</span>
-                  <span class="text-[#a8a8a8] font-mono">#{cw.pr_number}</span>
-                </div>
-              {/if}
-              {#if cw.progress != null}
-                <div class="flex gap-2 text-[0.8rem] items-center">
-                  <span class="text-[#585858] min-w-[50px]">Progress:</span>
-                  <div class="flex-1 flex items-center gap-2">
-                    <div class="flex-1 h-1.5 bg-[#3a3a3a] rounded-full overflow-hidden">
-                      <div
-                        class="h-full bg-[#5fafaf] rounded-full transition-all duration-300"
-                        style="width: {cw.progress}%"
-                      ></div>
-                    </div>
-                    <span class="text-[#a8a8a8] font-mono text-[0.7rem] min-w-[32px] text-right">{cw.progress}%</span>
-                  </div>
-                </div>
-              {/if}
-            </div>
+          <div class="flex items-center gap-2 p-2 bg-[#262626] rounded-lg font-mono text-sm">
+            <span class="text-base text-[#d7af5f]">{getSpinner()}</span>
+            <span class="font-medium lowercase" style="color: {getHealthColor(cw.health)}">{cw.name}</span>
+            {#if cw.phase}
+              <span class="hidden text-[0.75rem] text-[#808080] sm:inline">{cw.phase}</span>
+            {/if}
+            {#if cw.progress != null}
+              <span class="hidden text-[0.7rem] text-[#5fafaf] md:inline">{cw.progress}%</span>
+            {/if}
+            {#if cw.time_estimate}
+              <span class="text-[0.7rem] text-[#5faf5f]">{cw.time_estimate}</span>
+            {/if}
           </div>
         {/each}
       </div>

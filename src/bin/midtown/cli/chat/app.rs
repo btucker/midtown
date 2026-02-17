@@ -57,10 +57,12 @@ pub struct CoworkerInfo {
     /// Coworker name (e.g., "amsterdam")
     pub name: String,
     /// Current task ID being worked on
+    #[allow(dead_code)] // Kept for API consistency, not displayed in compact layout
     pub task_id: Option<u32>,
     /// Workflow phase abbreviation (e.g., "dev", "PR", "test")
     pub phase: Option<String>,
     /// PR number if one is open for this task
+    #[allow(dead_code)] // Kept for API consistency, not displayed in compact layout
     pub pr_number: Option<u64>,
     /// Health status: "green", "yellow", "red"
     pub health: String,
@@ -70,6 +72,8 @@ pub struct CoworkerInfo {
     pub profile: String,
     /// Progress percentage (0-100) if reported
     pub progress: Option<u8>,
+    /// Estimated time remaining (e.g., "~3m", "~30s")
+    pub time_estimate: Option<String>,
 }
 
 /// Info about a repo in a multi-repo project
@@ -2298,6 +2302,10 @@ fn fetch_kanban_data_via_rpc() -> Option<(
                         .map(|s| s.to_string())
                         .unwrap_or_else(midtown::auth::current_profile);
                     let progress = cw.get("progress").and_then(|v| v.as_u64()).map(|p| p as u8);
+                    let time_estimate = cw
+                        .get("time_estimate")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
 
                     Some(CoworkerInfo {
                         name,
@@ -2308,6 +2316,7 @@ fn fetch_kanban_data_via_rpc() -> Option<(
                         provider,
                         profile,
                         progress,
+                        time_estimate,
                     })
                 })
                 .collect()

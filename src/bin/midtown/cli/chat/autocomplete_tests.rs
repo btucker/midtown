@@ -19,6 +19,7 @@ fn test_autocomplete_starts_with_matching() {
             provider: "claude".to_string(),
             profile: "default".to_string(),
             progress: None,
+            time_estimate: None,
         },
         CoworkerInfo {
             name: "pleasant".to_string(),
@@ -29,6 +30,7 @@ fn test_autocomplete_starts_with_matching() {
             provider: "claude".to_string(),
             profile: "default".to_string(),
             progress: None,
+            time_estimate: None,
         },
         CoworkerInfo {
             name: "lexington".to_string(),
@@ -39,6 +41,7 @@ fn test_autocomplete_starts_with_matching() {
             provider: "claude".to_string(),
             profile: "default".to_string(),
             progress: None,
+            time_estimate: None,
         },
     ];
 
@@ -89,6 +92,7 @@ fn test_autocomplete_empty_query_shows_all() {
             provider: "claude".to_string(),
             profile: "default".to_string(),
             progress: None,
+            time_estimate: None,
         },
         CoworkerInfo {
             name: "pleasant".to_string(),
@@ -99,6 +103,7 @@ fn test_autocomplete_empty_query_shows_all() {
             provider: "claude".to_string(),
             profile: "default".to_string(),
             progress: None,
+            time_estimate: None,
         },
     ];
 
@@ -121,6 +126,7 @@ fn test_autocomplete_case_insensitive() {
         provider: "claude".to_string(),
         profile: "default".to_string(),
         progress: None,
+        time_estimate: None,
     }];
 
     // Lowercase query should match capitalized name
@@ -217,6 +223,7 @@ fn test_shift_enter_with_autocomplete_shown() {
         provider: "claude".to_string(),
         profile: "default".to_string(),
         progress: None,
+        time_estimate: None,
     }];
 
     // Shift+Enter should insert newline, not select autocomplete
@@ -250,6 +257,7 @@ fn test_enter_selects_autocomplete_when_shown() {
         provider: "claude".to_string(),
         profile: "default".to_string(),
         progress: None,
+        time_estimate: None,
     }];
 
     // Get autocomplete items to populate the list
