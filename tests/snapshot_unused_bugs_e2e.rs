@@ -113,18 +113,9 @@ fn test_dispatch_with_zero_coworkers() {
     );
 
     // All functions should return without panicking
-    assert!(
-        idle_effects.is_empty() || !idle_effects.is_empty(),
-        "Should handle zero coworkers gracefully"
-    );
-    assert!(
-        stuck_effects.is_empty() || !stuck_effects.is_empty(),
-        "Should handle zero coworkers gracefully"
-    );
-    assert!(
-        orphan_effects.is_empty() || !orphan_effects.is_empty(),
-        "Should handle zero coworkers gracefully"
-    );
+    // Test passes if we reach this point without panicking
+    // Test passes if we reach this point without panicking
+    // Test passes if we reach this point without panicking
 }
 
 /// Test that lead nudge mechanism works correctly.
@@ -186,10 +177,7 @@ fn test_hit_usage_limit() {
     }
 
     // Should schedule a nudge or be empty if already scheduled
-    assert!(
-        effects.is_empty() || !effects.is_empty(),
-        "Should handle usage limits without panicking"
-    );
+    // Test passes if we reach this point without panicking
 }
 
 /// Test that subagent idle detection doesn't produce false positives.
@@ -256,10 +244,7 @@ fn test_lexington_premature_break() {
     }
 
     // The function should respect idle timeout before sending on break
-    assert!(
-        effects.is_empty() || !effects.is_empty(),
-        "Completed premature break check"
-    );
+    // Test passes if we reach this point without panicking
 }
 
 /// Test that orphan warning repetition is prevented.
@@ -326,10 +311,7 @@ fn test_spawn_loop_york_1107() {
     );
 
     // The function should handle the state without creating spawn loops
-    assert!(
-        orphan_effects.is_empty() || !orphan_effects.is_empty(),
-        "Completed spawn loop check for 1107"
-    );
+    // Test passes if we reach this point without panicking
 }
 
 #[test]
@@ -346,10 +328,7 @@ fn test_spawn_loop_york_1110() {
         orphan_effects.len()
     );
 
-    assert!(
-        orphan_effects.is_empty() || !orphan_effects.is_empty(),
-        "Completed spawn loop check for 1110"
-    );
+    // Test passes if we reach this point without panicking
 }
 
 /// Test that reviewer not spawning issue is fixed.
@@ -440,10 +419,7 @@ fn test_reviewer_assignment_stuck_pr_1164() {
     }
 
     // Should generate restart effects or be empty if not yet stuck
-    assert!(
-        effects.is_empty() || !effects.is_empty(),
-        "Completed stuck reviewer check for PR 1164"
-    );
+    // Test passes if we reach this point without panicking
 }
 
 /// Test that orphaned PR recovery works correctly.
@@ -470,10 +446,7 @@ fn test_orphan_recovery_pr_ref_bug() {
     }
 
     // Should generate CallInCoworker or other reconciliation effects
-    assert!(
-        effects.is_empty() || !effects.is_empty(),
-        "Completed orphan PR recovery check"
-    );
+    // Test passes if we reach this point without panicking
 }
 
 /// Test that merged PR cleanup works correctly.
@@ -501,10 +474,7 @@ fn test_recovery_loop_completed_tasks() {
     }
 
     // Should complete tasks and send coworkers on break, or be empty if already handled
-    assert!(
-        effects.is_empty() || !effects.is_empty(),
-        "Completed merged PR cleanup check"
-    );
+    // Test passes if we reach this point without panicking
 }
 
 /// Test that reviewer worktree branch conflicts are handled.
@@ -529,8 +499,5 @@ fn test_reviewer_worktree_branch_exists() {
     );
 
     // Should handle the branch conflict gracefully
-    assert!(
-        effects.is_empty() || !effects.is_empty(),
-        "Completed reviewer worktree branch check"
-    );
+    // Test passes if we reach this point without panicking
 }
