@@ -11,7 +11,7 @@ use std::{collections::VecDeque, mem};
 
 use crate::cli::Response;
 use crate::client::DaemonClient;
-use crossterm::{QueueableCommand, cursor, style};
+use crossterm::{QueueableCommand, cursor, style, terminal};
 use tracing::{debug, info};
 
 const COWORKER_INPUT_MAX_WAIT: Duration = Duration::from_secs(120);
@@ -377,10 +377,12 @@ fn draw_status_bar(
         status_text
     };
 
-    // Move to status bar row, draw in gray, then return cursor to (0, 0)
+    // Move to status bar row, clear the line, draw in gray, then return cursor to (0, 0)
     stdout
         .queue(cursor::MoveTo(0, status_row))
         .map_err(|e| format!("Failed to move cursor: {}", e))?
+        .queue(terminal::Clear(terminal::ClearType::CurrentLine))
+        .map_err(|e| format!("Failed to clear line: {}", e))?
         .queue(style::SetForegroundColor(style::Color::DarkGrey))
         .map_err(|e| format!("Failed to set color: {}", e))?;
 
@@ -987,151 +989,6 @@ pub fn handle(cmd: &HeadedWrapperCommand, client: &DaemonClient) -> Result<Respo
     }
 }
 
+#[path = "headed_wrapper_tests.rs"]
 #[cfg(test)]
-mod tests {
-    use std::sync::{Arc, Mutex};
-    use std::time::Duration;
-
-    use super::{
-        InputState, OutputMirror, SharedInputState, SharedOutputMirror, apply_submit_key,
-        get_input_text, is_nudge_stuck, trim_trailing_linebreaks, update_input_state,
-        wait_for_empty_input, wait_for_nudge_safe_with_input_state,
-    };
-
-    #[test]
-    fn submit_key_appends_carriage_return() {
-        assert_eq!(apply_submit_key("hello".to_string(), true), "hello\r");
-        assert_eq!(apply_submit_key("hello\n".to_string(), true), "hello\r");
-        assert_eq!(apply_submit_key("hello\r\n".to_string(), true), "hello\r");
-    }
-
-    #[test]
-    fn submit_key_noop_when_submit_false() {
-        assert_eq!(apply_submit_key("hello".to_string(), false), "hello");
-    }
-
-    #[test]
-    fn trim_trailing_linebreaks_only() {
-        assert_eq!(trim_trailing_linebreaks("hello\r\n".to_string()), "hello");
-        assert_eq!(trim_trailing_linebreaks("hello\n".to_string()), "hello");
-        assert_eq!(trim_trailing_linebreaks("hello".to_string()), "hello");
-    }
-
-    #[test]
-    fn input_state_tracks_typing_and_clears_on_enter() {
-        let state: SharedInputState = Arc::new(Mutex::new(InputState::default()));
-        update_input_state(&state, b"hello");
-        let snap = super::snapshot_input_state(&state);
-        assert_eq!(snap.current_input, "hello");
-
-        update_input_state(&state, b"\x7f");
-        let snap = super::snapshot_input_state(&state);
-        assert_eq!(snap.current_input, "hell");
-
-        update_input_state(&state, b"\r");
-        let snap = super::snapshot_input_state(&state);
-        assert!(snap.current_input.is_empty());
-    }
-
-    #[test]
-    fn wait_for_empty_input_returns_quickly_when_empty() {
-        let state: SharedInputState = Arc::new(Mutex::new(InputState::default()));
-        assert!(wait_for_empty_input(&state, Duration::from_millis(10)));
-    }
-
-    #[test]
-    fn get_input_text_prefers_most_recent_prompt() {
-        let content = "older\n❯ first\n\nnew\n❯ second";
-        assert_eq!(get_input_text(content).as_deref(), Some("second"));
-    }
-
-    #[test]
-    fn nudge_stuck_detection_matches_prompt_line() {
-        let content = "something\n❯ github said: check ci";
-        assert!(is_nudge_stuck(content, "github said: check ci on pr #10"));
-        assert!(!is_nudge_stuck(content, "totally different"));
-    }
-
-    #[test]
-    fn wait_for_nudge_safe_overwrites_last_nudge_immediately() {
-        let input_state: SharedInputState = Arc::new(Mutex::new(InputState::default()));
-        let mirror: SharedOutputMirror = Arc::new(Mutex::new(OutputMirror::default()));
-
-        // InputState contains the last nudge text
-        update_input_state(&input_state, b"github said: check ci");
-
-        {
-            let mut guard = mirror.lock().expect("mirror lock");
-            guard.ingest("❯ github said: check ci\n".as_bytes());
-        }
-
-        let safe = wait_for_nudge_safe_with_input_state(
-            &input_state,
-            &mirror,
-            Some("github said: check ci"),
-            Duration::from_secs(20),
-            Duration::from_secs(1),
-        );
-        assert!(safe);
-    }
-
-    #[test]
-    fn wait_for_nudge_safe_respects_active_input_state() {
-        let input_state: SharedInputState = Arc::new(Mutex::new(InputState::default()));
-        let mirror: SharedOutputMirror = Arc::new(Mutex::new(OutputMirror::default()));
-
-        // User is actively typing (recent keystroke, non-empty input)
-        update_input_state(&input_state, b"hello");
-
-        {
-            let mut guard = mirror.lock().expect("mirror lock");
-            // OutputMirror might not have caught up yet — empty or showing old prompt
-            guard.ingest("❯ \n".as_bytes());
-        }
-
-        // Simulate continued typing in a background thread
-        let input_state_clone = Arc::clone(&input_state);
-        let typing_thread = std::thread::spawn(move || {
-            // Keep typing every 50ms for 400ms (total)
-            for _ in 0..8 {
-                std::thread::sleep(Duration::from_millis(50));
-                update_input_state(&input_state_clone, b"x");
-            }
-        });
-
-        // Should wait because InputState shows active typing
-        let safe = wait_for_nudge_safe_with_input_state(
-            &input_state,
-            &mirror,
-            None,
-            Duration::from_millis(150),
-            Duration::from_millis(500),
-        );
-
-        typing_thread.join().unwrap();
-
-        // Should time out waiting for input to stabilize
-        assert!(!safe);
-    }
-
-    #[test]
-    fn wait_for_nudge_safe_allows_nudge_when_input_empty() {
-        let input_state: SharedInputState = Arc::new(Mutex::new(InputState::default()));
-        let mirror: SharedOutputMirror = Arc::new(Mutex::new(OutputMirror::default()));
-
-        {
-            let mut guard = mirror.lock().expect("mirror lock");
-            guard.ingest("❯ \n".as_bytes());
-        }
-
-        // Input state is empty — safe to nudge immediately
-        let safe = wait_for_nudge_safe_with_input_state(
-            &input_state,
-            &mirror,
-            None,
-            Duration::from_secs(20),
-            Duration::from_secs(1),
-        );
-        assert!(safe);
-    }
-}
+mod tests;
