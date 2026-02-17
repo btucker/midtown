@@ -512,7 +512,7 @@ fn main() {
         return;
     }
 
-    // View command (launches chat locally and best-effort split for Lead)
+    // View command (launches chat-only by default; --attach opens Lead in a split)
     if let Commands::View { project, attach } = &command {
         let result = cli::handle_view(project.as_deref(), *attach);
         handle_result(format, result);
