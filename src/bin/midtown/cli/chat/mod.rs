@@ -682,9 +682,19 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                     && y >= board_rect.y
                     && y < board_rect.y + board_rect.height
                 {
-                    // Check if click is on a task line (for attach)
                     // Board rect includes border (1 line), so subtract 1 to get content-relative line
                     let content_y = y.saturating_sub(board_rect.y + 1);
+
+                    // Check if click is on a channel header (for selection)
+                    if let Some(channel_name) = app.channel_line_map.get(&content_y) {
+                        // Update board selection to this channel
+                        app.board_selection =
+                            Some(app::BoardSelection::Channel(channel_name.clone()));
+                        app.update_selected_channel();
+                        return EventResult::Continue;
+                    }
+
+                    // Check if click is on a task line (for attach)
                     if let Some((_task_id, task_owner)) = app.task_line_map.get(&content_y)
                         && let Some(owner) = task_owner
                     {

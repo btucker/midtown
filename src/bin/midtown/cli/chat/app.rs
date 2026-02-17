@@ -306,6 +306,9 @@ pub struct App {
     /// Mapping of board panel line numbers to tasks (for click-to-attach)
     /// Maps (line_number) -> (task_id, task_owner) where line_number is relative to board content area
     pub task_line_map: HashMap<u16, (String, Option<String>)>,
+    /// Mapping of board panel line numbers to channel headers (for click-to-select)
+    /// Maps line_number -> channel_name where line_number is relative to board content area
+    pub channel_line_map: HashMap<u16, String>,
 }
 
 /// Autocomplete state for @mentions, #channels, and !task-ids
@@ -437,6 +440,7 @@ impl App {
             board_area: None,
             input_area: None,
             task_line_map: HashMap::new(),
+            channel_line_map: HashMap::new(),
         };
 
         // Initial load
@@ -900,7 +904,7 @@ impl App {
     }
 
     /// Update the selected channel when a board selection changes
-    fn update_selected_channel(&mut self) {
+    pub fn update_selected_channel(&mut self) {
         if let Some(ref selection) = self.board_selection {
             let new_channel = match selection {
                 BoardSelection::Channel(ch) => ch.clone(),
@@ -2566,6 +2570,7 @@ pub(super) mod tests {
             board_area: None,
             input_area: None,
             task_line_map: HashMap::new(),
+            channel_line_map: HashMap::new(),
         }
     }
 

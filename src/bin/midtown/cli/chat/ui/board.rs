@@ -19,8 +19,9 @@ use super::text::wrap_content;
 /// Returns (hyperlinks, tasks_area) where tasks_area is the rect containing the task list
 /// (excluding the coworker status section). This is used for click detection.
 pub fn draw_board_panel(f: &mut Frame, app: &mut App, area: Rect) -> (Vec<Hyperlink>, Rect) {
-    // Clear task line map for new render
+    // Clear line maps for new render
     app.task_line_map.clear();
+    app.channel_line_map.clear();
 
     // Split board area vertically: tasks at top, coworkers at bottom
     let active_coworker_count = app.coworkers.len();
@@ -104,21 +105,18 @@ pub fn draw_board_panel(f: &mut Frame, app: &mut App, area: Rect) -> (Vec<Hyperl
         }
     }
 
-    // Build task_line_map before rendering (to avoid borrow conflicts)
-    // This maps line numbers to (task_id, owner) for click-to-attach
+    // Build task_line_map and channel_line_map before rendering (to avoid borrow conflicts)
+    // task_line_map: maps line numbers to (task_id, owner) for click-to-attach
+    // channel_line_map: maps line numbers to channel_name for click-to-select
     let mut task_line_map: HashMap<u16, (String, Option<String>)> = HashMap::new();
+    let mut channel_line_map: HashMap<u16, String> = HashMap::new();
     let mut current_line: u16 = 0;
-    let mut first_channel = true;
 
     // First pass: calculate line positions
-    for tasks in channels_to_display.values() {
-        if !first_channel {
-            current_line += 1; // Blank line between channels
-        }
-        first_channel = false;
-
+    for (channel_name, tasks) in &channels_to_display {
+        // Record channel header line for click-to-select
+        channel_line_map.insert(current_line, channel_name.clone());
         current_line += 1; // Channel header
-        current_line += 1; // Blank line after header
 
         for task in tasks {
             // Record the first line of this task for click-to-attach
@@ -132,19 +130,13 @@ pub fn draw_board_panel(f: &mut Frame, app: &mut App, area: Rect) -> (Vec<Hyperl
         }
     }
 
-    // Store task_line_map in app for mouse click handler
+    // Store line maps in app for mouse click handler
     app.task_line_map = task_line_map;
+    app.channel_line_map = channel_line_map;
 
     // Render each channel as a swimlane
-    first_channel = true;
     for (channel_name, tasks) in &channels_to_display {
-        if !first_channel {
-            lines.push(Line::from(""));
-        }
-        first_channel = false;
-
         render_channel_header(app, channel_name, tasks, &prs_by_channel, &mut lines);
-        lines.push(Line::from("")); // Blank line after header
 
         let task_indentation = compute_task_indentation(tasks);
 
@@ -266,7 +258,7 @@ fn render_task_item(
     };
 
     let prefix = format!("!{} ", task.id);
-    let prefix_width = task_indent.len() + 2 + prefix.len(); // indent + "● " + prefix
+    let prefix_width = 2 + task_indent.len() + 2 + prefix.len(); // "  " + indent + "● " + prefix
     let task_line = format!("{}{}", prefix, task.subject);
 
     let is_task_selected = app.board_selection.as_ref().is_some_and(|sel| match sel {
@@ -278,8 +270,9 @@ fn render_task_item(
     for (i, wrapped) in wrapped_lines.iter().enumerate() {
         if i == 0 {
             // First line: render indent + bullet + text as separate spans
+            // Add 2-space indent to align bullet with channel # (channel header uses "  #")
             let bullet_span = Span::styled(
-                format!("{}● ", task_indent),
+                format!("  {}● ", task_indent),
                 Style::default().fg(bullet_color),
             );
             let mut text_style = Style::default().fg(text_color);
@@ -578,8 +571,8 @@ mod tests {
         assert_eq!(lines.len(), 1);
         let spans = &lines[0].spans;
         assert_eq!(spans.len(), 2);
-        // Bullet span: no indent (level 0), just "● "
-        assert_eq!(spans[0].content.as_ref(), "● ");
+        // Bullet span: 2-space alignment + no indent (level 0) = "  ● "
+        assert_eq!(spans[0].content.as_ref(), "  ● ");
         // Text span: "!42 Task 42"
         assert_eq!(spans[1].content.as_ref(), "!42 Task 42");
     }
@@ -597,8 +590,8 @@ mod tests {
         assert_eq!(lines.len(), 1);
         let spans = &lines[0].spans;
         assert_eq!(spans.len(), 2);
-        // Bullet span includes indent: "  ● "
-        assert_eq!(spans[0].content.as_ref(), "  ● ");
+        // Bullet span: 2-space alignment + 2-space indent (level 1) = "    ● "
+        assert_eq!(spans[0].content.as_ref(), "    ● ");
         // Text span: "!7 Task 7"
         assert_eq!(spans[1].content.as_ref(), "!7 Task 7");
     }
@@ -615,8 +608,8 @@ mod tests {
 
         assert_eq!(lines.len(), 1);
         let spans = &lines[0].spans;
-        // Bullet span includes 6-space indent: "      ● "
-        assert_eq!(spans[0].content.as_ref(), "      ● ");
+        // Bullet span: 2-space alignment + 6-space indent (level 3) = "        ● "
+        assert_eq!(spans[0].content.as_ref(), "        ● ");
         assert_eq!(spans[1].content.as_ref(), "!99 Task 99");
     }
 
