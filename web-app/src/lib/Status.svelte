@@ -99,6 +99,20 @@
                   <span class="text-[#a8a8a8] font-mono">#{cw.pr_number}</span>
                 </div>
               {/if}
+              {#if cw.progress != null}
+                <div class="flex gap-2 text-[0.8rem] items-center">
+                  <span class="text-[#585858] min-w-[50px]">Progress:</span>
+                  <div class="flex-1 flex items-center gap-2">
+                    <div class="flex-1 h-1.5 bg-[#3a3a3a] rounded-full overflow-hidden">
+                      <div
+                        class="h-full bg-[#5fafaf] rounded-full transition-all duration-300"
+                        style="width: {cw.progress}%"
+                      ></div>
+                    </div>
+                    <span class="text-[#a8a8a8] font-mono text-[0.7rem] min-w-[32px] text-right">{cw.progress}%</span>
+                  </div>
+                </div>
+              {/if}
             </div>
           </div>
         {/each}
