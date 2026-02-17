@@ -606,3 +606,80 @@ async fn test_reviewer_spawns_when_worktree_exists_but_no_current_coworker() {
          Before fix: empty branch_owners_map caused all PRs to be treated as orphaned after restart.",
     );
 }
+
+/// Bug: reconcile_orphaned_prs creates duplicate "Merge PR #X" tasks every 30 seconds.
+///
+/// Root cause: The function only checks pr_task_associations (which tracks the *original*
+/// task that created the PR via pr_author_sessions). When a merge task is created, it's
+/// a new task not linked in pr_author_sessions, so pr_task_associations doesn't contain
+/// the PR. On the next tick, the function creates another duplicate merge task.
+///
+/// Expected: Only one "Merge PR #X" task should exist for each PR, even across multiple ticks.
+#[test]
+fn test_reconcile_orphaned_prs_does_not_create_duplicates() {
+    use super::super::snapshot::minimal_snapshot_for_test;
+    use crate::tasks::{Task, TaskStatus};
+
+    // Simulate PR #42 that meets all orphan criteria:
+    // - Has coworker branch prefix
+    // - Has been reviewed
+    // - CI is passing
+    // - Not a draft
+    let pr_data = json!({
+        "number": 42,
+        "title": "Fix authentication bug",
+        "headRefName": "york/fix-auth",
+        "isDraft": false,
+        "statusCheckRollup": {
+            "state": "SUCCESS"
+        }
+    });
+
+    let mut snap = minimal_snapshot_for_test();
+    snap.open_prs_data = vec![pr_data];
+    snap.reviewed_prs.insert(42);
+
+    // First tick: No existing merge task yet
+    let effects1 = reconcile_orphaned_prs(&snap);
+
+    // Should create one merge task
+    let create_task_count1 = effects1
+        .iter()
+        .filter(|e| matches!(e, Effect::CreateTask { .. }))
+        .count();
+    assert_eq!(
+        create_task_count1, 1,
+        "First tick should create exactly one merge task"
+    );
+
+    // Simulate the created task now exists in all_tasks as pending
+    let merge_task = Task {
+        id: "1001".to_string(),
+        subject: "Merge PR #42 — reviewed, CI green".to_string(),
+        status: TaskStatus::Pending,
+        owner: None,
+        description: Some("PR #42 (Fix authentication bug) has been reviewed...".to_string()),
+        blocked_by: vec![],
+        channel: None,
+        pr: Some(42), // This will be set after the fix
+        created_at: None,
+    };
+
+    snap.all_tasks = vec![merge_task];
+
+    // Second tick: Merge task now exists
+    let effects2 = reconcile_orphaned_prs(&snap);
+
+    // Should NOT create another merge task (bug: currently creates duplicate)
+    let create_task_count2 = effects2
+        .iter()
+        .filter(|e| matches!(e, Effect::CreateTask { .. }))
+        .count();
+    assert_eq!(
+        create_task_count2, 0,
+        "Second tick should NOT create duplicate merge task. BUG: reconcile_orphaned_prs \
+         only checks pr_task_associations (which tracks original PR author tasks), not \
+         existing merge tasks in all_tasks. This causes duplicate 'Merge PR #42' tasks \
+         to be created every 30 seconds."
+    );
+}

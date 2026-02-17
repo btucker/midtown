@@ -351,6 +351,8 @@ pub enum Effect {
         repo_name: String,
         subject: String,
         description: String,
+        /// Optional PR number to associate with the task (for deduplication).
+        pr: Option<u64>,
     },
 }
 
@@ -1540,6 +1542,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 repo_name,
                 subject,
                 description,
+                pr,
             } => {
                 // Derive active_form from subject (simple present progressive form)
                 let active_form = if subject.starts_with("Merge") {
@@ -1556,7 +1559,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     &repo_name,
                     None, // blocked_by
                     None, // channel
-                    None, // pr
+                    pr,   // pr (from effect)
                 ) {
                     Ok(task_id) => {
                         info!("Created task !{}: {}", task_id, subject);

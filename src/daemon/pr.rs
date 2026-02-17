@@ -3460,6 +3460,12 @@ pub(super) fn reconcile_orphaned_prs(snap: &WorldSnapshot) -> Vec<Effect> {
             continue;
         }
 
+        // Skip if a merge task already exists for this PR (prevents duplicates)
+        // This checks all_tasks for any task with pr field matching pr_number
+        if snap.all_tasks.iter().any(|task| task.pr == Some(pr_number)) {
+            continue;
+        }
+
         // Check if PR has been reviewed (Claude review comment exists)
         if !snap.reviewed_prs.contains(&pr_number) {
             continue;
@@ -3496,6 +3502,7 @@ pub(super) fn reconcile_orphaned_prs(snap: &WorldSnapshot) -> Vec<Effect> {
                  Branch: {}",
                 pr_number, title, branch
             ),
+            pr: Some(pr_number),
         });
     }
 
