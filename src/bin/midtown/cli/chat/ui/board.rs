@@ -187,11 +187,11 @@ fn render_channel_header(
     let task_count = tasks.len();
     let channel_header = if let Some(&unread_count) = app.channel_unread_counts.get(channel_name) {
         format!(
-            "  #{} ({}) — {} tasks",
+            "#{} ({}) — {} tasks",
             channel_name, unread_count, task_count
         )
     } else {
-        format!("  #{} — {} tasks", channel_name, task_count)
+        format!("#{} — {} tasks", channel_name, task_count)
     };
 
     let is_selected = app.board_selection.as_ref().is_some_and(|sel| match sel {
@@ -258,7 +258,8 @@ fn render_task_item(
     };
 
     let prefix = format!("!{} ", task.id);
-    let prefix_width = 2 + task_indent.len() + 2 + prefix.len(); // "  " + indent + "● " + prefix
+    // 1-space indent + indent_level + "● " + prefix = total width before subject text
+    let bullet_prefix_width = 1 + task_indent.len() + 2 + prefix.len();
     let task_line = format!("{}{}", prefix, task.subject);
 
     let is_task_selected = app.board_selection.as_ref().is_some_and(|sel| match sel {
@@ -269,10 +270,9 @@ fn render_task_item(
     let wrapped_lines = wrap_content(&task_line, wrap_width);
     for (i, wrapped) in wrapped_lines.iter().enumerate() {
         if i == 0 {
-            // First line: render indent + bullet + text as separate spans
-            // Add 2-space indent to align bullet with channel # (channel header uses "  #")
+            // First line: 1-space indent + bullet + text as separate spans
             let bullet_span = Span::styled(
-                format!("  {}● ", task_indent),
+                format!(" {}● ", task_indent),
                 Style::default().fg(bullet_color),
             );
             let mut text_style = Style::default().fg(text_color);
@@ -282,13 +282,12 @@ fn render_task_item(
             let text_span = Span::styled(wrapped.to_string(), text_style);
             lines.push(Line::from(vec![bullet_span, text_span]));
         } else {
-            // Continuation lines: indent without bullet
-            let indent_width = prefix_width.saturating_sub(2);
+            // Continuation lines: align with first letter of subject text
             let text = format!(
                 "{:width$}{}",
                 "",
                 wrapped.trim_start(),
-                width = indent_width
+                width = bullet_prefix_width
             );
             let mut style = Style::default().fg(text_color);
             if is_task_selected {
@@ -323,7 +322,7 @@ fn draw_coworker_status(f: &mut Frame, app: &mut App, area: Rect) {
         .collect();
 
     let active_count = active_coworkers.len();
-    let header = format!("  Coworkers ({}/{})", active_count, app.max_coworkers);
+    let header = format!("Coworkers ({}/{})", active_count, app.max_coworkers);
     let header_paragraph = Paragraph::new(Line::from(vec![Span::styled(
         header,
         Style::default()
@@ -620,8 +619,8 @@ mod tests {
         assert_eq!(lines.len(), 1);
         let spans = &lines[0].spans;
         assert_eq!(spans.len(), 2);
-        // Bullet span: 2-space alignment + no indent (level 0) = "  ● "
-        assert_eq!(spans[0].content.as_ref(), "  ● ");
+        // Bullet span: 1-space indent + no indent (level 0) = " ● "
+        assert_eq!(spans[0].content.as_ref(), " ● ");
         // Text span: "!42 Task 42"
         assert_eq!(spans[1].content.as_ref(), "!42 Task 42");
     }
@@ -639,8 +638,8 @@ mod tests {
         assert_eq!(lines.len(), 1);
         let spans = &lines[0].spans;
         assert_eq!(spans.len(), 2);
-        // Bullet span: 2-space alignment + 2-space indent (level 1) = "    ● "
-        assert_eq!(spans[0].content.as_ref(), "    ● ");
+        // Bullet span: 1-space indent + 2-space indent (level 1) = "   ● "
+        assert_eq!(spans[0].content.as_ref(), "   ● ");
         // Text span: "!7 Task 7"
         assert_eq!(spans[1].content.as_ref(), "!7 Task 7");
     }
@@ -657,8 +656,8 @@ mod tests {
 
         assert_eq!(lines.len(), 1);
         let spans = &lines[0].spans;
-        // Bullet span: 2-space alignment + 6-space indent (level 3) = "        ● "
-        assert_eq!(spans[0].content.as_ref(), "        ● ");
+        // Bullet span: 1-space indent + 6-space indent (level 3) = "       ● "
+        assert_eq!(spans[0].content.as_ref(), "       ● ");
         assert_eq!(spans[1].content.as_ref(), "!99 Task 99");
     }
 
