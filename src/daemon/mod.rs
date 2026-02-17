@@ -44,6 +44,7 @@ pub use constants::{
     DEFAULT_WEBHOOK_RESTART_INTERVAL_SECS, PR_NUDGE_COOLDOWN_SECS,
     PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS, PR_REVIEW_DELAY_SECS,
 };
+pub use state::{DaemonPersistentState, HeadlessSessionInfo};
 pub use trackers::{
     CommentTracker, OrphanTracker, PrIssueTracker, PrIssueType, StuckConditionTracker,
     StuckConditionType,
