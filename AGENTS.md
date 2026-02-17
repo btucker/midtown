@@ -9,10 +9,9 @@ Midtown is a multi-Claude Code workspace manager. It coordinates a Lead (human-f
 ## Build & Development Commands
 
 ```bash
-# Build
+# Build & install
 cargo build                     # debug build (daemon only)
-cargo build --release           # release build (daemon only)
-./scripts/build-all.sh          # build + install midtown
+cargo install --path .          # release build + install to ~/.cargo/bin/
 
 # Test
 cargo test                      # unit + non-ignored integration tests
@@ -28,8 +27,6 @@ cargo fmt -- --check
 ./scripts/coverage.sh --text    # text summary
 ./scripts/coverage.sh --open    # HTML report and open in browser
 
-# Install locally
-cargo install --path .
 ```
 
 **Test file placement**: Put unit tests in separate files (`src/daemon/pr_tests.rs`) rather than inline `#[cfg(test)] mod tests` blocks. Use `#[path = "pr_tests.rs"] #[cfg(test)] mod tests;` in the source file to maintain private access. This keeps PR diffs focused — reviewers can see how much is test vs. implementation at a glance. Integration/E2E tests go in `tests/` as usual.
@@ -185,10 +182,10 @@ Each concern has a primary owner. The non-owner path only acts as reconciliation
 If you are the Lead, whenever a PR is merged into main, pull, rebuild, and restart so the running daemon and coworkers pick up the changes:
 
 ```bash
-git pull && ./scripts/build-all.sh && midtown restart
+git pull && cargo install --path . && midtown restart
 ```
 
-This builds the release binary and installs it atomically to `~/.cargo/bin/` (which is typically in your PATH).
+This builds the release binary and installs it to `~/.cargo/bin/` (which is typically in your PATH).
 
 Post to the channel when done so the team knows the new code is live:
 
