@@ -104,15 +104,15 @@ enum Commands {
         #[arg(long)]
         force: bool,
     },
-    /// Launch chat in this terminal and open Lead in a split (best effort)
+    /// Launch chat in this terminal (chat-only by default; use --attach to open Lead in a split)
     #[command(alias = "attach")]
     View {
         /// Project name to view (default: inferred from cwd)
         project: Option<String>,
 
-        /// Launch chat without trying to auto-create/open a Lead split
+        /// Attach to the Lead session and open it in a split pane
         #[arg(long)]
-        skip_auto_split: bool,
+        attach: bool,
     },
     /// Project management commands
     Project {
@@ -513,12 +513,8 @@ fn main() {
     }
 
     // View command (launches chat locally and best-effort split for Lead)
-    if let Commands::View {
-        project,
-        skip_auto_split,
-    } = &command
-    {
-        let result = cli::handle_view(project.as_deref(), *skip_auto_split);
+    if let Commands::View { project, attach } = &command {
+        let result = cli::handle_view(project.as_deref(), *attach);
         handle_result(format, result);
         return;
     }

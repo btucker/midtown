@@ -83,9 +83,9 @@ pub fn handle_restart(force: bool) -> Result<Response, String> {
     daemon::handle_restart(force)
 }
 
-/// Handle view command (launches chat + best-effort lead split)
-pub fn handle_view(project: Option<&str>, skip_auto_split: bool) -> Result<Response, String> {
-    daemon::handle_view(project, skip_auto_split)
+/// Handle view command (launches chat; optionally attaches Lead and opens a split)
+pub fn handle_view(project: Option<&str>, attach: bool) -> Result<Response, String> {
+    daemon::handle_view(project, attach)
 }
 
 /// Handle project list command (no daemon required)
