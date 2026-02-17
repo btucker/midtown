@@ -2578,6 +2578,7 @@ pub(super) mod tests {
             spinner_frame: 0,
             available_channels: Vec::new(),
             channels_last_refresh: Instant::now(),
+            project_name: "test".to_string(),
             board_area: None,
             input_area: None,
             task_line_map: HashMap::new(),
