@@ -64,12 +64,7 @@ export async function fetchChannels(includeArchived = false) {
         ci_status: null,
         is_archived: typeof ch === 'object' && ch.is_archived,
       }))
-      // Ensure midtown is first
-      channelList.sort((a, b) => {
-        if (a.name === 'midtown') return -1
-        if (b.name === 'midtown') return 1
-        return a.name.localeCompare(b.name)
-      })
+      // Backend already returns channels sorted with main project channel first
       channels.set(channelList)
       return channelList
     }

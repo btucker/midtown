@@ -299,6 +299,8 @@ pub struct App {
     pub available_channels: Vec<midtown::ChannelInfo>,
     /// Last time available channels were refreshed
     channels_last_refresh: Instant,
+    /// Project/repository name (used for pinning main channel first in sidebar)
+    project_name: String,
     /// Last rendered board panel area (for click detection)
     pub board_area: Option<ratatui::layout::Rect>,
     /// Last rendered input bar area (for click detection)
@@ -437,6 +439,7 @@ impl App {
             spinner_frame: 0,
             available_channels: Vec::new(),
             channels_last_refresh: Instant::now() - CHANNELS_REFRESH_INTERVAL, // Force initial refresh
+            project_name: channel_repo.clone(),
             board_area: None,
             input_area: None,
             task_line_map: HashMap::new(),
@@ -1275,7 +1278,11 @@ impl App {
             None => return,
         };
 
-        if let Ok(channels) = Channel::list(&base_dir, self.show_archived_channels) {
+        if let Ok(channels) = Channel::list(
+            &base_dir,
+            self.show_archived_channels,
+            Some(&self.project_name),
+        ) {
             self.available_channels = channels;
         }
     }
@@ -1294,7 +1301,11 @@ impl App {
         };
 
         // List all available channels (based on current filter setting)
-        let channels = match Channel::list(&base_dir, self.show_archived_channels) {
+        let channels = match Channel::list(
+            &base_dir,
+            self.show_archived_channels,
+            Some(&self.project_name),
+        ) {
             Ok(list) => list,
             Err(_) => return, // Can't read channel list, skip
         };
@@ -1489,7 +1500,7 @@ impl App {
         if let Some(ref channel) = self.channel {
             let base_dir = channel.base_dir();
             // For autocomplete, include archived channels so users can reference them
-            if let Ok(channels) = Channel::list(base_dir, true) {
+            if let Ok(channels) = Channel::list(base_dir, true, Some(&self.project_name)) {
                 for channel_info in channels {
                     if channel_info.name.to_lowercase().starts_with(query) {
                         items.push(AutocompleteItem {

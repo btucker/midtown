@@ -201,7 +201,12 @@ impl Channel {
     ///
     /// * `base_dir` - Base directory to search for channels
     /// * `include_archived` - If true, includes archived channels in the result
-    pub fn list(base_dir: impl Into<PathBuf>, include_archived: bool) -> Result<Vec<ChannelInfo>> {
+    /// * `project_name` - Optional project name. If provided, the channel matching this name is pinned first in the list.
+    pub fn list(
+        base_dir: impl Into<PathBuf>,
+        include_archived: bool,
+        project_name: Option<&str>,
+    ) -> Result<Vec<ChannelInfo>> {
         let base_dir = base_dir.into();
         let mut channels = Vec::new();
 
@@ -259,7 +264,19 @@ impl Channel {
             }
         }
 
-        channels.sort_by(|a, b| a.name.cmp(&b.name));
+        // Sort with main project channel pinned first, then alphabetically
+        channels.sort_by(|a, b| {
+            if let Some(main) = project_name {
+                match (a.name == main, b.name == main) {
+                    (true, false) => std::cmp::Ordering::Less, // a is main → a first
+                    (false, true) => std::cmp::Ordering::Greater, // b is main → b first
+                    _ => a.name.cmp(&b.name),                  // neither or both → alphabetical
+                }
+            } else {
+                a.name.cmp(&b.name) // no project name → alphabetical
+            }
+        });
+
         Ok(channels)
     }
 
@@ -1860,7 +1877,7 @@ mod tests {
         let _channel2 = Channel::new(temp_dir.path(), "test2").unwrap();
 
         // Both should appear in the list
-        let channels = Channel::list(temp_dir.path(), false).unwrap();
+        let channels = Channel::list(temp_dir.path(), false, None).unwrap();
         assert!(
             channels.iter().any(|c| c.name == "test1"),
             "test1 should be in the list"
@@ -1874,7 +1891,7 @@ mod tests {
         channel1.archive().unwrap();
 
         // Now only test2 should appear in the list
-        let channels = Channel::list(temp_dir.path(), false).unwrap();
+        let channels = Channel::list(temp_dir.path(), false, None).unwrap();
         assert!(
             !channels.iter().any(|c| c.name == "test1"),
             "Archived channel test1 should not be in the list"
@@ -1913,7 +1930,7 @@ mod tests {
         File::create(channels_dir.join(".hidden.jsonl")).unwrap(); // leading dot
 
         // List should only return valid channel names
-        let channels = Channel::list(temp_dir.path(), false).unwrap();
+        let channels = Channel::list(temp_dir.path(), false, None).unwrap();
         let channel_names: Vec<&str> = channels.iter().map(|c| c.name.as_str()).collect();
 
         assert!(
