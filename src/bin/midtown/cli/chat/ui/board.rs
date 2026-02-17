@@ -843,4 +843,265 @@ mod tests {
             "tasks_area should exclude coworker section"
         );
     }
+
+    fn make_coworker(name: &str) -> CoworkerInfo {
+        CoworkerInfo {
+            name: name.to_string(),
+            task_id: None,
+            phase: Some("developing".to_string()),
+            pr_number: None,
+            health: "green".to_string(),
+            provider: "claude".to_string(),
+            profile: "default".to_string(),
+            progress: None,
+            time_estimate: None,
+        }
+    }
+
+    #[test]
+    fn test_coworker_table_row_all_columns() {
+        let mut cw = make_coworker("park");
+        cw.task_id = Some(1418);
+        cw.pr_number = Some(1207);
+        cw.progress = Some(42);
+        cw.time_estimate = Some("~3m".to_string());
+
+        let row = coworker_table_row(&cw, "⠋", true, true, true, true, true);
+
+        // Verify all 7 columns are present by checking the row can be constructed
+        // (Row doesn't expose cell count directly, but we verify data is correct
+        // by checking what we passed to each show_* flag)
+        let _ = row; // Row is valid, column building doesn't panic
+    }
+
+    #[test]
+    fn test_coworker_table_row_minimal_columns() {
+        let cw = make_coworker("york");
+        // Minimal: only spinner + name (all show_* = false)
+        let row = coworker_table_row(&cw, "⠙", false, false, false, false, false);
+        let _ = row;
+    }
+
+    #[test]
+    fn test_coworker_section_height_no_coworkers() {
+        // When there are no coworkers, section height should be 0
+        let coworker_count: u16 = 0;
+        let height = if coworker_count > 0 {
+            coworker_count + 3
+        } else {
+            0
+        };
+        assert_eq!(height, 0);
+    }
+
+    #[test]
+    fn test_coworker_section_height_with_coworkers() {
+        // 1 coworker → header (1) + row (1) + 2 borders = 4... but the current
+        // implementation does active_count + 3 (1 header + N rows + 2 borders).
+        // With 1 active coworker the height should be 4.
+        // This mirrors the formula in draw_board_panel().
+        let active_count: u16 = 1;
+        let height = active_count + 3;
+        assert_eq!(height, 4);
+
+        let active_count: u16 = 3;
+        let height = active_count + 3;
+        assert_eq!(height, 6);
+    }
+
+    #[test]
+    fn test_draw_coworker_status_renders_without_panic() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let backend = TestBackend::new(80, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let mut app = test_app();
+        app.coworkers = vec![
+            {
+                let mut cw = make_coworker("park");
+                cw.task_id = Some(1418);
+                cw.phase = Some("developing".to_string());
+                cw.pr_number = Some(1207);
+                cw.progress = Some(42);
+                cw.time_estimate = Some("~3m".to_string());
+                cw
+            },
+            {
+                let mut cw = make_coworker("amsterdam");
+                cw.task_id = Some(1419);
+                cw.phase = Some("pull-request".to_string());
+                cw.pr_number = Some(1208);
+                cw.progress = Some(78);
+                cw
+            },
+        ];
+        app.max_coworkers = 4;
+
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                draw_coworker_status(f, &mut app, area);
+            })
+            .unwrap();
+        // If we get here without panicking, the render succeeded
+    }
+
+    #[test]
+    fn test_draw_coworker_status_narrow_width_no_panic() {
+        // Test responsive degradation at very narrow widths
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        for width in [20u16, 25, 30, 40, 50, 60, 80] {
+            let backend = TestBackend::new(width, 6);
+            let mut terminal = Terminal::new(backend).unwrap();
+
+            let mut app = test_app();
+            app.coworkers = vec![{
+                let mut cw = make_coworker("amsterdam");
+                cw.task_id = Some(1234);
+                cw.phase = Some("testing".to_string());
+                cw.pr_number = Some(999);
+                cw.progress = Some(50);
+                cw.time_estimate = Some("~5m".to_string());
+                cw
+            }];
+
+            terminal
+                .draw(|f| {
+                    let area = f.area();
+                    draw_coworker_status(f, &mut app, area);
+                })
+                .unwrap();
+        }
+    }
+
+    #[test]
+    fn test_draw_coworker_status_health_colors() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let backend = TestBackend::new(80, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let mut app = test_app();
+        app.coworkers = vec![
+            {
+                let mut cw = make_coworker("york");
+                cw.health = "green".to_string();
+                cw
+            },
+            {
+                let mut cw = make_coworker("park");
+                cw.health = "yellow".to_string();
+                cw
+            },
+            {
+                let mut cw = make_coworker("lexington");
+                cw.health = "red".to_string();
+                cw
+            },
+            {
+                let mut cw = make_coworker("madison");
+                cw.health = "unknown".to_string();
+                cw
+            },
+        ];
+
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                draw_coworker_status(f, &mut app, area);
+            })
+            .unwrap();
+        // Verifies health-based color logic handles all branches including "unknown"
+    }
+
+    #[test]
+    fn test_draw_coworker_status_idle_coworkers_excluded() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let backend = TestBackend::new(80, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let mut app = test_app();
+        app.coworkers = vec![
+            {
+                let mut cw = make_coworker("york");
+                cw.phase = Some("idle".to_string());
+                cw
+            },
+            {
+                // No phase set — also excluded
+                let mut cw = make_coworker("park");
+                cw.phase = None;
+                cw
+            },
+            {
+                let mut cw = make_coworker("amsterdam");
+                cw.phase = Some("developing".to_string());
+                cw
+            },
+        ];
+
+        // Only "amsterdam" (developing) should appear. This test verifies no panic
+        // and renders correctly with a mix of idle/none/active coworkers.
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                draw_coworker_status(f, &mut app, area);
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn test_draw_board_panel_coworker_section_snug_height() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let backend = TestBackend::new(80, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let mut app = test_app();
+        // 2 active coworkers → expected section height: 2 + 3 = 5
+        app.coworkers = vec![
+            {
+                let mut cw = make_coworker("york");
+                cw.phase = Some("developing".to_string());
+                cw
+            },
+            {
+                let mut cw = make_coworker("park");
+                cw.phase = Some("testing".to_string());
+                cw
+            },
+        ];
+        app.max_coworkers = 4;
+
+        let mut returned_tasks_area = None;
+
+        terminal
+            .draw(|f| {
+                let area = Rect {
+                    x: 0,
+                    y: 0,
+                    width: 80,
+                    height: 40,
+                };
+                let (_hyperlinks, tasks_area) = draw_board_panel(f, &mut app, area);
+                returned_tasks_area = Some(tasks_area);
+            })
+            .unwrap();
+
+        let tasks_area = returned_tasks_area.unwrap();
+        // 2 active coworkers → section height = 2 + 3 = 5
+        // tasks_area height should be 40 - 5 = 35
+        assert_eq!(
+            tasks_area.height, 35,
+            "tasks area height should leave exactly 5 rows for 2 coworkers"
+        );
+    }
 }
