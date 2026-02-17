@@ -1,16 +1,4 @@
-//! Text processing utilities: markdown parsing, line wrapping, and content formatting.
-
-use ratatui::{style::Style, text::Span};
-
-/// Parse markdown in text and return styled spans
-///
-/// Handles:
-/// - **bold** -> BOLD modifier
-/// - *italic* -> ITALIC modifier
-/// - `code` -> Cyan color
-pub fn parse_markdown(text: &str, base_style: Style) -> Vec<Span<'static>> {
-    minimad_ratatui::inline(text, base_style).spans
-}
+//! Text processing utilities: line wrapping and content formatting.
 
 /// Wrap content text into lines that fit the given width
 pub fn wrap_content(content: &str, width: usize) -> Vec<String> {
@@ -74,7 +62,7 @@ pub fn wrap_line(text: &str, width: usize) -> Vec<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ratatui::style::{Color, Modifier};
+    use ratatui::style::{Color, Modifier, Style};
 
     #[test]
     fn test_wrap_line_empty() {
@@ -137,55 +125,55 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_markdown_plain_text() {
+    fn test_inline_plain_text() {
         let base = Style::default().fg(Color::White);
-        let spans = parse_markdown("hello world", base);
-        assert_eq!(spans.len(), 1);
-        assert_eq!(spans[0].content, "hello world");
+        let line = minimad_ratatui::inline("hello world", base);
+        assert_eq!(line.spans.len(), 1);
+        assert_eq!(line.spans[0].content, "hello world");
     }
 
     #[test]
-    fn test_parse_markdown_bold() {
+    fn test_inline_bold() {
         let base = Style::default().fg(Color::White);
-        let spans = parse_markdown("hello **bold** world", base);
-        assert_eq!(spans.len(), 3);
-        assert_eq!(spans[0].content, "hello ");
-        assert_eq!(spans[1].content, "bold");
-        assert!(spans[1].style.add_modifier.contains(Modifier::BOLD));
-        assert_eq!(spans[2].content, " world");
+        let line = minimad_ratatui::inline("hello **bold** world", base);
+        assert_eq!(line.spans.len(), 3);
+        assert_eq!(line.spans[0].content, "hello ");
+        assert_eq!(line.spans[1].content, "bold");
+        assert!(line.spans[1].style.add_modifier.contains(Modifier::BOLD));
+        assert_eq!(line.spans[2].content, " world");
     }
 
     #[test]
-    fn test_parse_markdown_italic() {
+    fn test_inline_italic() {
         let base = Style::default().fg(Color::White);
-        let spans = parse_markdown("hello *italic* world", base);
-        assert_eq!(spans.len(), 3);
-        assert_eq!(spans[0].content, "hello ");
-        assert_eq!(spans[1].content, "italic");
-        assert!(spans[1].style.add_modifier.contains(Modifier::ITALIC));
-        assert_eq!(spans[2].content, " world");
+        let line = minimad_ratatui::inline("hello *italic* world", base);
+        assert_eq!(line.spans.len(), 3);
+        assert_eq!(line.spans[0].content, "hello ");
+        assert_eq!(line.spans[1].content, "italic");
+        assert!(line.spans[1].style.add_modifier.contains(Modifier::ITALIC));
+        assert_eq!(line.spans[2].content, " world");
     }
 
     #[test]
-    fn test_parse_markdown_code() {
+    fn test_inline_code() {
         let base = Style::default().fg(Color::White);
-        let spans = parse_markdown("run `cargo test` now", base);
-        assert_eq!(spans.len(), 3);
-        assert_eq!(spans[0].content, "run ");
-        assert_eq!(spans[1].content, "cargo test");
-        assert_eq!(spans[1].style.fg, Some(Color::Cyan));
-        assert_eq!(spans[2].content, " now");
+        let line = minimad_ratatui::inline("run `cargo test` now", base);
+        assert_eq!(line.spans.len(), 3);
+        assert_eq!(line.spans[0].content, "run ");
+        assert_eq!(line.spans[1].content, "cargo test");
+        assert_eq!(line.spans[1].style.fg, Some(Color::Cyan));
+        assert_eq!(line.spans[2].content, " now");
     }
 
     #[test]
-    fn test_parse_markdown_mixed() {
+    fn test_inline_mixed() {
         let base = Style::default().fg(Color::White);
-        let spans = parse_markdown("**bold** and `code`", base);
-        assert_eq!(spans.len(), 3);
-        assert_eq!(spans[0].content, "bold");
-        assert!(spans[0].style.add_modifier.contains(Modifier::BOLD));
-        assert_eq!(spans[1].content, " and ");
-        assert_eq!(spans[2].content, "code");
-        assert_eq!(spans[2].style.fg, Some(Color::Cyan));
+        let line = minimad_ratatui::inline("**bold** and `code`", base);
+        assert_eq!(line.spans.len(), 3);
+        assert_eq!(line.spans[0].content, "bold");
+        assert!(line.spans[0].style.add_modifier.contains(Modifier::BOLD));
+        assert_eq!(line.spans[1].content, " and ");
+        assert_eq!(line.spans[2].content, "code");
+        assert_eq!(line.spans[2].style.fg, Some(Color::Cyan));
     }
 }

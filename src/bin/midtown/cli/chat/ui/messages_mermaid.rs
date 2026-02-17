@@ -51,11 +51,12 @@ pub fn render_message_with_mermaid(
             ContentSegment::Text(text) => {
                 let content_lines = wrap_content(text, content_width);
                 for content in &content_lines {
+                    let parsed = minimad_ratatui::inline(content, ctx.content_style);
                     if is_first_content_line {
-                        lines.push(build_first_content_line(msg, &ctx, content));
+                        lines.push(build_first_content_line(msg, &ctx, parsed));
                         is_first_content_line = false;
                     } else {
-                        lines.push(build_continuation_line(&ctx, content));
+                        lines.push(build_continuation_line(&ctx, parsed));
                     }
                 }
             }
