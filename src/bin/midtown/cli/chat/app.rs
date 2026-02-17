@@ -297,6 +297,8 @@ pub struct App {
     spinner_frame: usize,
     /// List of all available channels (including empty ones)
     pub available_channels: Vec<midtown::ChannelInfo>,
+    /// Last time available channels were refreshed
+    channels_last_refresh: Instant,
     /// Last rendered board panel area (for click detection)
     pub board_area: Option<ratatui::layout::Rect>,
     /// Last rendered input bar area (for click detection)
@@ -363,6 +365,9 @@ const USAGE_REFRESH_INTERVAL: Duration = Duration::from_secs(120);
 /// Shorter retry interval when usage fetch fails (15 seconds)
 const USAGE_RETRY_INTERVAL: Duration = Duration::from_secs(15);
 
+/// Interval between available channels list refreshes (30 seconds)
+const CHANNELS_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
+
 /// Number of lines to scroll per mouse wheel event
 const SCROLL_STEP: usize = 3;
 
@@ -425,6 +430,7 @@ impl App {
             show_archived_channels: false,
             spinner_frame: 0,
             available_channels: Vec::new(),
+            channels_last_refresh: Instant::now() - CHANNELS_REFRESH_INTERVAL, // Force initial refresh
             board_area: None,
             input_area: None,
         };
@@ -628,8 +634,11 @@ impl App {
         // Poll for completed mermaid renders
         self.mermaid_cache.poll_completed();
 
-        // Refresh available channels list
-        self.refresh_available_channels();
+        // Refresh available channels list periodically (less frequent than every tick)
+        if self.channels_last_refresh.elapsed() >= CHANNELS_REFRESH_INTERVAL {
+            self.refresh_available_channels();
+            self.channels_last_refresh = Instant::now();
+        }
 
         // Refresh unread counts for channels
         self.refresh_unread_counts();
@@ -806,14 +815,10 @@ impl App {
 
         let mut selections = Vec::new();
 
-        // Discover available channels
-        let channel_repo =
-            midtown::paths::detect_repo_name().unwrap_or_else(|| "default".to_string());
-        let base_dir = midtown::paths::projects_dir_for_repo(&channel_repo);
-        // Show or hide archived channels based on user preference
-        let channels =
-            midtown::Channel::list(&base_dir, self.show_archived_channels).unwrap_or_default();
-        let main_channel = channels
+        // Use available_channels (already filtered by show_archived_channels)
+        // This ensures navigation matches what's rendered in draw_board_panel
+        let main_channel = self
+            .available_channels
             .first()
             .map(|c| c.name.as_str())
             .unwrap_or("midtown");
@@ -827,13 +832,19 @@ impl App {
             tasks_by_channel.entry(channel_key).or_default().push(task);
         }
 
-        // Build selection list: channel headers followed by their tasks
-        for (channel_name, tasks) in &tasks_by_channel {
+        // Build selection list: include all available channels (not just those with tasks)
+        // and add tasks under each channel
+        for channel_info in &self.available_channels {
             // Add channel header
-            selections.push(BoardSelection::Channel(channel_name.clone()));
-            // Add tasks under this channel
-            for task in tasks {
-                selections.push(BoardSelection::Task(channel_name.clone(), task.id.clone()));
+            selections.push(BoardSelection::Channel(channel_info.name.clone()));
+            // Add tasks under this channel (if any)
+            if let Some(tasks) = tasks_by_channel.get(&channel_info.name) {
+                for task in tasks {
+                    selections.push(BoardSelection::Task(
+                        channel_info.name.clone(),
+                        task.id.clone(),
+                    ));
+                }
             }
         }
 
@@ -2547,6 +2558,7 @@ pub(super) mod tests {
             show_archived_channels: false,
             spinner_frame: 0,
             available_channels: Vec::new(),
+            channels_last_refresh: Instant::now(),
             board_area: None,
             input_area: None,
         }
