@@ -1659,6 +1659,7 @@ dependencies = [
  "hmac",
  "http",
  "jwt-simple",
+ "minimad-ratatui",
  "ntest",
  "once_cell",
  "p256",
@@ -1700,6 +1701,23 @@ checksum = "f7c44f8e672c00fe5308fa235f821cb4198414e1c77935c1ab6948d3fd78550e"
 dependencies = [
  "mime",
  "unicase",
+]
+
+[[package]]
+name = "minimad"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "df8b688969b16915f3ecadc7829d5b7779dee4977e503f767f34136803d5c06f"
+dependencies = [
+ "once_cell",
+]
+
+[[package]]
+name = "minimad-ratatui"
+version = "0.1.0"
+dependencies = [
+ "minimad",
+ "ratatui",
 ]
 
 [[package]]

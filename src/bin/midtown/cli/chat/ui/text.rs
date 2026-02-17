@@ -1,9 +1,6 @@
 //! Text processing utilities: markdown parsing, line wrapping, and content formatting.
 
-use ratatui::{
-    style::{Color, Modifier, Style},
-    text::Span,
-};
+use ratatui::{style::Style, text::Span};
 
 /// Parse markdown in text and return styled spans
 ///
@@ -12,97 +9,7 @@ use ratatui::{
 /// - *italic* -> ITALIC modifier
 /// - `code` -> Cyan color
 pub fn parse_markdown(text: &str, base_style: Style) -> Vec<Span<'static>> {
-    if text.is_empty() {
-        return vec![Span::styled(String::new(), base_style)];
-    }
-
-    let mut spans = Vec::new();
-    let mut chars = text.char_indices().peekable();
-    let mut current_pos = 0;
-
-    while let Some((i, c)) = chars.next() {
-        match c {
-            '`' => {
-                // Code span - look for closing backtick
-                if let Some(end) = text[i + 1..].find('`') {
-                    // Add any text before this marker
-                    if i > current_pos {
-                        spans.push(Span::styled(text[current_pos..i].to_string(), base_style));
-                    }
-                    // Add the code span (without backticks)
-                    let code_text = &text[i + 1..i + 1 + end];
-                    spans.push(Span::styled(
-                        code_text.to_string(),
-                        Style::default().fg(Color::Cyan),
-                    ));
-                    // Skip past the closing backtick
-                    current_pos = i + 1 + end + 1;
-                    // Advance the iterator
-                    for _ in 0..end + 1 {
-                        chars.next();
-                    }
-                }
-            }
-            '*' => {
-                // Check for ** (bold) or single * (italic)
-                if chars.peek().is_some_and(|(_, next_c)| *next_c == '*') {
-                    // Bold: **text**
-                    chars.next(); // consume second *
-                    if let Some(end) = text[i + 2..].find("**") {
-                        if i > current_pos {
-                            spans.push(Span::styled(text[current_pos..i].to_string(), base_style));
-                        }
-                        let bold_text = &text[i + 2..i + 2 + end];
-                        spans.push(Span::styled(
-                            bold_text.to_string(),
-                            base_style.add_modifier(Modifier::BOLD),
-                        ));
-                        current_pos = i + 2 + end + 2;
-                        // Skip past closing **
-                        for _ in 0..end + 2 {
-                            chars.next();
-                        }
-                    }
-                } else {
-                    // Italic: *text*
-                    if let Some(end) = text[i + 1..].find('*') {
-                        // Make sure it's not ** (start of bold)
-                        if end > 0 && !text[i + 1..].starts_with('*') {
-                            if i > current_pos {
-                                spans.push(Span::styled(
-                                    text[current_pos..i].to_string(),
-                                    base_style,
-                                ));
-                            }
-                            let italic_text = &text[i + 1..i + 1 + end];
-                            spans.push(Span::styled(
-                                italic_text.to_string(),
-                                base_style.add_modifier(Modifier::ITALIC),
-                            ));
-                            current_pos = i + 1 + end + 1;
-                            // Skip past closing *
-                            for _ in 0..end + 1 {
-                                chars.next();
-                            }
-                        }
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-
-    // Add any remaining text
-    if current_pos < text.len() {
-        spans.push(Span::styled(text[current_pos..].to_string(), base_style));
-    }
-
-    // If no spans were added (e.g., no markdown found), return the whole text
-    if spans.is_empty() {
-        return vec![Span::styled(text.to_string(), base_style)];
-    }
-
-    spans
+    minimad_ratatui::inline(text, base_style).spans
 }
 
 /// Wrap content text into lines that fit the given width
@@ -167,6 +74,7 @@ pub fn wrap_line(text: &str, width: usize) -> Vec<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui::style::{Color, Modifier};
 
     #[test]
     fn test_wrap_line_empty() {

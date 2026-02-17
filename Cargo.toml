@@ -1,5 +1,5 @@
 [workspace]
-members = ["."]
+members = [".", "crates/minimad-ratatui"]
 resolver = "2"
 
 [package]
@@ -80,6 +80,7 @@ base64ct = { version = "1", features = ["alloc"] }
 reqwest = { version = "0.12", features = ["rustls-tls", "json", "blocking"], default-features = false }
 http = "1"
 shell-escape = "0.1.5"
+minimad-ratatui = { path = "crates/minimad-ratatui" }
 
 [dev-dependencies]
 tempfile = "3.0"

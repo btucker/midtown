@@ -1,0 +1,10 @@
+[package]
+name = "minimad-ratatui"
+version = "0.1.0"
+edition = "2024"
+description = "Bridge minimad markdown parser to ratatui types"
+license = "MIT"
+
+[dependencies]
+minimad = "0.14"
+ratatui = { version = "0.29", default-features = false }
