@@ -578,6 +578,8 @@ pub(super) async fn poll_prs_for_issues(
                     "number": pr.get("number").and_then(|n| n.as_u64()).unwrap_or(0),
                     "title": title,
                     "author": pr.get("author").and_then(|a| a.get("login")).and_then(|l| l.as_str()).unwrap_or("unknown"),
+                    "headRefName": pr.get("headRefName").and_then(|r| r.as_str()),
+                    "isDraft": pr.get("isDraft").and_then(|d| d.as_bool()),
                     "status": status,
                     "task_id": task_id,
                     "task_name": task_name,
