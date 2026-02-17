@@ -34,6 +34,7 @@ pub mod snapshot;
 mod specialized;
 mod startup;
 pub(crate) mod state;
+mod stream;
 mod trackers;
 mod webhook_fwd;
 
@@ -1981,30 +1982,6 @@ async fn run_tick(event: &events::DaemonEvent, state: &DaemonState) {
     effects::execute_effects(tick_effects, state).await;
 }
 
-/// Extract and aggregate text content from headless lead `StreamEvent::Assistant` events.
-///
-/// Collects all text blocks from all Assistant events in a single drain cycle,
-/// returning a single aggregated string. This avoids flooding the channel with
-/// per-token or per-event messages during streaming.
-fn extract_lead_text(events: &[crate::headless::StreamEvent]) -> String {
-    let mut aggregated = String::new();
-    for event in events {
-        if let crate::headless::StreamEvent::Assistant { message, .. } = event
-            && let Some(content) = message.get("content")
-            && let Some(arr) = content.as_array()
-        {
-            for block in arr {
-                if block.get("type").and_then(|t| t.as_str()) == Some("text")
-                    && let Some(text) = block.get("text").and_then(|t| t.as_str())
-                {
-                    aggregated.push_str(text);
-                }
-            }
-        }
-    }
-    aggregated
-}
-
 /// Run the daemon server with the given configuration.
 ///
 /// This function will block until the daemon receives a shutdown signal
@@ -2723,18 +2700,10 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                     }
                 }
 
-                // Post headless lead output to the main channel so user has visibility.
-                // Aggregate all text from the drain cycle into a single message to avoid
-                // flooding the channel with per-token or per-event messages.
-                if let Some(lead_events) = events.get("lead") {
-                    let aggregated = extract_lead_text(lead_events);
-                    if !aggregated.is_empty() {
-                        let msg = crate::message::Message::text("lead", aggregated);
-                        if let Err(e) = state.send_and_broadcast_async(&msg).await {
-                            warn!("Failed to post lead output to channel: {}", e);
-                        }
-                    }
-                }
+                // Process headless lead output and post aggregated text to channel.
+                // Routes through Effect pipeline to maintain architecture consistency.
+                let lead_effects = stream::process_lead_output(&events);
+                effects::execute_effects(lead_effects, &state).await;
 
                 // Defense-in-depth: check process liveness via try_wait() to catch
                 // sessions where the process exited but drain_events didn't detect it
