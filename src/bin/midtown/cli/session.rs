@@ -719,7 +719,7 @@ pub(crate) fn build_attach_shell_command(
     );
 
     // Convert HashMap to shell-quoted env var assignments (key=value format, with shell_quote on values)
-    let env_parts: Vec<String> = env_map
+    let mut env_parts: Vec<String> = env_map
         .iter()
         .map(|(k, v)| format!("{}={}", k, shell_quote(v)))
         .collect();
