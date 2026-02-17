@@ -24,7 +24,11 @@ pub fn draw_board_panel(f: &mut Frame, app: &mut App, area: Rect) -> (Vec<Hyperl
     app.channel_line_map.clear();
 
     // Split board area vertically: tasks at top, coworkers at bottom
-    let active_coworker_count = app.coworkers.len();
+    let active_coworker_count = app
+        .coworkers
+        .iter()
+        .filter(|cw| cw.phase.as_deref() != Some("idle") && cw.phase.is_some())
+        .count();
     let coworker_section_height = if active_coworker_count > 0 {
         active_coworker_count as u16 + 3 // 1 header + N rows + 2 borders
     } else {
@@ -1102,6 +1106,60 @@ mod tests {
         assert_eq!(
             tasks_area.height, 35,
             "tasks area height should leave exactly 5 rows for 2 coworkers"
+        );
+    }
+
+    #[test]
+    fn test_draw_board_panel_idle_coworkers_dont_inflate_height() {
+        // Regression test: idle coworkers should not inflate the section height.
+        // If 2 out of 3 coworkers are idle, only 1 active row should be reserved.
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let backend = TestBackend::new(80, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let mut app = test_app();
+        app.coworkers = vec![
+            {
+                let mut cw = make_coworker("york");
+                cw.phase = Some("idle".to_string()); // idle — excluded
+                cw
+            },
+            {
+                let mut cw = make_coworker("park");
+                cw.phase = None; // no phase — excluded
+                cw
+            },
+            {
+                let mut cw = make_coworker("amsterdam");
+                cw.phase = Some("developing".to_string()); // active
+                cw
+            },
+        ];
+        app.max_coworkers = 4;
+
+        let mut returned_tasks_area = None;
+
+        terminal
+            .draw(|f| {
+                let area = Rect {
+                    x: 0,
+                    y: 0,
+                    width: 80,
+                    height: 40,
+                };
+                let (_hyperlinks, tasks_area) = draw_board_panel(f, &mut app, area);
+                returned_tasks_area = Some(tasks_area);
+            })
+            .unwrap();
+
+        let tasks_area = returned_tasks_area.unwrap();
+        // Only 1 active coworker → section height = 1 + 3 = 4
+        // tasks_area height should be 40 - 4 = 36
+        assert_eq!(
+            tasks_area.height, 36,
+            "idle coworkers should not inflate section height (only 1 active coworker)"
         );
     }
 }
