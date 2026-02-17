@@ -1398,13 +1398,22 @@ pub(super) fn spawn_for_pending_tasks(
     // Spawns to already-running coworkers (grouped tasks) don't count — only fresh spawns
     // that will create new coworker processes.
     let mut spawns_queued_this_tick: usize = 0;
-    // Dev cap: max_coworkers - REVIEW_HEADROOM, but always allow at least 1 dev.
-    // With max=8 and REVIEW_HEADROOM=2, dev cap is 6.
-    let dev_cap = state.max_coworkers.saturating_sub(REVIEW_HEADROOM).max(1);
+    // Dev cap = max_coworkers (REVIEW_HEADROOM does NOT reduce dev slots).
+    // Reviewers may exceed max_coworkers by up to REVIEW_HEADROOM via is_at_coworker_limit().
+    // With max=8 and REVIEW_HEADROOM=2: dev_cap=8, reviewer_cap=10.
+    let dev_cap = state.max_coworkers;
     // Use running coworkers from snapshot, not all coworkers from internal map.
     // The internal map includes stopped coworkers until they're cleaned up, which
     // incorrectly blocks task dispatch when all coworkers are stopped.
-    let current_coworker_count = snap.running_coworkers.len();
+    // Exclude the lead: a headless lead session counts as "running" in the
+    // CoworkerManager but is not a dev/reviewer slot. Including it would consume
+    // one of the dev slots, causing the daemon to under-spawn whenever the lead
+    // runs headless.
+    let current_coworker_count = snap
+        .running_coworkers
+        .iter()
+        .filter(|cw| !cw.name.eq_ignore_ascii_case("lead"))
+        .count();
 
     for task in pending_unowned.iter() {
         // Re-check dev limit after each spawn decision, accounting for spawns queued this tick.
