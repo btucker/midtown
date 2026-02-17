@@ -736,19 +736,19 @@ fn auto_focus_and_insert_char(app: &mut App, c: char) {
     app.detect_autocomplete_trigger();
 }
 
-/// Attach to a coworker session in a split pane.
+/// Attach to a session in a split pane.
 ///
-/// Connects to the daemon, pauses the headless coworker, builds an interactive
+/// Connects to the daemon, pauses the headless session, builds an interactive
 /// attach command, and launches it in a terminal split. If any step fails,
-/// the coworker is detached so it resumes headless execution.
-fn attach_coworker_split(coworker_name: &str) {
+/// the session is detached so it resumes headless execution.
+fn attach_session_split(session_name: &str) {
     let client = match crate::client::DaemonClient::connect() {
         Ok(c) => c,
         Err(_) => return,
     };
 
-    // Pause the headless coworker and get session info.
-    let info = match client.session_attach(&format!("name/{}", coworker_name)) {
+    // Pause the headless session and get session info.
+    let info = match client.session_attach(&format!("name/{}", session_name)) {
         Ok(info) => info,
         Err(_) => return,
     };
@@ -756,14 +756,14 @@ fn attach_coworker_split(coworker_name: &str) {
     let session_id = match info.get("session_id").and_then(|v| v.as_str()) {
         Some(id) => id,
         None => {
-            let _ = client.session_detach(coworker_name);
+            let _ = client.session_detach(session_name);
             return;
         }
     };
     let cwd = match info.get("cwd").and_then(|v| v.as_str()) {
         Some(c) => c,
         None => {
-            let _ = client.session_detach(coworker_name);
+            let _ = client.session_detach(session_name);
             return;
         }
     };
@@ -776,91 +776,41 @@ fn attach_coworker_split(coworker_name: &str) {
 
     let _ = midtown::platform_launch::run_platform_prelaunch_hook(provider);
 
-    let cwd = match super::session::ensure_attach_worktree(coworker_name, cwd) {
+    let cwd = match super::session::ensure_attach_worktree(session_name, cwd) {
         Ok(c) => c,
         Err(_) => {
-            let _ = client.session_detach(coworker_name);
+            let _ = client.session_detach(session_name);
             return;
         }
     };
 
-    let shell_command =
-        match super::session::build_attach_shell_command(&cwd, coworker_name, provider, session_id)
-        {
-            Ok(cmd) => cmd,
-            Err(_) => {
-                let _ = client.session_detach(coworker_name);
-                return;
-            }
-        };
+    let shell_command = match super::session::build_attach_shell_command(
+        &cwd,
+        session_name,
+        provider,
+        session_id,
+    ) {
+        Ok(cmd) => cmd,
+        Err(_) => {
+            let _ = client.session_detach(session_name);
+            return;
+        }
+    };
 
     let host = super::daemon::AttachHost::detect();
     if super::daemon::launch_lead_split(host, &cwd, &shell_command).is_err() {
-        let _ = client.session_detach(coworker_name);
+        let _ = client.session_detach(session_name);
     }
 }
 
+/// Attach to a coworker session in a split pane.
+fn attach_coworker_split(coworker_name: &str) {
+    attach_session_split(coworker_name);
+}
+
 /// Attach to the lead session in a split pane (Ctrl+L handler).
-///
-/// Connects to the daemon, pauses the headless lead, builds an interactive
-/// attach command, and launches it in a terminal split. If any step fails,
-/// the lead is detached so it resumes headless execution.
 fn attach_lead_split() {
-    let client = match crate::client::DaemonClient::connect() {
-        Ok(c) => c,
-        Err(_) => return,
-    };
-
-    // Pause the headless lead and get session info.
-    let info = match client.session_attach("name/lead") {
-        Ok(info) => info,
-        Err(_) => return,
-    };
-
-    let session_id = match info.get("session_id").and_then(|v| v.as_str()) {
-        Some(id) => id,
-        None => {
-            let _ = client.session_detach("lead");
-            return;
-        }
-    };
-    let cwd = match info.get("cwd").and_then(|v| v.as_str()) {
-        Some(c) => c,
-        None => {
-            let _ = client.session_detach("lead");
-            return;
-        }
-    };
-    let provider = info
-        .get("provider")
-        .and_then(|v| v.as_str())
-        .unwrap_or("claude")
-        .parse::<midtown::auth::AuthProvider>()
-        .unwrap_or(midtown::auth::AuthProvider::Claude);
-
-    let _ = midtown::platform_launch::run_platform_prelaunch_hook(provider);
-
-    let cwd = match super::session::ensure_attach_worktree("lead", cwd) {
-        Ok(c) => c,
-        Err(_) => {
-            let _ = client.session_detach("lead");
-            return;
-        }
-    };
-
-    let shell_command =
-        match super::session::build_attach_shell_command(&cwd, "lead", provider, session_id) {
-            Ok(cmd) => cmd,
-            Err(_) => {
-                let _ = client.session_detach("lead");
-                return;
-            }
-        };
-
-    let host = super::daemon::AttachHost::detect();
-    if super::daemon::launch_lead_split(host, &cwd, &shell_command).is_err() {
-        let _ = client.session_detach("lead");
-    }
+    attach_session_split("lead");
 }
 
 #[cfg(test)]
