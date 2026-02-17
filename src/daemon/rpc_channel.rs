@@ -82,6 +82,9 @@ fn parse_duration(s: &str) -> Option<Duration> {
 /// For coworkers, the action text is also reflected in the web UI status.
 ///
 /// Also detects feedback requests from coworkers and nudges the Lead.
+/// For topic channels, nudges the active channel lead session (if any)
+/// instead of the main Lead. @mentions are not routed in topic channels
+/// since the channel lead owns all routing in its domain.
 ///
 /// Accepts an optional `channel` parameter to post to topic channels.
 /// If not provided, defaults to the main channel.
@@ -161,9 +164,14 @@ pub(super) async fn handle_channel_post(
 
         if is_topic_channel {
             // Topic channel: nudge the channel lead for this channel (if one is active).
-            // Channel leads are registered in the session manager under the channel name.
+            // Channel leads are registered in the session manager under the channel name
+            // (see task !1465 for channel lead session lifecycle management).
             // If no channel lead is active, the message is already in the channel log
             // and will be read when the lead next starts up.
+            //
+            // Note: @mentions are intentionally NOT routed here. In topic channels,
+            // the channel lead is the single point of entry and owns all routing
+            // decisions within its domain. This avoids competing routing paths.
             if state.session_manager.is_alive(channel_name).await {
                 let nudge_msg = format!("user: {}", content);
                 info!(
