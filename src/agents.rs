@@ -41,6 +41,9 @@ const DEFAULT_REVIEWER_RESUME_PROMPT: &str = include_str!("../agents/reviewer-re
 /// Embedded default for the clusterer system prompt.
 const DEFAULT_CLUSTERER_PROMPT: &str = include_str!("../agents/clusterer.md");
 
+/// Embedded default for the channel lead system prompt template.
+const DEFAULT_CHANNEL_LEAD_PROMPT: &str = include_str!("../agents/channel-lead.md");
+
 /// Find the git repository root directory.
 fn git_repo_root() -> Option<PathBuf> {
     let output = std::process::Command::new("git")
@@ -374,6 +377,23 @@ pub fn reviewer_resume_prompt(pr_number: u64) -> String {
 /// relationships and channel structure.
 pub fn clusterer_system_prompt() -> String {
     load_prompt_file("clusterer.md").unwrap_or_else(|| DEFAULT_CLUSTERER_PROMPT.to_string())
+}
+
+/// Load the channel lead system prompt with channel name and domain context substitution.
+///
+/// Returns the prompt from `agents/channel-lead.md` if found, otherwise returns
+/// the embedded default. The `{channel_name}` placeholder is replaced with the
+/// actual channel name, and `{domain_context}` is replaced with daemon-injected
+/// context (channel description, active tasks, recent PRs).
+///
+/// Note: `channel_name` is embedded into bash command examples in the template,
+/// so it must be a shell-safe identifier (alphanumeric + hyphens).
+pub fn channel_lead_system_prompt(channel_name: &str, domain_context: &str) -> String {
+    let template = load_prompt_file("channel-lead.md")
+        .unwrap_or_else(|| DEFAULT_CHANNEL_LEAD_PROMPT.to_string());
+    template
+        .replace("{channel_name}", channel_name)
+        .replace("{domain_context}", domain_context)
 }
 
 #[cfg(test)]
@@ -832,6 +852,75 @@ mod tests {
         assert!(
             prompt.contains("main channel"),
             "Clusterer prompt should explain main channel behavior"
+        );
+    }
+
+    #[test]
+    fn test_channel_lead_system_prompt_substitutes_channel_name() {
+        let prompt = channel_lead_system_prompt("web-interface", "No context yet.");
+        assert!(
+            prompt.contains("#web-interface"),
+            "Channel lead prompt should contain the channel name with # prefix"
+        );
+        assert!(
+            prompt.contains("--channel web-interface"),
+            "Channel lead prompt should show correct channel flag"
+        );
+        assert!(
+            !prompt.contains("{channel_name}"),
+            "Channel lead prompt should not contain unreplaced {{channel_name}} placeholders"
+        );
+    }
+
+    #[test]
+    fn test_channel_lead_system_prompt_substitutes_domain_context() {
+        let context = "Active tasks: !42 Add WebSocket reconnect. Recent PRs: #99 merged.";
+        let prompt = channel_lead_system_prompt("daemon-core", context);
+        assert!(
+            prompt.contains(context),
+            "Channel lead prompt should inject domain context"
+        );
+        assert!(
+            !prompt.contains("{domain_context}"),
+            "Channel lead prompt should not contain unreplaced {{domain_context}} placeholder"
+        );
+    }
+
+    #[test]
+    fn test_channel_lead_system_prompt_contains_required_sections() {
+        let prompt = channel_lead_system_prompt("tui", "No context.");
+        assert!(
+            prompt.contains("Identity & Role"),
+            "Channel lead prompt should have Identity & Role section"
+        );
+        assert!(
+            prompt.contains("Escalation Rules"),
+            "Channel lead prompt should have Escalation Rules section"
+        );
+        assert!(
+            prompt.contains("Living Documents"),
+            "Channel lead prompt should have Living Documents section"
+        );
+        assert!(
+            prompt.contains("read-only"),
+            "Channel lead prompt should state read-only constraint"
+        );
+        assert!(
+            prompt.contains("midtown channel post"),
+            "Channel lead prompt should describe how to post"
+        );
+    }
+
+    #[test]
+    fn test_channel_lead_system_prompt_contains_escalation_to_lead() {
+        let prompt = channel_lead_system_prompt("github-integration", "No context.");
+        assert!(
+            prompt.contains("@lead"),
+            "Channel lead prompt should mention @lead for escalation"
+        );
+        assert!(
+            prompt.contains("#midtown"),
+            "Channel lead prompt should reference #midtown for cross-cutting escalations"
         );
     }
 
