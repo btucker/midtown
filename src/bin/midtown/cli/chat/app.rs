@@ -192,7 +192,6 @@ pub enum BoardSelection {
     /// A channel header (channel name)
     Channel(String),
     /// A task within a channel (channel name, task ID)
-    #[allow(dead_code)]
     Task(String, String),
 }
 
@@ -296,6 +295,17 @@ pub struct App {
     pub show_archived_channels: bool,
     /// Spinner animation frame counter for coworker progress display
     spinner_frame: usize,
+    /// List of all available channels (including empty ones)
+    pub available_channels: Vec<midtown::ChannelInfo>,
+    /// Last time available channels were refreshed
+    channels_last_refresh: Instant,
+    /// Last rendered board panel area (for click detection)
+    pub board_area: Option<ratatui::layout::Rect>,
+    /// Last rendered input bar area (for click detection)
+    pub input_area: Option<ratatui::layout::Rect>,
+    /// Mapping of board panel line numbers to tasks (for click-to-attach)
+    /// Maps (line_number) -> (task_id, task_owner) where line_number is relative to board content area
+    pub task_line_map: HashMap<u16, (String, Option<String>)>,
 }
 
 /// Autocomplete state for @mentions, #channels, and !task-ids
@@ -358,6 +368,9 @@ const USAGE_REFRESH_INTERVAL: Duration = Duration::from_secs(120);
 /// Shorter retry interval when usage fetch fails (15 seconds)
 const USAGE_RETRY_INTERVAL: Duration = Duration::from_secs(15);
 
+/// Interval between available channels list refreshes (30 seconds)
+const CHANNELS_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
+
 /// Number of lines to scroll per mouse wheel event
 const SCROLL_STEP: usize = 3;
 
@@ -419,6 +432,11 @@ impl App {
             channel_switcher: ChannelSwitcherState::default(),
             show_archived_channels: false,
             spinner_frame: 0,
+            available_channels: Vec::new(),
+            channels_last_refresh: Instant::now() - CHANNELS_REFRESH_INTERVAL, // Force initial refresh
+            board_area: None,
+            input_area: None,
+            task_line_map: HashMap::new(),
         };
 
         // Initial load
@@ -620,6 +638,12 @@ impl App {
         // Poll for completed mermaid renders
         self.mermaid_cache.poll_completed();
 
+        // Refresh available channels list periodically (less frequent than every tick)
+        if self.channels_last_refresh.elapsed() >= CHANNELS_REFRESH_INTERVAL {
+            self.refresh_available_channels();
+            self.channels_last_refresh = Instant::now();
+        }
+
         // Refresh unread counts for channels
         self.refresh_unread_counts();
     }
@@ -795,14 +819,10 @@ impl App {
 
         let mut selections = Vec::new();
 
-        // Discover available channels
-        let channel_repo =
-            midtown::paths::detect_repo_name().unwrap_or_else(|| "default".to_string());
-        let base_dir = midtown::paths::projects_dir_for_repo(&channel_repo);
-        // Show or hide archived channels based on user preference
-        let channels =
-            midtown::Channel::list(&base_dir, self.show_archived_channels).unwrap_or_default();
-        let main_channel = channels
+        // Use available_channels (already filtered by show_archived_channels)
+        // This ensures navigation matches what's rendered in draw_board_panel
+        let main_channel = self
+            .available_channels
             .first()
             .map(|c| c.name.as_str())
             .unwrap_or("midtown");
@@ -816,9 +836,20 @@ impl App {
             tasks_by_channel.entry(channel_key).or_default().push(task);
         }
 
-        // Build selection list: channel headers only (no tasks)
-        for channel_name in tasks_by_channel.keys() {
-            selections.push(BoardSelection::Channel(channel_name.clone()));
+        // Build selection list: include all available channels (not just those with tasks)
+        // and add tasks under each channel
+        for channel_info in &self.available_channels {
+            // Add channel header
+            selections.push(BoardSelection::Channel(channel_info.name.clone()));
+            // Add tasks under this channel (if any)
+            if let Some(tasks) = tasks_by_channel.get(&channel_info.name) {
+                for task in tasks {
+                    selections.push(BoardSelection::Task(
+                        channel_info.name.clone(),
+                        task.id.clone(),
+                    ));
+                }
+            }
         }
 
         selections
@@ -1209,6 +1240,39 @@ impl App {
                 self.current_tasks_cache
                     .insert(owner.to_lowercase(), task.subject.clone());
             }
+        }
+    }
+
+    /// Refresh the list of available channels from the daemon.
+    ///
+    /// This fetches channels from the daemon's RPC interface (same as web UI),
+    /// ensuring TUI and web UI show the same channel list.
+    pub fn refresh_available_channels(&mut self) {
+        // Skip in test mode to avoid daemon communication
+        if self.test_mode {
+            return;
+        }
+
+        // Try daemon RPC first (ensures parity with web UI)
+        if let Ok(client) = crate::client::DaemonClient::connect()
+            && let Ok(crate::cli::Response::Json { value }) =
+                client.channel_list(self.show_archived_channels)
+            && let Some(channels_value) = value.get("channels")
+            && let Ok(channels) =
+                serde_json::from_value::<Vec<midtown::ChannelInfo>>(channels_value.clone())
+        {
+            self.available_channels = channels;
+            return;
+        }
+
+        // Fallback to direct filesystem access if daemon is unavailable
+        let base_dir = match &self.channel {
+            Some(ch) => ch.base_dir().to_path_buf(),
+            None => return,
+        };
+
+        if let Ok(channels) = Channel::list(&base_dir, self.show_archived_channels) {
+            self.available_channels = channels;
         }
     }
 
@@ -2497,6 +2561,11 @@ pub(super) mod tests {
             channel_switcher: ChannelSwitcherState::default(),
             show_archived_channels: false,
             spinner_frame: 0,
+            available_channels: Vec::new(),
+            channels_last_refresh: Instant::now(),
+            board_area: None,
+            input_area: None,
+            task_line_map: HashMap::new(),
         }
     }
 
@@ -3210,40 +3279,61 @@ pub(super) mod tests {
                     blocked_by: vec![],
                 },
             ],
+            available_channels: vec![
+                midtown::ChannelInfo {
+                    name: "features".to_string(),
+                    is_archived: false,
+                },
+                midtown::ChannelInfo {
+                    name: "midtown".to_string(),
+                    is_archived: false,
+                },
+            ],
             ..test_app()
         };
 
         // Initial state: no selection
         assert_eq!(app.board_selection, None);
 
-        // Navigate down - should select first channel
+        // Navigate down - should select first item (features channel)
         app.board_selection_down();
         assert!(
             matches!(
                 &app.board_selection,
                 Some(BoardSelection::Channel(ch)) if ch == "features"
             ),
-            "First down should select first channel"
+            "First down should select first channel (features)"
         );
 
-        // Navigate down again - should select next channel (midtown)
+        // Navigate down again - should select first task under features channel
+        app.board_selection_down();
+        assert!(
+            matches!(
+                &app.board_selection,
+                Some(BoardSelection::Task(ch, id)) if ch == "features" && id == "3"
+            ),
+            "Second down should select first task under features channel"
+        );
+
+        // Navigate down again - should select midtown channel
         app.board_selection_down();
         assert!(
             matches!(
                 &app.board_selection,
                 Some(BoardSelection::Channel(ch)) if ch == "midtown"
             ),
-            "Second down should select second channel"
+            "Third down should select midtown channel"
         );
 
-        // Navigate up - should go back to first channel
+        // Navigate up twice - should go back to first channel
+        app.board_selection_up();
         app.board_selection_up();
         assert!(
             matches!(
                 &app.board_selection,
                 Some(BoardSelection::Channel(ch)) if ch == "features"
             ),
-            "Up should go back to first channel"
+            "Up twice should go back to first channel"
         );
     }
 

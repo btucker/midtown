@@ -16,6 +16,9 @@ use super::text::wrap_content;
 
 /// Draw the board panel (left side) with channel list
 pub fn draw_board_panel(f: &mut Frame, app: &mut App, area: Rect) -> Vec<Hyperlink> {
+    // Clear task line map for new render
+    app.task_line_map.clear();
+
     // Split board area vertically: tasks at top, coworkers at bottom
     let active_coworker_count = app.coworkers.len();
     let coworker_section_height = if active_coworker_count > 0 {
@@ -43,12 +46,45 @@ pub fn draw_board_panel(f: &mut Frame, app: &mut App, area: Rect) -> Vec<Hyperli
     // Default channel matches the daemon's ChannelRouter default ("midtown")
     let main_channel = "midtown";
 
-    let mut tasks_by_channel: BTreeMap<String, Vec<&KanbanTask>> = BTreeMap::new();
-    let (pending, in_progress, _completed) = app.tasks_by_status();
+    // Clone task and channel data to avoid holding borrows on app
+    // This allows us to mutate app.task_line_map later
+    let tasks_clone: Vec<KanbanTask> = app.tasks.clone();
+    let available_channels_clone = app.available_channels.clone();
+    let show_archived = app.show_archived_channels;
 
-    for task in in_progress.iter().chain(pending.iter()) {
-        let channel_key = task.channel.as_deref().unwrap_or(main_channel).to_string();
-        tasks_by_channel.entry(channel_key).or_default().push(task);
+    // Group tasks by channel
+    let mut tasks_by_channel: BTreeMap<String, Vec<&KanbanTask>> = BTreeMap::new();
+    for task in &tasks_clone {
+        if task.status == TaskStatus::InProgress || task.status == TaskStatus::Pending {
+            let channel_key = task.channel.as_deref().unwrap_or(main_channel).to_string();
+            tasks_by_channel.entry(channel_key).or_default().push(task);
+        }
+    }
+
+    // Build the set of channels to display - start with all available channels
+    let mut channels_to_display: BTreeMap<String, Vec<&KanbanTask>> = BTreeMap::new();
+    for channel_info in &available_channels_clone {
+        // Only show if not archived, or if showing archived channels
+        if !channel_info.is_archived || show_archived {
+            channels_to_display.insert(
+                channel_info.name.clone(),
+                tasks_by_channel
+                    .get(&channel_info.name)
+                    .cloned()
+                    .unwrap_or_default(),
+            );
+        }
+    }
+
+    // If available_channels is empty (initial load), fall back to showing midtown
+    if channels_to_display.is_empty() {
+        channels_to_display.insert(
+            main_channel.to_string(),
+            tasks_by_channel
+                .get(main_channel)
+                .cloned()
+                .unwrap_or_default(),
+        );
     }
 
     let wrap_width = area.width.saturating_sub(2).max(20) as usize;
@@ -65,9 +101,40 @@ pub fn draw_board_panel(f: &mut Frame, app: &mut App, area: Rect) -> Vec<Hyperli
         }
     }
 
-    // Render each channel as a swimlane
+    // Build task_line_map before rendering (to avoid borrow conflicts)
+    // This maps line numbers to (task_id, owner) for click-to-attach
+    let mut task_line_map: HashMap<u16, (String, Option<String>)> = HashMap::new();
+    let mut current_line: u16 = 0;
     let mut first_channel = true;
-    for (channel_name, tasks) in &tasks_by_channel {
+
+    // First pass: calculate line positions
+    for tasks in channels_to_display.values() {
+        if !first_channel {
+            current_line += 1; // Blank line between channels
+        }
+        first_channel = false;
+
+        current_line += 1; // Channel header
+        current_line += 1; // Blank line after header
+
+        for task in tasks {
+            // Record the first line of this task for click-to-attach
+            task_line_map.insert(current_line, (task.id.clone(), task.owner.clone()));
+
+            // Calculate how many lines this task will take (wrapping)
+            let prefix = format!("!{} ", task.id);
+            let task_line = format!("{}{}", prefix, task.subject);
+            let wrapped_lines = wrap_content(&task_line, wrap_width);
+            current_line += wrapped_lines.len() as u16;
+        }
+    }
+
+    // Store task_line_map in app for mouse click handler
+    app.task_line_map = task_line_map;
+
+    // Render each channel as a swimlane
+    first_channel = true;
+    for (channel_name, tasks) in &channels_to_display {
         if !first_channel {
             lines.push(Line::from(""));
         }

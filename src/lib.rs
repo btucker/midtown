@@ -156,7 +156,7 @@ pub mod specialized;
 // so there's no harm in including it in production builds.
 pub mod test_utils;
 
-pub use channel::{Channel, ChannelRouter};
+pub use channel::{Channel, ChannelInfo, ChannelRouter};
 pub use coworker::{Coworker, CoworkerManager, CoworkerStatus, is_coworker_name};
 pub use cursor::Cursor;
 pub use message::{Message, MessageType};

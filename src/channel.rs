@@ -956,6 +956,11 @@ impl ChannelRouter {
         }
     }
 
+    /// Get the base directory path for channels managed by this router.
+    pub fn base_dir(&self) -> &Path {
+        &self.base_dir
+    }
+
     /// Send a message to the appropriate channel based on Message.channel field.
     ///
     /// If the message's channel is None or empty, uses the default channel name.

@@ -201,6 +201,32 @@ pub(super) async fn handle_channel_post(
     )
 }
 
+/// Handle channel.list RPC method.
+///
+/// Returns the list of available channels, optionally including archived channels.
+/// This ensures the TUI and web UI show the same channel list.
+pub(super) fn handle_channel_list(
+    id: RequestId,
+    include_archived: bool,
+    state: &DaemonState,
+) -> Response {
+    let base_dir = state.channel_router.base_dir();
+    let channels = match crate::Channel::list(base_dir, include_archived) {
+        Ok(ch) => ch,
+        Err(e) => {
+            error!("Failed to list channels: {}", e);
+            return Response::error(id, RpcError::new(-32603, e.to_string()));
+        }
+    };
+
+    Response::success(
+        id,
+        serde_json::json!({
+            "channels": channels,
+        }),
+    )
+}
+
 /// Handle channel.read RPC method.
 pub(super) fn handle_channel_read(id: RequestId, all: bool, state: &DaemonState) -> Response {
     // Read from the default (main) channel

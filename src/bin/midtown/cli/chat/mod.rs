@@ -174,6 +174,9 @@ async fn run_app_async(
                             EventResult::AttachLead => {
                                 attach_lead_split();
                             }
+                            EventResult::AttachCoworker(coworker_name) => {
+                                attach_coworker_split(&coworker_name);
+                            }
                             EventResult::Continue => {}
                         }
 
@@ -197,6 +200,9 @@ async fn run_app_async(
                                 }
                                 EventResult::AttachLead => {
                                     attach_lead_split();
+                                }
+                                EventResult::AttachCoworker(coworker_name) => {
+                                    attach_coworker_split(&coworker_name);
                                 }
                                 EventResult::Continue => {}
                             }
@@ -373,6 +379,8 @@ enum EventResult {
     ToggleArchivedChannels,
     /// Attach to the lead session in a split pane
     AttachLead,
+    /// Attach to a coworker session in a split pane (coworker name)
+    AttachCoworker(String),
 }
 
 /// Handle a terminal event, returns the result.
@@ -499,6 +507,19 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                         EventResult::Continue
                     } else if app.autocomplete.show {
                         app.insert_autocomplete_item();
+                        EventResult::Continue
+                    } else if app.focused_pane == FocusedPane::Board {
+                        // When board is focused and Enter is pressed, check if a task is selected
+                        if let Some(app::BoardSelection::Task(_channel, task_id)) =
+                            &app.board_selection
+                            && let Some(task) = app.tasks.iter().find(|t| &t.id == task_id)
+                            && let Some(ref owner) = task.owner
+                        {
+                            // Attach to the coworker owning this task
+                            return EventResult::AttachCoworker(owner.clone());
+                        }
+                        // If no task selected or task has no owner, focus InputBar
+                        app.focused_pane = FocusedPane::InputBar;
                         EventResult::Continue
                     } else if app.focused_pane != FocusedPane::InputBar {
                         app.focused_pane = FocusedPane::InputBar;
@@ -637,6 +658,48 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                 app.mouse_scroll_down();
                 EventResult::Continue
             }
+            MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
+                // Handle left mouse button clicks
+                let x = mouse.column;
+                let y = mouse.row;
+
+                // Check if click is in the input area
+                if let Some(input_rect) = app.input_area
+                    && x >= input_rect.x
+                    && x < input_rect.x + input_rect.width
+                    && y >= input_rect.y
+                    && y < input_rect.y + input_rect.height
+                {
+                    // Click in input area - focus it
+                    app.focused_pane = FocusedPane::InputBar;
+                    return EventResult::Continue;
+                }
+
+                // Check if click is in the board area
+                if let Some(board_rect) = app.board_area
+                    && x >= board_rect.x
+                    && x < board_rect.x + board_rect.width
+                    && y >= board_rect.y
+                    && y < board_rect.y + board_rect.height
+                {
+                    // Check if click is on a task line (for attach)
+                    // Board rect includes border (1 line), so subtract 1 to get content-relative line
+                    let content_y = y.saturating_sub(board_rect.y + 1);
+                    if let Some((_task_id, task_owner)) = app.task_line_map.get(&content_y)
+                        && let Some(owner) = task_owner
+                    {
+                        // Task has an owner - attach to their session
+                        attach_coworker_split(owner);
+                        return EventResult::Exit;
+                    }
+
+                    // Click in board area (but not on a task with owner) - focus it
+                    app.focused_pane = FocusedPane::Board;
+                    return EventResult::Continue;
+                }
+
+                EventResult::Continue
+            }
             _ => EventResult::Continue,
         },
         _ => EventResult::Continue,
@@ -671,6 +734,70 @@ fn auto_focus_and_insert_char(app: &mut App, c: char) {
 
     // Detect autocomplete trigger
     app.detect_autocomplete_trigger();
+}
+
+/// Attach to a coworker session in a split pane.
+///
+/// Connects to the daemon, pauses the headless coworker, builds an interactive
+/// attach command, and launches it in a terminal split. If any step fails,
+/// the coworker is detached so it resumes headless execution.
+fn attach_coworker_split(coworker_name: &str) {
+    let client = match crate::client::DaemonClient::connect() {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+
+    // Pause the headless coworker and get session info.
+    let info = match client.session_attach(&format!("name/{}", coworker_name)) {
+        Ok(info) => info,
+        Err(_) => return,
+    };
+
+    let session_id = match info.get("session_id").and_then(|v| v.as_str()) {
+        Some(id) => id,
+        None => {
+            let _ = client.session_detach(coworker_name);
+            return;
+        }
+    };
+    let cwd = match info.get("cwd").and_then(|v| v.as_str()) {
+        Some(c) => c,
+        None => {
+            let _ = client.session_detach(coworker_name);
+            return;
+        }
+    };
+    let provider = info
+        .get("provider")
+        .and_then(|v| v.as_str())
+        .unwrap_or("claude")
+        .parse::<midtown::auth::AuthProvider>()
+        .unwrap_or(midtown::auth::AuthProvider::Claude);
+
+    let _ = midtown::platform_launch::run_platform_prelaunch_hook(provider);
+
+    let cwd = match super::session::ensure_attach_worktree(coworker_name, cwd) {
+        Ok(c) => c,
+        Err(_) => {
+            let _ = client.session_detach(coworker_name);
+            return;
+        }
+    };
+
+    let shell_command =
+        match super::session::build_attach_shell_command(&cwd, coworker_name, provider, session_id)
+        {
+            Ok(cmd) => cmd,
+            Err(_) => {
+                let _ = client.session_detach(coworker_name);
+                return;
+            }
+        };
+
+    let host = super::daemon::AttachHost::detect();
+    if super::daemon::launch_lead_split(host, &cwd, &shell_command).is_err() {
+        let _ = client.session_detach(coworker_name);
+    }
 }
 
 /// Attach to the lead session in a split pane (Ctrl+L handler).
