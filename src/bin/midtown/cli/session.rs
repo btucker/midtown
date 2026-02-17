@@ -754,6 +754,8 @@ pub(crate) fn build_attach_shell_command(
     );
     let detach_cmd = format!("{} session detach {}", bin_command, shell_quote(name));
 
+    // Sort for deterministic ordering in shell command
+    env_parts.sort();
     Ok(format!(
         "export {}; {}; _midtown_rc=$?; {} >/dev/null 2>&1 || true; exit $_midtown_rc",
         env_parts.join(" "),

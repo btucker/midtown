@@ -88,7 +88,7 @@ pub struct HeadlessConfig {
     /// take precedence. Use this to pass coworker-specific env vars like
     /// `MIDTOWN_AGENT` and provider config vars (`CLAUDE_CONFIG_DIR`/`CODEX_HOME`).
     #[serde(default)]
-    pub env: std::collections::HashMap<String, String>,
+    pub env: std::collections::BTreeMap<String, String>,
 }
 
 /// Custom serde module for `Option<Duration>` as seconds (f64).
@@ -1157,7 +1157,7 @@ mod tests {
             settings_path: None,
             setting_sources: None,
             auth_provider: crate::auth::AuthProvider::Claude,
-            env: std::collections::HashMap::new(),
+            env: std::collections::BTreeMap::new(),
         }
     }
 

@@ -248,7 +248,7 @@ impl SpecializedCoworker {
             settings_path: None,
             setting_sources: None,
             auth_provider: crate::auth::AuthProvider::Claude,
-            env: std::collections::HashMap::new(),
+            env: std::collections::BTreeMap::new(),
         };
 
         let mut session = if let Some(ref sid) = session_id {

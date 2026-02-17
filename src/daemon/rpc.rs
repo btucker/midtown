@@ -303,7 +303,7 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
                 settings_path: None,
                 setting_sources: None,
                 auth_provider: crate::auth::AuthProvider::Claude,
-                env: std::collections::HashMap::new(),
+                env: std::collections::BTreeMap::new(),
             };
             super::rpc_headless::handle_headless_execute(request.id, prompt, &config).await
         }

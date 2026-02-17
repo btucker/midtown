@@ -144,8 +144,8 @@ pub fn build_agent_env_vars(
     channel: &Option<String>,
     auth_provider: crate::auth::AuthProvider,
     auth_profile_dir: &std::path::Path,
-) -> std::collections::HashMap<String, String> {
-    let mut env = std::collections::HashMap::new();
+) -> std::collections::BTreeMap<String, String> {
+    let mut env = std::collections::BTreeMap::new();
 
     env.insert("MIDTOWN_AGENT".to_string(), name.to_string());
     env.insert("DISABLE_AUTOUPDATER".to_string(), "1".to_string());

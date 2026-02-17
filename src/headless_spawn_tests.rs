@@ -30,7 +30,7 @@ fn test_fresh_session_uses_append_system_prompt() {
         agent_id: None,
         agent_name: None,
         auth_provider: crate::auth::AuthProvider::Claude,
-        env: std::collections::HashMap::new(),
+        env: std::collections::BTreeMap::new(),
     };
 
     let args = extract_spawn_args(&config);
@@ -133,7 +133,7 @@ fn test_fresh_session_should_not_duplicate_settings_flag() {
         agent_id: None,
         agent_name: None,
         auth_provider: crate::auth::AuthProvider::Claude,
-        env: std::collections::HashMap::new(),
+        env: std::collections::BTreeMap::new(),
     };
 
     let args = extract_spawn_args(&config);
@@ -174,7 +174,7 @@ fn test_resume_session_should_omit_settings_flag() {
         agent_id: None,
         agent_name: None,
         auth_provider: crate::auth::AuthProvider::Claude,
-        env: std::collections::HashMap::new(),
+        env: std::collections::BTreeMap::new(),
     };
 
     let args = extract_spawn_args(&config);
@@ -218,7 +218,7 @@ fn test_fresh_session_without_settings_path() {
         agent_id: None,
         agent_name: None,
         auth_provider: crate::auth::AuthProvider::Claude,
-        env: std::collections::HashMap::new(),
+        env: std::collections::BTreeMap::new(),
     };
 
     let args = extract_spawn_args(&config);
