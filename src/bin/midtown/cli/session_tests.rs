@@ -337,6 +337,7 @@ fn test_lead_attach_includes_system_prompt() {
         midtown::auth::AuthProvider::Claude,
         "session-123",
         None,
+        true,
     );
 
     let command = result.expect("build_attach_shell_command should succeed");
@@ -365,6 +366,7 @@ fn test_coworker_attach_includes_system_prompt() {
         midtown::auth::AuthProvider::Claude,
         "session-456",
         None,
+        true,
     );
 
     let command = result.expect("build_attach_shell_command should succeed");
@@ -393,6 +395,7 @@ fn test_lead_attach_sets_task_list_id() {
         midtown::auth::AuthProvider::Claude,
         "session-123",
         None,
+        true,
     );
 
     assert!(result.is_ok(), "build_attach_shell_command should succeed");
@@ -415,6 +418,7 @@ fn test_coworker_attach_no_task_list_id() {
         midtown::auth::AuthProvider::Claude,
         "session-456",
         None,
+        true,
     );
 
     assert!(result.is_ok(), "build_attach_shell_command should succeed");
@@ -437,6 +441,7 @@ fn test_lead_attach_includes_agent_teams_flags() {
         midtown::auth::AuthProvider::Claude,
         "session-123",
         None,
+        true,
     );
 
     let command = result.expect("build_attach_shell_command should succeed");
@@ -545,6 +550,7 @@ fn test_reviewer_attach_gets_reviewer_system_prompt() {
         midtown::auth::AuthProvider::Claude,
         "session-789",
         Some("reviewer"),
+        true,
     );
 
     let command = result.expect("build_attach_shell_command should succeed");
@@ -566,6 +572,7 @@ fn test_lead_attach_gets_opus_model() {
         midtown::auth::AuthProvider::Claude,
         "session-123",
         None,
+        true,
     );
 
     let command = result.expect("build_attach_shell_command should succeed");
@@ -614,6 +621,7 @@ fn test_build_attach_command_uses_shell_command_substitution() {
         midtown::auth::AuthProvider::Claude,
         "session-123",
         None,
+        true,
     );
 
     let command = result.expect("build_attach_shell_command should succeed");
@@ -706,6 +714,7 @@ fn test_build_attach_command_no_double_quoting() {
         midtown::auth::AuthProvider::Claude,
         "session-123",
         None,
+        true,
     );
 
     let command = result.expect("build_attach_shell_command should succeed");
@@ -748,6 +757,7 @@ fn test_build_attach_command_shell_parseable() {
         midtown::auth::AuthProvider::Claude,
         "session-123",
         None,
+        true,
     );
 
     let command = result.expect("build_attach_shell_command should succeed");
@@ -761,6 +771,53 @@ fn test_build_attach_command_shell_parseable() {
     assert!(
         parse_result.is_ok() && parse_result.unwrap().success(),
         "Command should be parseable by shell, got error for: {}",
+        command
+    );
+}
+
+// ── include_detach flag (fix for dual-lead bug #1428) ────────────────
+
+#[test]
+fn test_view_attach_command_omits_session_detach() {
+    // midtown view passes include_detach=false so the split pane's shell command
+    // does NOT call `session detach` when claude exits — preventing the dual-lead
+    // bug where the pane's claude process exits before the chat UI exits, causing
+    // the headless lead to be re-spawned while the headed session is still active.
+    let cwd = find_project_root();
+    let result = build_attach_shell_command(
+        &cwd,
+        "lead",
+        midtown::auth::AuthProvider::Claude,
+        "session-123",
+        None,
+        false, // include_detach=false: midtown view manages detach explicitly on exit
+    );
+    let command = result.expect("build_attach_shell_command should succeed");
+    assert!(
+        !command.contains("session detach"),
+        "midtown view shell command must NOT contain `session detach` (dual-lead bug #1428), got: {}",
+        command
+    );
+}
+
+#[test]
+fn test_standalone_attach_command_includes_session_detach() {
+    // midtown session attach passes include_detach=true so the pane's shell
+    // command calls `session detach` when the interactive session ends, resuming
+    // the headless lead automatically.
+    let cwd = find_project_root();
+    let result = build_attach_shell_command(
+        &cwd,
+        "lead",
+        midtown::auth::AuthProvider::Claude,
+        "session-123",
+        None,
+        true, // include_detach=true: standalone attach needs auto-detach
+    );
+    let command = result.expect("build_attach_shell_command should succeed");
+    assert!(
+        command.contains("session detach"),
+        "standalone attach shell command must contain `session detach`, got: {}",
         command
     );
 }
