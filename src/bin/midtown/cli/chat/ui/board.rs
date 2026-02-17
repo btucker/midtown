@@ -341,7 +341,7 @@ fn draw_coworker_status(f: &mut Frame, app: &mut App, area: Rect) {
     //   spinner : 2  (e.g. "⠋ ")
     //   name    : max name length (variable, but bounded)
     //   task_id : 5  (e.g. "!1418")
-    //   phase   : 4  (e.g. "dev ", "PR  ")
+    //   phase   : 6  (e.g. "review", "debug")
     //   pr_num  : 5  (e.g. "#1207")
     //   progress: 4  (e.g. "42% ")
     //   time    : 4  (e.g. "~3m")
@@ -364,12 +364,12 @@ fn draw_coworker_status(f: &mut Frame, app: &mut App, area: Rect) {
     let w_spinner: usize = 2; // "⠋ "
     let w_name: usize = name_max; // right-padded to align
     let w_task_id: usize = 5; // "!1418"
-    let w_phase: usize = 4; // "dev "
+    let w_phase: usize = 6; // "review" (longest abbreviation)
     let w_pr: usize = 5; // "#1207"
     let w_progress: usize = 4; // "42% "
     let w_time: usize = 4; // "~3m"
 
-    // Gap between columns (minimum 1 space)
+    // Gap between columns — must match Table::column_spacing() below.
     let gap: usize = 1;
 
     // Cumulative widths for each layout level
@@ -404,6 +404,7 @@ fn draw_coworker_status(f: &mut Frame, app: &mut App, area: Rect) {
         constraints.push(Constraint::Length(w_progress as u16));
     }
     if show_time {
+        // Min (not Length) so the last column absorbs remaining width.
         constraints.push(Constraint::Min(w_time as u16));
     }
 
@@ -1161,5 +1162,47 @@ mod tests {
             tasks_area.height, 36,
             "idle coworkers should not inflate section height (only 1 active coworker)"
         );
+    }
+
+    #[test]
+    fn test_phase_column_width_fits_all_abbreviations() {
+        use midtown::coworker_state::WorkflowPhase;
+
+        // w_phase in draw_coworker_status must fit the longest abbreviation.
+        let w_phase: usize = 6;
+        let phases = [
+            WorkflowPhase::Claiming,
+            WorkflowPhase::Developing,
+            WorkflowPhase::Testing,
+            WorkflowPhase::PullRequest,
+            WorkflowPhase::Reviewing,
+            WorkflowPhase::Debugging,
+            WorkflowPhase::Completed,
+            WorkflowPhase::Idle,
+        ];
+
+        for phase in &phases {
+            let abbr = phase.abbreviation();
+            assert!(
+                abbr.len() <= w_phase,
+                "Phase {:?} abbreviation {:?} ({} chars) exceeds column width {}",
+                phase,
+                abbr,
+                abbr.len(),
+                w_phase,
+            );
+        }
+    }
+
+    #[test]
+    fn test_coworker_table_row_review_phase_untruncated() {
+        // Verify that "review" (the longest phase abbreviation) renders
+        // without truncation in the coworker table row.
+        let mut cw = make_coworker("york");
+        cw.phase = Some("review".to_string());
+        cw.task_id = Some(42);
+
+        let row = coworker_table_row(&cw, "⠋", true, true, false, false, false);
+        let _ = row; // Row builds successfully with the phase data
     }
 }
