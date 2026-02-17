@@ -225,10 +225,8 @@ fn test_subagent_idle_bug() {
     // This assertion depends on the snapshot - if the bug is that a subagent
     // was incorrectly shut down, we verify that doesn't happen
     println!("Subagent idle check: has_shutdown={}", has_shutdown);
-    assert!(
-        !has_shutdown || has_shutdown,
-        "Completed subagent idle check"
-    );
+    // TODO: Replace with actual assertion once snapshot schema is updated
+    assert!(!has_shutdown, "Active subagent should not be shut down");
 }
 
 /// Test that lexington premature break is prevented.
@@ -301,10 +299,8 @@ fn test_orphan_warning_repeated_amsterdam() {
 
     // The function should not generate duplicate messages
     // (exact assertion depends on whether the snapshot shows pre/post dedup)
-    assert!(
-        message_count <= 1 || message_count > 1,
-        "Completed orphan warning check"
-    );
+    // TODO: Replace with actual assertion once snapshot schema is updated
+    assert!(message_count <= 1, "Should not generate duplicate warnings");
 }
 
 /// Test that spawn loops are prevented.
