@@ -322,10 +322,11 @@ async fn api_channels_list(
     Query(query): Query<ChannelListQuery>,
 ) -> Result<impl IntoResponse, StatusCode> {
     let base_dir = crate::paths::projects_dir_for_repo(&state.config.repo);
-    let channels = Channel::list(base_dir, query.include_archived).map_err(|e| {
-        error!("Failed to list channels: {}", e);
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
+    let channels = Channel::list(base_dir, query.include_archived, Some(&state.config.repo))
+        .map_err(|e| {
+            error!("Failed to list channels: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
 
     Ok(axum::Json(serde_json::json!({ "channels": channels })))
 }

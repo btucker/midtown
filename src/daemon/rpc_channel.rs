@@ -238,7 +238,7 @@ pub(super) fn handle_channel_list(
     state: &DaemonState,
 ) -> Response {
     let base_dir = state.channel_router.base_dir();
-    let channels = match crate::Channel::list(base_dir, include_archived) {
+    let channels = match crate::Channel::list(base_dir, include_archived, Some(&state.repo_name)) {
         Ok(ch) => ch,
         Err(e) => {
             error!("Failed to list channels: {}", e);
