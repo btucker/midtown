@@ -34,6 +34,7 @@ pub mod snapshot;
 mod specialized;
 mod startup;
 pub(crate) mod state;
+mod stream;
 mod trackers;
 mod webhook_fwd;
 
@@ -2698,6 +2699,11 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                         warn!("Failed to save persistent state after session_id backfill: {}", e);
                     }
                 }
+
+                // Process headless lead output and post aggregated text to channel.
+                // Routes through Effect pipeline to maintain architecture consistency.
+                let lead_effects = stream::process_lead_output(&events);
+                effects::execute_effects(lead_effects, &state).await;
 
                 // Defense-in-depth: check process liveness via try_wait() to catch
                 // sessions where the process exited but drain_events didn't detect it
