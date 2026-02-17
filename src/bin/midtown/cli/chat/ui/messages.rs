@@ -117,8 +117,8 @@ pub fn push_sender_header(
 
 /// Build the first content line with appropriate timestamp prefix.
 ///
-/// Dispatches to action ("* "), crosspost ("★ from #channel | "), or plain timestamp format.
-/// Prepends the prefix spans to a pre-parsed `Line` from the block parser.
+/// Prepends action ("* "), crosspost ("★ from #channel | "), or plain timestamp
+/// prefix spans to a pre-parsed `Line` from the block/inline parser.
 pub fn build_first_content_line(
     msg: &midtown::Message,
     ctx: &MessageRenderContext,
@@ -187,9 +187,9 @@ pub fn build_continuation_line(
 /// flow: compute context → optional sender header → timestamp first line →
 /// indented continuation lines.
 ///
-/// Block-level constructs (tables, code fences) are parsed via `minimad_ratatui::from_str`
-/// so that tables get proper column alignment. Regular text segments are word-wrapped
-/// with `wrap_content` and parsed inline so they fit the terminal width.
+/// Tables (lines starting with `|`, outside code fences) are block-parsed via
+/// `minimad_ratatui::from_str` for proper column alignment. All other text is
+/// word-wrapped with `wrap_content` and parsed inline to fit the terminal width.
 pub fn render_message(
     msg: &midtown::Message,
     width: usize,
@@ -240,7 +240,8 @@ fn render_content_lines(
     let mut text_buf = String::new();
 
     let flush_text = |buf: &mut String, result: &mut Vec<Line<'static>>| {
-        if buf.is_empty() {
+        if buf.trim_end_matches('\n').is_empty() {
+            buf.clear();
             return;
         }
         let wrapped = wrap_content(buf.trim_end_matches('\n'), content_width);
@@ -251,10 +252,15 @@ fn render_content_lines(
     };
 
     let mut in_table = false;
+    let mut in_fence = false;
     let mut table_buf = String::new();
 
     for raw_line in content.split('\n') {
-        let is_table_line = raw_line.trim_start().starts_with('|');
+        let trimmed = raw_line.trim_start();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            in_fence = !in_fence;
+        }
+        let is_table_line = !in_fence && trimmed.starts_with('|');
 
         if is_table_line {
             if !in_table {
@@ -1151,6 +1157,55 @@ mod tests {
             header_sep_pos, data_sep_pos,
             "Table columns must be aligned: │ separator should be at same position in header ({:?}) and data row ({:?})",
             header_text, data_text
+        );
+    }
+
+    #[test]
+    fn test_table_ending_with_newline_no_trailing_blank_line() {
+        // A table followed by a trailing newline should not produce a spurious blank line.
+        let table_content = "| A | B |\n|---|---|\n| 1 | 2 |\n";
+        let msg = test_message(table_content);
+        let current_tasks = HashMap::new();
+
+        let lines = render_message(&msg, 80, None, &current_tasks, None);
+
+        // The last rendered line should not be empty
+        let last = lines.last().expect("should have at least one line");
+        let last_text: String = last.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(
+            !last_text.trim().is_empty(),
+            "Table ending with newline should not produce trailing blank line, got: {:?}",
+            last_text
+        );
+    }
+
+    #[test]
+    fn test_pipe_inside_code_fence_not_treated_as_table() {
+        // Lines starting with `|` inside code blocks must not be extracted as table rows.
+        let content = "before\n```\n| grep foo\n| sort\n```\nafter";
+        let msg = test_message(content);
+        let current_tasks = HashMap::new();
+
+        let lines = render_message(&msg, 80, None, &current_tasks, None);
+
+        // The output should contain "grep foo" as plain text, not as a table cell.
+        // If it was parsed as a table, minimad would insert │ separators.
+        let all_text: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
+            .collect::<Vec<_>>()
+            .join("");
+
+        let separator = '\u{2502}'; // │
+        assert!(
+            !all_text.contains(separator),
+            "Pipe lines inside code fences should not become table rows, got: {:?}",
+            all_text
+        );
+        assert!(
+            all_text.contains("grep foo"),
+            "Code fence content should be preserved, got: {:?}",
+            all_text
         );
     }
 
