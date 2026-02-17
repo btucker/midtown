@@ -250,10 +250,11 @@ fn draw_autocomplete_dropdown(f: &mut Frame, app: &App, input_area: Rect) {
     let dropdown_height = (item_count * 2) as u16;
     let dropdown_width = 40u16.min(input_area.width.saturating_sub(4));
 
+    // saturating_sub(2): skip past the 1-row lead indicator + 1-row visual gap
     let dropdown_y = input_area
         .y
         .saturating_sub(dropdown_height)
-        .saturating_sub(1);
+        .saturating_sub(2);
     let dropdown_x = input_area.x + 2;
 
     let dropdown_area = Rect {

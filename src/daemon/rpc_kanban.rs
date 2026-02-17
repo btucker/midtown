@@ -9,6 +9,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::time::{Duration, Instant};
 
+use chrono::Utc;
 use tracing::{debug, error, warn};
 
 use crate::rpc::{RequestId, Response, RpcError};
@@ -60,8 +61,8 @@ pub(crate) async fn handle_kanban_data(id: RequestId, state: &DaemonState) -> Re
             "Returning cached kanban data (TTL: {}s)",
             KANBAN_CACHE_TTL.as_secs()
         );
-        // lead_working is not cached — it's live session state
-        let lead_working = state.session_manager.is_alive("lead").await;
+        // lead_working is never cached — inject live value from headless_health
+        let lead_working = is_lead_actively_working(state);
         if let Some(obj) = cached.as_object_mut() {
             obj.insert("lead_working".to_string(), serde_json::json!(lead_working));
         }
@@ -253,20 +254,22 @@ pub(crate) async fn handle_kanban_data(id: RequestId, state: &DaemonState) -> Re
             .collect::<Vec<_>>()
     };
 
-    // Check if the headless lead session is actively working
-    let lead_working = state.session_manager.is_alive("lead").await;
-
-    // Build response and cache it
-    let response_data = serde_json::json!({
+    // Build the cacheable response (WITHOUT lead_working — it's live state)
+    let mut response_data = serde_json::json!({
         "prs": prs,
         "merged_prs": merged_prs,
         "repos": repos,
         "coworkers": coworkers_data,
         "max_coworkers": state.max_coworkers,
-        "lead_working": lead_working,
     });
 
     state.kanban_cache.set(response_data.clone(), cache_key);
+
+    // Inject live lead_working state (not cached)
+    let lead_working = is_lead_actively_working(state);
+    if let Some(obj) = response_data.as_object_mut() {
+        obj.insert("lead_working".to_string(), serde_json::json!(lead_working));
+    }
 
     Response::success(id, response_data)
 }
@@ -277,6 +280,37 @@ pub(crate) async fn handle_kanban_data(id: RequestId, state: &DaemonState) -> Re
 
 /// TTL for kanban data cache (30 seconds, matching web server's CACHE_TTL).
 const KANBAN_CACHE_TTL: Duration = Duration::from_secs(30);
+
+/// Timeout for considering the lead session "actively working".
+///
+/// If the last stream event from the lead session is older than this, the
+/// lead is considered idle (waiting for user input, between turns, etc.).
+const LEAD_ACTIVITY_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Check whether the headless lead session is actively working by examining
+/// the `last_event_at` timestamp from `headless_health`.
+///
+/// Returns `true` only when the lead session is alive AND has received a
+/// stream event within `LEAD_ACTIVITY_TIMEOUT`. This distinguishes "actively
+/// computing" from "running but idle at the prompt".
+fn is_lead_actively_working(state: &DaemonState) -> bool {
+    let health_guard = state.headless_health.read().unwrap();
+    let lead_health = health_guard.get("lead");
+    is_session_actively_working(lead_health)
+}
+
+/// Core logic for activity detection: returns `true` when a session is alive
+/// and has received a stream event within `LEAD_ACTIVITY_TIMEOUT`.
+fn is_session_actively_working(health: Option<&ProcessHealth>) -> bool {
+    let Some(h) = health else {
+        return false;
+    };
+    if !h.is_alive {
+        return false;
+    }
+    h.last_event_at
+        .is_some_and(|ts| (Utc::now() - ts).num_seconds() < LEAD_ACTIVITY_TIMEOUT.as_secs() as i64)
+}
 
 /// Compute a hash representing coworker state for cache invalidation.
 ///
@@ -803,6 +837,54 @@ mod tests {
             kanban_ci_status(&[serde_json::json!({"status": "IN_PROGRESS"})]),
             "running"
         );
+    }
+
+    #[test]
+    fn test_lead_activity_detection_no_health() {
+        assert!(!is_session_actively_working(None));
+    }
+
+    #[test]
+    fn test_lead_activity_detection_not_alive() {
+        let health = ProcessHealth {
+            is_alive: false,
+            last_event_at: Some(Utc::now()),
+            ..Default::default()
+        };
+        assert!(!is_session_actively_working(Some(&health)));
+    }
+
+    #[test]
+    fn test_lead_activity_detection_alive_recent_event() {
+        let health = ProcessHealth {
+            is_alive: true,
+            last_event_at: Some(Utc::now()),
+            ..Default::default()
+        };
+        assert!(is_session_actively_working(Some(&health)));
+    }
+
+    #[test]
+    fn test_lead_activity_detection_alive_stale_event() {
+        // Event older than LEAD_ACTIVITY_TIMEOUT — should be considered idle
+        let stale_ts = Utc::now() - chrono::Duration::seconds(10);
+        let health = ProcessHealth {
+            is_alive: true,
+            last_event_at: Some(stale_ts),
+            ..Default::default()
+        };
+        assert!(!is_session_actively_working(Some(&health)));
+    }
+
+    #[test]
+    fn test_lead_activity_detection_alive_no_events() {
+        // Alive but has never received any events
+        let health = ProcessHealth {
+            is_alive: true,
+            last_event_at: None,
+            ..Default::default()
+        };
+        assert!(!is_session_actively_working(Some(&health)));
     }
 
     #[test]
