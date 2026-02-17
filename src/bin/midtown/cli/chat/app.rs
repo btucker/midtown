@@ -1491,8 +1491,12 @@ impl App {
         }
 
         // In test mode, use self.coworkers instead of daemon
+        // Skip "lead" since it's already added above
         if self.test_mode {
             for cw in &self.coworkers {
+                if cw.name.eq_ignore_ascii_case("lead") {
+                    continue;
+                }
                 if cw.name.to_lowercase().starts_with(query) {
                     // Look up current task from the tasks cache
                     let current_task = self
@@ -1507,7 +1511,11 @@ impl App {
             }
         } else {
             // Add coworkers from cached list (populated from daemon status)
+            // Skip "lead" since it's already added above
             for cw in &self.coworkers {
+                if cw.name.eq_ignore_ascii_case("lead") {
+                    continue;
+                }
                 if cw.name.to_lowercase().starts_with(query) {
                     // Look up current task from the tasks cache
                     let current_task = self
