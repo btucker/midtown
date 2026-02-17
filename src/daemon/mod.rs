@@ -2598,7 +2598,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                         "PR #{} merged into {}.",
                         pr_number, state.default_branch
                     );
-                    let channel_msg = Message::text("system", channel_text);
+                    let channel_msg = Message::text("midtown", channel_text);
                     if let Err(e) = state.send_and_broadcast_async(&channel_msg).await {
                         warn!("Failed to post merge notification for PR #{}: {}", pr_number, e);
                     }
@@ -2836,7 +2836,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                         format!("⚠️ Coworker {} session exited unexpectedly", name)
                     };
 
-                    let msg = crate::message::Message::text("system", message_text);
+                    let msg = crate::message::Message::text("midtown", message_text);
                     if let Err(e) = state.send_and_broadcast_async(&msg).await {
                         warn!("Failed to post session exit message for {}: {}", name, e);
                     }

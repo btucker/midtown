@@ -110,7 +110,6 @@ pub fn push_sender_header(
     let current_task = current_tasks.get(&msg.from.to_lowercase());
     lines.push(build_sender_line(
         &ctx.display_from,
-        &msg.message_type,
         ctx.color,
         current_task,
         width,
@@ -184,50 +183,40 @@ pub fn render_message(
 /// Format: "**name**" or "**name** - Task subject" (task is not bold)
 fn build_sender_line(
     display_name: &str,
-    message_type: &MessageType,
     color: Color,
     current_task: Option<&String>,
     width: usize,
 ) -> Line<'static> {
-    match message_type {
-        MessageType::System => Line::from(vec![Span::styled(
-            String::from("<system>"),
-            Style::default().fg(Color::DarkGray),
-        )]),
-        _ => {
-            let mut spans = vec![Span::styled(
-                display_name.to_string(),
-                Style::default().fg(color).add_modifier(Modifier::BOLD),
-            )];
+    let mut spans = vec![Span::styled(
+        display_name.to_string(),
+        Style::default().fg(color).add_modifier(Modifier::BOLD),
+    )];
 
-            // Add current task if available
-            if let Some(task) = current_task {
-                // Calculate available space for task (width - name - " - ")
-                // Use chars().count() for UTF-8 safe length calculation
-                let prefix_len = display_name.chars().count() + 3; // " - " = 3 chars
-                let available = width.saturating_sub(prefix_len);
+    // Add current task if available
+    if let Some(task) = current_task {
+        // Calculate available space for task (width - name - " - ")
+        // Use chars().count() for UTF-8 safe length calculation
+        let prefix_len = display_name.chars().count() + 3; // " - " = 3 chars
+        let available = width.saturating_sub(prefix_len);
 
-                if available > 5 {
-                    // Only show if we have reasonable space
-                    // Use chars() for UTF-8 safe truncation to avoid panics on multi-byte chars
-                    let truncated_task = if task.chars().count() > available {
-                        let truncated: String =
-                            task.chars().take(available.saturating_sub(1)).collect();
-                        format!("{}…", truncated)
-                    } else {
-                        task.clone()
-                    };
+        if available > 5 {
+            // Only show if we have reasonable space
+            // Use chars() for UTF-8 safe truncation to avoid panics on multi-byte chars
+            let truncated_task = if task.chars().count() > available {
+                let truncated: String = task.chars().take(available.saturating_sub(1)).collect();
+                format!("{}…", truncated)
+            } else {
+                task.clone()
+            };
 
-                    spans.push(Span::styled(
-                        format!(" - {}", truncated_task),
-                        Style::default().fg(Color::DarkGray),
-                    ));
-                }
-            }
-
-            Line::from(spans)
+            spans.push(Span::styled(
+                format!(" - {}", truncated_task),
+                Style::default().fg(Color::DarkGray),
+            ));
         }
     }
+
+    Line::from(spans)
 }
 
 /// Build a timestamp line with message content: " HH:MM message"
@@ -461,7 +450,7 @@ mod tests {
 
         let msg = Message {
             id: "1".to_string(),
-            from: "system".to_string(),
+            from: "midtown".to_string(),
             content: "Session started".to_string(),
             timestamp: Utc::now(),
             message_type: MessageType::System,
@@ -472,13 +461,13 @@ mod tests {
 
         let current_tasks = HashMap::new();
 
-        // System messages now render through standard path: sender line + timestamp line
+        // System messages render through standard path: sender line + timestamp line
         let lines = render_message(&msg, 80, None, &current_tasks, None);
         assert_eq!(lines.len(), 2); // sender line + content line
 
-        // First line is the sender name (<system>)
+        // First line is the sender name
         let sender: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
-        assert_eq!(sender, "<system>");
+        assert_eq!(sender, "midtown");
         assert_eq!(lines[0].spans[0].style.fg, Some(Color::DarkGray));
 
         // Second line has timestamp + content in DarkGray
@@ -753,6 +742,7 @@ mod tests {
         assert!(is_system_like_sender("daemon"));
         assert!(!is_system_like_sender("github"));
         assert!(is_system_like_sender("system"));
+        assert!(is_system_like_sender("midtown"));
         assert!(is_system_like_sender("DAEMON"));
         assert!(!is_system_like_sender("madison"));
         assert!(!is_system_like_sender("park"));

@@ -229,6 +229,7 @@ fn test_is_coworker_sender() {
     assert!(!is_coworker_sender("lead"));
     assert!(!is_coworker_sender("github"));
     assert!(!is_coworker_sender("GitHub"));
+    assert!(!is_coworker_sender("midtown"));
     assert!(!is_coworker_sender("system"));
 
     // Actual coworker names should be detected
