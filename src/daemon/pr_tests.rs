@@ -280,6 +280,68 @@ async fn test_orphaned_pr_with_merge_conflict_is_ignored() {
     );
 }
 
+/// Bug: Lead PRs without task IDs in their title are incorrectly marked as
+/// orphaned, preventing reviewer assignment.
+///
+/// Scenario: The lead creates a PR with branch "lead/remove-build-all-script"
+/// and title "chore: Remove build-all.sh in favor of cargo install" (no task ID).
+///
+/// The orphan detection logic checks:
+/// 1. Look up by PR number → not found (not linked yet)
+/// 2. Look up by task ID from title → no task ID in title → not found
+/// 3. Look up by branch name → "lead/remove-build-all-script" doesn't match any worktree
+///
+/// Result: worktree = None → marked as orphaned → no reviewer spawned.
+///
+/// Expected: Lead PRs should never be marked as orphaned because the lead's
+/// main worktree is always available to address review feedback.
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn test_lead_pr_without_task_id_should_not_be_orphaned() {
+    use crate::worktree_registry::WorktreeRegistry;
+
+    // Simulate PR #1164: lead branch, no task ID in title
+    let pr = json!({
+        "number": 1164,
+        "headRefName": "lead/remove-build-all-script",
+        "title": "chore: Remove build-all.sh in favor of cargo install",
+        "isDraft": false,
+        "createdAt": "2024-01-01T00:00:00Z",  // Old enough to pass review delay
+    });
+
+    let state = make_test_state("midtown");
+    let registry = WorktreeRegistry::new();
+
+    // Important: The lead's worktree exists, but NOT indexed by this branch name
+    // (it's the main "lead" worktree in a different location)
+
+    let effects = collect_reviewer_effects_with_source(
+        None, // No branch_owners_map (simulating empty worktree map)
+        &registry,
+        &state,
+        &[pr],
+        crate::github_state::AssignmentSource::PollingFallback,
+    )
+    .await;
+
+    // Bug: Currently returns 0 effects (PR marked as orphaned, skipped)
+    // Expected: Should spawn a reviewer (lead can address feedback)
+    assert!(
+        !effects.is_empty(),
+        "Lead PR without task ID should spawn a reviewer, not be marked as orphaned"
+    );
+
+    // Verify we got a SpawnCoworkerWithCallbacks effect for the reviewer
+    let has_reviewer_spawn = effects
+        .iter()
+        .any(|e| matches!(e, Effect::SpawnCoworkerWithCallbacks { .. }));
+    assert!(
+        has_reviewer_spawn,
+        "Expected SpawnCoworkerWithCallbacks effect for lead PR. Effects: {:#?}",
+        effects
+    );
+}
+
 #[tokio::test]
 #[allow(clippy::await_holding_lock)] // Intentionally hold PATH_LOCK across await to prevent test interference
 async fn test_ci_wait_deduplication_uses_time_aware_hash() {
