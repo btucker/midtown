@@ -92,10 +92,9 @@ pub fn draw(f: &mut Frame, app: &mut App) -> Vec<Hyperlink> {
         .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
         .split(vertical_chunks[1]);
 
-    // Store board area for click detection
-    app.board_area = Some(horizontal_chunks[0]);
-
-    let hyperlinks = board::draw_board_panel(f, app, horizontal_chunks[0]);
+    let (hyperlinks, tasks_area) = board::draw_board_panel(f, app, horizontal_chunks[0]);
+    // Store tasks area for click detection (task_line_map line numbers are relative to this area)
+    app.board_area = Some(tasks_area);
     chat::draw_chat_panel(f, app, horizontal_chunks[1]);
 
     if !app.usage_data.is_empty() {
