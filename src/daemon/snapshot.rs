@@ -351,7 +351,7 @@ impl WorldSnapshot {
 /// This is the single place where we read from `DaemonState` and external
 /// sources (task storage, GitHub CLI). Called once per tick, before
 /// any evaluation functions.
-pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
+pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
     // ── Coworker state ──────────────────────────────────────────────────
     let active_coworkers = state.coworkers.list();
     let running_coworkers = state.coworkers.list_running();

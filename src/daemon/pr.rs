@@ -2068,14 +2068,29 @@ pub(crate) async fn collect_reviewer_effects_with_source(
         // These should not get auto-review spawned since the author can't address feedback.
         // The main PR loop already posts warnings for orphaned PRs with critical issues.
         let head_ref = pr.get("headRefName").and_then(|s| s.as_str()).unwrap_or("");
+        let title = pr.get("title").and_then(|s| s.as_str()).unwrap_or("");
 
-        // Check if this PR has an active worktree assignment in the registry.
-        // After daemon restart, the worktree_branch_owners map may be incomplete
-        // (only includes currently-bound coworkers), so we check the persistent
-        // registry instead. A PR is orphaned if it has no worktree assignment or
-        // the assignment is marked completed.
+        // Check if this PR has an active worktree in the registry.
+        // After daemon restart, worktree bindings may have changed (current_coworker
+        // may differ from the PR branch owner), so we can't rely on matching the
+        // owner name. Instead, check if a worktree exists for this PR's task.
+        //
+        // Try multiple strategies to find the worktree:
+        // 1. Look up by PR number (if the PR was linked to a worktree via webhook)
+        // 2. Look up by task ID extracted from PR title (most reliable for task-based PRs)
+        // 3. Fall back to branch name lookup (for non-task PRs or legacy workflows)
         let worktree = worktree_registry
             .get_by_pr(pr_number)
+            .or_else(|| {
+                // Extract task ID from title and look up by task
+                crate::tasks::extract_task_id_from_pr_title(title).and_then(|task_id| {
+                    let task_id_str = task_id.to_string();
+                    worktree_registry
+                        .all_assignments()
+                        .values()
+                        .find(|a| a.task_id.as_ref() == Some(&task_id_str))
+                })
+            })
             .or_else(|| worktree_registry.get_by_branch(head_ref));
 
         let is_orphaned = match worktree {
@@ -2093,15 +2108,15 @@ pub(crate) async fn collect_reviewer_effects_with_source(
                 true
             }
             None => {
-                // Try to determine owner for better debug message
+                // No worktree found - orphaned
                 if let Some(owner) = coworker_from_branch_with_map(head_ref, branch_owners_map) {
                     debug!(
-                        "PR #{} is orphaned (no worktree for owner {} / branch {}), skipping auto-review",
+                        "PR #{} is orphaned (no worktree found for owner {}, branch: {}), skipping auto-review",
                         pr_number, owner, head_ref
                     );
                 } else {
                     debug!(
-                        "PR #{} is orphaned (no determinable owner, branch: {}), skipping auto-review",
+                        "PR #{} is orphaned (no determinable owner or worktree, branch: {}), skipping auto-review",
                         pr_number, head_ref
                     );
                 }
