@@ -329,7 +329,7 @@ impl WebhookEffectFixture {
 
     /// Read recent messages from the channel via RPC.
     fn read_channel_messages(&self) -> Vec<String> {
-        let response = self.rpc_call("channel.read", Some(serde_json::json!({"limit": 100})));
+        let response = self.rpc_call("channel.read", Some(serde_json::json!({"all": true})));
 
         if let Some(response) = response
             && let Some(messages) = response["result"]["messages"].as_array()
@@ -752,12 +752,13 @@ fn test_pr_merged_cleans_up_worktree() {
 /// the daemon acts correctly at each stage: queueing reviewer spawns, posting
 /// channel messages, and auto-completing tasks.
 ///
-/// NOTE: This test is currently disabled because sending multiple webhooks for
-/// the same PR in quick succession appears to have some state interaction that
-/// prevents the second webhook from being processed. The individual effects are
-/// fully tested in the other test cases.
-#[allow(dead_code)]
-fn _test_full_pr_lifecycle_webhook_effects_disabled() {
+/// NOTE: This test was previously disabled because sending multiple webhooks for
+/// the same PR in quick succession had state interaction issues. Re-enabling to
+/// investigate and fix the root cause.
+#[test]
+#[ignore]
+#[timeout(60000)]
+fn test_full_pr_lifecycle_webhook_effects() {
     let mut fixture = WebhookEffectFixture::new(47204).expect("Failed to create fixture");
     assert!(fixture.start_daemon(), "Failed to start daemon");
 
@@ -822,53 +823,26 @@ fn _test_full_pr_lifecycle_webhook_effects_disabled() {
     let status = fixture
         .send_webhook("pull_request", pr_merged_payload)
         .expect("Failed to send webhook");
-    eprintln!("PR merged webhook response status: {}", status);
     assert_eq!(status, 200);
 
     // Give daemon time to process (longer for second webhook in sequence)
     thread::sleep(Duration::from_millis(2000));
 
-    // Debug: print daemon logs
-    let daemon_log = fixture.temp_dir.join("daemon.log");
-    if let Ok(log_content) = fs::read_to_string(&daemon_log) {
-        eprintln!("=== Daemon log (last 50 lines) ===");
-        for line in log_content
-            .lines()
-            .rev()
-            .take(50)
-            .collect::<Vec<_>>()
-            .iter()
-            .rev()
-        {
-            eprintln!("{}", line);
-        }
-    }
-
-    // Debug: print all messages
-    let messages = fixture.read_channel_messages();
-    eprintln!("All channel messages after PR #101 merged:");
-    for (i, msg) in messages.iter().enumerate() {
-        eprintln!("  {}: {}", i, msg);
-    }
-
     // Verify PR merged message
     assert!(
-        fixture.channel_contains("merged PR #101"),
-        "PR merged message should appear. Messages: {:?}",
-        messages
+        fixture.wait_for_channel_message("merged PR #101", 5000),
+        "PR merged message should appear"
     );
 
     // Verify merge notification
     assert!(
-        fixture.channel_contains("PR #101 merged into main"),
-        "Merge notification should be posted. Messages: {:?}",
-        messages
+        fixture.wait_for_channel_message("PR #101 merged into main", 5000),
+        "Merge notification should be posted"
     );
 
     // Verify task auto-completion (daemon creates task structure automatically)
     assert!(
-        fixture.channel_contains("✅ Auto-completed task !51"),
-        "Task should be auto-completed after PR merge. Messages: {:?}",
-        messages
+        fixture.wait_for_channel_message("✅ Auto-completed task !51", 5000),
+        "Task should be auto-completed after PR merge"
     );
 }
