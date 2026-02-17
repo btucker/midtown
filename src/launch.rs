@@ -127,7 +127,7 @@ pub fn zai_env_vars(profile_dir: &std::path::Path) -> std::io::Result<(String, S
 
 /// Build environment variables common to all agent sessions (headless and interactive).
 ///
-/// Returns a HashMap of env var name -> value that should be set for any Claude Code
+/// Returns a BTreeMap of env var name -> value that should be set for any Claude Code
 /// agent session. This includes:
 /// - `MIDTOWN_AGENT`: Agent name
 /// - `DISABLE_AUTOUPDATER`: Always set to "1"
@@ -144,8 +144,8 @@ pub fn build_agent_env_vars(
     channel: &Option<String>,
     auth_provider: crate::auth::AuthProvider,
     auth_profile_dir: &std::path::Path,
-) -> std::collections::HashMap<String, String> {
-    let mut env = std::collections::HashMap::new();
+) -> std::collections::BTreeMap<String, String> {
+    let mut env = std::collections::BTreeMap::new();
 
     env.insert("MIDTOWN_AGENT".to_string(), name.to_string());
     env.insert("DISABLE_AUTOUPDATER".to_string(), "1".to_string());
@@ -439,7 +439,7 @@ impl LaunchConfig {
             &config_dir,
         );
 
-        // Convert HashMap to shell export format (key='value')
+        // Convert env map to shell export format (key='value')
         let env_parts: Vec<String> = env_map
             .iter()
             .map(|(k, v)| format!("{}='{}'", k, v))
@@ -784,7 +784,6 @@ mod tests {
             std::path::Path::new("/tmp/test-repo"),
             "midtown",
         );
-        eprintln!("Shell command: {}", result.shell_command);
         assert!(
             result
                 .shell_command

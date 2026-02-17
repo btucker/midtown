@@ -718,7 +718,7 @@ pub(crate) fn build_attach_shell_command(
         &profile_dir,
     );
 
-    // Convert HashMap to shell-quoted env var assignments (key=value format, with shell_quote on values)
+    // Convert env map to shell-quoted env var assignments (key=value format, with shell_quote on values)
     let env_parts: Vec<String> = env_map
         .iter()
         .map(|(k, v)| format!("{}={}", k, shell_quote(v)))
