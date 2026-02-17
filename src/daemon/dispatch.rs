@@ -1907,11 +1907,19 @@ pub fn should_recover_task_test_helper(
 // Task reset for orphaned tasks (owner on break, no PR)
 // ============================================================================
 
-/// Reset tasks that are orphaned because their owner went on break.
+/// Reset tasks that are orphaned — either ownerless or their owner went on break.
 ///
-/// A task is orphaned when:
+/// A task is reset to pending when:
+///
+/// **Ownerless tasks** (no owner field):
+/// 1. It's in_progress with no owner
+/// 2. It does NOT have an open PR (no entry in `tasks_with_open_prs` or `github_open_pr_task_ids`)
+///
+/// These are reset immediately — no grace period since there's no owner to recover.
+///
+/// **Owned tasks** (owner went on break):
 /// 1. It's in_progress with an owner
-/// 2. It does NOT have an open PR (no entry in `tasks_with_open_prs`)
+/// 2. It does NOT have an open PR
 /// 3. The owner is NOT active (not in active_names)
 /// 4. Grace period has expired since owner stopped (respects `coworker_stop_times`)
 ///
@@ -1940,9 +1948,6 @@ pub fn reset_orphaned_tasks(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
 
     for (task_id, subject, owner) in &snap.in_progress_tasks {
         let owner_clean = owner.trim().trim_matches('"').to_lowercase();
-        if owner_clean.is_empty() {
-            continue;
-        }
 
         // Only consider tasks WITHOUT an associated open PR
         // (tasks with PRs are handled by reconcile_tasks_in_review)
@@ -1956,9 +1961,11 @@ pub fn reset_orphaned_tasks(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
             continue;
         }
 
-        // Also protect tasks that REFERENCE an open PR in their subject
+        // Protect tasks that REFERENCE an open PR in their subject
         // (e.g., "Address review feedback on PR #1032") — these don't own
         // the PR but shouldn't be reset while the PR is still open.
+        // This check runs before the ownerless check so that ownerless review
+        // tasks (e.g., owner cleared on break) are also protected.
         if let Some(pr_num_str) = crate::tasks::extract_pr_number(subject)
             && let Ok(pr_num) = pr_num_str.parse::<u64>()
         {
@@ -1973,6 +1980,21 @@ pub fn reset_orphaned_tasks(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
                 );
                 continue;
             }
+        }
+
+        // Ownerless in_progress tasks have no active worker — reset to pending
+        // so they can be re-dispatched. No grace period needed since there is
+        // no owner to recover.
+        if owner_clean.is_empty() {
+            debug!(
+                "Task !{} is in_progress with no owner — resetting to pending",
+                task_id
+            );
+            effects.push(Effect::ResetTaskToPending {
+                task_id: task_id.clone(),
+                repo_name: snap.repo_name.clone(),
+            });
+            continue;
         }
 
         // Only reset if the owner is NOT active (already shut down / on break)
