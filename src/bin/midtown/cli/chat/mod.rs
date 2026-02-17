@@ -410,10 +410,14 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                         return EventResult::Continue;
                     }
                     KeyCode::Char('f') => {
-                        // Alt+F: move forward one word (to end of current word)
+                        // Alt+F: move forward one word (skip whitespace, then to end of word)
                         let chars: Vec<char> = app.input_text.chars().collect();
                         let len = chars.len();
                         let mut pos = app.input_cursor;
+                        // Skip whitespace going right
+                        while pos < len && chars[pos].is_whitespace() {
+                            pos += 1;
+                        }
                         // Skip non-whitespace going right
                         while pos < len && !chars[pos].is_whitespace() {
                             pos += 1;
@@ -443,6 +447,7 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                                 app.input_text.truncate(byte_idx);
                                 app.kill_ring = Some(killed);
                             }
+                            app.detect_autocomplete_trigger();
                         } else {
                             app.toggle_channel_switcher();
                         }
@@ -474,6 +479,7 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                             app.input_text = app.input_text[byte_idx..].to_string();
                             app.kill_ring = Some(killed);
                             app.input_cursor = 0;
+                            app.detect_autocomplete_trigger();
                         }
                         return EventResult::Continue;
                     }
@@ -502,6 +508,7 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                             );
                             app.kill_ring = Some(killed);
                             app.input_cursor = word_start;
+                            app.detect_autocomplete_trigger();
                         }
                         return EventResult::Continue;
                     }
@@ -529,6 +536,7 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                             let byte_idx =
                                 char_index_to_byte_index(&app.input_text, app.input_cursor);
                             app.input_text.remove(byte_idx);
+                            app.detect_autocomplete_trigger();
                         }
                         return EventResult::Continue;
                     }
@@ -2230,157 +2238,15 @@ mod tests {
         // Selected channel should not change
         assert_eq!(app.selected_channel, "midtown");
     }
-
-    fn ctrl_key(code: KeyCode) -> Event {
-        Event::Key(KeyEvent::new(code, KeyModifiers::CONTROL))
-    }
-
-    fn alt_key(code: KeyCode) -> Event {
-        Event::Key(KeyEvent::new(code, KeyModifiers::ALT))
-    }
-
-    #[test]
-    fn test_ctrl_a_moves_to_beginning() {
-        use app::FocusedPane;
-        let mut app = test_app();
-        app.focused_pane = FocusedPane::InputBar;
-        app.input_text = "hello world".to_string();
-        app.input_cursor = 5;
-
-        handle_event(&mut app, ctrl_key(KeyCode::Char('a')));
-        assert_eq!(app.input_cursor, 0);
-    }
-
-    #[test]
-    fn test_ctrl_e_moves_to_end() {
-        use app::FocusedPane;
-        let mut app = test_app();
-        app.focused_pane = FocusedPane::InputBar;
-        app.input_text = "hello world".to_string();
-        app.input_cursor = 0;
-
-        handle_event(&mut app, ctrl_key(KeyCode::Char('e')));
-        assert_eq!(app.input_cursor, 11);
-    }
-
-    #[test]
-    fn test_ctrl_k_kills_to_end_when_input_focused() {
-        use app::FocusedPane;
-        let mut app = test_app();
-        app.focused_pane = FocusedPane::InputBar;
-        app.input_text = "hello world".to_string();
-        app.input_cursor = 5;
-
-        handle_event(&mut app, ctrl_key(KeyCode::Char('k')));
-        assert_eq!(app.input_text, "hello");
-        assert_eq!(app.input_cursor, 5);
-        assert_eq!(app.kill_ring, Some(" world".to_string()));
-    }
-
-    #[test]
-    fn test_ctrl_k_toggles_channel_switcher_when_not_in_input() {
-        use app::FocusedPane;
-        let mut app = test_app();
-        app.focused_pane = FocusedPane::Chat;
-
-        handle_event(&mut app, ctrl_key(KeyCode::Char('k')));
-        // Channel switcher should be toggled (channel_switcher.show)
-        assert!(app.channel_switcher.show);
-    }
-
-    #[test]
-    fn test_ctrl_u_kills_to_beginning() {
-        use app::FocusedPane;
-        let mut app = test_app();
-        app.focused_pane = FocusedPane::InputBar;
-        app.input_text = "hello world".to_string();
-        app.input_cursor = 5;
-
-        handle_event(&mut app, ctrl_key(KeyCode::Char('u')));
-        assert_eq!(app.input_text, " world");
-        assert_eq!(app.input_cursor, 0);
-        assert_eq!(app.kill_ring, Some("hello".to_string()));
-    }
-
-    #[test]
-    fn test_ctrl_w_kills_previous_word() {
-        use app::FocusedPane;
-        let mut app = test_app();
-        app.focused_pane = FocusedPane::InputBar;
-        app.input_text = "hello world".to_string();
-        app.input_cursor = 11;
-
-        handle_event(&mut app, ctrl_key(KeyCode::Char('w')));
-        assert_eq!(app.input_text, "hello ");
-        assert_eq!(app.input_cursor, 6);
-        assert_eq!(app.kill_ring, Some("world".to_string()));
-    }
-
-    #[test]
-    fn test_ctrl_b_moves_back_one_char() {
-        use app::FocusedPane;
-        let mut app = test_app();
-        app.focused_pane = FocusedPane::InputBar;
-        app.input_text = "hello".to_string();
-        app.input_cursor = 3;
-
-        handle_event(&mut app, ctrl_key(KeyCode::Char('b')));
-        assert_eq!(app.input_cursor, 2);
-    }
-
-    #[test]
-    fn test_ctrl_f_moves_forward_one_char() {
-        use app::FocusedPane;
-        let mut app = test_app();
-        app.focused_pane = FocusedPane::InputBar;
-        app.input_text = "hello".to_string();
-        app.input_cursor = 3;
-
-        handle_event(&mut app, ctrl_key(KeyCode::Char('f')));
-        assert_eq!(app.input_cursor, 4);
-    }
-
-    #[test]
-    fn test_ctrl_d_deletes_char_under_cursor() {
-        use app::FocusedPane;
-        let mut app = test_app();
-        app.focused_pane = FocusedPane::InputBar;
-        app.input_text = "hello".to_string();
-        app.input_cursor = 2;
-
-        handle_event(&mut app, ctrl_key(KeyCode::Char('d')));
-        assert_eq!(app.input_text, "helo");
-        assert_eq!(app.input_cursor, 2);
-    }
-
-    #[test]
-    fn test_alt_b_moves_back_one_word() {
-        use app::FocusedPane;
-        let mut app = test_app();
-        app.focused_pane = FocusedPane::InputBar;
-        app.input_text = "hello world".to_string();
-        app.input_cursor = 11;
-
-        handle_event(&mut app, alt_key(KeyCode::Char('b')));
-        assert_eq!(app.input_cursor, 6);
-    }
-
-    #[test]
-    fn test_alt_f_moves_forward_one_word() {
-        use app::FocusedPane;
-        let mut app = test_app();
-        app.focused_pane = FocusedPane::InputBar;
-        app.input_text = "hello world".to_string();
-        app.input_cursor = 0;
-
-        handle_event(&mut app, alt_key(KeyCode::Char('f')));
-        assert_eq!(app.input_cursor, 5);
-    }
 }
 
 #[path = "channel_switcher_tests.rs"]
 #[cfg(test)]
 mod channel_switcher_tests;
+
+#[path = "emacs_keybinding_tests.rs"]
+#[cfg(test)]
+mod emacs_keybinding_tests;
 
 #[path = "keyboard_protocol_tests.rs"]
 #[cfg(test)]
