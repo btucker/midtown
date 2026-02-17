@@ -11,6 +11,7 @@ use std::{collections::VecDeque, mem};
 
 use crate::cli::Response;
 use crate::client::DaemonClient;
+use crossterm::{QueueableCommand, cursor, style, terminal};
 use tracing::{debug, info};
 
 const COWORKER_INPUT_MAX_WAIT: Duration = Duration::from_secs(120);
@@ -348,6 +349,58 @@ fn capture_output_text(mirror: &SharedOutputMirror) -> String {
         Ok(mirror) => mirror.sanitized_content(),
         Err(_) => String::new(),
     }
+}
+
+/// Build the status bar display string, truncating with "..." if it exceeds
+/// `max_width`. Uses `floor_char_boundary` to avoid splitting multi-byte chars.
+fn format_status_text(session: &str, cwd: &str, max_width: usize) -> String {
+    let status_text = format!("{} | Worktree: {}", session, cwd);
+
+    if status_text.len() > max_width {
+        let available = max_width.saturating_sub(3); // Reserve space for "..."
+        if available > 0 {
+            format!(
+                "{}...",
+                &status_text[..status_text.floor_char_boundary(available)]
+            )
+        } else {
+            String::new()
+        }
+    } else {
+        status_text
+    }
+}
+
+fn draw_status_bar(
+    session: &str,
+    cwd: &str,
+    terminal_width: u16,
+    status_row: u16,
+) -> Result<(), String> {
+    let mut stdout = std::io::stdout();
+
+    let display_text = format_status_text(session, cwd, terminal_width as usize);
+
+    // Move to status bar row, clear the line, draw in gray, then return cursor to (0, 0)
+    stdout
+        .queue(cursor::MoveTo(0, status_row))
+        .map_err(|e| format!("Failed to move cursor: {}", e))?
+        .queue(terminal::Clear(terminal::ClearType::CurrentLine))
+        .map_err(|e| format!("Failed to clear line: {}", e))?
+        .queue(style::SetForegroundColor(style::Color::DarkGrey))
+        .map_err(|e| format!("Failed to set color: {}", e))?;
+
+    write!(stdout, "{}", display_text).map_err(|e| format!("Failed to write status bar: {}", e))?;
+
+    stdout
+        .queue(style::ResetColor)
+        .map_err(|e| format!("Failed to reset color: {}", e))?
+        .queue(cursor::MoveTo(0, 0))
+        .map_err(|e| format!("Failed to move cursor back: {}", e))?
+        .flush()
+        .map_err(|e| format!("Failed to flush stdout: {}", e))?;
+
+    Ok(())
 }
 
 fn sanitize_terminal_text(raw: &[u8]) -> String {
@@ -719,9 +772,11 @@ pub fn handle(cmd: &HeadedWrapperCommand, client: &DaemonClient) -> Result<Respo
 
             let pty_system = portable_pty::native_pty_system();
             let (cols, rows) = crossterm::terminal::size().unwrap_or((120, 40));
+            // Reserve one row for the status bar
+            let pty_rows = rows.saturating_sub(1);
             let pty_pair = pty_system
                 .openpty(portable_pty::PtySize {
-                    rows,
+                    rows: pty_rows,
                     cols,
                     pixel_width: 0,
                     pixel_height: 0,
@@ -756,6 +811,18 @@ pub fn handle(cmd: &HeadedWrapperCommand, client: &DaemonClient) -> Result<Respo
             let output_mirror: SharedOutputMirror = Arc::new(Mutex::new(OutputMirror::default()));
 
             let raw_mode_enabled = crossterm::terminal::enable_raw_mode().is_ok();
+
+            // Draw initial status bar
+            let default_cwd = std::env::current_dir()
+                .ok()
+                .and_then(|p| p.to_str().map(|s| s.to_string()))
+                .unwrap_or_else(|| ".".to_string());
+            let cwd_display = cwd.as_deref().unwrap_or(&default_cwd);
+            let status_row = rows.saturating_sub(1);
+            if let Err(e) = draw_status_bar(session, cwd_display, cols, status_row) {
+                debug!("Failed to draw initial status bar: {}", e);
+            }
+
             spawn_stdout_relay(pty_reader, Arc::clone(&output_mirror));
             spawn_stdin_relay(Arc::clone(&shared_writer), Arc::clone(&input_state));
 
@@ -789,14 +856,23 @@ pub fn handle(cmd: &HeadedWrapperCommand, client: &DaemonClient) -> Result<Respo
                     && let Ok(crossterm::event::Event::Resize(new_cols, new_rows)) =
                         crossterm::event::read()
                 {
+                    // Reserve one row for the status bar
+                    let new_pty_rows = new_rows.saturating_sub(1);
                     let new_size = portable_pty::PtySize {
-                        rows: new_rows,
+                        rows: new_pty_rows,
                         cols: new_cols,
                         pixel_width: 0,
                         pixel_height: 0,
                     };
                     if let Err(e) = pty_pair.master.resize(new_size) {
                         debug!("Failed to resize PTY: {}", e);
+                    }
+
+                    // Redraw status bar at new position
+                    let new_status_row = new_rows.saturating_sub(1);
+                    if let Err(e) = draw_status_bar(session, cwd_display, new_cols, new_status_row)
+                    {
+                        debug!("Failed to redraw status bar on resize: {}", e);
                     }
                 }
 
@@ -917,151 +993,6 @@ pub fn handle(cmd: &HeadedWrapperCommand, client: &DaemonClient) -> Result<Respo
     }
 }
 
+#[path = "headed_wrapper_tests.rs"]
 #[cfg(test)]
-mod tests {
-    use std::sync::{Arc, Mutex};
-    use std::time::Duration;
-
-    use super::{
-        InputState, OutputMirror, SharedInputState, SharedOutputMirror, apply_submit_key,
-        get_input_text, is_nudge_stuck, trim_trailing_linebreaks, update_input_state,
-        wait_for_empty_input, wait_for_nudge_safe_with_input_state,
-    };
-
-    #[test]
-    fn submit_key_appends_carriage_return() {
-        assert_eq!(apply_submit_key("hello".to_string(), true), "hello\r");
-        assert_eq!(apply_submit_key("hello\n".to_string(), true), "hello\r");
-        assert_eq!(apply_submit_key("hello\r\n".to_string(), true), "hello\r");
-    }
-
-    #[test]
-    fn submit_key_noop_when_submit_false() {
-        assert_eq!(apply_submit_key("hello".to_string(), false), "hello");
-    }
-
-    #[test]
-    fn trim_trailing_linebreaks_only() {
-        assert_eq!(trim_trailing_linebreaks("hello\r\n".to_string()), "hello");
-        assert_eq!(trim_trailing_linebreaks("hello\n".to_string()), "hello");
-        assert_eq!(trim_trailing_linebreaks("hello".to_string()), "hello");
-    }
-
-    #[test]
-    fn input_state_tracks_typing_and_clears_on_enter() {
-        let state: SharedInputState = Arc::new(Mutex::new(InputState::default()));
-        update_input_state(&state, b"hello");
-        let snap = super::snapshot_input_state(&state);
-        assert_eq!(snap.current_input, "hello");
-
-        update_input_state(&state, b"\x7f");
-        let snap = super::snapshot_input_state(&state);
-        assert_eq!(snap.current_input, "hell");
-
-        update_input_state(&state, b"\r");
-        let snap = super::snapshot_input_state(&state);
-        assert!(snap.current_input.is_empty());
-    }
-
-    #[test]
-    fn wait_for_empty_input_returns_quickly_when_empty() {
-        let state: SharedInputState = Arc::new(Mutex::new(InputState::default()));
-        assert!(wait_for_empty_input(&state, Duration::from_millis(10)));
-    }
-
-    #[test]
-    fn get_input_text_prefers_most_recent_prompt() {
-        let content = "older\n❯ first\n\nnew\n❯ second";
-        assert_eq!(get_input_text(content).as_deref(), Some("second"));
-    }
-
-    #[test]
-    fn nudge_stuck_detection_matches_prompt_line() {
-        let content = "something\n❯ github said: check ci";
-        assert!(is_nudge_stuck(content, "github said: check ci on pr #10"));
-        assert!(!is_nudge_stuck(content, "totally different"));
-    }
-
-    #[test]
-    fn wait_for_nudge_safe_overwrites_last_nudge_immediately() {
-        let input_state: SharedInputState = Arc::new(Mutex::new(InputState::default()));
-        let mirror: SharedOutputMirror = Arc::new(Mutex::new(OutputMirror::default()));
-
-        // InputState contains the last nudge text
-        update_input_state(&input_state, b"github said: check ci");
-
-        {
-            let mut guard = mirror.lock().expect("mirror lock");
-            guard.ingest("❯ github said: check ci\n".as_bytes());
-        }
-
-        let safe = wait_for_nudge_safe_with_input_state(
-            &input_state,
-            &mirror,
-            Some("github said: check ci"),
-            Duration::from_secs(20),
-            Duration::from_secs(1),
-        );
-        assert!(safe);
-    }
-
-    #[test]
-    fn wait_for_nudge_safe_respects_active_input_state() {
-        let input_state: SharedInputState = Arc::new(Mutex::new(InputState::default()));
-        let mirror: SharedOutputMirror = Arc::new(Mutex::new(OutputMirror::default()));
-
-        // User is actively typing (recent keystroke, non-empty input)
-        update_input_state(&input_state, b"hello");
-
-        {
-            let mut guard = mirror.lock().expect("mirror lock");
-            // OutputMirror might not have caught up yet — empty or showing old prompt
-            guard.ingest("❯ \n".as_bytes());
-        }
-
-        // Simulate continued typing in a background thread
-        let input_state_clone = Arc::clone(&input_state);
-        let typing_thread = std::thread::spawn(move || {
-            // Keep typing every 50ms for 400ms (total)
-            for _ in 0..8 {
-                std::thread::sleep(Duration::from_millis(50));
-                update_input_state(&input_state_clone, b"x");
-            }
-        });
-
-        // Should wait because InputState shows active typing
-        let safe = wait_for_nudge_safe_with_input_state(
-            &input_state,
-            &mirror,
-            None,
-            Duration::from_millis(150),
-            Duration::from_millis(500),
-        );
-
-        typing_thread.join().unwrap();
-
-        // Should time out waiting for input to stabilize
-        assert!(!safe);
-    }
-
-    #[test]
-    fn wait_for_nudge_safe_allows_nudge_when_input_empty() {
-        let input_state: SharedInputState = Arc::new(Mutex::new(InputState::default()));
-        let mirror: SharedOutputMirror = Arc::new(Mutex::new(OutputMirror::default()));
-
-        {
-            let mut guard = mirror.lock().expect("mirror lock");
-            guard.ingest("❯ \n".as_bytes());
-        }
-
-        // Input state is empty — safe to nudge immediately
-        let safe = wait_for_nudge_safe_with_input_state(
-            &input_state,
-            &mirror,
-            None,
-            Duration::from_secs(20),
-            Duration::from_secs(1),
-        );
-        assert!(safe);
-    }
-}
+mod tests;
