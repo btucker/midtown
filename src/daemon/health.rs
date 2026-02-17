@@ -814,45 +814,34 @@ pub(super) async fn check_and_respawn_dead_processes(
     snap: &snapshot::WorldSnapshot,
     state: &DaemonState,
 ) -> Vec<Effect> {
+    // Pure decision: which processes need respawning?
+    let respawns = crate::rules::decide_dead_process_respawns(
+        &snap.headless_process_health,
+        &snap.in_progress_tasks,
+    );
+
     let mut effects = Vec::new();
-
-    for (name, health) in &snap.headless_process_health {
-        // Only care about processes that died (not alive, has exit code)
-        if health.is_alive || health.exit_code.is_none() {
-            continue;
-        }
-
-        // Check if this coworker has an in-progress task
-        let task = snap
-            .in_progress_tasks
-            .iter()
-            .find(|(_id, _subject, owner)| owner.eq_ignore_ascii_case(name));
-
-        let Some((task_id, task_subject, _owner)) = task else {
-            continue;
-        };
-
+    for respawn in respawns {
         // Per-coworker cooldown to prevent respawn loops
         let should_check = {
             let cooldowns = state.cooldowns.lock().unwrap();
-            cooldowns.check("process_respawn", name, ZOMBIE_RESPAWN_COOLDOWN)
+            cooldowns.check("process_respawn", &respawn.name, ZOMBIE_RESPAWN_COOLDOWN)
         };
         if !should_check {
-            debug!("Process respawn cooldown active for {}", name);
+            debug!("Process respawn cooldown active for {}", respawn.name);
             continue;
         }
 
-        let exit_code = health.exit_code.unwrap_or(-1);
         warn!(
             "Coworker {} process died (exit code {}) — restarting for task !{}",
-            name, exit_code, task_id
+            respawn.name, respawn.exit_code, respawn.task_id
         );
 
         let prompt = format_task_prompt(
-            task_id,
+            &respawn.task_id,
             &format!(
                 "You've been assigned task !{}: {}. Your previous session crashed (exit code {}). Check your git status and continue where you left off.",
-                task_id, task_subject, exit_code
+                respawn.task_id, respawn.task_subject, respawn.exit_code
             ),
         );
 
@@ -860,11 +849,11 @@ pub(super) async fn check_and_respawn_dead_processes(
         let channel = snap
             .all_tasks
             .iter()
-            .find(|t| t.id == *task_id)
+            .find(|t| t.id == respawn.task_id)
             .and_then(|t| t.channel.clone());
 
         let mut config = crate::launch::LaunchConfig::coworker(
-            name.clone(),
+            respawn.name.clone(),
             state.repo_name.clone(),
             crate::launch::SessionMode::Fresh,
             Some(prompt),
@@ -872,23 +861,23 @@ pub(super) async fn check_and_respawn_dead_processes(
         config.channel = channel.clone();
 
         // Apply task model if available (sets both provider and model)
-        config.apply_task_model(&snap.task_model_map, task_id);
+        config.apply_task_model(&snap.task_model_map, &respawn.task_id);
 
         effects.push(Effect::ShutdownCoworker {
-            name: name.clone(),
+            name: respawn.name.clone(),
             message: String::new(),
             session_id: None,
         });
         effects.push(Effect::SpawnCoworker(config));
         effects.push(Effect::RecordCooldown {
             category: "process_respawn".to_string(),
-            key: name.clone(),
+            key: respawn.name.clone(),
         });
         effects.push(Effect::PostToChannel {
             sender: "midtown".to_string(),
             message: format!(
                 "💀 Coworker {} process died (exit {}) — restarting for task !{}",
-                name, exit_code, task_id
+                respawn.name, respawn.exit_code, respawn.task_id
             ),
             channel,
         });

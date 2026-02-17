@@ -1053,14 +1053,22 @@ fn pr_action_to_effects(
             }]
         }
         PrAction::SpawnOwner { owner, message } => {
-            // Look up saved session from PR break for resume
-            let saved_session = {
+            // Pure decision: should we resume with saved session or fresh?
+            let resume_mode = {
                 let sessions = state.pr_break_sessions.read().unwrap();
-                sessions.get(&owner).cloned()
+                crate::rules::decide_pr_owner_resume_mode(&owner, &sessions)
             };
-            let session_mode = match saved_session.as_deref() {
-                Some(sid) => crate::launch::SessionMode::ResumeSession(sid.to_string()),
-                None => crate::launch::SessionMode::Resume,
+            let has_saved_session = matches!(
+                resume_mode,
+                crate::rules::PrOwnerResumeMode::WithSavedSession(_)
+            );
+            let session_mode = match resume_mode {
+                crate::rules::PrOwnerResumeMode::WithSavedSession(sid) => {
+                    crate::launch::SessionMode::ResumeSession(sid)
+                }
+                crate::rules::PrOwnerResumeMode::WithoutSavedSession => {
+                    crate::launch::SessionMode::Resume
+                }
             };
             let config = crate::launch::LaunchConfig::coworker(
                 owner.clone(),
@@ -1101,7 +1109,7 @@ fn pr_action_to_effects(
                 });
             }
 
-            if saved_session.is_some() {
+            if has_saved_session {
                 on_success.push(Effect::ClearPrBreakSession {
                     name: owner.clone(),
                 });
@@ -1724,13 +1732,22 @@ fn comment_action_to_effects(
             }]
         }
         PrAction::SpawnOwner { owner, message } => {
-            let saved_session = {
+            // Pure decision: should we resume with saved session or fresh?
+            let resume_mode = {
                 let sessions = state.pr_break_sessions.read().unwrap();
-                sessions.get(&owner).cloned()
+                crate::rules::decide_pr_owner_resume_mode(&owner, &sessions)
             };
-            let session_mode = match saved_session.as_deref() {
-                Some(sid) => crate::launch::SessionMode::ResumeSession(sid.to_string()),
-                None => crate::launch::SessionMode::Resume,
+            let has_saved_session = matches!(
+                resume_mode,
+                crate::rules::PrOwnerResumeMode::WithSavedSession(_)
+            );
+            let session_mode = match resume_mode {
+                crate::rules::PrOwnerResumeMode::WithSavedSession(sid) => {
+                    crate::launch::SessionMode::ResumeSession(sid)
+                }
+                crate::rules::PrOwnerResumeMode::WithoutSavedSession => {
+                    crate::launch::SessionMode::Resume
+                }
             };
             let mut config = crate::launch::LaunchConfig::coworker(
                 owner.clone(),
@@ -1772,7 +1789,7 @@ fn comment_action_to_effects(
                 });
             }
 
-            if saved_session.is_some() {
+            if has_saved_session {
                 on_success.push(Effect::ClearPrBreakSession {
                     name: owner.clone(),
                 });
@@ -2322,13 +2339,22 @@ fn review_complete_action_to_effects(
             }]
         }
         PrAction::SpawnOwner { owner, message } => {
-            let saved_session = {
+            // Pure decision: should we resume with saved session or fresh?
+            let resume_mode = {
                 let sessions = state.pr_break_sessions.read().unwrap();
-                sessions.get(&owner).cloned()
+                crate::rules::decide_pr_owner_resume_mode(&owner, &sessions)
             };
-            let session_mode = match saved_session.as_deref() {
-                Some(sid) => crate::launch::SessionMode::ResumeSession(sid.to_string()),
-                None => crate::launch::SessionMode::Resume,
+            let has_saved_session = matches!(
+                resume_mode,
+                crate::rules::PrOwnerResumeMode::WithSavedSession(_)
+            );
+            let session_mode = match resume_mode {
+                crate::rules::PrOwnerResumeMode::WithSavedSession(sid) => {
+                    crate::launch::SessionMode::ResumeSession(sid)
+                }
+                crate::rules::PrOwnerResumeMode::WithoutSavedSession => {
+                    crate::launch::SessionMode::Resume
+                }
             };
             let mut config = crate::launch::LaunchConfig::coworker(
                 owner.clone(),
@@ -2370,7 +2396,7 @@ fn review_complete_action_to_effects(
                 });
             }
 
-            if saved_session.is_some() {
+            if has_saved_session {
                 on_success.push(Effect::ClearPrBreakSession {
                     name: owner.clone(),
                 });

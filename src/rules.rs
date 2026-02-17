@@ -395,6 +395,92 @@ pub(crate) fn decide_stuck_coworker_restarts(
     restarts
 }
 
+// ---------------------------------------------------------------------------
+// Dead process detection
+// ---------------------------------------------------------------------------
+
+/// A coworker whose process has died and should be respawned.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DeadProcessRespawn {
+    pub name: String,
+    pub task_id: String,
+    pub task_subject: String,
+    pub exit_code: i32,
+}
+
+/// Detect coworkers whose headless process has exited unexpectedly.
+///
+/// A coworker's process is considered dead if:
+/// - `is_alive` is false
+/// - `exit_code` is present
+/// - The coworker has an in-progress task
+///
+/// Pure function: takes ProcessHealth data and returns respawn decisions.
+pub(crate) fn decide_dead_process_respawns(
+    process_health: &HashMap<String, crate::daemon::snapshot::ProcessHealth>,
+    in_progress_tasks: &[(String, String, String)],
+) -> Vec<DeadProcessRespawn> {
+    let mut respawns = Vec::new();
+
+    for (name, health) in process_health {
+        // Only care about processes that died (not alive, has exit code)
+        if health.is_alive || health.exit_code.is_none() {
+            continue;
+        }
+
+        // Check if this coworker has an in-progress task
+        let Some((task_id, task_subject, _owner)) = in_progress_tasks
+            .iter()
+            .find(|(_id, _subject, owner)| owner.eq_ignore_ascii_case(name))
+        else {
+            continue;
+        };
+
+        respawns.push(DeadProcessRespawn {
+            name: name.clone(),
+            task_id: task_id.clone(),
+            task_subject: task_subject.clone(),
+            exit_code: health.exit_code.unwrap_or(-1),
+        });
+    }
+
+    respawns
+}
+
+// ---------------------------------------------------------------------------
+// PR owner resume decision
+// ---------------------------------------------------------------------------
+
+/// Session mode for resuming a coworker for PR feedback.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum PrOwnerResumeMode {
+    /// Resume with saved session ID (preserves conversation history)
+    WithSavedSession(String),
+    /// Resume without saved session (fresh session)
+    WithoutSavedSession,
+}
+
+/// Decide how to resume a PR owner when PR feedback arrives.
+///
+/// If the owner has a saved session in `pr_break_sessions`, use ResumeSession mode
+/// to preserve conversation history. Otherwise, use fresh Resume mode.
+///
+/// Pure function: takes saved sessions map and returns resume mode.
+pub(crate) fn decide_pr_owner_resume_mode(
+    owner: &str,
+    pr_break_sessions: &HashMap<String, String>,
+) -> PrOwnerResumeMode {
+    if let Some(session_id) = pr_break_sessions.get(owner) {
+        PrOwnerResumeMode::WithSavedSession(session_id.clone())
+    } else {
+        PrOwnerResumeMode::WithoutSavedSession
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Stuck reviewer detection
+// ---------------------------------------------------------------------------
+
 /// A reviewer detected as stuck (no events for the stuck duration).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct StuckReviewerRestart {
@@ -2622,6 +2708,186 @@ mod tests {
             result.is_none(),
             "Should not recover coworker with open PR even after grace period (creates loop)"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // decide_dead_process_respawns tests
+    // -----------------------------------------------------------------------
+
+    /// Helper to create a ProcessHealth entry for a dead process.
+    fn dead_health(exit_code: i32) -> crate::daemon::snapshot::ProcessHealth {
+        crate::daemon::snapshot::ProcessHealth {
+            is_alive: false,
+            exit_code: Some(exit_code),
+            last_event_at: Some(Utc::now() - chrono::Duration::seconds(60)),
+            has_usage_limit: false,
+            usage_limit_reset_at: None,
+            has_api_error: false,
+            has_auth_error: false,
+            has_running_subagent: false,
+            has_pending_tool: false,
+            has_tool_name_conflict: false,
+        }
+    }
+
+    #[test]
+    fn dead_process_respawns_with_in_progress_task() {
+        let mut health = HashMap::new();
+        health.insert("york".to_string(), dead_health(1));
+
+        let tasks = vec![("42".to_string(), "Fix bug".to_string(), "york".to_string())];
+
+        let respawns = decide_dead_process_respawns(&health, &tasks);
+
+        assert_eq!(respawns.len(), 1);
+        assert_eq!(respawns[0].name, "york");
+        assert_eq!(respawns[0].task_id, "42");
+        assert_eq!(respawns[0].task_subject, "Fix bug");
+        assert_eq!(respawns[0].exit_code, 1);
+    }
+
+    #[test]
+    fn dead_process_without_task_not_respawned() {
+        let mut health = HashMap::new();
+        health.insert("madison".to_string(), dead_health(0));
+
+        let tasks: Vec<(String, String, String)> = vec![];
+
+        let respawns = decide_dead_process_respawns(&health, &tasks);
+
+        assert!(
+            respawns.is_empty(),
+            "dead process without task should not be respawned"
+        );
+    }
+
+    #[test]
+    fn alive_process_not_respawned() {
+        let mut health = HashMap::new();
+        health.insert(
+            "broadway".to_string(),
+            crate::daemon::snapshot::ProcessHealth {
+                is_alive: true,
+                exit_code: None,
+                last_event_at: Some(Utc::now() - chrono::Duration::seconds(10)),
+                has_usage_limit: false,
+                usage_limit_reset_at: None,
+                has_api_error: false,
+                has_auth_error: false,
+                has_running_subagent: false,
+                has_pending_tool: false,
+                has_tool_name_conflict: false,
+            },
+        );
+
+        let tasks = vec![(
+            "99".to_string(),
+            "Review PR".to_string(),
+            "broadway".to_string(),
+        )];
+
+        let respawns = decide_dead_process_respawns(&health, &tasks);
+
+        assert!(respawns.is_empty(), "alive process should not be respawned");
+    }
+
+    #[test]
+    fn dead_process_without_exit_code_not_respawned() {
+        let mut health = HashMap::new();
+        health.insert(
+            "amsterdam".to_string(),
+            crate::daemon::snapshot::ProcessHealth {
+                is_alive: false,
+                exit_code: None, // No exit code yet
+                last_event_at: Some(Utc::now() - chrono::Duration::seconds(5)),
+                has_usage_limit: false,
+                usage_limit_reset_at: None,
+                has_api_error: false,
+                has_auth_error: false,
+                has_running_subagent: false,
+                has_pending_tool: false,
+                has_tool_name_conflict: false,
+            },
+        );
+
+        let tasks = vec![(
+            "33".to_string(),
+            "Add test".to_string(),
+            "amsterdam".to_string(),
+        )];
+
+        let respawns = decide_dead_process_respawns(&health, &tasks);
+
+        assert!(
+            respawns.is_empty(),
+            "dead process without exit code should not be respawned (not fully exited yet)"
+        );
+    }
+
+    #[test]
+    fn dead_process_case_insensitive_task_match() {
+        let mut health = HashMap::new();
+        health.insert("Lexington".to_string(), dead_health(137));
+
+        // Task owner is lowercase, but health entry is mixed case
+        let tasks = vec![(
+            "7".to_string(),
+            "Refactor".to_string(),
+            "lexington".to_string(),
+        )];
+
+        let respawns = decide_dead_process_respawns(&health, &tasks);
+
+        assert_eq!(
+            respawns.len(),
+            1,
+            "should match task owner case-insensitively"
+        );
+        assert_eq!(respawns[0].name, "Lexington");
+    }
+
+    // -----------------------------------------------------------------------
+    // decide_pr_owner_resume_mode tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn pr_owner_with_saved_session_resumes() {
+        let mut sessions = HashMap::new();
+        sessions.insert("columbus".to_string(), "session-abc-123".to_string());
+
+        let mode = decide_pr_owner_resume_mode("columbus", &sessions);
+
+        assert_eq!(
+            mode,
+            PrOwnerResumeMode::WithSavedSession("session-abc-123".to_string())
+        );
+    }
+
+    #[test]
+    fn pr_owner_without_saved_session_fresh_resume() {
+        let sessions: HashMap<String, String> = HashMap::new();
+
+        let mode = decide_pr_owner_resume_mode("riverside", &sessions);
+
+        assert_eq!(mode, PrOwnerResumeMode::WithoutSavedSession);
+    }
+
+    #[test]
+    fn pr_owner_resume_case_sensitive_match() {
+        // Session keys are case-sensitive (unlike coworker name matching elsewhere)
+        let mut sessions = HashMap::new();
+        sessions.insert("Lexington".to_string(), "session-xyz-789".to_string());
+
+        // Exact match
+        let mode = decide_pr_owner_resume_mode("Lexington", &sessions);
+        assert_eq!(
+            mode,
+            PrOwnerResumeMode::WithSavedSession("session-xyz-789".to_string())
+        );
+
+        // Different case — no match (HashMap uses exact key match)
+        let mode = decide_pr_owner_resume_mode("lexington", &sessions);
+        assert_eq!(mode, PrOwnerResumeMode::WithoutSavedSession);
     }
 
     // -----------------------------------------------------------------------
