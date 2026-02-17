@@ -24,7 +24,7 @@ const AVENUE_COLORS: &[(&str, Color)] = &[
 ];
 
 /// Check if a sender is a "system-like" sender that should be grouped together
-/// (daemon, system) without blank lines between consecutive messages.
+/// (daemon, midtown, system) without blank lines between consecutive messages.
 ///
 /// Note: "github" was previously included here but is now treated like a regular
 /// sender for spacing purposes, so github messages get blank line separation
