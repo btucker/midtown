@@ -274,6 +274,19 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
             Response::success(request.id, serde_json::json!({"message": "restarting"}))
         }
 
+        "coworker.stop_all" => {
+            info!("stop_all requested via RPC — sending SIGTERM to all headless sessions");
+            // Send SIGTERM to all running coworker sessions and wait up to 10s for them to exit.
+            let count = state
+                .session_manager
+                .graceful_shutdown_all(std::time::Duration::from_secs(10))
+                .await;
+            Response::success(
+                request.id,
+                serde_json::json!({"message": "stopped", "count": count}),
+            )
+        }
+
         "daemon.check-pending" => {
             info!("Check-pending triggered via RPC");
             let snap = snapshot::collect_world_snapshot(state).await;

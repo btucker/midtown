@@ -1084,163 +1084,38 @@ fn kill_orphaned_webhook_forwarders(messages: &mut Vec<String>) {
     }
 }
 
-/// Wait for coworkers to drain (reach stopped/stopping state) before shutdown.
+/// Handle `midtown restart` command.
 ///
-/// First signals the daemon to enter draining mode (stops new task assignments).
-/// Then polls coworker status every 500ms and displays progress. Returns once all
-/// coworkers are stopped/stopping, or after the timeout expires (5 minutes).
-fn wait_for_coworkers_to_drain(timeout_secs: u64) -> Result<(), String> {
-    use std::collections::HashMap;
-
-    let socket_path = socket_path();
-    if !socket_path.exists() {
-        // Daemon not running, nothing to drain
-        return Ok(());
-    }
-
-    // First, signal the daemon to enter draining mode (stops assigning new tasks)
-    let client = match crate::client::DaemonClient::connect() {
+/// Restarts the daemon and webserver by sending SIGTERM to all running coworker
+/// sessions before re-execing the daemon process.
+///
+/// Both default and `--force` modes send SIGTERM to coworkers. The `--force`
+/// flag now has no additional effect on coworker shutdown (SIGTERM is always
+/// sent); it exists for backwards compatibility.
+///
+/// For a full fresh start, use `midtown stop && midtown start`.
+pub fn handle_restart(_force: bool) -> Result<Response, String> {
+    // Send SIGTERM to all running coworker sessions via daemon RPC.
+    // The daemon's graceful_shutdown_all() sends SIGTERM and waits up to 10s,
+    // then SIGKILL as fallback.
+    let client = match DaemonClient::connect() {
         Ok(c) => c,
         Err(_) => {
-            // Daemon stopped or connection failed
-            return Ok(());
+            // Daemon not running — nothing to signal
+            eprintln!("Daemon not running, skipping coworker shutdown.");
+            // Fall through to start path below
+            return handle_start(None, vec![]).map(|_| Response::Message {
+                message: "Daemon was not running; started fresh.".to_string(),
+            });
         }
     };
 
-    if let Err(e) = client.enter_drain() {
-        eprintln!("Warning: Failed to enter drain mode: {}", e);
-        // Continue anyway - we'll still wait for coworkers to finish their current work
+    eprintln!("Sending SIGTERM to all coworker sessions...");
+    match client.stop_all_coworkers() {
+        Ok(_) => eprintln!("Coworker sessions stopped."),
+        Err(e) => eprintln!("Warning: stop_all_coworkers RPC failed: {}", e),
     }
-
-    let start = std::time::Instant::now();
-    let timeout = std::time::Duration::from_secs(timeout_secs);
-    let mut last_status: HashMap<String, String> = HashMap::new();
-    let mut first_iteration = true;
-
-    loop {
-        // Check timeout
-        if start.elapsed() >= timeout {
-            eprintln!("Timeout reached. Force-stopping remaining coworkers...");
-            return Ok(()); // Proceed with force shutdown
-        }
-
-        // Query daemon status via RPC
-        let client = match crate::client::DaemonClient::connect() {
-            Ok(c) => c,
-            Err(_) => {
-                // Daemon stopped or connection failed
-                return Ok(());
-            }
-        };
-
-        let response = match client.status() {
-            Ok(r) => r,
-            Err(_) => {
-                // Status query failed, assume daemon is stopping
-                return Ok(());
-            }
-        };
-
-        // Extract coworker info from the response
-        let coworkers = match response {
-            crate::cli::Response::Status(status_resp) => status_resp
-                .full_status
-                .as_ref()
-                .map(|fs| fs.coworkers.clone())
-                .unwrap_or_default(),
-            _ => {
-                // Unexpected response format
-                return Err("Unexpected status response format".to_string());
-            }
-        };
-
-        // If no coworkers exist, we're done immediately
-        if coworkers.is_empty() {
-            if first_iteration {
-                eprintln!("No coworkers running.");
-            }
-            return Ok(());
-        }
-
-        // Print header on first iteration
-        if first_iteration {
-            eprintln!("Waiting for coworkers to finish...");
-            first_iteration = false;
-        }
-
-        // Check if all coworkers are stopped or stopping
-        let mut all_done = true;
-        let mut current_status: HashMap<String, String> = HashMap::new();
-
-        for coworker in &coworkers {
-            let status = coworker.status.to_lowercase();
-            current_status.insert(coworker.name.clone(), status.clone());
-
-            // Consider stopped/stopping as done, and also treat running coworkers
-            // with no current task as done (they're idle, waiting to be shut down).
-            // CoworkerStatus has no Idle variant — idle state is inferred from
-            // status == "running" with current_task == None.
-            let is_done = status == "stopped"
-                || status == "stopping"
-                || (status == "running" && coworker.current_task.is_none());
-
-            if !is_done {
-                all_done = false;
-
-                // Print status update if changed or first time seeing this coworker
-                if last_status.get(&coworker.name) != Some(&status) {
-                    let task_info = coworker
-                        .current_task
-                        .as_ref()
-                        .map(|t| format!(" (task !{})", t))
-                        .unwrap_or_default();
-                    eprintln!("  {}: {}{}", coworker.name, status, task_info);
-                }
-            } else if last_status.get(&coworker.name) != Some(&status) {
-                // Transitioned to done state - mark with checkmark
-                eprintln!("  {}: {} ✓", coworker.name, status);
-            }
-        }
-
-        // Report stopped coworkers (removed from the list)
-        for name in last_status.keys() {
-            if !current_status.contains_key(name) {
-                eprintln!("  {} stopped. ✓", name);
-            }
-        }
-
-        last_status = current_status;
-
-        if all_done {
-            eprintln!("All coworkers stopped.");
-            return Ok(());
-        }
-
-        // Sleep before next poll
-        std::thread::sleep(std::time::Duration::from_millis(500));
-    }
-}
-
-/// Handle `midtown restart` command.
-///
-/// Gracefully restarts the daemon and webserver while preserving coworker state.
-///
-/// When `force` is false (default):
-/// - Waits for all coworkers to finish their current work and reach stopped state
-/// - Displays real-time status of which coworkers are still working
-/// - Times out after 5 minutes and force-kills stuck coworkers
-///
-/// When `force` is true:
-/// - Immediately stops all coworkers without waiting
-/// - Used for urgent restarts or when daemon is unresponsive
-///
-/// For a full fresh start, use `midtown stop && midtown start`.
-pub fn handle_restart(force: bool) -> Result<Response, String> {
-    // If not forcing, wait for coworkers to drain gracefully
-    if !force {
-        // Timeout after 5 minutes (300 seconds)
-        wait_for_coworkers_to_drain(300)?;
-    }
+    drop(client);
 
     // Send exec-restart RPC to the daemon. The daemon will:
     // 1. Gracefully shut down (persist sessions, detach coworkers)

@@ -512,16 +512,17 @@ impl DaemonClient {
         self.send("daemon.check-pending", None)
     }
 
-    pub fn enter_drain(&self) -> Result<Response, String> {
-        self.send("daemon.enter-drain", None)
-    }
-
     /// Request the daemon to re-exec itself after graceful shutdown.
     ///
     /// This preserves the daemon's original process context (including sandbox
     /// state), avoiding sandbox-exec nesting failures on macOS.
     pub fn exec_restart(&self) -> Result<Response, String> {
         self.send("daemon.exec-restart", None)
+    }
+
+    /// Send SIGTERM to all running headless coworker sessions and wait for them to exit.
+    pub fn stop_all_coworkers(&self) -> Result<Response, String> {
+        self.send("coworker.stop_all", None)
     }
 
     // Auth commands

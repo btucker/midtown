@@ -451,6 +451,73 @@ impl SessionManager {
         count
     }
 
+    /// Gracefully shut down all coworker sessions.
+    ///
+    /// Sends SIGTERM to each session so Claude Code can save state, then waits
+    /// up to `timeout` for all to exit. Any that haven't exited by then are
+    /// force-killed via SIGKILL (through the Drop impl).
+    ///
+    /// Returns the number of sessions that were shut down.
+    pub async fn graceful_shutdown_all(&self, timeout: Duration) -> usize {
+        let mut sessions = self.sessions.write().await;
+        let count = sessions.len();
+        if count == 0 {
+            return 0;
+        }
+
+        // Collect all sessions and send SIGTERM to each
+        let slot_ids: Vec<String> = sessions.keys().cloned().collect();
+        let mut coworker_sessions: Vec<(String, CoworkerSession)> = Vec::new();
+        for slot_id in &slot_ids {
+            if let Some(cs) = sessions.remove(slot_id) {
+                if let Some(ref session) = cs.session
+                    && let Some(pid) = session.pid()
+                {
+                    let _ = std::process::Command::new("kill")
+                        .arg(pid.to_string())
+                        .stderr(std::process::Stdio::null())
+                        .status();
+                    info!("Sent SIGTERM to session '{}' (pid={})", cs.name, pid);
+                }
+                coworker_sessions.push((cs.name.clone(), cs));
+            }
+        }
+
+        // Release the lock while we wait for processes to exit
+        drop(sessions);
+
+        // Wait for all processes to exit within the timeout
+        let deadline = tokio::time::Instant::now() + timeout;
+        for (name, cs) in &mut coworker_sessions {
+            if let Some(ref mut session) = cs.session {
+                let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+                match tokio::time::timeout(remaining, session.wait()).await {
+                    Ok(Ok(_)) => {
+                        info!(
+                            "Gracefully shut down headless session '{}' after SIGTERM",
+                            name
+                        );
+                    }
+                    Ok(Err(e)) => {
+                        warn!("Error waiting for session '{}' to exit: {}", name, e);
+                    }
+                    Err(_) => {
+                        warn!(
+                            "Session '{}' did not exit within {:?} after SIGTERM. Force-killing.",
+                            name, timeout
+                        );
+                    }
+                }
+            }
+        }
+
+        // Drop all sessions (SIGKILL fallback via Drop for any still alive)
+        drop(coworker_sessions);
+
+        info!("Gracefully shut down {} headless session(s)", count);
+        count
+    }
+
     /// Check if a coworker has a running session (by name).
     pub async fn is_alive(&self, name: &str) -> bool {
         let sessions = self.sessions.read().await;
