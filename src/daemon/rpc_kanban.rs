@@ -61,10 +61,12 @@ pub(crate) async fn handle_kanban_data(id: RequestId, state: &DaemonState) -> Re
             "Returning cached kanban data (TTL: {}s)",
             KANBAN_CACHE_TTL.as_secs()
         );
-        // lead_working is never cached — inject live value from headless_health
+        // lead_working and tool_activity are never cached — inject live values.
         let lead_working = is_lead_actively_working(state);
+        let tool_activity = collect_tool_activity(state);
         if let Some(obj) = cached.as_object_mut() {
             obj.insert("lead_working".to_string(), serde_json::json!(lead_working));
+            obj.insert("tool_activity".to_string(), tool_activity);
         }
         return Response::success(id, cached);
     }
@@ -265,10 +267,12 @@ pub(crate) async fn handle_kanban_data(id: RequestId, state: &DaemonState) -> Re
 
     state.kanban_cache.set(response_data.clone(), cache_key);
 
-    // Inject live lead_working state (not cached)
+    // Inject live state (not cached): lead_working and tool_activity.
     let lead_working = is_lead_actively_working(state);
+    let tool_activity = collect_tool_activity(state);
     if let Some(obj) = response_data.as_object_mut() {
         obj.insert("lead_working".to_string(), serde_json::json!(lead_working));
+        obj.insert("tool_activity".to_string(), tool_activity);
     }
 
     Response::success(id, response_data)
@@ -312,6 +316,19 @@ fn is_session_actively_working(health: Option<&ProcessHealth>) -> bool {
         let elapsed = (Utc::now() - ts).num_seconds();
         elapsed >= 0 && elapsed < LEAD_ACTIVITY_TIMEOUT.as_secs() as i64
     })
+}
+
+/// Collect recent tool call/result items per agent as a JSON value for the RPC response.
+///
+/// Returns a JSON object mapping agent name → array of serialized `UniversalItem`s.
+/// This is live state — never cached — so the TUI always sees the latest activity.
+fn collect_tool_activity(state: &DaemonState) -> serde_json::Value {
+    let tool_map = state.recent_tool_items.read().unwrap();
+    let obj: serde_json::Map<String, serde_json::Value> = tool_map
+        .iter()
+        .filter_map(|(agent, items)| serde_json::to_value(items).ok().map(|v| (agent.clone(), v)))
+        .collect();
+    serde_json::Value::Object(obj)
 }
 
 /// Compute a hash representing coworker state for cache invalidation.

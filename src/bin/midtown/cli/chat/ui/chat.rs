@@ -86,7 +86,9 @@ fn draw_chat_messages(f: &mut Frame, app: &mut App, area: Rect) {
     if let Some(ref cache) = app.message_render_cache
         && cache.cache_key == cache_key
     {
-        let paragraph = Paragraph::new(cache.lines.clone());
+        let mut lines = cache.lines.clone();
+        append_tool_activity_lines(&app.tool_activity, &mut lines);
+        let paragraph = Paragraph::new(lines);
         f.render_widget(block, area);
         f.render_widget(paragraph, inner);
         app.diagram_sources.clone_from(&cache.diagram_sources);
@@ -165,10 +167,63 @@ fn draw_chat_messages(f: &mut Frame, app: &mut App, area: Rect) {
         cache_key,
     ));
 
-    let paragraph = Paragraph::new(visible_lines);
+    // Append live tool activity (not cached — changes independently of messages).
+    let mut final_lines = visible_lines;
+    append_tool_activity_lines(&app.tool_activity, &mut final_lines);
+
+    let paragraph = Paragraph::new(final_lines);
 
     f.render_widget(block, area);
     f.render_widget(paragraph, inner);
+}
+
+/// Append per-agent tool call activity lines to the message display.
+///
+/// Renders a compact activity strip for each agent with recent tool calls,
+/// shown below the message history. Skips agents with no activity.
+fn append_tool_activity_lines(
+    tool_activity: &std::collections::HashMap<String, Vec<String>>,
+    lines: &mut Vec<Line<'static>>,
+) {
+    use super::styles::get_sender_color;
+
+    if tool_activity.is_empty() {
+        return;
+    }
+
+    // Blank separator before activity strips
+    lines.push(Line::from(""));
+
+    // Sort agents for deterministic ordering
+    let mut agents: Vec<&String> = tool_activity.keys().collect();
+    agents.sort();
+
+    for agent in agents {
+        let headers = &tool_activity[agent];
+        if headers.is_empty() {
+            continue;
+        }
+
+        let color = get_sender_color(agent);
+
+        // Agent name header: "amsterdam working…"
+        lines.push(Line::from(vec![
+            Span::styled(
+                agent.clone(),
+                Style::default().fg(color).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" working\u{2026}", Style::default().fg(Color::DarkGray)),
+        ]));
+
+        // Show up to 3 most recent tool calls (last 3, most recent last)
+        let start = headers.len().saturating_sub(3);
+        for header in &headers[start..] {
+            lines.push(Line::from(vec![
+                Span::styled("  \u{203a} ", Style::default().fg(Color::DarkGray)),
+                Span::styled(header.clone(), Style::default().fg(Color::DarkGray)),
+            ]));
+        }
+    }
 }
 
 /// Calculate the required height for the input bar based on wrapped text
