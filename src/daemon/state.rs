@@ -134,6 +134,12 @@ pub struct DaemonPersistentState {
     /// invocations, so we persist the session ID to resume it on next task creation.
     #[serde(default)]
     pub clusterer_session_id: Option<String>,
+
+    /// Count of consecutive clusterer failures since last success.
+    /// When this reaches the threshold, `clusterer_session_id` is cleared
+    /// so the next invocation starts a fresh session instead of retrying a dead one.
+    #[serde(default)]
+    pub clusterer_consecutive_failures: u32,
 }
 
 impl DaemonPersistentState {
@@ -235,6 +241,7 @@ impl DaemonPersistentState {
             task_plan: HashMap::new(),
             task_execution_skill: HashMap::new(),
             clusterer_session_id: None,
+            clusterer_consecutive_failures: 0,
         };
 
         // Save the unified file

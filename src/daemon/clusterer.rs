@@ -20,6 +20,12 @@ use crate::daemon::state::DaemonPersistentState;
 /// Timeout for a single clusterer invocation.
 const SESSION_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Number of consecutive failures after which the clusterer session ID is cleared.
+///
+/// After this many failures in a row, the next invocation will spawn a fresh session
+/// rather than continuing to retry a dead one.
+pub const MAX_CONSECUTIVE_FAILURES: u32 = 3;
+
 /// System prompt for the clusterer agent.
 const CLUSTERER_SYSTEM_PROMPT: &str = include_str!("../../agents/clusterer.md");
 
@@ -123,6 +129,32 @@ impl SpecializedRole for ClustererRole {
     }
 }
 
+/// Record a successful clusterer invocation.
+///
+/// Updates the session ID and resets the consecutive failure counter.
+pub fn record_clusterer_success(ps: &mut DaemonPersistentState, session_id: Option<String>) {
+    ps.clusterer_session_id = session_id;
+    ps.clusterer_consecutive_failures = 0;
+}
+
+/// Record a failed clusterer invocation.
+///
+/// Increments the consecutive failure counter. When the counter reaches
+/// `MAX_CONSECUTIVE_FAILURES`, clears the session ID so the next invocation
+/// spawns a fresh session instead of retrying a dead one.
+pub fn record_clusterer_failure(ps: &mut DaemonPersistentState) {
+    ps.clusterer_consecutive_failures += 1;
+    if ps.clusterer_consecutive_failures >= MAX_CONSECUTIVE_FAILURES
+        && ps.clusterer_session_id.is_some()
+    {
+        warn!(
+            "Clusterer: {} consecutive failures, clearing session ID to force fresh session on next attempt",
+            ps.clusterer_consecutive_failures
+        );
+        ps.clusterer_session_id = None;
+    }
+}
+
 /// Invoke the clusterer to assign a channel for a new task.
 ///
 /// On first invocation, spawns a fresh session and saves the session ID.
@@ -144,25 +176,32 @@ pub async fn assign_channel(
         session_id.is_some()
     );
 
-    let result = SpecializedCoworker::execute(&role, request, session_id, Some(cwd), None)
-        .await
-        .map_err(|e| format!("Clusterer execution failed: {}", e))?;
+    let result = SpecializedCoworker::execute(&role, request, session_id, Some(cwd), None).await;
 
-    info!(
-        "Clusterer: returned {} creates, {} archives, {} merges, {} assignments (cost=${:.4}, duration={}ms, session_id={})",
-        result.response.create_channels.len(),
-        result.response.archive_channels.len(),
-        result.response.merge_channels.len(),
-        result.response.assign_tasks.len(),
-        result.cost_usd,
-        result.duration_ms,
-        result.session_id.as_deref().unwrap_or("unknown"),
-    );
+    match result {
+        Ok(result) => {
+            info!(
+                "Clusterer: returned {} creates, {} archives, {} merges, {} assignments (cost=${:.4}, duration={}ms, session_id={})",
+                result.response.create_channels.len(),
+                result.response.archive_channels.len(),
+                result.response.merge_channels.len(),
+                result.response.assign_tasks.len(),
+                result.cost_usd,
+                result.duration_ms,
+                result.session_id.as_deref().unwrap_or("unknown"),
+            );
 
-    // Save the session ID for next time
-    persistent_state.clusterer_session_id = result.session_id;
+            record_clusterer_success(persistent_state, result.session_id);
 
-    Ok(result.response)
+            Ok(result.response)
+        }
+        Err(e) => {
+            let err_msg = format!("Clusterer execution failed: {}", e);
+            warn!("{}", err_msg);
+            record_clusterer_failure(persistent_state);
+            Err(err_msg)
+        }
+    }
 }
 
 #[path = "clusterer_tests.rs"]
