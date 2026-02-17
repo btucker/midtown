@@ -552,7 +552,7 @@ pub fn check_for_usage_limits(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
 }
 
 /// Check if a scheduled usage limit nudge is due, and if so, nudge all running coworkers.
-pub(super) fn maybe_nudge_usage_limit_expiry(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
+pub fn maybe_nudge_usage_limit_expiry(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
     // Pure decision: should we nudge?
     let decision = crate::rules::decide_usage_limit_expiry(
         snap.usage_limit_nudge_at,
@@ -774,7 +774,7 @@ pub(super) fn check_and_nudge_api_errors(
 /// The primary fix is in `headless.rs` (skip `--settings` on resume), but this
 /// serves as defense in depth: detect the error via stderr, shut down the session,
 /// and let normal task dispatch respawn it.
-pub(super) fn check_and_restart_tool_name_conflicts(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
+pub fn check_and_restart_tool_name_conflicts(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
     if snap.tool_name_conflict_coworkers.is_empty() {
         return vec![];
     }
@@ -891,7 +891,7 @@ pub(super) async fn check_and_respawn_dead_processes(
 /// The lead is the human-facing session that should never be permanently down.
 /// If the lead is not in `active_coworkers` (dead and deregistered), respawn it.
 /// Uses `coworker_stop_times` as a cooldown to prevent rapid respawn loops.
-pub(super) fn ensure_lead_alive(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
+pub fn ensure_lead_alive(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
     // Check if lead is already registered (any status)
     let lead_registered = snap
         .active_coworkers

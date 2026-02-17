@@ -14,6 +14,7 @@ mod multi_tick_harness;
 
 use midtown::daemon::{DaemonEvent, Effect};
 use multi_tick_harness::MultiTickHarness;
+use serde_json::json;
 
 /// Test that reset_orphaned_tasks doesn't produce duplicate resets.
 ///
@@ -21,7 +22,6 @@ use multi_tick_harness::MultiTickHarness;
 /// On tick 2, the same task shouldn't be reset again.
 #[test]
 fn test_no_duplicate_orphan_resets() {
-    // Load a snapshot with orphaned tasks
     let fixture = include_str!(
         "fixtures/snapshot/snapshot-tool-names-must-be-unique-all-stuck-20260211-030435.json"
     );
@@ -30,7 +30,6 @@ fn test_no_duplicate_orphan_resets() {
     // Tick 1: Reset orphaned tasks
     let effects1 = harness.tick(&DaemonEvent::TaskDispatchTick);
 
-    // Count reset effects
     let reset_count_1 = effects1
         .iter()
         .filter(|e| matches!(e, Effect::ResetTaskToPending { .. }))
@@ -48,12 +47,6 @@ fn test_no_duplicate_orphan_resets() {
 
     println!("Tick 2: {} reset effects", reset_count_2);
 
-    // After effects are applied from tick 1, tick 2 should not re-reset the same tasks.
-    // The harness simulates applying resets, so tasks that were reset in tick 1
-    // should be pending (with no owner) in tick 2.
-    //
-    // If the decision function has a bug and doesn't check current state properly,
-    // it would try to reset the same task again.
     assert_eq!(
         reset_count_2, 0,
         "Tick 2 should not re-reset tasks that were already reset in tick 1"
@@ -100,90 +93,118 @@ fn test_no_duplicate_idle_shutdowns() {
 
     println!("Tick 2: {} shutdown effects", shutdown_count_2);
 
-    // The harness simulates removing coworkers from active_names when they're shut down.
-    // Tick 2 should not attempt to shut down coworkers that were already removed.
     assert_eq!(
         shutdown_count_2, 0,
         "Tick 2 should not re-shutdown coworkers that were already shut down in tick 1"
     );
 }
 
-/// Test that merged PR cleanup doesn't duplicate task completion effects.
+/// Test that merged PR cleanup doesn't repeat across ticks.
 ///
-/// Bug scenario: PR is merged → task completed on tick 1.
-/// On tick 2, the same task shouldn't be completed again.
+/// Bug scenario: PR is merged → cleanup on tick 1.
+/// On tick 2, the same PR shouldn't be cleaned up again.
+///
+/// Uses snapshot mutation to inject a merged PR with a matching branch entry,
+/// since `collect_merged_pr_cleanup_effects` requires both `merged_pr_numbers`
+/// and `merged_pr_branches` to produce `CleanupMergedWorktree` effects.
 #[test]
 fn test_no_duplicate_pr_cleanup() {
     let fixture =
         include_str!("fixtures/snapshot/snapshot-reviewer-not-spawning-20260214-003545.json");
     let mut harness = MultiTickHarness::from_json(fixture).unwrap();
 
+    // Inject a merged PR with a matching branch entry so
+    // collect_merged_pr_cleanup_effects produces effects
+    harness.snapshot_mut().merged_pr_numbers.insert(9999);
+    harness
+        .snapshot_mut()
+        .merged_pr_branches
+        .insert(9999, "test-branch".to_string());
+
     // Tick 1: Collect merged PR cleanup effects
     let effects1 = harness.tick(&DaemonEvent::PrPollTick);
 
-    let complete_count_1 = effects1
+    let cleanup_count_1 = effects1
         .iter()
-        .filter(|e| matches!(e, Effect::CompleteTask { .. }))
+        .filter(|e| matches!(e, Effect::CleanupMergedWorktree { .. }))
         .count();
 
-    println!("Tick 1: {} complete task effects", complete_count_1);
+    println!("Tick 1: {} CleanupMergedWorktree effects", cleanup_count_1);
+    assert!(
+        cleanup_count_1 > 0,
+        "Tick 1 should produce at least one CleanupMergedWorktree effect for the injected PR"
+    );
 
-    // Tick 2: Should not re-complete the same tasks
+    // Tick 2: Should not re-clean up the same PRs
     let effects2 = harness.tick(&DaemonEvent::PrPollTick);
 
-    let complete_count_2 = effects2
+    let cleanup_count_2 = effects2
         .iter()
-        .filter(|e| matches!(e, Effect::CompleteTask { .. }))
+        .filter(|e| matches!(e, Effect::CleanupMergedWorktree { .. }))
         .count();
 
-    println!("Tick 2: {} complete task effects", complete_count_2);
+    println!("Tick 2: {} CleanupMergedWorktree effects", cleanup_count_2);
 
-    // The harness marks tasks as completed when CompleteTask effects are applied.
-    // Tick 2 should not try to complete tasks that are already completed.
     assert_eq!(
-        complete_count_2, 0,
-        "Tick 2 should not re-complete tasks that were already completed in tick 1"
+        cleanup_count_2, 0,
+        "Tick 2 should not re-clean up PRs that were already cleaned up in tick 1"
     );
 }
 
-/// Test that reviewer spawn doesn't duplicate across ticks.
+/// Test that reconcile_orphaned_prs doesn't create duplicate tasks.
 ///
-/// Bug scenario: PR needs review → reviewer assigned on tick 1.
-/// On tick 2, another reviewer shouldn't be assigned to the same PR.
+/// Bug scenario: Orphaned PR found → task created on tick 1.
+/// On tick 2, the same PR shouldn't get another task.
+///
+/// Uses snapshot mutation to create an orphaned PR (reviewed, CI green,
+/// no task association) that `reconcile_orphaned_prs` will act on.
 #[test]
-fn test_no_duplicate_reviewer_spawns() {
+fn test_no_duplicate_orphaned_pr_tasks() {
     let fixture =
         include_str!("fixtures/snapshot/snapshot-reviewer-not-spawning-20260214-003545.json");
     let mut harness = MultiTickHarness::from_json(fixture).unwrap();
 
-    // Tick 1: Reconcile orphaned PRs (may spawn reviewers)
+    // Inject an orphaned PR: reviewed, CI green, has a coworker branch prefix, no task.
+    // open_prs_data is Vec<serde_json::Value> matching the GitHub API shape.
+    let orphan_pr = json!({
+        "number": 8888,
+        "title": "feat: Test orphan PR [Midtown !999]",
+        "headRefName": "broadway/test-orphan",
+        "isDraft": false,
+        "statusCheckRollup": [
+            {"conclusion": "SUCCESS"}
+        ]
+    });
+    harness.snapshot_mut().open_prs_data.push(orphan_pr);
+    harness.snapshot_mut().reviewed_prs.insert(8888);
+
+    // Tick 1: Reconcile should create a task for the orphaned PR
     let effects1 = harness.tick(&DaemonEvent::PrPollTick);
 
-    let assign_count_1 = effects1
+    let create_count_1 = effects1
         .iter()
-        .filter(|e| matches!(e, Effect::AssignReviewer { .. }))
+        .filter(|e| matches!(e, Effect::CreateTask { .. }))
         .count();
 
-    println!("Tick 1: {} reviewer assignments", assign_count_1);
+    println!("Tick 1: {} CreateTask effects", create_count_1);
+    assert!(
+        create_count_1 > 0,
+        "Tick 1 should create a task for the orphaned PR"
+    );
 
-    // Tick 2: Should not re-assign reviewers to the same PRs
+    // Tick 2: Should not create a duplicate task for the same PR
     let effects2 = harness.tick(&DaemonEvent::PrPollTick);
 
-    let assign_count_2 = effects2
+    let create_count_2 = effects2
         .iter()
-        .filter(|e| matches!(e, Effect::AssignReviewer { .. }))
+        .filter(|e| matches!(e, Effect::CreateTask { .. }))
         .count();
 
-    println!("Tick 2: {} reviewer assignments", assign_count_2);
+    println!("Tick 2: {} CreateTask effects", create_count_2);
 
-    // The harness tracks reviewer assignments. After tick 1 assigns a reviewer,
-    // tick 2 should see that the PR already has a reviewer and not assign another.
-    //
-    // Note: This depends on the decision function checking reviewer_pr_assignments.
-    // If it's buggy and doesn't check, it would assign again.
     assert_eq!(
-        assign_count_2, 0,
-        "Tick 2 should not re-assign reviewers to PRs that already have reviewers from tick 1"
+        create_count_2, 0,
+        "Tick 2 should not create duplicate tasks for PRs that already have tasks from tick 1"
     );
 }
 
@@ -229,22 +250,20 @@ fn test_stuck_reviewer_backoff() {
 
     println!("Tick 2: {} reviewer restarts", restart_count_2);
 
-    // The stuck reviewer logic includes cooldowns and restart count limits.
-    // Even if the reviewer is still stuck after tick 1, tick 2 should respect
-    // cooldowns and backoff instead of restarting immediately.
-    //
-    // Note: This test depends on the decision function tracking restart counts
-    // and implementing backoff. If buggy, it would restart every tick.
     assert_eq!(
         restart_count_2, 0,
         "Tick 2 should not immediately restart a stuck reviewer due to backoff"
     );
 }
 
-/// Test that usage limit nudges don't spam every tick.
+/// Test that usage limit nudges don't fire repeatedly.
 ///
 /// Bug scenario: Coworker hits usage limit → nudge scheduled on tick 1.
-/// On tick 2, the nudge shouldn't be scheduled again immediately.
+/// On tick 2, the nudge shouldn't be scheduled again because
+/// `usage_limit_nudge_scheduled` is now true.
+///
+/// Uses snapshot mutation to set `has_usage_limit: true` on a coworker,
+/// since the fixture doesn't have any coworkers with usage limits.
 #[test]
 fn test_usage_limit_nudge_dedup() {
     let fixture = include_str!(
@@ -252,7 +271,20 @@ fn test_usage_limit_nudge_dedup() {
     );
     let mut harness = MultiTickHarness::from_json(fixture).unwrap();
 
-    // Tick 1: Check for usage limits
+    // Inject a coworker with has_usage_limit: true so check_for_usage_limits
+    // will actually produce SetUsageLimitNudge
+    if let Some((_name, health)) = harness
+        .snapshot_mut()
+        .headless_process_health
+        .iter_mut()
+        .find(|(_, h)| h.is_alive)
+    {
+        health.has_usage_limit = true;
+    }
+    // Ensure the flag starts as false
+    harness.snapshot_mut().usage_limit_nudge_scheduled = false;
+
+    // Tick 1: Check for usage limits — should produce SetUsageLimitNudge
     let effects1 = harness.tick(&DaemonEvent::SessionMonitorTick);
 
     let nudge_count_1 = effects1
@@ -261,8 +293,18 @@ fn test_usage_limit_nudge_dedup() {
         .count();
 
     println!("Tick 1: {} usage limit nudge effects", nudge_count_1);
+    assert!(
+        nudge_count_1 > 0,
+        "Tick 1 should produce a SetUsageLimitNudge effect for the usage-limited coworker"
+    );
 
-    // Tick 2: Should not re-schedule the same nudge
+    // Verify the harness applied the effect
+    assert!(
+        harness.snapshot().usage_limit_nudge_scheduled,
+        "After tick 1, usage_limit_nudge_scheduled should be true"
+    );
+
+    // Tick 2: Should not re-schedule the nudge
     let effects2 = harness.tick(&DaemonEvent::SessionMonitorTick);
 
     let nudge_count_2 = effects2
@@ -272,15 +314,9 @@ fn test_usage_limit_nudge_dedup() {
 
     println!("Tick 2: {} usage limit nudge effects", nudge_count_2);
 
-    // The usage_limit_nudge_scheduled flag in WorldSnapshot tracks whether
-    // a nudge is already scheduled. Tick 2 should see this and not schedule again.
-    //
-    // Note: The harness doesn't currently mutate usage_limit_nudge_scheduled,
-    // so this test may pass trivially. To make it meaningful, we'd need to
-    // simulate the effect of SetUsageLimitNudge.
     assert_eq!(
         nudge_count_2, 0,
-        "Tick 2 should not re-schedule a usage limit nudge that's already scheduled"
+        "Tick 2 should not re-schedule a usage limit nudge — flag is already set"
     );
 }
 
@@ -302,10 +338,6 @@ fn test_multi_tick_stabilization() {
         println!("Tick {}: {} effects", i, effects.len());
     }
 
-    // After the first tick resolves issues, subsequent ticks should produce
-    // fewer effects. By tick 5, we should be stable (0 effects).
-    //
-    // If there's a bug causing an infinite loop, effect counts won't decrease.
     let last_count = effect_counts.last().unwrap();
     assert_eq!(
         *last_count, 0,

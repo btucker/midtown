@@ -66,12 +66,17 @@ pub use effects::Effect;
 // 2. Those functions often mutate state, making them harder to test in isolation
 // 3. Pure functions are the gold standard for testing
 #[doc(hidden)]
-pub use dispatch::reset_orphaned_tasks;
+pub use dispatch::{
+    build_description_based_completion_effects, check_for_duplicate_task_workers,
+    reset_orphaned_tasks,
+};
 #[doc(hidden)]
 pub use events::DaemonEvent;
 #[doc(hidden)]
 pub use health::{
-    check_and_restart_stuck_reviewers, check_and_shutdown_idle_coworkers, check_for_usage_limits,
+    check_and_restart_stuck_reviewers, check_and_restart_tool_name_conflicts,
+    check_and_shutdown_idle_coworkers, check_for_usage_limits, ensure_lead_alive,
+    maybe_nudge_usage_limit_expiry,
 };
 #[doc(hidden)]
 pub use pr::{collect_merged_pr_cleanup_effects, reconcile_orphaned_prs};
