@@ -759,7 +759,7 @@ fn test_pr_merged_cleans_up_worktree() {
 #[ignore]
 #[timeout(60000)]
 fn test_full_pr_lifecycle_webhook_effects() {
-    let mut fixture = WebhookEffectFixture::new(47204).expect("Failed to create fixture");
+    let mut fixture = WebhookEffectFixture::new(47205).expect("Failed to create fixture");
     assert!(fixture.start_daemon(), "Failed to start daemon");
 
     thread::sleep(Duration::from_secs(1));
