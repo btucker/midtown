@@ -385,6 +385,9 @@ pub fn clusterer_system_prompt() -> String {
 /// the embedded default. The `{channel_name}` placeholder is replaced with the
 /// actual channel name, and `{domain_context}` is replaced with daemon-injected
 /// context (channel description, active tasks, recent PRs).
+///
+/// Note: `channel_name` is embedded into bash command examples in the template,
+/// so it must be a shell-safe identifier (alphanumeric + hyphens).
 pub fn channel_lead_system_prompt(channel_name: &str, domain_context: &str) -> String {
     let template = load_prompt_file("channel-lead.md")
         .unwrap_or_else(|| DEFAULT_CHANNEL_LEAD_PROMPT.to_string());
