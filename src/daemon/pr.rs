@@ -1915,7 +1915,6 @@ async fn collect_reviewer_effects(
         state,
         prs,
         crate::github_state::AssignmentSource::PollingFallback,
-        Some(&snap.worktree_registry),
     )
     .await
 }
@@ -1926,7 +1925,6 @@ pub(crate) async fn collect_reviewer_effects_with_source(
     state: &DaemonState,
     prs: &[serde_json::Value],
     source: crate::github_state::AssignmentSource,
-    worktree_registry: Option<&crate::worktree_registry::WorktreeRegistry>,
 ) -> Vec<Effect> {
     let mut effects: Vec<Effect> = Vec::new();
 
@@ -2484,7 +2482,6 @@ pub(super) async fn process_pending_review_spawns(
             state,
             &[pr],
             crate::github_state::AssignmentSource::Webhook,
-            None, // Webhook path builds branch_owners from registry, no separate lookup needed
         )
         .await;
         all_effects.extend(effects);
@@ -2609,7 +2606,6 @@ pub(super) async fn handle_ci_completion_for_review_spawn(
         state,
         &[pr],
         crate::github_state::AssignmentSource::Webhook,
-        None, // Webhook path builds branch_owners from registry, no separate lookup needed
     )
     .await;
 
