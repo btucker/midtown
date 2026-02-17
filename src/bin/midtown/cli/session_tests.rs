@@ -1,33 +1,13 @@
 //! Tests for session commands (attach, detach, target parsing, CLI arg construction).
 
 use super::*;
-use std::sync::Mutex;
 
-// Mutex to serialize tests that depend on CWD being in a git repo.
-// Other tests (like daemon tests) may change CWD, so we need to serialize
-// to prevent interference. We use unwrap_or_else to recover from poisoned mutex.
-static SESSION_CWD_MUTEX: Mutex<()> = Mutex::new(());
-
-/// Ensure we're in a git repository before running a test.
-/// If not, try to cd to the project root (which is a git repo).
-fn ensure_in_git_repo() {
-    if midtown::paths::detect_repo_name().is_none() {
-        // Not in a repo - try to find the project root by looking for Cargo.toml
-        let current = std::env::current_dir().ok();
-        if let Some(mut path) = current {
-            // Walk up until we find Cargo.toml or run out of parents
-            while !path.join("Cargo.toml").exists() {
-                if !path.pop() {
-                    // Reached root without finding Cargo.toml - skip this approach
-                    break;
-                }
-            }
-            // If we found Cargo.toml, cd there
-            if path.join("Cargo.toml").exists() {
-                let _ = std::env::set_current_dir(&path);
-            }
-        }
-    }
+/// Return the project root directory (a git repo).
+///
+/// Uses CARGO_MANIFEST_DIR which is set at compile time, making this
+/// independent of the process CWD (which other tests may change).
+fn find_project_root() -> String {
+    env!("CARGO_MANIFEST_DIR").to_string()
 }
 
 fn git_head(dir: &std::path::Path) -> String {
@@ -350,10 +330,9 @@ fn test_to_cli_args_coworker_restricts_settings() {
 
 #[test]
 fn test_lead_attach_includes_system_prompt() {
-    let _lock = SESSION_CWD_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-    ensure_in_git_repo();
+    let cwd = find_project_root();
     let result = build_attach_shell_command(
-        "/tmp/test-cwd",
+        &cwd,
         "lead",
         midtown::auth::AuthProvider::Claude,
         "session-123",
@@ -379,10 +358,9 @@ fn test_lead_attach_includes_system_prompt() {
 
 #[test]
 fn test_coworker_attach_includes_system_prompt() {
-    let _lock = SESSION_CWD_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-    ensure_in_git_repo();
+    let cwd = find_project_root();
     let result = build_attach_shell_command(
-        "/tmp/test-cwd",
+        &cwd,
         "park",
         midtown::auth::AuthProvider::Claude,
         "session-456",
@@ -408,10 +386,9 @@ fn test_coworker_attach_includes_system_prompt() {
 
 #[test]
 fn test_lead_attach_sets_task_list_id() {
-    let _lock = SESSION_CWD_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-    ensure_in_git_repo();
+    let cwd = find_project_root();
     let result = build_attach_shell_command(
-        "/tmp/test-cwd",
+        &cwd,
         "lead",
         midtown::auth::AuthProvider::Claude,
         "session-123",
@@ -431,10 +408,9 @@ fn test_lead_attach_sets_task_list_id() {
 
 #[test]
 fn test_coworker_attach_no_task_list_id() {
-    let _lock = SESSION_CWD_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-    ensure_in_git_repo();
+    let cwd = find_project_root();
     let result = build_attach_shell_command(
-        "/tmp/test-cwd",
+        &cwd,
         "park",
         midtown::auth::AuthProvider::Claude,
         "session-456",
@@ -454,10 +430,9 @@ fn test_coworker_attach_no_task_list_id() {
 
 #[test]
 fn test_lead_attach_includes_agent_teams_flags() {
-    let _lock = SESSION_CWD_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-    ensure_in_git_repo();
+    let cwd = find_project_root();
     let result = build_attach_shell_command(
-        "/tmp/test-cwd",
+        &cwd,
         "lead",
         midtown::auth::AuthProvider::Claude,
         "session-123",
@@ -563,10 +538,9 @@ fn test_to_cli_args_coworker_gets_sonnet_model() {
 
 #[test]
 fn test_reviewer_attach_gets_reviewer_system_prompt() {
-    let _lock = SESSION_CWD_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-    ensure_in_git_repo();
+    let cwd = find_project_root();
     let result = build_attach_shell_command(
-        "/tmp/test-cwd",
+        &cwd,
         "york",
         midtown::auth::AuthProvider::Claude,
         "session-789",
@@ -585,10 +559,9 @@ fn test_reviewer_attach_gets_reviewer_system_prompt() {
 
 #[test]
 fn test_lead_attach_gets_opus_model() {
-    let _lock = SESSION_CWD_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-    ensure_in_git_repo();
+    let cwd = find_project_root();
     let result = build_attach_shell_command(
-        "/tmp/test-cwd",
+        &cwd,
         "lead",
         midtown::auth::AuthProvider::Claude,
         "session-123",
