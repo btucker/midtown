@@ -154,7 +154,8 @@ pub struct DaemonTestHarness {
     pub temp_dir: PathBuf,
     /// Project directory under ~/.midtown/projects/<name>/
     pub project_dir: PathBuf,
-    /// Repository name (used for socket path derivation)
+    /// Repository name (used for socket path derivation and cleanup)
+    #[allow(dead_code)]
     pub repo_name: String,
     /// Path to the daemon socket
     pub socket_path: PathBuf,
@@ -450,6 +451,7 @@ impl DaemonTestHarness {
     /// Create a task JSON file in the test's task directory.
     ///
     /// Creates a task with the given ID, subject, status, and optional owner.
+    #[allow(dead_code)]
     pub fn create_task(&self, id: &str, subject: &str, status: &str, owner: Option<&str>) {
         let _ = fs::create_dir_all(&self.tasks_dir);
         let task_json = serde_json::json!({
@@ -463,6 +465,7 @@ impl DaemonTestHarness {
     }
 
     /// Read daemon-state.json.
+    #[allow(dead_code)]
     pub fn read_daemon_state(&self) -> Option<serde_json::Value> {
         let path = self.project_dir.join("daemon-state.json");
         if !path.exists() {
@@ -494,6 +497,7 @@ impl DaemonTestHarness {
     }
 
     /// Get the coworkers directory for this test repo.
+    #[allow(dead_code)]
     pub fn coworkers_dir(&self) -> PathBuf {
         dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
@@ -503,6 +507,7 @@ impl DaemonTestHarness {
     }
 
     /// Check if a worktree exists for a given coworker.
+    #[allow(dead_code)]
     pub fn worktree_exists(&self, coworker: &str) -> bool {
         self.coworkers_dir().join(coworker).exists()
     }
@@ -538,9 +543,7 @@ impl<'a> WebhookTestClient<'a> {
     ///
     /// The harness must have webhook enabled.
     pub fn new(harness: &'a DaemonTestHarness) -> Option<Self> {
-        if harness.webhook_port.is_none() {
-            return None;
-        }
+        harness.webhook_port?;
         Some(Self { harness })
     }
 

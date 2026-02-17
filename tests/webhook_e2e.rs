@@ -16,7 +16,7 @@ use std::thread;
 use std::time::Duration;
 
 mod common;
-use common::{DaemonHarnessOptions, DaemonTestHarness, WebhookTestClient};
+use common::{DaemonHarnessOptions, DaemonTestHarness};
 
 // ── Test Helpers ────────────────────────────────────────────────────
 
