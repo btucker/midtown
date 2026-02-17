@@ -740,25 +740,37 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
             _ => EventResult::Continue,
         },
         Event::Paste(text) => {
-            // Bracketed paste: insert the entire pasted string at cursor position.
-            // Newlines in the pasted text are preserved as-is (they display as
-            // line breaks in the multi-line input and are sent as part of the message).
-            auto_focus_and_insert_str(app, &text);
+            // Normalize line endings: clipboard content from Windows or web browsers
+            // may contain \r\n or bare \r — convert to \n before insertion.
+            let text = text.replace("\r\n", "\n").replace('\r', "\n");
+
+            if app.channel_switcher.show {
+                // Route pasted text to channel switcher filter
+                for c in text.chars() {
+                    app.channel_switcher_input(c);
+                }
+            } else {
+                // Bracketed paste: insert the entire pasted string at cursor position.
+                // Newlines in the pasted text are preserved as-is (they display as
+                // line breaks in the multi-line input and are sent as part of the message).
+                auto_focus_and_insert_str(app, &text);
+            }
             EventResult::Continue
         }
         _ => EventResult::Continue,
     }
 }
 
-/// Toggle mouse capture for text selection mode.
-/// When selection mode is on, mouse capture is disabled so the terminal handles
-/// text selection natively. Scrollwheel won't work in the TUI during selection mode.
+/// Toggle mouse capture and bracketed paste for text selection mode.
+/// When selection mode is on, mouse capture and bracketed paste are disabled so
+/// the terminal handles text selection and paste natively. Scrollwheel won't
+/// work in the TUI during selection mode.
 fn toggle_mouse_capture(app: &mut App, backend: &mut CrosstermBackend<io::Stdout>) {
     app.selection_mode = !app.selection_mode;
     if app.selection_mode {
-        let _ = execute!(backend, DisableMouseCapture);
+        let _ = execute!(backend, DisableMouseCapture, DisableBracketedPaste);
     } else {
-        let _ = execute!(backend, EnableMouseCapture);
+        let _ = execute!(backend, EnableMouseCapture, EnableBracketedPaste);
     }
 }
 
@@ -787,14 +799,17 @@ fn auto_focus_and_insert_char(app: &mut App, c: char) {
 fn auto_focus_and_insert_str(app: &mut App, s: &str) {
     use app::FocusedPane;
 
+    // Switch focus to InputBar if not already there
     if app.focused_pane != FocusedPane::InputBar {
         app.focused_pane = FocusedPane::InputBar;
     }
 
+    // Insert string at cursor position
     let byte_idx = char_index_to_byte_index(&app.input_text, app.input_cursor);
     app.input_text.insert_str(byte_idx, s);
     app.input_cursor += s.chars().count();
 
+    // Detect autocomplete trigger
     app.detect_autocomplete_trigger();
 }
 
@@ -1717,88 +1732,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_paste_inserts_text_at_cursor() {
-        let mut app = test_app();
-
-        let event = Event::Paste("hello world".to_string());
-        handle_event(&mut app, event);
-
-        assert_eq!(app.input_text, "hello world");
-        assert_eq!(app.input_cursor, 11);
-    }
-
-    #[test]
-    fn test_paste_preserves_newlines() {
-        let mut app = test_app();
-
-        let event = Event::Paste("line1\nline2\nline3".to_string());
-        handle_event(&mut app, event);
-
-        assert_eq!(app.input_text, "line1\nline2\nline3");
-        assert_eq!(app.input_cursor, 17);
-    }
-
-    #[test]
-    fn test_paste_inserts_at_middle_of_existing_text() {
-        use app::FocusedPane;
-        let mut app = test_app();
-        app.focused_pane = FocusedPane::InputBar;
-        app.input_text = "helo".to_string();
-        app.input_cursor = 2; // cursor between 'he' and 'lo'
-
-        let event = Event::Paste("l".to_string());
-        handle_event(&mut app, event);
-
-        assert_eq!(app.input_text, "hello");
-        assert_eq!(app.input_cursor, 3);
-    }
-
-    #[test]
-    fn test_paste_auto_focuses_input_bar() {
-        use app::FocusedPane;
-        let mut app = test_app();
-        app.focused_pane = FocusedPane::Chat;
-
-        let event = Event::Paste("hello".to_string());
-        handle_event(&mut app, event);
-
-        assert_eq!(app.focused_pane, FocusedPane::InputBar);
-    }
-
-    #[test]
-    fn test_paste_empty_string_is_noop() {
-        let mut app = test_app();
-
-        let event = Event::Paste(String::new());
-        handle_event(&mut app, event);
-
-        assert_eq!(app.input_text, "");
-        assert_eq!(app.input_cursor, 0);
-    }
-
-    #[test]
-    fn test_alt_enter_inserts_newline() {
-        let mut app = test_app();
-
-        let event = Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT));
-        handle_event(&mut app, event);
-
-        assert_eq!(app.input_text, "\n");
-        assert_eq!(app.input_cursor, 1);
-    }
-
-    #[test]
-    fn test_shift_enter_inserts_newline() {
-        let mut app = test_app();
-
-        let event = Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT));
-        handle_event(&mut app, event);
-
-        assert_eq!(app.input_text, "\n");
-        assert_eq!(app.input_cursor, 1);
-    }
-
     /// Regression test: Shift+letter should insert uppercase character.
     ///
     /// With the kitty keyboard protocol (REPORT_ALL_KEYS_AS_ESCAPE_CODES),
@@ -2220,3 +2153,7 @@ mod channel_switcher_tests;
 #[path = "keyboard_protocol_tests.rs"]
 #[cfg(test)]
 mod keyboard_protocol_tests;
+
+#[path = "paste_tests.rs"]
+#[cfg(test)]
+mod paste_tests;
