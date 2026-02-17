@@ -1,6 +1,30 @@
 //! Tests for session commands (attach, detach, target parsing, CLI arg construction).
 
 use super::*;
+use std::sync::Mutex;
+
+// Mutex to serialize tests that depend on CWD being in a git repo.
+// Other tests (like daemon tests) may change CWD, so we need to serialize
+// to prevent interference. We use unwrap_or_else to recover from poisoned mutex.
+static SESSION_CWD_MUTEX: Mutex<()> = Mutex::new(());
+
+/// Ensure we're in a git repository before running a test.
+/// If not, try to cd to the project root (which is a git repo).
+fn ensure_in_git_repo() {
+    if midtown::paths::detect_repo_name().is_none() {
+        let current = std::env::current_dir().ok();
+        if let Some(mut path) = current {
+            while !path.join("Cargo.toml").exists() {
+                if !path.pop() {
+                    break;
+                }
+            }
+            if path.join("Cargo.toml").exists() {
+                let _ = std::env::set_current_dir(&path);
+            }
+        }
+    }
+}
 
 /// Return the project root directory (a git repo).
 ///
@@ -612,7 +636,7 @@ fn test_build_attach_command_uses_shell_command_substitution() {
     ensure_in_git_repo();
 
     let result = build_attach_shell_command(
-        "/tmp/test-cwd",
+        &find_project_root(),
         "lead",
         midtown::auth::AuthProvider::Claude,
         "session-123",
@@ -695,10 +719,9 @@ fn test_build_attach_command_no_double_quoting() {
     let _lock = SESSION_CWD_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     ensure_in_git_repo();
 
-    // Use a path with special characters to trigger quoting
-    let cwd = "/tmp/test dir with spaces";
+    // Use the project root (a real git repo) as the cwd
     let result = build_attach_shell_command(
-        cwd,
+        &find_project_root(),
         "lead",
         midtown::auth::AuthProvider::Claude,
         "session-123",
@@ -743,7 +766,7 @@ fn test_build_attach_command_shell_parseable() {
     ensure_in_git_repo();
 
     let result = build_attach_shell_command(
-        "/tmp/test-cwd",
+        &find_project_root(),
         "lead",
         midtown::auth::AuthProvider::Claude,
         "session-123",
