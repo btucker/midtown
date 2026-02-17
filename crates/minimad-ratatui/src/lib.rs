@@ -4,15 +4,85 @@
 //! - [`from_str`]: Parse markdown into a multi-line `ratatui::text::Text`
 //! - [`inline`]: Parse markdown as a single inline line for single-line rendering
 
+use std::sync::OnceLock;
+
 use minimad::{Alignment, CompositeStyle, Line as MadLine, Text as MadText};
 use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
 };
+use syntect::easy::HighlightLines;
+use syntect::highlighting::{Style as SyntectStyle, Theme, ThemeSet};
+use syntect::parsing::SyntaxSet;
 
 #[path = "tests.rs"]
 #[cfg(test)]
 mod tests;
+
+fn syntax_set() -> &'static SyntaxSet {
+    static SS: OnceLock<SyntaxSet> = OnceLock::new();
+    SS.get_or_init(SyntaxSet::load_defaults_newlines)
+}
+
+fn default_theme() -> &'static Theme {
+    static THEME: OnceLock<Theme> = OnceLock::new();
+    THEME.get_or_init(|| {
+        let ts = ThemeSet::load_defaults();
+        ts.themes
+            .into_iter()
+            .find(|(name, _)| name == "base16-ocean.dark")
+            .map(|(_, theme)| theme)
+            .expect("base16-ocean.dark theme should exist in syntect defaults")
+    })
+}
+
+/// Convert a syntect foreground color to a ratatui `Color::Rgb`.
+fn syntect_color_to_ratatui(color: syntect::highlighting::Color) -> Color {
+    Color::Rgb(color.r, color.g, color.b)
+}
+
+/// Highlight a block of code lines using syntect.
+///
+/// When `lang` is `None` or unrecognized, falls back to plain text (dark bg, no color).
+/// When `lang` is a recognized language, applies RGB token colors over a dark background.
+fn highlight_code_block(code_lines: &[&str], lang: Option<&str>) -> Vec<Line<'static>> {
+    let ss = syntax_set();
+    let theme = default_theme();
+    let code_bg = Style::default().bg(Color::DarkGray);
+
+    let syntax = lang
+        .and_then(|l| {
+            ss.find_syntax_by_token(l)
+                .or_else(|| ss.find_syntax_by_name(l))
+        })
+        .unwrap_or_else(|| ss.find_syntax_plain_text());
+
+    let mut highlighter = HighlightLines::new(syntax, theme);
+    let mut result = Vec::new();
+
+    for line_text in code_lines {
+        match highlighter.highlight_line(line_text, ss) {
+            Ok(ranges) => {
+                let spans: Vec<Span<'static>> = ranges
+                    .into_iter()
+                    .map(|(style, text): (SyntectStyle, &str)| {
+                        let fg = syntect_color_to_ratatui(style.foreground);
+                        Span::styled(
+                            text.to_string(),
+                            Style::default().fg(fg).bg(Color::DarkGray),
+                        )
+                    })
+                    .collect();
+                result.push(Line::from(spans));
+            }
+            Err(_) => {
+                result.push(Line::from(Span::styled(line_text.to_string(), code_bg)));
+            }
+        }
+    }
+
+    result
+}
 
 /// Convert a minimad `Compound` to a ratatui `Span`.
 ///
@@ -180,28 +250,19 @@ fn mad_line_to_line(mad_line: &MadLine<'_>, base_style: Style) -> Line<'static> 
     }
 }
 
-/// Parse markdown into a multi-line ratatui `Text`.
-///
-/// Each line of markdown is converted to a ratatui `Line` with appropriate styling:
-/// - Bold, italic, strikeout use ratatui modifiers
-/// - Code spans use cyan foreground
-/// - Code fence blocks use a dark background
-/// - Table rows are rendered with `│` separators between cells, with cells padded
-///   to align columns. The header row (first TableRow) is rendered bold. The
-///   separator row (TableRule) determines per-column alignment (left/center/right).
-/// - Horizontal rules render as 40 `─` characters
-///
-/// The `base_style` is applied to all unstyled text.
-pub fn from_str(markdown: &str, base_style: Style) -> Text<'static> {
-    let mad_text = MadText::from(markdown);
+/// Render a section of normal (non-fenced) markdown through minimad, preserving
+/// table detection and column alignment.
+fn render_normal_section(section: &str, base_style: Style, output: &mut Vec<Line<'static>>) {
+    if section.is_empty() {
+        return;
+    }
+    let mad_text = MadText::from(section);
     let mad_lines: Vec<&MadLine<'_>> = mad_text.lines.iter().collect();
 
     let header_style = base_style.add_modifier(Modifier::BOLD);
-    let mut output_lines: Vec<Line<'static>> = Vec::with_capacity(mad_lines.len());
 
     let mut i = 0;
     while i < mad_lines.len() {
-        // Detect a table block: one or more consecutive TableRow / TableRule lines.
         if mad_lines[i].is_table_part() {
             let start = i;
             while i < mad_lines.len() && mad_lines[i].is_table_part() {
@@ -212,7 +273,6 @@ pub fn from_str(markdown: &str, base_style: Style) -> Text<'static> {
             let (col_widths, alignments) = compute_table_layout(block);
             let total_width = table_total_width(&col_widths);
 
-            // The first TableRow in the block is the header.
             let mut header_rendered = false;
 
             for mad_line in block {
@@ -224,7 +284,7 @@ pub fn from_str(markdown: &str, base_style: Style) -> Text<'static> {
                         } else {
                             base_style
                         };
-                        output_lines.push(render_table_row(
+                        output.push(render_table_row(
                             row,
                             &col_widths,
                             &alignments,
@@ -233,20 +293,80 @@ pub fn from_str(markdown: &str, base_style: Style) -> Text<'static> {
                         ));
                     }
                     MadLine::TableRule(_) => {
-                        output_lines.push(Line::from(Span::styled(
+                        output.push(Line::from(Span::styled(
                             "\u{2500}".repeat(total_width),
                             base_style,
                         )));
                     }
                     _ => {
-                        output_lines.push(mad_line_to_line(mad_line, base_style));
+                        output.push(mad_line_to_line(mad_line, base_style));
                     }
                 }
             }
         } else {
-            output_lines.push(mad_line_to_line(mad_lines[i], base_style));
+            output.push(mad_line_to_line(mad_lines[i], base_style));
             i += 1;
         }
+    }
+}
+
+/// Parse markdown into a multi-line ratatui `Text`.
+///
+/// Each line of markdown is converted to a ratatui `Line` with appropriate styling:
+/// - Bold, italic, strikeout use ratatui modifiers
+/// - Code spans use cyan foreground
+/// - Code fence blocks use a dark background; fenced blocks with a language tag get
+///   syntect-based RGB syntax highlighting (theme: base16-ocean.dark)
+/// - Table rows are rendered with `│` separators between cells, with cells padded
+///   to align columns. The header row (first TableRow) is rendered bold. The
+///   separator row (TableRule) determines per-column alignment (left/center/right).
+/// - Horizontal rules render as 40 `─` characters
+///
+/// The `base_style` is applied to all unstyled text.
+pub fn from_str(markdown: &str, base_style: Style) -> Text<'static> {
+    let mut output_lines: Vec<Line<'static>> = Vec::new();
+    let mut normal_buf = String::new();
+    let mut in_fence = false;
+    let mut fence_lang: Option<&str> = None;
+    let mut code_lines: Vec<&str> = Vec::new();
+
+    for raw_line in markdown.lines() {
+        let trimmed = raw_line.trim_start();
+        if trimmed.starts_with("```") {
+            if in_fence {
+                // Closing fence: flush accumulated normal text, then render code block
+                render_normal_section(&normal_buf, base_style, &mut output_lines);
+                normal_buf.clear();
+                output_lines.extend(highlight_code_block(&code_lines, fence_lang));
+                code_lines.clear();
+                in_fence = false;
+                fence_lang = None;
+            } else {
+                // Opening fence: flush accumulated normal text first
+                render_normal_section(&normal_buf, base_style, &mut output_lines);
+                normal_buf.clear();
+                in_fence = true;
+                let lang_tag = trimmed.trim_start_matches('`').trim();
+                fence_lang = if lang_tag.is_empty() {
+                    None
+                } else {
+                    Some(lang_tag)
+                };
+            }
+        } else if in_fence {
+            code_lines.push(raw_line);
+        } else {
+            normal_buf.push_str(raw_line);
+            normal_buf.push('\n');
+        }
+    }
+
+    // Flush any remaining normal content
+    render_normal_section(&normal_buf, base_style, &mut output_lines);
+
+    // Unclosed fence: render as plain code
+    if in_fence && !code_lines.is_empty() {
+        output_lines.extend(highlight_code_block(&code_lines, None));
     }
 
     Text::from(output_lines)
