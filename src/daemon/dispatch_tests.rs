@@ -2349,6 +2349,99 @@ fn test_reset_orphaned_tasks_with_pr_no_effect() {
 }
 
 #[test]
+fn test_reset_orphaned_tasks_github_open_pr_task_ids_protects() {
+    // Regression test for bug: reset_orphaned_tasks only checked tasks_with_open_prs
+    // (from pr_author_sessions) but NOT github_open_pr_task_ids (from GitHub API).
+    //
+    // After a daemon restart, pr_author_sessions is empty, so tasks_with_open_prs is
+    // empty. Tasks with open PRs (detected via GitHub PR titles) were incorrectly
+    // reset to pending, triggering a new coworker spawn for an already-PR'd task.
+    //
+    // Scenario matches snapshot-pr-opened-then-task-unassigned-reassigned-20260217-190136.json:
+    // - tasks_with_open_prs is empty (stale after restart)
+    // - github_open_pr_task_ids has task 1422 → PR #1211
+    // - Task 1422 is in_progress, owned by madison (not active)
+    //
+    // Bug: reset_orphaned_tasks would emit ResetTaskToPending for task 1422.
+    // Fix: also check github_open_pr_task_ids before resetting.
+    let in_progress = vec![(
+        "1422".to_string(),
+        "Create minimad-ratatui standalone crate".to_string(),
+        "madison".to_string(),
+    )];
+    let tasks_with_open_prs = HashMap::new(); // Empty — stale after daemon restart
+    let active_names = HashSet::new(); // madison is NOT active
+
+    let mut snap = make_reconcile_snapshot(in_progress, tasks_with_open_prs, active_names);
+    // github_open_pr_task_ids populated from GitHub API (authoritative)
+    snap.github_open_pr_task_ids
+        .insert("1422".to_string(), 1211u64);
+
+    let effects = reset_orphaned_tasks(&snap);
+
+    assert!(
+        effects.is_empty(),
+        "Should not reset task !1422 — it has open PR #1211 via github_open_pr_task_ids, \
+         even though tasks_with_open_prs is empty (stale after restart). Got effects: {:?}",
+        effects
+    );
+}
+
+#[test]
+fn test_reset_orphaned_tasks_github_open_pr_task_ids_inactive_owner() {
+    // Regression test for the sequence: PR opened, coworker went on break,
+    // daemon restart → tasks_with_open_prs emptied → reset_orphaned_tasks fires.
+    //
+    // The captured snapshot-pr-opened-then-task-unassigned-reassigned shows the
+    // divergence: tasks_with_open_prs={} but github_open_pr_task_ids has the PRs.
+    // When owners later go inactive, reset_orphaned_tasks must still protect them.
+    //
+    // Simulates what happens after coworkers go on break (removed from active_names).
+    let in_progress = vec![
+        (
+            "1422".to_string(),
+            "Create minimad-ratatui crate".to_string(),
+            "madison".to_string(),
+        ),
+        (
+            "1428".to_string(),
+            "Fix daemon re-spawns".to_string(),
+            "amsterdam".to_string(),
+        ),
+        (
+            "1429".to_string(),
+            "Fix lead counts against dev cap".to_string(),
+            "park".to_string(),
+        ),
+    ];
+    let tasks_with_open_prs = HashMap::new(); // Empty — stale after daemon restart
+    let active_names = HashSet::new(); // All owners went on break
+
+    let mut snap = make_reconcile_snapshot(in_progress, tasks_with_open_prs, active_names);
+    // github_open_pr_task_ids populated from GitHub API (authoritative, survives restart)
+    snap.github_open_pr_task_ids
+        .insert("1422".to_string(), 1211u64);
+    snap.github_open_pr_task_ids
+        .insert("1428".to_string(), 1212u64);
+    snap.github_open_pr_task_ids
+        .insert("1429".to_string(), 1210u64);
+
+    let effects = reset_orphaned_tasks(&snap);
+
+    // None of the three tasks should be reset — all have open PRs
+    for task_id in &["1422", "1428", "1429"] {
+        let was_reset = effects.iter().any(
+            |e| matches!(e, Effect::ResetTaskToPending { task_id: tid, .. } if tid == task_id),
+        );
+        assert!(
+            !was_reset,
+            "Task !{task_id} should NOT be reset — it has an open PR via github_open_pr_task_ids, \
+             even though tasks_with_open_prs is empty (stale after restart)"
+        );
+    }
+}
+
+#[test]
 fn test_reset_orphaned_tasks_pr_reference_in_subject_protects() {
     // Bug: "Address review feedback on PR #42" tasks reference an open PR
     // but don't own it (not in tasks_with_open_prs). Without the PR-reference

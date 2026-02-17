@@ -1934,7 +1934,13 @@ pub fn reset_orphaned_tasks(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
 
         // Only consider tasks WITHOUT an associated open PR
         // (tasks with PRs are handled by reconcile_tasks_in_review)
-        if snap.tasks_with_open_prs.contains_key(task_id) {
+        // Check both sources: pr_author_sessions (tasks_with_open_prs) and GitHub API
+        // (github_open_pr_task_ids). After a daemon restart, pr_author_sessions is empty
+        // but github_open_pr_task_ids is repopulated from the GitHub API — tasks must be
+        // protected from reset even when only the GitHub source has them.
+        if snap.tasks_with_open_prs.contains_key(task_id)
+            || snap.github_open_pr_task_ids.contains_key(task_id)
+        {
             continue;
         }
 
