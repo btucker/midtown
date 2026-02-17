@@ -24,14 +24,17 @@ const AVENUE_COLORS: &[(&str, Color)] = &[
 ];
 
 /// Check if a sender is a "system-like" sender that should be grouped together
-/// (daemon, system) without blank lines between consecutive messages.
+/// (daemon, midtown, system) without blank lines between consecutive messages.
 ///
 /// Note: "github" was previously included here but is now treated like a regular
 /// sender for spacing purposes, so github messages get blank line separation
 /// matching coworker messages. GitHub content is still styled DarkGray via
 /// `is_dim_sender`.
 pub fn is_system_like_sender(sender: &str) -> bool {
-    matches!(sender.to_lowercase().as_str(), "daemon" | "system")
+    matches!(
+        sender.to_lowercase().as_str(),
+        "daemon" | "midtown" | "system"
+    )
 }
 
 /// Check if a sender's message content should be rendered in DarkGray.
@@ -39,7 +42,7 @@ pub fn is_system_like_sender(sender: &str) -> bool {
 pub fn is_dim_sender(sender: &str) -> bool {
     matches!(
         sender.to_lowercase().as_str(),
-        "daemon" | "github" | "system"
+        "daemon" | "github" | "midtown" | "system"
     )
 }
 
@@ -47,7 +50,7 @@ pub fn is_dim_sender(sender: &str) -> bool {
 pub fn get_sender_color(name: &str) -> Color {
     match name.to_lowercase().as_str() {
         "lead" | "user" => Color::LightYellow,
-        "daemon" | "github" | "system" => Color::DarkGray,
+        "daemon" | "github" | "midtown" | "system" => Color::DarkGray,
         _ => {
             // Check avenue colors
             for (avenue, color) in AVENUE_COLORS {

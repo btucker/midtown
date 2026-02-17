@@ -164,7 +164,8 @@ pub(super) const STUCK_ESCALATION_NUDGE_COUNT: u32 = 2;
 pub(super) const SKIP_SENDERS: &[&str] = &["midtown", "system", "github", "user", "architect"];
 
 /// Senders that are considered "system" (not coworkers) for channel post handling.
-pub(super) const SYSTEM_SENDERS: &[&str] = &["Lead", "lead", "github", "system", "GitHub"];
+pub(super) const SYSTEM_SENDERS: &[&str] =
+    &["Lead", "lead", "github", "midtown", "system", "GitHub"];
 
 /// All valid coworker names for @mention detection.
 pub(super) const COWORKER_NAMES: &[&str] = &[

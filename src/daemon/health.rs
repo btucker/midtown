@@ -145,7 +145,7 @@ pub fn check_and_shutdown_idle_coworkers(snap: &snapshot::WorldSnapshot) -> Vec<
                 );
                 // Don't shutdown - post a warning to the channel so the team knows
                 effects.push(Effect::PostToChannel {
-                    sender: "system".to_string(),
+                    sender: "midtown".to_string(),
                     message: format!(
                         "⚠️ Reviewer {} is idle but hasn't posted review for PR #{} yet",
                         name, pr
@@ -177,7 +177,7 @@ pub fn check_and_shutdown_idle_coworkers(snap: &snapshot::WorldSnapshot) -> Vec<
 
         // Post system message, broadcast status, and shut down
         effects.push(Effect::PostToChannel {
-            sender: "system".to_string(),
+            sender: "midtown".to_string(),
             message: shutdown_msg,
             channel: None,
         });
@@ -544,7 +544,7 @@ pub fn check_for_usage_limits(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
     vec![
         Effect::SetUsageLimitNudge { at: nudge_time },
         Effect::PostToChannel {
-            sender: "system".to_string(),
+            sender: "midtown".to_string(),
             message,
             channel: None,
         },
@@ -575,7 +575,7 @@ pub fn maybe_nudge_usage_limit_expiry(snap: &snapshot::WorldSnapshot) -> Vec<Eff
     let mut effects = vec![
         Effect::ClearUsageLimitNudge,
         Effect::PostToChannel {
-            sender: "system".to_string(),
+            sender: "midtown".to_string(),
             message: format!(
                 "🔔 Usage limit expired — nudging {} coworkers to resume work",
                 snap.running_coworkers.len()
@@ -662,7 +662,7 @@ pub(super) fn check_and_handle_auth_errors(
         effects.insert(
             0,
             Effect::PostToChannel {
-                sender: "system".to_string(),
+                sender: "midtown".to_string(),
                 message: message.clone(),
                 channel: None,
             },
@@ -751,7 +751,7 @@ pub(super) fn check_and_nudge_api_errors(
         effects.insert(
             0,
             Effect::PostToChannel {
-                sender: "system".to_string(),
+                sender: "midtown".to_string(),
                 message: format!(
                     "⚠️ Widespread API errors affecting {} coworkers: {}. Will periodically nudge to retry.",
                     affected_count,
@@ -974,7 +974,7 @@ fn effects_for_fired_reminders(
             reminder.trigger, reminder.message
         );
         effects.push(Effect::PostToChannel {
-            sender: "system".to_string(),
+            sender: "midtown".to_string(),
             message: message.clone(),
             channel: None,
         });
