@@ -1955,6 +1955,8 @@ pub fn reset_orphaned_tasks(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
         // (github_open_pr_task_ids). After a daemon restart, pr_author_sessions is empty
         // but github_open_pr_task_ids is repopulated from the GitHub API — tasks must be
         // protected from reset even when only the GitHub source has them.
+        // NOTE: This guard must fire before the ownerless check so that ownerless tasks
+        // with open PRs are also protected.
         if snap.tasks_with_open_prs.contains_key(task_id)
             || snap.github_open_pr_task_ids.contains_key(task_id)
         {
