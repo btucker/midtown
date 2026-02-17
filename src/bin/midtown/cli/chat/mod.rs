@@ -16,9 +16,9 @@ use std::time::Duration;
 use crossterm::{
     cursor::MoveTo,
     event::{
-        DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyCode, KeyEventKind,
-        KeyModifiers, KeyboardEnhancementFlags, MouseEventKind, PopKeyboardEnhancementFlags,
-        PushKeyboardEnhancementFlags,
+        DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+        Event, EventStream, KeyCode, KeyEventKind, KeyModifiers, KeyboardEnhancementFlags,
+        MouseEventKind, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
     },
     execute,
     style::{Color as CrosstermColor, Print, ResetColor, SetForegroundColor},
@@ -72,11 +72,14 @@ where
     let mut stdout = io::stdout();
 
     // Enable keyboard enhancement flags for proper Shift+Enter detection.
-    // See KEYBOARD_ENHANCEMENT_FLAGS for details.
+    // EnableBracketedPaste wraps pasted text in escape markers so crossterm
+    // delivers it as Event::Paste(text) instead of individual characters.
+    // See KEYBOARD_ENHANCEMENT_FLAGS for details on the keyboard flags.
     execute!(
         stdout,
         EnterAlternateScreen,
         EnableMouseCapture,
+        EnableBracketedPaste,
         PushKeyboardEnhancementFlags(KEYBOARD_ENHANCEMENT_FLAGS)
     )
     .map_err(|e| format!("Failed to enter alternate screen: {}", e))?;
@@ -101,6 +104,7 @@ where
         terminal.backend_mut(),
         LeaveAlternateScreen,
         DisableMouseCapture,
+        DisableBracketedPaste,
         PopKeyboardEnhancementFlags
     );
     let _ = terminal.show_cursor();
@@ -496,10 +500,13 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                 }
                 // Enter: select channel switcher item if showing, or autocomplete item if showing,
                 // execute /channel create command, auto-focus InputBar, or send message
-                // Shift+Enter: insert newline
+                // Shift+Enter or Alt+Enter: insert newline
+                // (Alt+Enter works universally; Shift+Enter requires kitty keyboard protocol)
                 KeyCode::Enter => {
-                    if key.modifiers.contains(KeyModifiers::SHIFT) {
-                        // Shift+Enter inserts a newline
+                    if key.modifiers.contains(KeyModifiers::SHIFT)
+                        || key.modifiers.contains(KeyModifiers::ALT)
+                    {
+                        // Shift+Enter or Alt+Enter inserts a newline
                         auto_focus_and_insert_char(app, '\n');
                         EventResult::Continue
                     } else if app.channel_switcher.show {
@@ -732,19 +739,38 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
             }
             _ => EventResult::Continue,
         },
+        Event::Paste(text) => {
+            // Normalize line endings: clipboard content from Windows or web browsers
+            // may contain \r\n or bare \r — convert to \n before insertion.
+            let text = text.replace("\r\n", "\n").replace('\r', "\n");
+
+            if app.channel_switcher.show {
+                // Route pasted text to channel switcher filter
+                for c in text.chars() {
+                    app.channel_switcher_input(c);
+                }
+            } else {
+                // Bracketed paste: insert the entire pasted string at cursor position.
+                // Newlines in the pasted text are preserved as-is (they display as
+                // line breaks in the multi-line input and are sent as part of the message).
+                auto_focus_and_insert_str(app, &text);
+            }
+            EventResult::Continue
+        }
         _ => EventResult::Continue,
     }
 }
 
-/// Toggle mouse capture for text selection mode.
-/// When selection mode is on, mouse capture is disabled so the terminal handles
-/// text selection natively. Scrollwheel won't work in the TUI during selection mode.
+/// Toggle mouse capture and bracketed paste for text selection mode.
+/// When selection mode is on, mouse capture and bracketed paste are disabled so
+/// the terminal handles text selection and paste natively. Scrollwheel won't
+/// work in the TUI during selection mode.
 fn toggle_mouse_capture(app: &mut App, backend: &mut CrosstermBackend<io::Stdout>) {
     app.selection_mode = !app.selection_mode;
     if app.selection_mode {
-        let _ = execute!(backend, DisableMouseCapture);
+        let _ = execute!(backend, DisableMouseCapture, DisableBracketedPaste);
     } else {
-        let _ = execute!(backend, EnableMouseCapture);
+        let _ = execute!(backend, EnableMouseCapture, EnableBracketedPaste);
     }
 }
 
@@ -761,6 +787,27 @@ fn auto_focus_and_insert_char(app: &mut App, c: char) {
     let byte_idx = char_index_to_byte_index(&app.input_text, app.input_cursor);
     app.input_text.insert(byte_idx, c);
     app.input_cursor += 1;
+
+    // Detect autocomplete trigger
+    app.detect_autocomplete_trigger();
+}
+
+/// Auto-focus the InputBar and insert a string at the cursor position.
+///
+/// Used for bracketed paste events where the terminal delivers the full
+/// pasted text at once, preserving embedded newlines as input line breaks.
+fn auto_focus_and_insert_str(app: &mut App, s: &str) {
+    use app::FocusedPane;
+
+    // Switch focus to InputBar if not already there
+    if app.focused_pane != FocusedPane::InputBar {
+        app.focused_pane = FocusedPane::InputBar;
+    }
+
+    // Insert string at cursor position
+    let byte_idx = char_index_to_byte_index(&app.input_text, app.input_cursor);
+    app.input_text.insert_str(byte_idx, s);
+    app.input_cursor += s.chars().count();
 
     // Detect autocomplete trigger
     app.detect_autocomplete_trigger();
@@ -2106,3 +2153,7 @@ mod channel_switcher_tests;
 #[path = "keyboard_protocol_tests.rs"]
 #[cfg(test)]
 mod keyboard_protocol_tests;
+
+#[path = "paste_tests.rs"]
+#[cfg(test)]
+mod paste_tests;
