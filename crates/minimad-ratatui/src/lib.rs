@@ -4,7 +4,7 @@
 //! - [`from_str`]: Parse markdown into a multi-line `ratatui::text::Text`
 //! - [`inline`]: Parse markdown as a single inline line for single-line rendering
 
-use minimad::{CompositeStyle, Line as MadLine, Text as MadText};
+use minimad::{Alignment, CompositeStyle, Line as MadLine, Text as MadText};
 use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
@@ -46,14 +46,102 @@ fn composite_to_spans(composite: &minimad::Composite<'_>, base_style: Style) -> 
         .collect()
 }
 
-/// Convert a minimad `Line` to a ratatui `Line<'static>`.
+/// Compute the visible character width of a `Composite` (sum of all compound char lengths).
+fn composite_char_width(composite: &minimad::Composite<'_>) -> usize {
+    composite.char_length()
+}
+
+/// Build a ratatui `Line` for a single table row, padding each cell to `col_widths` and
+/// applying `alignments`. If `header_style` is provided, cell content uses that style.
+fn render_table_row(
+    table_row: &minimad::TableRow<'_>,
+    col_widths: &[usize],
+    alignments: &[Alignment],
+    cell_style: Style,
+    base_style: Style,
+) -> Line<'static> {
+    let mut spans: Vec<Span<'static>> = Vec::new();
+
+    for (i, cell) in table_row.cells.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::styled(" \u{2502} ", base_style)); // │
+        }
+
+        let target_width = col_widths.get(i).copied().unwrap_or(0);
+        let content_width = composite_char_width(cell);
+        let padding = target_width.saturating_sub(content_width);
+
+        let alignment = alignments.get(i).copied().unwrap_or(Alignment::Unspecified);
+
+        let (pad_left, pad_right) = match alignment {
+            Alignment::Right => (padding, 0),
+            Alignment::Center => {
+                let left = padding / 2;
+                let right = padding - left;
+                (left, right)
+            }
+            // Left or Unspecified: pad on right
+            _ => (0, padding),
+        };
+
+        if pad_left > 0 {
+            spans.push(Span::styled(" ".repeat(pad_left), base_style));
+        }
+        spans.extend(composite_to_spans(cell, cell_style));
+        if pad_right > 0 {
+            spans.push(Span::styled(" ".repeat(pad_right), base_style));
+        }
+    }
+
+    Line::from(spans)
+}
+
+/// Compute column widths and alignments for a contiguous block of table lines.
 ///
-/// Line variants handled:
-/// - `Normal`: use base_style
-/// - `CodeFence`: dark background style
-/// - `TableRow`: cells joined with `│` separators
-/// - `TableRule`: horizontal rule with `─` characters
-/// - `HorizontalRule`: 40 `─` characters
+/// Returns `(col_widths, alignments)`.
+fn compute_table_layout(table_lines: &[&MadLine<'_>]) -> (Vec<usize>, Vec<Alignment>) {
+    let mut col_widths: Vec<usize> = Vec::new();
+    let mut alignments: Vec<Alignment> = Vec::new();
+
+    for mad_line in table_lines {
+        match mad_line {
+            MadLine::TableRow(row) => {
+                for (i, cell) in row.cells.iter().enumerate() {
+                    let w = composite_char_width(cell);
+                    if i >= col_widths.len() {
+                        col_widths.resize(i + 1, 0);
+                    }
+                    if w > col_widths[i] {
+                        col_widths[i] = w;
+                    }
+                }
+            }
+            MadLine::TableRule(rule) => {
+                for (i, &align) in rule.cells.iter().enumerate() {
+                    if i >= alignments.len() {
+                        alignments.resize(i + 1, Alignment::Unspecified);
+                    }
+                    alignments[i] = align;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    (col_widths, alignments)
+}
+
+/// Total rendered width for a table row given column widths: sum of widths + separators.
+///
+/// Each separator is " │ " (3 chars). With N columns: N widths + (N-1) * 3.
+fn table_total_width(col_widths: &[usize]) -> usize {
+    if col_widths.is_empty() {
+        return 0;
+    }
+    col_widths.iter().sum::<usize>() + (col_widths.len() - 1) * 3
+}
+
+/// Convert a minimad `Line` to a ratatui `Line<'static>` for non-table lines.
 fn mad_line_to_line(mad_line: &MadLine<'_>, base_style: Style) -> Line<'static> {
     let code_style = base_style.bg(Color::DarkGray);
 
@@ -72,21 +160,23 @@ fn mad_line_to_line(mad_line: &MadLine<'_>, base_style: Style) -> Line<'static> 
             Line::from(spans)
         }
         MadLine::TableRow(table_row) => {
+            // Fallback: no padding, no alignment (used when called outside from_str context)
             let mut spans: Vec<Span<'static>> = Vec::new();
             for (i, cell) in table_row.cells.iter().enumerate() {
                 if i > 0 {
-                    spans.push(Span::styled(" \u{2502} ", base_style)); // │
+                    spans.push(Span::styled(" \u{2502} ", base_style));
                 }
                 spans.extend(composite_to_spans(cell, base_style));
             }
             Line::from(spans)
         }
-        MadLine::TableRule(_) => {
-            Line::from(Span::styled("\u{2500}".repeat(40), base_style)) // ─
+        MadLine::TableRule(rule) => {
+            // Fallback: estimate width from column count (3 chars per cell + separators)
+            let n = rule.cells.len().max(1);
+            let width = n * 3 + n.saturating_sub(1) * 3;
+            Line::from(Span::styled("\u{2500}".repeat(width), base_style))
         }
-        MadLine::HorizontalRule => {
-            Line::from(Span::styled("\u{2500}".repeat(40), base_style)) // ─
-        }
+        MadLine::HorizontalRule => Line::from(Span::styled("\u{2500}".repeat(40), base_style)),
     }
 }
 
@@ -96,18 +186,70 @@ fn mad_line_to_line(mad_line: &MadLine<'_>, base_style: Style) -> Line<'static> 
 /// - Bold, italic, strikeout use ratatui modifiers
 /// - Code spans use cyan foreground
 /// - Code fence blocks use a dark background
-/// - Table rows are rendered with `│` separators between cells
+/// - Table rows are rendered with `│` separators between cells, with cells padded
+///   to align columns. The header row (first TableRow) is rendered bold. The
+///   separator row (TableRule) determines per-column alignment (left/center/right).
 /// - Horizontal rules render as 40 `─` characters
 ///
 /// The `base_style` is applied to all unstyled text.
 pub fn from_str(markdown: &str, base_style: Style) -> Text<'static> {
     let mad_text = MadText::from(markdown);
-    let lines: Vec<Line<'static>> = mad_text
-        .lines
-        .iter()
-        .map(|l| mad_line_to_line(l, base_style))
-        .collect();
-    Text::from(lines)
+    let mad_lines: Vec<&MadLine<'_>> = mad_text.lines.iter().collect();
+
+    let header_style = base_style.add_modifier(Modifier::BOLD);
+    let mut output_lines: Vec<Line<'static>> = Vec::with_capacity(mad_lines.len());
+
+    let mut i = 0;
+    while i < mad_lines.len() {
+        // Detect a table block: one or more consecutive TableRow / TableRule lines.
+        if mad_lines[i].is_table_part() {
+            let start = i;
+            while i < mad_lines.len() && mad_lines[i].is_table_part() {
+                i += 1;
+            }
+            let block = &mad_lines[start..i];
+
+            let (col_widths, alignments) = compute_table_layout(block);
+            let total_width = table_total_width(&col_widths);
+
+            // The first TableRow in the block is the header.
+            let mut header_rendered = false;
+
+            for mad_line in block {
+                match mad_line {
+                    MadLine::TableRow(row) => {
+                        let cell_style = if !header_rendered {
+                            header_rendered = true;
+                            header_style
+                        } else {
+                            base_style
+                        };
+                        output_lines.push(render_table_row(
+                            row,
+                            &col_widths,
+                            &alignments,
+                            cell_style,
+                            base_style,
+                        ));
+                    }
+                    MadLine::TableRule(_) => {
+                        output_lines.push(Line::from(Span::styled(
+                            "\u{2500}".repeat(total_width),
+                            base_style,
+                        )));
+                    }
+                    _ => {
+                        output_lines.push(mad_line_to_line(mad_line, base_style));
+                    }
+                }
+            }
+        } else {
+            output_lines.push(mad_line_to_line(mad_lines[i], base_style));
+            i += 1;
+        }
+    }
+
+    Text::from(output_lines)
 }
 
 /// Parse markdown as a single inline line for single-line rendering.
