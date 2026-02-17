@@ -657,7 +657,11 @@ impl DaemonState {
         self.kanban_cache.cleanup();
     }
 
-    /// Check if the daemon is at the maximum coworker limit (absolute cap).
+    /// Check if the daemon is at the absolute coworker limit (including reviewer headroom).
+    ///
+    /// Reviewers may exceed `max_coworkers` by up to `REVIEW_HEADROOM` slots,
+    /// so the absolute cap is `max_coworkers + REVIEW_HEADROOM`. This allows
+    /// reviewer spawning to proceed even when the dev cap is fully used.
     ///
     /// The lead is excluded: a headless lead session registers in CoworkerManager
     /// but is not a dev/reviewer slot and must not consume capacity.
@@ -668,23 +672,25 @@ impl DaemonState {
             .iter()
             .filter(|cw| !cw.name.eq_ignore_ascii_case("lead"))
             .count();
-        non_lead_count >= self.max_coworkers
+        non_lead_count >= self.max_coworkers + REVIEW_HEADROOM
     }
 
     /// Check if the daemon is at the dev coworker limit.
-    /// Reserves `REVIEW_HEADROOM` slots for reviewers, but always allows at least 1 dev slot.
+    ///
+    /// Dev cap equals `max_coworkers` — REVIEW_HEADROOM is NOT subtracted here.
+    /// Instead, `is_at_coworker_limit()` uses `max_coworkers + REVIEW_HEADROOM`
+    /// so reviewers can exceed the normal dev cap by up to REVIEW_HEADROOM slots.
     ///
     /// The lead is excluded: a headless lead session registers in CoworkerManager
     /// but is not a dev/reviewer slot and must not consume capacity.
     fn is_at_dev_limit(&self) -> bool {
-        let dev_cap = self.max_coworkers.saturating_sub(REVIEW_HEADROOM).max(1);
         let non_lead_count = self
             .coworkers
             .list_running()
             .iter()
             .filter(|cw| !cw.name.eq_ignore_ascii_case("lead"))
             .count();
-        non_lead_count >= dev_cap
+        non_lead_count >= self.max_coworkers
     }
 
     /// Check if a coworker slot is available for spawning.
@@ -2322,10 +2328,10 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
         shutdown_tx.clone(),
     )?);
     info!(
-        "Max coworkers limit: {} (dev: {}, reserving {} for reviewers)",
+        "Max coworkers limit: {} dev slots, {} reviewer headroom (absolute cap: {})",
         config.max_coworkers,
-        config.max_coworkers.saturating_sub(REVIEW_HEADROOM).max(1),
-        REVIEW_HEADROOM
+        REVIEW_HEADROOM,
+        config.max_coworkers + REVIEW_HEADROOM
     );
 
     // Recover coworker workflow state from their state files across daemon restarts.
