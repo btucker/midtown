@@ -1757,9 +1757,7 @@ pub(super) fn build_task_completion_effects(
 /// This function skips those tasks to avoid double-completion.
 ///
 /// Returns effects to complete tasks whose description references only merged PRs.
-pub(super) fn build_description_based_completion_effects(
-    snap: &snapshot::WorldSnapshot,
-) -> Vec<Effect> {
+pub fn build_description_based_completion_effects(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
     let mut effects = Vec::new();
 
     for task in &snap.all_tasks {
