@@ -452,3 +452,180 @@ fn test_inline_table_rule_width_scales_with_columns() {
         content2
     );
 }
+
+// ── syntax highlighting tests ──────────────────────────────────────────────────
+
+#[test]
+fn test_from_str_code_fence_without_language_uses_dark_bg() {
+    let markdown = "```\nsome code\n```";
+    let text = from_str(markdown, base());
+
+    assert_eq!(
+        text.lines.len(),
+        1,
+        "Should have exactly 1 line (no fence delimiters)"
+    );
+    let code_line = &text.lines[0];
+
+    let content = line_content(code_line);
+    assert!(content.contains("some code"), "Should have code content");
+
+    let has_dark_bg = code_line
+        .spans
+        .iter()
+        .any(|s| s.style.bg == Some(Color::DarkGray));
+    assert!(
+        has_dark_bg,
+        "Should have dark gray background without syntax highlighting"
+    );
+}
+
+#[test]
+fn test_from_str_code_fence_with_language_has_dark_bg() {
+    let markdown = "```rust\nlet x = 1;\n```";
+    let text = from_str(markdown, base());
+
+    assert!(!text.lines.is_empty(), "Should have at least one line");
+    let code_line = &text.lines[0];
+
+    let all_dark_bg = code_line
+        .spans
+        .iter()
+        .all(|s| s.style.bg == Some(Color::DarkGray));
+    assert!(
+        all_dark_bg,
+        "All code spans should have dark gray background"
+    );
+
+    let content = line_content(code_line);
+    assert!(content.contains("let"), "Should contain 'let' keyword");
+}
+
+#[test]
+fn test_from_str_code_fence_with_language_has_rgb_colors() {
+    let markdown = "```rust\nlet x = 1;\n```";
+    let text = from_str(markdown, base());
+
+    let code_line = &text.lines[0];
+    let has_rgb = code_line
+        .spans
+        .iter()
+        .any(|s| matches!(s.style.fg, Some(Color::Rgb(_, _, _))));
+    assert!(has_rgb, "Rust code should have RGB syntax highlight colors");
+}
+
+#[test]
+fn test_from_str_code_fence_no_fence_delimiter_lines() {
+    let markdown = "```rust\nfn main() {}\n```";
+    let text = from_str(markdown, base());
+
+    for line in &text.lines {
+        let content = line_content(line);
+        assert!(
+            !content.trim_start_matches('`').is_empty() || content.contains("fn"),
+            "Fence delimiter lines should not appear in output, got: {:?}",
+            content
+        );
+    }
+
+    let has_fn = text.lines.iter().any(|l| line_content(l).contains("fn"));
+    assert!(has_fn, "Should have the code content");
+    assert_eq!(text.lines.len(), 1, "Should have exactly 1 line of code");
+}
+
+#[test]
+fn test_from_str_code_fence_multiline_code() {
+    let markdown = "```rust\nlet a = 1;\nlet b = 2;\n```";
+    let text = from_str(markdown, base());
+
+    assert_eq!(text.lines.len(), 2, "Should have 2 lines of code");
+
+    let line0 = line_content(&text.lines[0]);
+    let line1 = line_content(&text.lines[1]);
+    assert!(line0.contains('a'), "First line should contain 'a'");
+    assert!(line1.contains('b'), "Second line should contain 'b'");
+}
+
+#[test]
+fn test_from_str_code_fence_followed_by_text() {
+    let markdown = "```rust\nlet x = 1;\n```\n\nNormal text after.";
+    let text = from_str(markdown, base());
+
+    let has_code = text.lines.iter().any(|l| line_content(l).contains("let"));
+    let has_text = text
+        .lines
+        .iter()
+        .any(|l| line_content(l).contains("Normal text after"));
+
+    assert!(has_code, "Should have the code line");
+    assert!(has_text, "Should have the normal text after the fence");
+}
+
+#[test]
+fn test_from_str_text_before_code_fence() {
+    let markdown = "Before text.\n\n```rust\nlet x = 1;\n```";
+    let text = from_str(markdown, base());
+
+    let has_before = text
+        .lines
+        .iter()
+        .any(|l| line_content(l).contains("Before text"));
+    let has_code = text.lines.iter().any(|l| line_content(l).contains("let"));
+
+    assert!(has_before, "Should have text before the code fence");
+    assert!(has_code, "Should have the code content");
+}
+
+#[test]
+fn test_from_str_unknown_language_uses_plain_text_highlighting() {
+    let markdown = "```unknownlang123\nsome code here\n```";
+    let text = from_str(markdown, base());
+
+    assert!(!text.lines.is_empty(), "Should produce output");
+    let code_line = &text.lines[0];
+    let has_dark_bg = code_line
+        .spans
+        .iter()
+        .any(|s| s.style.bg == Some(Color::DarkGray));
+    assert!(
+        has_dark_bg,
+        "Unknown language should still have dark background"
+    );
+}
+
+#[test]
+fn test_from_str_table_after_code_fence() {
+    let markdown = "```rust\nlet x = 1;\n```\n\n| Col A | Col B |\n|---|---|\n| a | b |";
+    let text = from_str(markdown, base());
+
+    let has_code = text.lines.iter().any(|l| line_content(l).contains("let"));
+    let has_table = text.lines.iter().any(|l| {
+        let c = line_content(l);
+        c.contains('a') && c.contains('\u{2502}')
+    });
+
+    assert!(has_code, "Should have the code line");
+    assert!(has_table, "Should have the table row with separator");
+}
+
+#[test]
+fn test_from_str_table_header_bold_after_code_fence() {
+    let markdown = "```rust\nlet x = 1;\n```\n\n| Feature | Status |\n|---|---|\n| Auth | Done |";
+    let text = from_str(markdown, base());
+
+    let header_line = text
+        .lines
+        .iter()
+        .find(|l| line_content(l).contains("Feature"));
+    assert!(header_line.is_some(), "Should have table header line");
+
+    let header_line = header_line.unwrap();
+    let has_bold = header_line
+        .spans
+        .iter()
+        .any(|s| s.style.add_modifier.contains(Modifier::BOLD));
+    assert!(
+        has_bold,
+        "Table header should be bold even after a code fence"
+    );
+}
