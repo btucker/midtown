@@ -301,6 +301,8 @@ pub struct App {
     pub show_archived_channels: bool,
     /// Spinner animation frame counter for coworker progress display
     spinner_frame: usize,
+    /// Last time the spinner frame was advanced (for time-based animation)
+    spinner_last_tick: Instant,
     /// List of all available channels (including empty ones)
     pub available_channels: Vec<midtown::ChannelInfo>,
     /// Last time available channels were refreshed
@@ -457,6 +459,7 @@ impl App {
             channel_switcher: ChannelSwitcherState::default(),
             show_archived_channels: false,
             spinner_frame: 0,
+            spinner_last_tick: Instant::now(),
             available_channels: Vec::new(),
             channels_last_refresh: Instant::now() - CHANNELS_REFRESH_INTERVAL, // Force initial refresh
             project_name: channel_repo.clone(),
@@ -1769,13 +1772,25 @@ impl App {
         self.channel_switcher.selected_index = 0;
     }
 
-    /// Get the current spinner character and advance the animation frame.
+    /// Get the current spinner character without advancing the frame.
     /// Returns a braille spinner character (⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏).
-    pub fn spinner_char(&mut self) -> &'static str {
+    /// Frame advancement is time-based via `tick_spinner()`.
+    pub fn spinner_char(&self) -> &'static str {
         const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-        let ch = SPINNER_FRAMES[self.spinner_frame % SPINNER_FRAMES.len()];
-        self.spinner_frame = self.spinner_frame.wrapping_add(1);
-        ch
+        SPINNER_FRAMES[self.spinner_frame % SPINNER_FRAMES.len()]
+    }
+
+    /// Advance the spinner frame if enough time has elapsed since the last tick.
+    /// Returns true if the frame changed (caller should redraw).
+    pub fn tick_spinner(&mut self) -> bool {
+        const SPINNER_INTERVAL: Duration = Duration::from_millis(100);
+        if self.spinner_last_tick.elapsed() >= SPINNER_INTERVAL {
+            self.spinner_frame = self.spinner_frame.wrapping_add(1);
+            self.spinner_last_tick = Instant::now();
+            true
+        } else {
+            false
+        }
     }
 }
 
@@ -2653,6 +2668,7 @@ pub(super) mod tests {
             channel_switcher: ChannelSwitcherState::default(),
             show_archived_channels: false,
             spinner_frame: 0,
+            spinner_last_tick: Instant::now(),
             available_channels: Vec::new(),
             channels_last_refresh: Instant::now(),
             project_name: "test".to_string(),
