@@ -313,7 +313,8 @@ pub struct App {
     /// Mapping of board panel line numbers to channel headers (for click-to-select)
     /// Maps line_number -> channel_name where line_number is relative to board content area
     pub channel_line_map: HashMap<u16, String>,
-    /// Sidebar width as a percentage of the total horizontal area (20–60)
+    /// Sidebar width as a percentage of the total horizontal area (20–60).
+    /// The rendered width is further capped at `MAX_SIDEBAR_WIDTH` columns.
     pub sidebar_width_pct: u16,
     /// X column of the divider between sidebar and chat (set each render pass)
     pub divider_x: Option<u16>,
