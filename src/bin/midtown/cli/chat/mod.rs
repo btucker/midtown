@@ -1681,6 +1681,217 @@ mod tests {
 
         assert_eq!(app.input_text, "a", "Plain 'a' should insert lowercase 'a'");
     }
+
+    /// Helper to create a mouse click event at the given coordinates
+    fn mouse_click(column: u16, row: u16) -> Event {
+        use crossterm::event::{MouseButton, MouseEvent};
+        Event::Mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        })
+    }
+
+    /// Test that clicking on a channel header in the board panel selects that channel
+    #[test]
+    fn test_click_channel_header_selects_channel() {
+        use app::{BoardSelection, KanbanTask, TaskStatus};
+        use midtown::ChannelInfo;
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let backend = TestBackend::new(80, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let mut app = test_app();
+        // Set up multiple channels with tasks
+        app.available_channels = vec![
+            ChannelInfo {
+                name: "midtown".to_string(),
+                is_archived: false,
+            },
+            ChannelInfo {
+                name: "feature-x".to_string(),
+                is_archived: false,
+            },
+        ];
+        app.tasks = vec![
+            KanbanTask {
+                id: "1".to_string(),
+                subject: "Task in midtown".to_string(),
+                owner: None,
+                status: TaskStatus::Pending,
+                modified_at: None,
+                channel: Some("midtown".to_string()),
+                blocked_by: vec![],
+            },
+            KanbanTask {
+                id: "2".to_string(),
+                subject: "Task in feature-x".to_string(),
+                owner: None,
+                status: TaskStatus::Pending,
+                modified_at: None,
+                channel: Some("feature-x".to_string()),
+                blocked_by: vec![],
+            },
+        ];
+        app.selected_channel = "midtown".to_string();
+
+        // First draw to populate channel_line_map and board_area
+        terminal
+            .draw(|f| {
+                // Use ui::draw to populate both channel_line_map and board_area
+                ui::draw(f, &mut app);
+            })
+            .unwrap();
+
+        // Verify channel_line_map was populated
+        assert!(
+            !app.channel_line_map.is_empty(),
+            "channel_line_map should be populated after render"
+        );
+
+        // Find which line number corresponds to the "feature-x" channel header
+        let feature_x_line = app
+            .channel_line_map
+            .iter()
+            .find(|(_, name)| *name == "feature-x")
+            .map(|(line, _)| *line)
+            .expect("feature-x should be in channel_line_map");
+
+        // Click on the feature-x channel header
+        // board_area.y is the top of the board (with border), so add 1 for border + feature_x_line for content
+        let board_area = app.board_area.unwrap();
+        let click_y = board_area.y + 1 + feature_x_line;
+        let click_x = board_area.x + 5; // Somewhere in the middle of the channel header
+
+        let click_event = mouse_click(click_x, click_y);
+        let result = handle_event(&mut app, click_event);
+
+        assert!(
+            matches!(result, EventResult::Continue),
+            "Mouse click should continue"
+        );
+
+        // Verify board selection was updated to the clicked channel
+        assert_eq!(
+            app.board_selection,
+            Some(BoardSelection::Channel("feature-x".to_string())),
+            "Clicking channel header should select that channel"
+        );
+
+        // Verify selected_channel was updated
+        assert_eq!(
+            app.selected_channel, "feature-x",
+            "Clicking channel header should update selected_channel"
+        );
+    }
+
+    /// Test that clicking on a channel header when already selected keeps it selected
+    #[test]
+    fn test_click_already_selected_channel_maintains_selection() {
+        use app::{BoardSelection, KanbanTask, TaskStatus};
+        use midtown::ChannelInfo;
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let backend = TestBackend::new(80, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let mut app = test_app();
+        app.available_channels = vec![ChannelInfo {
+            name: "midtown".to_string(),
+            is_archived: false,
+        }];
+        app.tasks = vec![KanbanTask {
+            id: "1".to_string(),
+            subject: "Task in midtown".to_string(),
+            owner: None,
+            status: TaskStatus::Pending,
+            modified_at: None,
+            channel: Some("midtown".to_string()),
+            blocked_by: vec![],
+        }];
+        app.selected_channel = "midtown".to_string();
+        app.board_selection = Some(BoardSelection::Channel("midtown".to_string()));
+
+        // Render to populate maps and board_area
+        terminal
+            .draw(|f| {
+                ui::draw(f, &mut app);
+            })
+            .unwrap();
+
+        let midtown_line = app
+            .channel_line_map
+            .iter()
+            .find(|(_, name)| *name == "midtown")
+            .map(|(line, _)| *line)
+            .unwrap();
+
+        let board_area = app.board_area.unwrap();
+        let click_y = board_area.y + 1 + midtown_line;
+        let click_x = board_area.x + 5;
+
+        // Click on already-selected channel
+        handle_event(&mut app, mouse_click(click_x, click_y));
+
+        // Should still be selected
+        assert_eq!(
+            app.board_selection,
+            Some(BoardSelection::Channel("midtown".to_string()))
+        );
+        assert_eq!(app.selected_channel, "midtown");
+    }
+
+    /// Test that clicking outside the board area does not trigger channel selection
+    #[test]
+    fn test_click_outside_board_does_not_select_channel() {
+        use app::{KanbanTask, TaskStatus};
+        use midtown::ChannelInfo;
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let backend = TestBackend::new(80, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let mut app = test_app();
+        app.available_channels = vec![ChannelInfo {
+            name: "midtown".to_string(),
+            is_archived: false,
+        }];
+        app.tasks = vec![KanbanTask {
+            id: "1".to_string(),
+            subject: "Task in midtown".to_string(),
+            owner: None,
+            status: TaskStatus::Pending,
+            modified_at: None,
+            channel: Some("midtown".to_string()),
+            blocked_by: vec![],
+        }];
+        app.selected_channel = "midtown".to_string();
+        app.board_selection = None;
+
+        // Render to populate maps and board_area
+        terminal
+            .draw(|f| {
+                ui::draw(f, &mut app);
+            })
+            .unwrap();
+
+        let board_area = app.board_area.unwrap();
+        // Click far outside the board area
+        let click_x = board_area.x + board_area.width + 10;
+        let click_y = board_area.y + 5;
+
+        handle_event(&mut app, mouse_click(click_x, click_y));
+
+        // Board selection should remain None
+        assert_eq!(app.board_selection, None);
+        // Selected channel should not change
+        assert_eq!(app.selected_channel, "midtown");
+    }
 }
 
 #[path = "channel_switcher_tests.rs"]
