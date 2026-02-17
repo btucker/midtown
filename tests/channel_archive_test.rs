@@ -34,7 +34,7 @@ fn test_archive_channel_renames_file_correctly() {
     );
 
     // Verify archived channels are not listed
-    let channels = Channel::list(base_dir, false).unwrap();
+    let channels = Channel::list(base_dir, false, None).unwrap();
     assert!(
         !channels.iter().any(|c| c.name == "test-topic"),
         "Archived channel should not appear in list"
@@ -114,7 +114,7 @@ fn test_list_archived_channels() {
     assert!(!archived.contains(&"test3".to_string()));
 
     // Verify regular list() still excludes archived channels
-    let active = Channel::list(base_dir, false).unwrap();
+    let active = Channel::list(base_dir, false, None).unwrap();
     assert!(!active.iter().any(|c| c.name == "test1"));
     assert!(!active.iter().any(|c| c.name == "test2"));
     assert!(active.iter().any(|c| c.name == "test3"));
@@ -154,7 +154,7 @@ fn test_list_with_include_archived() {
     let channel3 = Channel::new(temp_dir.path(), "to-archive").unwrap();
 
     // All three should appear when include_archived=false (they're not archived yet)
-    let channels = Channel::list(temp_dir.path(), false).unwrap();
+    let channels = Channel::list(temp_dir.path(), false, None).unwrap();
     assert_eq!(channels.len(), 3);
     assert!(channels.iter().any(|c| c.name == "active1"));
     assert!(channels.iter().any(|c| c.name == "active2"));
@@ -164,14 +164,14 @@ fn test_list_with_include_archived() {
     channel3.archive().unwrap();
 
     // With include_archived=false, should only see 2 active channels
-    let channels_no_archived = Channel::list(temp_dir.path(), false).unwrap();
+    let channels_no_archived = Channel::list(temp_dir.path(), false, None).unwrap();
     assert_eq!(channels_no_archived.len(), 2);
     assert!(channels_no_archived.iter().any(|c| c.name == "active1"));
     assert!(channels_no_archived.iter().any(|c| c.name == "active2"));
     assert!(!channels_no_archived.iter().any(|c| c.name == "to-archive"));
 
     // With include_archived=true, should see all 3 channels (including archived one)
-    let channels_with_archived = Channel::list(temp_dir.path(), true).unwrap();
+    let channels_with_archived = Channel::list(temp_dir.path(), true, None).unwrap();
     assert_eq!(channels_with_archived.len(), 3);
     assert!(
         channels_with_archived
@@ -210,7 +210,7 @@ fn test_list_archived_channels_no_ghost_files() {
     assert!(archived_path.exists(), "Archived file should exist");
 
     // List channels with include_archived=true
-    let channels = Channel::list(temp_dir.path(), true).unwrap();
+    let channels = Channel::list(temp_dir.path(), true, None).unwrap();
 
     // Verify the archived channel appears in the list with is_archived=true
     let archived_info = channels
