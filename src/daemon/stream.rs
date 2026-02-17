@@ -64,7 +64,7 @@ pub fn process_universal_events(events: &HashMap<String, Vec<StreamEvent>>) -> V
     let timestamp = chrono::Utc::now();
     let mut effects = Vec::new();
     for (agent_name, agent_events) in events {
-        let items = crate::universal_events::claude::extract_tool_calls(agent_events, timestamp);
+        let items = crate::universal_events::claude::extract_tool_events(agent_events, timestamp);
         if !items.is_empty() {
             effects.push(Effect::BroadcastUniversalItems {
                 agent_name: agent_name.clone(),
