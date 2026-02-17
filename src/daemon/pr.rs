@@ -152,6 +152,26 @@ impl PrContext {
     }
 }
 
+/// Add RecordTaskAssignment to on_success for cross-tick spawn deduplication.
+///
+/// When spawning a coworker for a PR that's associated with a task, we must include
+/// RecordTaskAssignment in the on_success callback so mark_in_flight_spawns_from_effects()
+/// can track the spawn and prevent task dispatch from double-spawning the same task
+/// in the next tick. See bug !1377.
+fn add_task_assignment_to_on_success(
+    on_success: &mut Vec<Effect>,
+    pr_number: u64,
+    coworker: &str,
+    ctx: &PrContext,
+) {
+    if let Some(task_id) = ctx.pr_task_associations.get(&pr_number) {
+        on_success.push(Effect::RecordTaskAssignment {
+            coworker: coworker.to_string(),
+            task_id: task_id.clone(),
+        });
+    }
+}
+
 /// How often to re-fetch merged PRs (5 minutes). Merges aren't urgent so
 /// polling less frequently saves significant API calls.
 const MERGED_PRS_FETCH_INTERVAL_SECS: u64 = 300;
@@ -1091,15 +1111,7 @@ fn pr_action_to_effects(
                 },
             ];
 
-            // Cross-tick spawn deduplication (!1377): Include RecordTaskAssignment
-            // so mark_in_flight_spawns_from_effects() tracks this spawn and prevents
-            // task dispatch from double-spawning for the same task in the next tick.
-            if let Some(task_id) = ctx.pr_task_associations.get(&pr_number) {
-                on_success.push(Effect::RecordTaskAssignment {
-                    coworker: owner.clone(),
-                    task_id: task_id.clone(),
-                });
-            }
+            add_task_assignment_to_on_success(&mut on_success, pr_number, &owner, ctx);
 
             if saved_session.is_some() {
                 on_success.push(Effect::ClearPrBreakSession {
@@ -1762,15 +1774,7 @@ fn comment_action_to_effects(
                 },
             ];
 
-            // Cross-tick spawn deduplication (!1377): Include RecordTaskAssignment
-            // so mark_in_flight_spawns_from_effects() tracks this spawn and prevents
-            // task dispatch from double-spawning for the same task in the next tick.
-            if let Some(task_id) = ctx.pr_task_associations.get(&pr_number) {
-                on_success.push(Effect::RecordTaskAssignment {
-                    coworker: owner.clone(),
-                    task_id: task_id.clone(),
-                });
-            }
+            add_task_assignment_to_on_success(&mut on_success, pr_number, &owner, ctx);
 
             if saved_session.is_some() {
                 on_success.push(Effect::ClearPrBreakSession {
@@ -1895,15 +1899,7 @@ fn handoff_to_coworker_effects(
         },
     ];
 
-    // Cross-tick spawn deduplication (!1377): Include RecordTaskAssignment
-    // so mark_in_flight_spawns_from_effects() tracks this spawn and prevents
-    // task dispatch from double-spawning for the same task in the next tick.
-    if let Some(task_id) = ctx.pr_task_associations.get(&pr_number) {
-        on_success.push(Effect::RecordTaskAssignment {
-            coworker: assignee.to_string(),
-            task_id: task_id.clone(),
-        });
-    }
+    add_task_assignment_to_on_success(&mut on_success, pr_number, assignee, ctx);
 
     let on_failure = vec![
         Effect::PostToChannel {
@@ -2360,15 +2356,7 @@ fn review_complete_action_to_effects(
                 },
             ];
 
-            // Cross-tick spawn deduplication (!1377): Include RecordTaskAssignment
-            // so mark_in_flight_spawns_from_effects() tracks this spawn and prevents
-            // task dispatch from double-spawning for the same task in the next tick.
-            if let Some(task_id) = ctx.pr_task_associations.get(&pr_number) {
-                on_success.push(Effect::RecordTaskAssignment {
-                    coworker: owner.clone(),
-                    task_id: task_id.clone(),
-                });
-            }
+            add_task_assignment_to_on_success(&mut on_success, pr_number, &owner, ctx);
 
             if saved_session.is_some() {
                 on_success.push(Effect::ClearPrBreakSession {

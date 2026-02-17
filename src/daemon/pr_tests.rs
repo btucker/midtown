@@ -1206,3 +1206,208 @@ fn test_reconcile_orphaned_prs_ignores_completed_merge_tasks() {
          leaving the PR stuck without an active merge task."
     );
 }
+
+/// Bug !1377: pr_action_to_effects was missing RecordTaskAssignment in on_success,
+/// allowing cross-tick duplicate spawns for the same task.
+#[test]
+fn pr_action_to_effects_includes_record_task_assignment() {
+    let state = make_test_state("test-repo");
+
+    // Build PrContext with a PR→task association
+    let mut pr_task_associations = HashMap::new();
+    pr_task_associations.insert(123, "42".to_string());
+
+    let ctx = PrContext {
+        pr_task_associations,
+        task_channel: HashMap::new(),
+        session_context: None,
+    };
+
+    // Call pr_action_to_effects with SpawnOwner action
+    let effects = pr_action_to_effects(
+        crate::rules::PrAction::SpawnOwner {
+            owner: "broadway".to_string(),
+            message: "CI failed".to_string(),
+        },
+        123,
+        "Fix auth bug [Midtown !42]",
+        PrIssueType::CiFailed,
+        &state,
+        &ctx,
+    );
+
+    // Find the SpawnCoworkerWithCallbacks effect
+    let spawn_effect = effects
+        .iter()
+        .find_map(|e| {
+            if let Effect::SpawnCoworkerWithCallbacks { on_success, .. } = e {
+                Some(on_success)
+            } else {
+                None
+            }
+        })
+        .expect("Should have SpawnCoworkerWithCallbacks");
+
+    // Verify RecordTaskAssignment is in on_success
+    let has_record = spawn_effect.iter().any(|e| {
+        matches!(
+            e,
+            Effect::RecordTaskAssignment { coworker, task_id }
+                if coworker == "broadway" && task_id == "42"
+        )
+    });
+    assert!(
+        has_record,
+        "pr_action_to_effects on_success must include RecordTaskAssignment for cross-tick dedup"
+    );
+}
+
+/// Bug !1377: comment_action_to_effects was missing RecordTaskAssignment in on_success.
+#[test]
+fn comment_action_to_effects_includes_record_task_assignment() {
+    let state = make_test_state("test-repo");
+
+    let mut pr_task_associations = HashMap::new();
+    pr_task_associations.insert(456, "99".to_string());
+
+    let ctx = PrContext {
+        pr_task_associations,
+        task_channel: HashMap::new(),
+        session_context: None,
+    };
+
+    let effects = comment_action_to_effects(
+        crate::rules::PrAction::SpawnOwner {
+            owner: "park".to_string(),
+            message: "Review comment received".to_string(),
+        },
+        456,
+        "Add feature [Midtown !99]",
+        &state,
+        &ctx,
+    );
+
+    let spawn_effect = effects
+        .iter()
+        .find_map(|e| {
+            if let Effect::SpawnCoworkerWithCallbacks { on_success, .. } = e {
+                Some(on_success)
+            } else {
+                None
+            }
+        })
+        .expect("Should have SpawnCoworkerWithCallbacks");
+
+    let has_record = spawn_effect.iter().any(|e| {
+        matches!(
+            e,
+            Effect::RecordTaskAssignment { coworker, task_id }
+                if coworker == "park" && task_id == "99"
+        )
+    });
+    assert!(
+        has_record,
+        "comment_action_to_effects on_success must include RecordTaskAssignment for cross-tick dedup"
+    );
+}
+
+/// Bug !1377: handoff_to_coworker_effects was missing RecordTaskAssignment in on_success.
+#[test]
+fn handoff_to_coworker_effects_includes_record_task_assignment() {
+    let state = make_test_state("test-repo");
+
+    let mut pr_task_associations = HashMap::new();
+    pr_task_associations.insert(789, "17".to_string());
+
+    let ctx = PrContext {
+        pr_task_associations,
+        task_channel: HashMap::new(),
+        session_context: None,
+    };
+
+    let effects = handoff_to_coworker_effects(
+        "york",
+        "broadway",
+        789,
+        "york/task-17-fix",
+        "test-session-id".to_string(),
+        "Handoff message",
+        "context",
+        "Refactor module [Midtown !17]",
+        PrIssueType::ReviewComment,
+        &state,
+        &ctx,
+    );
+
+    let spawn_effect = effects
+        .iter()
+        .find_map(|e| {
+            if let Effect::SpawnCoworkerWithCallbacks { on_success, .. } = e {
+                Some(on_success)
+            } else {
+                None
+            }
+        })
+        .expect("Should have SpawnCoworkerWithCallbacks");
+
+    let has_record = spawn_effect.iter().any(|e| {
+        matches!(
+            e,
+            Effect::RecordTaskAssignment { coworker, task_id }
+                if coworker == "york" && task_id == "17"
+        )
+    });
+    assert!(
+        has_record,
+        "handoff_to_coworker_effects on_success must include RecordTaskAssignment for cross-tick dedup"
+    );
+}
+
+/// Bug !1377: review_complete_action_to_effects was missing RecordTaskAssignment in on_success.
+#[test]
+fn review_complete_action_to_effects_includes_record_task_assignment() {
+    let state = make_test_state("test-repo");
+
+    let mut pr_task_associations = HashMap::new();
+    pr_task_associations.insert(321, "55".to_string());
+
+    let ctx = PrContext {
+        pr_task_associations,
+        task_channel: HashMap::new(),
+        session_context: None,
+    };
+
+    let effects = review_complete_action_to_effects(
+        crate::rules::PrAction::SpawnOwner {
+            owner: "amsterdam".to_string(),
+            message: "Review complete".to_string(),
+        },
+        321,
+        "Update docs [Midtown !55]",
+        &state,
+        &ctx,
+    );
+
+    let spawn_effect = effects
+        .iter()
+        .find_map(|e| {
+            if let Effect::SpawnCoworkerWithCallbacks { on_success, .. } = e {
+                Some(on_success)
+            } else {
+                None
+            }
+        })
+        .expect("Should have SpawnCoworkerWithCallbacks");
+
+    let has_record = spawn_effect.iter().any(|e| {
+        matches!(
+            e,
+            Effect::RecordTaskAssignment { coworker, task_id }
+                if coworker == "amsterdam" && task_id == "55"
+        )
+    });
+    assert!(
+        has_record,
+        "review_complete_action_to_effects on_success must include RecordTaskAssignment for cross-tick dedup"
+    );
+}
