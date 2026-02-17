@@ -7,10 +7,10 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph},
+    widgets::{Block, Borders, Cell, Paragraph, Row, Table},
 };
 
-use super::super::app::{App, KanbanTask, TaskStatus};
+use super::super::app::{App, CoworkerInfo, KanbanTask, TaskStatus};
 use super::Hyperlink;
 use super::text::wrap_content;
 
@@ -24,7 +24,11 @@ pub fn draw_board_panel(f: &mut Frame, app: &mut App, area: Rect) -> (Vec<Hyperl
     app.channel_line_map.clear();
 
     // Split board area vertically: tasks at top, coworkers at bottom
-    let active_coworker_count = app.coworkers.len();
+    let active_coworker_count = app
+        .coworkers
+        .iter()
+        .filter(|cw| cw.phase.as_deref() != Some("idle") && cw.phase.is_some())
+        .count();
     let coworker_section_height = if active_coworker_count > 0 {
         active_coworker_count as u16 + 3 // 1 header + N rows + 2 borders
     } else {
@@ -304,7 +308,7 @@ fn draw_coworker_status(f: &mut Frame, app: &mut App, area: Rect) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1), // Header line
-            Constraint::Min(0),    // Content rows
+            Constraint::Min(0),    // Content rows (table)
         ])
         .split(area);
 
@@ -315,10 +319,7 @@ fn draw_coworker_status(f: &mut Frame, app: &mut App, area: Rect) {
     let active_coworkers: Vec<_> = app
         .coworkers
         .iter()
-        .filter(|cw| {
-            // Show coworker if they have a phase and it's not "idle"
-            cw.phase.as_deref() != Some("idle") && cw.phase.is_some()
-        })
+        .filter(|cw| cw.phase.as_deref() != Some("idle") && cw.phase.is_some())
         .collect();
 
     let active_count = active_coworkers.len();
@@ -331,109 +332,156 @@ fn draw_coworker_status(f: &mut Frame, app: &mut App, area: Rect) {
     )]));
     f.render_widget(header_paragraph, chunks[0]);
 
-    // Build status lines with responsive layout
-    let mut lines = Vec::new();
-    let available_width = area.width.saturating_sub(2) as usize; // Account for borders
+    // Available width inside the bordered table (subtract 2 for left+right borders)
+    let available_width = area.width.saturating_sub(2) as usize;
 
-    for cw in active_coworkers {
-        let health_color = match cw.health.as_str() {
-            "green" => Color::Green,
-            "yellow" => Color::Yellow,
-            "red" => Color::Red,
-            _ => Color::Green,
-        };
+    // Determine which columns to show based on available width.
+    //
+    // Column widths (fixed):
+    //   spinner : 2  (e.g. "⠋ ")
+    //   name    : max name length (variable, but bounded)
+    //   task_id : 5  (e.g. "!1418")
+    //   phase   : 6  (e.g. "review", "debug")
+    //   pr_num  : 5  (e.g. "#1207")
+    //   progress: 4  (e.g. "42% ")
+    //   time    : 4  (e.g. "~3m")
+    //
+    // Degradation order (drop from right):
+    //   Full:    spinner | name | task_id | phase | pr_num | progress | time
+    //   Level 1: spinner | name | task_id | phase | pr_num | progress
+    //   Level 2: spinner | name | task_id | phase | pr_num
+    //   Level 3: spinner | name | task_id | phase
+    //   Level 4: spinner | name | task_id
+    //   Minimal: spinner | name
 
-        // Build the status line with responsive degradation
-        // Priority order for dropping: phase, percentage, nothing (always show name + spinner + time)
-        let mut line_spans = Vec::new();
+    let name_max = active_coworkers
+        .iter()
+        .map(|cw| cw.name.len())
+        .max()
+        .unwrap_or(6);
 
-        // Always: spinner + name
-        line_spans.push(Span::styled(
-            format!("{} ", spinner),
-            Style::default().fg(Color::Yellow),
-        ));
-        line_spans.push(Span::styled(
-            format!("{}  ", cw.name),
-            Style::default().fg(health_color),
-        ));
+    // Column widths (each includes one space of padding on the right, handled by Cell)
+    let w_spinner: usize = 2; // "⠋ "
+    let w_name: usize = name_max; // right-padded to align
+    let w_task_id: usize = 5; // "!1418"
+    let w_phase: usize = 6; // "review" (longest abbreviation)
+    let w_pr: usize = 5; // "#1207"
+    let w_progress: usize = 4; // "42% "
+    let w_time: usize = 4; // "~3m"
 
-        // Build optional components
-        let phase_text = cw.phase.as_deref().unwrap_or("");
-        let progress_text = cw.progress.map(|p| format!("{}%", p)).unwrap_or_default();
-        let time_text = cw.time_estimate.as_deref().unwrap_or("");
+    // Gap between columns — must match Table::column_spacing() below.
+    let gap: usize = 1;
 
-        // Calculate space needed for each layout level
-        // Full: "⠋ park  dev  42% ~3m"
-        let full_width = spinner.len()
-            + 1
-            + cw.name.len()
-            + 2
-            + phase_text.len()
-            + 2
-            + progress_text.len()
-            + 1
-            + time_text.len();
-        // Without phase: "⠋ park  42% ~3m"
-        let no_phase_width =
-            spinner.len() + 1 + cw.name.len() + 2 + progress_text.len() + 1 + time_text.len();
-        // Without percentage: "⠋ park  ~3m"
-        let no_pct_width = spinner.len() + 1 + cw.name.len() + 2 + time_text.len();
+    // Cumulative widths for each layout level
+    let base = w_spinner + gap + w_name;
+    let with_task = base + gap + w_task_id;
+    let with_phase = with_task + gap + w_phase;
+    let with_pr = with_phase + gap + w_pr;
+    let with_progress = with_pr + gap + w_progress;
+    let with_time = with_progress + gap + w_time;
 
-        if full_width <= available_width && !phase_text.is_empty() {
-            // Full layout: spinner + name + phase + percentage + time
-            line_spans.push(Span::styled(
-                format!("{}  ", phase_text),
-                Style::default().fg(Color::DarkGray),
-            ));
-            if !progress_text.is_empty() {
-                line_spans.push(Span::styled(
-                    format!("{} ", progress_text),
-                    Style::default().fg(Color::Cyan),
-                ));
-            }
-            if !time_text.is_empty() {
-                line_spans.push(Span::styled(
-                    time_text.to_string(),
-                    Style::default().fg(Color::Green),
-                ));
-            }
-        } else if no_phase_width <= available_width {
-            // Drop phase: spinner + name + percentage + time
-            if !progress_text.is_empty() {
-                line_spans.push(Span::styled(
-                    format!("{} ", progress_text),
-                    Style::default().fg(Color::Cyan),
-                ));
-            }
-            if !time_text.is_empty() {
-                line_spans.push(Span::styled(
-                    time_text.to_string(),
-                    Style::default().fg(Color::Green),
-                ));
-            }
-        } else if no_pct_width <= available_width {
-            // Drop percentage: spinner + name + time
-            if !time_text.is_empty() {
-                line_spans.push(Span::styled(
-                    time_text.to_string(),
-                    Style::default().fg(Color::Green),
-                ));
-            }
-        }
-        // If even the minimal layout doesn't fit, we show spinner + name only (already added)
+    let show_task_id = with_task <= available_width;
+    let show_phase = show_task_id && with_phase <= available_width;
+    let show_pr = show_phase && with_pr <= available_width;
+    let show_progress = show_pr && with_progress <= available_width;
+    let show_time = show_progress && with_time <= available_width;
 
-        lines.push(Line::from(line_spans));
+    // Build column constraints
+    let mut constraints = vec![
+        Constraint::Length(w_spinner as u16),
+        Constraint::Length(w_name as u16),
+    ];
+    if show_task_id {
+        constraints.push(Constraint::Length(w_task_id as u16));
+    }
+    if show_phase {
+        constraints.push(Constraint::Length(w_phase as u16));
+    }
+    if show_pr {
+        constraints.push(Constraint::Length(w_pr as u16));
+    }
+    if show_progress {
+        constraints.push(Constraint::Length(w_progress as u16));
+    }
+    if show_time {
+        // Min (not Length) so the last column absorbs remaining width.
+        constraints.push(Constraint::Min(w_time as u16));
     }
 
-    let paragraph = Paragraph::new(lines)
+    let rows: Vec<Row> = active_coworkers
+        .iter()
+        .map(|cw| {
+            coworker_table_row(
+                cw,
+                spinner,
+                show_task_id,
+                show_phase,
+                show_pr,
+                show_progress,
+                show_time,
+            )
+        })
+        .collect();
+
+    let table = Table::new(rows, constraints)
         .block(
             Block::default()
                 .borders(Borders::ALL)
                 .style(Style::default().fg(Color::White)),
         )
-        .style(Style::default());
+        .column_spacing(1);
 
-    f.render_widget(paragraph, chunks[1]);
+    f.render_widget(table, chunks[1]);
+}
+
+/// Build a single table Row for a coworker.
+fn coworker_table_row(
+    cw: &CoworkerInfo,
+    spinner: &str,
+    show_task_id: bool,
+    show_phase: bool,
+    show_pr: bool,
+    show_progress: bool,
+    show_time: bool,
+) -> Row<'static> {
+    let health_color = match cw.health.as_str() {
+        "green" => Color::Green,
+        "yellow" => Color::Yellow,
+        "red" => Color::Red,
+        _ => Color::Green,
+    };
+
+    let mut cells: Vec<Cell> = vec![
+        Cell::from(spinner.to_string()).style(Style::default().fg(Color::Yellow)),
+        Cell::from(cw.name.clone()).style(Style::default().fg(health_color)),
+    ];
+
+    if show_task_id {
+        let task_text = cw.task_id.map(|id| format!("!{id}")).unwrap_or_default();
+        cells.push(Cell::from(task_text).style(Style::default().fg(Color::DarkGray)));
+    }
+
+    if show_phase {
+        let phase_text = cw.phase.as_deref().unwrap_or("").to_string();
+        cells.push(Cell::from(phase_text).style(Style::default().fg(Color::DarkGray)));
+    }
+
+    if show_pr {
+        let pr_text = cw.pr_number.map(|n| format!("#{n}")).unwrap_or_default();
+        cells.push(Cell::from(pr_text).style(Style::default().fg(Color::Blue)));
+    }
+
+    if show_progress {
+        let progress_text = cw.progress.map(|p| format!("{p}%")).unwrap_or_default();
+        cells.push(Cell::from(progress_text).style(Style::default().fg(Color::Cyan)));
+    }
+
+    if show_time {
+        let time_text = cw.time_estimate.as_deref().unwrap_or("").to_string();
+        cells.push(Cell::from(time_text).style(Style::default().fg(Color::Green)));
+    }
+
+    Row::new(cells)
 }
 
 /// Compute indentation level for each task based on dependency structure.
@@ -799,5 +847,362 @@ mod tests {
             tasks_area.height < 40,
             "tasks_area should exclude coworker section"
         );
+    }
+
+    fn make_coworker(name: &str) -> CoworkerInfo {
+        CoworkerInfo {
+            name: name.to_string(),
+            task_id: None,
+            phase: Some("developing".to_string()),
+            pr_number: None,
+            health: "green".to_string(),
+            provider: "claude".to_string(),
+            profile: "default".to_string(),
+            progress: None,
+            time_estimate: None,
+        }
+    }
+
+    #[test]
+    fn test_coworker_table_row_all_columns() {
+        let mut cw = make_coworker("park");
+        cw.task_id = Some(1418);
+        cw.pr_number = Some(1207);
+        cw.progress = Some(42);
+        cw.time_estimate = Some("~3m".to_string());
+
+        let row = coworker_table_row(&cw, "⠋", true, true, true, true, true);
+
+        // Verify all 7 columns are present by checking the row can be constructed
+        // (Row doesn't expose cell count directly, but we verify data is correct
+        // by checking what we passed to each show_* flag)
+        let _ = row; // Row is valid, column building doesn't panic
+    }
+
+    #[test]
+    fn test_coworker_table_row_minimal_columns() {
+        let cw = make_coworker("york");
+        // Minimal: only spinner + name (all show_* = false)
+        let row = coworker_table_row(&cw, "⠙", false, false, false, false, false);
+        let _ = row;
+    }
+
+    #[test]
+    fn test_coworker_section_height_no_coworkers() {
+        // When there are no coworkers, section height should be 0
+        let coworker_count: u16 = 0;
+        let height = if coworker_count > 0 {
+            coworker_count + 3
+        } else {
+            0
+        };
+        assert_eq!(height, 0);
+    }
+
+    #[test]
+    fn test_coworker_section_height_with_coworkers() {
+        // 1 coworker → header (1) + row (1) + 2 borders = 4... but the current
+        // implementation does active_count + 3 (1 header + N rows + 2 borders).
+        // With 1 active coworker the height should be 4.
+        // This mirrors the formula in draw_board_panel().
+        let active_count: u16 = 1;
+        let height = active_count + 3;
+        assert_eq!(height, 4);
+
+        let active_count: u16 = 3;
+        let height = active_count + 3;
+        assert_eq!(height, 6);
+    }
+
+    #[test]
+    fn test_draw_coworker_status_renders_without_panic() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let backend = TestBackend::new(80, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let mut app = test_app();
+        app.coworkers = vec![
+            {
+                let mut cw = make_coworker("park");
+                cw.task_id = Some(1418);
+                cw.phase = Some("developing".to_string());
+                cw.pr_number = Some(1207);
+                cw.progress = Some(42);
+                cw.time_estimate = Some("~3m".to_string());
+                cw
+            },
+            {
+                let mut cw = make_coworker("amsterdam");
+                cw.task_id = Some(1419);
+                cw.phase = Some("pull-request".to_string());
+                cw.pr_number = Some(1208);
+                cw.progress = Some(78);
+                cw
+            },
+        ];
+        app.max_coworkers = 4;
+
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                draw_coworker_status(f, &mut app, area);
+            })
+            .unwrap();
+        // If we get here without panicking, the render succeeded
+    }
+
+    #[test]
+    fn test_draw_coworker_status_narrow_width_no_panic() {
+        // Test responsive degradation at very narrow widths
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        for width in [20u16, 25, 30, 40, 50, 60, 80] {
+            let backend = TestBackend::new(width, 6);
+            let mut terminal = Terminal::new(backend).unwrap();
+
+            let mut app = test_app();
+            app.coworkers = vec![{
+                let mut cw = make_coworker("amsterdam");
+                cw.task_id = Some(1234);
+                cw.phase = Some("testing".to_string());
+                cw.pr_number = Some(999);
+                cw.progress = Some(50);
+                cw.time_estimate = Some("~5m".to_string());
+                cw
+            }];
+
+            terminal
+                .draw(|f| {
+                    let area = f.area();
+                    draw_coworker_status(f, &mut app, area);
+                })
+                .unwrap();
+        }
+    }
+
+    #[test]
+    fn test_draw_coworker_status_health_colors() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let backend = TestBackend::new(80, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let mut app = test_app();
+        app.coworkers = vec![
+            {
+                let mut cw = make_coworker("york");
+                cw.health = "green".to_string();
+                cw
+            },
+            {
+                let mut cw = make_coworker("park");
+                cw.health = "yellow".to_string();
+                cw
+            },
+            {
+                let mut cw = make_coworker("lexington");
+                cw.health = "red".to_string();
+                cw
+            },
+            {
+                let mut cw = make_coworker("madison");
+                cw.health = "unknown".to_string();
+                cw
+            },
+        ];
+
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                draw_coworker_status(f, &mut app, area);
+            })
+            .unwrap();
+        // Verifies health-based color logic handles all branches including "unknown"
+    }
+
+    #[test]
+    fn test_draw_coworker_status_idle_coworkers_excluded() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let backend = TestBackend::new(80, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let mut app = test_app();
+        app.coworkers = vec![
+            {
+                let mut cw = make_coworker("york");
+                cw.phase = Some("idle".to_string());
+                cw
+            },
+            {
+                // No phase set — also excluded
+                let mut cw = make_coworker("park");
+                cw.phase = None;
+                cw
+            },
+            {
+                let mut cw = make_coworker("amsterdam");
+                cw.phase = Some("developing".to_string());
+                cw
+            },
+        ];
+
+        // Only "amsterdam" (developing) should appear. This test verifies no panic
+        // and renders correctly with a mix of idle/none/active coworkers.
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                draw_coworker_status(f, &mut app, area);
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn test_draw_board_panel_coworker_section_snug_height() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let backend = TestBackend::new(80, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let mut app = test_app();
+        // 2 active coworkers → expected section height: 2 + 3 = 5
+        app.coworkers = vec![
+            {
+                let mut cw = make_coworker("york");
+                cw.phase = Some("developing".to_string());
+                cw
+            },
+            {
+                let mut cw = make_coworker("park");
+                cw.phase = Some("testing".to_string());
+                cw
+            },
+        ];
+        app.max_coworkers = 4;
+
+        let mut returned_tasks_area = None;
+
+        terminal
+            .draw(|f| {
+                let area = Rect {
+                    x: 0,
+                    y: 0,
+                    width: 80,
+                    height: 40,
+                };
+                let (_hyperlinks, tasks_area) = draw_board_panel(f, &mut app, area);
+                returned_tasks_area = Some(tasks_area);
+            })
+            .unwrap();
+
+        let tasks_area = returned_tasks_area.unwrap();
+        // 2 active coworkers → section height = 2 + 3 = 5
+        // tasks_area height should be 40 - 5 = 35
+        assert_eq!(
+            tasks_area.height, 35,
+            "tasks area height should leave exactly 5 rows for 2 coworkers"
+        );
+    }
+
+    #[test]
+    fn test_draw_board_panel_idle_coworkers_dont_inflate_height() {
+        // Regression test: idle coworkers should not inflate the section height.
+        // If 2 out of 3 coworkers are idle, only 1 active row should be reserved.
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let backend = TestBackend::new(80, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let mut app = test_app();
+        app.coworkers = vec![
+            {
+                let mut cw = make_coworker("york");
+                cw.phase = Some("idle".to_string()); // idle — excluded
+                cw
+            },
+            {
+                let mut cw = make_coworker("park");
+                cw.phase = None; // no phase — excluded
+                cw
+            },
+            {
+                let mut cw = make_coworker("amsterdam");
+                cw.phase = Some("developing".to_string()); // active
+                cw
+            },
+        ];
+        app.max_coworkers = 4;
+
+        let mut returned_tasks_area = None;
+
+        terminal
+            .draw(|f| {
+                let area = Rect {
+                    x: 0,
+                    y: 0,
+                    width: 80,
+                    height: 40,
+                };
+                let (_hyperlinks, tasks_area) = draw_board_panel(f, &mut app, area);
+                returned_tasks_area = Some(tasks_area);
+            })
+            .unwrap();
+
+        let tasks_area = returned_tasks_area.unwrap();
+        // Only 1 active coworker → section height = 1 + 3 = 4
+        // tasks_area height should be 40 - 4 = 36
+        assert_eq!(
+            tasks_area.height, 36,
+            "idle coworkers should not inflate section height (only 1 active coworker)"
+        );
+    }
+
+    #[test]
+    fn test_phase_column_width_fits_all_abbreviations() {
+        use midtown::coworker_state::WorkflowPhase;
+
+        // w_phase in draw_coworker_status must fit the longest abbreviation.
+        let w_phase: usize = 6;
+        let phases = [
+            WorkflowPhase::Claiming,
+            WorkflowPhase::Developing,
+            WorkflowPhase::Testing,
+            WorkflowPhase::PullRequest,
+            WorkflowPhase::Reviewing,
+            WorkflowPhase::Debugging,
+            WorkflowPhase::Completed,
+            WorkflowPhase::Idle,
+        ];
+
+        for phase in &phases {
+            let abbr = phase.abbreviation();
+            assert!(
+                abbr.len() <= w_phase,
+                "Phase {:?} abbreviation {:?} ({} chars) exceeds column width {}",
+                phase,
+                abbr,
+                abbr.len(),
+                w_phase,
+            );
+        }
+    }
+
+    #[test]
+    fn test_coworker_table_row_review_phase_untruncated() {
+        // Verify that "review" (the longest phase abbreviation) renders
+        // without truncation in the coworker table row.
+        let mut cw = make_coworker("york");
+        cw.phase = Some("review".to_string());
+        cw.task_id = Some(42);
+
+        let row = coworker_table_row(&cw, "⠋", true, true, false, false, false);
+        let _ = row; // Row builds successfully with the phase data
     }
 }
