@@ -127,10 +127,25 @@
     {:else}
       <div class="flex flex-col gap-1">
         {#each $daemonStatus.tasks as task}
-          <div class="flex gap-2 px-3 py-2 bg-[#262626] rounded text-[0.85rem]">
-            <span class="text-[#585858] min-w-[30px]">!{task.id}</span>
-            <span class="flex-1 line-clamp-2 overflow-hidden">{task.subject}</span>
-            <span class="text-[#585858] capitalize">{task.status}</span>
+          {@const coworker = $coworkers.find(cw => cw.task_id === Number(task.id))}
+          {@const progress = coworker?.progress}
+          <div class="flex flex-col gap-1.5 px-3 py-2 bg-[#262626] rounded text-[0.85rem]">
+            <div class="flex gap-2">
+              <span class="text-[#585858] min-w-[30px]">!{task.id}</span>
+              <span class="flex-1 line-clamp-2 overflow-hidden">{task.subject}</span>
+              <span class="text-[#585858] capitalize">{task.status}</span>
+            </div>
+            {#if progress != null}
+              <div class="flex items-center gap-2 ml-[38px]">
+                <div class="flex-1 h-1.5 bg-[#3a3a3a] rounded-full overflow-hidden">
+                  <div
+                    class="h-full bg-[#5fafaf] rounded-full transition-all duration-300"
+                    style="width: {progress}%"
+                  ></div>
+                </div>
+                <span class="text-[#a8a8a8] font-mono text-[0.65rem] min-w-[32px] text-right">{progress}%</span>
+              </div>
+            {/if}
           </div>
         {/each}
       </div>
