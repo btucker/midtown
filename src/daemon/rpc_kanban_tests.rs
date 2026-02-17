@@ -134,3 +134,63 @@ fn test_coworker_state_hash_changes_on_assignment() {
     assert_ne!(hash_2, hash_3);
     assert_ne!(hash_3, hash_4);
 }
+
+#[test]
+fn test_lead_activity_detection_no_health() {
+    assert!(!is_session_actively_working(None));
+}
+
+#[test]
+fn test_lead_activity_detection_not_alive() {
+    let health = ProcessHealth {
+        is_alive: false,
+        last_event_at: Some(Utc::now()),
+        ..Default::default()
+    };
+    assert!(!is_session_actively_working(Some(&health)));
+}
+
+#[test]
+fn test_lead_activity_detection_alive_recent_event() {
+    let health = ProcessHealth {
+        is_alive: true,
+        last_event_at: Some(Utc::now()),
+        ..Default::default()
+    };
+    assert!(is_session_actively_working(Some(&health)));
+}
+
+#[test]
+fn test_lead_activity_detection_alive_stale_event() {
+    // Event older than LEAD_ACTIVITY_TIMEOUT — should be considered idle
+    let stale_ts = Utc::now() - chrono::Duration::seconds(10);
+    let health = ProcessHealth {
+        is_alive: true,
+        last_event_at: Some(stale_ts),
+        ..Default::default()
+    };
+    assert!(!is_session_actively_working(Some(&health)));
+}
+
+#[test]
+fn test_lead_activity_detection_alive_no_events() {
+    // Alive but has never received any events
+    let health = ProcessHealth {
+        is_alive: true,
+        last_event_at: None,
+        ..Default::default()
+    };
+    assert!(!is_session_actively_working(Some(&health)));
+}
+
+#[test]
+fn test_lead_activity_detection_future_timestamp() {
+    // Clock skew: last_event_at is in the future — should NOT report active
+    let future_ts = Utc::now() + chrono::Duration::seconds(60);
+    let health = ProcessHealth {
+        is_alive: true,
+        last_event_at: Some(future_ts),
+        ..Default::default()
+    };
+    assert!(!is_session_actively_working(Some(&health)));
+}
