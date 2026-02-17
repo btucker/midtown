@@ -12,6 +12,99 @@ use std::collections::HashMap;
 use tokio::sync::RwLock;
 use tracing::{info, warn};
 
+/// Kill a stale daemon process that lost its PID lock but didn't exit.
+///
+/// Called after successfully acquiring the PID lock. Since we hold the exclusive
+/// lock, the old process is definitively stale. This function:
+/// 1. Verifies the process command contains "midtown" (avoids killing PID-reused processes)
+/// 2. Sends SIGTERM for graceful shutdown
+/// 3. Polls up to 3 seconds for the process to exit
+/// 4. Sends SIGKILL as a last resort
+pub fn kill_stale_daemon(pid: u32) {
+    if pid == std::process::id() {
+        return;
+    }
+
+    if !verify_midtown_process(pid) {
+        info!(
+            "Stale PID {} is not a midtown process (PID reused or already exited), skipping",
+            pid
+        );
+        return;
+    }
+
+    info!(
+        "Killing stale daemon process {} (lost PID lock but still running)",
+        pid
+    );
+
+    // SIGTERM first for graceful shutdown
+    let _ = std::process::Command::new("kill")
+        .arg(pid.to_string())
+        .output();
+
+    // Poll up to 3 seconds for the process to die
+    for _ in 0..30 {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        if !process_exists(pid) {
+            info!("Stale daemon {} exited after SIGTERM", pid);
+            return;
+        }
+    }
+
+    // Still alive — SIGKILL
+    warn!(
+        "Stale daemon {} didn't exit after SIGTERM, sending SIGKILL",
+        pid
+    );
+    let _ = std::process::Command::new("kill")
+        .args(["-9", &pid.to_string()])
+        .output();
+}
+
+/// Check if a process is a stale midtown daemon (not the current one).
+///
+/// Returns true if:
+/// - pid != current_daemon_pid
+/// - The process command line contains "midtown"
+pub fn is_stale_midtown_daemon(pid: u32, current_daemon_pid: u32) -> bool {
+    if pid == current_daemon_pid {
+        return false;
+    }
+
+    verify_midtown_process(pid)
+}
+
+/// Check if a PID belongs to a midtown process.
+///
+/// Returns true if the process exists and its command line contains "midtown".
+pub fn verify_midtown_process(pid: u32) -> bool {
+    let output = match std::process::Command::new("ps")
+        .args(["-p", &pid.to_string(), "-o", "args="])
+        .output()
+    {
+        Ok(output) => output,
+        Err(_) => return false,
+    };
+
+    if !output.status.success() {
+        return false;
+    }
+
+    let cmdline = String::from_utf8_lossy(&output.stdout);
+    cmdline.contains("midtown")
+}
+
+/// Check if a process exists (is still running).
+fn process_exists(pid: u32) -> bool {
+    // kill -0 checks if process exists without sending a signal
+    std::process::Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
 /// Check if the daemon is running inside a sandbox context.
 ///
 /// Returns `Some(warning_message)` if sandboxing is unavailable (already nested),
@@ -73,11 +166,12 @@ pub async fn recover_coworker_records(
 /// Scan for and kill any orphaned Claude headless processes not tracked by the daemon.
 ///
 /// This cleanup runs on daemon startup to remove zombie processes left behind
-/// from crashes or unclean shutdowns. Only kills processes that:
+/// from crashes or unclean shutdowns. Kills processes that:
 /// - Match the midtown settings pattern (scoped to this installation)
-/// - Are truly orphaned (PPID=1)
+/// - Are truly orphaned (PPID=1), OR
+/// - Are children of a stale midtown daemon (parent is a midtown process that isn't the current daemon)
 /// - Are not tmux processes
-pub fn kill_zombie_claude_processes() {
+pub fn kill_zombie_claude_processes(current_daemon_pid: u32) {
     info!("Scanning for zombie Claude headless processes...");
 
     // Use the same pattern as the rest of the codebase to scope to this midtown installation
@@ -109,15 +203,9 @@ pub fn kill_zombie_claude_processes() {
         return;
     }
 
-    // Filter to only truly orphaned processes (PPID=1) and exclude tmux
+    // Filter to orphaned processes or children of stale daemons, excluding tmux
     let mut zombie_pids = Vec::new();
     for pid in candidate_pids {
-        // Check if process is orphaned (PPID=1)
-        let ppid = get_ppid(pid);
-        if ppid != Some(1) {
-            continue;
-        }
-
         // Check if process is tmux (should not kill)
         let is_tmux = std::process::Command::new("ps")
             .args(["-p", &pid.to_string(), "-o", "comm="])
@@ -134,7 +222,24 @@ pub fn kill_zombie_claude_processes() {
             continue;
         }
 
-        zombie_pids.push(pid);
+        let ppid = get_ppid(pid);
+
+        // Kill if truly orphaned (PPID=1)
+        if ppid == Some(1) {
+            zombie_pids.push(pid);
+            continue;
+        }
+
+        // Kill if parent is a stale midtown daemon
+        if let Some(parent_pid) = ppid
+            && is_stale_midtown_daemon(parent_pid, current_daemon_pid)
+        {
+            info!(
+                "Process {} has stale midtown daemon parent {} (not current {})",
+                pid, parent_pid, current_daemon_pid
+            );
+            zombie_pids.push(pid);
+        }
     }
 
     if zombie_pids.is_empty() {
@@ -146,11 +251,26 @@ pub fn kill_zombie_claude_processes() {
         zombie_pids.len()
     );
     for pid in &zombie_pids {
-        info!("Killing zombie process: {}", pid);
+        info!("Sending SIGTERM to zombie process: {}", pid);
         let _ = std::process::Command::new("kill")
-            .arg("-9")
             .arg(pid.to_string())
             .output();
+    }
+
+    // Wait up to 2 seconds for processes to exit gracefully
+    std::thread::sleep(std::time::Duration::from_secs(2));
+
+    // SIGKILL any survivors
+    for pid in &zombie_pids {
+        if process_exists(*pid) {
+            warn!(
+                "Zombie process {} didn't exit after SIGTERM, sending SIGKILL",
+                pid
+            );
+            let _ = std::process::Command::new("kill")
+                .args(["-9", &pid.to_string()])
+                .output();
+        }
     }
 }
 

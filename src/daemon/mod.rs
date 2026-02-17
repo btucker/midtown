@@ -84,7 +84,7 @@ pub use pr::{collect_merged_pr_cleanup_effects, reconcile_orphaned_prs};
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::File;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read as _, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -1785,7 +1785,18 @@ fn acquire_pid_lock(pid_path: &PathBuf) -> crate::Result<File> {
     // Try to acquire an exclusive lock (non-blocking)
     match file.try_lock_exclusive() {
         Ok(()) => {
-            // We got the lock - write our PID
+            // We got the lock. Before writing our PID, read and kill any stale daemon.
+            // This handles the case where the old daemon lost the lock (e.g., worktree
+            // build replaced the binary) but didn't exit, keeping its children alive.
+            let mut old_contents = String::new();
+            let _ = file.read_to_string(&mut old_contents);
+            if let Ok(old_pid) = old_contents.trim().parse::<u32>()
+                && old_pid != std::process::id()
+            {
+                startup::kill_stale_daemon(old_pid);
+            }
+
+            // Write our PID
             let pid = std::process::id();
             file.set_len(0)?; // Truncate any old content
             writeln!(file, "{}", pid)?;
@@ -2340,7 +2351,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
     // Kill any zombie Claude headless processes left from crashes or unclean shutdowns.
     // This only kills truly orphaned (PPID=1) processes from crashes — NOT processes
     // that were intentionally detached during a clean daemon restart.
-    startup::kill_zombie_claude_processes();
+    startup::kill_zombie_claude_processes(std::process::id());
 
     // CRITICAL: Restore task assignments from disk BEFORE session recovery.
     // This must happen first so that the in-memory coworker_task_assignments map

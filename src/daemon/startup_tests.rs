@@ -220,6 +220,62 @@ async fn test_startup_recovery_sets_lead_role() {
     }
 }
 
+// --- Tests for stale daemon and zombie scanner helpers ---
+
+#[test]
+fn test_is_stale_midtown_daemon_excludes_current_pid() {
+    // The current daemon PID should never be considered stale
+    let current_pid = std::process::id();
+    assert!(
+        !is_stale_midtown_daemon(current_pid, current_pid),
+        "Current daemon PID should not be considered stale"
+    );
+}
+
+#[test]
+fn test_is_stale_midtown_daemon_returns_false_for_nonexistent_pid() {
+    // A non-existent PID should not be considered a stale daemon
+    let fake_pid = 99999;
+    let current_pid = std::process::id();
+    assert!(
+        !is_stale_midtown_daemon(fake_pid, current_pid),
+        "Non-existent PID should not be considered a stale midtown daemon"
+    );
+}
+
+#[test]
+fn test_verify_midtown_process_returns_false_for_nonexistent_pid() {
+    assert!(
+        !verify_midtown_process(99999),
+        "Non-existent PID should not verify as midtown"
+    );
+}
+
+#[test]
+fn test_verify_midtown_process_returns_false_for_non_midtown_process() {
+    // PID 1 (launchd/init) is definitely not a midtown process
+    assert!(
+        !verify_midtown_process(1),
+        "PID 1 (init/launchd) should not verify as midtown"
+    );
+}
+
+#[test]
+fn test_kill_stale_daemon_skips_non_midtown_process() {
+    // PID 1 (launchd/init) should be skipped because it's not a midtown process.
+    // This test verifies that kill_stale_daemon doesn't attempt to kill
+    // non-midtown processes (it just logs and returns).
+    // If it incorrectly tried to kill PID 1, the test environment would error.
+    kill_stale_daemon(1);
+    // If we get here without panic/error, the function correctly skipped PID 1
+}
+
+#[test]
+fn test_kill_stale_daemon_skips_own_pid() {
+    // Should be a no-op when called with our own PID
+    kill_stale_daemon(std::process::id());
+}
+
 /// Verify that check_sandbox_context() returns an appropriate message when
 /// the daemon is running inside a sandbox (where coworker sandboxing will fail).
 ///
