@@ -1749,6 +1749,13 @@ impl App {
             .clone();
 
         // Switch to the selected channel
+        let channel_repo =
+            midtown::paths::detect_repo_name().unwrap_or_else(|| "default".to_string());
+        let base_dir = midtown::paths::projects_dir_for_repo(&channel_repo);
+        self.selected_channel_archived = base_dir
+            .join("channels")
+            .join(format!("{}.archived.jsonl", &selected_channel))
+            .exists();
         self.selected_channel = selected_channel.clone();
 
         // Update board selection to the selected channel
@@ -1760,8 +1767,8 @@ impl App {
         self.channel_switcher.filtered_channels.clear();
         self.channel_switcher.selected_index = 0;
 
-        // Scroll to bottom when switching channels
-        self.scroll_to_bottom();
+        // Load messages from the newly selected channel
+        self.load_channel_messages();
     }
 
     /// Dismiss the channel switcher without selecting
