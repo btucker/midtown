@@ -896,6 +896,7 @@ impl DaemonState {
                     crate::launch::CoworkerRole::Reviewer => "reviewer".to_string(),
                     crate::launch::CoworkerRole::Lead => "lead".to_string(),
                     crate::launch::CoworkerRole::Coworker => "coworker".to_string(),
+                    crate::launch::CoworkerRole::ChannelLead(_) => "channel-lead".to_string(),
                 },
             };
             if let Err(e) = crate::mailbox::upsert_team_member(team_name, member) {

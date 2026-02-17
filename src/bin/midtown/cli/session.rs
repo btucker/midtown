@@ -776,7 +776,8 @@ pub(crate) fn build_attach_shell_command(
                 model: match role {
                     midtown::launch::CoworkerRole::Lead
                     | midtown::launch::CoworkerRole::Reviewer => "opus".to_string(),
-                    midtown::launch::CoworkerRole::Coworker => "sonnet".to_string(),
+                    midtown::launch::CoworkerRole::Coworker
+                    | midtown::launch::CoworkerRole::ChannelLead(_) => "sonnet".to_string(),
                 },
                 channel: None,
                 auth_profile_dir: Some(profile_dir.clone()),
@@ -784,13 +785,16 @@ pub(crate) fn build_attach_shell_command(
             };
 
             // Write system prompt to temp file
-            let system_prompt = match launch_config.role {
+            let system_prompt = match &launch_config.role {
                 midtown::launch::CoworkerRole::Lead => midtown::agents::lead_system_prompt(),
                 midtown::launch::CoworkerRole::Reviewer => {
                     midtown::agents::reviewer_system_prompt(name)
                 }
                 midtown::launch::CoworkerRole::Coworker => {
                     midtown::agents::coworker_system_prompt(name)
+                }
+                midtown::launch::CoworkerRole::ChannelLead(channel_name) => {
+                    midtown::agents::channel_lead_system_prompt(channel_name, "No context yet.")
                 }
             };
             let prompt_file = std::env::temp_dir().join(format!(

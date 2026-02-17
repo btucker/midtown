@@ -29,6 +29,8 @@ pub enum CoworkerRole {
     Reviewer,
     /// Lead — uses lead.md + common.md, unrestricted settings
     Lead,
+    /// Channel lead — uses channel-lead.md, domain expert for a topic channel
+    ChannelLead(String),
 }
 
 /// All configuration needed to launch a Claude CLI process.
@@ -315,6 +317,40 @@ impl LaunchConfig {
         }
     }
 
+    /// Create a config for a channel lead session.
+    ///
+    /// Channel leads are persistent headless sessions that act as domain experts
+    /// for their topic channel. They use `channel-lead.md` as their system prompt
+    /// and post responses to their channel.
+    ///
+    /// The `model` should be resolved from `ChannelLeadsConfig::model_for_channel()`
+    /// before calling this constructor, enabling per-channel model selection from
+    /// project config.
+    pub fn channel_lead(
+        channel_name: impl Into<String>,
+        repo_name: impl Into<String>,
+        session_mode: SessionMode,
+        model: impl Into<String>,
+    ) -> Self {
+        let channel_name = channel_name.into();
+        let repo = repo_name.into();
+        let team = crate::mailbox::team_name_for_repo(&repo);
+        LaunchConfig {
+            name: channel_name.clone(),
+            session_mode,
+            role: CoworkerRole::ChannelLead(channel_name.clone()),
+            initial_prompt: None,
+            additional_dirs: vec![],
+            pr_number: None,
+            team_name: Some(team),
+            working_dir: None,
+            model: model.into(),
+            channel: Some(channel_name),
+            auth_profile_dir: None,
+            auth_provider: crate::auth::AuthProvider::Claude,
+        }
+    }
+
     /// Convert to a `HeadlessConfig` for headless session spawn.
     ///
     /// Generates the system prompt based on the coworker's role, and maps
@@ -325,10 +361,13 @@ impl LaunchConfig {
     /// For Lead role: saves the system prompt to `~/.midtown/lead/<repo>/system-prompt.txt`
     /// so it can be re-applied when attaching to the headless session.
     pub fn to_headless_config(&self, project_name: &str) -> HeadlessConfig {
-        let system_prompt = match self.role {
+        let system_prompt = match &self.role {
             CoworkerRole::Reviewer => crate::agents::reviewer_system_prompt(&self.name),
             CoworkerRole::Lead => crate::agents::lead_system_prompt(),
             CoworkerRole::Coworker => crate::agents::coworker_system_prompt(&self.name),
+            CoworkerRole::ChannelLead(channel_name) => {
+                crate::agents::channel_lead_system_prompt(channel_name, "No context yet.")
+            }
         };
 
         // Save the lead system prompt to disk for attach resumption
@@ -981,6 +1020,40 @@ mod tests {
         assert_eq!(headless.team_name, Some("midtown-myrepo".to_string()));
         assert_eq!(headless.agent_id, Some("lead@midtown-myrepo".to_string()));
         assert_eq!(headless.agent_name, Some("lead".to_string()));
+    }
+
+    #[test]
+    fn test_launch_config_channel_lead_factory() {
+        let config =
+            LaunchConfig::channel_lead("daemon-architecture", "myrepo", SessionMode::Fresh, "opus");
+        assert_eq!(config.name, "daemon-architecture");
+        assert_eq!(
+            config.role,
+            CoworkerRole::ChannelLead("daemon-architecture".to_string())
+        );
+        assert_eq!(config.model, "opus");
+        assert_eq!(config.channel, Some("daemon-architecture".to_string()));
+        assert_eq!(config.team_name, Some("midtown-myrepo".to_string()));
+        assert!(config.initial_prompt.is_none());
+        assert!(config.pr_number.is_none());
+    }
+
+    #[test]
+    fn test_launch_config_channel_lead_default_model() {
+        let config =
+            LaunchConfig::channel_lead("web-interface", "myrepo", SessionMode::Fresh, "sonnet");
+        assert_eq!(config.model, "sonnet");
+    }
+
+    #[test]
+    fn test_channel_lead_headless_config_has_system_prompt() {
+        let config = LaunchConfig::channel_lead("tui", "myrepo", SessionMode::Fresh, "sonnet");
+        let headless = config.to_headless_config("midtown");
+        // Channel lead system prompt references the channel name
+        assert!(
+            headless.system_prompt.contains("tui"),
+            "System prompt should reference the channel name"
+        );
     }
 }
 
