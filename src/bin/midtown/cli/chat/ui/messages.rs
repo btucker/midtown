@@ -11,7 +11,6 @@ use midtown::MessageType;
 
 use super::TIMESTAMP_GUTTER_WIDTH;
 use super::styles::{get_sender_color, is_dim_sender, is_system_like_sender};
-use super::text::{parse_markdown, wrap_content};
 
 /// Precomputed values shared by message rendering functions.
 ///
@@ -119,25 +118,66 @@ pub fn push_sender_header(
 /// Build the first content line with appropriate timestamp prefix.
 ///
 /// Dispatches to action ("* "), crosspost ("★ from #channel | "), or plain timestamp format.
+/// Prepends the prefix spans to a pre-parsed `Line` from the block parser.
 pub fn build_first_content_line(
     msg: &midtown::Message,
     ctx: &MessageRenderContext,
-    content: &str,
+    parsed_line: Line<'static>,
 ) -> Line<'static> {
     if msg.message_type == MessageType::Action {
-        build_action_timestamp_line(&ctx.time, content, ctx.color, ctx.content_style)
+        prepend_spans(
+            vec![
+                Span::styled(
+                    format!(" {} ", ctx.time),
+                    Style::default().fg(Color::DarkGray),
+                ),
+                Span::styled("* ", Style::default().fg(ctx.color)),
+            ],
+            parsed_line,
+        )
     } else if let Some(ref source_channel) = msg.source_channel {
-        build_crosspost_timestamp_line(&ctx.time, content, source_channel, ctx.content_style)
+        prepend_spans(
+            vec![
+                Span::styled(
+                    format!(" {} ", ctx.time),
+                    Style::default().fg(Color::DarkGray),
+                ),
+                Span::styled("★ ", Style::default().fg(Color::Yellow)),
+                Span::styled(
+                    format!("from #{} | ", source_channel),
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ],
+            parsed_line,
+        )
     } else {
-        build_timestamp_line(&ctx.time, content, ctx.content_style)
+        prepend_spans(
+            vec![Span::styled(
+                format!(" {} ", ctx.time),
+                Style::default().fg(Color::DarkGray),
+            )],
+            parsed_line,
+        )
     }
 }
 
+/// Prepend a list of spans to an existing `Line`.
+fn prepend_spans(prefix: Vec<Span<'static>>, line: Line<'static>) -> Line<'static> {
+    let mut spans = prefix;
+    spans.extend(line.spans);
+    Line::from(spans)
+}
+
 /// Build a continuation line (non-first content line) with proper indentation.
-pub fn build_continuation_line(ctx: &MessageRenderContext, content: &str) -> Line<'static> {
-    let indent = " ".repeat(ctx.indent_width());
-    let mut spans = vec![Span::raw(indent)];
-    spans.extend(parse_markdown(content, ctx.content_style));
+///
+/// Prepends the indent prefix to a pre-parsed `Line` from the block parser.
+pub fn build_continuation_line(
+    ctx: &MessageRenderContext,
+    parsed_line: Line<'static>,
+) -> Line<'static> {
+    let indent = Span::raw(" ".repeat(ctx.indent_width()));
+    let mut spans = vec![indent];
+    spans.extend(parsed_line.spans);
     Line::from(spans)
 }
 
@@ -146,6 +186,10 @@ pub fn build_continuation_line(ctx: &MessageRenderContext, content: &str) -> Lin
 /// Handles three message variants (action, crosspost, regular) through a unified
 /// flow: compute context → optional sender header → timestamp first line →
 /// indented continuation lines.
+///
+/// Block-level constructs (tables, code fences) are parsed via `minimad_ratatui::from_str`
+/// so that tables get proper column alignment. Regular text segments are word-wrapped
+/// with `wrap_content` and parsed inline so they fit the terminal width.
 pub fn render_message(
     msg: &midtown::Message,
     width: usize,
@@ -160,19 +204,85 @@ pub fn render_message(
         return vec![];
     }
 
-    let content_lines = wrap_content(&msg.content, content_width);
+    let rendered_content = render_content_lines(&msg.content, content_width, ctx.content_style);
+
     let mut result = Vec::new();
 
     if ctx.show_sender {
         push_sender_header(msg, &ctx, prev_sender, current_tasks, width, &mut result);
     }
 
-    for (i, content) in content_lines.iter().enumerate() {
+    for (i, line) in rendered_content.into_iter().enumerate() {
         if i == 0 {
-            result.push(build_first_content_line(msg, &ctx, content));
+            result.push(build_first_content_line(msg, &ctx, line));
         } else {
-            result.push(build_continuation_line(&ctx, content));
+            result.push(build_continuation_line(&ctx, line));
         }
+    }
+
+    result
+}
+
+/// Render message content into styled lines, using block-level parsing for tables
+/// and inline parsing with word-wrapping for regular text.
+///
+/// Content is split into table blocks (lines starting with `|`) and text segments.
+/// Table blocks are parsed by `minimad_ratatui::from_str` to get aligned columns.
+/// Text segments are word-wrapped to `content_width` then parsed inline.
+fn render_content_lines(
+    content: &str,
+    content_width: usize,
+    style: ratatui::style::Style,
+) -> Vec<Line<'static>> {
+    use super::text::wrap_content;
+
+    let mut result = Vec::new();
+    let mut text_buf = String::new();
+
+    let flush_text = |buf: &mut String, result: &mut Vec<Line<'static>>| {
+        if buf.is_empty() {
+            return;
+        }
+        let wrapped = wrap_content(buf.trim_end_matches('\n'), content_width);
+        for line_text in wrapped {
+            result.push(minimad_ratatui::inline(&line_text, style));
+        }
+        buf.clear();
+    };
+
+    let mut in_table = false;
+    let mut table_buf = String::new();
+
+    for raw_line in content.split('\n') {
+        let is_table_line = raw_line.trim_start().starts_with('|');
+
+        if is_table_line {
+            if !in_table {
+                // Flush any buffered text before starting the table
+                flush_text(&mut text_buf, &mut result);
+                in_table = true;
+            }
+            table_buf.push_str(raw_line);
+            table_buf.push('\n');
+        } else {
+            if in_table {
+                // Flush the table block
+                let parsed = minimad_ratatui::from_str(&table_buf, style);
+                result.extend(parsed.lines);
+                table_buf.clear();
+                in_table = false;
+            }
+            text_buf.push_str(raw_line);
+            text_buf.push('\n');
+        }
+    }
+
+    // Flush remaining content
+    if in_table {
+        let parsed = minimad_ratatui::from_str(&table_buf, style);
+        result.extend(parsed.lines);
+    } else {
+        flush_text(&mut text_buf, &mut result);
     }
 
     result
@@ -216,52 +326,6 @@ fn build_sender_line(
         }
     }
 
-    Line::from(spans)
-}
-
-/// Build a timestamp line with message content: " HH:MM message"
-fn build_timestamp_line(time: &str, content: &str, content_style: Style) -> Line<'static> {
-    let mut spans = vec![Span::styled(
-        format!(" {} ", time),
-        Style::default().fg(Color::DarkGray),
-    )];
-    spans.extend(parse_markdown(content, content_style));
-    Line::from(spans)
-}
-
-/// Build a timestamp line for action messages: " HH:MM * message"
-/// The "*" is in the actor's color to indicate this is an action/status message
-fn build_action_timestamp_line(
-    time: &str,
-    content: &str,
-    actor_color: Color,
-    content_style: Style,
-) -> Line<'static> {
-    let mut spans = vec![
-        Span::styled(format!(" {} ", time), Style::default().fg(Color::DarkGray)),
-        Span::styled("* ", Style::default().fg(actor_color)),
-    ];
-    spans.extend(parse_markdown(content, content_style));
-    Line::from(spans)
-}
-
-/// Build a timestamp line for cross-posted insights: " HH:MM ★ from #channel | message"
-/// The "★" and channel attribution are styled distinctly to indicate cross-posting
-fn build_crosspost_timestamp_line(
-    time: &str,
-    content: &str,
-    source_channel: &str,
-    content_style: Style,
-) -> Line<'static> {
-    let mut spans = vec![
-        Span::styled(format!(" {} ", time), Style::default().fg(Color::DarkGray)),
-        Span::styled("★ ", Style::default().fg(Color::Yellow)),
-        Span::styled(
-            format!("from #{} | ", source_channel),
-            Style::default().fg(Color::DarkGray),
-        ),
-    ];
-    spans.extend(parse_markdown(content, content_style));
     Line::from(spans)
 }
 
@@ -1009,6 +1073,84 @@ mod tests {
             "Continuation indent should be {} spaces, got {} (possible byte/char mismatch)",
             expected_indent,
             first_span_content.len()
+        );
+    }
+
+    #[test]
+    fn test_markdown_table_columns_are_aligned() {
+        // Tables in messages should have columns padded to equal widths.
+        // The per-line inline parser cannot know column widths across rows,
+        // so the header row and data rows won't align without the block parser.
+        //
+        // With a table like:
+        //   | Name      | Status    |
+        //   |-----------|-----------|
+        //   | riverside | active    |
+        //
+        // "Name" (4 chars) and "riverside" (9 chars) must align — the header
+        // must be padded to 9 chars so both rows have equal column widths.
+        let table_content = "| Name | Status |\n|------|--------|\n| riverside | developing |";
+        let msg = test_message(table_content);
+        let current_tasks = HashMap::new();
+
+        let lines = render_message(&msg, 80, None, &current_tasks, None);
+
+        // Find the header row line and data row line in the output
+        let header_line = lines
+            .iter()
+            .find(|l| l.spans.iter().any(|s| s.content.as_ref().contains("Name")));
+        let data_line = lines.iter().find(|l| {
+            l.spans
+                .iter()
+                .any(|s| s.content.as_ref().contains("riverside"))
+        });
+
+        assert!(
+            header_line.is_some(),
+            "Should have a header row with 'Name'"
+        );
+        assert!(
+            data_line.is_some(),
+            "Should have a data row with 'riverside'"
+        );
+
+        // Compute the byte offset of the │ separator in both lines.
+        // If columns are aligned, the separator should appear at the same offset
+        // in both the header and data row.
+        let separator = '\u{2502}'; // │
+
+        let header_text: String = header_line
+            .unwrap()
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        let data_text: String = data_line
+            .unwrap()
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+
+        // Find position of first │ in each line's content portion (after timestamp gutter)
+        let header_sep_pos = header_text.chars().position(|c| c == separator);
+        let data_sep_pos = data_text.chars().position(|c| c == separator);
+
+        assert!(
+            header_sep_pos.is_some(),
+            "Header row should contain │ separator, got: {:?}",
+            header_text
+        );
+        assert!(
+            data_sep_pos.is_some(),
+            "Data row should contain │ separator, got: {:?}",
+            data_text
+        );
+
+        assert_eq!(
+            header_sep_pos, data_sep_pos,
+            "Table columns must be aligned: │ separator should be at same position in header ({:?}) and data row ({:?})",
+            header_text, data_text
         );
     }
 
