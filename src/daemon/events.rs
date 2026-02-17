@@ -243,9 +243,10 @@ pub async fn evaluate_tick(
 /// ones trigger `on_success` callbacks (since the idempotent guard returns Ok),
 /// posting duplicate "Called in" messages.
 ///
-/// Also prevents double-spawn for the same task: orphan recovery might spawn
-/// "amsterdam" for task 123, while task dispatch spawns "york" for the same task
-/// in the same tick. This function deduplicates by BOTH coworker name AND task ID.
+/// Also acts as defense-in-depth against double-spawn for the same task: orphan recovery
+/// might spawn "amsterdam" for task 123, while task dispatch spawns "york" for the same
+/// task in the same tick. The primary guard is the exclusion set passed to
+/// `spawn_for_pending_tasks_excluding`; this deduplication by task ID is a backstop.
 ///
 /// Handles all spawn-like effect variants: `SpawnCoworker`,
 /// `SpawnCoworkerWithCallbacks`, `AssignAndSpawn`, and `ResumeCoworker`.

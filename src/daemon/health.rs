@@ -913,11 +913,11 @@ pub fn ensure_lead_alive(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
     // a good reason (e.g., auth error, attach/detach cycle).
     if let Some(stop_time) = snap.coworker_stop_times.get("lead") {
         let since_stop = snap.now_utc.signed_duration_since(*stop_time);
-        if since_stop < chrono::Duration::from_std(MINIMUM_COWORKER_LIFETIME).unwrap_or_default() {
+        if since_stop < chrono::Duration::from_std(LEAD_RESPAWN_COOLDOWN).unwrap_or_default() {
             debug!(
                 "Lead respawn cooldown: stopped {}s ago (need {}s)",
                 since_stop.num_seconds(),
-                MINIMUM_COWORKER_LIFETIME.as_secs()
+                LEAD_RESPAWN_COOLDOWN.as_secs()
             );
             return vec![];
         }

@@ -66,6 +66,13 @@ pub(super) const ORPHAN_CHECK_INTERVAL_SECS: u64 = 5;
 /// relevant now that dual-dispatch is fixed and worktree collision guards are in place.
 pub(super) const MINIMUM_COWORKER_LIFETIME: Duration = Duration::from_secs(60);
 
+/// Cooldown before the lead session is automatically respawned after stopping (5 minutes).
+/// The lead may have stopped intentionally (auth error, manual detach/reattach). A long
+/// cooldown prevents crash loops where a broken lead respawns repeatedly within seconds.
+/// This is longer than MINIMUM_COWORKER_LIFETIME because a crash-looping lead is more
+/// disruptive than a coworker cycling too fast.
+pub(super) const LEAD_RESPAWN_COOLDOWN: Duration = Duration::from_secs(300);
+
 /// Cooldown between orphan recovery spawns (2 seconds).
 /// Tradeoff: Multiple orphan recoveries happen faster vs. spawn storm risk. At 2s with
 /// ORPHAN_CHECK_INTERVAL_SECS=5s, we can recover multiple tasks quickly without overwhelming

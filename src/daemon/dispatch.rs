@@ -1137,13 +1137,9 @@ pub fn decide_orphan_cleanup(data: &OrphanCleanupData) -> Vec<Effect> {
     effects
 }
 
-/// Handles two cases:
-/// 1. Pending tasks with owners - spawn/nudge the assigned coworker if not running
-/// 2. Pending tasks without owners - spawn a new coworker, assign the task, and nudge
-///
-/// `excluded_task_ids`: Task IDs already claimed by orphan recovery in this tick.
-/// Pending dispatch skips these to avoid dual-spawn when a task appears in both
-/// `in_progress_tasks` (orphaned) and `pending_tasks_without_owners` simultaneously.
+/// Convenience wrapper that calls `spawn_for_pending_tasks_excluding` with no exclusions.
+/// Use this when orphan recovery runs in a separate tick and there are no same-tick
+/// task IDs to exclude.
 pub(super) fn spawn_for_pending_tasks(
     snap: &snapshot::WorldSnapshot,
     state: &DaemonState,
@@ -1151,6 +1147,13 @@ pub(super) fn spawn_for_pending_tasks(
     spawn_for_pending_tasks_excluding(snap, state, &std::collections::HashSet::new())
 }
 
+/// Handles two cases:
+/// 1. Pending tasks with owners - spawn/nudge the assigned coworker if not running
+/// 2. Pending tasks without owners - spawn a new coworker, assign the task, and nudge
+///
+/// `excluded_task_ids`: Task IDs already claimed by orphan recovery in this tick.
+/// Pending dispatch skips these to avoid dual-spawn when a task appears in both
+/// `in_progress_tasks` (orphaned) and `pending_tasks_without_owners` simultaneously.
 pub(super) fn spawn_for_pending_tasks_excluding(
     snap: &snapshot::WorldSnapshot,
     state: &DaemonState,
