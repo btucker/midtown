@@ -393,6 +393,12 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
 
     match event {
         Event::Key(key) if key.kind == KeyEventKind::Press => {
+            // Track consecutive kills for kill ring append semantics.
+            // Any non-kill command resets last_was_kill by swapping it out here
+            // and only restoring it inside kill branches.
+            let prev_was_kill = app.last_was_kill;
+            app.last_was_kill = false;
+
             // Handle Alt+key combinations (emacs word movement), only when in InputBar
             if key.modifiers.contains(KeyModifiers::ALT)
                 && app.focused_pane == FocusedPane::InputBar
@@ -449,7 +455,13 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                                     char_index_to_byte_index(&app.input_text, app.input_cursor);
                                 let killed = app.input_text[byte_idx..].to_string();
                                 app.input_text.truncate(byte_idx);
-                                app.kill_ring = Some(killed);
+                                if prev_was_kill {
+                                    let ring = app.kill_ring.get_or_insert_with(String::new);
+                                    ring.push_str(&killed);
+                                } else {
+                                    app.kill_ring = Some(killed);
+                                }
+                                app.last_was_kill = true;
                             }
                             app.detect_autocomplete_trigger();
                         } else {
@@ -481,7 +493,13 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                                 char_index_to_byte_index(&app.input_text, app.input_cursor);
                             let killed = app.input_text[..byte_idx].to_string();
                             app.input_text = app.input_text[byte_idx..].to_string();
-                            app.kill_ring = Some(killed);
+                            if prev_was_kill {
+                                let ring = app.kill_ring.get_or_insert_with(String::new);
+                                ring.push_str(&killed);
+                            } else {
+                                app.kill_ring = Some(killed);
+                            }
+                            app.last_was_kill = true;
                             app.input_cursor = 0;
                             app.detect_autocomplete_trigger();
                         }
@@ -510,7 +528,13 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                                 &app.input_text[..start_byte],
                                 &app.input_text[end_byte..]
                             );
-                            app.kill_ring = Some(killed);
+                            if prev_was_kill {
+                                let ring = app.kill_ring.get_or_insert_with(String::new);
+                                ring.push_str(&killed);
+                            } else {
+                                app.kill_ring = Some(killed);
+                            }
+                            app.last_was_kill = true;
                             app.input_cursor = word_start;
                             app.detect_autocomplete_trigger();
                         }
@@ -540,6 +564,19 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                             let byte_idx =
                                 char_index_to_byte_index(&app.input_text, app.input_cursor);
                             app.input_text.remove(byte_idx);
+                            app.detect_autocomplete_trigger();
+                        }
+                        return EventResult::Continue;
+                    }
+                    KeyCode::Char('y') => {
+                        // Ctrl+Y: yank (paste) kill ring content at cursor (only in InputBar)
+                        if app.focused_pane == FocusedPane::InputBar
+                            && let Some(ref yanked) = app.kill_ring.clone()
+                        {
+                            let byte_idx =
+                                char_index_to_byte_index(&app.input_text, app.input_cursor);
+                            app.input_text.insert_str(byte_idx, yanked);
+                            app.input_cursor += yanked.chars().count();
                             app.detect_autocomplete_trigger();
                         }
                         return EventResult::Continue;
