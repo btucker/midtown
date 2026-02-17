@@ -91,7 +91,7 @@ struct WebhookEffectFixture {
     webhook_port: u16,
     webhook_secret: String,
     daemon_process: Option<Child>,
-    session_name: String,
+    tasks_dir: PathBuf,
 }
 
 impl WebhookEffectFixture {
@@ -169,7 +169,11 @@ impl WebhookEffectFixture {
             let _ = fs::create_dir_all(parent);
         }
 
-        let session_name = format!("midtown-{}", repo_name);
+        let tasks_dir = dirs::home_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join(".claude")
+            .join("tasks")
+            .join(format!("midtown-{}", &repo_name));
 
         Some(Self {
             temp_dir,
@@ -180,7 +184,7 @@ impl WebhookEffectFixture {
             webhook_port,
             webhook_secret: "test-webhook-secret".to_string(),
             daemon_process: None,
-            session_name,
+            tasks_dir,
         })
     }
 
@@ -327,13 +331,13 @@ impl WebhookEffectFixture {
     fn read_channel_messages(&self) -> Vec<String> {
         let response = self.rpc_call("channel.read", Some(serde_json::json!({"limit": 100})));
 
-        if let Some(response) = response {
-            if let Some(messages) = response["result"]["messages"].as_array() {
-                return messages
-                    .iter()
-                    .filter_map(|m| m["message"].as_str().map(String::from))
-                    .collect();
-            }
+        if let Some(response) = response
+            && let Some(messages) = response["result"]["messages"].as_array()
+        {
+            return messages
+                .iter()
+                .filter_map(|m| m["message"].as_str().map(String::from))
+                .collect();
         }
 
         Vec::new()
@@ -373,22 +377,24 @@ impl WebhookEffectFixture {
     }
 
     /// List coworkers via RPC.
+    #[allow(dead_code)]
     fn list_coworkers(&self) -> Vec<String> {
         let response = self.rpc_call("coworker.list", None);
 
-        if let Some(response) = response {
-            if let Some(coworkers) = response["result"]["coworkers"].as_array() {
-                return coworkers
-                    .iter()
-                    .filter_map(|c| c["name"].as_str().map(String::from))
-                    .collect();
-            }
+        if let Some(response) = response
+            && let Some(coworkers) = response["result"]["coworkers"].as_array()
+        {
+            return coworkers
+                .iter()
+                .filter_map(|c| c["name"].as_str().map(String::from))
+                .collect();
         }
 
         Vec::new()
     }
 
     /// Wait for a coworker to be spawned.
+    #[allow(dead_code)]
     fn wait_for_coworker(&self, name: &str, timeout_ms: u64) -> bool {
         let start = std::time::Instant::now();
         while start.elapsed().as_millis() < timeout_ms as u128 {
@@ -400,6 +406,39 @@ impl WebhookEffectFixture {
         }
         false
     }
+
+    /// Create a task JSON file in the test's task directory.
+    fn create_task(&self, id: &str, subject: &str, status: &str, owner: Option<&str>) {
+        let _ = fs::create_dir_all(&self.tasks_dir);
+        let task_json = serde_json::json!({
+            "id": id,
+            "subject": subject,
+            "status": status,
+            "owner": owner,
+            "description": format!("Test task {}", id),
+            "blocked_by": []
+        });
+        let task_file = self.tasks_dir.join(format!("{}.json", id));
+        fs::write(
+            &task_file,
+            serde_json::to_string_pretty(&task_json).unwrap(),
+        )
+        .unwrap_or_else(|e| panic!("Failed to write task file {:?}: {}", task_file, e));
+    }
+
+    /// Get path to coworkers directory.
+    fn coworkers_dir(&self) -> PathBuf {
+        dirs::home_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join(".midtown")
+            .join("coworkers")
+            .join(&self.repo_name)
+    }
+
+    /// Check if a worktree exists for a given coworker.
+    fn worktree_exists(&self, coworker: &str) -> bool {
+        self.coworkers_dir().join(coworker).exists()
+    }
 }
 
 impl Drop for WebhookEffectFixture {
@@ -410,16 +449,11 @@ impl Drop for WebhookEffectFixture {
             let _ = child.wait();
         }
 
-        // Kill tmux session if it exists
-        let _ = Command::new("tmux")
-            .args(["kill-session", "-t", &self.session_name])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
-
         // Clean up test directories
         let _ = fs::remove_dir_all(&self.temp_dir);
         let _ = fs::remove_dir_all(&self.project_dir);
+        let _ = fs::remove_dir_all(&self.tasks_dir);
+        let _ = fs::remove_dir_all(self.coworkers_dir());
         if let Some(parent) = self.socket_path.parent() {
             let _ = fs::remove_dir_all(parent);
         }
@@ -594,13 +628,16 @@ fn test_ci_failure_nudges_owner() {
 ///
 /// This verifies the daemon acts on PR merge webhooks by posting to channel,
 /// sending merge notification, and auto-completing the task referenced in the
-/// PR title (the daemon creates the task directory structure automatically).
+/// PR title.
 #[test]
 #[ignore]
 #[timeout(60000)]
 fn test_pr_merged_posts_notification() {
     let mut fixture = WebhookEffectFixture::new(47203).expect("Failed to create fixture");
     assert!(fixture.start_daemon(), "Failed to start daemon");
+
+    // Create a task file so auto-completion can succeed
+    fixture.create_task("42", "Add auth endpoint", "in_progress", Some("park"));
 
     thread::sleep(Duration::from_secs(1));
 
@@ -636,12 +673,76 @@ fn test_pr_merged_posts_notification() {
         "Merge notification should appear in channel"
     );
 
-    // BONUS: In this test environment, the daemon actually creates a task
-    // directory structure even without pre-existing tasks, so task auto-completion
-    // works! Verify the task completion message appears.
+    // Verify task auto-completion message appears
     assert!(
         fixture.wait_for_channel_message("✅ Auto-completed task !42", 5000),
         "Task should be auto-completed when PR is merged"
+    );
+}
+
+/// Test that PR merged webhook triggers worktree cleanup.
+///
+/// This verifies the daemon acts on PR merge webhooks by cleaning up the
+/// coworker worktree associated with the merged PR.
+#[test]
+#[ignore]
+#[timeout(60000)]
+fn test_pr_merged_cleans_up_worktree() {
+    let mut fixture = WebhookEffectFixture::new(47204).expect("Failed to create fixture");
+    assert!(fixture.start_daemon(), "Failed to start daemon");
+
+    thread::sleep(Duration::from_secs(1));
+
+    // Create a fake worktree directory to simulate an active coworker
+    let worktree_path = fixture.coworkers_dir().join("riverside");
+    fs::create_dir_all(&worktree_path).expect("Failed to create worktree dir");
+    assert!(
+        fixture.worktree_exists("riverside"),
+        "Worktree should exist before merge"
+    );
+
+    let payload = r#"{
+        "action": "closed",
+        "number": 66,
+        "pull_request": {
+            "title": "feat: Add feature",
+            "user": {"login": "testuser"},
+            "merged": true,
+            "head": {"ref": "riverside/add-feature"}
+        },
+        "repository": {"full_name": "test/repo"}
+    }"#;
+
+    let status = fixture
+        .send_webhook("pull_request", payload)
+        .expect("Failed to send webhook");
+    assert_eq!(status, 200);
+
+    // Give daemon time to process webhook and queue cleanup
+    thread::sleep(Duration::from_millis(1000));
+
+    // Verify merged message appears
+    assert!(
+        fixture.wait_for_channel_message("merged PR #66", 5000),
+        "PR merged message should appear in channel"
+    );
+
+    // Wait for cleanup to occur (daemon processes cleanup on next tick)
+    // The daemon may not immediately delete the worktree - it queues cleanup effects
+    // which are processed asynchronously. For this test, we verify the cleanup
+    // was queued by checking daemon state or waiting for the worktree to be removed.
+    let mut cleanup_occurred = false;
+    for _ in 0..20 {
+        thread::sleep(Duration::from_millis(500));
+        if !fixture.worktree_exists("riverside") {
+            cleanup_occurred = true;
+            break;
+        }
+    }
+
+    assert!(
+        cleanup_occurred,
+        "Worktree should be cleaned up after PR merge"
     );
 }
 
