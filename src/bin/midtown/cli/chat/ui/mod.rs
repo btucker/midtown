@@ -87,10 +87,21 @@ pub fn draw(f: &mut Frame, app: &mut App) -> Vec<Hyperlink> {
 
     draw_repo_status_lines(f, app, vertical_chunks[0]);
 
+    let sidebar_pct = app.sidebar_width_pct;
+    let main_area = vertical_chunks[1];
+    app.layout_width = main_area.width;
+    app.main_area_y = main_area.y;
+    app.main_area_bottom = main_area.y + main_area.height;
     let horizontal_chunks = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
-        .split(vertical_chunks[1]);
+        .constraints([
+            Constraint::Percentage(sidebar_pct),
+            Constraint::Percentage(100 - sidebar_pct),
+        ])
+        .split(main_area);
+
+    // Track divider X position: the last column of the sidebar panel (its right border)
+    app.divider_x = Some(horizontal_chunks[0].x + horizontal_chunks[0].width.saturating_sub(1));
 
     let (hyperlinks, tasks_area) = board::draw_board_panel(f, app, horizontal_chunks[0]);
     // Store tasks area for click detection (task_line_map line numbers are relative to this area)

@@ -315,6 +315,18 @@ pub struct App {
     /// Mapping of board panel line numbers to channel headers (for click-to-select)
     /// Maps line_number -> channel_name where line_number is relative to board content area
     pub channel_line_map: HashMap<u16, String>,
+    /// Sidebar width as a percentage of the total horizontal area (20–60)
+    pub sidebar_width_pct: u16,
+    /// X column of the divider between sidebar and chat (set each render pass)
+    pub divider_x: Option<u16>,
+    /// Whether the user is currently dragging the divider
+    pub dragging_divider: bool,
+    /// Full width of the horizontal layout area (set each render pass, used for drag resize)
+    pub layout_width: u16,
+    /// Y range of the main content area (set each render pass, used for divider Y bounds check)
+    pub main_area_y: u16,
+    /// Bottom Y (exclusive) of the main content area
+    pub main_area_bottom: u16,
 }
 
 /// Autocomplete state for @mentions, #channels, and !task-ids
@@ -448,6 +460,12 @@ impl App {
             input_area: None,
             task_line_map: HashMap::new(),
             channel_line_map: HashMap::new(),
+            sidebar_width_pct: 40,
+            divider_x: None,
+            dragging_divider: false,
+            layout_width: 0,
+            main_area_y: 0,
+            main_area_bottom: u16::MAX,
         };
 
         // Initial load
@@ -780,6 +798,19 @@ impl App {
             self.mouse_scroll_accumulator = 0;
             self.scroll_down();
         }
+    }
+
+    /// Resize sidebar to place the divider at `mouse_x` given total terminal width.
+    ///
+    /// Clamps the resulting percentage to 20–60% so both panels remain usable.
+    pub fn resize_sidebar_to(&mut self, mouse_x: u16, terminal_width: u16) {
+        if terminal_width == 0 {
+            return;
+        }
+        let pct = (mouse_x as u32 * 100 / terminal_width as u32).clamp(20, 60) as u16;
+        self.sidebar_width_pct = pct;
+        // Invalidate message render cache since layout changed
+        self.message_render_cache = None;
     }
 
     /// Page up
@@ -2592,7 +2623,58 @@ pub(super) mod tests {
             input_area: None,
             task_line_map: HashMap::new(),
             channel_line_map: HashMap::new(),
+            sidebar_width_pct: 40,
+            divider_x: None,
+            dragging_divider: false,
+            layout_width: 0,
+            main_area_y: 0,
+            main_area_bottom: u16::MAX,
         }
+    }
+
+    #[test]
+    fn test_resize_sidebar_to_normal() {
+        let mut app = test_app();
+        app.resize_sidebar_to(40, 100);
+        assert_eq!(app.sidebar_width_pct, 40);
+    }
+
+    #[test]
+    fn test_resize_sidebar_to_clamps_min() {
+        let mut app = test_app();
+        app.resize_sidebar_to(5, 100); // 5% → clamped to 20%
+        assert_eq!(app.sidebar_width_pct, 20);
+    }
+
+    #[test]
+    fn test_resize_sidebar_to_clamps_max() {
+        let mut app = test_app();
+        app.resize_sidebar_to(80, 100); // 80% → clamped to 60%
+        assert_eq!(app.sidebar_width_pct, 60);
+    }
+
+    #[test]
+    fn test_resize_sidebar_to_zero_width_noop() {
+        let mut app = test_app();
+        app.sidebar_width_pct = 40;
+        app.resize_sidebar_to(50, 0); // terminal_width=0 → no-op
+        assert_eq!(app.sidebar_width_pct, 40);
+    }
+
+    #[test]
+    fn test_resize_sidebar_invalidates_render_cache() {
+        use ratatui::text::Line;
+        let mut app = test_app();
+        app.message_render_cache = Some(super::MessageRenderCache::new(
+            vec![Line::raw("cached")],
+            vec![],
+            42,
+        ));
+        app.resize_sidebar_to(50, 100);
+        assert!(
+            app.message_render_cache.is_none(),
+            "resize_sidebar_to should invalidate the message render cache"
+        );
     }
 
     #[test]

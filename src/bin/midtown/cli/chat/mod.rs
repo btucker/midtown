@@ -663,6 +663,16 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                 let x = mouse.column;
                 let y = mouse.row;
 
+                // Check if click is on the sidebar/chat divider
+                if let Some(div_x) = app.divider_x
+                    && x == div_x
+                    && y >= app.main_area_y
+                    && y < app.main_area_bottom
+                {
+                    app.dragging_divider = true;
+                    return EventResult::Continue;
+                }
+
                 // Check if click is in the input area
                 if let Some(input_rect) = app.input_area
                     && x >= input_rect.x
@@ -708,6 +718,16 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                     return EventResult::Continue;
                 }
 
+                EventResult::Continue
+            }
+            MouseEventKind::Drag(crossterm::event::MouseButton::Left) => {
+                if app.dragging_divider {
+                    app.resize_sidebar_to(mouse.column, app.layout_width);
+                }
+                EventResult::Continue
+            }
+            MouseEventKind::Up(crossterm::event::MouseButton::Left) => {
+                app.dragging_divider = false;
                 EventResult::Continue
             }
             _ => EventResult::Continue,
@@ -1852,6 +1872,181 @@ mod tests {
             Some(BoardSelection::Channel("midtown".to_string()))
         );
         assert_eq!(app.selected_channel, "midtown");
+    }
+
+    /// Test divider drag: clicking the divider column starts dragging
+    #[test]
+    fn test_click_divider_starts_drag() {
+        let mut app = test_app();
+        app.divider_x = Some(32);
+
+        let event = mouse_click(32, 5);
+        let result = handle_event(&mut app, event);
+
+        assert!(
+            matches!(result, EventResult::Continue),
+            "Clicking divider should continue"
+        );
+        assert!(
+            app.dragging_divider,
+            "dragging_divider should be set after clicking divider"
+        );
+    }
+
+    /// Test that clicking adjacent to but not on the divider does not start drag
+    #[test]
+    fn test_click_near_divider_does_not_start_drag() {
+        let mut app = test_app();
+        app.divider_x = Some(32);
+
+        // Click one column away from the divider
+        handle_event(&mut app, mouse_click(31, 5));
+        assert!(
+            !app.dragging_divider,
+            "Clicking adjacent to divider should not start drag"
+        );
+
+        handle_event(&mut app, mouse_click(33, 5));
+        assert!(
+            !app.dragging_divider,
+            "Clicking adjacent to divider (right) should not start drag"
+        );
+    }
+
+    /// Test that clicking the divider X column outside the main content area (e.g., in the
+    /// status bar row at y=0) does not start a drag.
+    #[test]
+    fn test_click_divider_outside_main_area_does_not_start_drag() {
+        let mut app = test_app();
+        app.divider_x = Some(32);
+        // Status bar is at row 0; main content starts at row 1
+        app.main_area_y = 1;
+        app.main_area_bottom = 40;
+
+        // Click at (div_x, 0) — status bar row, above main content area
+        handle_event(&mut app, mouse_click(32, 0));
+        assert!(
+            !app.dragging_divider,
+            "Clicking divider in status bar row should not start drag"
+        );
+
+        // Click at (div_x, 40) — usage bar row, below main content area
+        handle_event(&mut app, mouse_click(32, 40));
+        assert!(
+            !app.dragging_divider,
+            "Clicking divider below main content area should not start drag"
+        );
+
+        // Click at (div_x, 1) — first row of main area — should start drag
+        handle_event(&mut app, mouse_click(32, 1));
+        assert!(
+            app.dragging_divider,
+            "Clicking divider within main content area should start drag"
+        );
+    }
+
+    /// Helper to create a mouse drag event
+    fn mouse_drag(column: u16, row: u16) -> Event {
+        use crossterm::event::{MouseButton, MouseEvent};
+        Event::Mouse(MouseEvent {
+            kind: MouseEventKind::Drag(MouseButton::Left),
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        })
+    }
+
+    /// Helper to create a mouse up event
+    fn mouse_up(column: u16, row: u16) -> Event {
+        use crossterm::event::{MouseButton, MouseEvent};
+        Event::Mouse(MouseEvent {
+            kind: MouseEventKind::Up(MouseButton::Left),
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        })
+    }
+
+    /// Test full drag sequence: mousedown on divider → drag → release
+    #[test]
+    fn test_drag_divider_resizes_sidebar() {
+        let mut app = test_app();
+        app.divider_x = Some(40); // divider at column 40
+        app.layout_width = 100; // 100-column terminal
+        app.sidebar_width_pct = 40;
+
+        // Click divider to start drag
+        handle_event(&mut app, mouse_click(40, 5));
+        assert!(app.dragging_divider);
+
+        // Drag to column 50 → should set sidebar to 50%
+        handle_event(&mut app, mouse_drag(50, 5));
+        assert_eq!(
+            app.sidebar_width_pct, 50,
+            "Dragging to column 50 in 100-wide terminal should set sidebar to 50%"
+        );
+
+        // Drag to column 30 → should set sidebar to 30%
+        handle_event(&mut app, mouse_drag(30, 5));
+        assert_eq!(app.sidebar_width_pct, 30);
+
+        // Release mouse → dragging should stop
+        handle_event(&mut app, mouse_up(30, 5));
+        assert!(!app.dragging_divider, "Mouse up should stop dragging");
+
+        // Drag after release should not change width
+        handle_event(&mut app, mouse_drag(60, 5));
+        assert_eq!(
+            app.sidebar_width_pct, 30,
+            "Drag after mouse up should not resize"
+        );
+    }
+
+    /// Test that drag is clamped to min width (20%)
+    #[test]
+    fn test_drag_clamps_to_min_width() {
+        let mut app = test_app();
+        app.divider_x = Some(40);
+        app.layout_width = 100;
+        app.dragging_divider = true;
+
+        // Drag to column 5 → should clamp to 20%
+        handle_event(&mut app, mouse_drag(5, 5));
+        assert_eq!(
+            app.sidebar_width_pct, 20,
+            "Sidebar should clamp to 20% minimum"
+        );
+    }
+
+    /// Test that drag is clamped to max width (60%)
+    #[test]
+    fn test_drag_clamps_to_max_width() {
+        let mut app = test_app();
+        app.divider_x = Some(40);
+        app.layout_width = 100;
+        app.dragging_divider = true;
+
+        // Drag to column 90 → should clamp to 60%
+        handle_event(&mut app, mouse_drag(90, 5));
+        assert_eq!(
+            app.sidebar_width_pct, 60,
+            "Sidebar should clamp to 60% maximum"
+        );
+    }
+
+    /// Test that non-dragging drag events are ignored
+    #[test]
+    fn test_drag_without_mousedown_is_ignored() {
+        let mut app = test_app();
+        app.layout_width = 100;
+        app.sidebar_width_pct = 40;
+        app.dragging_divider = false;
+
+        handle_event(&mut app, mouse_drag(60, 5));
+        assert_eq!(
+            app.sidebar_width_pct, 40,
+            "Drag without prior mousedown on divider should not resize"
+        );
     }
 
     /// Test that clicking outside the board area does not trigger channel selection
