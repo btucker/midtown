@@ -1780,16 +1780,21 @@ impl App {
         SPINNER_FRAMES[self.spinner_frame % SPINNER_FRAMES.len()]
     }
 
+    /// Returns true if any spinner is currently visible (lead working or active coworkers).
+    pub fn any_spinner_visible(&self) -> bool {
+        self.lead_working
+            || self
+                .coworkers
+                .iter()
+                .any(|cw| cw.phase.as_deref() != Some("idle") && cw.phase.is_some())
+    }
+
     /// Advance the spinner frame if enough time has elapsed since the last tick.
-    /// Returns true if the frame changed (caller should redraw).
-    pub fn tick_spinner(&mut self) -> bool {
+    pub fn tick_spinner(&mut self) {
         const SPINNER_INTERVAL: Duration = Duration::from_millis(100);
         if self.spinner_last_tick.elapsed() >= SPINNER_INTERVAL {
             self.spinner_frame = self.spinner_frame.wrapping_add(1);
             self.spinner_last_tick = Instant::now();
-            true
-        } else {
-            false
         }
     }
 }
@@ -2574,6 +2579,10 @@ fn fetch_repo_status(repo_full_name: Option<&str>) -> RepoStatus {
 #[path = "autocomplete_tests.rs"]
 #[cfg(test)]
 mod autocomplete_tests;
+
+#[path = "spinner_tests.rs"]
+#[cfg(test)]
+mod spinner_tests;
 
 #[cfg(test)]
 pub(super) mod tests {
