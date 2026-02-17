@@ -666,6 +666,8 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                 // Check if click is on the sidebar/chat divider
                 if let Some(div_x) = app.divider_x
                     && x == div_x
+                    && y >= app.main_area_y
+                    && y < app.main_area_bottom
                 {
                     app.dragging_divider = true;
                     return EventResult::Continue;
@@ -724,7 +726,7 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                 }
                 EventResult::Continue
             }
-            MouseEventKind::Up(_) => {
+            MouseEventKind::Up(crossterm::event::MouseButton::Left) => {
                 app.dragging_divider = false;
                 EventResult::Continue
             }
@@ -1908,6 +1910,38 @@ mod tests {
         assert!(
             !app.dragging_divider,
             "Clicking adjacent to divider (right) should not start drag"
+        );
+    }
+
+    /// Test that clicking the divider X column outside the main content area (e.g., in the
+    /// status bar row at y=0) does not start a drag.
+    #[test]
+    fn test_click_divider_outside_main_area_does_not_start_drag() {
+        let mut app = test_app();
+        app.divider_x = Some(32);
+        // Status bar is at row 0; main content starts at row 1
+        app.main_area_y = 1;
+        app.main_area_bottom = 40;
+
+        // Click at (div_x, 0) — status bar row, above main content area
+        handle_event(&mut app, mouse_click(32, 0));
+        assert!(
+            !app.dragging_divider,
+            "Clicking divider in status bar row should not start drag"
+        );
+
+        // Click at (div_x, 40) — usage bar row, below main content area
+        handle_event(&mut app, mouse_click(32, 40));
+        assert!(
+            !app.dragging_divider,
+            "Clicking divider below main content area should not start drag"
+        );
+
+        // Click at (div_x, 1) — first row of main area — should start drag
+        handle_event(&mut app, mouse_click(32, 1));
+        assert!(
+            app.dragging_divider,
+            "Clicking divider within main content area should start drag"
         );
     }
 

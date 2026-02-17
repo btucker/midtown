@@ -323,6 +323,10 @@ pub struct App {
     pub dragging_divider: bool,
     /// Full width of the horizontal layout area (set each render pass, used for drag resize)
     pub layout_width: u16,
+    /// Y range of the main content area (set each render pass, used for divider Y bounds check)
+    pub main_area_y: u16,
+    /// Bottom Y (exclusive) of the main content area
+    pub main_area_bottom: u16,
 }
 
 /// Autocomplete state for @mentions, #channels, and !task-ids
@@ -460,6 +464,8 @@ impl App {
             divider_x: None,
             dragging_divider: false,
             layout_width: 0,
+            main_area_y: 0,
+            main_area_bottom: u16::MAX,
         };
 
         // Initial load
@@ -2621,6 +2627,8 @@ pub(super) mod tests {
             divider_x: None,
             dragging_divider: false,
             layout_width: 0,
+            main_area_y: 0,
+            main_area_bottom: u16::MAX,
         }
     }
 

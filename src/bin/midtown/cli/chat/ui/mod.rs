@@ -90,6 +90,8 @@ pub fn draw(f: &mut Frame, app: &mut App) -> Vec<Hyperlink> {
     let sidebar_pct = app.sidebar_width_pct;
     let main_area = vertical_chunks[1];
     app.layout_width = main_area.width;
+    app.main_area_y = main_area.y;
+    app.main_area_bottom = main_area.y + main_area.height;
     let horizontal_chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
