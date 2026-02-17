@@ -424,6 +424,7 @@ fn fetch_codex_rate_limits_via_app_server(profile: &str) -> Option<CodexRateLimi
     });
 
     let init = serde_json::json!({
+        "jsonrpc": "2.0",
         "id": 1,
         "method": "initialize",
         "params": {
@@ -431,18 +432,22 @@ fn fetch_codex_rate_limits_via_app_server(profile: &str) -> Option<CodexRateLimi
             "capabilities": null
         }
     });
-    let initialized = serde_json::json!({ "method": "initialized" });
+    let initialized = serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "initialized",
+        "params": {}
+    });
     let read_limits = serde_json::json!({
+        "jsonrpc": "2.0",
         "id": 2,
         "method": "account/rateLimits/read",
-        "params": null
+        "params": {}
     });
 
     let _ = writeln!(stdin, "{}", init);
     let _ = writeln!(stdin, "{}", initialized);
     let _ = writeln!(stdin, "{}", read_limits);
     let _ = stdin.flush();
-    drop(stdin);
 
     let mut snapshot = None;
     let deadline = Instant::now() + CODEX_APP_SERVER_RPC_TIMEOUT;
@@ -476,6 +481,7 @@ fn fetch_codex_rate_limits_via_app_server(profile: &str) -> Option<CodexRateLimi
         break;
     }
 
+    drop(stdin);
     let _ = child.kill();
     let _ = child.wait();
     snapshot
