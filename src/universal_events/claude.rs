@@ -15,8 +15,14 @@ mod tests;
 /// Iterates over `StreamEvent::Assistant` events, inspects each content block,
 /// and produces a `UniversalItem` for every `tool_use` block found.
 ///
+/// Uses Claude's `call_id` as the `item_id` for deterministic output.
+/// The provided `timestamp` is applied to all extracted items.
+///
 /// Non-assistant events and non-tool-use content blocks are skipped.
-pub fn extract_tool_calls(events: &[StreamEvent]) -> Vec<UniversalItem> {
+pub fn extract_tool_calls(
+    events: &[StreamEvent],
+    timestamp: chrono::DateTime<chrono::Utc>,
+) -> Vec<UniversalItem> {
     let mut items = Vec::new();
 
     for event in events {
@@ -42,7 +48,7 @@ pub fn extract_tool_calls(events: &[StreamEvent]) -> Vec<UniversalItem> {
                         .to_string();
 
                     items.push(UniversalItem {
-                        item_id: uuid::Uuid::new_v4().to_string(),
+                        item_id: call_id.clone(),
                         kind: ItemKind::ToolCall,
                         content: vec![ContentPart::ToolCall {
                             name,
@@ -50,7 +56,7 @@ pub fn extract_tool_calls(events: &[StreamEvent]) -> Vec<UniversalItem> {
                             call_id,
                         }],
                         status: ItemStatus::Completed,
-                        timestamp: chrono::Utc::now(),
+                        timestamp,
                     });
                 }
             }

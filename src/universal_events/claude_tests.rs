@@ -1,5 +1,6 @@
 use super::*;
 use crate::headless::StreamEvent;
+use chrono::{TimeZone, Utc};
 use serde_json::json;
 
 // ── extract_tool_calls tests ────────────────────────────────────────────
@@ -19,12 +20,15 @@ fn test_extract_tool_calls_single_tool_use() {
         extra: json!(null),
     }];
 
-    let items = extract_tool_calls(&events);
+    let timestamp = Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap();
+    let items = extract_tool_calls(&events, timestamp);
     assert_eq!(items.len(), 1);
 
     let item = &items[0];
+    assert_eq!(item.item_id, "call_001");
     assert!(matches!(item.kind, ItemKind::ToolCall));
     assert!(matches!(item.status, ItemStatus::Completed));
+    assert_eq!(item.timestamp, timestamp);
     assert_eq!(item.content.len(), 1);
 
     match &item.content[0] {
@@ -64,8 +68,12 @@ fn test_extract_tool_calls_multiple_tool_uses() {
         extra: json!(null),
     }];
 
-    let items = extract_tool_calls(&events);
+    let timestamp = Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap();
+    let items = extract_tool_calls(&events, timestamp);
     assert_eq!(items.len(), 2);
+
+    assert_eq!(items[0].item_id, "call_001");
+    assert_eq!(items[1].item_id, "call_002");
 
     match &items[0].content[0] {
         ContentPart::ToolCall { name, call_id, .. } => {
@@ -97,7 +105,8 @@ fn test_extract_tool_calls_text_only_no_items() {
         extra: json!(null),
     }];
 
-    let items = extract_tool_calls(&events);
+    let timestamp = Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap();
+    let items = extract_tool_calls(&events, timestamp);
     assert!(items.is_empty());
 }
 
@@ -120,9 +129,11 @@ fn test_extract_tool_calls_mixed_content() {
         extra: json!(null),
     }];
 
-    let items = extract_tool_calls(&events);
+    let timestamp = Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap();
+    let items = extract_tool_calls(&events, timestamp);
     assert_eq!(items.len(), 1);
 
+    assert_eq!(items[0].item_id, "call_100");
     match &items[0].content[0] {
         ContentPart::ToolCall { name, .. } => {
             assert_eq!(name, "Bash");
@@ -155,7 +166,8 @@ fn test_extract_tool_calls_non_assistant_events() {
         },
     ];
 
-    let items = extract_tool_calls(&events);
+    let timestamp = Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap();
+    let items = extract_tool_calls(&events, timestamp);
     assert!(items.is_empty());
 }
 
@@ -163,6 +175,7 @@ fn test_extract_tool_calls_non_assistant_events() {
 fn test_extract_tool_calls_empty_events() {
     let events: Vec<StreamEvent> = vec![];
 
-    let items = extract_tool_calls(&events);
+    let timestamp = Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap();
+    let items = extract_tool_calls(&events, timestamp);
     assert!(items.is_empty());
 }
