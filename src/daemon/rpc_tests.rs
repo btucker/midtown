@@ -70,33 +70,6 @@ fn test_exec_restart_response_deserializes() {
     );
 }
 
-/// Test that enter-drain RPC response can be deserialized as a CLI Response.
-#[test]
-fn test_enter_drain_response_deserializes() {
-    let daemon_response = Response::success(
-        RequestId::Number(1),
-        serde_json::json!({"message": "draining"}),
-    );
-
-    let json = serde_json::to_string(&daemon_response).unwrap();
-
-    #[derive(serde::Deserialize)]
-    struct JsonRpcResponse {
-        result: Option<Value>,
-    }
-
-    let rpc_response: JsonRpcResponse = serde_json::from_str(&json).unwrap();
-    let result = rpc_response.result.unwrap();
-
-    let cli_response: Result<CliResponse, _> = serde_json::from_value(result);
-
-    assert!(
-        cli_response.is_ok(),
-        "enter-drain response should deserialize to CLI Response, got error: {:?}",
-        cli_response.unwrap_err()
-    );
-}
-
 /// Test that check-pending RPC response can be deserialized as a CLI Response.
 #[test]
 fn test_check_pending_response_deserializes() {

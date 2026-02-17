@@ -255,14 +255,6 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
             Response::success(request.id, serde_json::json!({"message": "shutting_down"}))
         }
 
-        "daemon.enter-drain" => {
-            info!("Drain mode requested via RPC");
-            state
-                .draining
-                .store(true, std::sync::atomic::Ordering::SeqCst);
-            Response::success(request.id, serde_json::json!({"message": "draining"}))
-        }
-
         "daemon.exec-restart" => {
             info!("Exec-restart requested via RPC — daemon will re-exec after shutdown");
             state
@@ -272,6 +264,24 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
             // The run() function checks restart_requested and returns ExecRestart.
             let _ = state.shutdown_tx.send(());
             Response::success(request.id, serde_json::json!({"message": "restarting"}))
+        }
+
+        "coworker.stop_all" => {
+            info!("stop_all requested via RPC — sending SIGTERM to all headless sessions");
+            // Set draining flag before shutdown to prevent new task assignments
+            // during the SIGTERM wait window (TaskDispatchTick may fire during the wait).
+            state
+                .draining
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            // Send SIGTERM to all running coworker sessions and wait up to 10s for them to exit.
+            let count = state
+                .session_manager
+                .graceful_shutdown_all(std::time::Duration::from_secs(10))
+                .await;
+            Response::success(
+                request.id,
+                serde_json::json!({"message": "stopped", "count": count}),
+            )
         }
 
         "daemon.check-pending" => {

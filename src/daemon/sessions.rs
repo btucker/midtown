@@ -451,6 +451,74 @@ impl SessionManager {
         count
     }
 
+    /// Gracefully shut down all coworker sessions.
+    ///
+    /// Sends SIGTERM to each session so Claude Code can save state, then waits
+    /// up to `timeout` for all to exit. Any that haven't exited by then are
+    /// force-killed via SIGKILL (through the Drop impl).
+    ///
+    /// Session metadata (name, session_id, etc.) is kept in the map with status
+    /// Stopped so that `collect_session_info()` can still read it after this call
+    /// returns — this is required for session persistence across daemon restarts.
+    ///
+    /// Returns the number of sessions that were shut down.
+    pub async fn graceful_shutdown_all(&self, timeout: Duration) -> usize {
+        // Take the session handles out of the map (send SIGTERM while holding lock),
+        // but keep the CoworkerSession entries in the map with status Stopped.
+        // This preserves session_id and other metadata for collect_session_info().
+        let mut handles: Vec<(String, HeadlessSession)> = Vec::new();
+        let total_count;
+        {
+            let mut sessions = self.sessions.write().await;
+            total_count = sessions.len();
+            if total_count == 0 {
+                return 0;
+            }
+            for cs in sessions.values_mut() {
+                if let Some(session) = cs.session.take() {
+                    if let Some(pid) = session.pid() {
+                        let _ = std::process::Command::new("kill")
+                            .arg(pid.to_string())
+                            .stderr(std::process::Stdio::null())
+                            .status();
+                        info!("Sent SIGTERM to session '{}' (pid={})", cs.name, pid);
+                    }
+                    handles.push((cs.name.clone(), session));
+                }
+                cs.status = SessionStatus::Stopped;
+            }
+        }
+
+        // Wait for all processes to exit within the timeout (lock is released above)
+        let deadline = tokio::time::Instant::now() + timeout;
+        for (name, session) in &mut handles {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            match tokio::time::timeout(remaining, session.wait()).await {
+                Ok(Ok(_)) => {
+                    info!(
+                        "Gracefully shut down headless session '{}' after SIGTERM",
+                        name
+                    );
+                }
+                Ok(Err(e)) => {
+                    warn!("Error waiting for session '{}' to exit: {}", name, e);
+                }
+                Err(_) => {
+                    warn!(
+                        "Session '{}' did not exit within {:?} after SIGTERM. Force-killing.",
+                        name, timeout
+                    );
+                }
+            }
+        }
+
+        // Drop handles — SIGKILL fallback via HeadlessSession::Drop for any still alive
+        drop(handles);
+
+        info!("Gracefully shut down {} headless session(s)", total_count);
+        total_count
+    }
+
     /// Check if a coworker has a running session (by name).
     pub async fn is_alive(&self, name: &str) -> bool {
         let sessions = self.sessions.read().await;
@@ -729,8 +797,8 @@ impl SessionManager {
         let mut info_map = HashMap::new();
 
         for (_slot_id, cs) in sessions.iter() {
-            if let (Some(session_id), Some(session)) = (&cs.session_id, &cs.session) {
-                let pid = session.pid();
+            if let Some(session_id) = &cs.session_id {
+                let pid = cs.session.as_ref().and_then(|s| s.pid());
                 let info = HeadlessSessionInfo {
                     session_id: session_id.clone(),
                     last_active: cs.last_event_at.unwrap_or(cs.started_at),

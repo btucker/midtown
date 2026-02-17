@@ -295,3 +295,91 @@ fn test_usage_limit_reset_time_in_future() {
         panic!("Should parse usage limit message");
     }
 }
+
+#[tokio::test]
+async fn test_graceful_shutdown_all_empty_returns_zero() {
+    let sm = SessionManager::new("test-repo".to_string());
+    let count = sm
+        .graceful_shutdown_all(std::time::Duration::from_secs(1))
+        .await;
+    assert_eq!(count, 0);
+}
+
+#[tokio::test]
+async fn test_graceful_shutdown_all_marks_sessions_stopped() {
+    let sm = SessionManager::new("test-repo".to_string());
+    insert_test_session(&sm, "madison", SessionStatus::Running).await;
+    insert_test_session(&sm, "park", SessionStatus::Running).await;
+
+    let count = sm
+        .graceful_shutdown_all(std::time::Duration::from_secs(1))
+        .await;
+    assert_eq!(count, 2, "Should report 2 sessions shut down");
+
+    // Sessions must remain in the map (not removed) so collect_session_info() can read them
+    let names = sm.list_names().await;
+    assert_eq!(
+        names.len(),
+        2,
+        "Sessions should remain in map after shutdown"
+    );
+
+    // All sessions must be marked Stopped
+    let alive = sm.list_alive_names().await;
+    assert!(
+        alive.is_empty(),
+        "No sessions should be alive after graceful_shutdown_all"
+    );
+}
+
+/// Regression test for the bug where graceful_shutdown_all() removed sessions from the map,
+/// causing collect_session_info() to return empty results and breaking session persistence
+/// across daemon restarts.
+#[tokio::test]
+async fn test_graceful_shutdown_all_preserves_session_info() {
+    let sm = SessionManager::new("test-repo".to_string());
+
+    // Insert a session with a known session_id (simulating an active coworker)
+    {
+        let mut sessions = sm.sessions.write().await;
+        let slot_id = uuid::Uuid::new_v4().to_string();
+        sessions.insert(
+            slot_id.clone(),
+            CoworkerSession {
+                session: None,
+                slot_id,
+                name: "madison".to_string(),
+                status: SessionStatus::Running,
+                started_at: Utc::now(),
+                session_id: Some("session-abc-123".to_string()),
+                cost_usd: 1.5,
+                last_event_at: None,
+                has_usage_limit: false,
+                usage_limit_reset_at: None,
+                has_api_error: false,
+                has_auth_error: false,
+                has_running_subagent: false,
+                has_pending_tool: false,
+                has_tool_name_conflict: false,
+                is_resume: false,
+                output_log: None,
+                output_log_path: PathBuf::new(),
+            },
+        );
+    }
+
+    // Simulate the restart flow: graceful_shutdown_all() is called, then collect_session_info()
+    sm.graceful_shutdown_all(std::time::Duration::from_secs(1))
+        .await;
+
+    let session_info = sm.collect_session_info().await;
+    assert!(
+        session_info.contains_key("madison"),
+        "collect_session_info() must return session data after graceful_shutdown_all() — \
+         session persistence across restarts depends on this"
+    );
+    assert_eq!(
+        session_info["madison"].session_id, "session-abc-123",
+        "Session ID must be preserved for restart recovery"
+    );
+}
