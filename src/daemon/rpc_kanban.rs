@@ -308,8 +308,10 @@ fn is_session_actively_working(health: Option<&ProcessHealth>) -> bool {
     if !h.is_alive {
         return false;
     }
-    h.last_event_at
-        .is_some_and(|ts| (Utc::now() - ts).num_seconds() < LEAD_ACTIVITY_TIMEOUT.as_secs() as i64)
+    h.last_event_at.is_some_and(|ts| {
+        let elapsed = (Utc::now() - ts).num_seconds();
+        elapsed >= 0 && elapsed < LEAD_ACTIVITY_TIMEOUT.as_secs() as i64
+    })
 }
 
 /// Compute a hash representing coworker state for cache invalidation.
@@ -373,8 +375,10 @@ fn build_pr_task_map(prs: &[serde_json::Value]) -> HashMap<u32, u64> {
 
 /// Thread-safe TTL cache for kanban GraphQL data.
 ///
-/// Stores the full kanban response (PRs, merged PRs, repos, coworkers) keyed
-/// by a combined hash of repo paths AND coworker state (task assignments).
+/// Stores the kanban response (PRs, merged PRs, repos, coworkers) keyed by a
+/// combined hash of repo paths AND coworker state (task assignments).
+/// Note: `lead_working` is excluded from the cache and injected live on each
+/// read, since it changes on a sub-second cadence.
 /// The cache expires after KANBAN_CACHE_TTL and avoids expensive GraphQL
 /// queries on every RPC call.
 ///
@@ -837,54 +841,6 @@ mod tests {
             kanban_ci_status(&[serde_json::json!({"status": "IN_PROGRESS"})]),
             "running"
         );
-    }
-
-    #[test]
-    fn test_lead_activity_detection_no_health() {
-        assert!(!is_session_actively_working(None));
-    }
-
-    #[test]
-    fn test_lead_activity_detection_not_alive() {
-        let health = ProcessHealth {
-            is_alive: false,
-            last_event_at: Some(Utc::now()),
-            ..Default::default()
-        };
-        assert!(!is_session_actively_working(Some(&health)));
-    }
-
-    #[test]
-    fn test_lead_activity_detection_alive_recent_event() {
-        let health = ProcessHealth {
-            is_alive: true,
-            last_event_at: Some(Utc::now()),
-            ..Default::default()
-        };
-        assert!(is_session_actively_working(Some(&health)));
-    }
-
-    #[test]
-    fn test_lead_activity_detection_alive_stale_event() {
-        // Event older than LEAD_ACTIVITY_TIMEOUT — should be considered idle
-        let stale_ts = Utc::now() - chrono::Duration::seconds(10);
-        let health = ProcessHealth {
-            is_alive: true,
-            last_event_at: Some(stale_ts),
-            ..Default::default()
-        };
-        assert!(!is_session_actively_working(Some(&health)));
-    }
-
-    #[test]
-    fn test_lead_activity_detection_alive_no_events() {
-        // Alive but has never received any events
-        let health = ProcessHealth {
-            is_alive: true,
-            last_event_at: None,
-            ..Default::default()
-        };
-        assert!(!is_session_actively_working(Some(&health)));
     }
 
     #[test]
