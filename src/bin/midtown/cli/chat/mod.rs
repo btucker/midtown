@@ -824,6 +824,7 @@ fn attach_session_split(session_name: &str) {
         provider,
         session_id,
         coworker_type.as_deref(),
+        false, // include_detach: midtown view calls session_detach explicitly on exit
     ) {
         Ok(cmd) => cmd,
         Err(_) => {

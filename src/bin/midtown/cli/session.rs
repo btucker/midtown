@@ -309,8 +309,14 @@ fn handle_attach(target: &AttachArgs, client: &DaemonClient) -> Result<Response,
         // For coworkers, this ensures the worktree directory exists.
         let cwd = ensure_attach_worktree(name, cwd)?;
 
-        let shell_command =
-            build_attach_shell_command(&cwd, name, provider, session_id, coworker_type.as_deref())?;
+        let shell_command = build_attach_shell_command(
+            &cwd,
+            name,
+            provider,
+            session_id,
+            coworker_type.as_deref(),
+            true, // include_detach: standalone attach resumes headless when pane closes
+        )?;
         let launcher = PaneLauncher::detect();
 
         // Step 3: Launch interactive session in a pane for the current terminal host.
@@ -692,12 +698,22 @@ fn usage_attach() -> &'static str {
        midtown session attach park"
 }
 
+/// Build the shell command to run in a pane for an interactive attach session.
+///
+/// When `include_detach` is `true`, the shell command ends with
+/// `midtown session detach <name>`, which resumes the headless session when the
+/// interactive pane closes.  Set this to `true` for `midtown session attach`
+/// (standalone interactive use) and `false` for `midtown view`, which calls
+/// `session_detach` explicitly when the chat UI exits — avoiding a race where
+/// the pane's claude process exits before the chat UI and triggers an early
+/// headless respawn that creates a dual-lead situation.
 pub(crate) fn build_attach_shell_command(
     cwd: &str,
     name: &str,
     provider: midtown::auth::AuthProvider,
     session_id: &str,
     coworker_type: Option<&str>,
+    include_detach: bool,
 ) -> Result<String, String> {
     let repo_name = midtown::paths::detect_repo_name_from_dir(Path::new(cwd))
         .ok_or_else(|| "Not in a git repository".to_string())?;
@@ -824,14 +840,22 @@ pub(crate) fn build_attach_shell_command(
         shell_quote(cwd),
         shell_quote(&provider_cmd),
     );
-    let detach_cmd = format!("{} session detach {}", bin_command, shell_quote(name));
 
-    Ok(format!(
-        "export {}; {}; _midtown_rc=$?; {} >/dev/null 2>&1 || true; exit $_midtown_rc",
-        env_parts.join(" "),
-        wrapped_attach_cmd,
-        detach_cmd
-    ))
+    if include_detach {
+        let detach_cmd = format!("{} session detach {}", bin_command, shell_quote(name));
+        Ok(format!(
+            "export {}; {}; _midtown_rc=$?; {} >/dev/null 2>&1 || true; exit $_midtown_rc",
+            env_parts.join(" "),
+            wrapped_attach_cmd,
+            detach_cmd
+        ))
+    } else {
+        Ok(format!(
+            "export {}; {}",
+            env_parts.join(" "),
+            wrapped_attach_cmd,
+        ))
+    }
 }
 
 fn parse_provider(raw: &str) -> midtown::auth::AuthProvider {
