@@ -1726,9 +1726,9 @@ pub(super) fn launch_lead_split(
 
 /// Handle `midtown view` command.
 ///
-/// Starts `midtown chat` in the current terminal and auto-creates a split
-/// that attaches to the Lead's headless session.
-pub fn handle_view(project: Option<&str>, skip_auto_split: bool) -> Result<Response, String> {
+/// By default, starts `midtown chat` in the current terminal without touching the lead session.
+/// With `--attach`, also attaches to the Lead's headless session and opens it in a split pane.
+pub fn handle_view(project: Option<&str>, attach: bool) -> Result<Response, String> {
     let ctx = resolve_attach_context(project)?;
 
     // Ensure project-scoped socket resolution uses the target project's repo root.
@@ -1747,106 +1747,121 @@ pub fn handle_view(project: Option<&str>, skip_auto_split: bool) -> Result<Respo
         std::thread::sleep(std::time::Duration::from_millis(150));
     }
 
-    // Attach to the headless lead session via the daemon RPC.
-    let client =
-        DaemonClient::connect().map_err(|e| format!("Failed to connect to daemon: {}", e))?;
+    if attach {
+        // Attach to the headless lead session via the daemon RPC.
+        let client =
+            DaemonClient::connect().map_err(|e| format!("Failed to connect to daemon: {}", e))?;
 
-    // Wait for lead session to become attachable (it may still be initializing).
-    let mut attach_info = None;
-    for _ in 0..50 {
-        match client.session_attach("name/lead") {
-            Ok(info) => {
-                attach_info = Some(info);
-                break;
+        // Wait for lead session to become attachable (it may still be initializing).
+        let mut attach_info = None;
+        for _ in 0..50 {
+            match client.session_attach("name/lead") {
+                Ok(info) => {
+                    attach_info = Some(info);
+                    break;
+                }
+                Err(e)
+                    if e.contains("No session ID found") || e.contains("matched no persisted") =>
+                {
+                    // Lead session not yet registered — wait and retry
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                    continue;
+                }
+                Err(e) if e.contains("already attached") => {
+                    // Previous view session exited without detaching — clean up and retry
+                    let _ = client.session_detach("lead");
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                    continue;
+                }
+                Err(e) => {
+                    if let Some(cwd) = original_cwd {
+                        let _ = std::env::set_current_dir(cwd);
+                    }
+                    return Err(format!("Failed to attach to lead session: {}", e));
+                }
             }
-            Err(e) if e.contains("No session ID found") || e.contains("matched no persisted") => {
-                // Lead session not yet registered — wait and retry
-                std::thread::sleep(std::time::Duration::from_millis(200));
-                continue;
-            }
-            Err(e) if e.contains("already attached") => {
-                // Previous view session exited without detaching — clean up and retry
-                let _ = client.session_detach("lead");
-                std::thread::sleep(std::time::Duration::from_millis(200));
-                continue;
-            }
-            Err(e) => {
+        }
+
+        let info = match attach_info {
+            Some(info) => info,
+            None => {
                 if let Some(cwd) = original_cwd {
                     let _ = std::env::set_current_dir(cwd);
                 }
-                return Err(format!("Failed to attach to lead session: {}", e));
+                return Err(
+                    "Lead session not available for attach. Try again in a few seconds."
+                        .to_string(),
+                );
             }
-        }
-    }
+        };
 
-    let info = match attach_info {
-        Some(info) => info,
-        None => {
+        let session_id = info
+            .get("session_id")
+            .and_then(|v| v.as_str())
+            .ok_or("Daemon did not return session_id")?;
+        let cwd = info
+            .get("cwd")
+            .and_then(|v| v.as_str())
+            .ok_or("Daemon did not return cwd")?;
+        let provider_str = info
+            .get("provider")
+            .and_then(|v| v.as_str())
+            .unwrap_or("claude");
+        let provider = provider_str
+            .parse::<midtown::auth::AuthProvider>()
+            .unwrap_or(midtown::auth::AuthProvider::Claude);
+
+        if let Err(e) = midtown::platform_launch::run_platform_prelaunch_hook(provider) {
+            eprintln!(
+                "Warning: Platform pre-launch hook failed (continuing): {}",
+                e
+            );
+        }
+
+        let cwd = super::session::ensure_attach_worktree("lead", cwd)?;
+        let lead_shell_command = super::session::build_attach_shell_command(
+            &cwd, "lead", provider, session_id, None,
+            false, // include_detach: midtown view calls session_detach explicitly on exit
+        )?;
+
+        let host = AttachHost::detect();
+
+        if let Err(e) = launch_lead_split(host, &cwd, &lead_shell_command) {
+            // Detach so the lead resumes headless
+            let _ = client.session_detach("lead");
             if let Some(cwd) = original_cwd {
                 let _ = std::env::set_current_dir(cwd);
             }
-            return Err(
-                "Lead session not available for attach. Try again in a few seconds.".to_string(),
-            );
+            return Err(format!(
+                "Failed to create Lead split. Chat was not started.\n{}\n\n\
+To open chat without a Lead split, run:\n  midtown view",
+                e
+            ));
         }
-    };
 
-    let session_id = info
-        .get("session_id")
-        .and_then(|v| v.as_str())
-        .ok_or("Daemon did not return session_id")?;
-    let cwd = info
-        .get("cwd")
-        .and_then(|v| v.as_str())
-        .ok_or("Daemon did not return cwd")?;
-    let provider_str = info
-        .get("provider")
-        .and_then(|v| v.as_str())
-        .unwrap_or("claude");
-    let provider = provider_str
-        .parse::<midtown::auth::AuthProvider>()
-        .unwrap_or(midtown::auth::AuthProvider::Claude);
+        let chat_result = super::chat::run();
 
-    if let Err(e) = midtown::platform_launch::run_platform_prelaunch_hook(provider) {
-        eprintln!(
-            "Warning: Platform pre-launch hook failed (continuing): {}",
-            e
-        );
-    }
-
-    let cwd = super::session::ensure_attach_worktree("lead", cwd)?;
-    let lead_shell_command = super::session::build_attach_shell_command(
-        &cwd, "lead", provider, session_id, None,
-        false, // include_detach: midtown view calls session_detach explicitly on exit
-    )?;
-
-    let host = AttachHost::detect();
-
-    if !skip_auto_split && let Err(e) = launch_lead_split(host, &cwd, &lead_shell_command) {
-        // Detach so the lead resumes headless
+        // Always detach on exit so the daemon resumes headless mode.
+        // Without this, a normal exit leaves the lead in `attached_coworkers`
+        // and subsequent `midtown view --attach` calls fail with "already attached".
         let _ = client.session_detach("lead");
+
         if let Some(cwd) = original_cwd {
             let _ = std::env::set_current_dir(cwd);
         }
-        return Err(format!(
-            "Failed to create Lead split. Chat was not started.\n{}\n\n\
-If you want chat without automatic split creation, run:\n  midtown view --skip-auto-split",
-            e
-        ));
+
+        chat_result?;
+    } else {
+        // Chat-only: launch the TUI without touching the lead session.
+        let chat_result = super::chat::run();
+
+        if let Some(cwd) = original_cwd {
+            let _ = std::env::set_current_dir(cwd);
+        }
+
+        chat_result?;
     }
 
-    let chat_result = super::chat::run();
-
-    // Always detach on exit so the daemon resumes headless mode.
-    // Without this, a normal exit leaves the lead in `attached_coworkers`
-    // and subsequent `midtown view` calls fail with "already attached".
-    let _ = client.session_detach("lead");
-
-    if let Some(cwd) = original_cwd {
-        let _ = std::env::set_current_dir(cwd);
-    }
-
-    chat_result?;
     Ok(Response::message("Exited chat session"))
 }
 
