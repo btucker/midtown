@@ -572,9 +572,8 @@ pub(crate) struct DaemonState {
     kanban_cache: rpc_kanban::KanbanCache,
     /// Draining mode flag - when true, daemon stops assigning new tasks to coworkers.
     ///
-    /// Set via `daemon.enter-drain` RPC when `midtown restart` is called without --force.
-    /// Allows coworkers to finish their current tasks without being assigned new work,
-    /// enabling graceful shutdown.
+    /// Set via `coworker.stop_all` RPC handler before sending SIGTERM to coworkers,
+    /// preventing new task assignments during the SIGTERM wait window.
     draining: std::sync::atomic::AtomicBool,
     /// Exec-restart requested flag — when set, the daemon re-execs itself after
     /// graceful shutdown instead of exiting. This preserves the original (unsandboxed)

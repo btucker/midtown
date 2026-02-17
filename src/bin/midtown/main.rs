@@ -100,7 +100,7 @@ enum Commands {
     },
     /// Restart midtown (stop + start)
     Restart {
-        /// Skip graceful drain and force immediate restart
+        /// Reserved for future use (currently no-op)
         #[arg(long)]
         force: bool,
     },

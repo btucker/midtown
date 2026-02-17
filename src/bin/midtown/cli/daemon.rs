@@ -1118,7 +1118,7 @@ pub fn handle_restart(_force: bool) -> Result<Response, String> {
     drop(client);
 
     // Send exec-restart RPC to the daemon. The daemon will:
-    // 1. Gracefully shut down (persist sessions, detach coworkers)
+    // 1. Persist session info, then terminate all coworker sessions
     // 2. Re-exec itself with --foreground, preserving its original process
     //    context. This is critical on macOS: the daemon was initially launched
     //    from an unsandboxed CLI, so re-exec preserves that unsandboxed state.
