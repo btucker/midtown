@@ -1940,9 +1940,6 @@ pub fn reset_orphaned_tasks(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
 
     for (task_id, subject, owner) in &snap.in_progress_tasks {
         let owner_clean = owner.trim().trim_matches('"').to_lowercase();
-        if owner_clean.is_empty() {
-            continue;
-        }
 
         // Only consider tasks WITHOUT an associated open PR
         // (tasks with PRs are handled by reconcile_tasks_in_review)
@@ -1953,6 +1950,20 @@ pub fn reset_orphaned_tasks(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
         if snap.tasks_with_open_prs.contains_key(task_id)
             || snap.github_open_pr_task_ids.contains_key(task_id)
         {
+            continue;
+        }
+
+        // Ownerless in_progress tasks have no active worker — reset immediately.
+        // No grace period needed since there is no owner to recover.
+        if owner_clean.is_empty() {
+            debug!(
+                "Task !{} is in_progress with no owner — resetting to pending",
+                task_id
+            );
+            effects.push(Effect::ResetTaskToPending {
+                task_id: task_id.clone(),
+                repo_name: snap.repo_name.clone(),
+            });
             continue;
         }
 

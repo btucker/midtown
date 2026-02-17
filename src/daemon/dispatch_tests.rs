@@ -4023,3 +4023,50 @@ fn test_should_recover_task_skips_tasks_with_open_pr_in_github_open_pr_task_ids(
         "Should NOT recover task !1313 - it has open PR #1156 via github_open_pr_task_ids"
     );
 }
+
+#[test]
+fn test_reset_orphaned_tasks_resets_ownerless_in_progress_task() {
+    // Bug: When a coworker goes on break and the task owner is cleared,
+    // the task becomes in_progress with no owner. reset_orphaned_tasks() was
+    // skipping these via `continue` on empty owner, leaving them stuck forever.
+    let mut snap = snapshot::minimal_snapshot_for_test();
+    snap.in_progress_tasks = vec![(
+        "1474".to_string(),
+        "Fix orphaned tasks".to_string(),
+        "".to_string(),
+    )];
+
+    let effects = reset_orphaned_tasks(&snap);
+
+    assert_eq!(
+        effects.len(),
+        1,
+        "Expected one ResetTaskToPending effect for ownerless in_progress task"
+    );
+    match &effects[0] {
+        Effect::ResetTaskToPending { task_id, .. } => {
+            assert_eq!(task_id, "1474");
+        }
+        other => panic!("Expected ResetTaskToPending, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_reset_orphaned_tasks_ownerless_task_with_open_pr_is_skipped() {
+    // Ownerless in_progress tasks that have an open PR should NOT be reset —
+    // they're being managed by reconcile_tasks_in_review.
+    let mut snap = snapshot::minimal_snapshot_for_test();
+    snap.in_progress_tasks = vec![(
+        "1474".to_string(),
+        "Fix orphaned tasks".to_string(),
+        "".to_string(),
+    )];
+    snap.tasks_with_open_prs.insert("1474".to_string(), 999u64);
+
+    let effects = reset_orphaned_tasks(&snap);
+
+    assert!(
+        effects.is_empty(),
+        "Ownerless in_progress task with open PR should not be reset"
+    );
+}
