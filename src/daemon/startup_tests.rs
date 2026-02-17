@@ -276,6 +276,86 @@ fn test_kill_stale_daemon_skips_own_pid() {
     kill_stale_daemon(std::process::id());
 }
 
+// --- Tests for recoverable_session_pids and zombie exclusion ---
+
+#[tokio::test]
+async fn test_recoverable_session_pids_returns_resumable_pids() {
+    let persistent_state = tokio::sync::Mutex::new(DaemonPersistentState::default());
+
+    {
+        let mut state = persistent_state.lock().await;
+        let mut session = test_session_info("amsterdam", Some(42));
+        session.pid = Some(12345);
+        state
+            .headless_sessions
+            .insert("amsterdam".to_string(), session);
+
+        let mut session2 = test_session_info("columbus", Some(43));
+        session2.pid = Some(67890);
+        state
+            .headless_sessions
+            .insert("columbus".to_string(), session2);
+    }
+
+    let pids = recoverable_session_pids(&persistent_state).await;
+    assert_eq!(pids.len(), 2);
+    assert!(pids.contains(&12345));
+    assert!(pids.contains(&67890));
+}
+
+#[tokio::test]
+async fn test_recoverable_session_pids_excludes_non_resumable() {
+    let persistent_state = tokio::sync::Mutex::new(DaemonPersistentState::default());
+
+    {
+        let mut state = persistent_state.lock().await;
+        let mut resumable = test_session_info("amsterdam", Some(42));
+        resumable.pid = Some(11111);
+        state
+            .headless_sessions
+            .insert("amsterdam".to_string(), resumable);
+
+        let mut historical = test_session_info("columbus", Some(43));
+        historical.pid = Some(22222);
+        historical.resume_on_startup = false;
+        state
+            .headless_sessions
+            .insert("columbus".to_string(), historical);
+    }
+
+    let pids = recoverable_session_pids(&persistent_state).await;
+    assert_eq!(pids.len(), 1, "Only resumable sessions should be included");
+    assert!(pids.contains(&11111));
+    assert!(!pids.contains(&22222));
+}
+
+#[tokio::test]
+async fn test_recoverable_session_pids_skips_sessions_without_pid() {
+    let persistent_state = tokio::sync::Mutex::new(DaemonPersistentState::default());
+
+    {
+        let mut state = persistent_state.lock().await;
+        let mut no_pid_session = test_session_info("amsterdam", Some(42));
+        no_pid_session.pid = None;
+        state
+            .headless_sessions
+            .insert("amsterdam".to_string(), no_pid_session);
+    }
+
+    let pids = recoverable_session_pids(&persistent_state).await;
+    assert!(
+        pids.is_empty(),
+        "Sessions without a PID should not appear in the exclusion set"
+    );
+}
+
+#[tokio::test]
+async fn test_recoverable_session_pids_empty_state() {
+    let persistent_state = tokio::sync::Mutex::new(DaemonPersistentState::default());
+    let pids = recoverable_session_pids(&persistent_state).await;
+    assert!(pids.is_empty());
+}
+
 /// Verify that check_sandbox_context() returns an appropriate message when
 /// the daemon is running inside a sandbox (where coworker sandboxing will fail).
 ///

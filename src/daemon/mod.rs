@@ -2351,10 +2351,17 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
     // Recover coworker workflow state from their state files across daemon restarts.
     startup::recover_coworker_records(&repo_name, &state.coworkers, &state.coworker_records).await;
 
+    // Collect PIDs of sessions we intend to recover BEFORE running the zombie scanner.
+    // The scanner must skip these — they are intentionally detached processes that
+    // will die naturally from broken pipes. Killing them before recover_headless_sessions
+    // runs defeats session survival across daemon restarts.
+    let session_pids_to_preserve = startup::recoverable_session_pids(&state.persistent_state).await;
+
     // Kill any zombie Claude headless processes left from crashes or unclean shutdowns.
     // Kills processes that are truly orphaned (PPID=1) OR are children of a stale
     // midtown daemon (a midtown process that is not the current daemon).
-    startup::kill_zombie_claude_processes(std::process::id());
+    // Excludes session-survival PIDs collected above.
+    startup::kill_zombie_claude_processes(std::process::id(), &session_pids_to_preserve);
 
     // CRITICAL: Restore task assignments from disk BEFORE session recovery.
     // This must happen first so that the in-memory coworker_task_assignments map

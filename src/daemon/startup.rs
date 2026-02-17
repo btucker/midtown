@@ -7,7 +7,7 @@
 //!
 //! Workflow state is recovered when coworkers report via RPC.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use tokio::sync::RwLock;
 use tracing::{info, warn};
@@ -171,7 +171,15 @@ pub async fn recover_coworker_records(
 /// - Are truly orphaned (PPID=1), OR
 /// - Are children of a stale midtown daemon (parent is a midtown process that isn't the current daemon)
 /// - Are not tmux processes
-pub fn kill_zombie_claude_processes(current_daemon_pid: u32) {
+///
+/// `session_pids_to_preserve` is an exclusion list of PIDs belonging to headless
+/// sessions that should be recovered on startup. These processes are intentionally
+/// detached and will die naturally from broken pipes — killing them defeats the
+/// purpose of session survival across daemon restarts.
+pub fn kill_zombie_claude_processes(
+    current_daemon_pid: u32,
+    session_pids_to_preserve: &HashSet<u32>,
+) {
     info!("Scanning for zombie Claude headless processes...");
 
     // Use the same pattern as the rest of the codebase to scope to this midtown installation
@@ -206,6 +214,18 @@ pub fn kill_zombie_claude_processes(current_daemon_pid: u32) {
     // Filter to orphaned processes or children of stale daemons, excluding tmux
     let mut zombie_pids = Vec::new();
     for pid in candidate_pids {
+        // Skip PIDs belonging to sessions we intend to recover. These processes
+        // are intentionally detached — they will die naturally from the broken
+        // pipe when their stdin/stdout is closed. Killing them defeats session
+        // survival across daemon restarts.
+        if session_pids_to_preserve.contains(&pid) {
+            info!(
+                "Skipping session-survival process {} (will be recovered with --resume)",
+                pid
+            );
+            continue;
+        }
+
         // Check if process is tmux (should not kill)
         let is_tmux = std::process::Command::new("ps")
             .args(["-p", &pid.to_string(), "-o", "comm="])
@@ -492,6 +512,23 @@ pub async fn recovering_coworker_names(
                 None
             }
         })
+        .collect()
+}
+
+/// Collect PIDs of headless sessions that should be recovered on startup.
+///
+/// These PIDs must be excluded from the zombie scanner — the sessions are
+/// intentionally detached and will die naturally from broken pipes. Killing
+/// them before `recover_headless_sessions` runs defeats session survival.
+pub async fn recoverable_session_pids(
+    persistent_state: &tokio::sync::Mutex<DaemonPersistentState>,
+) -> HashSet<u32> {
+    let state = persistent_state.lock().await;
+    state
+        .headless_sessions
+        .values()
+        .filter(|info| info.resume_on_startup)
+        .filter_map(|info| info.pid)
         .collect()
 }
 
