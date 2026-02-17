@@ -256,7 +256,7 @@ pub(crate) async fn handle_kanban_data(id: RequestId, state: &DaemonState) -> Re
             .collect::<Vec<_>>()
     };
 
-    // Build the cacheable response (WITHOUT lead_working — it's live state)
+    // Build the cacheable response (WITHOUT lead_working or tool_activity — they're live state)
     let mut response_data = serde_json::json!({
         "prs": prs,
         "merged_prs": merged_prs,
@@ -324,6 +324,15 @@ fn is_session_actively_working(health: Option<&ProcessHealth>) -> bool {
 /// This is live state — never cached — so the TUI always sees the latest activity.
 fn collect_tool_activity(state: &DaemonState) -> serde_json::Value {
     let tool_map = state.recent_tool_items.read().unwrap();
+    serialize_tool_activity(&tool_map)
+}
+
+/// Serialize a tool activity map to a JSON object.
+///
+/// Separated from `collect_tool_activity` for testability without `DaemonState`.
+fn serialize_tool_activity(
+    tool_map: &HashMap<String, Vec<crate::universal_events::UniversalItem>>,
+) -> serde_json::Value {
     let obj: serde_json::Map<String, serde_json::Value> = tool_map
         .iter()
         .filter_map(|(agent, items)| serde_json::to_value(items).ok().map(|v| (agent.clone(), v)))
@@ -394,8 +403,8 @@ fn build_pr_task_map(prs: &[serde_json::Value]) -> HashMap<u32, u64> {
 ///
 /// Stores the kanban response (PRs, merged PRs, repos, coworkers) keyed by a
 /// combined hash of repo paths AND coworker state (task assignments).
-/// Note: `lead_working` is excluded from the cache and injected live on each
-/// read, since it changes on a sub-second cadence.
+/// Note: `lead_working` and `tool_activity` are excluded from the cache and
+/// injected live on each read, since they change on a sub-second cadence.
 /// The cache expires after KANBAN_CACHE_TTL and avoids expensive GraphQL
 /// queries on every RPC call.
 ///

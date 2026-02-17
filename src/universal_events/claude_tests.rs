@@ -364,8 +364,8 @@ fn test_extract_tool_events_tool_result_string_content() {
     assert_eq!(items.len(), 1);
 
     let item = &items[0];
-    assert_eq!(item.item_id, "call_001");
-    assert!(matches!(item.kind, ItemKind::ToolCall));
+    assert_eq!(item.item_id, "result:call_001");
+    assert!(matches!(item.kind, ItemKind::ToolResult));
     assert!(matches!(item.status, ItemStatus::Completed));
 
     match &item.content[0] {
@@ -497,8 +497,8 @@ fn test_extract_tool_events_tool_result_multiple_results() {
     let timestamp = Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap();
     let items = extract_tool_events(&events, timestamp);
     assert_eq!(items.len(), 2);
-    assert_eq!(items[0].item_id, "call_005");
-    assert_eq!(items[1].item_id, "call_006");
+    assert_eq!(items[0].item_id, "result:call_005");
+    assert_eq!(items[1].item_id, "result:call_006");
 }
 
 #[test]
@@ -559,28 +559,4 @@ fn test_extract_tool_events_mixed_assistant_and_user_events() {
         }
         _ => panic!("Expected ToolResult"),
     }
-}
-
-// ── backward-compatible alias tests ──────────────────────────────────
-
-#[test]
-fn test_extract_tool_calls_alias_works() {
-    // The public alias should produce the same results as extract_tool_events.
-    let events = vec![StreamEvent::Assistant {
-        message: json!({
-            "content": [{
-                "type": "tool_use",
-                "id": "call_alias",
-                "name": "Read",
-                "input": {"file_path": "/tmp/alias.rs"}
-            }]
-        }),
-        session_id: None,
-        extra: json!(null),
-    }];
-
-    let timestamp = Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap();
-    let items = extract_tool_calls(&events, timestamp);
-    assert_eq!(items.len(), 1);
-    assert_eq!(items[0].item_id, "call_alias");
 }

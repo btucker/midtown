@@ -86,7 +86,10 @@ fn draw_chat_messages(f: &mut Frame, app: &mut App, area: Rect) {
     if let Some(ref cache) = app.message_render_cache
         && cache.cache_key == cache_key
     {
+        let activity_lines = count_tool_activity_lines(&app.tool_activity);
+        let msg_height = (inner.height as usize).saturating_sub(activity_lines);
         let mut lines = cache.lines.clone();
+        lines.truncate(msg_height);
         append_tool_activity_lines(&app.tool_activity, &mut lines);
         let paragraph = Paragraph::new(lines);
         f.render_widget(block, area);
@@ -147,14 +150,18 @@ fn draw_chat_messages(f: &mut Frame, app: &mut App, area: Rect) {
         app.mermaid_cache.get_or_render(&source);
     }
 
+    // Reserve space for tool activity before truncating messages
+    let activity_lines = count_tool_activity_lines(&app.tool_activity);
+    let msg_height = (inner.height as usize).saturating_sub(activity_lines);
+
     // Handle line truncation based on scroll position
     let total_lines = lines.len();
-    let visible_lines = if total_lines > inner.height as usize {
+    let visible_lines = if total_lines > msg_height {
         if app.is_at_max_scroll() {
-            lines.truncate(inner.height as usize);
+            lines.truncate(msg_height);
             lines
         } else {
-            let truncation_offset = total_lines - inner.height as usize;
+            let truncation_offset = total_lines - msg_height;
             lines.split_off(truncation_offset)
         }
     } else {
@@ -175,6 +182,24 @@ fn draw_chat_messages(f: &mut Frame, app: &mut App, area: Rect) {
 
     f.render_widget(block, area);
     f.render_widget(paragraph, inner);
+}
+
+/// Count how many lines tool activity will occupy (for reserving space).
+fn count_tool_activity_lines(
+    tool_activity: &std::collections::HashMap<String, Vec<String>>,
+) -> usize {
+    if tool_activity.is_empty() {
+        return 0;
+    }
+    let mut count = 1; // blank separator
+    for headers in tool_activity.values() {
+        if headers.is_empty() {
+            continue;
+        }
+        count += 1; // agent name header
+        count += headers.len().min(3); // up to 3 tool call lines
+    }
+    count
 }
 
 /// Append per-agent tool call activity lines to the message display.

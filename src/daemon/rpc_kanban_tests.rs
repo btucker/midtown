@@ -194,3 +194,78 @@ fn test_lead_activity_detection_future_timestamp() {
     };
     assert!(!is_session_actively_working(Some(&health)));
 }
+
+#[test]
+fn test_serialize_tool_activity_empty() {
+    let map: HashMap<String, Vec<crate::universal_events::UniversalItem>> = HashMap::new();
+    let result = serialize_tool_activity(&map);
+    assert_eq!(result, serde_json::json!({}));
+}
+
+#[test]
+fn test_serialize_tool_activity_with_tool_call() {
+    use crate::universal_events::{ContentPart, ItemKind, ItemStatus, UniversalItem};
+
+    let mut map = HashMap::new();
+    map.insert(
+        "amsterdam".to_string(),
+        vec![UniversalItem {
+            item_id: "call_001".to_string(),
+            kind: ItemKind::ToolCall,
+            content: vec![ContentPart::ToolCall {
+                name: "Bash".to_string(),
+                input: serde_json::json!({"command": "git status"}),
+                call_id: "call_001".to_string(),
+                semantic_header: "$ git status".to_string(),
+            }],
+            status: ItemStatus::InProgress,
+            timestamp: Utc::now(),
+        }],
+    );
+
+    let result = serialize_tool_activity(&map);
+    let obj = result.as_object().expect("should be an object");
+    assert!(obj.contains_key("amsterdam"));
+
+    let items = obj["amsterdam"].as_array().expect("should be an array");
+    assert_eq!(items.len(), 1);
+
+    // Verify the JSON structure has the fields the TUI expects
+    let item = &items[0];
+    assert_eq!(item["item_id"], "call_001");
+    let content = &item["content"][0]["ToolCall"];
+    assert_eq!(content["semantic_header"], "$ git status");
+    assert_eq!(content["name"], "Bash");
+}
+
+#[test]
+fn test_serialize_tool_activity_with_tool_result() {
+    use crate::universal_events::{ContentPart, ItemKind, ItemStatus, UniversalItem};
+
+    let mut map = HashMap::new();
+    map.insert(
+        "madison".to_string(),
+        vec![UniversalItem {
+            item_id: "result:call_002".to_string(),
+            kind: ItemKind::ToolResult,
+            content: vec![ContentPart::ToolResult {
+                call_id: "call_002".to_string(),
+                output: "success".to_string(),
+                is_error: false,
+            }],
+            status: ItemStatus::Completed,
+            timestamp: Utc::now(),
+        }],
+    );
+
+    let result = serialize_tool_activity(&map);
+    let obj = result.as_object().expect("should be an object");
+    let items = obj["madison"].as_array().expect("should be an array");
+    assert_eq!(items.len(), 1);
+
+    let item = &items[0];
+    assert_eq!(item["item_id"], "result:call_002");
+    let content = &item["content"][0]["ToolResult"];
+    assert_eq!(content["call_id"], "call_002");
+    assert!(!content["is_error"].as_bool().unwrap());
+}

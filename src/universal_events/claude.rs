@@ -214,8 +214,8 @@ pub fn extract_tool_events(
                             let output = extract_tool_result_content(block);
 
                             items.push(UniversalItem {
-                                item_id: call_id.clone(),
-                                kind: ItemKind::ToolCall,
+                                item_id: format!("result:{call_id}"),
+                                kind: ItemKind::ToolResult,
                                 content: vec![ContentPart::ToolResult {
                                     call_id,
                                     output,
@@ -257,16 +257,4 @@ fn extract_tool_result_content(block: &serde_json::Value) -> String {
             .join(""),
         _ => String::new(),
     }
-}
-
-/// Extract tool call items from Claude stream events.
-///
-/// This is a compatibility alias for [`extract_tool_events`].
-/// New callers should use `extract_tool_events` directly.
-#[allow(dead_code)]
-pub fn extract_tool_calls(
-    events: &[StreamEvent],
-    timestamp: chrono::DateTime<chrono::Utc>,
-) -> Vec<UniversalItem> {
-    extract_tool_events(events, timestamp)
 }

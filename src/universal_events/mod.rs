@@ -30,6 +30,8 @@ pub enum ItemKind {
     Message,
     /// A tool/function call.
     ToolCall,
+    /// The result of a tool/function call.
+    ToolResult,
 }
 
 /// A content block within a universal item.
