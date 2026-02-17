@@ -23,16 +23,32 @@ use midtown::daemon::snapshot::WorldSnapshot;
 /// Before the fix, collect_reviewer_effects would skip these PRs as "orphaned".
 /// After the fix, it should generate spawn effects for all reviewable PRs.
 #[tokio::test]
+#[ignore] // TODO: Complete test once snapshot is available
 async fn polling_spawns_reviewers_after_restart() {
-    // TODO: Load snapshot after lead recaptures with correct headRefName data
+    // Load snapshot captured after daemon restart
     // let fixture = include_str!("fixtures/snapshot/snapshot-review-spawn-lost-after-restart-20260217-XXXXXX.json");
     // let snap: WorldSnapshot = serde_json::from_str(fixture)
     //     .expect("Failed to deserialize WorldSnapshot from fixture");
 
-    // TODO: Call collect_reviewer_effects and verify spawn effects are generated
-    // Expected: spawn effects for all 4 PRs that need review
-    // Actual before fix: 0 effects (all marked orphaned)
+    // Verify preconditions from snapshot:
+    // - Multiple PRs in open_prs_data with headRefName populated
+    // - Worktree registry has active assignments for these PR branches
+    // - prs_needing_review > 0
+    // - Some PR authors not in active_names (simulates restart scenario)
 
-    // Placeholder - will implement after snapshot is ready
+    // Create mock DaemonState for testing
+    // (This is complex - may need helper function or simplified mock)
+
+    // Call collect_reviewer_effects_with_source with:
+    // - branch_owners_map from snap.worktree_branch_owners
+    // - worktree_registry from snap.worktree_registry
+    // - mock state
+    // - open_prs_data as PR array
+
+    // Verify:
+    // - effects.len() > 0 (reviewers are spawned)
+    // - effects contain SpawnCoworkerWithCallbacks for each unreviewed PR
+    // - No PR is incorrectly skipped as "orphaned" when it has an active worktree
+
     todo!("Waiting for corrected snapshot from lead");
 }
