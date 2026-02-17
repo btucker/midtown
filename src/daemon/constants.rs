@@ -61,9 +61,10 @@ pub(super) const CHANNEL_ROTATION_RETAIN_MINUTES: i64 = 60;
 /// improving task assignment latency. With 5s interval, 10 orphaned worktrees take ~50s.
 pub(super) const ORPHAN_CHECK_INTERVAL_SECS: u64 = 5;
 
-/// Minimum time a coworker must be alive before being sent on a break (5 minutes)
-/// This prevents spawn storms where coworkers are rapidly sent on breaks.
-pub(super) const MINIMUM_COWORKER_LIFETIME: Duration = Duration::from_secs(300);
+/// Minimum time a coworker must be alive before being sent on a break (60 seconds).
+/// Reduced from 300s: the spawn storm concern that motivated the 5-min guard is less
+/// relevant now that dual-dispatch is fixed and worktree collision guards are in place.
+pub(super) const MINIMUM_COWORKER_LIFETIME: Duration = Duration::from_secs(60);
 
 /// Cooldown between orphan recovery spawns (2 seconds).
 /// Tradeoff: Multiple orphan recoveries happen faster vs. spawn storm risk. At 2s with

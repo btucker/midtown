@@ -87,8 +87,19 @@ pub async fn evaluate_tick(
             // effects.extend(super::dispatch::reconcile_tasks_in_review(snap));
             effects.extend(super::dispatch::reset_orphaned_tasks(snap));
             effects.extend(super::dispatch::check_for_duplicate_task_workers(snap));
-            effects.extend(super::dispatch::check_and_recover_orphans(snap, state));
-            effects.extend(super::dispatch::spawn_for_pending_tasks(snap, state));
+            let orphan_effects = super::dispatch::check_and_recover_orphans(snap, state);
+            // Build exclusion set from orphan recovery so pending dispatch skips the same tasks.
+            // Both functions run on the same immutable snapshot, so a task can appear as both
+            // orphaned (in_progress) and pending simultaneously. Without this coordination, two
+            // different coworkers get spawned for the same task in one tick.
+            let orphan_claimed_ids =
+                super::dispatch::extract_claimed_task_ids_from_effects(&orphan_effects);
+            effects.extend(orphan_effects);
+            effects.extend(super::dispatch::spawn_for_pending_tasks_excluding(
+                snap,
+                state,
+                &orphan_claimed_ids,
+            ));
             effects.extend(super::health::check_and_respawn_dead_processes(snap, state).await);
             effects.extend(super::health::ensure_lead_alive(snap));
             effects.extend(super::health::check_and_fire_reminders(snap, state).await);

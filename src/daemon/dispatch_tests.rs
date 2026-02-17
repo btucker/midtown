@@ -3499,6 +3499,139 @@ fn test_orphan_recovery_marks_task_in_flight() {
 }
 
 // ======================================================================
+// Dual dispatch (same-tick orphan recovery + pending dispatch) tests
+// ======================================================================
+
+#[test]
+fn test_dual_dispatch_orphan_recovery_and_pending_same_tick() {
+    // Regression test for dual dispatch bug where check_and_recover_orphans and
+    // spawn_for_pending_tasks both produce spawns for the same task in one tick.
+    //
+    // Scenario: Task !1420 appears simultaneously as:
+    //   - in_progress (orphaned, owner "lexington" not active) → orphan recovery spawns lexington
+    //   - pending without owner (in snapshot after a race condition) → dispatch spawns madison
+    //
+    // The fix: spawn_for_pending_tasks should accept an excluded_task_ids set from orphan
+    // recovery so it skips tasks already being recovered.
+    use crate::tasks::{Task, TaskStatus};
+    use chrono::Duration;
+    use std::time::SystemTime;
+
+    let now = chrono::Utc::now();
+    // Lexington stopped far enough back to be outside the grace period (not recently stopped)
+    // so orphan recovery will still pick it up (should_recover_task allows recovery)
+    let lexington_stopped = now - Duration::seconds(60);
+
+    let snap = snapshot::WorldSnapshot {
+        // Task !1420 is in_progress, owned by lexington (who is not active)
+        in_progress_tasks: vec![(
+            "1420".to_string(),
+            "Add click-and-drag resizing for the sidebar/chat divider".to_string(),
+            "lexington".to_string(),
+        )],
+        // Task !1420 also appears as pending without owner (race condition / same tick)
+        pending_tasks_without_owners: vec![Task {
+            id: "1420".to_string(),
+            subject: "Add click-and-drag resizing for the sidebar/chat divider".to_string(),
+            status: TaskStatus::Pending,
+            owner: None,
+            blocked_by: vec![],
+            description: None,
+            channel: None,
+            pr: None,
+            created_at: Some(SystemTime::now()),
+        }],
+        // Lexington is NOT active - its session ended
+        active_names: HashSet::new(),
+        coworker_stop_times: {
+            let mut m = HashMap::new();
+            m.insert("lexington".to_string(), lexington_stopped);
+            m
+        },
+        // Not at dev limit - allows spawning
+        is_at_dev_limit: false,
+        is_at_coworker_limit: false,
+        running_coworkers: vec![],
+        now_utc: now,
+        ..snapshot::minimal_snapshot_for_test()
+    };
+
+    let state = make_test_state();
+
+    // Simulate what events.rs does: collect orphan effects, then collect pending task effects
+    let orphan_effects = check_and_recover_orphans_with_task_lookup(&snap, &state, |task_id| {
+        if task_id == "1420" {
+            Some(in_progress_task_for_lookup(
+                "1420",
+                "Add click-and-drag resizing for the sidebar/chat divider",
+                "lexington",
+            ))
+        } else {
+            None
+        }
+    });
+
+    // Verify orphan recovery produces a spawn for task !1420
+    let orphan_spawns: Vec<_> = orphan_effects
+        .iter()
+        .filter(|e| {
+            if let Effect::SpawnCoworkerWithCallbacks { on_success, .. } = e {
+                on_success.iter().any(|sub| {
+                    matches!(sub, Effect::RecordTaskAssignment { task_id, .. } if task_id == "1420")
+                })
+            } else {
+                false
+            }
+        })
+        .collect();
+    assert_eq!(
+        orphan_spawns.len(),
+        1,
+        "Orphan recovery should produce exactly one spawn for task !1420"
+    );
+
+    // Extract claimed task IDs as events.rs does after the fix
+    let excluded_ids = extract_claimed_task_ids_from_effects(&orphan_effects);
+    assert!(
+        excluded_ids.contains("1420"),
+        "Orphan recovery should claim task !1420"
+    );
+
+    // Pending dispatch with exclusion set (the fixed path)
+    let pending_effects_fixed = spawn_for_pending_tasks_excluding(&snap, &state, &excluded_ids);
+
+    // Combine all effects as events.rs does
+    let all_effects: Vec<&Effect> = orphan_effects
+        .iter()
+        .chain(pending_effects_fixed.iter())
+        .collect();
+
+    // Count spawn effects targeting task !1420
+    let spawns_for_task_1420: Vec<_> = all_effects
+        .iter()
+        .filter(|e| {
+            match e {
+            Effect::SpawnCoworkerWithCallbacks { on_success, .. } => {
+                on_success.iter().any(|sub| {
+                    matches!(sub, Effect::RecordTaskAssignment { task_id, .. } if task_id == "1420")
+                })
+            }
+            Effect::AssignAndSpawn { task_id, .. } => task_id == "1420",
+            _ => false,
+        }
+        })
+        .collect();
+
+    assert_eq!(
+        spawns_for_task_1420.len(),
+        1,
+        "Only one spawn should target task !1420 — orphan recovery and pending dispatch \
+         should not both spawn for the same task in the same tick. Got {} spawns.",
+        spawns_for_task_1420.len()
+    );
+}
+
+// ======================================================================
 // Stale task cleanup tests
 // ======================================================================
 
