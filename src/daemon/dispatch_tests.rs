@@ -4029,12 +4029,12 @@ fn test_reset_orphaned_tasks_resets_ownerless_in_progress_task() {
     // Bug: When a coworker goes on break and the task owner is cleared,
     // the task becomes in_progress with no owner. reset_orphaned_tasks() was
     // skipping these via `continue` on empty owner, leaving them stuck forever.
-    let mut snap = snapshot::minimal_snapshot_for_test();
-    snap.in_progress_tasks = vec![(
+    let in_progress = vec![(
         "1474".to_string(),
         "Fix orphaned tasks".to_string(),
         "".to_string(),
     )];
+    let snap = make_reconcile_snapshot(in_progress, HashMap::new(), HashSet::new());
 
     let effects = reset_orphaned_tasks(&snap);
 
@@ -4055,18 +4055,62 @@ fn test_reset_orphaned_tasks_resets_ownerless_in_progress_task() {
 fn test_reset_orphaned_tasks_ownerless_task_with_open_pr_is_skipped() {
     // Ownerless in_progress tasks that have an open PR should NOT be reset —
     // they're being managed by reconcile_tasks_in_review.
-    let mut snap = snapshot::minimal_snapshot_for_test();
-    snap.in_progress_tasks = vec![(
+    let in_progress = vec![(
         "1474".to_string(),
         "Fix orphaned tasks".to_string(),
         "".to_string(),
     )];
-    snap.tasks_with_open_prs.insert("1474".to_string(), 999u64);
+    let mut tasks_with_open_prs = HashMap::new();
+    tasks_with_open_prs.insert("1474".to_string(), 999u64);
+    let snap = make_reconcile_snapshot(in_progress, tasks_with_open_prs, HashSet::new());
 
     let effects = reset_orphaned_tasks(&snap);
 
     assert!(
         effects.is_empty(),
         "Ownerless in_progress task with open PR should not be reset"
+    );
+}
+
+#[test]
+fn test_reset_orphaned_tasks_ownerless_task_with_github_open_pr_is_skipped() {
+    // Defense-in-depth: ownerless tasks should also be protected when the PR
+    // is only in github_open_pr_task_ids (e.g., after daemon restart when
+    // tasks_with_open_prs is empty).
+    let in_progress = vec![(
+        "1474".to_string(),
+        "Fix orphaned tasks".to_string(),
+        "".to_string(),
+    )];
+    let mut snap = make_reconcile_snapshot(in_progress, HashMap::new(), HashSet::new());
+    snap.github_open_pr_task_ids
+        .insert("1474".to_string(), 999u64);
+
+    let effects = reset_orphaned_tasks(&snap);
+
+    assert!(
+        effects.is_empty(),
+        "Ownerless in_progress task with open PR via github_open_pr_task_ids should not be reset"
+    );
+}
+
+#[test]
+fn test_reset_orphaned_tasks_ownerless_task_with_subject_pr_reference_is_skipped() {
+    // Ownerless tasks whose subject references an open PR should NOT be reset.
+    // E.g., "Address review feedback on PR #42" — the PR is still open, so
+    // the review task should remain in_progress for re-dispatch, not reset.
+    let in_progress = vec![(
+        "1474".to_string(),
+        "Address review feedback on PR #42".to_string(),
+        "".to_string(),
+    )];
+    let mut snap = make_reconcile_snapshot(in_progress, HashMap::new(), HashSet::new());
+    snap.open_prs_data = vec![serde_json::json!({"number": 42})];
+
+    let effects = reset_orphaned_tasks(&snap);
+
+    assert!(
+        effects.is_empty(),
+        "Ownerless task referencing open PR #42 in subject should not be reset"
     );
 }
