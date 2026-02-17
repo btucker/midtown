@@ -330,6 +330,8 @@ pub struct App {
     pub main_area_y: u16,
     /// Bottom Y (exclusive) of the main content area
     pub main_area_bottom: u16,
+    /// Kill ring: stores the last killed (cut) text for emacs-style kill commands
+    pub kill_ring: Option<String>,
 }
 
 /// Autocomplete state for @mentions, #channels, and !task-ids
@@ -470,6 +472,7 @@ impl App {
             layout_width: 0,
             main_area_y: 0,
             main_area_bottom: u16::MAX,
+            kill_ring: None,
         };
 
         // Initial load
@@ -2666,6 +2669,7 @@ pub(super) mod tests {
             layout_width: 0,
             main_area_y: 0,
             main_area_bottom: u16::MAX,
+            kill_ring: None,
         }
     }
 

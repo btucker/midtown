@@ -393,16 +393,157 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
 
     match event {
         Event::Key(key) if key.kind == KeyEventKind::Press => {
-            // Handle Ctrl+key combinations first (before character input catch-all)
+            // Handle Alt+key combinations (emacs word movement), only when in InputBar
+            if key.modifiers.contains(KeyModifiers::ALT)
+                && app.focused_pane == FocusedPane::InputBar
+            {
+                match key.code {
+                    KeyCode::Char('b') => {
+                        // Alt+B: move back one word
+                        let chars: Vec<char> = app.input_text.chars().collect();
+                        let mut pos = app.input_cursor;
+                        // Skip whitespace going left
+                        while pos > 0 && chars[pos - 1].is_whitespace() {
+                            pos -= 1;
+                        }
+                        // Skip non-whitespace going left
+                        while pos > 0 && !chars[pos - 1].is_whitespace() {
+                            pos -= 1;
+                        }
+                        app.input_cursor = pos;
+                        return EventResult::Continue;
+                    }
+                    KeyCode::Char('f') => {
+                        // Alt+F: move forward one word (skip whitespace, then to end of word)
+                        let chars: Vec<char> = app.input_text.chars().collect();
+                        let len = chars.len();
+                        let mut pos = app.input_cursor;
+                        // Skip whitespace going right
+                        while pos < len && chars[pos].is_whitespace() {
+                            pos += 1;
+                        }
+                        // Skip non-whitespace going right
+                        while pos < len && !chars[pos].is_whitespace() {
+                            pos += 1;
+                        }
+                        app.input_cursor = pos;
+                        return EventResult::Continue;
+                    }
+                    _ => {}
+                }
+                // Alt key not handled — fall through
+            }
+
+            // Handle Ctrl+key combinations (before character input catch-all)
             if key.modifiers.contains(KeyModifiers::CONTROL) {
                 match key.code {
                     KeyCode::Char('q') => return EventResult::Exit,
                     KeyCode::Char('s') => return EventResult::ToggleMouseCapture,
                     KeyCode::Char('k') => {
-                        app.toggle_channel_switcher();
+                        // Context-sensitive: kill to end of line when in InputBar,
+                        // otherwise toggle channel switcher (existing behavior)
+                        if app.focused_pane == FocusedPane::InputBar {
+                            let char_count = app.input_text.chars().count();
+                            if app.input_cursor < char_count {
+                                let byte_idx =
+                                    char_index_to_byte_index(&app.input_text, app.input_cursor);
+                                let killed = app.input_text[byte_idx..].to_string();
+                                app.input_text.truncate(byte_idx);
+                                app.kill_ring = Some(killed);
+                            }
+                            app.detect_autocomplete_trigger();
+                        } else {
+                            app.toggle_channel_switcher();
+                        }
                         return EventResult::Continue;
                     }
-                    KeyCode::Char('a') => return EventResult::ToggleArchivedChannels,
+                    KeyCode::Char('a') => {
+                        // Context-sensitive: move to beginning of line when in InputBar,
+                        // otherwise toggle archived channels (existing behavior)
+                        if app.focused_pane == FocusedPane::InputBar {
+                            app.input_cursor = 0;
+                        } else {
+                            return EventResult::ToggleArchivedChannels;
+                        }
+                        return EventResult::Continue;
+                    }
+                    KeyCode::Char('e') => {
+                        // Ctrl+E: move to end of line (only in InputBar)
+                        if app.focused_pane == FocusedPane::InputBar {
+                            app.input_cursor = app.input_text.chars().count();
+                        }
+                        return EventResult::Continue;
+                    }
+                    KeyCode::Char('u') => {
+                        // Ctrl+U: kill to beginning of line (only in InputBar)
+                        if app.focused_pane == FocusedPane::InputBar && app.input_cursor > 0 {
+                            let byte_idx =
+                                char_index_to_byte_index(&app.input_text, app.input_cursor);
+                            let killed = app.input_text[..byte_idx].to_string();
+                            app.input_text = app.input_text[byte_idx..].to_string();
+                            app.kill_ring = Some(killed);
+                            app.input_cursor = 0;
+                            app.detect_autocomplete_trigger();
+                        }
+                        return EventResult::Continue;
+                    }
+                    KeyCode::Char('w') => {
+                        // Ctrl+W: kill previous word (only in InputBar)
+                        if app.focused_pane == FocusedPane::InputBar && app.input_cursor > 0 {
+                            let chars: Vec<char> = app.input_text.chars().collect();
+                            let mut pos = app.input_cursor;
+                            // Skip whitespace going left
+                            while pos > 0 && chars[pos - 1].is_whitespace() {
+                                pos -= 1;
+                            }
+                            // Skip non-whitespace going left
+                            while pos > 0 && !chars[pos - 1].is_whitespace() {
+                                pos -= 1;
+                            }
+                            let word_start = pos;
+                            let start_byte = char_index_to_byte_index(&app.input_text, word_start);
+                            let end_byte =
+                                char_index_to_byte_index(&app.input_text, app.input_cursor);
+                            let killed = app.input_text[start_byte..end_byte].to_string();
+                            app.input_text = format!(
+                                "{}{}",
+                                &app.input_text[..start_byte],
+                                &app.input_text[end_byte..]
+                            );
+                            app.kill_ring = Some(killed);
+                            app.input_cursor = word_start;
+                            app.detect_autocomplete_trigger();
+                        }
+                        return EventResult::Continue;
+                    }
+                    KeyCode::Char('b') => {
+                        // Ctrl+B: move back one character (only in InputBar)
+                        if app.focused_pane == FocusedPane::InputBar && app.input_cursor > 0 {
+                            app.input_cursor -= 1;
+                        }
+                        return EventResult::Continue;
+                    }
+                    KeyCode::Char('f') => {
+                        // Ctrl+F: move forward one character (only in InputBar)
+                        if app.focused_pane == FocusedPane::InputBar
+                            && app.input_cursor < app.input_text.chars().count()
+                        {
+                            app.input_cursor += 1;
+                        }
+                        return EventResult::Continue;
+                    }
+                    KeyCode::Char('d') => {
+                        // Ctrl+D: delete character under cursor (only in InputBar)
+                        if app.focused_pane == FocusedPane::InputBar
+                            && app.input_cursor < app.input_text.chars().count()
+                        {
+                            let byte_idx =
+                                char_index_to_byte_index(&app.input_text, app.input_cursor);
+                            app.input_text.remove(byte_idx);
+                            app.detect_autocomplete_trigger();
+                        }
+                        return EventResult::Continue;
+                    }
                     KeyCode::Char('l') => return EventResult::AttachLead,
                     _ => {}
                 }
@@ -2149,6 +2290,10 @@ mod tests {
 #[path = "channel_switcher_tests.rs"]
 #[cfg(test)]
 mod channel_switcher_tests;
+
+#[path = "emacs_keybinding_tests.rs"]
+#[cfg(test)]
+mod emacs_keybinding_tests;
 
 #[path = "keyboard_protocol_tests.rs"]
 #[cfg(test)]
