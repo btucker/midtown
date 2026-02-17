@@ -227,10 +227,21 @@ fn make_test_state_with_max(max_coworkers: usize) -> crate::daemon::DaemonState 
 ///
 /// Scenario: max_coworkers=8, REVIEW_HEADROOM=2 → dev_cap=6.
 /// Lead (headless) + 5 real coworkers = 6 in running_coworkers.
-/// Bug: running_coworkers.len()=6 ≥ dev_cap=6 → no new tasks dispatched.
-/// Fix: lead excluded → effective_count=5 < 6 → task is dispatched.
+/// Bug: running_coworkers.len()=6 ≥ dev_cap=6 → no task effects dispatched.
+/// Fix: lead excluded → effective_count=5 < 6 → task effect IS emitted.
 #[test]
 fn test_lead_does_not_count_against_dev_cap() {
+    let state = make_test_state_with_max(8);
+
+    // Register 5 real coworkers in CoworkerManager so next_available_name()
+    // skips them and returns the 6th available name (columbus) for the new task.
+    // This ensures the dispatch loop hits the "fresh spawn" code path.
+    for name in &["lexington", "park", "madison", "broadway", "amsterdam"] {
+        state
+            .coworkers
+            .insert_for_testing(make_running_coworker(name));
+    }
+
     // 5 real coworkers + 1 headless lead = 6 total in running_coworkers
     let running = vec![
         make_running_coworker("lead"),
@@ -246,24 +257,22 @@ fn test_lead_does_not_count_against_dev_cap() {
     // is_at_dev_limit=false because lead doesn't count (5 real coworkers < dev_cap=6)
     let snap = make_dev_limit_snapshot(running, pending, false);
 
-    // max_coworkers=8, REVIEW_HEADROOM=2 → dev_cap=6
-    let state = make_test_state_with_max(8);
-
     let effects = crate::daemon::dispatch::spawn_for_pending_tasks(&snap, &state);
 
-    // With the bug: running_coworkers.len()=6 ≥ dev_cap=6 → no spawn.
-    // After the fix: lead excluded, effective_count=5 < 6 → spawn IS emitted.
-    let has_spawn = effects.iter().any(|e| {
+    // With the bug: current_coworker_count=6 (includes lead) ≥ dev_cap=6 → no effects.
+    // After the fix: lead excluded → effective_count=5 < 6 → AssignAndSpawn IS emitted.
+    let has_task_effect = effects.iter().any(|e| {
         matches!(
             e,
             crate::daemon::effects::Effect::AssignAndSpawn { .. }
                 | crate::daemon::effects::Effect::SpawnCoworkerWithCallbacks { .. }
+                | crate::daemon::effects::Effect::NudgeCoworkerWithCallbacks { .. }
         )
     });
     assert!(
-        has_spawn,
-        "Expected a spawn effect but got none. The lead should not count against the dev \
-         cap. Effects: {:?}",
+        has_task_effect,
+        "Expected a task dispatch effect but got none. The lead should not count against \
+         the dev cap. Effects: {:?}",
         effects
     );
 }
@@ -271,7 +280,23 @@ fn test_lead_does_not_count_against_dev_cap() {
 /// When the lead is NOT in running_coworkers, dev cap behaves normally.
 #[test]
 fn test_dev_cap_without_lead_unaffected() {
-    // 6 real coworkers (no lead) → at dev_cap=6
+    let state = make_test_state_with_max(8);
+
+    // Register 6 real coworkers — all slots at dev_cap=6 are consumed.
+    for name in &[
+        "lexington",
+        "park",
+        "madison",
+        "broadway",
+        "amsterdam",
+        "columbus",
+    ] {
+        state
+            .coworkers
+            .insert_for_testing(make_running_coworker(name));
+    }
+
+    // 6 real coworkers, no lead → at dev_cap=6
     let running = vec![
         make_running_coworker("lexington"),
         make_running_coworker("park"),
@@ -285,20 +310,21 @@ fn test_dev_cap_without_lead_unaffected() {
 
     // is_at_dev_limit=true: 6 real coworkers ≥ dev_cap=6
     let snap = make_dev_limit_snapshot(running, pending, true);
-    let state = make_test_state_with_max(8);
 
     let effects = crate::daemon::dispatch::spawn_for_pending_tasks(&snap, &state);
 
-    let has_spawn = effects.iter().any(|e| {
+    // No task dispatch effects: truly at cap with no lead to discount.
+    let has_task_effect = effects.iter().any(|e| {
         matches!(
             e,
             crate::daemon::effects::Effect::AssignAndSpawn { .. }
                 | crate::daemon::effects::Effect::SpawnCoworkerWithCallbacks { .. }
+                | crate::daemon::effects::Effect::NudgeCoworkerWithCallbacks { .. }
         )
     });
     assert!(
-        !has_spawn,
-        "Expected no spawn when truly at dev cap (6 real coworkers, no lead). \
+        !has_task_effect,
+        "Expected no task dispatch when truly at dev cap (6 real coworkers, no lead). \
          Effects: {:?}",
         effects
     );
