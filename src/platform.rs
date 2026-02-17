@@ -236,7 +236,9 @@ pub fn build_claude_headed_args(
     args.push("--settings".to_string());
     args.push(settings_file.display().to_string());
 
-    // System prompt file
+    // System prompt file — use "$(cat ...)" pattern for shell interpretation.
+    // The double quotes inside the string allow shell command substitution.
+    // When shell-quoted, this becomes: '"$(cat /path)"' which the shell interprets correctly.
     args.push("--append-system-prompt".to_string());
     args.push(format!("\"$(cat {})\"", prompt_file.display()));
 

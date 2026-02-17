@@ -806,6 +806,9 @@ pub(crate) fn build_attach_shell_command(
         }
     }
 
+    // Build the provider command as a shell command string.
+    // Each part is individually shell-escaped, then joined with spaces.
+    // The resulting string will be passed to `sh -lc` as a single argument.
     let provider_cmd = cmd_parts
         .iter()
         .map(|part| shell_quote(part))
@@ -840,9 +843,10 @@ fn parse_provider(raw: &str) -> midtown::auth::AuthProvider {
     }
 }
 
+/// Shell-quote a string using the `shell-escape` crate.
+/// This properly handles all special characters for Unix shells.
 fn shell_quote(input: &str) -> String {
-    let escaped = input.replace('\'', "'\"'\"'");
-    format!("'{}'", escaped)
+    shell_escape::escape(input.into()).into_owned()
 }
 
 fn escape_applescript_string(input: &str) -> String {
