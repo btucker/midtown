@@ -403,93 +403,26 @@ impl LaunchConfig {
         }
     }
 
-    /// Build the full shell command string for launching Claude in a terminal pane.
+    /// Build the Claude CLI argument vector.
     ///
-    /// `settings_file` and `prompt_file` are pre-written files containing the
-    /// Claude settings JSON and system prompt markdown. `initial_prompt_file`
-    /// is the optional pre-written file containing the initial task/review prompt.
-    /// `primary_repo` is the project root directory, used to compute the
-    /// filesystem sandbox profile (writable directories).
+    /// This is the single source of truth for CLI arg construction. All launch
+    /// paths (headed Zellij, attach/resume, headless) should derive their args
+    /// from this method to prevent divergence.
     ///
-    /// `project_name` is used to load sandbox configuration (allowed_paths).
+    /// Returns `(args, session_id)` where `args` starts with `"claude"` and
+    /// includes all flags, and `session_id` is `Some(uuid)` for fresh sessions.
     ///
-    /// Returns a `LaunchCommand` with the shell command and the session ID
-    /// (if a fresh session was created).
-    pub fn to_shell_command(
+    /// Does NOT include sandbox prefix or env vars — callers add those.
+    pub fn to_cli_args(
         &self,
         settings_file: &std::path::Path,
         prompt_file: &std::path::Path,
         initial_prompt_file: Option<&std::path::Path>,
-        primary_repo: &std::path::Path,
-        project_name: &str,
-    ) -> LaunchCommand {
-        // -- Environment variables --
-        // Get common env vars from shared function
-        let config_dir = self
-            .auth_profile_dir
-            .clone()
-            .unwrap_or_else(|| crate::auth::current_profile_dir_for(self.auth_provider));
-
-        let env_map = build_agent_env_vars(
-            &self.name,
-            &self.role,
-            &self.team_name,
-            &self.channel,
-            self.auth_provider,
-            &config_dir,
-        );
-
-        // Convert env map to shell export format (key='value')
-        let env_parts: Vec<String> = env_map
-            .iter()
-            .map(|(k, v)| format!("{}='{}'", k, v))
-            .collect();
-
-        let env_export = format!("export {}", env_parts.join(" "));
-
-        // -- Claude CLI arguments (as structured Vec, not format! interpolation) --
-        // On macOS, prepend sandbox-exec to restrict filesystem writes.
-        // On Linux with bwrap available, prepend bwrap.
-        // Falls back to no sandboxing if profile creation fails.
-        let sandbox_config = crate::config::get_project_sandbox_config(project_name);
-        let writable = crate::sandbox::writable_dirs(
-            primary_repo,
-            &self.additional_dirs,
-            &sandbox_config.allowed_paths,
-        );
-        let mut args: Vec<String> = if cfg!(target_os = "macos") {
-            match crate::sandbox::sandbox_exec_prefix(&writable) {
-                Ok((_profile_path, prefix)) => {
-                    let mut a = vec!["sandbox-exec".to_string()];
-                    a.extend(prefix);
-                    a.push("claude".to_string());
-                    a.push("--dangerously-skip-permissions".to_string());
-                    a
-                }
-                Err(e) => {
-                    eprintln!(
-                        "Warning: sandbox setup failed, running without sandbox: {}",
-                        e
-                    );
-                    vec![
-                        "claude".to_string(),
-                        "--dangerously-skip-permissions".to_string(),
-                    ]
-                }
-            }
-        } else if cfg!(target_os = "linux") && crate::sandbox::bwrap_available() {
-            // On Linux, we prepend bwrap. Build the full bwrap command after
-            // all claude args are assembled (see below).
-            vec![
-                "claude".to_string(),
-                "--dangerously-skip-permissions".to_string(),
-            ]
-        } else {
-            vec![
-                "claude".to_string(),
-                "--dangerously-skip-permissions".to_string(),
-            ]
-        };
+    ) -> (Vec<String>, Option<String>) {
+        let mut args = vec![
+            "claude".to_string(),
+            "--dangerously-skip-permissions".to_string(),
+        ];
 
         // Session mode — exactly one of these
         let session_id = match &self.session_mode {
@@ -549,7 +482,92 @@ impl LaunchConfig {
             args.push(format!("\"$(cat {})\"", path.display()));
         }
 
-        let shell_command = format!("{}; exec {}", env_export, args.join(" "));
+        (args, session_id)
+    }
+
+    /// Build the full shell command string for launching Claude in a terminal pane.
+    ///
+    /// `settings_file` and `prompt_file` are pre-written files containing the
+    /// Claude settings JSON and system prompt markdown. `initial_prompt_file`
+    /// is the optional pre-written file containing the initial task/review prompt.
+    /// `primary_repo` is the project root directory, used to compute the
+    /// filesystem sandbox profile (writable directories).
+    ///
+    /// `project_name` is used to load sandbox configuration (allowed_paths).
+    ///
+    /// Returns a `LaunchCommand` with the shell command and the session ID
+    /// (if a fresh session was created).
+    pub fn to_shell_command(
+        &self,
+        settings_file: &std::path::Path,
+        prompt_file: &std::path::Path,
+        initial_prompt_file: Option<&std::path::Path>,
+        primary_repo: &std::path::Path,
+        project_name: &str,
+    ) -> LaunchCommand {
+        // -- Environment variables --
+        // Get common env vars from shared function
+        let config_dir = self
+            .auth_profile_dir
+            .clone()
+            .unwrap_or_else(|| crate::auth::current_profile_dir_for(self.auth_provider));
+
+        let env_map = build_agent_env_vars(
+            &self.name,
+            &self.role,
+            &self.team_name,
+            &self.channel,
+            self.auth_provider,
+            &config_dir,
+        );
+
+        // Convert env map to shell export format (key='value')
+        let env_parts: Vec<String> = env_map
+            .iter()
+            .map(|(k, v)| format!("{}='{}'", k, v))
+            .collect();
+
+        let env_export = format!("export {}", env_parts.join(" "));
+
+        // -- Sandbox prefix --
+        // On macOS, prepend sandbox-exec to restrict filesystem writes.
+        // On Linux with bwrap available, prepend bwrap.
+        // Falls back to no sandboxing if profile creation fails.
+        let sandbox_config = crate::config::get_project_sandbox_config(project_name);
+        let writable = crate::sandbox::writable_dirs(
+            primary_repo,
+            &self.additional_dirs,
+            &sandbox_config.allowed_paths,
+        );
+        let sandbox_prefix: Vec<String> = if cfg!(target_os = "macos") {
+            match crate::sandbox::sandbox_exec_prefix(&writable) {
+                Ok((_profile_path, prefix)) => {
+                    let mut a = vec!["sandbox-exec".to_string()];
+                    a.extend(prefix);
+                    a
+                }
+                Err(e) => {
+                    eprintln!(
+                        "Warning: sandbox setup failed, running without sandbox: {}",
+                        e
+                    );
+                    vec![]
+                }
+            }
+        } else {
+            // On Linux, bwrap support is TODO — no sandbox prefix for now.
+            vec![]
+        };
+
+        // -- CLI arguments (from shared method) --
+        let (cli_args, session_id) =
+            self.to_cli_args(settings_file, prompt_file, initial_prompt_file);
+
+        // Combine: sandbox prefix + CLI args
+        let mut all_args = sandbox_prefix;
+        all_args.extend(cli_args);
+
+        let shell_command = format!("{}; exec {}", env_export, all_args.join(" "));
 
         LaunchCommand {
             shell_command,

@@ -1,7 +1,4 @@
-//! Tests for session attach command construction.
-//!
-//! These tests verify that the shell command for attaching to a session
-//! includes the correct system prompt flags.
+//! Tests for session commands (attach, detach, target parsing, CLI arg construction).
 
 use super::*;
 use std::sync::Mutex;
@@ -32,6 +29,327 @@ fn ensure_in_git_repo() {
         }
     }
 }
+
+fn git_head(dir: &std::path::Path) -> String {
+    let out = std::process::Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+// ── Target normalization ──────────────────────────────────────────────
+
+#[test]
+fn normalize_attach_target_accepts_two_token_name() {
+    let args = AttachArgs {
+        target: "name".to_string(),
+        value: Some("Park".to_string()),
+    };
+    assert_eq!(normalize_attach_target(&args).unwrap(), "name/Park");
+}
+
+#[test]
+fn normalize_attach_target_accepts_provider_alias() {
+    let args = AttachArgs {
+        target: "openai".to_string(),
+        value: Some("thread-1".to_string()),
+    };
+    assert_eq!(normalize_attach_target(&args).unwrap(), "codex/thread-1");
+}
+
+#[test]
+fn normalize_attach_target_rejects_zai_platform_selector() {
+    let args = AttachArgs {
+        target: "zai".to_string(),
+        value: Some("abc-123".to_string()),
+    };
+    assert!(normalize_attach_target(&args).is_err());
+}
+
+#[test]
+fn normalize_single_target_defaults_to_name() {
+    assert_eq!(normalize_single_target("madison").unwrap(), "name/madison");
+}
+
+#[test]
+fn normalize_single_target_platform_only() {
+    assert_eq!(normalize_single_target("codex").unwrap(), "codex");
+    assert_eq!(normalize_single_target("openai").unwrap(), "codex");
+    assert_eq!(normalize_single_target("claude").unwrap(), "claude");
+}
+
+#[test]
+fn normalize_single_target_supports_slash_syntax() {
+    assert_eq!(normalize_single_target("task/42").unwrap(), "task/42");
+    assert_eq!(
+        normalize_single_target("ANTHROPIC/abc").unwrap(),
+        "claude/abc"
+    );
+}
+
+#[test]
+fn normalize_single_target_rejects_missing_value() {
+    assert!(normalize_single_target("task/").is_err());
+    assert!(normalize_single_target("name:").is_err());
+}
+
+// ── Pane host detection ───────────────────────────────────────────────
+
+#[test]
+fn detect_host_prefers_zellij_over_tmux() {
+    let host = detect_pane_host_from(|k| match k {
+        "ZELLIJ" => Some("1".to_string()),
+        "TMUX" => Some("/tmp/tmux-1/default,123,0".to_string()),
+        _ => None,
+    });
+    assert_eq!(host, PaneHost::Zellij);
+}
+
+#[test]
+fn detect_host_tmux_from_env() {
+    let host = detect_pane_host_from(|k| match k {
+        "TMUX" => Some("/tmp/tmux-1/default,123,0".to_string()),
+        _ => None,
+    });
+    assert_eq!(host, PaneHost::Tmux);
+}
+
+#[test]
+fn detect_host_ghostty_from_term_program() {
+    let host = detect_pane_host_from(|k| match k {
+        "TERM_PROGRAM" => Some("ghostty".to_string()),
+        _ => None,
+    });
+    assert_eq!(host, PaneHost::Ghostty);
+}
+
+#[test]
+fn detect_host_iterm_from_lc_terminal() {
+    let host = detect_pane_host_from(|k| match k {
+        "LC_TERMINAL" => Some("iTerm2".to_string()),
+        _ => None,
+    });
+    assert_eq!(host, PaneHost::ITerm);
+}
+
+// ── Provider / target helpers ─────────────────────────────────────────
+
+#[test]
+fn parse_provider_accepts_aliases() {
+    assert_eq!(
+        parse_provider("anthropic"),
+        midtown::auth::AuthProvider::Claude
+    );
+    assert_eq!(parse_provider("openai"), midtown::auth::AuthProvider::Codex);
+    assert_eq!(parse_provider("z.ai"), midtown::auth::AuthProvider::Zai);
+}
+
+#[test]
+fn platform_session_target_detection() {
+    assert!(is_platform_session_target("claude/abc"));
+    assert!(is_platform_session_target("codex/thread-1"));
+    assert!(!is_platform_session_target("name/park"));
+    assert!(!is_platform_session_target("task/42"));
+    assert!(!is_platform_session_target("codex"));
+}
+
+#[test]
+fn provider_from_target_platform() {
+    assert_eq!(
+        provider_from_target("codex"),
+        midtown::auth::AuthProvider::Codex
+    );
+    assert_eq!(
+        provider_from_target("codex/anything"),
+        midtown::auth::AuthProvider::Codex
+    );
+    assert_eq!(
+        provider_from_target("name/madison"),
+        midtown::auth::AuthProvider::Claude
+    );
+}
+
+// ── Ghostty keybind parsing ───────────────────────────────────────────
+
+#[test]
+fn parse_ghostty_keybind_for_action_finds_binding() {
+    let output = "keybind = super+shift+d=new_split:down\nkeybind = super+d=new_split:right\n";
+    assert_eq!(
+        parse_ghostty_keybind_for_action(output, "new_split:right"),
+        Some("super+d".to_string())
+    );
+}
+
+#[test]
+fn parse_ghostty_keybind_for_action_returns_none_when_missing() {
+    let output = "keybind = super+shift+d=new_split:down\n";
+    assert_eq!(
+        parse_ghostty_keybind_for_action(output, "new_split:right"),
+        None
+    );
+}
+
+// ── Misc helpers ──────────────────────────────────────────────────────
+
+#[test]
+fn format_age_ms_compacts_units() {
+    assert_eq!(format_age_ms(999), "999ms");
+    assert_eq!(format_age_ms(1_500), "1.5s");
+    assert_eq!(format_age_ms(90_000), "1.5m");
+}
+
+// ── LaunchConfig::to_cli_args ─────────────────────────────────────────
+
+#[test]
+fn test_to_cli_args_resume_includes_all_flags() {
+    let config = midtown::launch::LaunchConfig {
+        name: "lead".to_string(),
+        session_mode: midtown::launch::SessionMode::Resume,
+        role: midtown::launch::CoworkerRole::Lead,
+        initial_prompt: None,
+        additional_dirs: vec![],
+        restrict_setting_sources: false,
+        pr_number: None,
+        team_name: Some("test-team".to_string()),
+        working_dir: None,
+        model: "opus".to_string(),
+        channel: None,
+        auth_profile_dir: None,
+        auth_provider: midtown::auth::AuthProvider::Claude,
+    };
+
+    let settings = std::env::temp_dir().join("test-cli-args-settings.json");
+    let prompt = std::env::temp_dir().join("test-cli-args-prompt.txt");
+    let _ = std::fs::write(&settings, "{}");
+    let _ = std::fs::write(&prompt, "test prompt");
+
+    let (args, session_id) = config.to_cli_args(&settings, &prompt, None);
+
+    // Should have at least 7 args
+    assert!(
+        args.len() >= 7,
+        "Should have at least 7 arguments, got: {:?}",
+        args
+    );
+
+    // First arg should be 'claude'
+    assert_eq!(args[0], "claude");
+
+    // Should include --continue (resume mode)
+    assert!(
+        args.contains(&"--continue".to_string()),
+        "Should include --continue flag"
+    );
+
+    // Should include --dangerously-skip-permissions
+    assert!(
+        args.contains(&"--dangerously-skip-permissions".to_string()),
+        "Should include --dangerously-skip-permissions flag"
+    );
+
+    // Should include --settings
+    assert!(
+        args.contains(&"--settings".to_string()),
+        "Should include --settings flag"
+    );
+
+    // Should include --append-system-prompt
+    assert!(
+        args.contains(&"--append-system-prompt".to_string()),
+        "Should include --append-system-prompt flag"
+    );
+
+    // Should include agent teams flags
+    assert!(
+        args.contains(&"--agent-id".to_string()),
+        "Should include --agent-id flag for agent teams"
+    );
+    assert!(
+        args.contains(&"--team-name".to_string()),
+        "Should include --team-name flag for agent teams"
+    );
+
+    // Resume mode → no session ID
+    assert!(session_id.is_none());
+}
+
+#[test]
+fn test_to_cli_args_fresh_generates_session_id() {
+    let config = midtown::launch::LaunchConfig {
+        name: "park".to_string(),
+        session_mode: midtown::launch::SessionMode::Fresh,
+        role: midtown::launch::CoworkerRole::Coworker,
+        initial_prompt: None,
+        additional_dirs: vec![],
+        restrict_setting_sources: true,
+        pr_number: None,
+        team_name: None,
+        working_dir: None,
+        model: "sonnet".to_string(),
+        channel: None,
+        auth_profile_dir: None,
+        auth_provider: midtown::auth::AuthProvider::Claude,
+    };
+
+    let settings = std::env::temp_dir().join("test-cli-args-settings2.json");
+    let prompt = std::env::temp_dir().join("test-cli-args-prompt2.txt");
+    let _ = std::fs::write(&settings, "{}");
+    let _ = std::fs::write(&prompt, "test prompt");
+
+    let (args, session_id) = config.to_cli_args(&settings, &prompt, None);
+
+    // Fresh mode → should have session-id
+    assert!(
+        args.contains(&"--session-id".to_string()),
+        "Fresh mode should include --session-id"
+    );
+    assert!(
+        session_id.is_some(),
+        "Fresh mode should return a session ID"
+    );
+
+    // Coworker should have --setting-sources
+    assert!(
+        args.contains(&"--setting-sources".to_string()),
+        "Coworker should include --setting-sources"
+    );
+}
+
+#[test]
+fn test_to_cli_args_coworker_restricts_settings() {
+    let config = midtown::launch::LaunchConfig {
+        name: "park".to_string(),
+        session_mode: midtown::launch::SessionMode::Resume,
+        role: midtown::launch::CoworkerRole::Coworker,
+        initial_prompt: None,
+        additional_dirs: vec![],
+        restrict_setting_sources: true,
+        pr_number: None,
+        team_name: None,
+        working_dir: None,
+        model: "sonnet".to_string(),
+        channel: None,
+        auth_profile_dir: None,
+        auth_provider: midtown::auth::AuthProvider::Claude,
+    };
+
+    let settings = std::env::temp_dir().join("test-settings.json");
+    let prompt = std::env::temp_dir().join("test-prompt.txt");
+    let _ = std::fs::write(&settings, "{}");
+    let _ = std::fs::write(&prompt, "test");
+
+    let (args, _) = config.to_cli_args(&settings, &prompt, None);
+
+    // Coworker should have --setting-sources
+    assert!(args.contains(&"--setting-sources".to_string()));
+    assert!(args.contains(&"project,local".to_string()));
+    // No agent teams without team_name
+    assert!(!args.contains(&"--agent-id".to_string()));
+}
+
+// ── build_attach_shell_command ────────────────────────────────────────
 
 #[test]
 fn test_lead_attach_includes_system_prompt() {
@@ -90,55 +408,6 @@ fn test_coworker_attach_includes_system_prompt() {
 }
 
 #[test]
-fn test_provider_resume_command_structure() {
-    let claude_cmd =
-        provider_resume_command(midtown::auth::AuthProvider::Claude, "test-session", "lead")
-            .expect("provider_resume_command should succeed");
-
-    // Should have at least 7 args: claude, --continue, --dangerously-skip-permissions, --settings, <settings-file>, --append-system-prompt, "$(cat ...)"
-    assert!(
-        claude_cmd.len() >= 7,
-        "Should have at least 7 arguments (claude, --continue, --dangerously-skip-permissions, --settings, settings-file, --append-system-prompt, prompt file), got: {:?}",
-        claude_cmd
-    );
-
-    // First arg should be 'claude'
-    assert_eq!(claude_cmd[0], "claude");
-
-    // Should include --continue
-    assert!(
-        claude_cmd.contains(&"--continue".to_string()),
-        "Should include --continue flag"
-    );
-
-    // Should include --dangerously-skip-permissions
-    assert!(
-        claude_cmd.contains(&"--dangerously-skip-permissions".to_string()),
-        "Should include --dangerously-skip-permissions flag"
-    );
-
-    // Should include --settings
-    assert!(
-        claude_cmd.contains(&"--settings".to_string()),
-        "Should include --settings flag"
-    );
-
-    // Should include --append-system-prompt
-    assert!(
-        claude_cmd.contains(&"--append-system-prompt".to_string()),
-        "Should include --append-system-prompt flag"
-    );
-
-    // Last arg should be the temp file reference
-    let last_arg = &claude_cmd[claude_cmd.len() - 1];
-    assert!(
-        last_arg.contains("$(cat") && last_arg.contains("midtown-attach-"),
-        "Last argument should use $(cat .../midtown-attach-...) pattern, got: {}",
-        last_arg
-    );
-}
-
-#[test]
 fn test_lead_attach_sets_task_list_id() {
     let _lock = SESSION_CWD_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     ensure_in_git_repo();
@@ -180,4 +449,103 @@ fn test_coworker_attach_no_task_list_id() {
         "Coworker attach command should not set CLAUDE_CODE_TASK_LIST_ID env var, got: {}",
         command
     );
+}
+
+#[test]
+fn test_lead_attach_includes_agent_teams_flags() {
+    let _lock = SESSION_CWD_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    ensure_in_git_repo();
+    let result = build_attach_shell_command(
+        "/tmp/test-cwd",
+        "lead",
+        midtown::auth::AuthProvider::Claude,
+        "session-123",
+    );
+
+    let command = result.expect("build_attach_shell_command should succeed");
+
+    // Attach should include agent teams flags (previously missing)
+    assert!(
+        command.contains("--agent-id"),
+        "Lead attach should include --agent-id flag, got: {}",
+        command
+    );
+    assert!(
+        command.contains("--team-name"),
+        "Lead attach should include --team-name flag, got: {}",
+        command
+    );
+    assert!(
+        command.contains("--agent-name"),
+        "Lead attach should include --agent-name flag, got: {}",
+        command
+    );
+}
+
+// ── Worktree management ───────────────────────────────────────────────
+
+#[test]
+fn ensure_attach_worktree_lead_updates_to_head() {
+    use std::process::Command as TestCmd;
+    use tempfile::TempDir;
+
+    let temp = TempDir::new().unwrap();
+    let repo = temp.path();
+
+    // Create a git repo with an initial commit
+    TestCmd::new("git")
+        .args(["init"])
+        .current_dir(repo)
+        .output()
+        .unwrap();
+    TestCmd::new("git")
+        .args(["config", "user.email", "test@test.com"])
+        .current_dir(repo)
+        .output()
+        .unwrap();
+    TestCmd::new("git")
+        .args(["config", "user.name", "Test"])
+        .current_dir(repo)
+        .output()
+        .unwrap();
+    TestCmd::new("git")
+        .args(["commit", "--allow-empty", "-m", "init"])
+        .current_dir(repo)
+        .output()
+        .unwrap();
+
+    let manager =
+        midtown::worktree::WorktreeManager::new(repo.to_path_buf()).expect("create manager");
+
+    // Create lead worktree at initial commit
+    let wt = manager.create_lead_worktree().expect("create lead wt");
+    let initial_head = git_head(repo);
+    assert_eq!(git_head(&wt), initial_head);
+
+    // Advance HEAD
+    TestCmd::new("git")
+        .args(["commit", "--allow-empty", "-m", "second"])
+        .current_dir(repo)
+        .output()
+        .unwrap();
+    let new_head = git_head(repo);
+    assert_ne!(initial_head, new_head);
+
+    // ensure_attach_worktree for "lead" should update worktree
+    let result = ensure_attach_worktree("lead", &wt.to_string_lossy());
+    assert!(result.is_ok());
+    assert_eq!(
+        git_head(&wt),
+        new_head,
+        "ensure_attach_worktree should update lead to HEAD"
+    );
+}
+
+#[test]
+fn ensure_attach_worktree_coworker_falls_back_to_daemon_cwd() {
+    // When repo detection fails (no git repo), should return daemon_cwd
+    let result = ensure_attach_worktree("park", "/tmp/some-cwd");
+    assert!(result.is_ok());
+    // Should not error — gracefully falls back
+    assert_eq!(result.unwrap(), "/tmp/some-cwd");
 }

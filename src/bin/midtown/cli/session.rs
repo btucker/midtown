@@ -735,7 +735,64 @@ pub(crate) fn build_attach_shell_command(
         cmd_parts.push("sandbox-exec".to_string());
         cmd_parts.extend(prefix);
     }
-    cmd_parts.extend(provider_resume_command(provider, session_id, name)?);
+
+    // Build CLI args using LaunchConfig — single source of truth for all launch paths
+    match provider {
+        midtown::auth::AuthProvider::Claude | midtown::auth::AuthProvider::Zai => {
+            let launch_config = midtown::launch::LaunchConfig {
+                name: name.to_string(),
+                session_mode: midtown::launch::SessionMode::Resume,
+                role: role.clone(),
+                initial_prompt: None,
+                additional_dirs: vec![],
+                restrict_setting_sources: name != "lead",
+                pr_number: None,
+                team_name: team_name.clone(),
+                working_dir: None,
+                model: "opus".to_string(),
+                channel: None,
+                auth_profile_dir: Some(profile_dir.clone()),
+                auth_provider: provider,
+            };
+
+            // Write system prompt to temp file
+            let system_prompt = match launch_config.role {
+                midtown::launch::CoworkerRole::Lead => midtown::agents::lead_system_prompt(),
+                midtown::launch::CoworkerRole::Reviewer => {
+                    midtown::agents::reviewer_system_prompt(name)
+                }
+                midtown::launch::CoworkerRole::Coworker => {
+                    midtown::agents::coworker_system_prompt(name)
+                }
+            };
+            let prompt_file = std::env::temp_dir().join(format!(
+                "midtown-attach-{}-{}.txt",
+                name,
+                std::process::id()
+            ));
+            std::fs::write(&prompt_file, system_prompt)
+                .map_err(|e| format!("Failed to write system prompt to temp file: {}", e))?;
+
+            // Write role-appropriate settings file
+            let settings_file = if name == "lead" {
+                midtown::settings::write_lead_settings_file()
+                    .map_err(|e| format!("Failed to write lead settings file: {}", e))?
+            } else {
+                midtown::settings::write_coworker_settings_file()
+                    .map_err(|e| format!("Failed to write coworker settings file: {}", e))?
+            };
+
+            let (cli_args, _) = launch_config.to_cli_args(&settings_file, &prompt_file, None);
+            cmd_parts.extend(cli_args);
+        }
+        midtown::auth::AuthProvider::Codex => {
+            cmd_parts.extend(vec![
+                "codex".to_string(),
+                "--resume".to_string(),
+                session_id.to_string(),
+            ]);
+        }
+    }
 
     let provider_cmd = cmd_parts
         .iter()
@@ -760,70 +817,6 @@ pub(crate) fn build_attach_shell_command(
         wrapped_attach_cmd,
         detach_cmd
     ))
-}
-
-fn provider_resume_command(
-    provider: midtown::auth::AuthProvider,
-    session_id: &str,
-    name: &str,
-) -> Result<Vec<String>, String> {
-    match provider {
-        midtown::auth::AuthProvider::Claude | midtown::auth::AuthProvider::Zai => {
-            // Use --continue instead of --resume <id>. --continue resumes the
-            // most recent session in the CWD, or starts fresh if none exists.
-            // This handles the case where the headless session was too new to
-            // have saved any conversation data (no user turns = nothing on disk).
-            // The session_id is kept for logging but not used in the command.
-            let _ = session_id;
-
-            // Write system prompt to temp file and use $(cat <file>) pattern
-            let system_prompt = if name == "lead" {
-                midtown::agents::lead_system_prompt()
-            } else {
-                midtown::agents::coworker_system_prompt(name)
-            };
-
-            let temp_file = std::env::temp_dir().join(format!(
-                "midtown-attach-{}-{}.txt",
-                name,
-                std::process::id()
-            ));
-            std::fs::write(&temp_file, system_prompt)
-                .map_err(|e| format!("Failed to write system prompt to temp file: {}", e))?;
-
-            // Write settings file and get path
-            let settings_file = if name == "lead" {
-                midtown::settings::write_lead_settings_file()
-                    .map_err(|e| format!("Failed to write lead settings file: {}", e))?
-            } else {
-                midtown::settings::write_coworker_settings_file()
-                    .map_err(|e| format!("Failed to write coworker settings file: {}", e))?
-            };
-
-            let mut args = vec![
-                "claude".to_string(),
-                "--continue".to_string(),
-                "--dangerously-skip-permissions".to_string(),
-                "--settings".to_string(),
-                settings_file.display().to_string(),
-                "--append-system-prompt".to_string(),
-                format!("\"$(cat {})\"", temp_file.display()),
-            ];
-
-            // For coworker attach sessions, restrict setting sources to match headless config
-            if name != "lead" {
-                args.push("--setting-sources".to_string());
-                args.push("project,local".to_string());
-            }
-
-            Ok(args)
-        }
-        midtown::auth::AuthProvider::Codex => Ok(vec![
-            "codex".to_string(),
-            "--resume".to_string(),
-            session_id.to_string(),
-        ]),
-    }
 }
 
 fn parse_provider(raw: &str) -> midtown::auth::AuthProvider {
@@ -962,268 +955,6 @@ fn detect_pane_host_from(get_env: impl Fn(&str) -> Option<String>) -> PaneHost {
     PaneHost::Unknown
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn normalize_attach_target_accepts_two_token_name() {
-        let args = AttachArgs {
-            target: "name".to_string(),
-            value: Some("Park".to_string()),
-        };
-        assert_eq!(normalize_attach_target(&args).unwrap(), "name/Park");
-    }
-
-    #[test]
-    fn normalize_attach_target_accepts_provider_alias() {
-        let args = AttachArgs {
-            target: "openai".to_string(),
-            value: Some("thread-1".to_string()),
-        };
-        assert_eq!(normalize_attach_target(&args).unwrap(), "codex/thread-1");
-    }
-
-    #[test]
-    fn normalize_attach_target_rejects_zai_platform_selector() {
-        let args = AttachArgs {
-            target: "zai".to_string(),
-            value: Some("abc-123".to_string()),
-        };
-        assert!(normalize_attach_target(&args).is_err());
-    }
-
-    #[test]
-    fn normalize_single_target_defaults_to_name() {
-        assert_eq!(normalize_single_target("madison").unwrap(), "name/madison");
-    }
-
-    #[test]
-    fn normalize_single_target_platform_only() {
-        assert_eq!(normalize_single_target("codex").unwrap(), "codex");
-        assert_eq!(normalize_single_target("openai").unwrap(), "codex");
-        assert_eq!(normalize_single_target("claude").unwrap(), "claude");
-    }
-
-    #[test]
-    fn normalize_single_target_supports_slash_syntax() {
-        assert_eq!(normalize_single_target("task/42").unwrap(), "task/42");
-        assert_eq!(
-            normalize_single_target("ANTHROPIC/abc").unwrap(),
-            "claude/abc"
-        );
-    }
-
-    #[test]
-    fn normalize_single_target_rejects_missing_value() {
-        assert!(normalize_single_target("task/").is_err());
-        assert!(normalize_single_target("name:").is_err());
-    }
-
-    #[test]
-    fn detect_host_prefers_zellij_over_tmux() {
-        let host = detect_pane_host_from(|k| match k {
-            "ZELLIJ" => Some("1".to_string()),
-            "TMUX" => Some("/tmp/tmux-1/default,123,0".to_string()),
-            _ => None,
-        });
-        assert_eq!(host, PaneHost::Zellij);
-    }
-
-    #[test]
-    fn detect_host_tmux_from_env() {
-        let host = detect_pane_host_from(|k| match k {
-            "TMUX" => Some("/tmp/tmux-1/default,123,0".to_string()),
-            _ => None,
-        });
-        assert_eq!(host, PaneHost::Tmux);
-    }
-
-    #[test]
-    fn detect_host_ghostty_from_term_program() {
-        let host = detect_pane_host_from(|k| match k {
-            "TERM_PROGRAM" => Some("ghostty".to_string()),
-            _ => None,
-        });
-        assert_eq!(host, PaneHost::Ghostty);
-    }
-
-    #[test]
-    fn detect_host_iterm_from_lc_terminal() {
-        let host = detect_pane_host_from(|k| match k {
-            "LC_TERMINAL" => Some("iTerm2".to_string()),
-            _ => None,
-        });
-        assert_eq!(host, PaneHost::ITerm);
-    }
-
-    #[test]
-    fn parse_provider_accepts_aliases() {
-        assert_eq!(
-            parse_provider("anthropic"),
-            midtown::auth::AuthProvider::Claude
-        );
-        assert_eq!(parse_provider("openai"), midtown::auth::AuthProvider::Codex);
-        assert_eq!(parse_provider("z.ai"), midtown::auth::AuthProvider::Zai);
-    }
-
-    #[test]
-    fn parse_ghostty_keybind_for_action_finds_binding() {
-        let output = "keybind = super+shift+d=new_split:down\nkeybind = super+d=new_split:right\n";
-        assert_eq!(
-            parse_ghostty_keybind_for_action(output, "new_split:right"),
-            Some("super+d".to_string())
-        );
-    }
-
-    #[test]
-    fn parse_ghostty_keybind_for_action_returns_none_when_missing() {
-        let output = "keybind = super+shift+d=new_split:down\n";
-        assert_eq!(
-            parse_ghostty_keybind_for_action(output, "new_split:right"),
-            None
-        );
-    }
-
-    #[test]
-    fn provider_resume_command_is_provider_specific() {
-        // Test Claude provider includes system prompt and settings
-        let claude_cmd =
-            provider_resume_command(midtown::auth::AuthProvider::Claude, "abc", "lead")
-                .expect("should succeed");
-        assert_eq!(claude_cmd[0], "claude");
-        assert_eq!(claude_cmd[1], "--continue");
-        assert_eq!(claude_cmd[2], "--dangerously-skip-permissions");
-        assert_eq!(claude_cmd[3], "--settings");
-        // claude_cmd[4] is the settings file path
-        assert_eq!(claude_cmd[5], "--append-system-prompt");
-        assert!(
-            claude_cmd[6].contains("$(cat"),
-            "Should include temp file reference"
-        );
-
-        // Test Codex provider
-        let codex_cmd =
-            provider_resume_command(midtown::auth::AuthProvider::Codex, "thread", "park")
-                .expect("should succeed");
-        assert_eq!(
-            codex_cmd,
-            vec![
-                "codex".to_string(),
-                "--resume".to_string(),
-                "thread".to_string(),
-            ]
-        );
-    }
-
-    #[test]
-    fn platform_session_target_detection() {
-        assert!(is_platform_session_target("claude/abc"));
-        assert!(is_platform_session_target("codex/thread-1"));
-        assert!(!is_platform_session_target("name/park"));
-        assert!(!is_platform_session_target("task/42"));
-        assert!(!is_platform_session_target("codex"));
-    }
-
-    #[test]
-    fn provider_from_target_platform() {
-        assert_eq!(
-            provider_from_target("codex"),
-            midtown::auth::AuthProvider::Codex
-        );
-        assert_eq!(
-            provider_from_target("codex/anything"),
-            midtown::auth::AuthProvider::Codex
-        );
-        assert_eq!(
-            provider_from_target("name/madison"),
-            midtown::auth::AuthProvider::Claude
-        );
-    }
-
-    #[test]
-    fn format_age_ms_compacts_units() {
-        assert_eq!(format_age_ms(999), "999ms");
-        assert_eq!(format_age_ms(1_500), "1.5s");
-        assert_eq!(format_age_ms(90_000), "1.5m");
-    }
-
-    #[test]
-    fn ensure_attach_worktree_lead_updates_to_head() {
-        use std::process::Command as TestCmd;
-        use tempfile::TempDir;
-
-        let temp = TempDir::new().unwrap();
-        let repo = temp.path();
-
-        // Create a git repo with an initial commit
-        TestCmd::new("git")
-            .args(["init"])
-            .current_dir(repo)
-            .output()
-            .unwrap();
-        TestCmd::new("git")
-            .args(["config", "user.email", "test@test.com"])
-            .current_dir(repo)
-            .output()
-            .unwrap();
-        TestCmd::new("git")
-            .args(["config", "user.name", "Test"])
-            .current_dir(repo)
-            .output()
-            .unwrap();
-        TestCmd::new("git")
-            .args(["commit", "--allow-empty", "-m", "init"])
-            .current_dir(repo)
-            .output()
-            .unwrap();
-
-        let manager =
-            midtown::worktree::WorktreeManager::new(repo.to_path_buf()).expect("create manager");
-
-        // Create lead worktree at initial commit
-        let wt = manager.create_lead_worktree().expect("create lead wt");
-        let initial_head = git_head(repo);
-        assert_eq!(git_head(&wt), initial_head);
-
-        // Advance HEAD
-        TestCmd::new("git")
-            .args(["commit", "--allow-empty", "-m", "second"])
-            .current_dir(repo)
-            .output()
-            .unwrap();
-        let new_head = git_head(repo);
-        assert_ne!(initial_head, new_head);
-
-        // ensure_attach_worktree for "lead" should update worktree
-        let result = ensure_attach_worktree("lead", &wt.to_string_lossy());
-        assert!(result.is_ok());
-        assert_eq!(
-            git_head(&wt),
-            new_head,
-            "ensure_attach_worktree should update lead to HEAD"
-        );
-    }
-
-    #[test]
-    fn ensure_attach_worktree_coworker_falls_back_to_daemon_cwd() {
-        // When repo detection fails (no git repo), should return daemon_cwd
-        let result = ensure_attach_worktree("park", "/tmp/some-cwd");
-        assert!(result.is_ok());
-        // Should not error — gracefully falls back
-        assert_eq!(result.unwrap(), "/tmp/some-cwd");
-    }
-
-    fn git_head(dir: &std::path::Path) -> String {
-        let out = std::process::Command::new("git")
-            .args(["rev-parse", "HEAD"])
-            .current_dir(dir)
-            .output()
-            .unwrap();
-        String::from_utf8_lossy(&out.stdout).trim().to_string()
-    }
-}
-
 #[path = "session_tests.rs"]
 #[cfg(test)]
-mod session_tests;
+mod tests;
