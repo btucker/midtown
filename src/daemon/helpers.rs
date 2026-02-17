@@ -224,6 +224,38 @@ pub fn is_lead_branch(branch: &str) -> bool {
     branch.starts_with("lead/")
 }
 
+/// Check if a PR is authored by the lead (repo owner).
+///
+/// Pure function: compares the PR's author login against the pre-fetched repo owner
+/// from `WorldSnapshot`. The repo owner is extracted from the git remote URL at
+/// daemon startup, avoiding I/O in decision functions.
+///
+/// Returns true if:
+/// - PR has an author.login field that matches the repo owner
+/// - `repo_owner` is provided
+///
+/// Returns false if:
+/// - PR has no author field
+/// - `repo_owner` is None (could not be determined at startup)
+/// - Author doesn't match repo owner
+pub fn is_lead_authored_pr(pr: &serde_json::Value, repo_owner: Option<&str>) -> bool {
+    let repo_owner = match repo_owner {
+        Some(owner) => owner,
+        None => return false,
+    };
+
+    let author_login = match pr
+        .get("author")
+        .and_then(|a| a.get("login"))
+        .and_then(|l| l.as_str())
+    {
+        Some(login) => login,
+        None => return false,
+    };
+
+    author_login.eq_ignore_ascii_case(repo_owner)
+}
+
 // ---------------------------------------------------------------------------
 // PR helpers
 // ---------------------------------------------------------------------------

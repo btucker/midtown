@@ -424,6 +424,9 @@ pub(crate) struct DaemonState {
     pr_issue_tracker: Mutex<PrIssueTracker>,
     /// Repository name (primary repo)
     repo_name: String,
+    /// Repository owner (extracted from git remote URL at startup).
+    /// Used by pure decision functions to determine if a PR is authored by the lead.
+    repo_owner: Option<String>,
     /// Default branch name (detected at startup, e.g. "main" or "master")
     default_branch: String,
     /// Paths to all repos in the project (primary + additional)
@@ -744,6 +747,25 @@ impl DaemonState {
 
         let user_display_name = config::get_user_display_name_for_project(&repo_name);
 
+        // Extract repo owner from git remote URL (once at startup, no API call needed).
+        // Used by pure decision functions to determine if a PR is lead-authored.
+        let repo_owner = std::process::Command::new("git")
+            .args(["remote", "get-url", "origin"])
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .and_then(|o| {
+                let url = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                extract_repo_name_from_url(&url)
+            })
+            .and_then(|name_with_owner| {
+                // extract_repo_name_from_url returns "owner/repo", we want just "owner"
+                name_with_owner.split('/').next().map(|s| s.to_string())
+            });
+        if let Some(ref owner) = repo_owner {
+            info!("Detected repo owner: {}", owner);
+        }
+
         // Clone repo_name for session_manager before moving it into Self
         let session_manager_repo_name = repo_name.clone();
 
@@ -754,6 +776,7 @@ impl DaemonState {
             coworker_records: tokio::sync::RwLock::new(HashMap::new()),
             pr_issue_tracker: Mutex::new(PrIssueTracker::new()),
             repo_name,
+            repo_owner,
             default_branch,
             all_repo_paths,
             cooldowns: std::sync::Mutex::new(crate::rules::CooldownTracker::new()),

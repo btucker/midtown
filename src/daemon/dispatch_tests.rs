@@ -419,6 +419,7 @@ fn test_description_based_completion_all_prs_merged() {
         all_tasks: vec![task],
         merged_pr_numbers,
         repo_name: "test-repo".to_string(),
+        repo_owner: None,
         ..snapshot::minimal_snapshot_for_test()
     };
 
@@ -473,6 +474,7 @@ fn test_description_based_completion_some_prs_not_merged() {
         all_tasks: vec![task],
         merged_pr_numbers,
         repo_name: "test-repo".to_string(),
+        repo_owner: None,
         ..snapshot::minimal_snapshot_for_test()
     };
 
@@ -503,6 +505,7 @@ fn test_description_based_completion_no_pr_references() {
     let snap = snapshot::WorldSnapshot {
         all_tasks: vec![task],
         repo_name: "test-repo".to_string(),
+        repo_owner: None,
         ..snapshot::minimal_snapshot_for_test()
     };
 
@@ -538,6 +541,7 @@ fn test_description_based_completion_skips_pending_tasks() {
         all_tasks: vec![task],
         merged_pr_numbers,
         repo_name: "test-repo".to_string(),
+        repo_owner: None,
         ..snapshot::minimal_snapshot_for_test()
     };
 
@@ -568,6 +572,7 @@ fn test_description_based_completion_no_description() {
     let snap = snapshot::WorldSnapshot {
         all_tasks: vec![task],
         repo_name: "test-repo".to_string(),
+        repo_owner: None,
         ..snapshot::minimal_snapshot_for_test()
     };
 
@@ -619,6 +624,7 @@ fn test_description_based_completion_skips_already_completed_tasks() {
         all_tasks: vec![completed_task, in_progress_task],
         merged_pr_numbers,
         repo_name: "test-repo".to_string(),
+        repo_owner: None,
         ..snapshot::minimal_snapshot_for_test()
     };
 
@@ -1013,6 +1019,7 @@ fn test_spawn_for_pending_tasks_generates_registry_effects_new_task() {
         is_at_coworker_limit: false,
         now_utc: chrono::Utc::now(),
         repo_name: "test-repo".to_string(),
+        repo_owner: None,
         github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
         freshly_fetched_rate_limit: None,
     };
@@ -1162,6 +1169,7 @@ fn test_spawn_for_pending_tasks_reuses_worktree_for_owned_task() {
         is_at_coworker_limit: false,
         now_utc: chrono::Utc::now(),
         repo_name: "test-repo".to_string(),
+        repo_owner: None,
         github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
         freshly_fetched_rate_limit: None,
     };
@@ -1286,6 +1294,7 @@ fn test_spawn_for_pending_tasks_skips_when_owner_has_pending_task() {
         is_at_dev_limit: false,
         now_utc: chrono::Utc::now(),
         repo_name: "test-repo".to_string(),
+        repo_owner: None,
         github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
         freshly_fetched_rate_limit: None,
     };
@@ -1380,6 +1389,7 @@ fn test_spawn_owner_includes_record_task_assignment_for_cross_tick_dedup() {
         is_at_dev_limit: false,
         now_utc: chrono::Utc::now(),
         repo_name: "test-repo".to_string(),
+        repo_owner: None,
         github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
         freshly_fetched_rate_limit: None,
     };
@@ -1478,6 +1488,7 @@ fn test_cross_tick_dedup_skips_in_flight_owned_task() {
         is_at_dev_limit: false,
         now_utc: chrono::Utc::now(),
         repo_name: "test-repo".to_string(),
+        repo_owner: None,
         github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
         freshly_fetched_rate_limit: None,
     };
@@ -1605,6 +1616,7 @@ fn test_cross_case_dedup_prevents_same_coworker_from_case1_and_case2() {
         is_at_dev_limit: false,
         now_utc: chrono::Utc::now(),
         repo_name: "test-repo".to_string(),
+        repo_owner: None,
         github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
         freshly_fetched_rate_limit: None,
     };
@@ -1707,6 +1719,7 @@ fn test_spawn_for_pending_tasks_skips_via_snapshot_assignment_check() {
         is_at_dev_limit: false,
         now_utc: chrono::Utc::now(),
         repo_name: "test-repo".to_string(),
+        repo_owner: None,
         github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
         freshly_fetched_rate_limit: None,
     };
@@ -1794,6 +1807,7 @@ fn test_orphan_recovery_reuses_existing_task_worktree() {
         is_at_dev_limit: false,
         now_utc: chrono::Utc::now(),
         repo_name: "test-repo".to_string(),
+        repo_owner: None,
         github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
         freshly_fetched_rate_limit: None,
     };
@@ -1939,6 +1953,7 @@ fn test_orphan_recovery_creates_new_worktree_when_none_exists() {
         is_at_dev_limit: false,
         now_utc: chrono::Utc::now(),
         repo_name: "test-repo".to_string(),
+        repo_owner: None,
         github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
         freshly_fetched_rate_limit: None,
     };
@@ -2107,6 +2122,7 @@ fn test_spawn_for_pending_unowned_reuses_existing_worktree() {
         is_at_coworker_limit: false,
         now_utc: chrono::Utc::now(),
         repo_name: "test-repo".to_string(),
+        repo_owner: None,
         github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
         freshly_fetched_rate_limit: None,
     };
@@ -2256,6 +2272,7 @@ fn make_reconcile_snapshot(
         is_at_dev_limit: false,
         now_utc: chrono::Utc::now(),
         repo_name: "test-repo".to_string(),
+        repo_owner: None,
         github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
         freshly_fetched_rate_limit: None,
     }
@@ -2670,6 +2687,7 @@ fn test_spawn_for_pending_tasks_when_all_coworkers_are_gone() {
         is_at_coworker_limit: false,
         now_utc: chrono::Utc::now(),
         repo_name: "test-repo".to_string(),
+        repo_owner: None,
         github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
         freshly_fetched_rate_limit: None,
     };
@@ -3325,6 +3343,7 @@ fn test_spawn_extracts_model_alias_from_provider_model_format() {
         is_at_coworker_limit: false,
         now_utc: chrono::Utc::now(),
         repo_name: "test-repo".to_string(),
+        repo_owner: None,
         github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
         freshly_fetched_rate_limit: None,
     };
@@ -3431,6 +3450,7 @@ fn test_orphan_recovery_marks_task_in_flight() {
         is_at_dev_limit: false,
         now_utc: chrono::Utc::now(),
         repo_name: "test-repo".to_string(),
+        repo_owner: None,
     };
 
     let state = make_test_state();
@@ -3572,6 +3592,7 @@ fn test_stale_task_cleanup_false_positive_task_about_merged_pr() {
         is_at_coworker_limit: false,
         now_utc: chrono::Utc::now(),
         repo_name: "test-repo".to_string(),
+        repo_owner: None,
         github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
         freshly_fetched_rate_limit: None,
     };
@@ -3670,6 +3691,7 @@ fn test_stale_task_cleanup_correct_behavior_with_explicit_pr_field() {
         is_at_coworker_limit: false,
         now_utc: chrono::Utc::now(),
         repo_name: "test-repo".to_string(),
+        repo_owner: None,
         github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
         freshly_fetched_rate_limit: None,
     };

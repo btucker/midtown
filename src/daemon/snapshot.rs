@@ -295,6 +295,10 @@ pub struct WorldSnapshot {
     pub now_utc: DateTime<Utc>,
     /// Repository name.
     pub repo_name: String,
+    /// Repository owner (from git remote URL). Used by pure decision functions
+    /// to determine if a PR is authored by the lead (repo owner).
+    #[serde(default)]
+    pub repo_owner: Option<String>,
 }
 
 /// Read the last N lines from the daemon log file.
@@ -678,6 +682,7 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
     let is_at_dev_limit = state.is_at_dev_limit();
     let now_utc = Utc::now();
     let repo_name = state.repo_name.clone();
+    let repo_owner = state.repo_owner.clone();
 
     let snapshot = WorldSnapshot {
         active_coworkers,
@@ -737,6 +742,7 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
         is_at_dev_limit,
         now_utc,
         repo_name,
+        repo_owner,
     };
 
     // Log full snapshot at trace level for debugging and test case generation
@@ -809,6 +815,7 @@ pub(super) fn minimal_snapshot_for_test() -> WorldSnapshot {
         is_at_dev_limit: false,
         now_utc: Utc::now(),
         repo_name: "test-repo".to_string(),
+        repo_owner: None,
         github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
         freshly_fetched_rate_limit: None,
     }

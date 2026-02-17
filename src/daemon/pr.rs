@@ -2173,6 +2173,14 @@ pub(crate) async fn collect_reviewer_effects_with_source(
                         pr_number, owner, head_ref
                     );
                     true
+                } else if super::helpers::is_lead_authored_pr(pr, state.repo_owner.as_deref()) {
+                    // PR is authored by the lead (repo owner) but doesn't follow lead/* naming.
+                    // The lead can still address feedback from their main worktree.
+                    debug!(
+                        "PR #{} is authored by lead (branch: {}), not orphaned",
+                        pr_number, head_ref
+                    );
+                    false
                 } else {
                     debug!(
                         "PR #{} is orphaned (no determinable owner or worktree, branch: {}), skipping auto-review",
