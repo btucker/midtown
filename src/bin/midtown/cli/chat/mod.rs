@@ -136,6 +136,10 @@ async fn run_app_async(
     // and forgot. Prevents the chat from appearing frozen when it's just scrolled up.
     let mut auto_scroll_interval = interval(Duration::from_secs(30));
 
+    // Animation timer (~100ms) for spinner frame advancement.
+    // Advances unconditionally so all spinners (lead + coworkers) animate.
+    let mut animation_interval = interval(Duration::from_millis(100));
+
     // Track previous hyperlinks to skip redundant OSC 8 rendering
     let mut last_hyperlinks: Vec<Hyperlink> = Vec::new();
 
@@ -244,6 +248,14 @@ async fn run_app_async(
             _ = auto_scroll_interval.tick() => {
                 if app.scroll_offset > 0 {
                     app.scroll_to_bottom();
+                }
+            }
+
+            // Animation tick: advance spinner frame if enough time has elapsed.
+            // Only tick when a spinner is actually visible (lead working or active coworkers).
+            _ = animation_interval.tick() => {
+                if app.any_spinner_visible() {
+                    app.tick_spinner();
                 }
             }
         }
