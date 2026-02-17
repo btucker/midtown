@@ -19,7 +19,11 @@ import {
   selectedAuthProvider,
   authSwitching,
   usageData,
+  agentToolItems,
 } from './store.js'
+
+// Maximum number of tool call items retained per agent in the activity store.
+const MAX_TOOL_ITEMS_PER_AGENT = 20
 
 let ws = null
 let reconnectTimeout = null
@@ -404,6 +408,16 @@ function handleUpdate(update) {
         leadTyping.set(false)
         if (leadTypingTimeout) clearTimeout(leadTypingTimeout)
       }
+
+      // Clear tool activity for the sender when they post a message —
+      // their work phase is done and the activity strip should reset.
+      if (msg.from && msg.from.toLowerCase() !== 'lead' && msg.from.toLowerCase() !== 'midtown') {
+        agentToolItems.update((byAgent) => {
+          const updated = { ...byAgent }
+          delete updated[msg.from.toLowerCase()]
+          return updated
+        })
+      }
       break
     case 'coworker_status':
       coworkers.update((list) => {
@@ -424,6 +438,16 @@ function handleUpdate(update) {
       if (update.data.working) {
         leadTypingTimeout = setTimeout(() => leadTyping.set(false), 45000)
       }
+      break
+    case 'universal_items':
+      // Tool call activity from a coworker session.
+      // data: { agent_name: string, items: UniversalItem[] }
+      agentToolItems.update((byAgent) => {
+        const name = update.data.agent_name
+        const existing = byAgent[name] || []
+        const merged = [...existing, ...update.data.items].slice(-MAX_TOOL_ITEMS_PER_AGENT)
+        return { ...byAgent, [name]: merged }
+      })
       break
     case 'error':
       // Invoke all registered error callbacks and then clear them
