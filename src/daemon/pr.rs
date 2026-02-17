@@ -3489,7 +3489,7 @@ fn collect_stale_check_effects_with_time(
 ///
 /// This is the PR equivalent of orphan task recovery. Pure decision function that
 /// returns effects, following the same pattern as `reconcile_tasks_in_review()`.
-pub(super) fn reconcile_orphaned_prs(snap: &WorldSnapshot) -> Vec<Effect> {
+pub fn reconcile_orphaned_prs(snap: &WorldSnapshot) -> Vec<Effect> {
     let mut effects = Vec::new();
 
     // Iterate over open PRs from the snapshot (pre-collected during collect_world_snapshot)
@@ -3577,7 +3577,7 @@ pub(super) fn reconcile_orphaned_prs(snap: &WorldSnapshot) -> Vec<Effect> {
 ///
 /// Called during polling ticks to clean up task-based worktrees after
 /// their PRs are merged.
-pub(super) fn collect_merged_pr_cleanup_effects(snap: &WorldSnapshot) -> Vec<Effect> {
+pub fn collect_merged_pr_cleanup_effects(snap: &WorldSnapshot) -> Vec<Effect> {
     let mut effects = Vec::new();
 
     // Use pre-computed PR → branch mapping from snapshot

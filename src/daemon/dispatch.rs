@@ -334,7 +334,7 @@ fn should_recover_task(
 ///
 /// Rate limiting: Only spawns ONE coworker per tick with a cooldown between
 /// spawns to prevent window flashing from spawn storms.
-pub(super) fn check_and_recover_orphans(
+pub fn check_and_recover_orphans(
     snap: &snapshot::WorldSnapshot,
     state: &DaemonState,
 ) -> Vec<effects::Effect> {
@@ -643,9 +643,7 @@ fn decide_discovered_coworker_nudges(
 /// 2. Groups tasks by task ID to find duplicates
 /// 3. For tasks with multiple workers, keeps the one that started earliest
 /// 4. Shuts down the duplicate workers with an explanatory message
-pub(super) fn check_for_duplicate_task_workers(
-    snap: &snapshot::WorldSnapshot,
-) -> Vec<effects::Effect> {
+pub fn check_for_duplicate_task_workers(snap: &snapshot::WorldSnapshot) -> Vec<effects::Effect> {
     if snap.in_progress_tasks.is_empty() {
         return vec![];
     }
@@ -1056,7 +1054,7 @@ pub(super) async fn gather_orphan_cleanup_data(
 ///
 /// Pure function: takes immutable data, returns effects. All I/O flows through
 /// Effect variants executed by `effects::execute_effects`.
-pub(super) fn decide_orphan_cleanup(data: &OrphanCleanupData) -> Vec<Effect> {
+pub fn decide_orphan_cleanup(data: &OrphanCleanupData) -> Vec<Effect> {
     let mut effects = Vec::new();
 
     // Clear reviewer assignments for orphaned coworkers.
@@ -1872,7 +1870,7 @@ pub fn should_recover_task_test_helper(
 ///
 /// Returns `ResetTaskToPending` effects for each orphaned task. This is a pure
 /// decision function — reads snapshot data and returns effects without performing I/O.
-pub(super) fn reset_orphaned_tasks(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
+pub fn reset_orphaned_tasks(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
     let mut effects = vec![];
 
     // Compute recently-stopped coworkers (within grace period).
