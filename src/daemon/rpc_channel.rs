@@ -156,24 +156,55 @@ pub(super) async fn handle_channel_post(
 
     // Nudge lead when user messages arrive (from web UI or TUI input)
     if state.is_user_sender(from) {
-        // Check if user is @mentioning specific coworkers or @all
-        let has_coworker_mentions =
-            !extract_mentions(&content).is_empty() || contains_at_all(&content);
-        let has_lead_mention = content.to_lowercase().contains("@lead");
+        let default_channel = state.channel_router.default_channel_name();
+        let is_topic_channel = channel_name != default_channel;
 
-        // Route @mentions in user messages directly to coworkers
-        super::chat::route_mentions(state, &msg).await;
-
-        // Only nudge lead if there are no coworker @mentions (regular
-        // message for the lead) or if the user also @mentioned the lead.
-        // This lets users talk directly to coworkers without the lead
-        // acting as a middleman.
-        if !has_coworker_mentions || has_lead_mention {
-            let nudge_msg = format!("user: {}", content);
-            info!("Nudging Lead about user message");
-            state.nudge_lead(&nudge_msg).await;
+        if is_topic_channel {
+            // Topic channel: nudge the channel lead for this channel (if one is active).
+            // Channel leads are registered in the session manager under the channel name.
+            // If no channel lead is active, the message is already in the channel log
+            // and will be read when the lead next starts up.
+            if state.session_manager.is_alive(channel_name).await {
+                let nudge_msg = format!("user: {}", content);
+                info!(
+                    "Nudging channel lead '{}' about user message in #{}",
+                    channel_name, channel_name
+                );
+                if let Err(e) = state
+                    .session_manager
+                    .send_message(channel_name, &nudge_msg)
+                    .await
+                {
+                    error!("Failed to nudge channel lead '{}': {}", channel_name, e);
+                }
+            } else {
+                info!(
+                    "No active channel lead for #{} — user message not forwarded",
+                    channel_name
+                );
+            }
         } else {
-            info!("Skipping Lead nudge — user message routed directly to mentioned coworker(s)");
+            // Main channel: check if user is @mentioning specific coworkers or @all
+            let has_coworker_mentions =
+                !extract_mentions(&content).is_empty() || contains_at_all(&content);
+            let has_lead_mention = content.to_lowercase().contains("@lead");
+
+            // Route @mentions in user messages directly to coworkers
+            super::chat::route_mentions(state, &msg).await;
+
+            // Only nudge lead if there are no coworker @mentions (regular
+            // message for the lead) or if the user also @mentioned the lead.
+            // This lets users talk directly to coworkers without the lead
+            // acting as a middleman.
+            if !has_coworker_mentions || has_lead_mention {
+                let nudge_msg = format!("user: {}", content);
+                info!("Nudging Lead about user message");
+                state.nudge_lead(&nudge_msg).await;
+            } else {
+                info!(
+                    "Skipping Lead nudge — user message routed directly to mentioned coworker(s)"
+                );
+            }
         }
     }
 
@@ -564,6 +595,65 @@ mod tests {
         assert_eq!(parse_duration("5x"), None);
         assert_eq!(parse_duration("abc"), None);
         assert_eq!(parse_duration("5.5m"), None); // floats not supported
+    }
+
+    /// Verify that a user message to a topic channel with no active channel lead
+    /// succeeds without error and does NOT nudge the main lead.
+    #[tokio::test]
+    async fn test_user_message_to_topic_channel_no_lead_no_main_nudge() {
+        let state = make_test_state("midtown-test-topic-no-lead");
+        let adapter_id = "test-adapter-topic-no-lead";
+        state
+            .headed_register("lead", adapter_id, crate::auth::AuthProvider::Claude)
+            .await
+            .expect("register headed adapter");
+
+        // Post to a topic channel with no active channel lead
+        let response = handle_channel_post(
+            1_i64.into(),
+            "user",
+            "hello topic",
+            Some("auth-refactor"),
+            &state,
+        )
+        .await;
+        assert!(response.error.is_none(), "channel.post should succeed");
+
+        // Main lead should NOT be nudged for topic channel user messages
+        let (messages, _capture) = state
+            .headed_poll("lead", adapter_id, 0, 10)
+            .await
+            .expect("poll headed queue");
+        assert!(
+            messages.is_empty(),
+            "Main lead should not be nudged when user posts to a topic channel without a channel lead"
+        );
+    }
+
+    /// Verify that a user message to the main channel still nudges the main lead.
+    #[tokio::test]
+    async fn test_user_message_to_main_channel_nudges_lead() {
+        let state = make_test_state("midtown-test-main-channel-nudge");
+        let adapter_id = "test-adapter-main-nudge";
+        state
+            .headed_register("lead", adapter_id, crate::auth::AuthProvider::Claude)
+            .await
+            .expect("register headed adapter");
+
+        // Post to main channel (None = default channel)
+        let response = handle_channel_post(2_i64.into(), "user", "hello main", None, &state).await;
+        assert!(response.error.is_none(), "channel.post should succeed");
+
+        let (messages, _capture) = state
+            .headed_poll("lead", adapter_id, 0, 10)
+            .await
+            .expect("poll headed queue");
+        assert_eq!(
+            messages.len(),
+            1,
+            "Main lead should be nudged for main channel user messages"
+        );
+        assert_eq!(messages[0].text, "user: hello main");
     }
 
     #[tokio::test]
