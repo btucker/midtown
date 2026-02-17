@@ -607,6 +607,62 @@ async fn test_reviewer_spawns_when_worktree_exists_but_no_current_coworker() {
     );
 }
 
+/// Bug: After daemon restart, completed worktrees cause open PRs to be treated as orphaned.
+///
+/// Root cause: collect_reviewer_effects_with_source checked `completed_at.is_some()` and
+/// marked such PRs as orphaned, preventing reviewer spawn. But the PR is still open,
+/// so the author can still address review feedback.
+///
+/// Expected: PRs with completed worktrees that are still open should get reviewer spawns.
+#[tokio::test]
+async fn test_completed_worktree_with_open_pr_gets_reviewer() {
+    let pr_json = serde_json::json!({
+        "number": 789,
+        "headRefName": "madison/fix-polling",
+        "title": "Fix polling reconciliation [Midtown !200]",
+        "mergeable": "MERGEABLE",
+        "statusCheckRollup": null,
+        "reviewDecision": null,
+        "isDraft": false,
+        "createdAt": "2026-01-01T00:00:00Z",
+        "state": "OPEN",
+    });
+
+    // Create a worktree registry with a COMPLETED worktree (completed_at is set)
+    let mut registry = crate::worktree_registry::WorktreeRegistry::default();
+    registry
+        .assign_worktree(crate::worktree_registry::WorktreeAssignment {
+            worktree_id: "task-200-fix-polling".to_string(),
+            branch_name: "madison/fix-polling".to_string(),
+            task_id: Some("200".to_string()),
+            current_coworker: None,
+            pr_number: Some(789),
+            created_at: chrono::Utc::now(),
+            completed_at: Some(chrono::Utc::now()), // Key: worktree is completed
+        })
+        .unwrap();
+
+    let branch_owners: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let state = make_test_state("test-repo");
+
+    let effects = collect_reviewer_effects_with_source(
+        Some(&branch_owners),
+        &registry,
+        &state,
+        &[pr_json],
+        crate::github_state::AssignmentSource::PollingFallback,
+    )
+    .await;
+
+    // The PR should NOT be skipped as orphaned — effects should be non-empty.
+    // Before the fix, completed_at being set caused the PR to be treated as orphaned.
+    assert!(
+        !effects.is_empty(),
+        "PR with completed worktree but still open should NOT be skipped as orphaned. \
+         Before fix: completed_at caused open PRs to be treated as orphaned, blocking reviewer spawn.",
+    );
+}
+
 /// Bug: reconcile_orphaned_prs creates duplicate "Merge PR #X" tasks every 30 seconds.
 ///
 /// Root cause: The function only checks pr_task_associations (which tracks the *original*

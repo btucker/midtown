@@ -1,94 +1,70 @@
-//! E2E test for PR polling reconciliation after daemon restart.
+//! Integration test for PR polling reconciliation after daemon restart.
 //!
 //! Bug: After daemon restart, polling doesn't reconcile unreviewed PRs
-//! because the orphan check fails when PR author coworkers aren't currently active.
+//! when their task worktrees are marked completed but the PRs are still open.
 //!
-//! Root cause: collect_reviewer_effects checks if PR owner appears in
-//! worktree_branch_owners.values() (only includes currently-bound coworkers).
-//! After restart, if author isn't spawned yet, they're marked orphaned.
+//! Root cause: collect_reviewer_effects marks PRs as "orphaned" if their
+//! worktree has `completed_at` set, even when the PR is still open and
+//! can receive review feedback.
 //!
-//! Fix: Check worktree registry directly (persistent assignments) instead of
-//! current bindings.
+//! Fix: PRs with open status should get reviewers spawned regardless of
+//! worktree completion status. The author can still address feedback by
+//! pushing to the branch.
 
 use midtown::daemon::snapshot::WorldSnapshot;
 
-/// Test that the worktree registry correctly identifies non-orphaned PRs
-/// even when PR author coworkers are not currently active.
+/// Test that the captured snapshot has the right preconditions for the bug:
+/// - PR #1166 is open, not draft, needs review
+/// - Task worktree is completed
+/// - No reviewer assigned
 ///
-/// This test uses a snapshot captured after daemon restart showing:
-/// - Multiple open PRs with headRefName populated
-/// - Worktree registry has active (non-completed) assignments for these PRs
-/// - Some PR authors are not in the active coworkers list
-///
-/// The test verifies that PRs with active worktree assignments are correctly
-/// identified as non-orphaned by checking the registry, not current bindings.
+/// The actual logic test (calling collect_reviewer_effects_with_source) is in
+/// src/daemon/pr_tests.rs::test_completed_worktree_with_open_pr_gets_reviewer
 #[test]
-fn worktree_registry_identifies_non_orphaned_prs() {
+fn snapshot_preconditions_for_completed_worktree_reviewer_bug() {
     let fixture = include_str!(
         "fixtures/snapshot/snapshot-review-spawn-lost-after-restart-20260217-003046.json"
     );
     let snap: WorldSnapshot =
         serde_json::from_str(fixture).expect("Failed to deserialize WorldSnapshot from fixture");
 
-    // Verify snapshot preconditions
+    // Find PR #1166
+    let pr_1166 = snap
+        .open_prs_data
+        .iter()
+        .find(|pr| pr.get("number").and_then(|n| n.as_u64()) == Some(1166))
+        .expect("Snapshot should contain PR #1166");
+
+    // Verify preconditions
+    let is_draft = pr_1166
+        .get("isDraft")
+        .and_then(|d| d.as_bool())
+        .unwrap_or(false);
+    assert!(!is_draft, "PR #1166 should not be a draft");
+
     assert!(
-        !snap.open_prs_data.is_empty(),
-        "Snapshot should have open PRs"
+        !snap.reviewed_prs.contains(&1166),
+        "PR #1166 should not be reviewed yet"
     );
 
-    // Count PRs that have active worktree assignments
-    let mut prs_with_active_worktrees = 0;
+    // Find the task worktree for task 1323
+    let task_worktree = snap
+        .worktree_registry
+        .all_assignments()
+        .values()
+        .find(|a| a.task_id.as_deref() == Some("1323"))
+        .expect("Snapshot should contain worktree for task 1323");
 
-    for pr in &snap.open_prs_data {
-        let pr_number = pr
-            .get("number")
-            .and_then(|n: &serde_json::Value| n.as_u64())
-            .unwrap_or(0);
-        let head_ref = pr
-            .get("headRefName")
-            .and_then(|r: &serde_json::Value| r.as_str())
-            .unwrap_or("");
-
-        // Check if this PR has an active worktree using the registry
-        // (This is the core logic from the fix)
-        let worktree = snap
-            .worktree_registry
-            .get_by_pr(pr_number)
-            .or_else(|| snap.worktree_registry.get_by_branch(head_ref));
-
-        let has_active_worktree =
-            matches!(worktree, Some(assignment) if assignment.completed_at.is_none());
-
-        if has_active_worktree {
-            prs_with_active_worktrees += 1;
-            println!(
-                "✓ PR #{} ({}) has active worktree assignment",
-                pr_number, head_ref
-            );
-        } else {
-            println!(
-                "✗ PR #{} ({}) is orphaned or completed",
-                pr_number, head_ref
-            );
-        }
-    }
-
-    // The key assertion: after daemon restart, PRs with persistent worktree
-    // assignments should be identified as non-orphaned, even if their author
-    // coworkers aren't currently active.
-    //
-    // Before the fix: 0 (all PRs marked orphaned because authors not in active_names)
-    // After the fix: > 0 (PRs with active worktree assignments are not orphaned)
+    // Verify the worktree is marked completed
     assert!(
-        prs_with_active_worktrees > 0,
-        "Expected at least one PR with an active worktree assignment. \
-         If this fails, the orphan check is still incorrectly relying on \
-         current coworker bindings instead of the persistent worktree registry."
+        task_worktree.completed_at.is_some(),
+        "Task 1323 worktree should be marked completed in the snapshot"
     );
 
-    println!(
-        "\n✓ Test passed: {} / {} PRs have active worktree assignments",
-        prs_with_active_worktrees,
-        snap.open_prs_data.len()
+    // Verify no reviewer is assigned to this PR
+    let has_reviewer = snap.reviewer_pr_assignments.values().any(|&pr| pr == 1166);
+    assert!(
+        !has_reviewer,
+        "PR #1166 should not have a reviewer assigned yet"
     );
 }

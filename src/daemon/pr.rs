@@ -2096,14 +2096,18 @@ pub(crate) async fn collect_reviewer_effects_with_source(
                 // Has active worktree - not orphaned
                 false
             }
-            Some(assignment) => {
-                // Worktree exists but is completed - orphaned
-                debug!(
-                    "PR #{} worktree is completed ({}), skipping auto-review",
-                    pr_number,
-                    assignment.completed_at.unwrap()
-                );
-                true
+            Some(_assignment) => {
+                // Worktree exists but is completed.
+                // IMPORTANT: If the PR is still open (which it is, since it's in the `prs` list),
+                // the author can still address review feedback by pushing to the branch.
+                // Therefore, completed worktrees with open PRs are NOT orphaned.
+                //
+                // Only mark as orphaned if the PR is merged/closed (which would exclude it
+                // from the `prs` list in the first place).
+                //
+                // After daemon restart, if a task was marked complete but the PR is still
+                // open awaiting review, polling reconciliation should spawn a reviewer.
+                false
             }
             None => {
                 // No worktree found - orphaned
