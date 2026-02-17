@@ -104,7 +104,7 @@ fn test_reviewer_assignments_preserved_after_restart() {
     // Create temporary test environment
     let temp_dir = TempDir::new().unwrap();
     let state_dir = temp_dir.path();
-    fs::create_dir_all(&state_dir).unwrap();
+    fs::create_dir_all(state_dir).unwrap();
 
     // Create daemon-state.json with reviewer assignments (using the actual JSON format)
     let now = Utc::now();
@@ -159,7 +159,7 @@ fn test_headless_sessions_preserved_after_restart() {
     // Create temporary test environment
     let temp_dir = TempDir::new().unwrap();
     let state_dir = temp_dir.path();
-    fs::create_dir_all(&state_dir).unwrap();
+    fs::create_dir_all(state_dir).unwrap();
 
     // Create daemon-state.json with headless sessions (using the actual JSON format)
     let now = Utc::now();
@@ -248,7 +248,7 @@ fn test_no_duplicate_spawns_after_restart() {
     let tasks_dir = temp_dir.path().join("tasks").join("midtown-test");
     let state_dir = temp_dir.path();
     fs::create_dir_all(&tasks_dir).unwrap();
-    fs::create_dir_all(&state_dir).unwrap();
+    fs::create_dir_all(state_dir).unwrap();
 
     // Set up pre-restart state:
     // - 3 in_progress tasks with owners
