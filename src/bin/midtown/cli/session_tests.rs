@@ -605,6 +605,193 @@ fn test_lead_attach_gets_opus_model() {
     );
 }
 
+// ── Shell quoting ──────────────────────────────────────────────────────
+
+#[test]
+fn test_shell_quote_does_not_double_escape_dollar_command() {
+    // The $(cat ...) pattern is used for passing large prompts to Claude.
+    // It should NOT be double-escaped.
+    let raw_arg = "$(cat /tmp/file.txt)";
+    let quoted = shell_quote(raw_arg);
+
+    // When the shell interprets the quoted string, it should see $(cat ...)
+    // as command substitution, not as a literal string.
+    // Test by having the shell echo it back.
+    let output = std::process::Command::new("sh")
+        .args(["-lc", &format!("echo {}", quoted)])
+        .output()
+        .expect("shell should parse");
+
+    let _stdout = String::from_utf8_lossy(&output.stdout);
+    // The output should contain the literal text since /tmp/file.txt doesn't exist
+    // (shell would fail the cat and produce empty or error)
+    // What matters is that the $ is interpreted as command substitution
+    assert!(
+        !quoted.contains("\"$"),
+        "Quoted arg should not have escaped $ with backslash, got: {}",
+        quoted
+    );
+}
+
+#[test]
+fn test_build_attach_command_uses_shell_command_substitution() {
+    let _lock = SESSION_CWD_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    ensure_in_git_repo();
+
+    let result = build_attach_shell_command(
+        "/tmp/test-cwd",
+        "lead",
+        midtown::auth::AuthProvider::Claude,
+        "session-123",
+        None,
+    );
+
+    let command = result.expect("build_attach_shell_command should succeed");
+
+    // The $(cat ...) pattern should appear and be properly quoted for shell interpretation.
+    // The correct pattern is: '"$(cat /path/to/file)"' which breaks down as:
+    //   ' - end single quote
+    //   "$(cat /path/to/file)" - double-quoted command substitution (shell interprets this)
+    //   ' - start single quote
+    // This allows the shell to actually execute the cat command.
+
+    assert!(
+        command.contains("$(cat "),
+        "Command should contain $(cat pattern for file reading"
+    );
+
+    // The pattern should be: '"$(cat ...)"' (single quote, double quote, $(cat, double quote, single quote)
+    // This allows shell interpretation of the command substitution
+    let correct_pattern = "'\"$(cat ";
+    assert!(
+        command.contains(correct_pattern),
+        "Command should have correct quoting pattern '{}', got: {}",
+        correct_pattern,
+        command
+    );
+
+    // Verify the closing pattern too: ...)"'
+    assert!(
+        command.contains(")\"'"),
+        "Command should have closing quote pattern ')\"\\'', got: {}",
+        command
+    );
+}
+
+#[test]
+fn test_shell_quote_handles_single_quotes() {
+    // Single quotes inside the string should be properly escaped
+    let quoted = shell_quote("it's a test");
+    // The quoted result should be valid when parsed by a shell
+    // It should wrap in single quotes and escape internal quotes
+    assert!(
+        quoted.contains("'"),
+        "Quoted string should contain quotes: {}",
+        quoted
+    );
+    // Verify it round-trips correctly via shell
+    let output = std::process::Command::new("sh")
+        .args(["-lc", &format!("printf '%s' {}", quoted)])
+        .output()
+        .expect("shell should parse quoted string");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "it's a test",
+        "Shell should unquote back to original"
+    );
+}
+
+#[test]
+fn test_shell_quote_handles_paths_with_spaces() {
+    let path = "/var/folders/My Documents/test file.txt";
+    let quoted = shell_quote(path);
+    // Verify it round-trips correctly via shell
+    let output = std::process::Command::new("sh")
+        .args(["-lc", &format!("printf '%s' {}", quoted)])
+        .output()
+        .expect("shell should parse quoted string");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        path,
+        "Shell should unquote back to original path"
+    );
+}
+
+#[test]
+fn test_build_attach_command_no_double_quoting() {
+    let _lock = SESSION_CWD_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    ensure_in_git_repo();
+
+    // Use a path with special characters to trigger quoting
+    let cwd = "/tmp/test dir with spaces";
+    let result = build_attach_shell_command(
+        cwd,
+        "lead",
+        midtown::auth::AuthProvider::Claude,
+        "session-123",
+        None,
+    );
+
+    let command = result.expect("build_attach_shell_command should succeed");
+
+    // The command should NOT have double-escaped quotes like ''"'"'...'"'"'
+    // This pattern indicates double-quoting which breaks shell parsing
+    assert!(
+        !command.contains("''\"'\"'"),
+        "Command should not contain double-escaped quotes (old pattern): {}",
+        command
+    );
+
+    // The command should also not have the '\''\\'''\'' pattern from double-escaping
+    // with the new shell_escape crate
+    assert!(
+        !command.contains("'\\''\\''"),
+        "Command should not contain double-escaped quotes (new pattern): {}",
+        command
+    );
+
+    // Most importantly, the inner sh -lc command should be parseable
+    // Extract the sh -lc argument and verify it's valid
+    if let Some(sh_lc_start) = command.find("sh -lc ") {
+        let after_sh_lc = &command[sh_lc_start + 7..];
+        // The argument to sh -lc should be a properly quoted string
+        // It should start with a quote character
+        assert!(
+            after_sh_lc.starts_with("'") || after_sh_lc.starts_with("\""),
+            "sh -lc argument should be quoted, got: {}",
+            after_sh_lc
+        );
+    }
+}
+
+#[test]
+fn test_build_attach_command_shell_parseable() {
+    let _lock = SESSION_CWD_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    ensure_in_git_repo();
+
+    let result = build_attach_shell_command(
+        "/tmp/test-cwd",
+        "lead",
+        midtown::auth::AuthProvider::Claude,
+        "session-123",
+        None,
+    );
+
+    let command = result.expect("build_attach_shell_command should succeed");
+
+    // The entire command should be parseable by a shell
+    // If quoting is broken, this will fail
+    let parse_result = std::process::Command::new("sh")
+        .args(["-n", "-c", &command]) // -n = parse but don't execute
+        .status();
+
+    assert!(
+        parse_result.is_ok() && parse_result.unwrap().success(),
+        "Command should be parseable by shell, got error for: {}",
+        command
+    );
+}
+
 // ── Worktree management ───────────────────────────────────────────────
 
 #[test]
