@@ -892,6 +892,261 @@ fn test_reconcile_orphaned_prs_does_not_create_duplicates() {
     );
 }
 
+/// Helper to create a PrContext with a task association for a given PR number.
+fn make_pr_context_with_task(pr_number: u64, task_id: &str) -> PrContext {
+    let mut pr_task_associations = std::collections::HashMap::new();
+    pr_task_associations.insert(pr_number, task_id.to_string());
+    PrContext {
+        pr_task_associations,
+        task_channel: std::collections::HashMap::new(),
+        session_context: None,
+    }
+}
+
+/// Helper to create a PrContext with no task associations.
+fn make_pr_context_empty() -> PrContext {
+    PrContext {
+        pr_task_associations: std::collections::HashMap::new(),
+        task_channel: std::collections::HashMap::new(),
+        session_context: None,
+    }
+}
+
+/// Helper: extract RecordTaskAssignment effects from SpawnCoworkerWithCallbacks on_success.
+fn extract_record_task_assignments(effects: &[Effect]) -> Vec<(&str, &str)> {
+    effects
+        .iter()
+        .filter_map(|e| match e {
+            Effect::SpawnCoworkerWithCallbacks { on_success, .. } => Some(on_success),
+            _ => None,
+        })
+        .flat_map(|on_success| {
+            on_success.iter().filter_map(|e| match e {
+                Effect::RecordTaskAssignment { coworker, task_id } => {
+                    Some((coworker.as_str(), task_id.as_str()))
+                }
+                _ => None,
+            })
+        })
+        .collect()
+}
+
+/// Cross-tick spawn dedup (!1377): pr_action_to_effects with SpawnOwner includes
+/// RecordTaskAssignment when pr_task_associations has an entry for the PR.
+#[test]
+fn pr_action_spawn_owner_includes_record_task_assignment() {
+    let state = make_test_state("test-repo");
+    let ctx = make_pr_context_with_task(42, "100");
+
+    let effects = pr_action_to_effects(
+        crate::rules::PrAction::SpawnOwner {
+            owner: "york".to_string(),
+            message: "PR needs attention".to_string(),
+        },
+        42,
+        "Fix auth",
+        PrIssueType::MergeConflict,
+        &state,
+        &ctx,
+    );
+
+    let assignments = extract_record_task_assignments(&effects);
+    assert_eq!(
+        assignments.len(),
+        1,
+        "SpawnOwner should include RecordTaskAssignment when task association exists"
+    );
+    assert_eq!(assignments[0], ("york", "100"));
+}
+
+/// Cross-tick spawn dedup (!1377): pr_action_to_effects with SpawnOwner does NOT
+/// include RecordTaskAssignment when no task association exists.
+#[test]
+fn pr_action_spawn_owner_no_record_without_task_association() {
+    let state = make_test_state("test-repo");
+    let ctx = make_pr_context_empty();
+
+    let effects = pr_action_to_effects(
+        crate::rules::PrAction::SpawnOwner {
+            owner: "york".to_string(),
+            message: "PR needs attention".to_string(),
+        },
+        42,
+        "Fix auth",
+        PrIssueType::MergeConflict,
+        &state,
+        &ctx,
+    );
+
+    let assignments = extract_record_task_assignments(&effects);
+    assert!(
+        assignments.is_empty(),
+        "SpawnOwner should NOT include RecordTaskAssignment when no task association exists"
+    );
+}
+
+/// Cross-tick spawn dedup (!1377): comment_action_to_effects with SpawnOwner includes
+/// RecordTaskAssignment when pr_task_associations has an entry for the PR.
+#[test]
+fn comment_action_spawn_owner_includes_record_task_assignment() {
+    let state = make_test_state("test-repo");
+    let ctx = make_pr_context_with_task(55, "200");
+
+    let effects = comment_action_to_effects(
+        crate::rules::PrAction::SpawnOwner {
+            owner: "park".to_string(),
+            message: "Review feedback arrived".to_string(),
+        },
+        55,
+        "Add logging",
+        &state,
+        &ctx,
+    );
+
+    let assignments = extract_record_task_assignments(&effects);
+    assert_eq!(
+        assignments.len(),
+        1,
+        "comment SpawnOwner should include RecordTaskAssignment"
+    );
+    assert_eq!(assignments[0], ("park", "200"));
+}
+
+/// Cross-tick spawn dedup (!1377): comment_action_to_effects with SpawnOwner does NOT
+/// include RecordTaskAssignment when no task association exists.
+#[test]
+fn comment_action_spawn_owner_no_record_without_task_association() {
+    let state = make_test_state("test-repo");
+    let ctx = make_pr_context_empty();
+
+    let effects = comment_action_to_effects(
+        crate::rules::PrAction::SpawnOwner {
+            owner: "park".to_string(),
+            message: "Review feedback arrived".to_string(),
+        },
+        55,
+        "Add logging",
+        &state,
+        &ctx,
+    );
+
+    let assignments = extract_record_task_assignments(&effects);
+    assert!(
+        assignments.is_empty(),
+        "comment SpawnOwner should NOT include RecordTaskAssignment without task association"
+    );
+}
+
+/// Cross-tick spawn dedup (!1377): handoff_to_coworker_effects includes
+/// RecordTaskAssignment when pr_task_associations has an entry for the PR.
+#[test]
+fn handoff_effects_include_record_task_assignment() {
+    let state = make_test_state("test-repo");
+    let ctx = make_pr_context_with_task(77, "300");
+
+    let effects = handoff_to_coworker_effects(
+        "madison",
+        "york",
+        77,
+        "york/fix-auth",
+        "session-123".to_string(),
+        "Taking over PR",
+        "resuming their session",
+        "Fix auth",
+        PrIssueType::ReviewComment,
+        &state,
+        &ctx,
+    );
+
+    let assignments = extract_record_task_assignments(&effects);
+    assert_eq!(
+        assignments.len(),
+        1,
+        "handoff should include RecordTaskAssignment"
+    );
+    assert_eq!(assignments[0], ("madison", "300"));
+}
+
+/// Cross-tick spawn dedup (!1377): handoff_to_coworker_effects does NOT include
+/// RecordTaskAssignment when no task association exists.
+#[test]
+fn handoff_effects_no_record_without_task_association() {
+    let state = make_test_state("test-repo");
+    let ctx = make_pr_context_empty();
+
+    let effects = handoff_to_coworker_effects(
+        "madison",
+        "york",
+        77,
+        "york/fix-auth",
+        "session-123".to_string(),
+        "Taking over PR",
+        "resuming their session",
+        "Fix auth",
+        PrIssueType::ReviewComment,
+        &state,
+        &ctx,
+    );
+
+    let assignments = extract_record_task_assignments(&effects);
+    assert!(
+        assignments.is_empty(),
+        "handoff should NOT include RecordTaskAssignment without task association"
+    );
+}
+
+/// Cross-tick spawn dedup (!1377): review_complete_action_to_effects with SpawnOwner
+/// includes RecordTaskAssignment when pr_task_associations has an entry for the PR.
+#[test]
+fn review_complete_spawn_owner_includes_record_task_assignment() {
+    let state = make_test_state("test-repo");
+    let ctx = make_pr_context_with_task(88, "400");
+
+    let effects = review_complete_action_to_effects(
+        crate::rules::PrAction::SpawnOwner {
+            owner: "amsterdam".to_string(),
+            message: "Review complete".to_string(),
+        },
+        88,
+        "Refactor API",
+        &state,
+        &ctx,
+    );
+
+    let assignments = extract_record_task_assignments(&effects);
+    assert_eq!(
+        assignments.len(),
+        1,
+        "review_complete SpawnOwner should include RecordTaskAssignment"
+    );
+    assert_eq!(assignments[0], ("amsterdam", "400"));
+}
+
+/// Cross-tick spawn dedup (!1377): review_complete_action_to_effects with SpawnOwner
+/// does NOT include RecordTaskAssignment when no task association exists.
+#[test]
+fn review_complete_spawn_owner_no_record_without_task_association() {
+    let state = make_test_state("test-repo");
+    let ctx = make_pr_context_empty();
+
+    let effects = review_complete_action_to_effects(
+        crate::rules::PrAction::SpawnOwner {
+            owner: "amsterdam".to_string(),
+            message: "Review complete".to_string(),
+        },
+        88,
+        "Refactor API",
+        &state,
+        &ctx,
+    );
+
+    let assignments = extract_record_task_assignments(&effects);
+    assert!(
+        assignments.is_empty(),
+        "review_complete SpawnOwner should NOT include RecordTaskAssignment without task association"
+    );
+}
+
 /// Bug: reconcile_orphaned_prs checks all_tasks including completed tasks.
 ///
 /// Scenario: A merge task was created, marked completed (mistakenly or due to some edge case),
