@@ -56,6 +56,24 @@ pub fn process_lead_output(events: &HashMap<String, Vec<StreamEvent>>) -> Vec<Ef
     effects
 }
 
+/// Process all agents' stream events and generate universal event broadcast effects.
+///
+/// Iterates all agents' events, extracts tool calls using the Claude converter,
+/// and returns broadcast effects for any agents that produced tool calls.
+pub fn process_universal_events(events: &HashMap<String, Vec<StreamEvent>>) -> Vec<Effect> {
+    let mut effects = Vec::new();
+    for (agent_name, agent_events) in events {
+        let items = crate::universal_events::claude::extract_tool_calls(agent_events, agent_name);
+        if !items.is_empty() {
+            effects.push(Effect::BroadcastUniversalItems {
+                agent_name: agent_name.clone(),
+                items,
+            });
+        }
+    }
+    effects
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -251,5 +269,82 @@ mod tests {
             effects.is_empty(),
             "Should not post if no text content found"
         );
+    }
+
+    // ── process_universal_events tests ───────────────────────────────────
+
+    #[test]
+    fn test_process_universal_events_no_events() {
+        let events = HashMap::new();
+        let effects = process_universal_events(&events);
+        assert!(effects.is_empty());
+    }
+
+    #[test]
+    fn test_process_universal_events_text_only_no_effects() {
+        let mut events = HashMap::new();
+        events.insert(
+            "lead".to_string(),
+            vec![StreamEvent::Assistant {
+                message: json!({
+                    "content": [{"type": "text", "text": "Hello"}]
+                }),
+                session_id: None,
+                extra: json!(null),
+            }],
+        );
+        let effects = process_universal_events(&events);
+        assert!(effects.is_empty());
+    }
+
+    #[test]
+    fn test_process_universal_events_tool_use_produces_effect() {
+        let mut events = HashMap::new();
+        events.insert(
+            "lexington".to_string(),
+            vec![StreamEvent::Assistant {
+                message: json!({
+                    "content": [{"type": "tool_use", "id": "tc_1", "name": "Read", "input": {"path": "/foo"}}]
+                }),
+                session_id: None,
+                extra: json!(null),
+            }],
+        );
+        let effects = process_universal_events(&events);
+        assert_eq!(effects.len(), 1);
+        match &effects[0] {
+            Effect::BroadcastUniversalItems { agent_name, items } => {
+                assert_eq!(agent_name, "lexington");
+                assert_eq!(items.len(), 1);
+            }
+            _ => panic!("Expected BroadcastUniversalItems effect"),
+        }
+    }
+
+    #[test]
+    fn test_process_universal_events_multiple_agents() {
+        let mut events = HashMap::new();
+        events.insert(
+            "lead".to_string(),
+            vec![StreamEvent::Assistant {
+                message: json!({
+                    "content": [{"type": "tool_use", "id": "tc_1", "name": "Edit", "input": {}}]
+                }),
+                session_id: None,
+                extra: json!(null),
+            }],
+        );
+        events.insert(
+            "park".to_string(),
+            vec![StreamEvent::Assistant {
+                message: json!({
+                    "content": [{"type": "tool_use", "id": "tc_2", "name": "Bash", "input": {}}]
+                }),
+                session_id: None,
+                extra: json!(null),
+            }],
+        );
+        let effects = process_universal_events(&events);
+        assert_eq!(effects.len(), 2);
     }
 }

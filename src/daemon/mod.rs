@@ -2755,6 +2755,10 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                 let lead_effects = stream::process_lead_output(&events);
                 effects::execute_effects(lead_effects, &state).await;
 
+                // Broadcast universal events (tool calls) to WebSocket clients
+                let universal_effects = stream::process_universal_events(&events);
+                effects::execute_effects(universal_effects, &state).await;
+
                 // Defense-in-depth: check process liveness via try_wait() to catch
                 // sessions where the process exited but drain_events didn't detect it
                 // (e.g., pipe buffering issues, partial reads, timing races).
