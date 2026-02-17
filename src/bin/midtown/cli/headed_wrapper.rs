@@ -717,10 +717,31 @@ pub fn handle(cmd: &HeadedWrapperCommand, client: &DaemonClient) -> Result<Respo
             }
 
             loop {
-                let polled =
-                    client.headed_poll(session, &adapter_id, last_seen_id, *batch_limit)?;
-                let parsed: HeadedPollResult = serde_json::from_value(polled)
-                    .map_err(|e| format!("Invalid headed.poll response: {}", e))?;
+                // Poll daemon for messages. When the daemon restarts, adapter leases
+                // are lost. Detect this (via "No active headed adapter" or "lease expired"
+                // errors) and re-register before retrying the poll.
+                let parsed: HeadedPollResult =
+                    match client.headed_poll(session, &adapter_id, last_seen_id, *batch_limit) {
+                        Ok(polled) => serde_json::from_value(polled)
+                            .map_err(|e| format!("Invalid headed.poll response: {}", e))?,
+                        Err(e)
+                            if e.contains("No active headed adapter")
+                                || e.contains("lease expired") =>
+                        {
+                            // Daemon restarted and lost our adapter lease — re-register
+                            debug!("Adapter lease lost, re-registering: {}", e);
+                            if let Err(reg_err) =
+                                client.headed_register(session, &adapter_id, provider)
+                            {
+                                debug!("Re-registration failed: {}", reg_err);
+                            }
+                            std::thread::sleep(Duration::from_secs(1));
+                            continue;
+                        }
+                        Err(e) => {
+                            return Err(e);
+                        }
+                    };
 
                 for msg in parsed.messages {
                     let payload =
@@ -879,6 +900,10 @@ pub fn handle(cmd: &HeadedWrapperCommand, client: &DaemonClient) -> Result<Respo
                 // Poll daemon for nudges. Tolerate transient connection failures
                 // (e.g., daemon restart) — just skip the poll cycle and retry next
                 // iteration. The interactive session should survive daemon restarts.
+                //
+                // When the daemon restarts, adapter leases are lost. Detect this
+                // (via "No active headed adapter" or "lease expired" errors) and
+                // re-register before retrying the poll.
                 let parsed: HeadedPollResult =
                     match client.headed_poll(session, &adapter_id, last_seen_id, *batch_limit) {
                         Ok(value) => match serde_json::from_value(value) {
@@ -888,6 +913,20 @@ pub fn handle(cmd: &HeadedWrapperCommand, client: &DaemonClient) -> Result<Respo
                                 continue;
                             }
                         },
+                        Err(e)
+                            if e.contains("No active headed adapter")
+                                || e.contains("lease expired") =>
+                        {
+                            // Daemon restarted and lost our adapter lease — re-register
+                            debug!("Adapter lease lost, re-registering: {}", e);
+                            if let Err(reg_err) =
+                                client.headed_register(session, &adapter_id, provider)
+                            {
+                                debug!("Re-registration failed: {}", reg_err);
+                            }
+                            std::thread::sleep(Duration::from_secs(1));
+                            continue;
+                        }
                         Err(_) => {
                             std::thread::sleep(Duration::from_secs(1));
                             continue;
@@ -996,3 +1035,7 @@ pub fn handle(cmd: &HeadedWrapperCommand, client: &DaemonClient) -> Result<Respo
 #[path = "headed_wrapper_tests.rs"]
 #[cfg(test)]
 mod tests;
+
+#[path = "headed_wrapper_reregister_tests.rs"]
+#[cfg(test)]
+mod reregister_tests;
