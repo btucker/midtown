@@ -63,8 +63,8 @@ pub struct LaunchConfig {
     /// task-based worktrees at ~/.midtown/worktrees/<repo>/task-<id>-<slug>/.
     pub working_dir: Option<PathBuf>,
     /// The Claude model to use for this session (e.g., "sonnet", "opus", "haiku").
-    /// Defaults to "sonnet" for standard coworkers, "opus" for reviewers, PR handoff
-    /// coworkers, and review feedback responders.
+    /// Defaults to "sonnet" for standard coworkers, "opus" for the Lead, reviewers,
+    /// PR handoff coworkers, and review feedback responders.
     pub model: String,
     /// Optional channel for routing coworker messages. When set, coworkers will
     /// post to this channel by default instead of the main channel.
@@ -269,7 +269,7 @@ impl LaunchConfig {
             pr_number: None,
             team_name: Some(team),
             working_dir: None,
-            model: "sonnet".to_string(),
+            model: "opus".to_string(),
             channel: None,
             auth_profile_dir: None,
             auth_provider: crate::auth::AuthProvider::Claude,
@@ -1025,7 +1025,7 @@ mod tests {
         );
         assert!(config.pr_number.is_none());
         assert_eq!(config.team_name, Some("midtown-myrepo".to_string()));
-        assert_eq!(config.model, "sonnet");
+        assert_eq!(config.model, "opus", "Lead must use Opus model");
     }
 
     #[test]
