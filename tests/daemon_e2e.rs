@@ -12,76 +12,12 @@ use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::process::{Command, Stdio};
 use std::thread;
 use std::time::Duration;
 
-/// Counter for unique test names across tests.
-static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-/// Generate a unique test repo name to avoid conflicts.
-fn test_repo_name() -> String {
-    let counter = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
-    format!("daemon-e2e-test-{}-{}", std::process::id(), counter)
-}
-
-/// Kill any orphaned daemon-e2e-test daemons from previous test runs.
-///
-/// This is a safety measure to ensure tests don't interfere with each other
-/// if a previous test run crashed without cleaning up properly.
-fn cleanup_orphaned_test_daemons() {
-    // Use pkill to find and kill any midtown daemon processes with test workdirs
-    // The pattern matches daemons started with --workdir containing "daemon-e2e-test"
-    let _ = Command::new("pkill")
-        .args(["-f", "midtown daemon.*daemon-e2e-test"])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
-
-    // Give processes a moment to die
-    thread::sleep(Duration::from_millis(50));
-
-    // Clean up stale project directories from crashed previous runs.
-    // Skip directories from the current process to avoid interfering with
-    // concurrently running tests in the same process.
-    let current_pid = format!("daemon-e2e-test-{}-", std::process::id());
-    let projects_dir = dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".midtown")
-        .join("projects");
-    if let Ok(entries) = fs::read_dir(&projects_dir) {
-        for entry in entries.flatten() {
-            if let Some(name) = entry.file_name().to_str()
-                && name.starts_with("daemon-e2e-test-")
-                && !name.starts_with(&current_pid)
-            {
-                let _ = fs::remove_dir_all(entry.path());
-            }
-        }
-    }
-
-    // Also clean up stale socket directories (same PID filter)
-    let state_dir = std::env::var("XDG_STATE_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            dirs::home_dir()
-                .unwrap_or_else(|| PathBuf::from("."))
-                .join(".local")
-                .join("state")
-        });
-    let sockets_dir = state_dir.join("midtown");
-    if let Ok(entries) = fs::read_dir(&sockets_dir) {
-        for entry in entries.flatten() {
-            if let Some(name) = entry.file_name().to_str()
-                && name.starts_with("daemon-e2e-test-")
-                && !name.starts_with(&current_pid)
-            {
-                let _ = fs::remove_dir_all(entry.path());
-            }
-        }
-    }
-}
+mod common;
+use common::{DaemonHarnessOptions, DaemonTestHarness};
 
 fn copy_dir_recursive(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
     fs::create_dir_all(to)?;
@@ -104,335 +40,29 @@ fn cleanup_profile_dirs(paths: &[PathBuf]) {
     }
 }
 
-/// Test fixture for daemon e2e tests.
+/// Create a DaemonTestHarness configured for daemon e2e tests.
 ///
-/// Creates an isolated environment with a fake git repo and manages
-/// daemon lifecycle.
-#[allow(dead_code)]
-struct DaemonFixture {
-    /// Temporary directory containing the test repo
-    temp_dir: PathBuf,
-    /// Project directory under ~/.midtown/projects/<name>/
-    project_dir: PathBuf,
-    /// Repository name (used for socket path derivation)
-    repo_name: String,
-    /// Path to the daemon socket
-    socket_path: PathBuf,
-    /// Per-fixture state directory (used as XDG_STATE_HOME)
-    state_dir: PathBuf,
-    /// Path to the daemon PID file
-    pid_path: PathBuf,
-    /// Daemon process handle (if started)
-    daemon_process: Option<Child>,
-    /// Task directory for this test repo (~/.claude/tasks/midtown-<repo>/)
-    tasks_dir: PathBuf,
-    /// Request ID counter for generating unique RPC request IDs
-    next_request_id: std::cell::Cell<u64>,
-}
+/// Uses a short XDG_STATE_HOME under /tmp to avoid UNIX socket path-length
+/// limits (SUN_LEN) on systems with long temporary directory prefixes.
+fn create_daemon_fixture() -> Option<DaemonTestHarness> {
+    let prefix = "daemon-e2e-test";
+    // Use a short base state dir; the harness appends repo_name/daemon.sock
+    let state_dir = PathBuf::from("/tmp").join("ms-daemon-e2e");
 
-impl DaemonFixture {
-    /// Create a new test fixture with a fake git repository.
-    fn new() -> Option<Self> {
-        // Clean up any orphaned daemons from previous test runs
-        cleanup_orphaned_test_daemons();
-
-        let repo_name = test_repo_name();
-        let temp_dir = std::env::temp_dir().join(&repo_name);
-
-        // Clean up any previous test data
-        let _ = fs::remove_dir_all(&temp_dir);
-        fs::create_dir_all(&temp_dir).ok()?;
-
-        // Initialize a git repository (daemon requires this)
-        let status = Command::new("git")
-            .args(["init"])
-            .current_dir(&temp_dir)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .ok()?;
-        if !status.success() {
-            return None;
-        }
-
-        // Configure git user (needed for commits)
-        let _ = Command::new("git")
-            .args(["config", "user.email", "test@example.com"])
-            .current_dir(&temp_dir)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
-        let _ = Command::new("git")
-            .args(["config", "user.name", "Test User"])
-            .current_dir(&temp_dir)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
-
-        // Create an initial commit (needed for git worktree to have a HEAD)
-        let _ = Command::new("git")
-            .args(["commit", "--allow-empty", "-m", "Initial commit"])
-            .current_dir(&temp_dir)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
-
-        // Use a short XDG_STATE_HOME to avoid UNIX socket path-length limits
-        // (SUN_LEN) on systems with long temporary directory prefixes.
-        let state_dir = PathBuf::from("/tmp").join(format!("ms-{}", &repo_name));
-        let socket_path = state_dir
-            .join("midtown")
-            .join(&repo_name)
-            .join("daemon.sock");
-
-        let project_dir = dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(".midtown")
-            .join("projects")
-            .join(&repo_name);
-        let pid_path = project_dir.join("daemon.pid");
-
-        // Compute task directory
-        let tasks_dir = dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(".claude")
-            .join("tasks")
-            .join(format!("midtown-{}", &repo_name));
-
-        // Ensure parent directories exist
-        if let Some(parent) = socket_path.parent() {
-            let _ = fs::create_dir_all(parent);
-        }
-        if let Some(parent) = pid_path.parent() {
-            let _ = fs::create_dir_all(parent);
-        }
-
-        Some(Self {
-            temp_dir,
-            project_dir,
-            repo_name,
-            socket_path,
-            state_dir,
-            pid_path,
-            daemon_process: None,
-            tasks_dir,
-            next_request_id: std::cell::Cell::new(1),
-        })
-    }
-
-    /// Start the daemon process.
-    ///
-    /// Returns true if the daemon started successfully and the socket is available.
-    fn start_daemon(&mut self) -> bool {
-        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let mut candidates = Vec::new();
-        if let Some(bin) = option_env!("CARGO_BIN_EXE_midtown") {
-            candidates.push(PathBuf::from(bin));
-        }
-        candidates.extend([
-            // Prefer freshly-built debug binaries over potentially stale release binaries.
-            manifest_dir.join("target/debug/midtown"),
-            // cargo-llvm-cov uses a separate target directory for instrumented builds
-            manifest_dir.join("target/llvm-cov-target/debug/midtown"),
-            manifest_dir.join("target/release/midtown"),
-        ]);
-
-        let binary_path = match candidates.iter().find(|p| p.exists()) {
-            Some(p) => p.clone(),
-            None => {
-                eprintln!("Skipping: No midtown binary found. Run `cargo build` first.");
-                return false;
-            }
-        };
-
-        // Remove stale socket if present
-        let _ = fs::remove_file(&self.socket_path);
-        let _ = fs::remove_file(&self.pid_path);
-
-        // Start the daemon process
-        // Use `daemon` subcommand with --workdir pointing to our test repo
-        let child = Command::new(&binary_path)
-            .arg("daemon")
-            .arg("--workdir")
-            .arg(&self.temp_dir)
-            .current_dir(&self.temp_dir)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            // Disable webhook to avoid port conflicts in tests
-            .env("MIDTOWN_WEBHOOK_PORT", "0")
-            // Disable chat monitor for cleaner tests
-            .env("MIDTOWN_CHAT_MONITOR", "0")
-            // Keep socket paths short and deterministic for e2e.
-            .env("XDG_STATE_HOME", &self.state_dir)
-            .spawn();
-
-        match child {
-            Ok(c) => {
-                self.daemon_process = Some(c);
-
-                // Wait for socket to become available (up to 60 seconds)
-                // Increased from 5s because daemon now installs plugins at startup
-                for _ in 0..300 {
-                    thread::sleep(Duration::from_millis(200));
-                    if self.socket_path.exists() && UnixStream::connect(&self.socket_path).is_ok() {
-                        return true;
-                    }
-                }
-                eprintln!("Daemon socket did not become available");
-                false
-            }
-            Err(e) => {
-                eprintln!("Failed to spawn daemon: {}", e);
-                false
-            }
-        }
-    }
-
-    /// Create a task JSON file in the test's task directory.
-    ///
-    /// Creates a task with the given ID, subject, status, and optional owner.
-    /// The file is written to `~/.claude/tasks/midtown-<repo_name>/<id>.json`.
-    fn create_task(&self, id: &str, subject: &str, status: &str, owner: Option<&str>) {
-        let _ = fs::create_dir_all(&self.tasks_dir);
-        let task_json = serde_json::json!({
-            "id": id,
-            "subject": subject,
-            "status": status,
-            "owner": owner,
-            "description": format!("Test task {}", id),
-            "blocked_by": []
-        });
-        let task_file = self.tasks_dir.join(format!("{}.json", id));
-        fs::write(
-            &task_file,
-            serde_json::to_string_pretty(&task_json).unwrap(),
-        )
-        .unwrap_or_else(|e| panic!("Failed to write task file {:?}: {}", task_file, e));
-    }
-
-    /// Connect to the daemon socket.
-    fn connect(&self) -> Option<UnixStream> {
-        UnixStream::connect(&self.socket_path).ok()
-    }
-
-    /// Send an RPC request and receive the response.
-    fn rpc_call(
-        &self,
-        method: &str,
-        params: Option<serde_json::Value>,
-    ) -> Option<serde_json::Value> {
-        self.rpc_call_with_timeout(method, params, Duration::from_secs(30))
-    }
-
-    /// Send an RPC request and receive the response with a timeout.
-    ///
-    /// Returns None if the response doesn't arrive within the timeout.
-    fn rpc_call_with_timeout(
-        &self,
-        method: &str,
-        params: Option<serde_json::Value>,
-        timeout: Duration,
-    ) -> Option<serde_json::Value> {
-        let mut stream = self.connect()?;
-
-        // Set read timeout to detect hangs
-        stream.set_read_timeout(Some(timeout)).ok()?;
-
-        // Generate unique request ID to avoid cache collisions
-        let request_id = self.next_request_id.get();
-        self.next_request_id.set(request_id + 1);
-
-        // Build JSON-RPC request
-        let request = serde_json::json!({
-            "jsonrpc": "2.0",
-            "method": method,
-            "params": params,
-            "id": request_id
-        });
-
-        // Send request
-        let request_line = format!("{}\n", request);
-        stream.write_all(request_line.as_bytes()).ok()?;
-        stream.flush().ok()?;
-
-        // Read response (will timeout if daemon doesn't respond in time)
-        let mut reader = BufReader::new(&stream);
-        let mut response_line = String::new();
-        reader.read_line(&mut response_line).ok()?;
-
-        // Parse response
-        serde_json::from_str(&response_line).ok()
-    }
-
-    /// Stop the daemon gracefully.
-    fn stop_daemon(&mut self) {
-        // First try RPC shutdown
-        if let Some(mut stream) = self.connect() {
-            let request = serde_json::json!({
-                "jsonrpc": "2.0",
-                "method": "shutdown",
-                "id": 999
-            });
-            let request_line = format!("{}\n", request);
-            let _ = stream.write_all(request_line.as_bytes());
-            let _ = stream.flush();
-            thread::sleep(Duration::from_millis(100));
-        }
-
-        // Kill the process if still running
-        if let Some(ref mut child) = self.daemon_process {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
-        self.daemon_process = None;
-
-        // As a final fallback, use pkill to ensure any daemon for this repo is stopped
-        // This catches cases where the Child handle might not have tracked the process correctly
-        let pattern = format!("midtown daemon.*{}", self.repo_name);
-        let _ = Command::new("pkill")
-            .args(["-f", &pattern])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
-    }
-}
-
-impl Drop for DaemonFixture {
-    fn drop(&mut self) {
-        self.stop_daemon();
-
-        // Clean up socket file and its parent directory
-        let _ = fs::remove_file(&self.socket_path);
-        if let Some(parent) = self.socket_path.parent() {
-            let _ = fs::remove_dir(parent);
-        }
-        let _ = fs::remove_dir_all(&self.state_dir);
-
-        // Clean up the entire project directory (~/.midtown/projects/<name>/)
-        // This includes config.toml, daemon.pid, channel.jsonl, cursors/, etc.
-        let _ = fs::remove_dir_all(&self.project_dir);
-
-        // Clean up worktrees directory (~/.midtown/worktrees/<name>/)
-        let worktrees_dir = dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(".midtown")
-            .join("worktrees")
-            .join(&self.repo_name);
-        let _ = fs::remove_dir_all(&worktrees_dir);
-
-        // Clean up task directory (~/.claude/tasks/midtown-<name>/)
-        let _ = fs::remove_dir_all(&self.tasks_dir);
-
-        // Clean up temp directory (the fake git repo)
-        let _ = fs::remove_dir_all(&self.temp_dir);
-    }
+    DaemonTestHarness::new(
+        prefix,
+        DaemonHarnessOptions {
+            custom_state_dir: Some(state_dir),
+            ..Default::default()
+        },
+    )
 }
 
 /// Test that the daemon starts and creates a socket.
 #[test]
 #[ignore] // Requires built binary
 fn test_daemon_starts_and_creates_socket() {
-    let mut fixture = match DaemonFixture::new() {
+    let mut fixture = match create_daemon_fixture() {
         Some(f) => f,
         None => return, // Skip silently if fixture creation fails
     };
@@ -460,7 +90,7 @@ fn test_daemon_starts_and_creates_socket() {
 #[test]
 #[ignore] // Requires built binary
 fn test_daemon_ping_endpoint() {
-    let mut fixture = match DaemonFixture::new() {
+    let mut fixture = match create_daemon_fixture() {
         Some(f) => f,
         None => return, // Skip silently if fixture creation fails
     };
@@ -484,7 +114,7 @@ fn test_daemon_ping_endpoint() {
 #[test]
 #[ignore] // Requires built binary
 fn test_daemon_version_endpoint() {
-    let mut fixture = match DaemonFixture::new() {
+    let mut fixture = match create_daemon_fixture() {
         Some(f) => f,
         None => return, // Skip silently if fixture creation fails
     };
@@ -522,7 +152,7 @@ fn test_daemon_version_endpoint() {
 #[test]
 #[ignore] // Requires built binary
 fn test_daemon_status_endpoint() {
-    let mut fixture = match DaemonFixture::new() {
+    let mut fixture = match create_daemon_fixture() {
         Some(f) => f,
         None => return, // Skip silently if fixture creation fails
     };
@@ -553,7 +183,7 @@ fn test_daemon_status_endpoint() {
 #[test]
 #[ignore] // Requires built binary
 fn test_daemon_coworker_list_endpoint() {
-    let mut fixture = match DaemonFixture::new() {
+    let mut fixture = match create_daemon_fixture() {
         Some(f) => f,
         None => return, // Skip silently if fixture creation fails
     };
@@ -595,7 +225,7 @@ fn test_daemon_coworker_list_endpoint() {
 #[test]
 #[ignore] // Requires built binary
 fn test_daemon_unknown_method_returns_error() {
-    let mut fixture = match DaemonFixture::new() {
+    let mut fixture = match create_daemon_fixture() {
         Some(f) => f,
         None => return, // Skip silently if fixture creation fails
     };
@@ -631,7 +261,7 @@ fn test_daemon_unknown_method_returns_error() {
 #[test]
 #[ignore] // Requires built binary
 fn test_daemon_handles_multiple_requests() {
-    let mut fixture = match DaemonFixture::new() {
+    let mut fixture = match create_daemon_fixture() {
         Some(f) => f,
         None => return, // Skip silently if fixture creation fails
     };
@@ -668,7 +298,7 @@ fn test_daemon_handles_multiple_requests() {
 #[test]
 #[ignore] // Requires built binary
 fn test_daemon_channel_post_endpoint() {
-    let mut fixture = match DaemonFixture::new() {
+    let mut fixture = match create_daemon_fixture() {
         Some(f) => f,
         None => return, // Skip silently if fixture creation fails
     };
@@ -704,7 +334,7 @@ fn test_daemon_channel_post_endpoint() {
 #[test]
 #[ignore] // Requires built binary
 fn test_headed_intercom_register_poll_ack() {
-    let mut fixture = match DaemonFixture::new() {
+    let mut fixture = match create_daemon_fixture() {
         Some(f) => f,
         None => return,
     };
@@ -829,7 +459,7 @@ fn test_headed_intercom_register_poll_ack() {
 #[test]
 #[ignore] // Requires built binary
 fn test_daemon_rpc_status_returns_tasks_array() {
-    let mut fixture = match DaemonFixture::new() {
+    let mut fixture = match create_daemon_fixture() {
         Some(f) => f,
         None => return, // Skip silently if fixture creation fails
     };
@@ -892,7 +522,7 @@ fn test_daemon_rpc_status_returns_tasks_array() {
 #[test]
 #[ignore] // Requires built binary
 fn test_daemon_rpc_status_returns_complete_daemon_state() {
-    let mut fixture = match DaemonFixture::new() {
+    let mut fixture = match create_daemon_fixture() {
         Some(f) => f,
         None => return,
     };
@@ -966,7 +596,7 @@ fn test_daemon_rpc_status_returns_complete_daemon_state() {
 #[test]
 #[ignore] // Requires built binary
 fn test_daemon_rpc_coworker_list_returns_expected_structure() {
-    let mut fixture = match DaemonFixture::new() {
+    let mut fixture = match create_daemon_fixture() {
         Some(f) => f,
         None => return,
     };
@@ -1030,7 +660,7 @@ fn test_daemon_rpc_coworker_list_returns_expected_structure() {
 #[test]
 #[ignore] // Requires built binary
 fn test_daemon_rpc_snapshot_returns_pane_contents() {
-    let mut fixture = match DaemonFixture::new() {
+    let mut fixture = match create_daemon_fixture() {
         Some(f) => f,
         None => return,
     };
@@ -1086,7 +716,7 @@ fn test_daemon_rpc_snapshot_returns_pane_contents() {
 #[test]
 #[ignore] // Requires built binary
 fn test_daemon_rpc_channel_read_returns_messages() {
-    let mut fixture = match DaemonFixture::new() {
+    let mut fixture = match create_daemon_fixture() {
         Some(f) => f,
         None => return,
     };
@@ -1159,7 +789,7 @@ fn test_daemon_rpc_channel_read_returns_messages() {
 #[test]
 #[ignore] // Requires built binary
 fn test_daemon_rpc_reminder_lifecycle() {
-    let mut fixture = match DaemonFixture::new() {
+    let mut fixture = match create_daemon_fixture() {
         Some(f) => f,
         None => return,
     };
@@ -1280,7 +910,7 @@ fn test_daemon_rpc_reminder_lifecycle() {
 #[test]
 #[ignore] // Requires built binary
 fn test_daemon_rpc_kanban_data_returns_structure() {
-    let mut fixture = match DaemonFixture::new() {
+    let mut fixture = match create_daemon_fixture() {
         Some(f) => f,
         None => return,
     };
@@ -1333,7 +963,7 @@ fn test_daemon_rpc_kanban_data_returns_structure() {
 #[test]
 #[ignore] // Requires built binary
 fn test_daemon_rpc_coworker_spawn_returns_response() {
-    let mut fixture = match DaemonFixture::new() {
+    let mut fixture = match create_daemon_fixture() {
         Some(f) => f,
         None => return,
     };
@@ -1378,7 +1008,7 @@ fn test_daemon_rpc_coworker_spawn_returns_response() {
 #[test]
 #[ignore] // Requires built binary
 fn test_daemon_rpc_invalid_params_returns_error() {
-    let mut fixture = match DaemonFixture::new() {
+    let mut fixture = match create_daemon_fixture() {
         Some(f) => f,
         None => return,
     };
@@ -1417,7 +1047,7 @@ fn test_daemon_rpc_invalid_params_returns_error() {
 #[test]
 #[ignore] // Requires built binary
 fn test_daemon_graceful_shutdown() {
-    let mut fixture = match DaemonFixture::new() {
+    let mut fixture = match create_daemon_fixture() {
         Some(f) => f,
         None => return, // Skip silently if fixture creation fails
     };
@@ -1459,7 +1089,7 @@ fn test_daemon_graceful_shutdown() {
 #[test]
 #[ignore] // Requires built binary
 fn test_daemon_creates_pid_file() {
-    let mut fixture = match DaemonFixture::new() {
+    let mut fixture = match create_daemon_fixture() {
         Some(f) => f,
         None => return, // Skip silently if fixture creation fails
     };
@@ -1496,7 +1126,7 @@ fn test_daemon_creates_pid_file() {
 #[test]
 #[ignore] // Requires built binary
 fn test_coworker_minimum_lifetime() {
-    let mut fixture = match DaemonFixture::new() {
+    let mut fixture = match create_daemon_fixture() {
         Some(f) => f,
         None => return, // Skip silently if fixture creation fails
     };
@@ -1526,7 +1156,7 @@ fn test_coworker_minimum_lifetime() {
     }
 
     // Helper: check if our coworker is still in the list
-    let coworker_is_listed = |fixture: &mut DaemonFixture| -> bool {
+    let coworker_is_listed = |fixture: &mut DaemonTestHarness| -> bool {
         let list_response = fixture.rpc_call("coworker.list", None);
         list_response
             .and_then(|r| r["result"]["coworkers"].as_array().cloned())
@@ -1565,7 +1195,7 @@ fn test_coworker_minimum_lifetime() {
 #[test]
 #[ignore] // Requires built binary and local codex auth
 fn test_daemon_rpc_auth_switch_codex_relaunches_codex_sessions() {
-    let mut fixture = match DaemonFixture::new() {
+    let mut fixture = match create_daemon_fixture() {
         Some(f) => f,
         None => return,
     };
@@ -1595,7 +1225,7 @@ fn test_daemon_rpc_auth_switch_codex_relaunches_codex_sessions() {
         return;
     }
 
-    let set_profile = |fixture: &DaemonFixture, profile: &str| {
+    let set_profile = |fixture: &DaemonTestHarness, profile: &str| {
         fixture.rpc_call(
             "auth.switch",
             Some(serde_json::json!({
@@ -1909,7 +1539,7 @@ fn test_daemon_installs_required_plugins() {
     );
 
     // Create a git repo for midtown to operate in
-    let fixture = match DaemonFixture::new() {
+    let fixture = match create_daemon_fixture() {
         Some(f) => f,
         None => return,
     };
@@ -1933,7 +1563,7 @@ fn test_daemon_installs_required_plugins() {
 
     match start_result {
         Ok(output) if output.status.success() => {
-            // Daemon started successfully - cleanup handled by DaemonFixture::drop()
+            // Daemon started successfully - cleanup handled by DaemonTestHarness::drop()
             // which connects to the socket and sends shutdown RPC
         }
         Ok(output) => {
@@ -2010,7 +1640,7 @@ fn test_global_config_generates_template() {
 #[test]
 #[ignore] // Requires built binary
 fn test_status_rpc_responds_within_timeout() {
-    let mut fixture = match DaemonFixture::new() {
+    let mut fixture = match create_daemon_fixture() {
         Some(f) => f,
         None => return, // Skip silently if fixture creation fails
     };
@@ -2062,7 +1692,7 @@ fn test_status_rpc_responds_within_timeout() {
 /// Test fixture for live daemon tests.
 ///
 /// Connects to an existing daemon running against the real midtown repo,
-/// or starts one if needed. Unlike DaemonFixture, this doesn't create
+/// or starts one if needed. Unlike DaemonTestHarness, this doesn't create
 /// a temporary repo - it uses the actual codebase.
 struct LiveDaemonFixture {
     /// Path to the daemon socket (midtown repo)
@@ -2466,7 +2096,7 @@ fn live_daemon_gh_token_auth_works() {
 #[test]
 #[ignore] // Requires built binary
 fn test_daemon_rpc_coworker_report_state_valid_phases() {
-    let mut fixture = match DaemonFixture::new() {
+    let mut fixture = match create_daemon_fixture() {
         Some(f) => f,
         None => return,
     };
@@ -2525,7 +2155,7 @@ fn test_daemon_rpc_coworker_report_state_valid_phases() {
 #[test]
 #[ignore] // Requires built binary
 fn test_daemon_rpc_coworker_report_state_invalid_phase() {
-    let mut fixture = match DaemonFixture::new() {
+    let mut fixture = match create_daemon_fixture() {
         Some(f) => f,
         None => return,
     };
@@ -2558,7 +2188,7 @@ fn test_daemon_rpc_coworker_report_state_invalid_phase() {
 #[test]
 #[ignore] // Requires built binary
 fn test_daemon_rpc_coworker_report_state_missing_params() {
-    let mut fixture = match DaemonFixture::new() {
+    let mut fixture = match create_daemon_fixture() {
         Some(f) => f,
         None => return,
     };
@@ -2600,7 +2230,7 @@ fn test_daemon_rpc_coworker_report_state_missing_params() {
 #[test]
 #[ignore] // Requires built binary
 fn test_daemon_rpc_coworker_asking_posts_to_channel() {
-    let mut fixture = match DaemonFixture::new() {
+    let mut fixture = match create_daemon_fixture() {
         Some(f) => f,
         None => return,
     };
@@ -2652,7 +2282,7 @@ fn test_daemon_rpc_coworker_asking_posts_to_channel() {
 #[test]
 #[ignore] // Requires built binary
 fn test_daemon_rpc_coworker_asking_missing_params() {
-    let mut fixture = match DaemonFixture::new() {
+    let mut fixture = match create_daemon_fixture() {
         Some(f) => f,
         None => return,
     };
@@ -2690,7 +2320,7 @@ fn test_daemon_rpc_coworker_asking_missing_params() {
 #[test]
 #[ignore] // Requires built binary
 fn test_daemon_rpc_daemon_check_pending_returns_ok() {
-    let mut fixture = match DaemonFixture::new() {
+    let mut fixture = match create_daemon_fixture() {
         Some(f) => f,
         None => return,
     };
@@ -2722,7 +2352,7 @@ fn test_daemon_rpc_daemon_check_pending_returns_ok() {
 #[test]
 #[ignore] // Requires built binary
 fn test_daemon_rpc_channel_post_me_action() {
-    let mut fixture = match DaemonFixture::new() {
+    let mut fixture = match create_daemon_fixture() {
         Some(f) => f,
         None => return,
     };
@@ -2759,7 +2389,7 @@ fn test_daemon_rpc_channel_post_me_action() {
 #[test]
 #[ignore] // Requires built binary
 fn test_daemon_rpc_channel_post_unescapes_shell_artifacts() {
-    let mut fixture = match DaemonFixture::new() {
+    let mut fixture = match create_daemon_fixture() {
         Some(f) => f,
         None => return,
     };
@@ -2812,7 +2442,7 @@ fn test_daemon_rpc_channel_post_unescapes_shell_artifacts() {
 #[test]
 #[ignore] // Requires built binary
 fn test_daemon_rpc_channel_read_all_param() {
-    let mut fixture = match DaemonFixture::new() {
+    let mut fixture = match create_daemon_fixture() {
         Some(f) => f,
         None => return,
     };
@@ -2869,7 +2499,7 @@ fn test_daemon_rpc_channel_read_all_param() {
 #[test]
 #[ignore] // Requires built binary
 fn test_daemon_rpc_coworker_nudge_valid_params() {
-    let mut fixture = match DaemonFixture::new() {
+    let mut fixture = match create_daemon_fixture() {
         Some(f) => f,
         None => return,
     };
@@ -2914,7 +2544,7 @@ fn test_daemon_rpc_coworker_nudge_valid_params() {
 #[test]
 #[ignore] // Requires built binary
 fn test_daemon_rpc_reminder_create_invalid_trigger() {
-    let mut fixture = match DaemonFixture::new() {
+    let mut fixture = match create_daemon_fixture() {
         Some(f) => f,
         None => return,
     };
@@ -2941,7 +2571,7 @@ fn test_daemon_rpc_reminder_create_invalid_trigger() {
 #[test]
 #[ignore] // Requires built binary
 fn test_daemon_rpc_reminder_cancel_not_found() {
-    let mut fixture = match DaemonFixture::new() {
+    let mut fixture = match create_daemon_fixture() {
         Some(f) => f,
         None => return,
     };
@@ -2982,7 +2612,7 @@ fn test_daemon_rpc_reminder_cancel_not_found() {
 #[test]
 #[ignore] // Requires built binary
 fn test_daemon_rpc_task_claim_missing_id() {
-    let mut fixture = match DaemonFixture::new() {
+    let mut fixture = match create_daemon_fixture() {
         Some(f) => f,
         None => return,
     };
@@ -3022,7 +2652,7 @@ fn test_daemon_rpc_task_claim_missing_id() {
 #[test]
 #[ignore] // Requires built binary
 fn test_daemon_rpc_task_claim_task_not_found() {
-    let mut fixture = match DaemonFixture::new() {
+    let mut fixture = match create_daemon_fixture() {
         Some(f) => f,
         None => return,
     };
@@ -3069,7 +2699,7 @@ fn test_daemon_rpc_task_claim_task_not_found() {
 #[test]
 #[ignore] // Requires built binary
 fn test_daemon_rpc_task_claim_task_not_pending() {
-    let mut fixture = match DaemonFixture::new() {
+    let mut fixture = match create_daemon_fixture() {
         Some(f) => f,
         None => return,
     };
@@ -3119,7 +2749,7 @@ fn test_daemon_rpc_task_claim_task_not_pending() {
 #[test]
 #[ignore] // Requires built binary
 fn test_daemon_rpc_task_claim_success() {
-    let mut fixture = match DaemonFixture::new() {
+    let mut fixture = match create_daemon_fixture() {
         Some(f) => f,
         None => return,
     };
@@ -3170,7 +2800,7 @@ fn test_daemon_rpc_task_claim_success() {
 #[test]
 #[ignore] // Requires built binary
 fn test_daemon_rpc_task_claim_completed_task() {
-    let mut fixture = match DaemonFixture::new() {
+    let mut fixture = match create_daemon_fixture() {
         Some(f) => f,
         None => return,
     };
@@ -3220,7 +2850,7 @@ fn test_daemon_rpc_task_claim_completed_task() {
 #[test]
 #[ignore] // Requires built binary
 fn test_daemon_rpc_task_claim_marks_coworker_busy() {
-    let mut fixture = match DaemonFixture::new() {
+    let mut fixture = match create_daemon_fixture() {
         Some(f) => f,
         None => return,
     };
@@ -3272,7 +2902,7 @@ fn test_daemon_rpc_task_claim_marks_coworker_busy() {
 #[test]
 #[ignore]
 fn test_daemon_rejects_invalid_model_format_on_create() {
-    let mut fixture = match DaemonFixture::new() {
+    let mut fixture = match create_daemon_fixture() {
         Some(f) => f,
         None => {
             eprintln!("Skipping: Failed to create test fixture");
@@ -3347,7 +2977,7 @@ fn test_daemon_rejects_invalid_model_format_on_create() {
 #[test]
 #[ignore]
 fn test_daemon_rejects_invalid_model_format_on_update() {
-    let mut fixture = match DaemonFixture::new() {
+    let mut fixture = match create_daemon_fixture() {
         Some(f) => f,
         None => {
             eprintln!("Skipping: Failed to create test fixture");
@@ -3420,7 +3050,7 @@ fn test_daemon_rejects_invalid_model_format_on_update() {
 #[test]
 #[ignore]
 fn test_daemon_accepts_valid_model_format_on_create() {
-    let mut fixture = match DaemonFixture::new() {
+    let mut fixture = match create_daemon_fixture() {
         Some(f) => f,
         None => {
             eprintln!("Skipping: Failed to create test fixture");
@@ -3489,7 +3119,7 @@ fn test_daemon_accepts_valid_model_format_on_create() {
 #[test]
 #[ignore] // Requires built binary
 fn test_daemon_creates_lead_worktree_on_startup() {
-    let mut fixture = match DaemonFixture::new() {
+    let mut fixture = match create_daemon_fixture() {
         Some(f) => f,
         None => return,
     };
@@ -3526,7 +3156,7 @@ fn test_daemon_creates_lead_worktree_on_startup() {
 #[test]
 #[ignore] // Requires built binary
 fn test_lead_worktree_persists_across_restart() {
-    let mut fixture = match DaemonFixture::new() {
+    let mut fixture = match create_daemon_fixture() {
         Some(f) => f,
         None => return,
     };
@@ -3564,7 +3194,7 @@ fn test_lead_worktree_persists_across_restart() {
 #[test]
 #[ignore] // Requires built binary
 fn test_daemon_starts_even_if_lead_worktree_creation_fails() {
-    let mut fixture = match DaemonFixture::new() {
+    let mut fixture = match create_daemon_fixture() {
         Some(f) => f,
         None => return,
     };
@@ -3599,7 +3229,7 @@ fn test_daemon_starts_even_if_lead_worktree_creation_fails() {
 #[test]
 #[ignore] // Requires built binary
 fn test_daemon_rpc_lead_spawn_returns_response() {
-    let mut fixture = match DaemonFixture::new() {
+    let mut fixture = match create_daemon_fixture() {
         Some(f) => f,
         None => return,
     };
@@ -3640,7 +3270,7 @@ fn test_daemon_rpc_lead_spawn_returns_response() {
 #[test]
 #[ignore] // Requires built binary
 fn test_daemon_rpc_lead_spawn_idempotent() {
-    let mut fixture = match DaemonFixture::new() {
+    let mut fixture = match create_daemon_fixture() {
         Some(f) => f,
         None => return,
     };
@@ -3678,7 +3308,7 @@ fn test_daemon_rpc_lead_spawn_idempotent() {
 #[test]
 #[ignore] // Requires built binary
 fn test_daemon_rpc_session_list_includes_lead_after_spawn() {
-    let mut fixture = match DaemonFixture::new() {
+    let mut fixture = match create_daemon_fixture() {
         Some(f) => f,
         None => return,
     };
@@ -3740,7 +3370,7 @@ fn test_daemon_rpc_session_list_includes_lead_after_spawn() {
 #[test]
 #[ignore] // Requires built binary
 fn test_daemon_rpc_session_attach_lead() {
-    let mut fixture = match DaemonFixture::new() {
+    let mut fixture = match create_daemon_fixture() {
         Some(f) => f,
         None => return,
     };
@@ -3808,7 +3438,7 @@ fn test_daemon_rpc_session_attach_lead() {
 #[test]
 #[ignore] // Requires built binary
 fn test_daemon_rpc_lead_attach_detach_lifecycle() {
-    let mut fixture = match DaemonFixture::new() {
+    let mut fixture = match create_daemon_fixture() {
         Some(f) => f,
         None => return,
     };
@@ -3888,7 +3518,7 @@ fn test_daemon_rpc_lead_attach_detach_lifecycle() {
 #[test]
 #[ignore] // Requires built binary
 fn test_daemon_rpc_session_attach_nonexistent_returns_error() {
-    let mut fixture = match DaemonFixture::new() {
+    let mut fixture = match create_daemon_fixture() {
         Some(f) => f,
         None => return,
     };
@@ -3921,7 +3551,7 @@ fn test_daemon_rpc_session_attach_nonexistent_returns_error() {
 #[test]
 #[ignore] // Requires built binary
 fn test_daemon_rpc_session_double_attach_returns_error() {
-    let mut fixture = match DaemonFixture::new() {
+    let mut fixture = match create_daemon_fixture() {
         Some(f) => f,
         None => return,
     };
@@ -3972,7 +3602,7 @@ fn test_daemon_rpc_session_double_attach_returns_error() {
 #[test]
 #[ignore] // Requires built binary
 fn test_daemon_rpc_session_detach_idempotent() {
-    let mut fixture = match DaemonFixture::new() {
+    let mut fixture = match create_daemon_fixture() {
         Some(f) => f,
         None => return,
     };
@@ -4000,7 +3630,7 @@ fn test_daemon_rpc_session_detach_idempotent() {
 #[test]
 #[ignore] // Requires built binary
 fn test_daemon_rpc_session_list_empty() {
-    let mut fixture = match DaemonFixture::new() {
+    let mut fixture = match create_daemon_fixture() {
         Some(f) => f,
         None => return,
     };

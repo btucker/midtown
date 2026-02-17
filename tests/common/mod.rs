@@ -2,6 +2,9 @@
 //!
 //! This module provides reusable test fixtures and helpers used across
 //! daemon_e2e.rs, webhook_e2e.rs, and webhook_effect_pipeline_e2e.rs.
+//!
+//! Not all consumers use all items, so we allow dead_code at the module level.
+#![allow(dead_code)]
 
 use std::cell::Cell;
 use std::fs;
@@ -155,7 +158,6 @@ pub struct DaemonTestHarness {
     /// Project directory under ~/.midtown/projects/<name>/
     pub project_dir: PathBuf,
     /// Repository name (used for socket path derivation and cleanup)
-    #[allow(dead_code)]
     pub repo_name: String,
     /// Path to the daemon socket
     pub socket_path: PathBuf,
@@ -372,6 +374,11 @@ impl DaemonTestHarness {
         }
     }
 
+    /// Connect to the daemon socket.
+    pub fn connect(&self) -> Option<UnixStream> {
+        UnixStream::connect(&self.socket_path).ok()
+    }
+
     /// Make an RPC call to the daemon.
     ///
     /// Returns the JSON-RPC response, or None on error.
@@ -380,14 +387,24 @@ impl DaemonTestHarness {
         method: &str,
         params: Option<serde_json::Value>,
     ) -> Option<serde_json::Value> {
+        self.rpc_call_with_timeout(method, params, Duration::from_secs(30))
+    }
+
+    /// Make an RPC call with a custom timeout.
+    ///
+    /// Returns None if the response doesn't arrive within the timeout.
+    pub fn rpc_call_with_timeout(
+        &self,
+        method: &str,
+        params: Option<serde_json::Value>,
+        timeout: Duration,
+    ) -> Option<serde_json::Value> {
         let id = self.next_request_id.get();
         self.next_request_id.set(id + 1);
 
-        let mut stream = UnixStream::connect(&self.socket_path).ok()?;
+        let mut stream = self.connect()?;
 
-        stream
-            .set_read_timeout(Some(Duration::from_secs(30)))
-            .ok()?;
+        stream.set_read_timeout(Some(timeout)).ok()?;
 
         let request = serde_json::json!({
             "jsonrpc": "2.0",
@@ -405,6 +422,40 @@ impl DaemonTestHarness {
         reader.read_line(&mut response_line).ok()?;
 
         serde_json::from_str(&response_line).ok()
+    }
+
+    /// Stop the daemon gracefully.
+    ///
+    /// Attempts RPC shutdown first, then kills the process, then uses pkill
+    /// as a final fallback.
+    pub fn stop_daemon(&mut self) {
+        // First try RPC shutdown
+        if let Some(mut stream) = self.connect() {
+            let request = serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "shutdown",
+                "id": 999
+            });
+            let request_line = format!("{}\n", request);
+            let _ = stream.write_all(request_line.as_bytes());
+            let _ = stream.flush();
+            thread::sleep(Duration::from_millis(100));
+        }
+
+        // Kill the process if still running
+        if let Some(ref mut child) = self.daemon_process {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        self.daemon_process = None;
+
+        // As a final fallback, use pkill to ensure any daemon for this repo is stopped
+        let pattern = format!("midtown daemon.*{}", self.repo_name);
+        let _ = Command::new("pkill")
+            .args(["-f", &pattern])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
     }
 
     /// Read recent messages from the channel via RPC.
@@ -451,7 +502,6 @@ impl DaemonTestHarness {
     /// Create a task JSON file in the test's task directory.
     ///
     /// Creates a task with the given ID, subject, status, and optional owner.
-    #[allow(dead_code)]
     pub fn create_task(&self, id: &str, subject: &str, status: &str, owner: Option<&str>) {
         let _ = fs::create_dir_all(&self.tasks_dir);
         let task_json = serde_json::json!({
@@ -465,7 +515,6 @@ impl DaemonTestHarness {
     }
 
     /// Read daemon-state.json.
-    #[allow(dead_code)]
     pub fn read_daemon_state(&self) -> Option<serde_json::Value> {
         let path = self.project_dir.join("daemon-state.json");
         if !path.exists() {
@@ -497,7 +546,6 @@ impl DaemonTestHarness {
     }
 
     /// Get the coworkers directory for this test repo.
-    #[allow(dead_code)]
     pub fn coworkers_dir(&self) -> PathBuf {
         dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
@@ -507,7 +555,6 @@ impl DaemonTestHarness {
     }
 
     /// Check if a worktree exists for a given coworker.
-    #[allow(dead_code)]
     pub fn worktree_exists(&self, coworker: &str) -> bool {
         self.coworkers_dir().join(coworker).exists()
     }
@@ -515,19 +562,32 @@ impl DaemonTestHarness {
 
 impl Drop for DaemonTestHarness {
     fn drop(&mut self) {
-        // Kill daemon process
-        if let Some(mut child) = self.daemon_process.take() {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
+        // Stop daemon gracefully
+        self.stop_daemon();
 
-        // Clean up test directories
-        let _ = fs::remove_dir_all(&self.temp_dir);
-        let _ = fs::remove_dir_all(&self.project_dir);
-        let _ = fs::remove_dir_all(&self.tasks_dir);
+        // Clean up socket file and its parent directory
+        let _ = fs::remove_file(&self.socket_path);
         if let Some(parent) = self.socket_path.parent() {
-            let _ = fs::remove_dir_all(parent);
+            let _ = fs::remove_dir(parent);
         }
+        let _ = fs::remove_dir_all(&self.state_dir);
+
+        // Clean up project directory
+        let _ = fs::remove_dir_all(&self.project_dir);
+
+        // Clean up worktrees directory
+        let worktrees_dir = dirs::home_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join(".midtown")
+            .join("worktrees")
+            .join(&self.repo_name);
+        let _ = fs::remove_dir_all(&worktrees_dir);
+
+        // Clean up task directory
+        let _ = fs::remove_dir_all(&self.tasks_dir);
+
+        // Clean up temp directory (the fake git repo)
+        let _ = fs::remove_dir_all(&self.temp_dir);
     }
 }
 
