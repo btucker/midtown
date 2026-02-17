@@ -100,6 +100,7 @@ fn test_world_snapshot_has_coworker_stop_times() {
         is_at_dev_limit: false,
         now_utc: Utc::now(),
         repo_name: "test-repo".to_string(),
+        repo_owner: None,
         github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
         freshly_fetched_rate_limit: None,
     };
@@ -199,6 +200,7 @@ fn test_snapshot_debug_context_empty_by_default() {
         is_at_dev_limit: false,
         now_utc: Utc::now(),
         repo_name: "test-repo".to_string(),
+        repo_owner: None,
         github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
         freshly_fetched_rate_limit: None,
     };
@@ -378,6 +380,7 @@ fn test_sessions_for_name() {
         is_at_dev_limit: false,
         now_utc: Utc::now(),
         repo_name: "test-repo".to_string(),
+        repo_owner: None,
         github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
         freshly_fetched_rate_limit: None,
     };
@@ -461,6 +464,7 @@ fn test_active_session_ids_in_snapshot() {
         is_at_dev_limit: false,
         now_utc: Utc::now(),
         repo_name: "test-repo".to_string(),
+        repo_owner: None,
         github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
         freshly_fetched_rate_limit: None,
     };

@@ -93,6 +93,7 @@ fn test_usage_limit_nudge_only_targets_running_coworkers() {
         is_at_dev_limit: false,
         now_utc: chrono::Utc::now(),
         repo_name: "test-repo".to_string(),
+        repo_owner: None,
         github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
         freshly_fetched_rate_limit: None,
     };
@@ -255,6 +256,7 @@ fn test_check_for_usage_limits_with_reset_time() {
         is_at_dev_limit: false,
         now_utc: chrono::Utc::now(),
         repo_name: "test-repo".to_string(),
+        repo_owner: None,
         github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
         freshly_fetched_rate_limit: None,
     };
@@ -338,6 +340,7 @@ fn test_check_for_usage_limits_already_scheduled() {
         is_at_dev_limit: false,
         now_utc: chrono::Utc::now(),
         repo_name: "test-repo".to_string(),
+        repo_owner: None,
         github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
         freshly_fetched_rate_limit: None,
     };
@@ -456,6 +459,7 @@ fn empty_snap() -> snapshot::WorldSnapshot {
         is_at_dev_limit: false,
         now_utc: chrono::Utc::now(),
         repo_name: "test-repo".to_string(),
+        repo_owner: None,
         github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
         freshly_fetched_rate_limit: None,
     }

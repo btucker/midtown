@@ -59,6 +59,70 @@ fn make_test_state(repo_name: &str) -> DaemonState {
     .expect("daemon state")
 }
 
+/// Helper to create minimal DaemonState for testing with a specific repo owner.
+/// Adds a fake origin remote so DaemonState::new detects the owner from git URL.
+fn make_test_state_with_owner(repo_name: &str, owner: &str) -> DaemonState {
+    use std::process::Command;
+
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    Command::new("git")
+        .args(["init"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("git init");
+    Command::new("git")
+        .args(["config", "user.email", "test@example.com"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("git config");
+    Command::new("git")
+        .args(["config", "user.name", "Test"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("git config");
+    Command::new("git")
+        .args(["commit", "--allow-empty", "-m", "init"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("git commit");
+    // Add a fake origin remote so DaemonState::new extracts the repo owner from it
+    Command::new("git")
+        .args([
+            "remote",
+            "add",
+            "origin",
+            &format!("https://github.com/{}/{}.git", owner, repo_name),
+        ])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("git remote add");
+
+    let wm = crate::worktree::WorktreeManager::new(temp_dir.path().to_path_buf())
+        .expect("worktree manager");
+    let cm = crate::coworker::CoworkerManager::new(wm);
+
+    // Leak temp_dir so it survives the test
+    let base_dir = temp_dir.path().to_path_buf();
+    std::mem::forget(temp_dir);
+
+    let channel_router = crate::ChannelRouter::new(&base_dir, "midtown");
+
+    let (shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(1);
+    DaemonState::new(
+        "/tmp/test.sock".into(),
+        cm,
+        repo_name.to_string(),
+        vec![base_dir.clone()],
+        channel_router,
+        None,
+        10,
+        None,
+        "main".to_string(),
+        shutdown_tx,
+    )
+    .expect("daemon state")
+}
+
 /// Bug: collect_green_with_feedback_effects was using head_ref.split('/').next()
 /// to extract the owner, which doesn't validate against known coworker names.
 /// This meant PRs with branches like "btucker/fix" would extract "btucker" as owner
@@ -810,6 +874,75 @@ async fn test_completed_worktree_with_snapshot_data() {
         "Expected AssignReviewer effect for PR #99999. \
          Before fix: completed worktrees caused PRs to be skipped as orphaned. \
          After fix: open PRs with completed worktrees should get reviewer spawns. \
+         Effects: {:#?}",
+        effects
+    );
+}
+
+/// Bug: PRs from the lead with non-lead/ branch names are incorrectly marked as orphaned.
+///
+/// Root cause: The orphan detection in `collect_reviewer_effects_with_source` (lines 2157-2183)
+/// checks if a PR has no worktree. If not, it checks `is_lead_branch()` (only returns true for
+/// `lead/*` branches). PRs like `codex/*` fail both checks and are marked as orphaned, preventing
+/// reviewer spawning.
+///
+/// Expected: PRs authored by the lead (repo owner) should get reviewers regardless of branch name.
+/// The lead can address feedback from their main worktree even if the branch doesn't follow `lead/*`.
+#[tokio::test]
+async fn test_lead_pr_with_non_standard_branch_gets_reviewer() {
+    // Create a PR with a non-lead/ branch name (like codex/*, feature/*, etc.)
+    // but authored by the lead user (repo owner)
+    let pr_json = serde_json::json!({
+        "number": 1198,
+        "headRefName": "codex/auth-usage-all-providers",  // Not lead/* and not a coworker name
+        "title": "auth: fetch usage for codex and z.ai",
+        "author": {
+            "login": "btucker",  // This is the repo owner (lead)
+            "is_bot": false
+        },
+        "mergeable": "MERGEABLE",
+        "statusCheckRollup": null,
+        "reviewDecision": null,
+        "isDraft": false,
+        "createdAt": "2026-01-01T00:00:00Z",
+        "state": "OPEN",
+    });
+
+    // Empty branch_owners - this branch doesn't match any coworker
+    let branch_owners: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+
+    // Empty worktree registry - no worktree exists for this PR
+    let worktree_registry = crate::worktree_registry::WorktreeRegistry::new();
+
+    // Create test state with repo_owner set to match the PR author.
+    // The repo_owner is extracted from git remote URL at daemon startup;
+    // in tests we configure it via a fake origin remote.
+    let state = make_test_state_with_owner("midtown", "btucker");
+
+    // Call the function under test
+    let effects = collect_reviewer_effects_with_source(
+        Some(&branch_owners),
+        &worktree_registry,
+        &state,
+        &[pr_json],
+        crate::github_state::AssignmentSource::PollingFallback,
+    )
+    .await;
+
+    // The function should spawn a reviewer for this PR
+    let has_assign_reviewer = effects.iter().any(|effect| {
+        matches!(
+            effect,
+            crate::daemon::effects::Effect::AssignReviewer { pr_number, .. }
+            if *pr_number == 1198
+        )
+    });
+
+    assert!(
+        has_assign_reviewer,
+        "Expected AssignReviewer effect for PR #1198. \
+         Before fix: PRs from lead with non-lead/ branches were marked as orphaned. \
+         After fix: lead-authored PRs should get reviewers regardless of branch name. \
          Effects: {:#?}",
         effects
     );
