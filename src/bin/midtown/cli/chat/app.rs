@@ -303,6 +303,9 @@ pub struct App {
     pub board_area: Option<ratatui::layout::Rect>,
     /// Last rendered input bar area (for click detection)
     pub input_area: Option<ratatui::layout::Rect>,
+    /// Mapping of board panel line numbers to tasks (for click-to-attach)
+    /// Maps (line_number) -> (task_id, task_owner) where line_number is relative to board content area
+    pub task_line_map: HashMap<u16, (String, Option<String>)>,
 }
 
 /// Autocomplete state for @mentions, #channels, and !task-ids
@@ -433,6 +436,7 @@ impl App {
             channels_last_refresh: Instant::now() - CHANNELS_REFRESH_INTERVAL, // Force initial refresh
             board_area: None,
             input_area: None,
+            task_line_map: HashMap::new(),
         };
 
         // Initial load
@@ -2561,6 +2565,7 @@ pub(super) mod tests {
             channels_last_refresh: Instant::now(),
             board_area: None,
             input_area: None,
+            task_line_map: HashMap::new(),
         }
     }
 

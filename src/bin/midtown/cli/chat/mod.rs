@@ -682,7 +682,18 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                     && y >= board_rect.y
                     && y < board_rect.y + board_rect.height
                 {
-                    // Click in board area - focus it
+                    // Check if click is on a task line (for attach)
+                    // Board rect includes border (1 line), so subtract 1 to get content-relative line
+                    let content_y = y.saturating_sub(board_rect.y + 1);
+                    if let Some((_task_id, task_owner)) = app.task_line_map.get(&content_y)
+                        && let Some(owner) = task_owner
+                    {
+                        // Task has an owner - attach to their session
+                        attach_coworker_split(owner);
+                        return EventResult::Exit;
+                    }
+
+                    // Click in board area (but not on a task with owner) - focus it
                     app.focused_pane = FocusedPane::Board;
                     return EventResult::Continue;
                 }
