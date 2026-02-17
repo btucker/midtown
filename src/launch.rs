@@ -29,6 +29,14 @@ pub enum CoworkerRole {
     Reviewer,
     /// Lead — uses lead.md + common.md, unrestricted settings
     Lead,
+    /// Channel lead — uses channel-lead.md with channel name injected.
+    /// Read-only: brainstorming and domain expertise for a topic channel.
+    ChannelLead {
+        /// The channel this lead is responsible for.
+        channel_name: String,
+        /// Domain context injected at startup (e.g., recent tasks, PRs).
+        domain_context: String,
+    },
 }
 
 /// All configuration needed to launch a Claude CLI process.
@@ -270,6 +278,47 @@ impl LaunchConfig {
         }
     }
 
+    /// Create a config for a channel lead session.
+    ///
+    /// Channel leads are long-lived conversational sessions that accumulate
+    /// domain expertise for a topic channel. They use the channel-lead.md
+    /// system prompt, run with read-only tool access, and post responses to
+    /// their channel via `midtown channel post --channel {name}`.
+    ///
+    /// The `domain_context` is injected into the system prompt at spawn time.
+    /// On first spawn it can be empty; accumulated context comes from session persistence.
+    pub fn channel_lead(
+        channel_name: impl Into<String>,
+        repo_name: impl Into<String>,
+        session_mode: SessionMode,
+        domain_context: impl Into<String>,
+    ) -> Self {
+        let channel_name_str = channel_name.into();
+        let repo = repo_name.into();
+        let team = crate::mailbox::team_name_for_repo(&repo);
+        let domain_ctx = domain_context.into();
+        LaunchConfig {
+            name: channel_name_str.clone(),
+            session_mode,
+            role: CoworkerRole::ChannelLead {
+                channel_name: channel_name_str.clone(),
+                domain_context: domain_ctx,
+            },
+            initial_prompt: Some(format!(
+                "Read the recent messages in #{channel_name_str} for context, then introduce yourself as the domain expert for this channel.",
+                channel_name_str = channel_name_str
+            )),
+            additional_dirs: vec![],
+            pr_number: None,
+            team_name: Some(team),
+            working_dir: None,
+            model: "sonnet".to_string(),
+            channel: Some(channel_name_str),
+            auth_profile_dir: None,
+            auth_provider: crate::auth::AuthProvider::Claude,
+        }
+    }
+
     /// Create a config for PR handoff — a coworker taking over another's PR.
     ///
     /// This resumes the original author's Claude session to preserve full context
@@ -325,14 +374,18 @@ impl LaunchConfig {
     /// For Lead role: saves the system prompt to `~/.midtown/lead/<repo>/system-prompt.txt`
     /// so it can be re-applied when attaching to the headless session.
     pub fn to_headless_config(&self, project_name: &str) -> HeadlessConfig {
-        let system_prompt = match self.role {
+        let system_prompt = match &self.role {
             CoworkerRole::Reviewer => crate::agents::reviewer_system_prompt(&self.name),
             CoworkerRole::Lead => crate::agents::lead_system_prompt(),
             CoworkerRole::Coworker => crate::agents::coworker_system_prompt(&self.name),
+            CoworkerRole::ChannelLead {
+                channel_name,
+                domain_context,
+            } => crate::agents::channel_lead_system_prompt(channel_name, domain_context),
         };
 
         // Save the lead system prompt to disk for attach resumption
-        if self.role == CoworkerRole::Lead {
+        if matches!(self.role, CoworkerRole::Lead) {
             let prompt_file = crate::paths::lead_system_prompt_file(project_name);
             if let Some(parent) = prompt_file.parent() {
                 let _ = std::fs::create_dir_all(parent);

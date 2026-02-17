@@ -880,7 +880,7 @@ impl DaemonState {
         headless_config.cwd = Some(working_dir.clone());
 
         // Write role-appropriate settings file and set the path
-        let settings_file = if config.role == crate::launch::CoworkerRole::Lead {
+        let settings_file = if matches!(config.role, crate::launch::CoworkerRole::Lead) {
             crate::settings::write_lead_settings_file()?
         } else {
             crate::settings::write_coworker_settings_file()?
@@ -895,6 +895,7 @@ impl DaemonState {
                 agent_type: match config.role {
                     crate::launch::CoworkerRole::Reviewer => "reviewer".to_string(),
                     crate::launch::CoworkerRole::Lead => "lead".to_string(),
+                    crate::launch::CoworkerRole::ChannelLead { .. } => "channel-lead".to_string(),
                     crate::launch::CoworkerRole::Coworker => "coworker".to_string(),
                 },
             };
@@ -988,6 +989,9 @@ impl DaemonState {
                     pid: self.session_manager.get_pid(&name).await,
                     coworker_type: match config.role {
                         crate::launch::CoworkerRole::Reviewer => Some("reviewer".to_string()),
+                        crate::launch::CoworkerRole::ChannelLead { .. } => {
+                            Some("channel-lead".to_string())
+                        }
                         _ => Some("dev".to_string()),
                     },
                     task_id: None,
@@ -2375,6 +2379,19 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
         effects::execute_effects(recovery_effects, &state).await;
     }
 
+    // Recover channel lead sessions for all active topic channels.
+    // Each topic channel gets a persistent headless Claude session that acts as
+    // a domain expert. Resumed on daemon restart; fresh sessions for new channels.
+    let channel_lead_effects =
+        startup::recover_channel_lead_sessions(&state.persistent_state, &repo_name).await;
+    if !channel_lead_effects.is_empty() {
+        info!(
+            "Executing {} channel lead session recovery effect(s)",
+            channel_lead_effects.len()
+        );
+        effects::execute_effects(channel_lead_effects, &state).await;
+    }
+
     let mut sigterm = signal(SignalKind::terminate())?;
     let mut sigint = signal(SignalKind::interrupt())?;
     // Subscribe to shutdown broadcasts (triggered by RPC exec-restart handler)
@@ -2762,6 +2779,17 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                                 info!("Backfilling session_id for '{}': {}", name, sid);
                                 info.session_id = sid.clone();
                                 needs_persist_save = true;
+                            }
+                            // Backfill channel_lead_sessions when a channel lead session
+                            // receives its init event. The map key is the channel name,
+                            // which equals the session's agent name for channel leads.
+                            if ps.channel_lead_sessions.contains_key(name.as_str()) {
+                                let stored = ps.channel_lead_sessions.get(name.as_str()).cloned();
+                                if stored.as_deref().is_none_or(|s| s.is_empty() || s != sid.as_str()) {
+                                    info!("Backfilling channel lead session_id for '{}': {}", name, sid);
+                                    ps.channel_lead_sessions.insert(name.clone(), sid.clone());
+                                    needs_persist_save = true;
+                                }
                             }
                         }
                     }

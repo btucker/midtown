@@ -134,6 +134,14 @@ pub struct DaemonPersistentState {
     /// invocations, so we persist the session ID to resume it on next task creation.
     #[serde(default)]
     pub clusterer_session_id: Option<String>,
+
+    /// Channel lead session IDs for resume-on-demand.
+    ///
+    /// Maps channel name → Claude Code session ID. One channel lead session
+    /// per active (non-archived) topic channel. Spawned/resumed at daemon
+    /// startup and when channels are created. Shut down when channels are archived.
+    #[serde(default)]
+    pub channel_lead_sessions: HashMap<String, String>,
 }
 
 impl DaemonPersistentState {
@@ -153,7 +161,7 @@ impl DaemonPersistentState {
                 // Rebuild reverse indexes that aren't serialized
                 state.worktree_registry.rebuild_indexes();
                 debug!(
-                    "Loaded daemon state: {} PR reviewers, {} reminders, CI stats: {}, {} worktree assignments, {} task-channel mappings, {} task-model mappings, {} task-plan mappings, {} task-execution-skill mappings",
+                    "Loaded daemon state: {} PR reviewers, {} reminders, CI stats: {}, {} worktree assignments, {} task-channel mappings, {} task-model mappings, {} task-plan mappings, {} task-execution-skill mappings, {} channel-lead sessions",
                     state.github.pr_reviewers.len(),
                     state.reminders.reminders.len(),
                     state.ci_stats.summary(),
@@ -161,7 +169,8 @@ impl DaemonPersistentState {
                     state.task_channel.len(),
                     state.task_model.len(),
                     state.task_plan.len(),
-                    state.task_execution_skill.len()
+                    state.task_execution_skill.len(),
+                    state.channel_lead_sessions.len()
                 );
                 Ok(state)
             }
@@ -184,7 +193,7 @@ impl DaemonPersistentState {
         fs::write(&tmp_path, &contents)?;
         crate::paths::atomic_rename(&tmp_path, &path)?;
         debug!(
-            "Saved daemon state: {} PR reviewers, {} reminders, CI stats: {}, {} worktree assignments, {} task-channel mappings, {} task-model mappings, {} task-plan mappings, {} task-execution-skill mappings",
+            "Saved daemon state: {} PR reviewers, {} reminders, CI stats: {}, {} worktree assignments, {} task-channel mappings, {} task-model mappings, {} task-plan mappings, {} task-execution-skill mappings, {} channel-lead sessions",
             self.github.pr_reviewers.len(),
             self.reminders.reminders.len(),
             self.ci_stats.summary(),
@@ -192,7 +201,8 @@ impl DaemonPersistentState {
             self.task_channel.len(),
             self.task_model.len(),
             self.task_plan.len(),
-            self.task_execution_skill.len()
+            self.task_execution_skill.len(),
+            self.channel_lead_sessions.len()
         );
         Ok(())
     }
@@ -235,6 +245,7 @@ impl DaemonPersistentState {
             task_plan: HashMap::new(),
             task_execution_skill: HashMap::new(),
             clusterer_session_id: None,
+            channel_lead_sessions: HashMap::new(),
         };
 
         // Save the unified file

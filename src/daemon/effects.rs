@@ -362,6 +362,20 @@ pub enum Effect {
         /// Optional PR number to associate with the task (for deduplication).
         pr: Option<u64>,
     },
+    /// Save a channel lead session ID after a successful spawn.
+    ///
+    /// Called after `SpawnCoworker` succeeds for a channel lead. Persists the
+    /// session ID to `DaemonPersistentState::channel_lead_sessions` so the
+    /// daemon can resume it on next startup.
+    SaveChannelLeadSession {
+        channel_name: String,
+        session_id: String,
+    },
+    /// Remove a channel lead session from persistent state.
+    ///
+    /// Called when a channel is archived. Removes the session ID mapping from
+    /// `DaemonPersistentState::channel_lead_sessions`.
+    RemoveChannelLeadSession { channel_name: String },
 }
 
 /// Deduplicate nudge effects targeting the same coworker within a single batch.
@@ -1378,6 +1392,36 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     if let Err(e) = state.send_and_broadcast_async(&msg).await {
                         warn!("Failed to post channel creation message: {}", e);
                     }
+
+                    // Spawn a channel lead session for the new topic channel.
+                    // Register a placeholder entry first so the session ID backfill
+                    // knows this channel has a lead in flight.
+                    {
+                        let mut ps = state.persistent_state.lock().await;
+                        ps.channel_lead_sessions
+                            .entry(name.clone())
+                            .or_insert_with(String::new);
+                        if let Err(e) = ps.save_for_repo(&state.repo_name) {
+                            warn!(
+                                "Failed to save daemon state before spawning channel lead: {}",
+                                e
+                            );
+                        }
+                    }
+                    let config = crate::launch::LaunchConfig::channel_lead(
+                        &name,
+                        &state.repo_name,
+                        crate::launch::SessionMode::Fresh,
+                        "", // domain_context: empty at creation, accumulates via session
+                    );
+                    match state.spawn_coworker(&config).await {
+                        Ok(_) => {
+                            info!("Spawned channel lead for '{}' successfully", name);
+                        }
+                        Err(e) => {
+                            warn!("Failed to spawn channel lead for '{}': {}", name, e);
+                        }
+                    }
                 }
             }
             Effect::ArchiveChannel { name } => {
@@ -1410,6 +1454,49 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                             );
                             if let Err(e) = state.send_and_broadcast_async(&msg).await {
                                 warn!("Failed to post archive message: {}", e);
+                            }
+
+                            // Gracefully shut down the channel lead session for this channel.
+                            // The channel is archived so the lead is no longer needed.
+                            let is_lead_running = state.session_manager.is_alive(&name).await;
+                            if is_lead_running {
+                                let goodbye = format!(
+                                    "Channel '{}' has been archived. Your session is ending — \
+                                     thank you for your service as domain expert for this channel.",
+                                    name
+                                );
+                                if let Err(e) =
+                                    state.session_manager.send_message(&name, &goodbye).await
+                                {
+                                    debug!(
+                                        "Could not send goodbye to channel lead '{}': {}",
+                                        name, e
+                                    );
+                                }
+                                if let Err(e) = state.session_manager.shutdown(&name).await {
+                                    warn!("Failed to shut down channel lead for '{}': {}", name, e);
+                                } else {
+                                    info!(
+                                        "Shut down channel lead session for archived channel '{}'",
+                                        name
+                                    );
+                                }
+                            }
+                            // Remove the session ID from persistent state
+                            {
+                                let mut ps = state.persistent_state.lock().await;
+                                if ps.channel_lead_sessions.remove(&name).is_some() {
+                                    debug!(
+                                        "Removed channel lead session for archived channel '{}'",
+                                        name
+                                    );
+                                    if let Err(e) = ps.save_for_repo(&state.repo_name) {
+                                        warn!(
+                                            "Failed to save daemon state after removing channel lead: {}",
+                                            e
+                                        );
+                                    }
+                                }
                             }
                         }
                     }
@@ -1585,6 +1672,36 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     }
                     Err(e) => {
                         warn!("Failed to create task '{}': {}", subject, e);
+                    }
+                }
+            }
+            Effect::SaveChannelLeadSession {
+                channel_name,
+                session_id,
+            } => {
+                let mut ps = state.persistent_state.lock().await;
+                ps.channel_lead_sessions
+                    .insert(channel_name.clone(), session_id.clone());
+                debug!(
+                    "Saved channel lead session for '{}': {}",
+                    channel_name, session_id
+                );
+                if let Err(e) = ps.save_for_repo(&state.repo_name) {
+                    warn!(
+                        "Failed to save daemon state after saving channel lead session: {}",
+                        e
+                    );
+                }
+            }
+            Effect::RemoveChannelLeadSession { channel_name } => {
+                let mut ps = state.persistent_state.lock().await;
+                if ps.channel_lead_sessions.remove(&channel_name).is_some() {
+                    debug!("Removed channel lead session for '{}'", channel_name);
+                    if let Err(e) = ps.save_for_repo(&state.repo_name) {
+                        warn!(
+                            "Failed to save daemon state after removing channel lead session: {}",
+                            e
+                        );
                     }
                 }
             }
