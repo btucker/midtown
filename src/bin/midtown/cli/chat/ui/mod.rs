@@ -46,6 +46,9 @@ pub struct Hyperlink {
 /// Gutter width for timestamp: " HH:MM " = 7 chars
 const TIMESTAMP_GUTTER_WIDTH: usize = 7;
 
+/// Maximum sidebar width in terminal columns (including left and right borders)
+const MAX_SIDEBAR_WIDTH: u16 = 40;
+
 /// Calculate height for repo status lines (1 per repo, minimum 1)
 fn repo_status_height(app: &App) -> u16 {
     let count = app.repo_statuses.len();
@@ -92,12 +95,21 @@ pub fn draw(f: &mut Frame, app: &mut App) -> Vec<Hyperlink> {
     app.layout_width = main_area.width;
     app.main_area_y = main_area.y;
     app.main_area_bottom = main_area.y + main_area.height;
+    // Cap sidebar at MAX_SIDEBAR_WIDTH columns; any remaining space goes to main content.
+    // Use u32 arithmetic to avoid overflow on very wide terminals (u16 wraps at width > 1638).
+    let sidebar_width =
+        (main_area.width as u32 * sidebar_pct as u32 / 100).min(MAX_SIDEBAR_WIDTH as u32) as u16;
+    // Sync stored percentage when the cap is active, so drag-resize starts from the
+    // rendered divider position rather than the uncapped percentage (avoids dead zone).
+    if main_area.width > 0 {
+        let effective_pct = (sidebar_width as u32 * 100 / main_area.width as u32) as u16;
+        if effective_pct < sidebar_pct {
+            app.sidebar_width_pct = effective_pct.max(20);
+        }
+    }
     let horizontal_chunks = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage(sidebar_pct),
-            Constraint::Percentage(100 - sidebar_pct),
-        ])
+        .constraints([Constraint::Length(sidebar_width), Constraint::Min(0)])
         .split(main_area);
 
     // Track divider X position: the last column of the sidebar panel (its right border)
@@ -236,6 +248,29 @@ fn build_repo_status_line(repo_label: &str, status: &RepoStatus, width: u16) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Mirrors the sidebar width calculation from `draw()`.
+    fn compute_sidebar_width(terminal_width: u16, sidebar_pct: u16) -> u16 {
+        (terminal_width as u32 * sidebar_pct as u32 / 100).min(MAX_SIDEBAR_WIDTH as u32) as u16
+    }
+
+    #[test]
+    fn test_sidebar_width_capped_at_max() {
+        // 120-column terminal at 40% → 48 columns, capped to 40
+        assert_eq!(compute_sidebar_width(120, 40), 40);
+        // 100-column terminal at 40% → exactly 40
+        assert_eq!(compute_sidebar_width(100, 40), 40);
+        // 80-column terminal at 40% → 32, under cap
+        assert_eq!(compute_sidebar_width(80, 40), 32);
+    }
+
+    #[test]
+    fn test_sidebar_width_no_u16_overflow_on_wide_terminal() {
+        // 2000 columns at 40% = 800, capped to 40 — should not panic or wrap
+        assert_eq!(compute_sidebar_width(2000, 40), 40);
+        // 5000 columns at 60% = 3000, capped to 40
+        assert_eq!(compute_sidebar_width(5000, 60), 40);
+    }
 
     #[test]
     fn test_format_relative_time() {
