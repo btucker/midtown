@@ -47,7 +47,7 @@ async fn dead_process_respawns_with_in_progress_task() {
     );
 
     // Coworker has an in-progress task
-    let in_progress_tasks = vec![(
+    let in_progress_tasks = [(
         "42".to_string(),
         "Fix bug in auth".to_string(),
         "york".to_string(),
@@ -143,7 +143,7 @@ async fn alive_process_not_respawned() {
         },
     );
 
-    let in_progress_tasks = vec![(
+    let in_progress_tasks = [(
         "99".to_string(),
         "Review PR".to_string(),
         "broadway".to_string(),
