@@ -543,3 +543,66 @@ async fn test_orphaned_pr_with_task_branch_and_merge_conflict_is_ignored() {
         effects
     );
 }
+
+/// Bug: After a daemon restart, worktree_branch_owners is empty because
+/// current_coworker is None for all worktree assignments. This causes
+/// collect_reviewer_effects_with_source to skip all PRs as "orphaned"
+/// even though their worktrees still exist in the registry.
+///
+/// Expected: PRs whose branches exist in the worktree registry should
+/// still get reviewer spawns, even if no coworker is currently bound.
+#[tokio::test]
+async fn test_reviewer_spawns_when_worktree_exists_but_no_current_coworker() {
+    // Create a PR that needs review — branch is lexington/fix-auth, owned by lexington
+    let pr_json = serde_json::json!({
+        "number": 456,
+        "headRefName": "lexington/fix-auth",
+        "title": "Fix authentication bug [Midtown !100]",
+        "mergeable": "MERGEABLE",
+        "statusCheckRollup": null,
+        "reviewDecision": null,
+        "isDraft": false,
+        "createdAt": "2026-01-01T00:00:00Z",
+        "state": "OPEN",
+    });
+
+    // Create a worktree registry with the branch registered but NO current_coworker
+    // (simulates post-restart state where coworker bindings are cleared)
+    let mut registry = crate::worktree_registry::WorktreeRegistry::default();
+    registry
+        .assign_worktree(crate::worktree_registry::WorktreeAssignment {
+            worktree_id: "task-100-fix-auth".to_string(),
+            branch_name: "lexington/fix-auth".to_string(),
+            task_id: Some("100".to_string()),
+            current_coworker: None, // Key: no coworker bound (post-restart)
+            pr_number: Some(456),
+            created_at: chrono::Utc::now(),
+            completed_at: None,
+        })
+        .unwrap();
+
+    // branch_owners_map is empty (mirrors snapshot after restart)
+    let branch_owners: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+
+    let state = make_test_state("test-repo");
+
+    let effects = collect_reviewer_effects_with_source(
+        Some(&branch_owners),
+        &state,
+        &[pr_json],
+        crate::github_state::AssignmentSource::PollingFallback,
+        Some(&registry),
+    )
+    .await;
+
+    // The PR should NOT be skipped as orphaned — effects should be non-empty.
+    // The specific effect depends on review state, but the key assertion is that
+    // the worktree registry lookup prevents the PR from being incorrectly skipped.
+    // Before the fix, this returned an empty Vec because the empty branch_owners_map
+    // caused every PR to be treated as orphaned.
+    assert!(
+        !effects.is_empty(),
+        "PR with registered worktree but no current_coworker should NOT be skipped as orphaned. \
+         Before fix: empty branch_owners_map caused all PRs to be treated as orphaned after restart.",
+    );
+}

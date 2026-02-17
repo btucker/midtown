@@ -1912,6 +1912,7 @@ async fn collect_reviewer_effects(
         state,
         prs,
         crate::github_state::AssignmentSource::PollingFallback,
+        Some(&snap.worktree_registry),
     )
     .await
 }
@@ -1921,6 +1922,7 @@ async fn collect_reviewer_effects_with_source(
     state: &DaemonState,
     prs: &[serde_json::Value],
     source: crate::github_state::AssignmentSource,
+    worktree_registry: Option<&crate::worktree_registry::WorktreeRegistry>,
 ) -> Vec<Effect> {
     let mut effects: Vec<Effect> = Vec::new();
 
@@ -2076,14 +2078,21 @@ async fn collect_reviewer_effects_with_source(
             }
         };
 
-        // Check if this owner has an active worktree (i.e., is actually working)
+        // Check if this PR has an associated worktree (active coworker or registered branch).
+        // After a daemon restart, current_coworker bindings are cleared, so branch_owners_map
+        // may be empty. Fall back to checking the worktree registry directly — if the branch
+        // exists there, the worktree is on disk and the author can address review feedback
+        // once respawned.
         let has_active_worktree = branch_owners_map
             .map(|map| map.values().any(|o| o == &owner))
             .unwrap_or(false);
+        let has_registered_worktree = worktree_registry
+            .map(|reg| reg.get_by_branch(head_ref).is_some())
+            .unwrap_or(false);
 
-        if !has_active_worktree {
+        if !has_active_worktree && !has_registered_worktree {
             debug!(
-                "PR #{} is orphaned (owner {} has no active worktree), skipping auto-review",
+                "PR #{} is orphaned (owner {} has no active or registered worktree), skipping auto-review",
                 pr_number, owner
             );
             continue;
@@ -2444,6 +2453,7 @@ pub(super) async fn process_pending_review_spawns(
             state,
             &[pr],
             crate::github_state::AssignmentSource::Webhook,
+            None, // Webhook path builds branch_owners from registry, no separate lookup needed
         )
         .await;
         all_effects.extend(effects);
@@ -2565,6 +2575,7 @@ pub(super) async fn handle_ci_completion_for_review_spawn(
         state,
         &[pr],
         crate::github_state::AssignmentSource::Webhook,
+        None, // Webhook path builds branch_owners from registry, no separate lookup needed
     )
     .await;
 
