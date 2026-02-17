@@ -415,3 +415,40 @@ fn test_table_alignment_center() {
         data_content
     );
 }
+
+#[test]
+fn test_inline_table_rule_width_scales_with_columns() {
+    // The fallback path in mad_line_to_line() should produce a rule width
+    // proportional to the column count, not a hardcoded value.
+    use super::mad_line_to_line;
+    use minimad::Text as MadText;
+
+    let md = "|---|---|---|";
+    let mad_text = MadText::from(md);
+    let mad_line = &mad_text.lines[0];
+    let line = mad_line_to_line(mad_line, base());
+    let content = line_content(&line);
+
+    // 3 columns → 3*3 + 2*3 = 15 chars of ─
+    assert_eq!(
+        content.chars().count(),
+        15,
+        "TableRule with 3 columns should produce 15-char rule, got: {:?}",
+        content
+    );
+
+    // Verify it scales: 2-column table rule should be shorter
+    let md2 = "|---|---|";
+    let mad_text2 = MadText::from(md2);
+    let mad_line2 = &mad_text2.lines[0];
+    let line2 = mad_line_to_line(mad_line2, base());
+    let content2 = line_content(&line2);
+
+    // 2 columns → 2*3 + 1*3 = 9 chars of ─
+    assert_eq!(
+        content2.chars().count(),
+        9,
+        "TableRule with 2 columns should produce 9-char rule, got: {:?}",
+        content2
+    );
+}

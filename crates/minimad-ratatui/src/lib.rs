@@ -170,7 +170,12 @@ fn mad_line_to_line(mad_line: &MadLine<'_>, base_style: Style) -> Line<'static> 
             }
             Line::from(spans)
         }
-        MadLine::TableRule(_) => Line::from(Span::styled("\u{2500}".repeat(40), base_style)),
+        MadLine::TableRule(rule) => {
+            // Fallback: estimate width from column count (3 chars per cell + separators)
+            let n = rule.cells.len().max(1);
+            let width = n * 3 + n.saturating_sub(1) * 3;
+            Line::from(Span::styled("\u{2500}".repeat(width), base_style))
+        }
         MadLine::HorizontalRule => Line::from(Span::styled("\u{2500}".repeat(40), base_style)),
     }
 }
