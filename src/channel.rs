@@ -352,6 +352,36 @@ impl Channel {
         Ok(())
     }
 
+    /// Helper: Try to acquire a shared lock with bounded retries.
+    ///
+    /// In high-concurrency scenarios (e.g., E2E tests), a write lock may be held
+    /// briefly after a write completes due to OS-level file handle cleanup.
+    /// Retry with short delays to avoid spurious failures.
+    ///
+    /// Retries up to 10 times with 50ms delays (500ms total).
+    fn try_lock_shared_with_retry(file: &File) -> Result<()> {
+        for attempt in 0..10 {
+            match file.try_lock_shared() {
+                Ok(()) => return Ok(()),
+                Err(_) if attempt < 9 => {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+                Err(e) => {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::WouldBlock,
+                        format!(
+                            "Failed to acquire shared lock after {} attempts: {}",
+                            attempt + 1,
+                            e
+                        ),
+                    )
+                    .into());
+                }
+            }
+        }
+        unreachable!("Loop should exit via Ok or Err")
+    }
+
     /// Append a message to the channel
     ///
     /// Uses file locking to ensure atomic append operations.
@@ -423,29 +453,7 @@ impl Channel {
         }
 
         let file = File::open(&self.channel_file)?;
-
-        // Try to acquire shared lock with bounded retries. In high-concurrency scenarios
-        // (e.g., E2E tests), a write lock may be held briefly after a write completes due
-        // to OS-level file handle cleanup. Retry with short delays to avoid spurious failures.
-        for attempt in 0..10 {
-            match file.try_lock_shared() {
-                Ok(()) => break,
-                Err(_) if attempt < 9 => {
-                    std::thread::sleep(std::time::Duration::from_millis(50));
-                }
-                Err(e) => {
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::WouldBlock,
-                        format!(
-                            "Failed to acquire shared lock after {} attempts: {}",
-                            attempt + 1,
-                            e
-                        ),
-                    )
-                    .into());
-                }
-            }
-        }
+        Self::try_lock_shared_with_retry(&file)?;
 
         let reader = BufReader::new(file);
         let mut messages = Vec::new();
@@ -488,35 +496,7 @@ impl Channel {
         let mut cursor = Cursor::load_or_create(&self.base_dir, &self.channel_name, agent)?;
 
         let file = File::open(&self.channel_file)?;
-
-        // Try to acquire shared lock with bounded retries to handle lock contention.
-        let mut acquired = false;
-        for attempt in 0..10 {
-            match file.try_lock_shared() {
-                Ok(()) => {
-                    acquired = true;
-                    break;
-                }
-                Err(_) if attempt < 9 => {
-                    std::thread::sleep(std::time::Duration::from_millis(50));
-                }
-                Err(e) => {
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::WouldBlock,
-                        format!("Failed to acquire shared lock after 500ms: {}", e),
-                    )
-                    .into());
-                }
-            }
-        }
-
-        if !acquired {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::TimedOut,
-                "Failed to acquire shared lock after 500ms",
-            )
-            .into());
-        }
+        Self::try_lock_shared_with_retry(&file)?;
 
         let mut reader = BufReader::new(file);
 
@@ -623,35 +603,7 @@ impl Channel {
 
         let file = File::open(&self.channel_file)?;
 
-        // Try to acquire shared lock with bounded retries to handle lock contention.
-        // This prevents failures when a writer is still releasing its exclusive lock.
-        let mut acquired = false;
-        for attempt in 0..10 {
-            match file.try_lock_shared() {
-                Ok(()) => {
-                    acquired = true;
-                    break;
-                }
-                Err(_) if attempt < 9 => {
-                    std::thread::sleep(std::time::Duration::from_millis(50));
-                }
-                Err(e) => {
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::WouldBlock,
-                        format!("Failed to acquire shared lock after 500ms: {}", e),
-                    )
-                    .into());
-                }
-            }
-        }
-
-        if !acquired {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::TimedOut,
-                "Failed to acquire shared lock after 500ms",
-            )
-            .into());
-        }
+        Self::try_lock_shared_with_retry(&file)?;
 
         let file_size = file.metadata()?.len();
         if file_size == 0 {
@@ -726,34 +678,7 @@ impl Channel {
 
         let file = File::open(&self.channel_file)?;
 
-        // Try to acquire shared lock with bounded retries to handle lock contention.
-        let mut acquired = false;
-        for attempt in 0..10 {
-            match file.try_lock_shared() {
-                Ok(()) => {
-                    acquired = true;
-                    break;
-                }
-                Err(_) if attempt < 9 => {
-                    std::thread::sleep(std::time::Duration::from_millis(50));
-                }
-                Err(e) => {
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::WouldBlock,
-                        format!("Failed to acquire shared lock after 500ms: {}", e),
-                    )
-                    .into());
-                }
-            }
-        }
-
-        if !acquired {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::TimedOut,
-                "Failed to acquire shared lock after 500ms",
-            )
-            .into());
-        }
+        Self::try_lock_shared_with_retry(&file)?;
 
         // Estimate where to start reading
         let estimated_bytes = (n as u64) * 300;
