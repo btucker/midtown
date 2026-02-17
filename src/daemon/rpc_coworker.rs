@@ -64,7 +64,6 @@ pub(super) async fn handle_coworker_spawn(
         role: crate::launch::CoworkerRole::Coworker,
         initial_prompt: prompt,
         additional_dirs: vec![],
-        restrict_setting_sources: true,
         pr_number: None,
         team_name: Some(team),
         working_dir: None,

@@ -1816,7 +1816,7 @@ pub fn handle_view(project: Option<&str>, skip_auto_split: bool) -> Result<Respo
 
     let cwd = super::session::ensure_attach_worktree("lead", cwd)?;
     let lead_shell_command =
-        super::session::build_attach_shell_command(&cwd, "lead", provider, session_id)?;
+        super::session::build_attach_shell_command(&cwd, "lead", provider, session_id, None)?;
 
     let host = AttachHost::detect();
 

@@ -833,8 +833,12 @@ impl DaemonState {
         let mut headless_config = launch_config.to_headless_config(&self.repo_name);
         headless_config.cwd = Some(working_dir.clone());
 
-        // Write shared coworker settings file and set the path
-        let settings_file = crate::settings::write_coworker_settings_file()?;
+        // Write role-appropriate settings file and set the path
+        let settings_file = if config.role == crate::launch::CoworkerRole::Lead {
+            crate::settings::write_lead_settings_file()?
+        } else {
+            crate::settings::write_coworker_settings_file()?
+        };
         headless_config.settings_path = Some(settings_file.to_string_lossy().to_string());
 
         // Set up agent-teams infrastructure (mailbox) before spawning
