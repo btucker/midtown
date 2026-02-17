@@ -11,6 +11,7 @@ use std::{collections::VecDeque, mem};
 
 use crate::cli::Response;
 use crate::client::DaemonClient;
+use crossterm::{QueueableCommand, cursor, style};
 use tracing::{debug, info};
 
 const COWORKER_INPUT_MAX_WAIT: Duration = Duration::from_secs(120);
@@ -348,6 +349,52 @@ fn capture_output_text(mirror: &SharedOutputMirror) -> String {
         Ok(mirror) => mirror.sanitized_content(),
         Err(_) => String::new(),
     }
+}
+
+fn draw_status_bar(
+    session: &str,
+    cwd: &str,
+    terminal_width: u16,
+    status_row: u16,
+) -> Result<(), String> {
+    let mut stdout = std::io::stdout();
+
+    // Format: "{session} | Worktree: {cwd}"
+    let status_text = format!("{} | Worktree: {}", session, cwd);
+
+    // Truncate if needed
+    let display_text = if status_text.len() > terminal_width as usize {
+        let available = terminal_width.saturating_sub(3) as usize; // Reserve space for "..."
+        if available > 0 {
+            format!(
+                "{}...",
+                &status_text[..status_text.floor_char_boundary(available)]
+            )
+        } else {
+            String::new()
+        }
+    } else {
+        status_text
+    };
+
+    // Move to status bar row, draw in gray, then return cursor to (0, 0)
+    stdout
+        .queue(cursor::MoveTo(0, status_row))
+        .map_err(|e| format!("Failed to move cursor: {}", e))?
+        .queue(style::SetForegroundColor(style::Color::DarkGrey))
+        .map_err(|e| format!("Failed to set color: {}", e))?;
+
+    write!(stdout, "{}", display_text).map_err(|e| format!("Failed to write status bar: {}", e))?;
+
+    stdout
+        .queue(style::ResetColor)
+        .map_err(|e| format!("Failed to reset color: {}", e))?
+        .queue(cursor::MoveTo(0, 0))
+        .map_err(|e| format!("Failed to move cursor back: {}", e))?
+        .flush()
+        .map_err(|e| format!("Failed to flush stdout: {}", e))?;
+
+    Ok(())
 }
 
 fn sanitize_terminal_text(raw: &[u8]) -> String {
@@ -719,9 +766,11 @@ pub fn handle(cmd: &HeadedWrapperCommand, client: &DaemonClient) -> Result<Respo
 
             let pty_system = portable_pty::native_pty_system();
             let (cols, rows) = crossterm::terminal::size().unwrap_or((120, 40));
+            // Reserve one row for the status bar
+            let pty_rows = rows.saturating_sub(1);
             let pty_pair = pty_system
                 .openpty(portable_pty::PtySize {
-                    rows,
+                    rows: pty_rows,
                     cols,
                     pixel_width: 0,
                     pixel_height: 0,
@@ -756,6 +805,18 @@ pub fn handle(cmd: &HeadedWrapperCommand, client: &DaemonClient) -> Result<Respo
             let output_mirror: SharedOutputMirror = Arc::new(Mutex::new(OutputMirror::default()));
 
             let raw_mode_enabled = crossterm::terminal::enable_raw_mode().is_ok();
+
+            // Draw initial status bar
+            let default_cwd = std::env::current_dir()
+                .ok()
+                .and_then(|p| p.to_str().map(|s| s.to_string()))
+                .unwrap_or_else(|| ".".to_string());
+            let cwd_display = cwd.as_deref().unwrap_or(&default_cwd);
+            let status_row = rows.saturating_sub(1);
+            if let Err(e) = draw_status_bar(session, cwd_display, cols, status_row) {
+                debug!("Failed to draw initial status bar: {}", e);
+            }
+
             spawn_stdout_relay(pty_reader, Arc::clone(&output_mirror));
             spawn_stdin_relay(Arc::clone(&shared_writer), Arc::clone(&input_state));
 
@@ -789,14 +850,23 @@ pub fn handle(cmd: &HeadedWrapperCommand, client: &DaemonClient) -> Result<Respo
                     && let Ok(crossterm::event::Event::Resize(new_cols, new_rows)) =
                         crossterm::event::read()
                 {
+                    // Reserve one row for the status bar
+                    let new_pty_rows = new_rows.saturating_sub(1);
                     let new_size = portable_pty::PtySize {
-                        rows: new_rows,
+                        rows: new_pty_rows,
                         cols: new_cols,
                         pixel_width: 0,
                         pixel_height: 0,
                     };
                     if let Err(e) = pty_pair.master.resize(new_size) {
                         debug!("Failed to resize PTY: {}", e);
+                    }
+
+                    // Redraw status bar at new position
+                    let new_status_row = new_rows.saturating_sub(1);
+                    if let Err(e) = draw_status_bar(session, cwd_display, new_cols, new_status_row)
+                    {
+                        debug!("Failed to redraw status bar on resize: {}", e);
                     }
                 }
 
