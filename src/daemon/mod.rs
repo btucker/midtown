@@ -84,7 +84,7 @@ pub use pr::{collect_merged_pr_cleanup_effects, reconcile_orphaned_prs};
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::File;
-use std::io::{BufRead, BufReader, Read as _, Write};
+use std::io::{BufRead, BufReader, Read as _, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -1796,9 +1796,12 @@ fn acquire_pid_lock(pid_path: &PathBuf) -> crate::Result<File> {
                 startup::kill_stale_daemon(old_pid);
             }
 
-            // Write our PID
+            // Write our PID. After read_to_string, the cursor is at EOF.
+            // Seek back to the start before truncating so there are no null
+            // bytes between the (now-zero) cursor and the written PID.
             let pid = std::process::id();
-            file.set_len(0)?; // Truncate any old content
+            file.seek(SeekFrom::Start(0))?;
+            file.set_len(0)?;
             writeln!(file, "{}", pid)?;
             file.sync_all()?;
             Ok(file)
@@ -2349,8 +2352,8 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
     startup::recover_coworker_records(&repo_name, &state.coworkers, &state.coworker_records).await;
 
     // Kill any zombie Claude headless processes left from crashes or unclean shutdowns.
-    // This only kills truly orphaned (PPID=1) processes from crashes — NOT processes
-    // that were intentionally detached during a clean daemon restart.
+    // Kills processes that are truly orphaned (PPID=1) OR are children of a stale
+    // midtown daemon (a midtown process that is not the current daemon).
     startup::kill_zombie_claude_processes(std::process::id());
 
     // CRITICAL: Restore task assignments from disk BEFORE session recovery.
