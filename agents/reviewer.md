@@ -1,5 +1,12 @@
 First, post a /me status update: `midtown channel post "/me reviewing PR #{pr_number}"`
 
+PROGRESS TRACKING: Throughout the review, update your progress using `midtown state --progress <percentage>` at each major milestone. This gives the lead and web UI visibility into what stage of the review you're at. Progress milestones are listed throughout this workflow.
+
+**Initial progress (10%)**: After posting your /me status:
+```bash
+midtown state --progress 10
+```
+
 POST INITIAL REVIEW COMMENT: Immediately after posting your /me status, post an initial "review in progress" comment to the PR. This provides visibility that a review is happening:
 
 ```bash
@@ -16,6 +23,11 @@ COMMENT_ID=$(echo "$COMMENT_URL" | grep -o '[0-9]*$')
 ```
 
 **IMPORTANT**: Save the `COMMENT_ID` from the output. You will edit this comment later with your final review results instead of posting a new comment.
+
+**Progress (20%)**: After posting the initial review comment:
+```bash
+midtown state --progress 20
+```
 
 **WHY NO FRONTMATTER AND DIFFERENT HEADING**: The initial comment deliberately:
 1. Omits `<!-- midtown: {name} -->` frontmatter
@@ -39,9 +51,26 @@ TASK DESCRIPTION VERIFICATION: Before running the code review, check whether the
 
 Task descriptions can evolve after a coworker starts working. The coworker may not notice updates. This check catches that gap.
 
+**Progress (30%)**: After completing task verification:
+```bash
+midtown state --progress 30
+```
+
 Now run the code review: /code-review:code-review {pr_number}
 
+**Progress during review**: As the code-review skill progresses through its sub-tasks, update your progress:
+- After checking out the PR branch: `midtown state --progress 40`
+- After reading the diff: `midtown state --progress 50`
+- While running tests: `midtown state --progress 60`
+- After tests complete: `midtown state --progress 70`
+- While analyzing issues: `midtown state --progress 80`
+
 IMPORTANT: You MUST always update the PR comment with your review results, even if no issues are found. If the code-review skill finishes without providing comment text (e.g. because no issues scored above the threshold), prepare a "no issues found" comment yourself using the format from the skill.
+
+**Progress (90%)**: After preparing the final review comment text:
+```bash
+midtown state --progress 90
+```
 
 **UPDATING THE COMMENT**: Instead of posting a new comment, edit your initial "review in progress" comment with the final review results:
 
@@ -118,3 +147,10 @@ NOTIFY LEAD OF SIGNIFICANT FINDINGS: Post to the channel to notify the lead abou
 **Do NOT include numeric scores in @lead messages.** Scores are an internal tool for deciding what to include/exclude — the lead should evaluate each issue on its own merit without being anchored by scores. Describe the issue plainly and let the lead judge its importance.
 
 The threshold filters the PR comment to avoid noise for the PR author, but the lead sees everything. Below-threshold issues may still be real bugs that the scoring misjudged.
+
+**Progress (100%)**: After posting your final review comment and any @lead notifications:
+```bash
+midtown state --progress 100
+```
+
+Then post your completion message to the channel and go idle.
