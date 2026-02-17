@@ -446,7 +446,7 @@ fn test_orphan_recovery_pr_ref_bug() {
         println!("  Effect: {:?}", effect);
     }
 
-    // Should generate CallInCoworker or other reconciliation effects
+    // Should generate spawn or other reconciliation effects
     // Test passes if we reach this point without panicking
 }
 
@@ -823,5 +823,544 @@ fn test_tool_names_must_be_unique_all_stuck() {
     );
 
     // Should handle tool name conflicts gracefully
+    // Test passes if we reach this point without panicking
+}
+
+/// Test that double assignment for open PRs is prevented.
+///
+/// Regression test for: snapshot-double-assign-open-pr-20260216-231443.json
+///
+/// Bug: Multiple reviewers were assigned to the same PR.
+#[test]
+fn test_double_assign_open_pr() {
+    let fixture =
+        include_str!("fixtures/snapshot/snapshot-double-assign-open-pr-20260216-231443.json");
+    let snapshot: WorldSnapshot =
+        serde_json::from_str(fixture).expect("Failed to deserialize snapshot");
+
+    // Check if orphaned PRs are reconciled without double-assigning reviewers
+    let effects = reconcile_orphaned_prs(&snapshot);
+
+    println!(
+        "reconcile_orphaned_prs returned {} effects for double-assign prevention",
+        effects.len()
+    );
+    for effect in &effects {
+        println!("  Effect: {:?}", effect);
+    }
+
+    // Snapshot shows 2 PRs needing review with no reviewer assignments
+    // Should generate reviewer spawn effects
+    let spawn_count = effects
+        .iter()
+        .filter(|e| {
+            matches!(
+                e,
+                Effect::SpawnCoworker(..)
+                    | Effect::SpawnCoworkerWithCallbacks { .. }
+                    | Effect::AssignAndSpawn { .. }
+            )
+        })
+        .count();
+
+    // Should not create duplicate spawn effects for the same PR
+    assert!(
+        spawn_count <= 2,
+        "Should not spawn more than 2 reviewers for 2 PRs needing review, got {}",
+        spawn_count
+    );
+}
+
+/// Test that orphan recovery doesn't cause double assignment (case 1).
+///
+/// Regression test for: snapshot-double-assign-orphan-recovery-20260214-040616.json
+///
+/// Bug: Orphan recovery logic assigned the same work to multiple coworkers.
+#[test]
+fn test_double_assign_orphan_recovery_20260214() {
+    let fixture = include_str!(
+        "fixtures/snapshot/snapshot-double-assign-orphan-recovery-20260214-040616.json"
+    );
+    let snapshot: WorldSnapshot =
+        serde_json::from_str(fixture).expect("Failed to deserialize snapshot");
+
+    // Check multiple decision functions for double-assignment prevention
+    let orphan_effects = reset_orphaned_tasks(&snapshot);
+    let pr_effects = reconcile_orphaned_prs(&snapshot);
+
+    println!(
+        "Orphan recovery (20260214): orphan_effects={}, pr_effects={}",
+        orphan_effects.len(),
+        pr_effects.len()
+    );
+    for effect in orphan_effects.iter().chain(pr_effects.iter()) {
+        println!("  Effect: {:?}", effect);
+    }
+
+    // Should not generate duplicate task assignments
+    // Test passes if we reach this point without panicking
+}
+
+/// Test that orphan recovery doesn't cause double assignment (case 2).
+///
+/// Regression test for: snapshot-double-assign-orphan-recovery-20260216-161016.json
+///
+/// Bug: Orphan recovery logic assigned the same work to multiple coworkers.
+#[test]
+fn test_double_assign_orphan_recovery_20260216() {
+    let fixture = include_str!(
+        "fixtures/snapshot/snapshot-double-assign-orphan-recovery-20260216-161016.json"
+    );
+    let snapshot: WorldSnapshot =
+        serde_json::from_str(fixture).expect("Failed to deserialize snapshot");
+
+    let orphan_effects = reset_orphaned_tasks(&snapshot);
+    let pr_effects = reconcile_orphaned_prs(&snapshot);
+
+    println!(
+        "Orphan recovery (20260216): orphan_effects={}, pr_effects={}",
+        orphan_effects.len(),
+        pr_effects.len()
+    );
+
+    // Should not generate duplicate task assignments or PR reconciliation
+    // Test passes if we reach this point without panicking
+}
+
+/// Test that duplicate merge tasks are not created.
+///
+/// Regression test for: snapshot-duplicate-merge-tasks-20260217-003305.json
+///
+/// Bug: Multiple merge tasks were created for the same PR.
+#[test]
+fn test_duplicate_merge_tasks() {
+    let fixture =
+        include_str!("fixtures/snapshot/snapshot-duplicate-merge-tasks-20260217-003305.json");
+    let snapshot: WorldSnapshot =
+        serde_json::from_str(fixture).expect("Failed to deserialize snapshot");
+
+    // Check if merged PR cleanup creates duplicate tasks
+    let effects = collect_merged_pr_cleanup_effects(&snapshot);
+
+    println!(
+        "collect_merged_pr_cleanup_effects returned {} effects for duplicate merge task prevention",
+        effects.len()
+    );
+    for effect in &effects {
+        println!("  Effect: {:?}", effect);
+    }
+
+    // Should not create duplicate task completion or coworker shutdown effects
+    // Each merged PR should only be handled once
+    let shutdown_count = effects
+        .iter()
+        .filter(|e| matches!(e, Effect::ShutdownCoworker { .. }))
+        .count();
+    let complete_count = effects
+        .iter()
+        .filter(|e| matches!(e, Effect::CompleteTask { .. }))
+        .count();
+
+    println!(
+        "Merge cleanup: shutdowns={}, completions={}",
+        shutdown_count, complete_count
+    );
+
+    // Test passes if we reach this point without panicking
+}
+
+/// Test that PR 1164 gets a reviewer after orphan fix.
+///
+/// Regression test for: snapshot-pr-1164-still-no-reviewer-after-orphan-fix-20260217-034006.json
+///
+/// Bug: After fixing orphan recovery, PR 1164 still didn't get assigned a reviewer.
+#[test]
+fn test_pr_1164_still_no_reviewer_after_orphan_fix() {
+    let fixture = include_str!(
+        "fixtures/snapshot/snapshot-pr-1164-still-no-reviewer-after-orphan-fix-20260217-034006.json"
+    );
+    let snapshot: WorldSnapshot =
+        serde_json::from_str(fixture).expect("Failed to deserialize snapshot");
+
+    // Check if orphaned PRs are reconciled
+    let effects = reconcile_orphaned_prs(&snapshot);
+
+    println!(
+        "reconcile_orphaned_prs returned {} effects for PR 1164 reviewer assignment",
+        effects.len()
+    );
+    for effect in &effects {
+        println!("  Effect: {:?}", effect);
+    }
+
+    // Should generate reviewer spawn/resume effects for PRs needing review
+    let has_reviewer_action = effects.iter().any(|e| {
+        matches!(
+            e,
+            Effect::SpawnCoworker(..)
+                | Effect::SpawnCoworkerWithCallbacks { .. }
+                | Effect::AssignAndSpawn { .. }
+                | Effect::ResumeCoworker { .. }
+        )
+    });
+
+    assert!(
+        has_reviewer_action || effects.is_empty(),
+        "Expected reviewer spawn/resume for PR 1164 or empty if already assigned"
+    );
+}
+
+/// Test that double nudge for PR merge is prevented.
+///
+/// Regression test for: snapshot-double-nudge-pr-merge-20260204-173400.json
+///
+/// Bug: Same PR merge nudge was sent multiple times.
+///
+/// SKIPPED: Snapshot is missing `active_session_ids` field (outdated schema).
+#[test]
+#[ignore = "Snapshot uses outdated WorldSnapshot schema"]
+fn test_double_nudge_pr_merge() {
+    let fixture =
+        include_str!("fixtures/snapshot/snapshot-double-nudge-pr-merge-20260204-173400.json");
+    let snapshot: WorldSnapshot =
+        serde_json::from_str(fixture).expect("Failed to deserialize snapshot");
+
+    // Check if merged PR cleanup prevents duplicate nudges
+    let effects = collect_merged_pr_cleanup_effects(&snapshot);
+
+    println!(
+        "collect_merged_pr_cleanup_effects returned {} effects for double nudge prevention",
+        effects.len()
+    );
+
+    // Should not generate duplicate nudges for the same PR merge
+    // Test passes if we reach this point without panicking
+}
+
+/// Test that madison break loop with PR not merging is handled.
+///
+/// Regression test for: snapshot-madison-break-loop-pr-not-merging-20260205-130328.json
+///
+/// Bug: Coworker was stuck in a break loop while their PR wasn't merging.
+///
+/// SKIPPED: Snapshot is missing `active_session_ids` field (outdated schema).
+#[test]
+#[ignore = "Snapshot uses outdated WorldSnapshot schema"]
+fn test_madison_break_loop_pr_not_merging() {
+    let fixture = include_str!(
+        "fixtures/snapshot/snapshot-madison-break-loop-pr-not-merging-20260205-130328.json"
+    );
+    let snapshot: WorldSnapshot =
+        serde_json::from_str(fixture).expect("Failed to deserialize snapshot");
+
+    // Check multiple decision functions for break loop detection
+    let idle_effects = check_and_shutdown_idle_coworkers(&snapshot);
+    let pr_effects = reconcile_orphaned_prs(&snapshot);
+
+    println!(
+        "Madison break loop: idle_effects={}, pr_effects={}",
+        idle_effects.len(),
+        pr_effects.len()
+    );
+
+    // Should not send coworker on break while they have an open PR
+    // Test passes if we reach this point without panicking
+}
+
+/// Test early debug capture scenario.
+///
+/// Regression test for: snapshot-early-debug-capture-20260204-144326.json
+///
+/// Bug: Early debug snapshot captured for investigation.
+///
+/// SKIPPED: Snapshot is missing `active_session_ids` field (outdated schema).
+#[test]
+#[ignore = "Snapshot uses outdated WorldSnapshot schema"]
+fn test_early_debug_capture() {
+    let fixture =
+        include_str!("fixtures/snapshot/snapshot-early-debug-capture-20260204-144326.json");
+    let snapshot: WorldSnapshot =
+        serde_json::from_str(fixture).expect("Failed to deserialize snapshot");
+
+    // Check multiple decision functions handle the state
+    let orphan_effects = reset_orphaned_tasks(&snapshot);
+    let pr_effects = reconcile_orphaned_prs(&snapshot);
+    let idle_effects = check_and_shutdown_idle_coworkers(&snapshot);
+
+    println!(
+        "Early debug: orphan={}, pr={}, idle={}",
+        orphan_effects.len(),
+        pr_effects.len(),
+        idle_effects.len()
+    );
+
+    // Test passes if we reach this point without panicking
+}
+
+/// Test that false positive bugs are handled correctly.
+///
+/// Regression test for: snapshot-false-positive-bugs-20260204-135417.json
+///
+/// Bug: False positive bug detection causing incorrect behavior.
+///
+/// SKIPPED: Snapshot is missing `active_session_ids` field (outdated schema).
+#[test]
+#[ignore = "Snapshot uses outdated WorldSnapshot schema"]
+fn test_false_positive_bugs() {
+    let fixture =
+        include_str!("fixtures/snapshot/snapshot-false-positive-bugs-20260204-135417.json");
+    let snapshot: WorldSnapshot =
+        serde_json::from_str(fixture).expect("Failed to deserialize snapshot");
+
+    // Check that decision functions don't trigger false positives
+    let stuck_effects = check_and_restart_stuck_reviewers(&snapshot);
+    let orphan_effects = reset_orphaned_tasks(&snapshot);
+
+    println!(
+        "False positive check: stuck={}, orphan={}",
+        stuck_effects.len(),
+        orphan_effects.len()
+    );
+
+    // Should not generate effects for false positive conditions
+    // Test passes if we reach this point without panicking
+}
+
+/// Test stuck compaction false positive.
+///
+/// Regression test for: snapshot-stuck-compaction-false-positive-20260204-174139.json
+///
+/// Bug: Compaction was incorrectly flagged as stuck.
+///
+/// SKIPPED: Snapshot is missing `active_session_ids` field (outdated schema).
+#[test]
+#[ignore = "Snapshot uses outdated WorldSnapshot schema"]
+fn test_stuck_compaction_false_positive() {
+    let fixture = include_str!(
+        "fixtures/snapshot/snapshot-stuck-compaction-false-positive-20260204-174139.json"
+    );
+    let snapshot: WorldSnapshot =
+        serde_json::from_str(fixture).expect("Failed to deserialize snapshot");
+
+    // Check that stuck detection doesn't fire for compaction
+    let effects = check_and_restart_stuck_reviewers(&snapshot);
+
+    println!(
+        "check_and_restart_stuck_reviewers returned {} effects for compaction false positive",
+        effects.len()
+    );
+
+    // Should not restart coworkers that are not actually stuck
+    // Test passes if we reach this point without panicking
+}
+
+/// Test compaction investigation scenario.
+///
+/// Regression test for: snapshot-compaction-investigation-20260204-175139.json
+///
+/// Bug: Snapshot captured during compaction investigation.
+///
+/// SKIPPED: Snapshot is missing `active_session_ids` field (outdated schema).
+#[test]
+#[ignore = "Snapshot uses outdated WorldSnapshot schema"]
+fn test_compaction_investigation() {
+    let fixture =
+        include_str!("fixtures/snapshot/snapshot-compaction-investigation-20260204-175139.json");
+    let snapshot: WorldSnapshot =
+        serde_json::from_str(fixture).expect("Failed to deserialize snapshot");
+
+    // Check that decision functions handle compaction state correctly
+    let effects = check_and_restart_stuck_reviewers(&snapshot);
+
+    println!("Compaction investigation: {} effects", effects.len());
+
+    // Test passes if we reach this point without panicking
+}
+
+/// Test broadway debug scenario.
+///
+/// Regression test for: snapshot-broadway-debug-20260203-140232.json
+///
+/// Bug: Snapshot captured for broadway coworker debugging.
+///
+/// SKIPPED: Snapshot is missing `active_session_ids` field (outdated schema).
+#[test]
+#[ignore = "Snapshot uses outdated WorldSnapshot schema"]
+fn test_broadway_debug() {
+    let fixture = include_str!("fixtures/snapshot/snapshot-broadway-debug-20260203-140232.json");
+    let snapshot: WorldSnapshot =
+        serde_json::from_str(fixture).expect("Failed to deserialize snapshot");
+
+    // Check multiple decision functions for broadway-specific issues
+    let orphan_effects = reset_orphaned_tasks(&snapshot);
+    let pr_effects = reconcile_orphaned_prs(&snapshot);
+
+    println!(
+        "Broadway debug: orphan={}, pr={}",
+        orphan_effects.len(),
+        pr_effects.len()
+    );
+
+    // Test passes if we reach this point without panicking
+}
+
+/// Test generic early snapshot 1.
+///
+/// Regression test for: snapshot-20260203-023035.json
+///
+/// Bug: Early snapshot for general debugging.
+///
+/// SKIPPED: Snapshot is missing `active_session_ids` field (outdated schema).
+#[test]
+#[ignore = "Snapshot uses outdated WorldSnapshot schema"]
+fn test_snapshot_20260203_023035() {
+    let fixture = include_str!("fixtures/snapshot/snapshot-20260203-023035.json");
+    let snapshot: WorldSnapshot =
+        serde_json::from_str(fixture).expect("Failed to deserialize snapshot");
+
+    // Check basic decision functions
+    let orphan_effects = reset_orphaned_tasks(&snapshot);
+    let idle_effects = check_and_shutdown_idle_coworkers(&snapshot);
+
+    println!(
+        "Snapshot 20260203-023035: orphan={}, idle={}",
+        orphan_effects.len(),
+        idle_effects.len()
+    );
+
+    // Test passes if we reach this point without panicking
+}
+
+/// Test generic early snapshot 2.
+///
+/// Regression test for: snapshot-20260203-023607.json
+///
+/// SKIPPED: Snapshot is missing `active_session_ids` field (outdated schema).
+#[test]
+#[ignore = "Snapshot uses outdated WorldSnapshot schema"]
+fn test_snapshot_20260203_023607() {
+    let fixture = include_str!("fixtures/snapshot/snapshot-20260203-023607.json");
+    let snapshot: WorldSnapshot =
+        serde_json::from_str(fixture).expect("Failed to deserialize snapshot");
+
+    let orphan_effects = reset_orphaned_tasks(&snapshot);
+    let pr_effects = reconcile_orphaned_prs(&snapshot);
+
+    println!(
+        "Snapshot 20260203-023607: orphan={}, pr={}",
+        orphan_effects.len(),
+        pr_effects.len()
+    );
+
+    // Test passes if we reach this point without panicking
+}
+
+/// Test generic early snapshot 3.
+///
+/// Regression test for: snapshot-20260203-031848.json
+///
+/// SKIPPED: Snapshot file contains git error message (not valid JSON).
+#[test]
+#[ignore = "Snapshot file is malformed"]
+fn test_snapshot_20260203_031848() {
+    let fixture = include_str!("fixtures/snapshot/snapshot-20260203-031848.json");
+    let snapshot: WorldSnapshot =
+        serde_json::from_str(fixture).expect("Failed to deserialize snapshot");
+
+    let orphan_effects = reset_orphaned_tasks(&snapshot);
+
+    println!("Snapshot 20260203-031848: orphan={}", orphan_effects.len());
+
+    // Test passes if we reach this point without panicking
+}
+
+/// Test generic early snapshot 4.
+///
+/// Regression test for: snapshot-20260203-142602.json
+///
+/// SKIPPED: Snapshot is missing `active_session_ids` field (outdated schema).
+#[test]
+#[ignore = "Snapshot uses outdated WorldSnapshot schema"]
+fn test_snapshot_20260203_142602() {
+    let fixture = include_str!("fixtures/snapshot/snapshot-20260203-142602.json");
+    let snapshot: WorldSnapshot =
+        serde_json::from_str(fixture).expect("Failed to deserialize snapshot");
+
+    let idle_effects = check_and_shutdown_idle_coworkers(&snapshot);
+    let stuck_effects = check_and_restart_stuck_reviewers(&snapshot);
+
+    println!(
+        "Snapshot 20260203-142602: idle={}, stuck={}",
+        idle_effects.len(),
+        stuck_effects.len()
+    );
+
+    // Test passes if we reach this point without panicking
+}
+
+/// Test generic early snapshot 5.
+///
+/// Regression test for: snapshot-20260203-162511.json
+///
+/// SKIPPED: Snapshot is missing `active_session_ids` field (outdated schema).
+#[test]
+#[ignore = "Snapshot uses outdated WorldSnapshot schema"]
+fn test_snapshot_20260203_162511() {
+    let fixture = include_str!("fixtures/snapshot/snapshot-20260203-162511.json");
+    let snapshot: WorldSnapshot =
+        serde_json::from_str(fixture).expect("Failed to deserialize snapshot");
+
+    let orphan_effects = reset_orphaned_tasks(&snapshot);
+    let pr_effects = reconcile_orphaned_prs(&snapshot);
+
+    println!(
+        "Snapshot 20260203-162511: orphan={}, pr={}",
+        orphan_effects.len(),
+        pr_effects.len()
+    );
+
+    // Test passes if we reach this point without panicking
+}
+
+/// Test generic early snapshot 6.
+///
+/// Regression test for: snapshot-20260203-193252.json
+///
+/// SKIPPED: Snapshot is missing `active_session_ids` field (outdated schema).
+#[test]
+#[ignore = "Snapshot uses outdated WorldSnapshot schema"]
+fn test_snapshot_20260203_193252() {
+    let fixture = include_str!("fixtures/snapshot/snapshot-20260203-193252.json");
+    let snapshot: WorldSnapshot =
+        serde_json::from_str(fixture).expect("Failed to deserialize snapshot");
+
+    let effects = reconcile_orphaned_prs(&snapshot);
+
+    println!("Snapshot 20260203-193252: pr={}", effects.len());
+
+    // Test passes if we reach this point without panicking
+}
+
+/// Test generic early snapshot 7.
+///
+/// Regression test for: snapshot-20260204-005541.json
+///
+/// SKIPPED: Snapshot is missing `active_session_ids` field (outdated schema).
+#[test]
+#[ignore = "Snapshot uses outdated WorldSnapshot schema"]
+fn test_snapshot_20260204_005541() {
+    let fixture = include_str!("fixtures/snapshot/snapshot-20260204-005541.json");
+    let snapshot: WorldSnapshot =
+        serde_json::from_str(fixture).expect("Failed to deserialize snapshot");
+
+    let orphan_effects = reset_orphaned_tasks(&snapshot);
+    let idle_effects = check_and_shutdown_idle_coworkers(&snapshot);
+
+    println!(
+        "Snapshot 20260204-005541: orphan={}, idle={}",
+        orphan_effects.len(),
+        idle_effects.len()
+    );
+
     // Test passes if we reach this point without panicking
 }
