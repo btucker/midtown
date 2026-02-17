@@ -540,6 +540,26 @@ where
     pre_spawn
 }
 
+/// Extract task IDs claimed by orphan recovery effects.
+///
+/// Scans `SpawnCoworkerWithCallbacks` on_success callbacks for `RecordTaskAssignment`
+/// effects and returns all found task IDs. Used by `events.rs` to build an exclusion
+/// set for `spawn_for_pending_tasks_excluding`, preventing dual-spawn when orphan
+/// recovery and pending dispatch both target the same task in one tick.
+pub(super) fn extract_claimed_task_ids_from_effects(effects: &[Effect]) -> HashSet<String> {
+    let mut ids = HashSet::new();
+    for effect in effects {
+        if let Effect::SpawnCoworkerWithCallbacks { on_success, .. } = effect {
+            for sub in on_success {
+                if let Effect::RecordTaskAssignment { task_id, .. } = sub {
+                    ids.insert(task_id.clone());
+                }
+            }
+        }
+    }
+    ids
+}
+
 /// Gather data and build effects for nudging coworkers discovered on daemon startup.
 ///
 /// Gather data and build effects for nudging coworkers discovered on daemon startup.
@@ -1117,12 +1137,27 @@ pub fn decide_orphan_cleanup(data: &OrphanCleanupData) -> Vec<Effect> {
     effects
 }
 
-/// Handles two cases:
-/// 1. Pending tasks with owners - spawn/nudge the assigned coworker if not running
-/// 2. Pending tasks without owners - spawn a new coworker, assign the task, and nudge
+/// Convenience wrapper that calls `spawn_for_pending_tasks_excluding` with no exclusions.
+/// Use this when orphan recovery runs in a separate tick and there are no same-tick
+/// task IDs to exclude.
 pub(super) fn spawn_for_pending_tasks(
     snap: &snapshot::WorldSnapshot,
     state: &DaemonState,
+) -> Vec<effects::Effect> {
+    spawn_for_pending_tasks_excluding(snap, state, &std::collections::HashSet::new())
+}
+
+/// Handles two cases:
+/// 1. Pending tasks with owners - spawn/nudge the assigned coworker if not running
+/// 2. Pending tasks without owners - spawn a new coworker, assign the task, and nudge
+///
+/// `excluded_task_ids`: Task IDs already claimed by orphan recovery in this tick.
+/// Pending dispatch skips these to avoid dual-spawn when a task appears in both
+/// `in_progress_tasks` (orphaned) and `pending_tasks_without_owners` simultaneously.
+pub(super) fn spawn_for_pending_tasks_excluding(
+    snap: &snapshot::WorldSnapshot,
+    state: &DaemonState,
+    excluded_task_ids: &std::collections::HashSet<String>,
 ) -> Vec<effects::Effect> {
     // Skip task assignment if daemon is draining (graceful shutdown in progress)
     if state.draining.load(std::sync::atomic::Ordering::SeqCst) {
@@ -1425,6 +1460,18 @@ pub(super) fn spawn_for_pending_tasks(
                 current_coworker_count, spawns_queued_this_tick, dev_cap, task.id
             );
             break;
+        }
+
+        // Skip tasks already claimed by orphan recovery in this tick.
+        // Orphan recovery and pending dispatch both run on the same snapshot, so a task
+        // can appear as both in_progress (orphaned) and pending simultaneously. Skipping
+        // here prevents dual spawns where two different coworkers target the same task.
+        if excluded_task_ids.contains(&task.id) {
+            debug!(
+                "Task !{} already claimed by orphan recovery this tick, skipping pending dispatch",
+                task.id
+            );
+            continue;
         }
 
         // Skip tasks that already have an in-flight AssignAndSpawn effect.
@@ -1899,7 +1946,13 @@ pub fn reset_orphaned_tasks(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
 
         // Only consider tasks WITHOUT an associated open PR
         // (tasks with PRs are handled by reconcile_tasks_in_review)
-        if snap.tasks_with_open_prs.contains_key(task_id) {
+        // Check both sources: pr_author_sessions (tasks_with_open_prs) and GitHub API
+        // (github_open_pr_task_ids). After a daemon restart, pr_author_sessions is empty
+        // but github_open_pr_task_ids is repopulated from the GitHub API — tasks must be
+        // protected from reset even when only the GitHub source has them.
+        if snap.tasks_with_open_prs.contains_key(task_id)
+            || snap.github_open_pr_task_ids.contains_key(task_id)
+        {
             continue;
         }
 

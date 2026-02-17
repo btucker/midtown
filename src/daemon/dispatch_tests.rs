@@ -2349,6 +2349,99 @@ fn test_reset_orphaned_tasks_with_pr_no_effect() {
 }
 
 #[test]
+fn test_reset_orphaned_tasks_github_open_pr_task_ids_protects() {
+    // Regression test for bug: reset_orphaned_tasks only checked tasks_with_open_prs
+    // (from pr_author_sessions) but NOT github_open_pr_task_ids (from GitHub API).
+    //
+    // After a daemon restart, pr_author_sessions is empty, so tasks_with_open_prs is
+    // empty. Tasks with open PRs (detected via GitHub PR titles) were incorrectly
+    // reset to pending, triggering a new coworker spawn for an already-PR'd task.
+    //
+    // Scenario matches snapshot-pr-opened-then-task-unassigned-reassigned-20260217-190136.json:
+    // - tasks_with_open_prs is empty (stale after restart)
+    // - github_open_pr_task_ids has task 1422 → PR #1211
+    // - Task 1422 is in_progress, owned by madison (not active)
+    //
+    // Bug: reset_orphaned_tasks would emit ResetTaskToPending for task 1422.
+    // Fix: also check github_open_pr_task_ids before resetting.
+    let in_progress = vec![(
+        "1422".to_string(),
+        "Create minimad-ratatui standalone crate".to_string(),
+        "madison".to_string(),
+    )];
+    let tasks_with_open_prs = HashMap::new(); // Empty — stale after daemon restart
+    let active_names = HashSet::new(); // madison is NOT active
+
+    let mut snap = make_reconcile_snapshot(in_progress, tasks_with_open_prs, active_names);
+    // github_open_pr_task_ids populated from GitHub API (authoritative)
+    snap.github_open_pr_task_ids
+        .insert("1422".to_string(), 1211u64);
+
+    let effects = reset_orphaned_tasks(&snap);
+
+    assert!(
+        effects.is_empty(),
+        "Should not reset task !1422 — it has open PR #1211 via github_open_pr_task_ids, \
+         even though tasks_with_open_prs is empty (stale after restart). Got effects: {:?}",
+        effects
+    );
+}
+
+#[test]
+fn test_reset_orphaned_tasks_github_open_pr_task_ids_inactive_owner() {
+    // Regression test for the sequence: PR opened, coworker went on break,
+    // daemon restart → tasks_with_open_prs emptied → reset_orphaned_tasks fires.
+    //
+    // The captured snapshot-pr-opened-then-task-unassigned-reassigned shows the
+    // divergence: tasks_with_open_prs={} but github_open_pr_task_ids has the PRs.
+    // When owners later go inactive, reset_orphaned_tasks must still protect them.
+    //
+    // Simulates what happens after coworkers go on break (removed from active_names).
+    let in_progress = vec![
+        (
+            "1422".to_string(),
+            "Create minimad-ratatui crate".to_string(),
+            "madison".to_string(),
+        ),
+        (
+            "1428".to_string(),
+            "Fix daemon re-spawns".to_string(),
+            "amsterdam".to_string(),
+        ),
+        (
+            "1429".to_string(),
+            "Fix lead counts against dev cap".to_string(),
+            "park".to_string(),
+        ),
+    ];
+    let tasks_with_open_prs = HashMap::new(); // Empty — stale after daemon restart
+    let active_names = HashSet::new(); // All owners went on break
+
+    let mut snap = make_reconcile_snapshot(in_progress, tasks_with_open_prs, active_names);
+    // github_open_pr_task_ids populated from GitHub API (authoritative, survives restart)
+    snap.github_open_pr_task_ids
+        .insert("1422".to_string(), 1211u64);
+    snap.github_open_pr_task_ids
+        .insert("1428".to_string(), 1212u64);
+    snap.github_open_pr_task_ids
+        .insert("1429".to_string(), 1210u64);
+
+    let effects = reset_orphaned_tasks(&snap);
+
+    // None of the three tasks should be reset — all have open PRs
+    for task_id in &["1422", "1428", "1429"] {
+        let was_reset = effects.iter().any(
+            |e| matches!(e, Effect::ResetTaskToPending { task_id: tid, .. } if tid == task_id),
+        );
+        assert!(
+            !was_reset,
+            "Task !{task_id} should NOT be reset — it has an open PR via github_open_pr_task_ids, \
+             even though tasks_with_open_prs is empty (stale after restart)"
+        );
+    }
+}
+
+#[test]
 fn test_reset_orphaned_tasks_pr_reference_in_subject_protects() {
     // Bug: "Address review feedback on PR #42" tasks reference an open PR
     // but don't own it (not in tasks_with_open_prs). Without the PR-reference
@@ -3495,6 +3588,139 @@ fn test_orphan_recovery_marks_task_in_flight() {
     assert!(
         state.is_task_spawn_in_flight("999999"),
         "Task !999999 should be marked in-flight after orphan recovery"
+    );
+}
+
+// ======================================================================
+// Dual dispatch (same-tick orphan recovery + pending dispatch) tests
+// ======================================================================
+
+#[test]
+fn test_dual_dispatch_orphan_recovery_and_pending_same_tick() {
+    // Regression test for dual dispatch bug where check_and_recover_orphans and
+    // spawn_for_pending_tasks both produce spawns for the same task in one tick.
+    //
+    // Scenario: Task !1420 appears simultaneously as:
+    //   - in_progress (orphaned, owner "lexington" not active) → orphan recovery spawns lexington
+    //   - pending without owner (in snapshot after a race condition) → dispatch spawns madison
+    //
+    // The fix: spawn_for_pending_tasks should accept an excluded_task_ids set from orphan
+    // recovery so it skips tasks already being recovered.
+    use crate::tasks::{Task, TaskStatus};
+    use chrono::Duration;
+    use std::time::SystemTime;
+
+    let now = chrono::Utc::now();
+    // Lexington stopped far enough back to be outside the grace period (not recently stopped)
+    // so orphan recovery will still pick it up (should_recover_task allows recovery)
+    let lexington_stopped = now - Duration::seconds(60);
+
+    let snap = snapshot::WorldSnapshot {
+        // Task !1420 is in_progress, owned by lexington (who is not active)
+        in_progress_tasks: vec![(
+            "1420".to_string(),
+            "Add click-and-drag resizing for the sidebar/chat divider".to_string(),
+            "lexington".to_string(),
+        )],
+        // Task !1420 also appears as pending without owner (race condition / same tick)
+        pending_tasks_without_owners: vec![Task {
+            id: "1420".to_string(),
+            subject: "Add click-and-drag resizing for the sidebar/chat divider".to_string(),
+            status: TaskStatus::Pending,
+            owner: None,
+            blocked_by: vec![],
+            description: None,
+            channel: None,
+            pr: None,
+            created_at: Some(SystemTime::now()),
+        }],
+        // Lexington is NOT active - its session ended
+        active_names: HashSet::new(),
+        coworker_stop_times: {
+            let mut m = HashMap::new();
+            m.insert("lexington".to_string(), lexington_stopped);
+            m
+        },
+        // Not at dev limit - allows spawning
+        is_at_dev_limit: false,
+        is_at_coworker_limit: false,
+        running_coworkers: vec![],
+        now_utc: now,
+        ..snapshot::minimal_snapshot_for_test()
+    };
+
+    let state = make_test_state();
+
+    // Simulate what events.rs does: collect orphan effects, then collect pending task effects
+    let orphan_effects = check_and_recover_orphans_with_task_lookup(&snap, &state, |task_id| {
+        if task_id == "1420" {
+            Some(in_progress_task_for_lookup(
+                "1420",
+                "Add click-and-drag resizing for the sidebar/chat divider",
+                "lexington",
+            ))
+        } else {
+            None
+        }
+    });
+
+    // Verify orphan recovery produces a spawn for task !1420
+    let orphan_spawns: Vec<_> = orphan_effects
+        .iter()
+        .filter(|e| {
+            if let Effect::SpawnCoworkerWithCallbacks { on_success, .. } = e {
+                on_success.iter().any(|sub| {
+                    matches!(sub, Effect::RecordTaskAssignment { task_id, .. } if task_id == "1420")
+                })
+            } else {
+                false
+            }
+        })
+        .collect();
+    assert_eq!(
+        orphan_spawns.len(),
+        1,
+        "Orphan recovery should produce exactly one spawn for task !1420"
+    );
+
+    // Extract claimed task IDs as events.rs does after the fix
+    let excluded_ids = extract_claimed_task_ids_from_effects(&orphan_effects);
+    assert!(
+        excluded_ids.contains("1420"),
+        "Orphan recovery should claim task !1420"
+    );
+
+    // Pending dispatch with exclusion set (the fixed path)
+    let pending_effects_fixed = spawn_for_pending_tasks_excluding(&snap, &state, &excluded_ids);
+
+    // Combine all effects as events.rs does
+    let all_effects: Vec<&Effect> = orphan_effects
+        .iter()
+        .chain(pending_effects_fixed.iter())
+        .collect();
+
+    // Count spawn effects targeting task !1420
+    let spawns_for_task_1420: Vec<_> = all_effects
+        .iter()
+        .filter(|e| {
+            match e {
+            Effect::SpawnCoworkerWithCallbacks { on_success, .. } => {
+                on_success.iter().any(|sub| {
+                    matches!(sub, Effect::RecordTaskAssignment { task_id, .. } if task_id == "1420")
+                })
+            }
+            Effect::AssignAndSpawn { task_id, .. } => task_id == "1420",
+            _ => false,
+        }
+        })
+        .collect();
+
+    assert_eq!(
+        spawns_for_task_1420.len(),
+        1,
+        "Only one spawn should target task !1420 — orphan recovery and pending dispatch \
+         should not both spawn for the same task in the same tick. Got {} spawns.",
+        spawns_for_task_1420.len()
     );
 }
 
