@@ -360,6 +360,7 @@ fn test_lead_attach_includes_system_prompt() {
         "lead",
         midtown::auth::AuthProvider::Claude,
         "session-123",
+        None,
     );
 
     let command = result.expect("build_attach_shell_command should succeed");
@@ -388,6 +389,7 @@ fn test_coworker_attach_includes_system_prompt() {
         "park",
         midtown::auth::AuthProvider::Claude,
         "session-456",
+        None,
     );
 
     let command = result.expect("build_attach_shell_command should succeed");
@@ -416,6 +418,7 @@ fn test_lead_attach_sets_task_list_id() {
         "lead",
         midtown::auth::AuthProvider::Claude,
         "session-123",
+        None,
     );
 
     assert!(result.is_ok(), "build_attach_shell_command should succeed");
@@ -438,6 +441,7 @@ fn test_coworker_attach_no_task_list_id() {
         "park",
         midtown::auth::AuthProvider::Claude,
         "session-456",
+        None,
     );
 
     assert!(result.is_ok(), "build_attach_shell_command should succeed");
@@ -460,6 +464,7 @@ fn test_lead_attach_includes_agent_teams_flags() {
         "lead",
         midtown::auth::AuthProvider::Claude,
         "session-123",
+        None,
     );
 
     let command = result.expect("build_attach_shell_command should succeed");
@@ -478,6 +483,129 @@ fn test_lead_attach_includes_agent_teams_flags() {
     assert!(
         command.contains("--agent-name"),
         "Lead attach should include --agent-name flag, got: {}",
+        command
+    );
+}
+
+// ── Model flag in to_cli_args ─────────────────────────────────────────
+
+#[test]
+fn test_to_cli_args_includes_model_flag() {
+    let config = midtown::launch::LaunchConfig {
+        name: "lead".to_string(),
+        session_mode: midtown::launch::SessionMode::Fresh,
+        role: midtown::launch::CoworkerRole::Lead,
+        initial_prompt: None,
+        additional_dirs: vec![],
+        restrict_setting_sources: false,
+        pr_number: None,
+        team_name: None,
+        working_dir: None,
+        model: "opus".to_string(),
+        channel: None,
+        auth_profile_dir: None,
+        auth_provider: midtown::auth::AuthProvider::Claude,
+    };
+
+    let settings = std::env::temp_dir().join("test-model-settings.json");
+    let prompt = std::env::temp_dir().join("test-model-prompt.txt");
+    let _ = std::fs::write(&settings, "{}");
+    let _ = std::fs::write(&prompt, "test");
+
+    let (args, _) = config.to_cli_args(&settings, &prompt, None);
+
+    // Should pass --model flag so all launch paths set the model explicitly
+    assert!(
+        args.contains(&"--model".to_string()),
+        "to_cli_args should include --model flag, got: {:?}",
+        args
+    );
+    // Should use the configured model
+    assert!(
+        args.contains(&"opus".to_string()),
+        "to_cli_args should pass the configured model value, got: {:?}",
+        args
+    );
+}
+
+#[test]
+fn test_to_cli_args_coworker_gets_sonnet_model() {
+    let config = midtown::launch::LaunchConfig {
+        name: "park".to_string(),
+        session_mode: midtown::launch::SessionMode::Fresh,
+        role: midtown::launch::CoworkerRole::Coworker,
+        initial_prompt: None,
+        additional_dirs: vec![],
+        restrict_setting_sources: true,
+        pr_number: None,
+        team_name: None,
+        working_dir: None,
+        model: "sonnet".to_string(),
+        channel: None,
+        auth_profile_dir: None,
+        auth_provider: midtown::auth::AuthProvider::Claude,
+    };
+
+    let settings = std::env::temp_dir().join("test-model-settings2.json");
+    let prompt = std::env::temp_dir().join("test-model-prompt2.txt");
+    let _ = std::fs::write(&settings, "{}");
+    let _ = std::fs::write(&prompt, "test");
+
+    let (args, _) = config.to_cli_args(&settings, &prompt, None);
+
+    assert!(
+        args.contains(&"--model".to_string()),
+        "to_cli_args should include --model flag"
+    );
+    assert!(
+        args.contains(&"sonnet".to_string()),
+        "Coworker should use sonnet model, got: {:?}",
+        args
+    );
+}
+
+// ── Reviewer attach role ──────────────────────────────────────────────
+
+#[test]
+fn test_reviewer_attach_gets_reviewer_system_prompt() {
+    let _lock = SESSION_CWD_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    ensure_in_git_repo();
+    let result = build_attach_shell_command(
+        "/tmp/test-cwd",
+        "york",
+        midtown::auth::AuthProvider::Claude,
+        "session-789",
+        Some("reviewer"),
+    );
+
+    let command = result.expect("build_attach_shell_command should succeed");
+
+    // Reviewer attach should include --setting-sources (coworker behavior)
+    assert!(
+        command.contains("--setting-sources"),
+        "Reviewer attach should restrict setting sources, got: {}",
+        command
+    );
+}
+
+#[test]
+fn test_lead_attach_gets_opus_model() {
+    let _lock = SESSION_CWD_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    ensure_in_git_repo();
+    let result = build_attach_shell_command(
+        "/tmp/test-cwd",
+        "lead",
+        midtown::auth::AuthProvider::Claude,
+        "session-123",
+        None,
+    );
+
+    let command = result.expect("build_attach_shell_command should succeed");
+
+    // Lead should always get opus model
+    assert!(
+        command.contains("--model") && command.contains("opus"),
+        "Lead attach should use opus model, got: {}",
         command
     );
 }

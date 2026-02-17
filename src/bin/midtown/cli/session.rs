@@ -293,6 +293,10 @@ fn handle_attach(target: &AttachArgs, client: &DaemonClient) -> Result<Response,
                 .and_then(|v| v.as_str())
                 .unwrap_or("claude"),
         );
+        let coworker_type = info
+            .get("coworker_type")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
         if let Err(e) = midtown::platform_launch::run_platform_prelaunch_hook(provider) {
             eprintln!(
                 "Warning: Platform pre-launch hook failed (continuing): {}",
@@ -305,7 +309,8 @@ fn handle_attach(target: &AttachArgs, client: &DaemonClient) -> Result<Response,
         // For coworkers, this ensures the worktree directory exists.
         let cwd = ensure_attach_worktree(name, cwd)?;
 
-        let shell_command = build_attach_shell_command(&cwd, name, provider, session_id)?;
+        let shell_command =
+            build_attach_shell_command(&cwd, name, provider, session_id, coworker_type.as_deref())?;
         let launcher = PaneLauncher::detect();
 
         // Step 3: Launch interactive session in a pane for the current terminal host.
@@ -691,6 +696,7 @@ pub(crate) fn build_attach_shell_command(
     name: &str,
     provider: midtown::auth::AuthProvider,
     session_id: &str,
+    coworker_type: Option<&str>,
 ) -> Result<String, String> {
     let repo_name =
         midtown::paths::detect_repo_name().ok_or_else(|| "Not in a git repository".to_string())?;
@@ -698,9 +704,11 @@ pub(crate) fn build_attach_shell_command(
     let profile_dir =
         midtown::auth::active_profile_dir_for_project_with_provider(&repo_name, provider);
 
-    // Determine role based on name
+    // Determine role from coworker_type (provided by daemon's HeadlessSessionInfo)
     let role = if name == "lead" {
         midtown::launch::CoworkerRole::Lead
+    } else if coworker_type == Some("reviewer") {
+        midtown::launch::CoworkerRole::Reviewer
     } else {
         midtown::launch::CoworkerRole::Coworker
     };
@@ -749,7 +757,11 @@ pub(crate) fn build_attach_shell_command(
                 pr_number: None,
                 team_name: team_name.clone(),
                 working_dir: None,
-                model: "opus".to_string(),
+                model: match role {
+                    midtown::launch::CoworkerRole::Lead
+                    | midtown::launch::CoworkerRole::Reviewer => "opus".to_string(),
+                    midtown::launch::CoworkerRole::Coworker => "sonnet".to_string(),
+                },
                 channel: None,
                 auth_profile_dir: Some(profile_dir.clone()),
                 auth_provider: provider,

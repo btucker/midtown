@@ -794,11 +794,16 @@ fn attach_session_split(session_name: &str) {
         }
     };
 
+    let coworker_type = info
+        .get("coworker_type")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
     let shell_command = match super::session::build_attach_shell_command(
         &cwd,
         session_name,
         provider,
         session_id,
+        coworker_type.as_deref(),
     ) {
         Ok(cmd) => cmd,
         Err(_) => {

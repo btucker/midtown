@@ -457,6 +457,10 @@ impl LaunchConfig {
             args.push("project,local".to_string());
         }
 
+        // Model selection (ensures all launch paths explicitly set the model)
+        args.push("--model".to_string());
+        args.push(self.model.clone());
+
         // Agent teams flags (enables mailbox-based message delivery)
         if let Some(ref team) = self.team_name {
             let agent_id = crate::mailbox::agent_id(&self.name, team);

@@ -563,6 +563,7 @@ pub(super) async fn handle_session_attach(
             "cwd": cwd,
             "name": name,
             "provider": provider.as_str(),
+            "coworker_type": info.coworker_type,
         }),
     )
 }
