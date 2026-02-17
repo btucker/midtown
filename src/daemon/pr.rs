@@ -1090,6 +1090,17 @@ fn pr_action_to_effects(
                     issue_type,
                 },
             ];
+
+            // Cross-tick spawn deduplication (!1377): Include RecordTaskAssignment
+            // so mark_in_flight_spawns_from_effects() tracks this spawn and prevents
+            // task dispatch from double-spawning for the same task in the next tick.
+            if let Some(task_id) = ctx.pr_task_associations.get(&pr_number) {
+                on_success.push(Effect::RecordTaskAssignment {
+                    coworker: owner.clone(),
+                    task_id: task_id.clone(),
+                });
+            }
+
             if saved_session.is_some() {
                 on_success.push(Effect::ClearPrBreakSession {
                     name: owner.clone(),
@@ -1750,6 +1761,17 @@ fn comment_action_to_effects(
                     issue_type,
                 },
             ];
+
+            // Cross-tick spawn deduplication (!1377): Include RecordTaskAssignment
+            // so mark_in_flight_spawns_from_effects() tracks this spawn and prevents
+            // task dispatch from double-spawning for the same task in the next tick.
+            if let Some(task_id) = ctx.pr_task_associations.get(&pr_number) {
+                on_success.push(Effect::RecordTaskAssignment {
+                    coworker: owner.clone(),
+                    task_id: task_id.clone(),
+                });
+            }
+
             if saved_session.is_some() {
                 on_success.push(Effect::ClearPrBreakSession {
                     name: owner.clone(),
@@ -1853,7 +1875,7 @@ fn handoff_to_coworker_effects(
         original_author,
     );
 
-    let on_success = vec![
+    let mut on_success = vec![
         Effect::BroadcastCoworkerUpdate {
             name: assignee.to_string(),
             status: "running".to_string(),
@@ -1872,6 +1894,16 @@ fn handoff_to_coworker_effects(
             issue_type,
         },
     ];
+
+    // Cross-tick spawn deduplication (!1377): Include RecordTaskAssignment
+    // so mark_in_flight_spawns_from_effects() tracks this spawn and prevents
+    // task dispatch from double-spawning for the same task in the next tick.
+    if let Some(task_id) = ctx.pr_task_associations.get(&pr_number) {
+        on_success.push(Effect::RecordTaskAssignment {
+            coworker: assignee.to_string(),
+            task_id: task_id.clone(),
+        });
+    }
 
     let on_failure = vec![
         Effect::PostToChannel {
@@ -2327,6 +2359,17 @@ fn review_complete_action_to_effects(
                     issue_type,
                 },
             ];
+
+            // Cross-tick spawn deduplication (!1377): Include RecordTaskAssignment
+            // so mark_in_flight_spawns_from_effects() tracks this spawn and prevents
+            // task dispatch from double-spawning for the same task in the next tick.
+            if let Some(task_id) = ctx.pr_task_associations.get(&pr_number) {
+                on_success.push(Effect::RecordTaskAssignment {
+                    coworker: owner.clone(),
+                    task_id: task_id.clone(),
+                });
+            }
+
             if saved_session.is_some() {
                 on_success.push(Effect::ClearPrBreakSession {
                     name: owner.clone(),
