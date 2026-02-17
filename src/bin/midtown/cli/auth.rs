@@ -1,6 +1,6 @@
 //! CLI handlers for auth profile management.
 
-use std::io::IsTerminal;
+use std::io::{IsTerminal, Write};
 
 use clap::Subcommand;
 use crossterm::{
@@ -443,6 +443,8 @@ struct ProfileRow {
     is_global_current: bool,
     has_credentials: bool,
     usage: Option<midtown::UsageData>,
+    /// Cache age (seconds) when usage is stale.
+    cache_age_seconds: Option<u64>,
     /// Remaining capacity = min(100 - session_util, 100 - week_util).
     /// Higher is better. None for profiles without usage data.
     remaining_capacity: Option<f64>,
@@ -470,6 +472,70 @@ impl ProfileListContext {
     }
 }
 
+fn render_usage_fetch_progress(
+    provider: midtown::auth::AuthProvider,
+    completed: usize,
+    total: usize,
+) {
+    if total == 0 {
+        return;
+    }
+    let width = 20usize;
+    let filled = completed * width / total;
+    let bar = format!(
+        "[{}{}]",
+        "#".repeat(filled),
+        "-".repeat(width.saturating_sub(filled))
+    );
+    eprint!(
+        "\rFetching {} usage {} {}/{}",
+        provider, bar, completed, total
+    );
+    let _ = std::io::stderr().flush();
+}
+
+fn fetch_usage_results_with_progress(
+    provider: midtown::auth::AuthProvider,
+    profiles: &[String],
+) -> Vec<(String, Option<midtown::UsageData>)> {
+    if profiles.is_empty() {
+        return Vec::new();
+    }
+
+    let show_progress = std::io::stdout().is_terminal();
+    let total = profiles.len();
+
+    std::thread::scope(|s| {
+        let (tx, rx) = std::sync::mpsc::channel::<(String, Option<midtown::UsageData>)>();
+        for name in profiles.iter().cloned() {
+            let tx = tx.clone();
+            s.spawn(move || {
+                let usage = midtown::fetch_usage_for_profile(&name, provider);
+                let _ = tx.send((name, usage));
+            });
+        }
+        drop(tx);
+
+        let mut completed = 0usize;
+        let mut results = Vec::with_capacity(total);
+        while let Ok(item) = rx.recv() {
+            completed += 1;
+            if show_progress {
+                render_usage_fetch_progress(provider, completed, total);
+            }
+            results.push(item);
+            if completed == total {
+                break;
+            }
+        }
+
+        if show_progress {
+            eprintln!();
+        }
+        results
+    })
+}
+
 /// Fetch profiles with usage data, sorted by available capacity (best first).
 fn fetch_sorted_profiles(
     provider: midtown::auth::AuthProvider,
@@ -485,28 +551,10 @@ fn fetch_sorted_profiles(
         global_current.clone()
     };
 
-    // Fetch usage data for all authenticated profiles in parallel
-    let usage_results: Vec<(String, Option<midtown::UsageData>)> =
-        if provider == midtown::auth::AuthProvider::Claude {
-            std::thread::scope(|s| {
-                let handles: Vec<_> = profiles
-                    .iter()
-                    .map(|name| {
-                        let name = name.clone();
-                        s.spawn(move || {
-                            let usage = midtown::fetch_usage_for_profile(&name, provider);
-                            (name, usage)
-                        })
-                    })
-                    .collect();
-                handles.into_iter().filter_map(|h| h.join().ok()).collect()
-            })
-        } else {
-            profiles
-                .iter()
-                .map(|name| (name.clone(), None))
-                .collect::<Vec<_>>()
-        };
+    // Fetch usage data for all profiles in parallel.
+    // Values are cached for 5 minutes and may return stale cache entries
+    // when a live refresh fails.
+    let usage_results = fetch_usage_results_with_progress(provider, &profiles);
 
     let mut rows: Vec<ProfileRow> = profiles
         .iter()
@@ -517,6 +565,13 @@ fn fetch_sorted_profiles(
                 .iter()
                 .find(|(n, _)| n == name)
                 .and_then(|(_, u)| u.clone());
+            let cache_age_seconds = usage.as_ref().and_then(|u| {
+                if u.cache_stale {
+                    u.cache_age_seconds
+                } else {
+                    None
+                }
+            });
 
             let (remaining_capacity, bottleneck_reset) = if let Some(ref data) = usage {
                 let session_remaining = 100.0 - data.session_util;
@@ -539,6 +594,7 @@ fn fetch_sorted_profiles(
                 is_global_current: *name == global_current,
                 has_credentials,
                 usage,
+                cache_age_seconds,
                 remaining_capacity,
                 bottleneck_reset,
             }
@@ -592,6 +648,22 @@ fn format_relative_time(target: chrono::DateTime<chrono::Utc>) -> String {
     } else {
         let minutes = duration.num_minutes() % 60;
         format!("{}m", minutes)
+    }
+}
+
+fn format_cache_age(age_seconds: u64) -> String {
+    if age_seconds < 60 {
+        format!("{}s", age_seconds)
+    } else if age_seconds < 3600 {
+        format!("{}m", age_seconds / 60)
+    } else {
+        let hours = age_seconds / 3600;
+        let mins = (age_seconds % 3600) / 60;
+        if mins == 0 {
+            format!("{}h", hours)
+        } else {
+            format!("{}h {}m", hours, mins)
+        }
     }
 }
 
@@ -737,7 +809,11 @@ fn format_table(rows: &[ProfileRow]) -> String {
             } else {
                 ""
             };
-            let profile = format!("{}{}", row.name, marker);
+            let stale = row
+                .cache_age_seconds
+                .map(|age| format!(" [{} old]", format_cache_age(age)))
+                .unwrap_or_default();
+            let profile = format!("{}{}{}", row.name, marker, stale);
             if !row.has_credentials {
                 return (
                     profile,
@@ -1002,6 +1078,18 @@ fn run_selector_loop(
 }
 
 fn draw_selector(f: &mut ratatui::Frame, rows: &[ProfileRow], state: &mut ListState) {
+    let selector_suffix = |row: &ProfileRow| -> String {
+        if row.is_current {
+            " (active)".to_string()
+        } else if !row.has_credentials {
+            " (no auth)".to_string()
+        } else if let Some(age) = row.cache_age_seconds {
+            format!(" (cached {} old)", format_cache_age(age))
+        } else {
+            String::new()
+        }
+    };
+
     let mut items: Vec<ListItem> = rows
         .iter()
         .map(|row| {
@@ -1019,13 +1107,7 @@ fn draw_selector(f: &mut ratatui::Frame, rows: &[ProfileRow], state: &mut ListSt
                 Style::default()
             };
 
-            let suffix = if row.is_current {
-                " (active)"
-            } else if !row.has_credentials {
-                " (no auth)"
-            } else {
-                ""
-            };
+            let suffix = selector_suffix(row);
 
             ListItem::new(Line::from(vec![
                 Span::styled(format!("{} ", indicator), style),
@@ -1047,16 +1129,7 @@ fn draw_selector(f: &mut ratatui::Frame, rows: &[ProfileRow], state: &mut ListSt
     // Compute width: widest row content + 2 for borders + 2 for highlight padding
     let max_row_width = rows
         .iter()
-        .map(|row| {
-            let suffix_len = if row.is_current {
-                " (active)".len()
-            } else if !row.has_credentials {
-                " (no auth)".len()
-            } else {
-                0
-            };
-            2 + row.name.len() + suffix_len // "● " prefix + name + suffix
-        })
+        .map(|row| 2 + row.name.len() + selector_suffix(row).len()) // "● " prefix + name + suffix
         .max()
         .unwrap_or(0)
         .max("+ Add account".len());
@@ -1174,6 +1247,7 @@ mod tests {
                 is_global_current: false,
                 has_credentials: true,
                 usage: None,
+                cache_age_seconds: None,
                 remaining_capacity: None,
                 bottleneck_reset: None,
             },
@@ -1183,6 +1257,7 @@ mod tests {
                 is_global_current: true,
                 has_credentials: true,
                 usage: None,
+                cache_age_seconds: None,
                 remaining_capacity: None,
                 bottleneck_reset: None,
             },
