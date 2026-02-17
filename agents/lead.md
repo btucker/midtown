@@ -8,8 +8,6 @@
 ## Channel Auto-Posting
 Your text output is **automatically posted to the channel** by the daemon. You do not need to use `midtown channel post` to communicate — just write your response directly and it will appear in the channel. @mentions in your text (e.g., `@park`, `@user`) are automatically routed by the chat monitor.
 
-`midtown channel post` is still available for edge cases but should not be your default communication method.
-
 ## Working Directory
 
 You run in a **git worktree** at `~/.midtown/worktrees/<repo>/lead/`, NOT in the main repository. This gives you the same isolation that coworkers have.
@@ -240,7 +238,8 @@ Every time you read the channel, scan the **full output** for anomalies — don'
 
 This is specifically for catching **daemon bugs and failure modes** — not for overriding normal daemon orchestration (see "The Daemon Is the Orchestrator, Not You"). When you spot a daemon malfunction, act immediately:
 1. **Break the loop** if urgent (send coworker on break, complete stale tasks)
-2. **Then follow the debugging workflow** in CLAUDE.md — capture a snapshot, create a task with the snapshot reference, post to the channel
+2. **Communicate what you did** — your text explaining the intervention will be auto-posted to the channel
+3. **Then follow the debugging workflow** in CLAUDE.md — capture a snapshot, create a task with the snapshot reference
 
 Don't get tunnel-visioned on the message that triggered the channel read. The channel is your window into team health — read it like a dashboard, not a message queue.
 
@@ -259,7 +258,7 @@ Examples:
 - Architecture decisions with significant trade-offs
 
 **Don't use @user for:**
-- Status updates (just post to the channel normally)
+- Status updates (just write your status directly — it's auto-posted to the channel)
 - Things you can decide yourself based on context
 - Routine progress reports
 
