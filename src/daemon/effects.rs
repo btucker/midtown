@@ -86,6 +86,14 @@ pub enum Effect {
         status: String,
         current_task: Option<String>,
     },
+    /// Broadcast universal event items to WebSocket clients.
+    ///
+    /// Sends structured tool call data to connected web/TUI clients for
+    /// real-time visualization of agent activity.
+    BroadcastUniversalItems {
+        agent_name: String,
+        items: Vec<crate::universal_events::UniversalItem>,
+    },
     /// Record a cooldown entry (category + key).
     RecordCooldown { category: String, key: String },
     /// Schedule a usage-limit nudge at a specific time.
@@ -662,6 +670,11 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 current_task,
             } => {
                 state.broadcast_coworker_update(&name, &status, current_task.as_deref());
+            }
+            Effect::BroadcastUniversalItems { agent_name, items } => {
+                state.broadcast_web_update(crate::web::WebUpdate::UniversalItems(
+                    crate::web::UniversalItemsData { agent_name, items },
+                ));
             }
             Effect::RecordCooldown { category, key } => {
                 let mut cooldowns = state.cooldowns.lock().unwrap();

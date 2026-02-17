@@ -209,6 +209,9 @@ pub enum WebUpdate {
     /// Error response for a client action
     #[serde(rename = "error")]
     Error(ErrorData),
+    /// Universal event items from agent sessions
+    #[serde(rename = "universal_items")]
+    UniversalItems(UniversalItemsData),
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -252,6 +255,12 @@ pub struct LeadTypingData {
 #[derive(Debug, Clone, Serialize)]
 pub struct ErrorData {
     pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct UniversalItemsData {
+    pub agent_name: String,
+    pub items: Vec<crate::universal_events::UniversalItem>,
 }
 
 /// WebSocket message from client

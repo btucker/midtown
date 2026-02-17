@@ -153,6 +153,9 @@ pub mod clustering;
 // Specialized headless coworker abstraction
 pub mod specialized;
 
+// Universal event types for provider-agnostic session event processing
+pub mod universal_events;
+
 // Test utilities
 // Note: Always available for use in both library and binary tests.
 // The retry_with_backoff function is small and has no dependencies,

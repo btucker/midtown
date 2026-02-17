@@ -89,6 +89,21 @@ The web interface is a Svelte 5 + Vite SPA served on port 47022:
   - **Desktop (≥1025px)**: Three-column Slack-inspired layout with sidebar, main channel, and toggleable detail panel for tasks, PRs, and coworker info
 - Clickable `@coworker` mentions in messages open coworker detail panel on desktop
 
+## Universal Events Pipeline
+
+The `universal_events` module (`src/universal_events/`) provides a provider-agnostic event model for structured agent activity. It captures tool calls from Claude Code's `stream-json` output and broadcasts them to WebSocket clients as structured data, parallel to the existing text pipeline.
+
+**Data flow:**
+```
+StreamEvent (NDJSON drain) → extract_tool_calls() → Vec<UniversalItem>
+    → Effect::BroadcastUniversalItems → WebUpdate::UniversalItems → WebSocket clients
+```
+
+- **Types** (`mod.rs`): `UniversalItem`, `ItemKind`, `ContentPart`, `ItemStatus` — agent-agnostic, extensible to other providers.
+- **Claude converter** (`claude.rs`): Pure function `extract_tool_calls()` that extracts `tool_use` content blocks from `StreamEvent::Assistant` events.
+- **Integration** (`daemon/stream.rs`): `process_universal_events()` iterates all agents' events, calls the converter, and returns `BroadcastUniversalItems` effects.
+- **Broadcast**: The `BroadcastUniversalItems` effect sends `WebUpdate::UniversalItems` to all connected WebSocket clients. Agent name is carried at the envelope level (`UniversalItemsData`), not per-item.
+
 ## Headed Intercom RPC
 
 Headed wrappers are adapter-neutral shims around interactive agent processes.
