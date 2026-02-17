@@ -57,12 +57,10 @@ pub struct CoworkerInfo {
     /// Coworker name (e.g., "amsterdam")
     pub name: String,
     /// Current task ID being worked on
-    #[allow(dead_code)] // Kept for API consistency, not displayed in compact layout
     pub task_id: Option<u32>,
     /// Workflow phase abbreviation (e.g., "dev", "PR", "test")
     pub phase: Option<String>,
     /// PR number if one is open for this task
-    #[allow(dead_code)] // Kept for API consistency, not displayed in compact layout
     pub pr_number: Option<u64>,
     /// Health status: "green", "yellow", "red"
     pub health: String,

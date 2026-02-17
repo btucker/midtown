@@ -7,10 +7,10 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph},
+    widgets::{Block, Borders, Cell, Paragraph, Row, Table},
 };
 
-use super::super::app::{App, KanbanTask, TaskStatus};
+use super::super::app::{App, CoworkerInfo, KanbanTask, TaskStatus};
 use super::Hyperlink;
 use super::text::wrap_content;
 
@@ -304,7 +304,7 @@ fn draw_coworker_status(f: &mut Frame, app: &mut App, area: Rect) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1), // Header line
-            Constraint::Min(0),    // Content rows
+            Constraint::Min(0),    // Content rows (table)
         ])
         .split(area);
 
@@ -315,10 +315,7 @@ fn draw_coworker_status(f: &mut Frame, app: &mut App, area: Rect) {
     let active_coworkers: Vec<_> = app
         .coworkers
         .iter()
-        .filter(|cw| {
-            // Show coworker if they have a phase and it's not "idle"
-            cw.phase.as_deref() != Some("idle") && cw.phase.is_some()
-        })
+        .filter(|cw| cw.phase.as_deref() != Some("idle") && cw.phase.is_some())
         .collect();
 
     let active_count = active_coworkers.len();
@@ -331,109 +328,155 @@ fn draw_coworker_status(f: &mut Frame, app: &mut App, area: Rect) {
     )]));
     f.render_widget(header_paragraph, chunks[0]);
 
-    // Build status lines with responsive layout
-    let mut lines = Vec::new();
-    let available_width = area.width.saturating_sub(2) as usize; // Account for borders
+    // Available width inside the bordered table (subtract 2 for left+right borders)
+    let available_width = area.width.saturating_sub(2) as usize;
 
-    for cw in active_coworkers {
-        let health_color = match cw.health.as_str() {
-            "green" => Color::Green,
-            "yellow" => Color::Yellow,
-            "red" => Color::Red,
-            _ => Color::Green,
-        };
+    // Determine which columns to show based on available width.
+    //
+    // Column widths (fixed):
+    //   spinner : 2  (e.g. "⠋ ")
+    //   name    : max name length (variable, but bounded)
+    //   task_id : 5  (e.g. "!1418")
+    //   phase   : 4  (e.g. "dev ", "PR  ")
+    //   pr_num  : 5  (e.g. "#1207")
+    //   progress: 4  (e.g. "42% ")
+    //   time    : 4  (e.g. "~3m")
+    //
+    // Degradation order (drop from right):
+    //   Full:    spinner | name | task_id | phase | pr_num | progress | time
+    //   Level 1: spinner | name | task_id | phase | pr_num | progress
+    //   Level 2: spinner | name | task_id | phase | pr_num
+    //   Level 3: spinner | name | task_id | phase
+    //   Level 4: spinner | name | task_id
+    //   Minimal: spinner | name
 
-        // Build the status line with responsive degradation
-        // Priority order for dropping: phase, percentage, nothing (always show name + spinner + time)
-        let mut line_spans = Vec::new();
+    let name_max = active_coworkers
+        .iter()
+        .map(|cw| cw.name.len())
+        .max()
+        .unwrap_or(6);
 
-        // Always: spinner + name
-        line_spans.push(Span::styled(
-            format!("{} ", spinner),
-            Style::default().fg(Color::Yellow),
-        ));
-        line_spans.push(Span::styled(
-            format!("{}  ", cw.name),
-            Style::default().fg(health_color),
-        ));
+    // Column widths (each includes one space of padding on the right, handled by Cell)
+    let w_spinner: usize = 2; // "⠋ "
+    let w_name: usize = name_max; // right-padded to align
+    let w_task_id: usize = 5; // "!1418"
+    let w_phase: usize = 4; // "dev "
+    let w_pr: usize = 5; // "#1207"
+    let w_progress: usize = 4; // "42% "
+    let w_time: usize = 4; // "~3m"
 
-        // Build optional components
-        let phase_text = cw.phase.as_deref().unwrap_or("");
-        let progress_text = cw.progress.map(|p| format!("{}%", p)).unwrap_or_default();
-        let time_text = cw.time_estimate.as_deref().unwrap_or("");
+    // Gap between columns (minimum 1 space)
+    let gap: usize = 1;
 
-        // Calculate space needed for each layout level
-        // Full: "⠋ park  dev  42% ~3m"
-        let full_width = spinner.len()
-            + 1
-            + cw.name.len()
-            + 2
-            + phase_text.len()
-            + 2
-            + progress_text.len()
-            + 1
-            + time_text.len();
-        // Without phase: "⠋ park  42% ~3m"
-        let no_phase_width =
-            spinner.len() + 1 + cw.name.len() + 2 + progress_text.len() + 1 + time_text.len();
-        // Without percentage: "⠋ park  ~3m"
-        let no_pct_width = spinner.len() + 1 + cw.name.len() + 2 + time_text.len();
+    // Cumulative widths for each layout level
+    let base = w_spinner + gap + w_name;
+    let with_task = base + gap + w_task_id;
+    let with_phase = with_task + gap + w_phase;
+    let with_pr = with_phase + gap + w_pr;
+    let with_progress = with_pr + gap + w_progress;
+    let with_time = with_progress + gap + w_time;
 
-        if full_width <= available_width && !phase_text.is_empty() {
-            // Full layout: spinner + name + phase + percentage + time
-            line_spans.push(Span::styled(
-                format!("{}  ", phase_text),
-                Style::default().fg(Color::DarkGray),
-            ));
-            if !progress_text.is_empty() {
-                line_spans.push(Span::styled(
-                    format!("{} ", progress_text),
-                    Style::default().fg(Color::Cyan),
-                ));
-            }
-            if !time_text.is_empty() {
-                line_spans.push(Span::styled(
-                    time_text.to_string(),
-                    Style::default().fg(Color::Green),
-                ));
-            }
-        } else if no_phase_width <= available_width {
-            // Drop phase: spinner + name + percentage + time
-            if !progress_text.is_empty() {
-                line_spans.push(Span::styled(
-                    format!("{} ", progress_text),
-                    Style::default().fg(Color::Cyan),
-                ));
-            }
-            if !time_text.is_empty() {
-                line_spans.push(Span::styled(
-                    time_text.to_string(),
-                    Style::default().fg(Color::Green),
-                ));
-            }
-        } else if no_pct_width <= available_width {
-            // Drop percentage: spinner + name + time
-            if !time_text.is_empty() {
-                line_spans.push(Span::styled(
-                    time_text.to_string(),
-                    Style::default().fg(Color::Green),
-                ));
-            }
-        }
-        // If even the minimal layout doesn't fit, we show spinner + name only (already added)
+    let show_task_id = with_task <= available_width;
+    let show_phase = show_task_id && with_phase <= available_width;
+    let show_pr = show_phase && with_pr <= available_width;
+    let show_progress = show_pr && with_progress <= available_width;
+    let show_time = show_progress && with_time <= available_width;
 
-        lines.push(Line::from(line_spans));
+    // Build column constraints
+    let mut constraints = vec![
+        Constraint::Length(w_spinner as u16),
+        Constraint::Length(w_name as u16),
+    ];
+    if show_task_id {
+        constraints.push(Constraint::Length(w_task_id as u16));
+    }
+    if show_phase {
+        constraints.push(Constraint::Length(w_phase as u16));
+    }
+    if show_pr {
+        constraints.push(Constraint::Length(w_pr as u16));
+    }
+    if show_progress {
+        constraints.push(Constraint::Length(w_progress as u16));
+    }
+    if show_time {
+        constraints.push(Constraint::Min(w_time as u16));
     }
 
-    let paragraph = Paragraph::new(lines)
+    let rows: Vec<Row> = active_coworkers
+        .iter()
+        .map(|cw| {
+            coworker_table_row(
+                cw,
+                spinner,
+                show_task_id,
+                show_phase,
+                show_pr,
+                show_progress,
+                show_time,
+            )
+        })
+        .collect();
+
+    let table = Table::new(rows, constraints)
         .block(
             Block::default()
                 .borders(Borders::ALL)
                 .style(Style::default().fg(Color::White)),
         )
-        .style(Style::default());
+        .column_spacing(1);
 
-    f.render_widget(paragraph, chunks[1]);
+    f.render_widget(table, chunks[1]);
+}
+
+/// Build a single table Row for a coworker.
+fn coworker_table_row(
+    cw: &CoworkerInfo,
+    spinner: &str,
+    show_task_id: bool,
+    show_phase: bool,
+    show_pr: bool,
+    show_progress: bool,
+    show_time: bool,
+) -> Row<'static> {
+    let health_color = match cw.health.as_str() {
+        "green" => Color::Green,
+        "yellow" => Color::Yellow,
+        "red" => Color::Red,
+        _ => Color::Green,
+    };
+
+    let mut cells: Vec<Cell> = vec![
+        Cell::from(spinner.to_string()).style(Style::default().fg(Color::Yellow)),
+        Cell::from(cw.name.clone()).style(Style::default().fg(health_color)),
+    ];
+
+    if show_task_id {
+        let task_text = cw.task_id.map(|id| format!("!{id}")).unwrap_or_default();
+        cells.push(Cell::from(task_text).style(Style::default().fg(Color::DarkGray)));
+    }
+
+    if show_phase {
+        let phase_text = cw.phase.as_deref().unwrap_or("").to_string();
+        cells.push(Cell::from(phase_text).style(Style::default().fg(Color::DarkGray)));
+    }
+
+    if show_pr {
+        let pr_text = cw.pr_number.map(|n| format!("#{n}")).unwrap_or_default();
+        cells.push(Cell::from(pr_text).style(Style::default().fg(Color::Blue)));
+    }
+
+    if show_progress {
+        let progress_text = cw.progress.map(|p| format!("{p}%")).unwrap_or_default();
+        cells.push(Cell::from(progress_text).style(Style::default().fg(Color::Cyan)));
+    }
+
+    if show_time {
+        let time_text = cw.time_estimate.as_deref().unwrap_or("").to_string();
+        cells.push(Cell::from(time_text).style(Style::default().fg(Color::Green)));
+    }
+
+    Row::new(cells)
 }
 
 /// Compute indentation level for each task based on dependency structure.
