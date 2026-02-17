@@ -1920,7 +1920,7 @@ async fn collect_reviewer_effects(
     .await
 }
 
-async fn collect_reviewer_effects_with_source(
+pub(crate) async fn collect_reviewer_effects_with_source(
     branch_owners_map: Option<&std::collections::HashMap<String, String>>,
     worktree_registry: &crate::worktree_registry::WorktreeRegistry,
     state: &DaemonState,
