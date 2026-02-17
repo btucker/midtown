@@ -21,18 +21,41 @@ pub fn draw_chat_panel(f: &mut Frame, app: &mut App, area: Rect) {
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(5), Constraint::Length(input_bar_height)])
+        .constraints([
+            Constraint::Min(5),
+            Constraint::Length(1),
+            Constraint::Length(input_bar_height),
+        ])
         .split(area);
 
     // Store input area for click detection
-    app.input_area = Some(chunks[1]);
+    app.input_area = Some(chunks[2]);
 
     draw_chat_messages(f, app, chunks[0]);
-    draw_input_bar(f, app, chunks[1]);
+    draw_lead_indicator(f, app, chunks[1]);
+    draw_input_bar(f, app, chunks[2]);
 
     if app.autocomplete.show {
-        draw_autocomplete_dropdown(f, app, chunks[1]);
+        draw_autocomplete_dropdown(f, app, chunks[2]);
     }
+}
+
+/// Draw the lead working indicator line between chat messages and input bar.
+///
+/// Shows a braille spinner with "lead..." when the headless lead session is
+/// actively working. Always reserves the space to prevent layout jitter.
+fn draw_lead_indicator(f: &mut Frame, app: &mut App, area: Rect) {
+    let line = if app.lead_working {
+        let spinner = app.spinner_char();
+        Line::from(vec![Span::styled(
+            format!(" {} lead...", spinner),
+            Style::default().fg(Color::DarkGray),
+        )])
+    } else {
+        Line::from("")
+    };
+    let paragraph = Paragraph::new(line);
+    f.render_widget(paragraph, area);
 }
 
 /// Draw the chat messages area (top of chat panel)

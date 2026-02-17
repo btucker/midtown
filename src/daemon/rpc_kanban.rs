@@ -55,11 +55,16 @@ pub(crate) async fn handle_kanban_data(id: RequestId, state: &DaemonState) -> Re
     let cache_key = cache_key_hasher.finish();
 
     // Check cache first
-    if let Some(cached) = state.kanban_cache.get(cache_key) {
+    if let Some(mut cached) = state.kanban_cache.get(cache_key) {
         debug!(
             "Returning cached kanban data (TTL: {}s)",
             KANBAN_CACHE_TTL.as_secs()
         );
+        // lead_working is not cached — it's live session state
+        let lead_working = state.session_manager.is_alive("lead").await;
+        if let Some(obj) = cached.as_object_mut() {
+            obj.insert("lead_working".to_string(), serde_json::json!(lead_working));
+        }
         return Response::success(id, cached);
     }
 
@@ -248,6 +253,9 @@ pub(crate) async fn handle_kanban_data(id: RequestId, state: &DaemonState) -> Re
             .collect::<Vec<_>>()
     };
 
+    // Check if the headless lead session is actively working
+    let lead_working = state.session_manager.is_alive("lead").await;
+
     // Build response and cache it
     let response_data = serde_json::json!({
         "prs": prs,
@@ -255,6 +263,7 @@ pub(crate) async fn handle_kanban_data(id: RequestId, state: &DaemonState) -> Re
         "repos": repos,
         "coworkers": coworkers_data,
         "max_coworkers": state.max_coworkers,
+        "lead_working": lead_working,
     });
 
     state.kanban_cache.set(response_data.clone(), cache_key);
