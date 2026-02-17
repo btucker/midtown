@@ -2110,19 +2110,31 @@ pub(crate) async fn collect_reviewer_effects_with_source(
                 false
             }
             None => {
-                // No worktree found - orphaned
-                if let Some(owner) = coworker_from_branch_with_map(head_ref, branch_owners_map) {
+                // No worktree found - check if this is a lead PR
+                // Lead PRs are never orphaned because the lead's main worktree is always
+                // available to address review feedback, even if the PR's specific branch
+                // doesn't have a dedicated worktree entry.
+                if is_lead_branch(head_ref) {
+                    debug!(
+                        "PR #{} is a lead PR (branch: {}), not orphaned",
+                        pr_number, head_ref
+                    );
+                    false
+                } else if let Some(owner) =
+                    coworker_from_branch_with_map(head_ref, branch_owners_map)
+                {
                     debug!(
                         "PR #{} is orphaned (no worktree found for owner {}, branch: {}), skipping auto-review",
                         pr_number, owner, head_ref
                     );
+                    true
                 } else {
                     debug!(
                         "PR #{} is orphaned (no determinable owner or worktree, branch: {}), skipping auto-review",
                         pr_number, head_ref
                     );
+                    true
                 }
-                true
             }
         };
 
