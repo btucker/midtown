@@ -663,6 +663,96 @@ async fn test_completed_worktree_with_open_pr_gets_reviewer() {
     );
 }
 
+/// Test the completed worktree bug fix using real captured snapshot worktree data.
+///
+/// This test uses the worktree registry from a real snapshot (where task 1323's
+/// worktree is completed) combined with synthetic PR JSON to verify that
+/// `collect_reviewer_effects_with_source` correctly spawns a reviewer for a PR
+/// with a completed worktree.
+///
+/// Complements `test_completed_worktree_with_open_pr_gets_reviewer` by using
+/// real worktree registry data instead of fully synthetic data.
+#[tokio::test]
+async fn test_completed_worktree_with_snapshot_data() {
+    use super::super::snapshot::WorldSnapshot;
+
+    let fixture = include_str!(
+        "../../tests/fixtures/snapshot/snapshot-review-spawn-lost-after-restart-20260217-003046.json"
+    );
+    let snap: WorldSnapshot =
+        serde_json::from_str(fixture).expect("Failed to deserialize WorldSnapshot from fixture");
+
+    // Verify the snapshot has the completed worktree we're testing
+    let task_1323_worktree = snap
+        .worktree_registry
+        .all_assignments()
+        .values()
+        .find(|a| a.task_id.as_deref() == Some("1323"))
+        .expect("Snapshot should contain worktree for task 1323");
+
+    assert!(
+        task_1323_worktree.completed_at.is_some(),
+        "Task 1323 worktree should be completed in the snapshot"
+    );
+
+    // Create a PR JSON for testing (GitHub API format with all required fields)
+    // Use a unique PR number that won't conflict with any cached review state.
+    // Title includes task ID so the function can find the completed worktree.
+    let pr_json = serde_json::json!({
+        "number": 99999,  // Unique PR number to avoid cached state
+        "headRefName": "test/snapshot-worktree-bug",
+        "title": "Test PR with completed worktree [Midtown !1323]",
+        "mergeable": "MERGEABLE",
+        "statusCheckRollup": null,
+        "reviewDecision": null,  // No review yet
+        "isDraft": false,
+        "createdAt": "2026-01-01T00:00:00Z",
+        "state": "OPEN",
+    });
+
+    // Empty branch_owners - this PR doesn't match a coworker branch,
+    // but it will be found via task ID extraction from the title
+    let branch_owners: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+
+    // Create minimal test state
+    let state = make_test_state("midtown");
+
+    // Call the function under test with snapshot's worktree registry and synthetic PR
+    let effects = collect_reviewer_effects_with_source(
+        Some(&branch_owners),
+        &snap.worktree_registry, // Real snapshot data with task 1323's completed worktree
+        &state,
+        &[pr_json], // Synthetic PR that extracts task ID 1323 from title
+        crate::github_state::AssignmentSource::PollingFallback,
+    )
+    .await;
+
+    // The function should return at least one effect for PR #99999
+    assert!(
+        !effects.is_empty(),
+        "Polling reconciliation should produce effects for unreviewed PR with completed worktree. \
+         Snapshot has task 1323 with completed worktree, PR #99999 should get a reviewer assigned."
+    );
+
+    // Verify that one of the effects is an AssignReviewer for PR #99999
+    let has_assign_reviewer = effects.iter().any(|effect| {
+        matches!(
+            effect,
+            crate::daemon::effects::Effect::AssignReviewer { pr_number, .. }
+            if *pr_number == 99999
+        )
+    });
+
+    assert!(
+        has_assign_reviewer,
+        "Expected AssignReviewer effect for PR #99999. \
+         Before fix: completed worktrees caused PRs to be skipped as orphaned. \
+         After fix: open PRs with completed worktrees should get reviewer spawns. \
+         Effects: {:#?}",
+        effects
+    );
+}
+
 /// Bug: reconcile_orphaned_prs creates duplicate "Merge PR #X" tasks every 30 seconds.
 ///
 /// Root cause: The function only checks pr_task_associations (which tracks the *original*
