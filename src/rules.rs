@@ -130,6 +130,9 @@ pub(crate) struct CoworkerRecord {
     pub task_id: Option<u32>,
     /// When the workflow phase was last updated via RPC.
     pub workflow_updated_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// Progress percentage (0-100) reported by the coworker.
+    /// Set via RPC when coworker calls `midtown state <phase> --progress <0-100>`.
+    pub progress: Option<u8>,
 }
 
 impl CoworkerRecord {
@@ -154,15 +157,26 @@ impl CoworkerRecord {
 }
 
 /// Update the workflow phase for a coworker (from RPC state report).
+///
+/// When `progress` is `None`, existing progress is preserved if the phase
+/// hasn't changed (e.g., hook fires without progress info). When the phase
+/// changes, progress is cleared since it belonged to the previous phase.
 pub(crate) fn set_workflow(
     records: &mut HashMap<String, CoworkerRecord>,
     name: &str,
     phase: crate::coworker_state::WorkflowPhase,
     task_id: Option<u32>,
+    progress: Option<u8>,
 ) {
     let record = records.entry(name.to_string()).or_default();
+    let phase_changed = record.workflow_phase != Some(phase);
     record.workflow_phase = Some(phase);
     record.task_id = task_id;
+    match progress {
+        Some(p) => record.progress = Some(p),
+        None if phase_changed => record.progress = None,
+        None => {} // preserve existing progress within same phase
+    }
     record.workflow_updated_at = Some(chrono::Utc::now());
 }
 
@@ -2849,6 +2863,94 @@ mod tests {
         assert!(
             restarts.is_empty(),
             "coworker without PR assignment should not be flagged"
+        );
+    }
+
+    #[test]
+    fn set_workflow_none_progress_preserves_existing() {
+        // Bug: hook fires coworker_report_state with progress=None, which
+        // unconditionally overwrites previously-reported progress.
+        let mut records = HashMap::new();
+
+        // First call: coworker reports 50% progress
+        set_workflow(
+            &mut records,
+            "york",
+            crate::coworker_state::WorkflowPhase::Developing,
+            Some(42),
+            Some(50),
+        );
+        assert_eq!(records["york"].progress, Some(50));
+
+        // Second call: hook fires with progress=None (should preserve 50%)
+        set_workflow(
+            &mut records,
+            "york",
+            crate::coworker_state::WorkflowPhase::Developing,
+            Some(42),
+            None,
+        );
+        assert_eq!(
+            records["york"].progress,
+            Some(50),
+            "progress should be preserved when caller passes None"
+        );
+    }
+
+    #[test]
+    fn set_workflow_explicit_zero_resets_progress() {
+        // Explicitly passing Some(0) should reset progress to 0.
+        let mut records = HashMap::new();
+
+        set_workflow(
+            &mut records,
+            "york",
+            crate::coworker_state::WorkflowPhase::Developing,
+            Some(42),
+            Some(75),
+        );
+        assert_eq!(records["york"].progress, Some(75));
+
+        set_workflow(
+            &mut records,
+            "york",
+            crate::coworker_state::WorkflowPhase::Testing,
+            Some(42),
+            Some(0),
+        );
+        assert_eq!(
+            records["york"].progress,
+            Some(0),
+            "explicit Some(0) should reset progress"
+        );
+    }
+
+    #[test]
+    fn set_workflow_phase_change_without_progress_clears_it() {
+        // When switching to a new phase (e.g., developing → pull-request)
+        // without providing progress, the old progress should be cleared
+        // because it's from a different phase.
+        let mut records = HashMap::new();
+
+        set_workflow(
+            &mut records,
+            "york",
+            crate::coworker_state::WorkflowPhase::Developing,
+            Some(42),
+            Some(80),
+        );
+
+        // Phase changes to pull-request without progress — should clear
+        set_workflow(
+            &mut records,
+            "york",
+            crate::coworker_state::WorkflowPhase::PullRequest,
+            Some(42),
+            None,
+        );
+        assert_eq!(
+            records["york"].progress, None,
+            "progress should be cleared on phase change even with None"
         );
     }
 }

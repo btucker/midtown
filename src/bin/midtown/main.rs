@@ -182,6 +182,10 @@ enum Commands {
         /// Task number being worked on
         #[arg(long)]
         task: Option<u32>,
+
+        /// Progress percentage (0-100)
+        #[arg(long)]
+        progress: Option<u8>,
     },
     /// Hook handlers (insight, idle, task, ask) - called by Claude Code hooks
     Hook {
@@ -594,8 +598,13 @@ fn main() {
     }
 
     // State command (no daemon required - writes state file directly)
-    if let Commands::State { phase, task } = &command {
-        let result = cli::handle_state(*phase, *task);
+    if let Commands::State {
+        phase,
+        task,
+        progress,
+    } = &command
+    {
+        let result = cli::handle_state(*phase, *task, *progress);
         handle_result(format, result);
         return;
     }

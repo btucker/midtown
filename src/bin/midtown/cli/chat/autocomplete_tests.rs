@@ -18,6 +18,7 @@ fn test_autocomplete_starts_with_matching() {
             health: "green".to_string(),
             provider: "claude".to_string(),
             profile: "default".to_string(),
+            progress: None,
         },
         CoworkerInfo {
             name: "pleasant".to_string(),
@@ -27,6 +28,7 @@ fn test_autocomplete_starts_with_matching() {
             health: "green".to_string(),
             provider: "claude".to_string(),
             profile: "default".to_string(),
+            progress: None,
         },
         CoworkerInfo {
             name: "lexington".to_string(),
@@ -36,6 +38,7 @@ fn test_autocomplete_starts_with_matching() {
             health: "green".to_string(),
             provider: "claude".to_string(),
             profile: "default".to_string(),
+            progress: None,
         },
     ];
 
@@ -85,6 +88,7 @@ fn test_autocomplete_empty_query_shows_all() {
             health: "green".to_string(),
             provider: "claude".to_string(),
             profile: "default".to_string(),
+            progress: None,
         },
         CoworkerInfo {
             name: "pleasant".to_string(),
@@ -94,6 +98,7 @@ fn test_autocomplete_empty_query_shows_all() {
             health: "green".to_string(),
             provider: "claude".to_string(),
             profile: "default".to_string(),
+            progress: None,
         },
     ];
 
@@ -115,6 +120,7 @@ fn test_autocomplete_case_insensitive() {
         health: "green".to_string(),
         provider: "claude".to_string(),
         profile: "default".to_string(),
+        progress: None,
     }];
 
     // Lowercase query should match capitalized name
@@ -210,6 +216,7 @@ fn test_shift_enter_with_autocomplete_shown() {
         health: "green".to_string(),
         provider: "claude".to_string(),
         profile: "default".to_string(),
+        progress: None,
     }];
 
     // Shift+Enter should insert newline, not select autocomplete
@@ -242,6 +249,7 @@ fn test_enter_selects_autocomplete_when_shown() {
         health: "green".to_string(),
         provider: "claude".to_string(),
         profile: "default".to_string(),
+        progress: None,
     }];
 
     // Get autocomplete items to populate the list

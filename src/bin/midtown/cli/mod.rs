@@ -103,15 +103,23 @@ pub fn handle_chat() -> Result<(), String> {
     chat::run()
 }
 
-/// Handle `midtown state <phase> [--task <id>]` — reports coworker state via daemon RPC.
+/// Handle `midtown state <phase> [--task <id>] [--progress <0-100>]` — reports coworker state via daemon RPC.
 ///
-/// Called explicitly by coworkers to report their workflow phase.
+/// Called explicitly by coworkers to report their workflow phase and optional progress.
 /// Sends state to the daemon which stores it in memory and updates web UI status.
 pub fn handle_state(
     phase: midtown::coworker_state::WorkflowPhase,
     task_id: Option<u32>,
+    progress: Option<u8>,
 ) -> Result<Response, String> {
     let agent = std::env::var("MIDTOWN_AGENT").unwrap_or_else(|_| "unknown".to_string());
+
+    // Validate progress is in range 0-100
+    if let Some(p) = progress
+        && p > 100
+    {
+        return Err("Progress must be between 0 and 100".to_string());
+    }
 
     // Convert phase to the snake_case string the RPC endpoint expects
     let phase_str = match phase {
@@ -127,7 +135,7 @@ pub fn handle_state(
 
     let client = crate::client::DaemonClient::connect()
         .map_err(|_| "Daemon is not running. Start with: midtown".to_string())?;
-    client.coworker_report_state(&agent, phase_str, task_id)
+    client.coworker_report_state(&agent, phase_str, task_id, progress)
 }
 
 /// Handle hook commands (insight, idle, task, ask) - no daemon required

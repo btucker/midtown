@@ -44,8 +44,7 @@ fn test_lead_attach_includes_system_prompt() {
         "session-123",
     );
 
-    assert!(result.is_ok(), "build_attach_shell_command should succeed");
-    let command = result.unwrap();
+    let command = result.expect("build_attach_shell_command should succeed");
 
     // Should include --append-system-prompt flag
     assert!(
@@ -73,12 +72,7 @@ fn test_coworker_attach_includes_system_prompt() {
         "session-456",
     );
 
-    assert!(
-        result.is_ok(),
-        "build_attach_shell_command should succeed, got error: {:?}",
-        result.as_ref().err()
-    );
-    let command = result.unwrap();
+    let command = result.expect("build_attach_shell_command should succeed");
 
     // Should include --append-system-prompt flag
     assert!(

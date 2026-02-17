@@ -68,6 +68,8 @@ pub struct CoworkerInfo {
     pub provider: String,
     /// Profile name for multi-account support
     pub profile: String,
+    /// Progress percentage (0-100) if reported
+    pub progress: Option<u8>,
 }
 
 /// Info about a repo in a multi-repo project
@@ -292,6 +294,8 @@ pub struct App {
     pub channel_switcher: ChannelSwitcherState,
     /// Whether to show archived channels in the board panel
     pub show_archived_channels: bool,
+    /// Spinner animation frame counter for coworker progress display
+    spinner_frame: usize,
 }
 
 /// Autocomplete state for @mentions, #channels, and !task-ids
@@ -414,6 +418,7 @@ impl App {
             autocomplete: AutocompleteState::default(),
             channel_switcher: ChannelSwitcherState::default(),
             show_archived_channels: false,
+            spinner_frame: 0,
         };
 
         // Initial load
@@ -1626,6 +1631,15 @@ impl App {
         self.channel_switcher.filtered_channels.clear();
         self.channel_switcher.selected_index = 0;
     }
+
+    /// Get the current spinner character and advance the animation frame.
+    /// Returns a braille spinner character (⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏).
+    pub fn spinner_char(&mut self) -> &'static str {
+        const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+        let ch = SPINNER_FRAMES[self.spinner_frame % SPINNER_FRAMES.len()];
+        self.spinner_frame = self.spinner_frame.wrapping_add(1);
+        ch
+    }
 }
 
 /// Fetch tasks from Claude Code's task storage.
@@ -2204,6 +2218,7 @@ fn fetch_kanban_data_via_rpc() -> Option<(
                         .and_then(|v| v.as_str())
                         .map(|s| s.to_string())
                         .unwrap_or_else(midtown::auth::current_profile);
+                    let progress = cw.get("progress").and_then(|v| v.as_u64()).map(|p| p as u8);
 
                     Some(CoworkerInfo {
                         name,
@@ -2213,6 +2228,7 @@ fn fetch_kanban_data_via_rpc() -> Option<(
                         health,
                         provider,
                         profile,
+                        progress,
                     })
                 })
                 .collect()
@@ -2480,6 +2496,7 @@ pub(super) mod tests {
             autocomplete: AutocompleteState::default(),
             channel_switcher: ChannelSwitcherState::default(),
             show_archived_channels: false,
+            spinner_frame: 0,
         }
     }
 

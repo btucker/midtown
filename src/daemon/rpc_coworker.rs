@@ -269,7 +269,7 @@ pub(super) async fn handle_coworker_view(
 
 /// Handle coworker.report-state RPC method.
 ///
-/// Stores the coworker's workflow phase in daemon memory and updates the
+/// Stores the coworker's workflow phase and progress in daemon memory and updates the
 /// web UI status. When a coworker reports `Idle`, they are immediately
 /// sent on break. When they report `Completed`, task cleanup is handled.
 pub(super) async fn handle_coworker_report_state(
@@ -277,6 +277,7 @@ pub(super) async fn handle_coworker_report_state(
     name: &str,
     phase_str: &str,
     task_id: Option<u32>,
+    progress: Option<u8>,
     state: &DaemonState,
 ) -> Response {
     // Parse the phase string via FromStr (implemented in coworker_state.rs)
@@ -379,7 +380,7 @@ pub(super) async fn handle_coworker_report_state(
     // Store in unified coworker record
     let status_display = {
         let mut records = state.coworker_records.write().await;
-        crate::rules::set_workflow(&mut records, name, phase, task_id);
+        crate::rules::set_workflow(&mut records, name, phase, task_id, progress);
         records
             .get(name)
             .and_then(|r| r.display_status())
