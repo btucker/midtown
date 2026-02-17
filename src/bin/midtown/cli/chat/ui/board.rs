@@ -15,7 +15,10 @@ use super::Hyperlink;
 use super::text::wrap_content;
 
 /// Draw the board panel (left side) with channel list
-pub fn draw_board_panel(f: &mut Frame, app: &mut App, area: Rect) -> Vec<Hyperlink> {
+///
+/// Returns (hyperlinks, tasks_area) where tasks_area is the rect containing the task list
+/// (excluding the coworker status section). This is used for click detection.
+pub fn draw_board_panel(f: &mut Frame, app: &mut App, area: Rect) -> (Vec<Hyperlink>, Rect) {
     // Clear task line map for new render
     app.task_line_map.clear();
 
@@ -178,7 +181,7 @@ pub fn draw_board_panel(f: &mut Frame, app: &mut App, area: Rect) -> Vec<Hyperli
         draw_coworker_status(f, app, chunks[1]);
     }
 
-    hyperlinks
+    (hyperlinks, tasks_area)
 }
 
 /// Render a channel header line with task count and unread count.
@@ -646,5 +649,113 @@ mod tests {
         let text_style = lines[0].spans[1].style;
         assert_eq!(bullet_style.fg, Some(Color::Yellow));
         assert_eq!(text_style.fg, Some(Color::Green));
+    }
+
+    #[test]
+    fn test_draw_board_panel_populates_task_line_map() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let backend = TestBackend::new(80, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let mut app = test_app();
+        app.tasks = vec![
+            KanbanTask {
+                id: "42".to_string(),
+                subject: "First task".to_string(),
+                owner: Some("york".to_string()),
+                status: TaskStatus::InProgress,
+                modified_at: None,
+                channel: None,
+                blocked_by: vec![],
+            },
+            KanbanTask {
+                id: "43".to_string(),
+                subject: "Second task".to_string(),
+                owner: Some("lexington".to_string()),
+                status: TaskStatus::Pending,
+                modified_at: None,
+                channel: None,
+                blocked_by: vec![],
+            },
+        ];
+
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                let (_hyperlinks, tasks_area) = draw_board_panel(f, &mut app, area);
+
+                // Verify tasks_area is returned correctly
+                assert!(tasks_area.width > 0);
+                assert!(tasks_area.height > 0);
+            })
+            .unwrap();
+
+        // Verify task_line_map is populated
+        assert!(
+            !app.task_line_map.is_empty(),
+            "task_line_map should be populated"
+        );
+
+        // Verify both tasks are in the map
+        let task_42_found = app
+            .task_line_map
+            .values()
+            .any(|(id, owner)| id == "42" && owner.as_deref() == Some("york"));
+        let task_43_found = app
+            .task_line_map
+            .values()
+            .any(|(id, owner)| id == "43" && owner.as_deref() == Some("lexington"));
+
+        assert!(task_42_found, "Task 42 should be in task_line_map");
+        assert!(task_43_found, "Task 43 should be in task_line_map");
+    }
+
+    #[test]
+    fn test_draw_board_panel_returns_correct_tasks_area() {
+        use super::super::super::app::CoworkerInfo;
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let backend = TestBackend::new(80, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let mut app = test_app();
+        // Add a coworker to trigger the split
+        app.coworkers = vec![CoworkerInfo {
+            name: "york".to_string(),
+            task_id: Some(42),
+            phase: Some("developing".to_string()),
+            pr_number: None,
+            health: "green".to_string(),
+            provider: "claude".to_string(),
+            profile: "test".to_string(),
+            progress: None,
+        }];
+
+        let mut returned_tasks_area = None;
+
+        terminal
+            .draw(|f| {
+                let area = Rect {
+                    x: 0,
+                    y: 0,
+                    width: 80,
+                    height: 40,
+                };
+                let (_hyperlinks, tasks_area) = draw_board_panel(f, &mut app, area);
+                returned_tasks_area = Some(tasks_area);
+            })
+            .unwrap();
+
+        let tasks_area = returned_tasks_area.unwrap();
+
+        // When coworkers exist, tasks_area should be smaller than the input area
+        // because the coworker status section takes up space at the bottom
+        assert!(
+            tasks_area.height < 40,
+            "tasks_area should exclude coworker section"
+        );
     }
 }
