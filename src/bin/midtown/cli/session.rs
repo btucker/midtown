@@ -718,8 +718,8 @@ pub(crate) fn build_attach_shell_command(
         &profile_dir,
     );
 
-    // Convert HashMap to shell-quoted env var assignments (key=value format, with shell_quote on values)
-    let mut env_parts: Vec<String> = env_map
+    // Convert env map to shell-quoted env var assignments (key=value format, with shell_quote on values)
+    let env_parts: Vec<String> = env_map
         .iter()
         .map(|(k, v)| format!("{}={}", k, shell_quote(v)))
         .collect();
@@ -754,8 +754,6 @@ pub(crate) fn build_attach_shell_command(
     );
     let detach_cmd = format!("{} session detach {}", bin_command, shell_quote(name));
 
-    // Sort for deterministic ordering in shell command
-    env_parts.sort();
     Ok(format!(
         "export {}; {}; _midtown_rc=$?; {} >/dev/null 2>&1 || true; exit $_midtown_rc",
         env_parts.join(" "),
