@@ -48,9 +48,6 @@ pub struct LaunchConfig {
     pub initial_prompt: Option<String>,
     /// Additional repo directories for multi-repo projects.
     pub additional_dirs: Vec<PathBuf>,
-    /// If true, pass `--setting-sources project,local` to restrict settings.
-    /// Coworkers use this to exclude user-level settings; the lead does not.
-    pub restrict_setting_sources: bool,
     /// PR number for reviewer coworkers.
     pub pr_number: Option<u64>,
     /// Agent teams team name. When set, adds `--agent-id`, `--agent-name`,
@@ -218,7 +215,6 @@ impl LaunchConfig {
             role: CoworkerRole::Coworker,
             initial_prompt,
             additional_dirs: vec![],
-            restrict_setting_sources: true,
             pr_number: None,
             team_name: Some(team),
             working_dir: None,
@@ -241,7 +237,6 @@ impl LaunchConfig {
             role: CoworkerRole::Reviewer,
             initial_prompt: Some(crate::agents::reviewer_launch_prompt(pr_number)),
             additional_dirs: vec![],
-            restrict_setting_sources: true,
             pr_number: Some(pr_number),
             team_name: None, // Reviewers don't need mailbox (short-lived)
             working_dir: None,
@@ -265,7 +260,6 @@ impl LaunchConfig {
             role: CoworkerRole::Lead,
             initial_prompt: Some("Read the channel for context, then post to the channel that you're online and ready.".to_string()),
             additional_dirs: vec![],
-            restrict_setting_sources: false,
             pr_number: None,
             team_name: Some(team),
             working_dir: None,
@@ -311,7 +305,6 @@ impl LaunchConfig {
             role: CoworkerRole::Coworker,
             initial_prompt: Some(initial_prompt),
             additional_dirs: vec![],
-            restrict_setting_sources: true,
             pr_number: None,
             team_name: Some(team),
             working_dir: None,
@@ -392,12 +385,8 @@ impl LaunchConfig {
             team_name: self.team_name.clone(),
             agent_id,
             agent_name,
-            settings_path: None, // Set by caller
-            setting_sources: if self.restrict_setting_sources {
-                Some("project,local".to_string())
-            } else {
-                None
-            },
+            settings_path: None,   // Set by caller
+            setting_sources: None, // Handled by platform arg builder (always project,local)
             auth_provider: self.auth_provider,
             env,
         }
@@ -405,9 +394,8 @@ impl LaunchConfig {
 
     /// Build the Claude CLI argument vector.
     ///
-    /// This is the single source of truth for CLI arg construction. All launch
-    /// paths (headed Zellij, attach/resume, headless) should derive their args
-    /// from this method to prevent divergence.
+    /// Delegates to `crate::platform::build_claude_headed_args()` — the single
+    /// source of truth for headed CLI arg construction.
     ///
     /// Returns `(args, session_id)` where `args` starts with `"claude"` and
     /// includes all flags, and `session_id` is `Some(uuid)` for fresh sessions.
@@ -419,74 +407,12 @@ impl LaunchConfig {
         prompt_file: &std::path::Path,
         initial_prompt_file: Option<&std::path::Path>,
     ) -> (Vec<String>, Option<String>) {
-        let mut args = vec![
-            "claude".to_string(),
-            "--dangerously-skip-permissions".to_string(),
-        ];
-
-        // Session mode — exactly one of these
-        let session_id = match &self.session_mode {
-            SessionMode::Fresh => {
-                let id = uuid::Uuid::new_v4().to_string();
-                args.push("--session-id".to_string());
-                args.push(id.clone());
-                Some(id)
-            }
-            SessionMode::Resume => {
-                args.push("--continue".to_string());
-                None
-            }
-            SessionMode::ResumeSession(id) => {
-                args.push("--resume".to_string());
-                args.push(id.clone());
-                None
-            }
-        };
-
-        // Additional directories (multi-repo)
-        for dir in &self.additional_dirs {
-            if let Some(d) = dir.to_str() {
-                args.push("--add-dir".to_string());
-                args.push(d.to_string());
-            }
-        }
-
-        // Settings source restriction (coworkers only — lead uses all sources)
-        if self.restrict_setting_sources {
-            args.push("--setting-sources".to_string());
-            args.push("project,local".to_string());
-        }
-
-        // Model selection (ensures all launch paths explicitly set the model)
-        args.push("--model".to_string());
-        args.push(self.model.clone());
-
-        // Agent teams flags (enables mailbox-based message delivery)
-        if let Some(ref team) = self.team_name {
-            let agent_id = crate::mailbox::agent_id(&self.name, team);
-            args.push("--agent-id".to_string());
-            args.push(agent_id);
-            args.push("--agent-name".to_string());
-            args.push(self.name.clone());
-            args.push("--team-name".to_string());
-            args.push(team.clone());
-        }
-
-        args.push("--settings".to_string());
-        args.push(settings_file.display().to_string());
-
-        // System prompt file
-        args.push("--append-system-prompt".to_string());
-        args.push(format!("\"$(cat {})\"", prompt_file.display()));
-
-        // Initial prompt as bare positional arg (NOT -p/--print).
-        // Written to temp file by caller; path passed in here.
-        // This MUST be the last argument. See PR #447 for why -p is forbidden.
-        if let Some(path) = initial_prompt_file {
-            args.push(format!("\"$(cat {})\"", path.display()));
-        }
-
-        (args, session_id)
+        crate::platform::build_claude_headed_args(
+            self,
+            settings_file,
+            prompt_file,
+            initial_prompt_file,
+        )
     }
 
     /// Build the full shell command string for launching Claude in a terminal pane.
@@ -675,26 +601,28 @@ mod tests {
     }
 
     #[test]
-    fn test_to_headless_config_includes_setting_sources() {
+    fn test_to_headless_config_setting_sources_handled_by_platform() {
+        // setting_sources is now always None on HeadlessConfig — the platform
+        // arg builder unconditionally adds --setting-sources project,local.
         let config = LaunchConfig::coworker("park", "myrepo", SessionMode::Fresh, None);
         let headless = config.to_headless_config("midtown");
-
         assert_eq!(
-            headless.setting_sources,
-            Some("project,local".to_string()),
-            "Coworkers must restrict setting sources to avoid duplicate plugin loading"
+            headless.setting_sources, None,
+            "setting_sources should be None — handled by platform arg builder"
         );
-    }
 
-    #[test]
-    fn test_to_headless_config_reviewer_includes_setting_sources() {
         let config = LaunchConfig::reviewer("york", 42);
         let headless = config.to_headless_config("midtown");
-
         assert_eq!(
-            headless.setting_sources,
-            Some("project,local".to_string()),
-            "Reviewers must restrict setting sources to avoid duplicate plugin loading"
+            headless.setting_sources, None,
+            "setting_sources should be None — handled by platform arg builder"
+        );
+
+        let config = LaunchConfig::lead("myrepo");
+        let headless = config.to_headless_config("midtown");
+        assert_eq!(
+            headless.setting_sources, None,
+            "setting_sources should be None — handled by platform arg builder"
         );
     }
 
@@ -710,7 +638,6 @@ mod tests {
         assert_eq!(config.session_mode, SessionMode::Fresh);
         assert_eq!(config.role, CoworkerRole::Coworker);
         assert_eq!(config.initial_prompt, Some("Do the thing".to_string()));
-        assert!(config.restrict_setting_sources);
         assert!(config.pr_number.is_none());
         assert_eq!(config.team_name, Some("midtown-myrepo".to_string()));
         assert_eq!(config.model, "sonnet");
@@ -1021,17 +948,14 @@ mod tests {
     }
 
     #[test]
-    fn test_lead_config_unrestricted_settings() {
+    fn test_lead_config_setting_sources_handled_by_platform_builder() {
+        // All sessions now get --setting-sources project,local via the platform
+        // arg builder. The HeadlessConfig.setting_sources field is always None.
         let config = LaunchConfig::lead("myrepo");
         let headless = config.to_headless_config("midtown");
-
-        assert!(
-            !config.restrict_setting_sources,
-            "Lead should not restrict setting sources"
-        );
         assert_eq!(
             headless.setting_sources, None,
-            "Lead headless config should have unrestricted setting sources"
+            "setting_sources should be None — handled by platform arg builder"
         );
     }
 
@@ -1040,7 +964,6 @@ mod tests {
         let config = LaunchConfig::lead("myrepo");
         assert_eq!(config.name, "lead");
         assert_eq!(config.role, CoworkerRole::Lead);
-        assert!(!config.restrict_setting_sources);
         assert!(
             config.initial_prompt.is_some(),
             "Lead should have an initial prompt for session_id init"

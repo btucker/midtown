@@ -6,6 +6,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::auth::AuthProvider;
+use crate::platform::Platform;
 
 const OFFICIAL_MARKETPLACE: &str = "anthropics/claude-plugins-official";
 const OFFICIAL_MARKETPLACE_NAME: &str = "claude-plugins-official";
@@ -16,17 +17,9 @@ static CLAUDE_PLUGIN_SYNC_OK: AtomicBool = AtomicBool::new(false);
 ///
 /// Providers are normalized to launch platforms first (`zai` uses the Claude platform).
 pub fn run_platform_prelaunch_hook(provider: AuthProvider) -> Result<(), String> {
-    match platform_for_provider(provider) {
-        AuthProvider::Claude => ensure_claude_plugins_installed_once(),
-        AuthProvider::Codex => Ok(()),
-        AuthProvider::Zai => Ok(()),
-    }
-}
-
-fn platform_for_provider(provider: AuthProvider) -> AuthProvider {
-    match provider {
-        AuthProvider::Zai => AuthProvider::Claude,
-        other => other,
+    match Platform::from_provider(provider) {
+        Platform::Claude => ensure_claude_plugins_installed_once(),
+        Platform::Codex => Ok(()),
     }
 }
 

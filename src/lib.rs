@@ -138,6 +138,9 @@ pub mod session_key;
 // Provider-specific adapters for headed (interactive) delivery paths
 pub mod headed_adapter;
 
+// Platform abstraction for CLI argument construction (shared by headed + headless)
+pub mod platform;
+
 // Platform-specific pre-launch hooks (shared by headed + headless launch paths)
 pub mod platform_launch;
 

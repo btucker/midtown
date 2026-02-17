@@ -214,10 +214,7 @@ async fn test_startup_recovery_sets_lead_role() {
         Effect::ResumeCoworker { name, config, .. } => {
             assert_eq!(name, "lead");
             assert_eq!(config.role, crate::launch::CoworkerRole::Lead);
-            assert!(
-                !config.restrict_setting_sources,
-                "Lead should have unrestricted setting sources"
-            );
+            // Setting sources are now always "project,local" via the platform arg builder
         }
         other => panic!("Expected ResumeCoworker, got {:?}", other),
     }

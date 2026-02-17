@@ -753,7 +753,6 @@ pub(crate) fn build_attach_shell_command(
                 role: role.clone(),
                 initial_prompt: None,
                 additional_dirs: vec![],
-                restrict_setting_sources: name != "lead",
                 pr_number: None,
                 team_name: team_name.clone(),
                 working_dir: None,

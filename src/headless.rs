@@ -386,165 +386,62 @@ impl HeadlessSession {
             warn!("Platform pre-launch hook failed (continuing): {}", e);
         }
 
-        let is_resume = config.resume_session_id.is_some();
-        let mut cmd = match config.auth_provider {
-            crate::auth::AuthProvider::Claude | crate::auth::AuthProvider::Zai => {
-                // Compute sandbox writable dirs from cwd (project working directory).
-                let primary_repo = config
-                    .cwd
-                    .as_deref()
-                    .map(std::path::Path::new)
-                    .unwrap_or(std::path::Path::new("/tmp"));
-                let project_name = config.project_name.as_deref().unwrap_or("midtown");
-                let sandbox_config = crate::config::get_project_sandbox_config(project_name);
-                let writable =
-                    crate::sandbox::writable_dirs(primary_repo, &[], &sandbox_config.allowed_paths);
+        let platform = crate::platform::Platform::from_provider(config.auth_provider);
+        let binary = platform.binary_name();
 
-                // On macOS, wrap with sandbox-exec to restrict filesystem writes.
-                // On Linux, wrap with bwrap if available.
-                // Falls back to running claude directly if sandbox setup fails.
-                let mut cmd = if cfg!(target_os = "macos") {
-                    match crate::sandbox::sandbox_exec_prefix(&writable) {
-                        Ok((_profile_path, prefix)) => {
-                            let mut c = Command::new("sandbox-exec");
-                            for arg in &prefix {
-                                c.arg(arg);
-                            }
-                            c.arg("claude");
-                            c
-                        }
-                        Err(e) => {
-                            warn!("Sandbox setup failed, running without sandbox: {}", e);
-                            Command::new("claude")
-                        }
-                    }
-                } else if cfg!(target_os = "linux") && crate::sandbox::bwrap_available() {
-                    let mut c = Command::new("bwrap");
-                    // Build bwrap args without the program args (we'll add claude args below)
-                    c.args(["--ro-bind", "/", "/"]);
-                    for dir in &writable {
-                        c.args(["--bind", dir, dir]);
-                    }
-                    c.args(["--dev", "/dev", "--proc", "/proc", "--", "claude"]);
-                    c
-                } else {
-                    Command::new("claude")
-                };
-
-                if is_resume {
-                    // Resume mode: --resume <id>, no -p flag
-                    cmd.arg("--resume")
-                        .arg(config.resume_session_id.as_ref().unwrap());
-                } else {
-                    // Fresh mode: -p with system prompt
-                    cmd.arg("-p");
-                    cmd.arg("--append-system-prompt").arg(&config.system_prompt);
-
-                    if let Some(ref schema) = config.json_schema {
-                        let schema_str = serde_json::to_string(schema).map_err(|e| {
-                            std::io::Error::new(std::io::ErrorKind::InvalidInput, e)
-                        })?;
-                        cmd.arg("--json-schema").arg(schema_str);
-                    }
-                }
-
-                cmd.arg("--verbose")
-                    .arg("--output-format")
-                    .arg("stream-json")
-                    .arg("--input-format")
-                    .arg("stream-json")
-                    .arg("--model")
-                    .arg(&config.model);
-
-                // Session persistence: only add --no-session-persistence when explicitly disabled
-                if !config.persist_session {
-                    cmd.arg("--no-session-persistence");
-                }
-
-                if let Some(budget) = config.max_budget_usd {
-                    cmd.arg("--max-budget-usd").arg(budget.to_string());
-                }
-
-                if !config.allow_tools {
-                    cmd.arg("--tools").arg("");
-                }
-
-                // Skip permissions since the daemon manages trust
-                cmd.arg("--dangerously-skip-permissions");
-
-                // Agent teams flags
-                if let Some(ref team) = config.team_name {
-                    cmd.arg("--team-name").arg(team);
-                }
-                if let Some(ref agent_id) = config.agent_id {
-                    cmd.arg("--agent-id").arg(agent_id);
-                }
-                if let Some(ref agent_name) = config.agent_name {
-                    cmd.arg("--agent-name").arg(agent_name);
-                }
-
-                // Settings file — skip on resume to avoid duplicate tool registrations.
-                // Resumed sessions already have their plugins loaded from saved state;
-                // passing --settings again causes "Tool names must be unique" API errors.
-                if !is_resume {
-                    if let Some(ref settings) = config.settings_path {
-                        cmd.arg("--settings").arg(settings);
-                    }
-
-                    // Setting sources — also skip on resume for consistency
-                    if let Some(ref sources) = config.setting_sources {
-                        cmd.arg("--setting-sources").arg(sources);
-                    }
-                }
-
-                cmd
+        // Build platform-specific CLI args using the shared arg builders.
+        let cli_args = match platform {
+            crate::platform::Platform::Claude => {
+                crate::platform::build_claude_headless_args(config)
             }
-            crate::auth::AuthProvider::Codex => {
-                // Codex app-server runs a persistent JSON-RPC stdio server.
-                // We initialize and start/resume threads via requests in `ensure_ready()`.
-                let primary_repo = config
-                    .cwd
-                    .as_deref()
-                    .map(std::path::Path::new)
-                    .unwrap_or(std::path::Path::new("/tmp"));
-                let project_name = config.project_name.as_deref().unwrap_or("midtown");
-                let sandbox_config = crate::config::get_project_sandbox_config(project_name);
-                let writable =
-                    crate::sandbox::writable_dirs(primary_repo, &[], &sandbox_config.allowed_paths);
-
-                let mut cmd = if cfg!(target_os = "macos") {
-                    match crate::sandbox::sandbox_exec_prefix(&writable) {
-                        Ok((_profile_path, prefix)) => {
-                            let mut c = Command::new("sandbox-exec");
-                            for arg in &prefix {
-                                c.arg(arg);
-                            }
-                            c.arg("codex");
-                            c
-                        }
-                        Err(e) => {
-                            warn!(
-                                "Sandbox setup failed for codex, running without sandbox: {}",
-                                e
-                            );
-                            Command::new("codex")
-                        }
-                    }
-                } else if cfg!(target_os = "linux") && crate::sandbox::bwrap_available() {
-                    let mut c = Command::new("bwrap");
-                    c.args(["--ro-bind", "/", "/"]);
-                    for dir in &writable {
-                        c.args(["--bind", dir, dir]);
-                    }
-                    c.args(["--dev", "/dev", "--proc", "/proc", "--", "codex"]);
-                    c
-                } else {
-                    Command::new("codex")
-                };
-                cmd.arg("app-server");
-                cmd
-            }
+            crate::platform::Platform::Codex => crate::platform::build_codex_headless_args(),
         };
+
+        // Compute sandbox writable dirs from cwd (project working directory).
+        let primary_repo = config
+            .cwd
+            .as_deref()
+            .map(std::path::Path::new)
+            .unwrap_or(std::path::Path::new("/tmp"));
+        let project_name = config.project_name.as_deref().unwrap_or("midtown");
+        let sandbox_config = crate::config::get_project_sandbox_config(project_name);
+        let writable =
+            crate::sandbox::writable_dirs(primary_repo, &[], &sandbox_config.allowed_paths);
+
+        // On macOS, wrap with sandbox-exec to restrict filesystem writes.
+        // On Linux, wrap with bwrap if available.
+        // Falls back to running the binary directly if sandbox setup fails.
+        let mut cmd = if cfg!(target_os = "macos") {
+            match crate::sandbox::sandbox_exec_prefix(&writable) {
+                Ok((_profile_path, prefix)) => {
+                    let mut c = Command::new("sandbox-exec");
+                    for arg in &prefix {
+                        c.arg(arg);
+                    }
+                    c.arg(binary);
+                    c
+                }
+                Err(e) => {
+                    warn!("Sandbox setup failed, running without sandbox: {}", e);
+                    Command::new(binary)
+                }
+            }
+        } else if cfg!(target_os = "linux") && crate::sandbox::bwrap_available() {
+            let mut c = Command::new("bwrap");
+            c.args(["--ro-bind", "/", "/"]);
+            for dir in &writable {
+                c.args(["--bind", dir, dir]);
+            }
+            c.args(["--dev", "/dev", "--proc", "/proc", "--", binary]);
+            c
+        } else {
+            Command::new(binary)
+        };
+
+        // Apply the platform-specific CLI args
+        for arg in &cli_args {
+            cmd.arg(arg);
+        }
 
         if let Some(ref cwd) = config.cwd {
             cmd.current_dir(cwd);
@@ -611,7 +508,9 @@ impl HeadlessSession {
 
         info!(
             "Spawned headless {:?} session (model={}, resume={})",
-            config.auth_provider, config.model, is_resume
+            config.auth_provider,
+            config.model,
+            config.resume_session_id.is_some()
         );
 
         Ok(Self {

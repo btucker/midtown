@@ -17,7 +17,6 @@ fn test_lead_system_prompt_saved_on_spawn() {
         role: CoworkerRole::Lead,
         initial_prompt: None,
         additional_dirs: vec![],
-        restrict_setting_sources: false,
         pr_number: None,
         team_name: None,
         working_dir: None,
