@@ -313,6 +313,11 @@ impl WebhookEffectFixture {
             "id": 1
         });
 
+        eprintln!(
+            "Sending RPC request: {}",
+            serde_json::to_string_pretty(&request).unwrap()
+        );
+
         // Send request
         let request_line = format!("{}\n", request);
         stream.write_all(request_line.as_bytes()).ok()?;
@@ -329,17 +334,22 @@ impl WebhookEffectFixture {
 
     /// Read recent messages from the channel via RPC.
     fn read_channel_messages(&self) -> Vec<String> {
-        let response = self.rpc_call("channel.read", Some(serde_json::json!({"limit": 100})));
+        let response = self.rpc_call("channel.read", Some(serde_json::json!({"all": true})));
+
+        eprintln!("RPC response: {:?}", response);
 
         if let Some(response) = response
             && let Some(messages) = response["result"]["messages"].as_array()
         {
-            return messages
+            let msgs: Vec<String> = messages
                 .iter()
                 .filter_map(|m| m["message"].as_str().map(String::from))
                 .collect();
+            eprintln!("Parsed {} messages from RPC", msgs.len());
+            return msgs;
         }
 
+        eprintln!("No messages in RPC response");
         Vec::new()
     }
 
@@ -450,13 +460,15 @@ impl Drop for WebhookEffectFixture {
         }
 
         // Clean up test directories
-        let _ = fs::remove_dir_all(&self.temp_dir);
-        let _ = fs::remove_dir_all(&self.project_dir);
-        let _ = fs::remove_dir_all(&self.tasks_dir);
-        let _ = fs::remove_dir_all(self.coworkers_dir());
-        if let Some(parent) = self.socket_path.parent() {
-            let _ = fs::remove_dir_all(parent);
-        }
+        // TEMPORARILY DISABLED for debugging - leave temp dirs for inspection
+        // let _ = fs::remove_dir_all(&self.temp_dir);
+        // let _ = fs::remove_dir_all(&self.project_dir);
+        // let _ = fs::remove_dir_all(&self.tasks_dir);
+        // let _ = fs::remove_dir_all(self.coworkers_dir());
+        // if let Some(parent) = self.socket_path.parent() {
+        //     let _ = fs::remove_dir_all(parent);
+        // }
+        eprintln!("Test temp dir preserved at: {:?}", self.temp_dir);
     }
 }
 
@@ -752,12 +764,13 @@ fn test_pr_merged_cleans_up_worktree() {
 /// the daemon acts correctly at each stage: queueing reviewer spawns, posting
 /// channel messages, and auto-completing tasks.
 ///
-/// NOTE: This test is currently disabled because sending multiple webhooks for
-/// the same PR in quick succession appears to have some state interaction that
-/// prevents the second webhook from being processed. The individual effects are
-/// fully tested in the other test cases.
-#[allow(dead_code)]
-fn _test_full_pr_lifecycle_webhook_effects_disabled() {
+/// NOTE: This test was previously disabled because sending multiple webhooks for
+/// the same PR in quick succession had state interaction issues. Re-enabling to
+/// investigate and fix the root cause.
+#[test]
+#[ignore]
+#[timeout(60000)]
+fn test_full_pr_lifecycle_webhook_effects() {
     let mut fixture = WebhookEffectFixture::new(47204).expect("Failed to create fixture");
     assert!(fixture.start_daemon(), "Failed to start daemon");
 
