@@ -12,8 +12,8 @@
 
 mod multi_tick_harness;
 
-use multi_tick_harness::MultiTickHarness;
 use midtown::daemon::{DaemonEvent, Effect};
+use multi_tick_harness::MultiTickHarness;
 
 /// Test that reset_orphaned_tasks doesn't produce duplicate resets.
 ///
@@ -66,9 +66,8 @@ fn test_no_duplicate_orphan_resets() {
 /// On tick 2, the same coworker shouldn't be shut down again.
 #[test]
 fn test_no_duplicate_idle_shutdowns() {
-    let fixture = include_str!(
-        "fixtures/snapshot/snapshot-reviewer-not-spawning-20260214-003545.json"
-    );
+    let fixture =
+        include_str!("fixtures/snapshot/snapshot-reviewer-not-spawning-20260214-003545.json");
     let mut harness = MultiTickHarness::from_json(fixture).unwrap();
 
     // Tick 1: Check for idle coworkers
@@ -76,10 +75,12 @@ fn test_no_duplicate_idle_shutdowns() {
 
     let shutdown_count_1 = effects1
         .iter()
-        .filter(|e| matches!(
-            e,
-            Effect::ShutdownCoworker { .. } | Effect::ShutdownCoworkerWithCallbacks { .. }
-        ))
+        .filter(|e| {
+            matches!(
+                e,
+                Effect::ShutdownCoworker { .. } | Effect::ShutdownCoworkerWithCallbacks { .. }
+            )
+        })
         .count();
 
     println!("Tick 1: {} shutdown effects", shutdown_count_1);
@@ -89,10 +90,12 @@ fn test_no_duplicate_idle_shutdowns() {
 
     let shutdown_count_2 = effects2
         .iter()
-        .filter(|e| matches!(
-            e,
-            Effect::ShutdownCoworker { .. } | Effect::ShutdownCoworkerWithCallbacks { .. }
-        ))
+        .filter(|e| {
+            matches!(
+                e,
+                Effect::ShutdownCoworker { .. } | Effect::ShutdownCoworkerWithCallbacks { .. }
+            )
+        })
         .count();
 
     println!("Tick 2: {} shutdown effects", shutdown_count_2);
@@ -111,9 +114,8 @@ fn test_no_duplicate_idle_shutdowns() {
 /// On tick 2, the same task shouldn't be completed again.
 #[test]
 fn test_no_duplicate_pr_cleanup() {
-    let fixture = include_str!(
-        "fixtures/snapshot/snapshot-reviewer-not-spawning-20260214-003545.json"
-    );
+    let fixture =
+        include_str!("fixtures/snapshot/snapshot-reviewer-not-spawning-20260214-003545.json");
     let mut harness = MultiTickHarness::from_json(fixture).unwrap();
 
     // Tick 1: Collect merged PR cleanup effects
@@ -150,9 +152,8 @@ fn test_no_duplicate_pr_cleanup() {
 /// On tick 2, another reviewer shouldn't be assigned to the same PR.
 #[test]
 fn test_no_duplicate_reviewer_spawns() {
-    let fixture = include_str!(
-        "fixtures/snapshot/snapshot-reviewer-not-spawning-20260214-003545.json"
-    );
+    let fixture =
+        include_str!("fixtures/snapshot/snapshot-reviewer-not-spawning-20260214-003545.json");
     let mut harness = MultiTickHarness::from_json(fixture).unwrap();
 
     // Tick 1: Reconcile orphaned PRs (may spawn reviewers)
@@ -203,10 +204,12 @@ fn test_stuck_reviewer_backoff() {
 
     let restart_count_1 = effects1
         .iter()
-        .filter(|e| matches!(
-            e,
-            Effect::ShutdownCoworker { .. } | Effect::ShutdownCoworkerWithCallbacks { .. }
-        ))
+        .filter(|e| {
+            matches!(
+                e,
+                Effect::ShutdownCoworker { .. } | Effect::ShutdownCoworkerWithCallbacks { .. }
+            )
+        })
         .count();
 
     println!("Tick 1: {} reviewer restarts", restart_count_1);
@@ -216,10 +219,12 @@ fn test_stuck_reviewer_backoff() {
 
     let restart_count_2 = effects2
         .iter()
-        .filter(|e| matches!(
-            e,
-            Effect::ShutdownCoworker { .. } | Effect::ShutdownCoworkerWithCallbacks { .. }
-        ))
+        .filter(|e| {
+            matches!(
+                e,
+                Effect::ShutdownCoworker { .. } | Effect::ShutdownCoworkerWithCallbacks { .. }
+            )
+        })
         .count();
 
     println!("Tick 2: {} reviewer restarts", restart_count_2);
@@ -285,9 +290,8 @@ fn test_usage_limit_nudge_dedup() {
 /// This catches runaway loops where effects keep being produced indefinitely.
 #[test]
 fn test_multi_tick_stabilization() {
-    let fixture = include_str!(
-        "fixtures/snapshot/snapshot-reviewer-not-spawning-20260214-003545.json"
-    );
+    let fixture =
+        include_str!("fixtures/snapshot/snapshot-reviewer-not-spawning-20260214-003545.json");
     let mut harness = MultiTickHarness::from_json(fixture).unwrap();
 
     let mut effect_counts = Vec::new();
