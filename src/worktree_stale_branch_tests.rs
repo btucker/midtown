@@ -3,10 +3,27 @@
 //! These tests reproduce the bug where `create_task_worktree` fails when
 //! a branch already exists but is linked to a stale (deleted) worktree.
 
+use std::path::Path;
 use std::process::Command as TestCommand;
 use tempfile::TempDir;
 
 use crate::worktree::WorktreeManager;
+
+/// Helper to run `git rev-parse <rev>` and return the commit SHA.
+fn git_rev_parse(repo_path: &Path, rev: &str) -> String {
+    let output = TestCommand::new("git")
+        .current_dir(repo_path)
+        .args(["rev-parse", rev])
+        .output()
+        .expect("git rev-parse");
+    assert!(
+        output.status.success(),
+        "git rev-parse {} failed: {}",
+        rev,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
 
 /// Create a temp git repo with an initial commit
 fn create_test_repo() -> (WorktreeManager, TempDir) {
@@ -350,4 +367,100 @@ fn test_create_task_worktree_path_exists_but_not_registered() {
         .trim()
         .to_string();
     assert_eq!(branch, worktree_id);
+}
+
+#[test]
+fn test_create_task_worktree_branches_from_default_not_head() {
+    let (manager, _temp_dir) = create_test_repo();
+
+    // Record the default branch commit SHA (the initial commit)
+    let default_commit = git_rev_parse(manager.repo_root(), "HEAD");
+
+    // Move the repo HEAD to a feature branch with an extra commit
+    let output = TestCommand::new("git")
+        .current_dir(manager.repo_root())
+        .args(["checkout", "-b", "unrelated-feature"])
+        .output()
+        .expect("create feature branch");
+    assert!(output.status.success());
+
+    let output = TestCommand::new("git")
+        .current_dir(manager.repo_root())
+        .args(["commit", "--allow-empty", "-m", "unrelated feature commit"])
+        .output()
+        .expect("commit on feature branch");
+    assert!(output.status.success());
+
+    let feature_commit = git_rev_parse(manager.repo_root(), "HEAD");
+    assert_ne!(
+        default_commit, feature_commit,
+        "Feature commit should differ from default branch"
+    );
+
+    // Create a task worktree — it should branch from the default branch commit,
+    // NOT from the current HEAD (which is on unrelated-feature)
+    let worktree_id = "review-pr-999";
+    let result = manager.create_task_worktree(worktree_id);
+    assert!(
+        result.is_ok(),
+        "create_task_worktree should succeed, got: {:?}",
+        result.err()
+    );
+
+    let wt_path = manager.task_worktree_path(worktree_id);
+    let wt_commit = git_rev_parse(&wt_path, "HEAD");
+    assert_eq!(
+        wt_commit, default_commit,
+        "Task worktree should branch from the default branch commit, not HEAD"
+    );
+    assert_ne!(
+        wt_commit, feature_commit,
+        "Task worktree should NOT contain the unrelated feature commit"
+    );
+}
+
+#[test]
+fn test_create_worktree_detaches_at_default_not_head() {
+    let (manager, _temp_dir) = create_test_repo();
+
+    // Record the default branch commit
+    let default_commit = git_rev_parse(manager.repo_root(), "HEAD");
+
+    // Move HEAD to a feature branch with an extra commit
+    let output = TestCommand::new("git")
+        .current_dir(manager.repo_root())
+        .args(["checkout", "-b", "unrelated-feature-2"])
+        .output()
+        .expect("create feature branch");
+    assert!(output.status.success());
+
+    let output = TestCommand::new("git")
+        .current_dir(manager.repo_root())
+        .args(["commit", "--allow-empty", "-m", "unrelated commit 2"])
+        .output()
+        .expect("commit on feature branch");
+    assert!(output.status.success());
+
+    let feature_commit = git_rev_parse(manager.repo_root(), "HEAD");
+    assert_ne!(default_commit, feature_commit);
+
+    // Legacy create should detach at the default branch, not HEAD
+    #[allow(deprecated)]
+    let result = manager.create("testworker-default");
+    assert!(
+        result.is_ok(),
+        "create should succeed, got: {:?}",
+        result.err()
+    );
+
+    let wt_path = manager.worktree_path("testworker-default");
+    let wt_commit = git_rev_parse(&wt_path, "HEAD");
+    assert_eq!(
+        wt_commit, default_commit,
+        "Legacy create should detach at default branch commit, not HEAD"
+    );
+    assert_ne!(
+        wt_commit, feature_commit,
+        "Legacy create should NOT contain the unrelated feature commit"
+    );
 }

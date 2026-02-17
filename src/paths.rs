@@ -69,9 +69,16 @@ pub fn set_test_midtown_base_dir(path: PathBuf) -> TestMidtownBaseDirGuard {
 ///
 /// Returns `None` if not in a git repository.
 pub fn detect_repo_name() -> Option<String> {
+    let cwd = std::env::current_dir().ok()?;
+    detect_repo_name_from_dir(&cwd)
+}
+
+/// Detect the repository name from a specific directory (CWD-independent).
+pub fn detect_repo_name_from_dir(dir: &std::path::Path) -> Option<String> {
     // First try git-common-dir which works correctly for worktrees
     let common_dir = std::process::Command::new("git")
         .args(["rev-parse", "--git-common-dir"])
+        .current_dir(dir)
         .output()
         .ok()
         .and_then(|output| {
@@ -90,6 +97,7 @@ pub fn detect_repo_name() -> Option<String> {
             if git_dir == ".git" {
                 return std::process::Command::new("git")
                     .args(["rev-parse", "--show-toplevel"])
+                    .current_dir(dir)
                     .output()
                     .ok()
                     .and_then(|output| {
@@ -111,6 +119,7 @@ pub fn detect_repo_name() -> Option<String> {
     // Fallback: try show-toplevel for regular repos
     std::process::Command::new("git")
         .args(["rev-parse", "--show-toplevel"])
+        .current_dir(dir)
         .output()
         .ok()
         .and_then(|output| {

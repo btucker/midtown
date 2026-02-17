@@ -395,6 +395,7 @@ pub(crate) fn ensure_attach_worktree(name: &str, daemon_cwd: &str) -> Result<Str
         // For coworkers, ensure their worktree exists
         let wt_path = manager.worktree_path(name);
         if !wt_path.exists() {
+            #[allow(deprecated)] // Legacy worktree layout for CLI session
             match manager.create(name) {
                 Ok(path) => return Ok(path.to_string_lossy().to_string()),
                 Err(e) => {
@@ -698,8 +699,8 @@ pub(crate) fn build_attach_shell_command(
     session_id: &str,
     coworker_type: Option<&str>,
 ) -> Result<String, String> {
-    let repo_name =
-        midtown::paths::detect_repo_name().ok_or_else(|| "Not in a git repository".to_string())?;
+    let repo_name = midtown::paths::detect_repo_name_from_dir(Path::new(cwd))
+        .ok_or_else(|| "Not in a git repository".to_string())?;
 
     let profile_dir =
         midtown::auth::active_profile_dir_for_project_with_provider(&repo_name, provider);

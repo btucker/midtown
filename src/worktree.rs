@@ -97,14 +97,16 @@ impl WorktreeManager {
     /// Create a worktree for a coworker.
     ///
     /// Creates a new worktree at `~/.midtown/coworkers/<repo>/<name>/`
-    /// detached at the current HEAD. The coworker should immediately create
+    /// detached at the default branch. The coworker should immediately create
     /// a feature branch for their task.
     ///
     /// Exception: When reusing an existing worktree that's on the default branch
     /// (main/master), the spawn system creates a recovery branch to prevent
     /// working on main. See `checkout_new_branch` for the recovery mechanism.
+    #[deprecated(note = "Use create_task_worktree instead")]
     pub fn create(&self, coworker_name: &str) -> WorktreeResult<PathBuf> {
         let worktree_path = self.worktree_path(coworker_name);
+        let start_point = self.resolve_default_start_point();
 
         // Check if worktree already exists and is valid (idempotent)
         if worktree_path.exists() && self.is_worktree_registered(&worktree_path) {
@@ -121,7 +123,7 @@ impl WorktreeManager {
             std::fs::create_dir_all(parent)?;
         }
 
-        // Create the worktree detached at HEAD
+        // Create the worktree detached at the default branch
         // Coworker will create their own feature branch for each task
         let output = Command::new("git")
             .current_dir(&self.repo_root)
@@ -130,6 +132,7 @@ impl WorktreeManager {
                 "add",
                 "--detach",
                 worktree_path.to_str().unwrap(),
+                &start_point,
             ])
             .output()?;
 
@@ -152,6 +155,7 @@ impl WorktreeManager {
                         "add",
                         "--detach",
                         worktree_path.to_str().unwrap(),
+                        &start_point,
                     ])
                     .output()?;
 
@@ -479,6 +483,34 @@ impl WorktreeManager {
     /// Get the repository name.
     pub fn repo_name(&self) -> &str {
         &self.repo_name
+    }
+
+    /// Resolve the start-point for new worktree branches.
+    ///
+    /// Prefers `origin/<default>` (tracks remote), falls back to local
+    /// `<default>`, ultimate fallback `"main"`.
+    fn resolve_default_start_point(&self) -> String {
+        let default_branch =
+            detect_default_branch(&self.repo_root).unwrap_or_else(|| "main".to_string());
+
+        // Prefer origin/<default> so branches track the remote tip
+        let remote_ref = format!("origin/{}", default_branch);
+        let has_remote = Command::new("git")
+            .current_dir(&self.repo_root)
+            .args([
+                "rev-parse",
+                "--verify",
+                &format!("refs/remotes/{}", remote_ref),
+            ])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+
+        if has_remote {
+            remote_ref
+        } else {
+            default_branch
+        }
     }
 
     /// Get the branch name checked out in a coworker's worktree.
@@ -934,11 +966,12 @@ impl WorktreeManager {
 
     /// Create a task-based worktree at `~/.midtown/worktrees/<repo>/<worktree_id>/`.
     ///
-    /// The worktree is created detached at HEAD, then checked out on a branch
-    /// matching the worktree_id. This is the preferred path for new task
-    /// assignments.
+    /// The worktree is created on a branch matching the worktree_id, starting
+    /// from the default branch (not HEAD). This prevents cross-PR contamination
+    /// when the lead's HEAD is on an unrelated feature branch.
     pub fn create_task_worktree(&self, worktree_id: &str) -> WorktreeResult<PathBuf> {
         let worktree_path = self.task_worktree_path(worktree_id);
+        let start_point = self.resolve_default_start_point();
 
         // Check if worktree already exists and is valid (idempotent)
         if worktree_path.exists() && self.is_worktree_registered(&worktree_path) {
@@ -1013,6 +1046,7 @@ impl WorktreeManager {
                 "-b",
                 worktree_id,
                 worktree_path.to_str().unwrap(),
+                &start_point,
             ])
             .output()?;
 
@@ -1055,6 +1089,7 @@ impl WorktreeManager {
                         "-b",
                         worktree_id,
                         worktree_path.to_str().unwrap(),
+                        &start_point,
                     ])
                     .output()?;
 
@@ -1078,6 +1113,7 @@ impl WorktreeManager {
                         "-b",
                         worktree_id,
                         worktree_path.to_str().unwrap(),
+                        &start_point,
                     ])
                     .output()?;
                 if !retry.status.success() {
@@ -1516,6 +1552,7 @@ fn check_coworker_worktree(path: &Path, worktrees_base: &Path) -> (bool, Option<
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
 

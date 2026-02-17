@@ -231,6 +231,7 @@ impl CoworkerManager {
     ///
     /// Returns the list of additional worktree paths to pass as --add-dir to Claude.
     /// Failures in additional repos are logged but don't prevent coworker spawn.
+    #[allow(deprecated)] // Legacy worktree layout for additional repos
     fn create_additional_worktrees(&self, coworker_name: &str) -> Vec<std::path::PathBuf> {
         let mut additional_dirs = Vec::new();
         for mgr in &self.additional_worktree_managers {
@@ -525,6 +526,7 @@ impl CoworkerManager {
     /// - Ensures the worktree is not on the default branch
     ///
     /// Returns `(working_dir, augmented_config)` on success.
+    #[allow(deprecated)] // Legacy worktree layout when no working_dir override
     pub fn prepare_spawn(
         &self,
         config: &crate::launch::LaunchConfig,
@@ -790,6 +792,7 @@ fn is_valid_git_worktree(path: &std::path::Path) -> bool {
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
     use std::process::Command;
