@@ -3460,9 +3460,13 @@ pub(super) fn reconcile_orphaned_prs(snap: &WorldSnapshot) -> Vec<Effect> {
             continue;
         }
 
-        // Skip if a merge task already exists for this PR (prevents duplicates)
-        // This checks all_tasks for any task with pr field matching pr_number
-        if snap.all_tasks.iter().any(|task| task.pr == Some(pr_number)) {
+        // Skip if an active merge task already exists for this PR (prevents duplicates)
+        // Only check pending/in_progress tasks — completed tasks shouldn't block reconciliation
+        // (in case a task was mistakenly completed before the PR actually merged)
+        if snap.all_tasks.iter().any(|task| {
+            task.pr == Some(pr_number)
+                && !matches!(task.status, crate::tasks::TaskStatus::Completed)
+        }) {
             continue;
         }
 
