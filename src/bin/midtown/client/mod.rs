@@ -215,8 +215,20 @@ impl DaemonClient {
         self.send("channel.post", Some(params))
     }
 
-    pub fn channel_read(&self, all: bool) -> Result<Response, String> {
-        self.send("channel.read", Some(serde_json::json!({ "all": all })))
+    pub fn channel_read(
+        &self,
+        all: bool,
+        last: Option<&usize>,
+        since: Option<&str>,
+    ) -> Result<Response, String> {
+        let mut params = serde_json::json!({ "all": all });
+        if let Some(n) = last {
+            params["last"] = serde_json::json!(n);
+        }
+        if let Some(duration) = since {
+            params["since"] = serde_json::json!(duration);
+        }
+        self.send("channel.read", Some(params))
     }
 
     /// List all available channels from the daemon.

@@ -8,17 +8,19 @@
 set -euo pipefail
 
 PROFILE="release"
-CARGO_FLAGS="--release"
+BUILD_FLAGS="--release"
+INSTALL_FLAGS=""
 
 if [[ "${1:-}" == "--debug" ]]; then
     PROFILE="debug"
-    CARGO_FLAGS=""
+    BUILD_FLAGS=""
+    INSTALL_FLAGS="--debug"
 fi
 
 echo "Building daemon ($PROFILE)..."
-cargo build $CARGO_FLAGS
+cargo build $BUILD_FLAGS
 
 echo "Installing daemon binary..."
-cargo install --path . $CARGO_FLAGS
+cargo install --path . $INSTALL_FLAGS
 
 echo "Done. Midtown installed to ~/.cargo/bin/midtown"
