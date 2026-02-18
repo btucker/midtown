@@ -294,31 +294,45 @@ pub(super) fn handle_channel_list(
 }
 
 /// Handle channel.read RPC method.
+///
+/// Accepts an optional `channel` parameter to read from a topic channel.
+/// If not provided, defaults to the main channel. Respects `MIDTOWN_CHANNEL`
+/// when called via the CLI client.
 pub(super) fn handle_channel_read(
     id: RequestId,
     all: bool,
     last: Option<usize>,
     since: Option<&str>,
+    channel: Option<&str>,
     state: &DaemonState,
 ) -> Response {
     info!(
-        "channel.read called with all={}, last={:?}, since={:?}",
-        all, last, since
+        "channel.read called with all={}, last={:?}, since={:?}, channel={:?}",
+        all, last, since, channel
     );
 
-    // Read from the default (main) channel
-    let default_channel = match state.channel_router.default_channel() {
-        Ok(ch) => ch,
-        Err(e) => {
-            error!("Failed to get default channel: {}", e);
-            return Response::error(id, RpcError::new(-32603, e.to_string()));
-        }
+    // Read from the specified channel, or fall back to the default (main) channel
+    let target_channel = match channel {
+        Some(name) => match state.channel_router.get_channel(name) {
+            Ok(ch) => ch,
+            Err(e) => {
+                error!("Failed to get channel '{}': {}", name, e);
+                return Response::error(id, RpcError::new(-32603, e.to_string()));
+            }
+        },
+        None => match state.channel_router.default_channel() {
+            Ok(ch) => ch,
+            Err(e) => {
+                error!("Failed to get default channel: {}", e);
+                return Response::error(id, RpcError::new(-32603, e.to_string()));
+            }
+        },
     };
 
     let messages = if let Some(n) = last {
         // Use --last flag: read last N messages
         info!("Reading last {} messages", n);
-        match default_channel.read_last_n_messages(n) {
+        match target_channel.read_last_n_messages(n) {
             Ok((msgs, _)) => {
                 info!(
                     "read_last_n_messages({}) returned {} messages",
@@ -352,7 +366,7 @@ pub(super) fn handle_channel_read(
 
         let cutoff = chrono::Utc::now() - chrono::Duration::from_std(duration).unwrap();
 
-        match default_channel.read_all() {
+        match target_channel.read_all() {
             Ok(msgs) => msgs.into_iter().filter(|m| m.timestamp >= cutoff).collect(),
             Err(e) => {
                 error!("Failed to read channel: {}", e);
@@ -361,7 +375,7 @@ pub(super) fn handle_channel_read(
         }
     } else if all {
         // Read all messages
-        match default_channel.read_all() {
+        match target_channel.read_all() {
             Ok(msgs) => msgs,
             Err(e) => {
                 error!("Failed to read channel: {}", e);
@@ -370,7 +384,7 @@ pub(super) fn handle_channel_read(
         }
     } else {
         // Read recent messages (last 20)
-        match default_channel.read_all() {
+        match target_channel.read_all() {
             Ok(msgs) => {
                 let total = msgs.len();
                 if total > 20 {
@@ -664,6 +678,39 @@ mod tests {
         assert_eq!(messages[0].text, "user: hello main");
     }
 
+    /// Verify that channel.read with a channel parameter reads from the specified
+    /// topic channel, not the main channel.
+    ///
+    /// Regression test for: channel leads calling `midtown channel read` always
+    /// got main channel messages instead of their topic channel messages.
+    #[tokio::test]
+    async fn test_channel_read_with_channel_parameter() {
+        let state = make_test_state("midtown-test-channel-read-channel");
+
+        // Post a message to the topic channel
+        let _r =
+            handle_channel_post(1_i64.into(), "user", "hello topic", Some("auth"), &state).await;
+
+        // Post a different message to the main channel
+        let _r = handle_channel_post(2_i64.into(), "user", "hello main", None, &state).await;
+
+        // Reading from the topic channel should return only the topic message
+        let response = handle_channel_read(999.into(), true, None, None, Some("auth"), &state);
+
+        assert!(response.error.is_none(), "channel.read should succeed");
+        let result = response.result.unwrap();
+        let messages = result["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 1, "Expected 1 message from topic channel");
+        assert!(
+            messages[0]["message"]
+                .as_str()
+                .unwrap()
+                .contains("hello topic"),
+            "Expected topic channel message, got: {:?}",
+            messages[0]["message"]
+        );
+    }
+
     #[tokio::test]
     async fn test_channel_read_with_last_parameter() {
         let state = make_test_state("midtown-test-channel-read-last");
@@ -675,7 +722,7 @@ mod tests {
         }
 
         // Request last 3 messages
-        let response = handle_channel_read(999.into(), false, Some(3), None, &state);
+        let response = handle_channel_read(999.into(), false, Some(3), None, None, &state);
 
         // Verify we got exactly 3 messages
         assert!(response.error.is_none(), "channel.read should succeed");
