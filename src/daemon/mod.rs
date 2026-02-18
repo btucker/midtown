@@ -681,14 +681,16 @@ impl DaemonState {
     /// so the absolute cap is `max_coworkers + REVIEW_HEADROOM`. This allows
     /// reviewer spawning to proceed even when the dev cap is fully used.
     ///
-    /// The lead is excluded: a headless lead session registers in CoworkerManager
-    /// but is not a dev/reviewer slot and must not consume capacity.
-    fn is_at_coworker_limit(&self) -> bool {
+    /// The lead and channel leads are excluded: they register in CoworkerManager
+    /// but are not dev/reviewer slots and must not consume capacity.
+    fn is_at_coworker_limit(&self, channel_lead_names: &std::collections::HashSet<String>) -> bool {
         let non_lead_count = self
             .coworkers
             .list_running()
             .iter()
-            .filter(|cw| !cw.name.eq_ignore_ascii_case("lead") && !cw.name.starts_with("ch-"))
+            .filter(|cw| {
+                !cw.name.eq_ignore_ascii_case("lead") && !channel_lead_names.contains(&cw.name)
+            })
             .count();
         non_lead_count >= self.max_coworkers + REVIEW_HEADROOM
     }
@@ -699,14 +701,16 @@ impl DaemonState {
     /// Instead, `is_at_coworker_limit()` uses `max_coworkers + REVIEW_HEADROOM`
     /// so reviewers can exceed the normal dev cap by up to REVIEW_HEADROOM slots.
     ///
-    /// The lead is excluded: a headless lead session registers in CoworkerManager
-    /// but is not a dev/reviewer slot and must not consume capacity.
-    fn is_at_dev_limit(&self) -> bool {
+    /// The lead and channel leads are excluded: they register in CoworkerManager
+    /// but are not dev/reviewer slots and must not consume capacity.
+    fn is_at_dev_limit(&self, channel_lead_names: &std::collections::HashSet<String>) -> bool {
         let non_lead_count = self
             .coworkers
             .list_running()
             .iter()
-            .filter(|cw| !cw.name.eq_ignore_ascii_case("lead") && !cw.name.starts_with("ch-"))
+            .filter(|cw| {
+                !cw.name.eq_ignore_ascii_case("lead") && !channel_lead_names.contains(&cw.name)
+            })
             .count();
         non_lead_count >= self.max_coworkers
     }
@@ -720,8 +724,12 @@ impl DaemonState {
     /// Use this for diagnostic messages and decisions about whether spawning
     /// is possible. For actual spawning, use the individual checks to get
     /// better error messages.
-    fn has_available_coworker_slot(&self) -> bool {
-        !self.is_at_coworker_limit() && self.coworkers.next_available_name().is_some()
+    fn has_available_coworker_slot(
+        &self,
+        channel_lead_names: &std::collections::HashSet<String>,
+    ) -> bool {
+        !self.is_at_coworker_limit(channel_lead_names)
+            && self.coworkers.next_available_name().is_some()
     }
 
     /// Check if a PR has a review comment from a Claude coworker.
@@ -2841,17 +2849,16 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                                 info.session_id = sid.clone();
                                 needs_persist_save = true;
                             }
-                            // Also backfill channel_lead_sessions for ch-* sessions.
-                            // Channel leads use the "ch-{channel}" name prefix; strip it
-                            // to get the channel name key used in channel_lead_sessions.
-                            if let Some(channel_name) = name.strip_prefix("ch-")
-                                && let Some(stored_id) =
-                                    ps.channel_lead_sessions.get_mut(channel_name)
+                            // Also backfill channel_lead_sessions for channel lead sessions.
+                            // Channel leads use the channel name directly as their session name,
+                            // so we can look up the key directly in channel_lead_sessions.
+                            if let Some(stored_id) =
+                                ps.channel_lead_sessions.get_mut(name.as_str())
                                 && (stored_id.is_empty() || stored_id != sid)
                             {
                                 info!(
                                     "Backfilling channel lead session_id for '{}': {}",
-                                    channel_name, sid
+                                    name, sid
                                 );
                                 *stored_id = sid.clone();
                                 needs_persist_save = true;

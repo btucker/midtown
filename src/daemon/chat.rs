@@ -135,6 +135,11 @@ pub(super) async fn route_mentions(state: &DaemonState, msg: &Message) {
         mentions
     );
 
+    let channel_lead_names: std::collections::HashSet<String> = {
+        let ps = state.persistent_state.lock().await;
+        ps.channel_lead_sessions.keys().cloned().collect()
+    };
+
     for name in mentions {
         let is_running = state.coworkers.get(&name).is_some();
         let nudge_text = format!("{} said: {}", msg.from, msg.content);
@@ -144,7 +149,7 @@ pub(super) async fn route_mentions(state: &DaemonState, msg: &Message) {
             &name,
             &msg.from,
             is_running,
-            state.is_at_dev_limit(),
+            state.is_at_dev_limit(&channel_lead_names),
             &nudge_text,
         );
 

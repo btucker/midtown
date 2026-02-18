@@ -536,7 +536,7 @@ async fn test_recover_channel_lead_sessions_fresh_spawn() {
 
     match &effects[0] {
         Effect::SpawnCoworker(config) => {
-            assert_eq!(config.name, "ch-auth");
+            assert_eq!(config.name, "auth");
             assert_eq!(config.session_mode, crate::launch::SessionMode::Fresh);
         }
         other => panic!("Expected SpawnCoworker, got {:?}", other),
@@ -577,7 +577,7 @@ async fn test_recover_channel_lead_sessions_resume_with_saved_session() {
 
     match &effects[0] {
         Effect::SpawnCoworker(config) => {
-            assert_eq!(config.name, "ch-payments");
+            assert_eq!(config.name, "payments");
             assert_eq!(
                 config.session_mode,
                 crate::launch::SessionMode::ResumeSession("session-abc-123".to_string())
@@ -609,7 +609,7 @@ async fn test_recover_channel_lead_sessions_empty_session_id_spawns_fresh() {
 
     match &effects[0] {
         Effect::SpawnCoworker(config) => {
-            assert_eq!(config.name, "ch-auth");
+            assert_eq!(config.name, "auth");
             assert_eq!(config.session_mode, crate::launch::SessionMode::Fresh);
         }
         other => panic!("Expected SpawnCoworker(Fresh), got {:?}", other),
@@ -661,12 +661,12 @@ async fn test_recover_channel_lead_sessions_multiple_channels() {
     });
     assert!(resume.is_some(), "Should have a resume for 'payments'");
 
-    // Verify the fresh is for web-interface (session name is prefixed)
+    // Verify the fresh is for web-interface
     let fresh = spawns.iter().find(|e| {
         matches!(
             e,
             Effect::SpawnCoworker(c)
-                if c.name == "ch-web-interface" && c.session_mode == crate::launch::SessionMode::Fresh
+                if c.name == "web-interface" && c.session_mode == crate::launch::SessionMode::Fresh
         )
     });
     assert!(
@@ -716,14 +716,13 @@ async fn test_recover_channel_lead_sessions_mixed_archived_and_active() {
             }
         })
         .collect();
-    // Session names are prefixed with "ch-" to avoid coworker name collisions
-    assert!(channel_names.contains(&"ch-auth"), "auth should be spawned");
+    assert!(channel_names.contains(&"auth"), "auth should be spawned");
     assert!(
-        channel_names.contains(&"ch-billing"),
+        channel_names.contains(&"billing"),
         "billing should be spawned"
     );
     assert!(
-        !channel_names.contains(&"old-feature") && !channel_names.contains(&"ch-old-feature"),
+        !channel_names.contains(&"old-feature"),
         "old-feature should not be spawned"
     );
 }

@@ -694,8 +694,10 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
     };
 
     // ── Limits & timing ─────────────────────────────────────────────────
-    let is_at_coworker_limit = state.is_at_coworker_limit();
-    let is_at_dev_limit = state.is_at_dev_limit();
+    let channel_lead_names: std::collections::HashSet<String> =
+        channel_lead_sessions.keys().cloned().collect();
+    let is_at_coworker_limit = state.is_at_coworker_limit(&channel_lead_names);
+    let is_at_dev_limit = state.is_at_dev_limit(&channel_lead_names);
     let now_utc = Utc::now();
     let repo_name = state.repo_name.clone();
     let repo_owner = state.repo_owner.clone();
