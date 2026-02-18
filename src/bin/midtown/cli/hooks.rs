@@ -168,7 +168,7 @@ fn post_insight_to_channel(repo: &str, agent: &str, insight: &str) -> bool {
         return false;
     }
 
-    let channel = match midtown::Channel::for_repo(repo) {
+    let channel = match open_channel_for_hook(repo) {
         Ok(ch) => ch,
         Err(e) => {
             hook_log(repo, &format!("insight: failed to open channel ({})", e));
@@ -354,8 +354,7 @@ fn handle_idle_hook() -> Result<Response, String> {
 
     // Post idle status to channel
     let repo = detect_git_repo().ok_or("Not in a git repository")?;
-    let channel =
-        midtown::Channel::for_repo(&repo).map_err(|e| format!("Failed to open channel: {}", e))?;
+    let channel = open_channel_for_hook(&repo)?;
 
     // Coworkers have MIDTOWN_AGENT set to their name at spawn time (see launch.rs).
     // Lead sessions don't have this set, so default to "lead".
@@ -530,8 +529,7 @@ fn handle_task_hook() -> Result<Response, String> {
     let agent = std::env::var("MIDTOWN_AGENT").unwrap_or_else(|_| "lead".to_string());
 
     let repo = detect_git_repo().ok_or("Not in a git repository")?;
-    let channel =
-        midtown::Channel::for_repo(&repo).map_err(|e| format!("Failed to open channel: {}", e))?;
+    let channel = open_channel_for_hook(&repo)?;
 
     let tool_name = context["tool_name"]
         .as_str()
@@ -933,6 +931,20 @@ fn detect_git_repo() -> Option<String> {
     None
 }
 
+/// Open the appropriate channel for a hook, respecting `MIDTOWN_CHANNEL`.
+///
+/// Channel leads run with `MIDTOWN_CHANNEL` set to their topic channel name.
+/// When this env var is present, hooks should post to that channel instead of
+/// the default "midtown" main channel — the same routing the RPC client applies.
+fn open_channel_for_hook(repo: &str) -> Result<midtown::Channel, String> {
+    if let Ok(channel_name) = std::env::var("MIDTOWN_CHANNEL") {
+        midtown::Channel::for_repo_named(repo, channel_name)
+            .map_err(|e| format!("Failed to open channel: {}", e))
+    } else {
+        midtown::Channel::for_repo(repo).map_err(|e| format!("Failed to open channel: {}", e))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1143,6 +1155,60 @@ Second insight
         );
 
         // Clean up test directory
+        let _ = std::fs::remove_dir_all(&projects_dir);
+    }
+
+    #[test]
+    fn test_open_channel_for_hook_respects_midtown_channel() {
+        // Without MIDTOWN_CHANNEL set, hooks should use the default "midtown" channel.
+        // With MIDTOWN_CHANNEL set, hooks should route to the named topic channel.
+        let repo = format!("test-hook-channel-routing-{}", std::process::id());
+        let projects_dir = midtown::paths::projects_dir_for_repo(&repo);
+        let _ = std::fs::remove_dir_all(&projects_dir);
+
+        // Default: no MIDTOWN_CHANNEL → opens "midtown" channel
+        unsafe { std::env::remove_var("MIDTOWN_CHANNEL") };
+        let ch = open_channel_for_hook(&repo).expect("should open default channel");
+        assert_eq!(ch.channel_name(), "midtown");
+
+        // With MIDTOWN_CHANNEL set → opens the named topic channel
+        unsafe { std::env::set_var("MIDTOWN_CHANNEL", "tui") };
+        let ch = open_channel_for_hook(&repo).expect("should open topic channel");
+        assert_eq!(ch.channel_name(), "tui");
+
+        // Clean up
+        unsafe { std::env::remove_var("MIDTOWN_CHANNEL") };
+        let _ = std::fs::remove_dir_all(&projects_dir);
+    }
+
+    #[test]
+    fn test_post_insight_to_channel_uses_topic_channel() {
+        // When MIDTOWN_CHANNEL is set, insights should go to the topic channel,
+        // not the main "midtown" channel.
+        let repo = format!("test-insight-topic-channel-{}", std::process::id());
+        let projects_dir = midtown::paths::projects_dir_for_repo(&repo);
+        let _ = std::fs::remove_dir_all(&projects_dir);
+
+        let insight = "Channel lead insight routing test";
+
+        unsafe { std::env::set_var("MIDTOWN_CHANNEL", "tui") };
+        let posted = post_insight_to_channel(&repo, "channel-lead", insight);
+        assert!(posted, "insight should post successfully");
+
+        // Verify the insight is in the topic channel, NOT the main channel
+        let topic_ch = midtown::Channel::for_repo_named(&repo, "tui").unwrap();
+        let topic_msgs = topic_ch.read_all().expect("should read topic channel");
+        let found_in_topic = topic_msgs.iter().any(|m| m.content.contains(insight));
+        assert!(found_in_topic, "insight should appear in topic channel");
+
+        // Main channel should be empty
+        if let Ok(main_ch) = midtown::Channel::for_repo(&repo) {
+            let main_msgs = main_ch.read_all().expect("should read main channel");
+            let found_in_main = main_msgs.iter().any(|m| m.content.contains(insight));
+            assert!(!found_in_main, "insight should NOT appear in main channel");
+        }
+
+        unsafe { std::env::remove_var("MIDTOWN_CHANNEL") };
         let _ = std::fs::remove_dir_all(&projects_dir);
     }
 
