@@ -1,6 +1,7 @@
 <script>
   import ChannelList from './ChannelList.svelte'
   import CoworkerStatus from './CoworkerStatus.svelte'
+  import OpsChannel from './OpsChannel.svelte'
   import UsageBars from './UsageBars.svelte'
   import AuthSwitcher from './AuthSwitcher.svelte'
   import { connected } from './store.js'
@@ -44,8 +45,9 @@
     </CollapsibleContent>
   </Collapsible>
 
-  <!-- Footer section with coworker status, usage bars, and controls -->
+  <!-- Footer section with ops channel, coworker status, usage bars, and controls -->
   <div class="mt-auto flex flex-col gap-2 border-t-2 border-[#2a2a2a] bg-[#0a0a0a] p-2 pb-safe-offset-2">
+    <OpsChannel />
     <CoworkerStatus />
     <UsageBars />
     <div class="flex items-center justify-end gap-2.5">
