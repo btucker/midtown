@@ -90,6 +90,7 @@ fn test_usage_limit_nudge_only_targets_running_coworkers() {
         worktree_branch_owners: HashMap::new(),
         worktree_registry: crate::worktree_registry::WorktreeRegistry::default(),
         merged_pr_branches: HashMap::new(),
+        lead_session_refresh_interval_secs: 5400,
         is_at_coworker_limit: false,
         is_at_dev_limit: false,
         now_utc: chrono::Utc::now(),
@@ -254,6 +255,7 @@ fn test_check_for_usage_limits_with_reset_time() {
         worktree_branch_owners: HashMap::new(),
         worktree_registry: crate::worktree_registry::WorktreeRegistry::default(),
         merged_pr_branches: HashMap::new(),
+        lead_session_refresh_interval_secs: 5400,
         is_at_coworker_limit: false,
         is_at_dev_limit: false,
         now_utc: chrono::Utc::now(),
@@ -339,6 +341,7 @@ fn test_check_for_usage_limits_already_scheduled() {
         worktree_branch_owners: HashMap::new(),
         worktree_registry: crate::worktree_registry::WorktreeRegistry::default(),
         merged_pr_branches: HashMap::new(),
+        lead_session_refresh_interval_secs: 5400,
         is_at_coworker_limit: false,
         is_at_dev_limit: false,
         now_utc: chrono::Utc::now(),
@@ -459,6 +462,7 @@ fn empty_snap() -> snapshot::WorldSnapshot {
         worktree_branch_owners: HashMap::new(),
         worktree_registry: crate::worktree_registry::WorktreeRegistry::default(),
         merged_pr_branches: HashMap::new(),
+        lead_session_refresh_interval_secs: 5400,
         is_at_coworker_limit: false,
         is_at_dev_limit: false,
         now_utc: chrono::Utc::now(),
@@ -596,5 +600,179 @@ fn detect_stale_attached_sessions_handles_multiple() {
     assert!(
         matches!(&effects[0], Effect::AutoDetachCoworker { name } if name == "lead"),
         "Effect should be AutoDetachCoworker for lead (the stale one)"
+    );
+}
+
+#[test]
+fn test_maybe_refresh_lead_session_no_refresh_when_disabled() {
+    use crate::coworker::{Coworker, CoworkerStatus};
+    // interval_secs = 0 → no effects even if lead has been running for a long time
+    let mut snap = empty_snap();
+    snap.lead_session_refresh_interval_secs = 0;
+    let started = snap.now_utc - chrono::Duration::minutes(120);
+    let lead = Coworker {
+        slot_id: uuid::Uuid::new_v4().to_string(),
+        name: "lead".to_string(),
+        status: CoworkerStatus::Running,
+        working_dir: "/tmp/test".to_string(),
+        started_at: started,
+        current_task: None,
+        session_id: None,
+        model: "sonnet".to_string(),
+        provider: crate::auth::AuthProvider::Claude,
+        profile: crate::auth::DEFAULT_PROFILE.to_string(),
+    };
+    snap.active_coworkers.push(lead);
+    snap.coworker_start_times
+        .insert("lead".to_string(), started);
+
+    let effects = maybe_refresh_lead_session(&snap);
+    assert!(
+        effects.is_empty(),
+        "No refresh should happen when interval is 0 (disabled)"
+    );
+}
+
+#[test]
+fn test_maybe_refresh_lead_session_no_refresh_when_young() {
+    use crate::coworker::{Coworker, CoworkerStatus};
+    // lead started 30 min ago, interval = 90 min → no effects
+    let mut snap = empty_snap();
+    snap.lead_session_refresh_interval_secs = 90 * 60;
+    let started = snap.now_utc - chrono::Duration::minutes(30);
+    let lead = Coworker {
+        slot_id: uuid::Uuid::new_v4().to_string(),
+        name: "lead".to_string(),
+        status: CoworkerStatus::Running,
+        working_dir: "/tmp/test".to_string(),
+        started_at: started,
+        current_task: None,
+        session_id: None,
+        model: "sonnet".to_string(),
+        provider: crate::auth::AuthProvider::Claude,
+        profile: crate::auth::DEFAULT_PROFILE.to_string(),
+    };
+    snap.active_coworkers.push(lead);
+    snap.coworker_start_times
+        .insert("lead".to_string(), started);
+
+    let effects = maybe_refresh_lead_session(&snap);
+    assert!(
+        effects.is_empty(),
+        "No refresh should happen when lead is younger than the interval"
+    );
+}
+
+#[test]
+fn test_maybe_refresh_lead_session_triggers_when_old() {
+    use crate::coworker::{Coworker, CoworkerStatus};
+    // lead started 91 min ago, interval = 90 min → PostToChannel + ShutdownCoworker
+    let mut snap = empty_snap();
+    snap.lead_session_refresh_interval_secs = 90 * 60;
+    let started = snap.now_utc - chrono::Duration::minutes(91);
+    let lead = Coworker {
+        slot_id: uuid::Uuid::new_v4().to_string(),
+        name: "lead".to_string(),
+        status: CoworkerStatus::Running,
+        working_dir: "/tmp/test".to_string(),
+        started_at: started,
+        current_task: None,
+        session_id: None,
+        model: "sonnet".to_string(),
+        provider: crate::auth::AuthProvider::Claude,
+        profile: crate::auth::DEFAULT_PROFILE.to_string(),
+    };
+    snap.active_coworkers.push(lead);
+    snap.coworker_start_times
+        .insert("lead".to_string(), started);
+
+    let effects = maybe_refresh_lead_session(&snap);
+    assert_eq!(
+        effects.len(),
+        2,
+        "Should produce PostToChannel + ShutdownCoworker when lead is past the interval"
+    );
+    assert!(
+        matches!(&effects[0], Effect::PostToChannel { sender, .. } if sender == "midtown"),
+        "First effect should be PostToChannel from midtown"
+    );
+    assert!(
+        matches!(&effects[1], Effect::ShutdownCoworker { name, .. } if name == "lead"),
+        "Second effect should be ShutdownCoworker for lead"
+    );
+}
+
+#[test]
+fn test_maybe_refresh_lead_session_skips_attached() {
+    use crate::coworker::{Coworker, CoworkerStatus};
+    // lead is attached interactively → no effects even if old
+    let mut snap = empty_snap();
+    snap.lead_session_refresh_interval_secs = 90 * 60;
+    let started = snap.now_utc - chrono::Duration::minutes(120);
+    let lead = Coworker {
+        slot_id: uuid::Uuid::new_v4().to_string(),
+        name: "lead".to_string(),
+        status: CoworkerStatus::Running,
+        working_dir: "/tmp/test".to_string(),
+        started_at: started,
+        current_task: None,
+        session_id: None,
+        model: "sonnet".to_string(),
+        provider: crate::auth::AuthProvider::Claude,
+        profile: crate::auth::DEFAULT_PROFILE.to_string(),
+    };
+    snap.active_coworkers.push(lead);
+    snap.coworker_start_times
+        .insert("lead".to_string(), started);
+    snap.attached_coworkers
+        .insert("lead".to_string(), snap.now_utc);
+
+    let effects = maybe_refresh_lead_session(&snap);
+    assert!(
+        effects.is_empty(),
+        "No refresh should happen when lead is attached interactively"
+    );
+}
+
+#[test]
+fn test_maybe_refresh_lead_session_no_lead_in_active_coworkers() {
+    // No lead in active_coworkers → no effects
+    let mut snap = empty_snap();
+    snap.lead_session_refresh_interval_secs = 90 * 60;
+    // Don't add any coworkers — lead is missing from active_coworkers
+
+    let effects = maybe_refresh_lead_session(&snap);
+    assert!(
+        effects.is_empty(),
+        "No refresh should happen when lead is not in active_coworkers"
+    );
+}
+
+#[test]
+fn test_maybe_refresh_lead_session_no_start_time() {
+    use crate::coworker::{Coworker, CoworkerStatus};
+    // Lead is in active_coworkers but missing from coworker_start_times → no effects
+    let mut snap = empty_snap();
+    snap.lead_session_refresh_interval_secs = 90 * 60;
+    let started = snap.now_utc - chrono::Duration::minutes(120);
+    let lead = Coworker {
+        slot_id: uuid::Uuid::new_v4().to_string(),
+        name: "lead".to_string(),
+        status: CoworkerStatus::Running,
+        working_dir: "/tmp/test".to_string(),
+        started_at: started,
+        current_task: None,
+        session_id: None,
+        model: "sonnet".to_string(),
+        provider: crate::auth::AuthProvider::Claude,
+        profile: crate::auth::DEFAULT_PROFILE.to_string(),
+    };
+    snap.active_coworkers.push(lead);
+    // Intentionally don't insert into coworker_start_times
+
+    let effects = maybe_refresh_lead_session(&snap);
+    assert!(
+        effects.is_empty(),
+        "No refresh should happen when lead has no start time recorded"
     );
 }
