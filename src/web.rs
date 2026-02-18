@@ -349,6 +349,7 @@ pub fn create_web_router(state: Arc<WebState>) -> Router {
         .route("/api/auth/profiles", get(api_auth_profiles))
         .route("/api/auth/switch", post(api_auth_switch))
         .route("/api/usage", get(api_usage))
+        .route("/api/questions", get(api_pending_questions))
         .route("/api/upload", post(api_upload))
         .layer(DefaultBodyLimit::max(11 * 1024 * 1024))
         .with_state(state)
@@ -1386,6 +1387,41 @@ async fn api_usage(State(state): State<Arc<WebState>>) -> Result<impl IntoRespon
 /// Upload a file (image or document) from the web UI.
 ///
 /// Accepts multipart/form-data with a file field. Saves the file to
+/// Returns pending coworker questions for initial hydration on page load.
+async fn api_pending_questions(
+    State(state): State<Arc<WebState>>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let repo = state.config.repo.clone();
+    let questions = tokio::task::spawn_blocking(move || {
+        use std::io::{BufRead, BufReader, Write};
+        use std::os::unix::net::UnixStream;
+
+        let socket = crate::paths::daemon_socket_for_repo(&repo);
+        let mut stream = UnixStream::connect(&socket).ok()?;
+        stream.set_read_timeout(Some(Duration::from_secs(5))).ok()?;
+
+        let request = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "coworker.questions",
+            "id": 1
+        });
+        writeln!(stream, "{}", request).ok()?;
+        stream.flush().ok()?;
+
+        let mut reader = BufReader::new(stream);
+        let mut line = String::new();
+        reader.read_line(&mut line).ok()?;
+
+        let resp: serde_json::Value = serde_json::from_str(&line).ok()?;
+        resp.get("result").and_then(|r| r.get("questions")).cloned()
+    })
+    .await
+    .unwrap_or(None)
+    .unwrap_or_else(|| serde_json::json!([]));
+
+    Ok(axum::Json(serde_json::json!({ "questions": questions })))
+}
+
 /// `~/.midtown/projects/<repo>/uploads/<timestamp>-<filename>` and returns
 /// the absolute path for the lead to read.
 ///
@@ -1670,30 +1706,40 @@ async fn handle_client_message(text: &str, state: &Arc<WebState>) -> Result<(), 
                 return Err("Empty answer".to_string());
             }
 
-            // Forward to daemon via coworker.nudge RPC (which clears the pending question and delivers the answer)
-            use std::io::{BufRead, BufReader, Write};
-            use std::os::unix::net::UnixStream;
-            let socket = crate::paths::daemon_socket_for_repo(&state.config.repo);
-            let mut stream = UnixStream::connect(&socket)
-                .map_err(|e| format!("Failed to connect to daemon: {}", e))?;
-            stream.set_write_timeout(Some(Duration::from_secs(5))).ok();
-            stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
-            let request = serde_json::json!({
-                "jsonrpc": "2.0",
-                "method": "coworker.nudge",
-                "params": {
-                    "from": "lead",
-                    "name": coworker_name,
-                    "message": answer,
-                },
-                "id": 1
-            });
-            writeln!(stream, "{}", request).map_err(|e| format!("Failed to send nudge: {}", e))?;
-            stream.flush().ok();
-            // Read response (optional - fire and forget is fine but good to check)
-            let mut reader = BufReader::new(stream);
-            let mut line = String::new();
-            reader.read_line(&mut line).ok();
+            // Forward to daemon via coworker.nudge RPC (which clears the pending question and delivers the answer).
+            // Uses spawn_blocking to avoid stalling the async executor on synchronous socket I/O.
+            let repo = state.config.repo.clone();
+            let cw_name = coworker_name.clone();
+            let ans = answer.clone();
+            tokio::task::spawn_blocking(move || {
+                use std::io::{BufRead, BufReader, Write};
+                use std::os::unix::net::UnixStream;
+                let socket = crate::paths::daemon_socket_for_repo(&repo);
+                let mut stream = UnixStream::connect(&socket)
+                    .map_err(|e| format!("Failed to connect to daemon: {}", e))?;
+                stream.set_write_timeout(Some(Duration::from_secs(5))).ok();
+                stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
+                let request = serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "method": "coworker.nudge",
+                    "params": {
+                        "from": "lead",
+                        "name": cw_name,
+                        "message": ans,
+                    },
+                    "id": 1
+                });
+                writeln!(stream, "{}", request)
+                    .map_err(|e| format!("Failed to send nudge: {}", e))?;
+                stream.flush().ok();
+                let mut reader = BufReader::new(stream);
+                let mut line = String::new();
+                reader.read_line(&mut line).ok();
+                Ok::<(), String>(())
+            })
+            .await
+            .map_err(|e| format!("spawn_blocking panic in answer_question: {}", e))?
+            .map_err(|e: String| e)?;
             info!("Answered question from {}: {}", coworker_name, answer);
         }
     }

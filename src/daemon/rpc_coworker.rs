@@ -437,12 +437,6 @@ pub(super) async fn handle_coworker_nudge(
     message: &str,
     state: &DaemonState,
 ) -> Response {
-    // Clear any pending questions from this coworker — the nudge delivers the answer.
-    {
-        let mut questions = state.pending_questions.lock().unwrap();
-        questions.retain(|q| q.coworker_name != name);
-    }
-
     // Always enqueue to headed intercom for wrapper-managed sessions.
     state.enqueue_headed_nudge(name, message).await;
 
@@ -465,6 +459,14 @@ pub(super) async fn handle_coworker_nudge(
             false
         }
     };
+
+    // Clear pending questions AFTER delivery — the nudge has been enqueued (headed)
+    // and best-effort delivered (headless). Clearing after ensures we don't lose the
+    // question if enqueue_headed_nudge were to fail in the future.
+    {
+        let mut questions = state.pending_questions.lock().unwrap();
+        questions.retain(|q| q.coworker_name != name);
+    }
 
     info!("Queued nudge for coworker {}: {}", name, message);
     Response::success(
@@ -496,12 +498,14 @@ pub(super) async fn handle_coworker_asking(
     state.nudge_lead(&nudge_message).await;
 
     // Assign a unique ID and store the question in pending state.
+    // Replace any existing question from the same coworker (only one active question per coworker).
     let question_id = state
         .pending_question_id_counter
         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let timestamp = chrono::Utc::now();
     {
         let mut questions = state.pending_questions.lock().unwrap();
+        questions.retain(|q| q.coworker_name != name);
         questions.push(super::PendingQuestion {
             id: question_id,
             coworker_name: name.to_string(),

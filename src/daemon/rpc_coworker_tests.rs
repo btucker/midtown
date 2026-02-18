@@ -126,6 +126,58 @@ async fn test_coworker_asking_multiple_questions_accumulate() {
     );
 }
 
+#[tokio::test]
+async fn test_coworker_asking_twice_replaces_previous_question() {
+    let state = make_test_state();
+
+    handle_coworker_asking(RequestId::Number(1), "madison", "First question?", &state).await;
+    handle_coworker_asking(RequestId::Number(2), "madison", "Updated question?", &state).await;
+
+    let questions = state.pending_questions.lock().unwrap();
+    assert_eq!(
+        questions.len(),
+        1,
+        "same coworker asking twice should replace, not accumulate"
+    );
+    assert_eq!(questions[0].question, "Updated question?");
+}
+
+// ============================================================================
+// cleanup_coworker_state — clears pending questions
+// ============================================================================
+
+#[tokio::test]
+async fn test_cleanup_coworker_state_clears_pending_questions() {
+    let state = make_test_state();
+
+    // Store pending questions for two coworkers
+    handle_coworker_asking(
+        RequestId::Number(1),
+        "madison",
+        "Madison's question?",
+        &state,
+    )
+    .await;
+    handle_coworker_asking(RequestId::Number(2), "park", "Park's question?", &state).await;
+
+    {
+        let questions = state.pending_questions.lock().unwrap();
+        assert_eq!(questions.len(), 2);
+    }
+
+    // Clean up madison's state (simulates crash/shutdown)
+    state.cleanup_coworker_state("madison").await;
+
+    // Only park's question should remain
+    let questions = state.pending_questions.lock().unwrap();
+    assert_eq!(
+        questions.len(),
+        1,
+        "cleanup should remove madison's question"
+    );
+    assert_eq!(questions[0].coworker_name, "park");
+}
+
 // ============================================================================
 // handle_coworker_nudge — clears pending question
 // ============================================================================

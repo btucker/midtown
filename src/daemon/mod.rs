@@ -772,6 +772,11 @@ impl DaemonState {
                 .unwrap()
                 .retain(|_, sid| sid != &session_id);
         }
+        // Clear pending questions (prevents stale questions after crash/shutdown)
+        {
+            let mut questions = self.pending_questions.lock().unwrap();
+            questions.retain(|q| q.coworker_name != name);
+        }
     }
 
     /// Remove expired entries from the RPC response cache.

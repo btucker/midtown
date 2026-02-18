@@ -216,6 +216,16 @@ export async function fetchStatus() {
   } catch (err) {
     console.error('Failed to fetch status:', err)
   }
+  // Hydrate pending questions from daemon (survives page refresh / WebSocket reconnect)
+  try {
+    const res = await fetch(`${getApiBase()}/questions`)
+    if (res.ok) {
+      const data = await res.json()
+      pendingQuestions.set(data.questions || [])
+    }
+  } catch {
+    // Non-critical — questions will arrive via WebSocket events
+  }
 }
 
 // Fetch API usage data (session + weekly utilization)
@@ -410,9 +420,10 @@ function handleUpdate(update) {
           delete updated[msg.from.toLowerCase()]
           return updated
         })
-        // Clear pending question for this coworker when they post a message
-        // (indicates they got an answer or moved on)
-        pendingQuestions.update((qs) => qs.filter((q) => q.coworker_name.toLowerCase() !== msg.from.toLowerCase()))
+        // Note: pending questions are NOT cleared on channel messages. A coworker
+        // posting a /me status update does not mean their question was answered.
+        // Questions are cleared by: (1) the daemon via nudge delivery, (2) optimistic
+        // removal in sendAnswer(), or (3) a new coworker_question event replacing it.
       }
       break
     case 'coworker_status': {

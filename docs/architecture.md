@@ -163,6 +163,24 @@ messages through a poll+ack contract.
 - `headed_sessions: Mutex<HashMap<String, HeadedSessionState>>` — Per-session queue + lease.
 - `attached_coworkers: Mutex<HashMap<String, DateTime<Utc>>>` — Tracks interactive attach/detach state for headless coworkers. Keys are coworker names; values are the attach timestamp. Entries are added on `midtown session attach`, removed on `midtown session detach` or via `Effect::AutoDetachCoworker` (auto-detach after `ATTACH_TIMEOUT` = 10 min, to recover from crash/disconnect without detach).
 
+## Coworker Questions (AskUserQuestion)
+
+Coworkers can ask the Lead questions via the Claude Code `AskUserQuestion` tool. The flow:
+
+1. Coworker calls `AskUserQuestion` → Claude Code CLI runs `midtown coworker asking` → daemon RPC `coworker.asking`
+2. Daemon stores the question in `DaemonState.pending_questions` (ephemeral, one active question per coworker), posts to channel, nudges the Lead
+3. Daemon broadcasts `WebUpdate::CoworkerQuestion` to WebSocket clients (Web UI, TUI)
+4. TUI polls `coworker.questions` RPC on each kanban refresh; Web UI hydrates from `/api/questions` on connect
+5. Lead answers via TUI input or Web UI → `coworker.nudge` RPC → daemon delivers answer and clears the pending question
+
+**DaemonState fields:**
+- `pending_questions: Mutex<Vec<PendingQuestion>>` — In-memory store of unanswered questions. Cleared on nudge delivery, coworker cleanup, or daemon restart.
+- `pending_question_id_counter: AtomicU64` — Monotonically increasing ID for question deduplication.
+
+**RPC methods:**
+- `coworker.asking` — Store a pending question and notify the Lead
+- `coworker.questions` — Return all pending questions (used by TUI polling and `/api/questions` endpoint)
+
 ## Reminders
 
 The Lead can set reminders that trigger on specific conditions:
