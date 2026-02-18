@@ -623,7 +623,9 @@
           <div class="mt-[3px]">
             <div class="flex items-center gap-[7px] whitespace-nowrap overflow-hidden text-ellipsis">
               <span class="font-bold text-[0.85rem]" style="color: {getSenderColor(agentName)}">{agentName}</span>
-              <span class="text-[#3a6a3a] text-[0.78rem] select-none">working…</span>
+              {#if toolItems.some((item) => item.status === 'InProgress')}
+                <span class="text-[#3a6a3a] text-[0.78rem] select-none">working…</span>
+              {/if}
             </div>
             <ToolActivity {agentName} items={toolItems} />
           </div>
