@@ -729,7 +729,10 @@ impl DaemonState {
         channel_lead_names: &std::collections::HashSet<String>,
     ) -> bool {
         !self.is_at_coworker_limit(channel_lead_names)
-            && self.coworkers.next_available_name().is_some()
+            && self
+                .coworkers
+                .next_available_name_excluding(channel_lead_names)
+                .is_some()
     }
 
     /// Check if a PR has a review comment from a Claude coworker.

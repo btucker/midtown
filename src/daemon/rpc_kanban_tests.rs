@@ -8,28 +8,38 @@ use super::*;
 // ============================================================================
 
 #[test]
-fn test_is_channel_lead_with_ch_prefix() {
-    assert!(is_channel_lead("ch-auth-refactor"));
-    assert!(is_channel_lead("ch-web-interface"));
-    assert!(is_channel_lead("ch-daemon-core"));
-    assert!(is_channel_lead("ch-"));
+fn test_is_channel_lead_matches_registered_names() {
+    let channel_leads: std::collections::HashSet<String> = ["auth", "web-interface", "daemon-core"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+
+    assert!(is_channel_lead("auth", &channel_leads));
+    assert!(is_channel_lead("web-interface", &channel_leads));
+    assert!(is_channel_lead("daemon-core", &channel_leads));
 }
 
 #[test]
-fn test_is_channel_lead_regular_coworkers() {
-    assert!(!is_channel_lead("madison"));
-    assert!(!is_channel_lead("broadway"));
-    assert!(!is_channel_lead("amsterdam"));
-    assert!(!is_channel_lead("park"));
-    assert!(!is_channel_lead("lead"));
+fn test_is_channel_lead_rejects_non_leads() {
+    let channel_leads: std::collections::HashSet<String> = ["auth", "web-interface"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+
+    assert!(!is_channel_lead("madison", &channel_leads));
+    assert!(!is_channel_lead("broadway", &channel_leads));
+    assert!(!is_channel_lead("amsterdam", &channel_leads));
+    assert!(!is_channel_lead("park", &channel_leads));
+    assert!(!is_channel_lead("lead", &channel_leads));
 }
 
 #[test]
-fn test_is_channel_lead_case_sensitivity() {
-    // Channel lead names are always lowercase (from channel_lead_session_name)
-    assert!(is_channel_lead("ch-auth"));
-    assert!(!is_channel_lead("CH-auth")); // uppercase prefix is not a channel lead
-    assert!(!is_channel_lead("Ch-auth"));
+fn test_is_channel_lead_empty_set() {
+    let channel_leads: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    // With no channel leads registered, nothing should match
+    assert!(!is_channel_lead("auth", &channel_leads));
+    assert!(!is_channel_lead("madison", &channel_leads));
 }
 
 #[test]
@@ -339,8 +349,10 @@ fn test_cache_key_stable_on_progress_update() {
     );
 
     // Use the real function from the parent module (not the local test helper below)
-    let hash_before = super::compute_coworker_state_hash(&records_before);
-    let hash_after = super::compute_coworker_state_hash(&records_after);
+    let hash_before =
+        super::compute_coworker_state_hash(&records_before, &std::collections::HashSet::new());
+    let hash_after =
+        super::compute_coworker_state_hash(&records_after, &std::collections::HashSet::new());
 
     assert_eq!(
         hash_before, hash_after,
@@ -364,8 +376,10 @@ fn test_cache_key_changes_on_phase_transition() {
         make_record(Some(WorkflowPhase::PullRequest), Some(1500), Some(90)),
     );
 
-    let hash_dev = super::compute_coworker_state_hash(&records_dev);
-    let hash_pr = super::compute_coworker_state_hash(&records_pr);
+    let hash_dev =
+        super::compute_coworker_state_hash(&records_dev, &std::collections::HashSet::new());
+    let hash_pr =
+        super::compute_coworker_state_hash(&records_pr, &std::collections::HashSet::new());
 
     assert_ne!(
         hash_dev, hash_pr,
@@ -389,8 +403,10 @@ fn test_cache_key_changes_on_task_assignment() {
         make_record(Some(WorkflowPhase::Developing), Some(999), None),
     );
 
-    let hash_no_task = super::compute_coworker_state_hash(&records_no_task);
-    let hash_with_task = super::compute_coworker_state_hash(&records_with_task);
+    let hash_no_task =
+        super::compute_coworker_state_hash(&records_no_task, &std::collections::HashSet::new());
+    let hash_with_task =
+        super::compute_coworker_state_hash(&records_with_task, &std::collections::HashSet::new());
 
     assert_ne!(
         hash_no_task, hash_with_task,
@@ -412,8 +428,10 @@ fn test_cache_key_changes_on_coworker_spawn() {
         make_record(Some(WorkflowPhase::Developing), Some(1200), None),
     );
 
-    let hash_empty = super::compute_coworker_state_hash(&records_empty);
-    let hash_one = super::compute_coworker_state_hash(&records_one);
+    let hash_empty =
+        super::compute_coworker_state_hash(&records_empty, &std::collections::HashSet::new());
+    let hash_one =
+        super::compute_coworker_state_hash(&records_one, &std::collections::HashSet::new());
 
     assert_ne!(
         hash_empty, hash_one,
@@ -439,8 +457,14 @@ fn test_cache_key_stable_when_idle_coworker_updates_progress() {
         make_record(Some(WorkflowPhase::Idle), Some(1400), Some(100)),
     );
 
-    let hash_no_progress = super::compute_coworker_state_hash(&records_idle_no_progress);
-    let hash_with_progress = super::compute_coworker_state_hash(&records_idle_with_progress);
+    let hash_no_progress = super::compute_coworker_state_hash(
+        &records_idle_no_progress,
+        &std::collections::HashSet::new(),
+    );
+    let hash_with_progress = super::compute_coworker_state_hash(
+        &records_idle_with_progress,
+        &std::collections::HashSet::new(),
+    );
 
     assert_eq!(
         hash_no_progress, hash_with_progress,
@@ -455,6 +479,9 @@ fn test_cache_key_stable_when_channel_lead_phase_changes() {
     // a channel lead's phase or task change must NOT change the cache key.
     use crate::coworker_state::WorkflowPhase;
 
+    let channel_leads: std::collections::HashSet<String> =
+        ["auth"].iter().map(|s| s.to_string()).collect();
+
     // Baseline: one regular coworker active
     let mut base_records = HashMap::new();
     base_records.insert(
@@ -465,20 +492,22 @@ fn test_cache_key_stable_when_channel_lead_phase_changes() {
     // Same regular coworker + a channel lead in Developing phase
     let mut records_with_ch_lead_dev = base_records.clone();
     records_with_ch_lead_dev.insert(
-        "ch-auth".to_string(),
+        "auth".to_string(),
         make_record(Some(WorkflowPhase::Developing), Some(777), None),
     );
 
     // Same regular coworker + the same channel lead, now in PullRequest phase
     let mut records_with_ch_lead_pr = base_records.clone();
     records_with_ch_lead_pr.insert(
-        "ch-auth".to_string(),
+        "auth".to_string(),
         make_record(Some(WorkflowPhase::PullRequest), Some(777), None),
     );
 
-    let hash_base = super::compute_coworker_state_hash(&base_records);
-    let hash_with_ch_dev = super::compute_coworker_state_hash(&records_with_ch_lead_dev);
-    let hash_with_ch_pr = super::compute_coworker_state_hash(&records_with_ch_lead_pr);
+    let hash_base = super::compute_coworker_state_hash(&base_records, &channel_leads);
+    let hash_with_ch_dev =
+        super::compute_coworker_state_hash(&records_with_ch_lead_dev, &channel_leads);
+    let hash_with_ch_pr =
+        super::compute_coworker_state_hash(&records_with_ch_lead_pr, &channel_leads);
 
     // Channel leads must be invisible to the hash — adding one or changing its
     // phase/task must not change the cache key.

@@ -193,6 +193,16 @@ impl CoworkerManager {
     /// This can be used to get a name before spawning, e.g., to assign
     /// task ownership atomically before the coworker starts.
     pub fn next_available_name(&self) -> Option<String> {
+        self.next_available_name_excluding(&std::collections::HashSet::new())
+    }
+
+    /// Pick the next available coworker name, excluding both registered coworkers
+    /// and any additional reserved names (e.g., channel lead session names that
+    /// could collide with avenue names after the ch- prefix was removed).
+    pub fn next_available_name_excluding(
+        &self,
+        reserved_names: &std::collections::HashSet<String>,
+    ) -> Option<String> {
         let coworkers = self.coworkers.read().unwrap();
 
         // Collect names currently in use (scan values)
@@ -202,7 +212,7 @@ impl CoworkerManager {
         // Collect available primary avenue names
         let available: Vec<&str> = AVENUE_NAMES
             .iter()
-            .filter(|name| !used_names.contains(**name))
+            .filter(|name| !used_names.contains(**name) && !reserved_names.contains(**name))
             .copied()
             .collect();
 
@@ -215,7 +225,7 @@ impl CoworkerManager {
         // Fall back to overflow names (also randomized)
         let overflow_available: Vec<&str> = OVERFLOW_NAMES
             .iter()
-            .filter(|name| !used_names.contains(**name))
+            .filter(|name| !used_names.contains(**name) && !reserved_names.contains(**name))
             .copied()
             .collect();
 
@@ -962,6 +972,26 @@ mod tests {
 
         // Should return None when all names exhausted
         assert_eq!(manager.next_available_name(), None);
+    }
+
+    #[test]
+    fn test_next_available_name_excludes_channel_lead_names() {
+        let (manager, _temp_dir) = test_manager();
+
+        // Reserve "park" as a channel lead name
+        let reserved: std::collections::HashSet<String> =
+            ["park"].iter().map(|s| s.to_string()).collect();
+
+        // Run multiple times to ensure "park" is never returned
+        for _ in 0..50 {
+            let name = manager.next_available_name_excluding(&reserved);
+            assert!(name.is_some());
+            assert_ne!(
+                name.as_deref(),
+                Some("park"),
+                "Channel lead name 'park' must not be allocated to a regular coworker"
+            );
+        }
     }
 
     #[test]

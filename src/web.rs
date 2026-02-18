@@ -692,6 +692,13 @@ async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoRespo
         crate::daemon::state::DaemonPersistentState::load_for_repo(&state.config.repo)
             .unwrap_or_default();
 
+    // Channel lead names for filtering (channel leads must not appear in coworker status)
+    let channel_lead_names: std::collections::HashSet<String> = persistent_state
+        .channel_lead_sessions
+        .keys()
+        .cloned()
+        .collect();
+
     // --- PR data + coworker data: prefer daemon RPC, fall back to cached gh CLI calls ---
     let repo_name = state.config.repo.clone();
     let (pull_requests, merged_prs, rpc_coworkers) = tokio::task::spawn_blocking(move || {
@@ -848,7 +855,9 @@ async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoRespo
                         // Skip channel lead sessions and the lead itself — they are
                         // not regular dev/reviewer coworkers and must not appear in
                         // the general coworker status panel.
-                        if cw.name.starts_with("ch-") || cw.name.eq_ignore_ascii_case("lead") {
+                        if channel_lead_names.contains(&cw.name)
+                            || cw.name.eq_ignore_ascii_case("lead")
+                        {
                             return None;
                         }
                         // Skip idle/stopped coworkers (matching daemon RPC logic)

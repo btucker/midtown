@@ -2250,7 +2250,10 @@ pub(crate) async fn collect_reviewer_effects_with_source(
             continue;
         }
 
-        let reviewer_name = match state.coworkers.next_available_name() {
+        let reviewer_name = match state
+            .coworkers
+            .next_available_name_excluding(&channel_lead_names)
+        {
             Some(name) => name,
             None => {
                 warn!("No available coworker slots for reviewer");

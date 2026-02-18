@@ -42,8 +42,11 @@ pub(super) async fn handle_coworker_spawn(
         );
     }
 
-    // Pick a name for the coworker
-    let name = match state.coworkers.next_available_name() {
+    // Pick a name for the coworker (excluding channel lead names to prevent collision)
+    let name = match state
+        .coworkers
+        .next_available_name_excluding(&channel_lead_names)
+    {
         Some(n) => n,
         None => {
             return Response::error(
