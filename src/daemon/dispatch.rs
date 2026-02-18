@@ -1813,7 +1813,7 @@ pub(super) fn build_task_completion_effects(
     )
 }
 
-/// Build effects to auto-complete tasks when all PRs referenced in their description are merged.
+/// Build effects to auto-complete tasks when all PRs referenced in their subject are merged.
 ///
 /// This handles cases where the task is NOT linked to a PR via `[Midtown #XX]` in the PR title:
 /// - Meta-tasks: "Merge reviewed PRs: #901-#910"
@@ -1823,8 +1823,8 @@ pub(super) fn build_task_completion_effects(
 /// Tasks linked via `[Midtown #XX]` are handled by `build_task_completion_effects` (webhook path).
 /// This function skips those tasks to avoid double-completion.
 ///
-/// Returns effects to complete tasks whose description references only merged PRs.
-pub fn build_description_based_completion_effects(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
+/// Returns effects to complete tasks whose subject references only merged PRs.
+pub fn build_subject_based_completion_effects(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
     let mut effects = Vec::new();
 
     for task in &snap.all_tasks {
