@@ -506,32 +506,8 @@ async fn shutdown_coworker_impl(name: &str, message: &str, state: &DaemonState) 
     }
     info!(coworker = %name, "SHUTDOWN_COWORKER: headless session stopped");
 
-    // Remove from CoworkerManager tracking
-    state.coworkers.deregister(name);
-    // Record stop time for workflow features that need to track coworker lifecycle
-    {
-        let mut stop_times = state.coworker_stop_times.write().unwrap();
-        stop_times.insert(name.to_lowercase(), chrono::Utc::now());
-    }
-    // Clean up unified coworker record (health, workflow phase, etc.)
-    {
-        let mut records = state.coworker_records.write().await;
-        records.remove(name);
-    }
-    // Clear cooldown entries for this coworker (prevents stale state on respawn)
-    {
-        let mut cooldowns = state.cooldowns.lock().unwrap();
-        cooldowns.clear_for_key(name);
-    }
-    // Clear any pending nudge for this coworker
-    state.clear_pending_nudge(name);
-    // Clear task assignment tracking (coworker is no longer active)
-    state.clear_coworker_assignments(name);
-    // Clear recent tool activity for this coworker (prevents stale activity on respawn)
-    {
-        let mut tool_map = state.recent_tool_items.write().unwrap();
-        tool_map.remove(name);
-    }
+    // Clean up all transient coworker state (shared with session death path)
+    state.cleanup_coworker_state(name).await;
     // Unbind from worktree registry (worktree persists for build cache reuse)
     {
         let mut ps = state.persistent_state.lock().await;

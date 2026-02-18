@@ -1605,3 +1605,202 @@ fn test_limit_checks_exclude_stopped_coworkers() {
         "3 running < 4 dev_cap → should not be at dev limit"
     );
 }
+
+// ============================================================================
+// cleanup_coworker_state — shared cleanup on session death / shutdown
+// ============================================================================
+
+/// Construct a minimal DaemonState for cleanup tests.
+fn make_cleanup_test_state() -> DaemonState {
+    use std::process::Command;
+    use tempfile::TempDir;
+
+    let temp_dir = TempDir::new().expect("temp dir");
+    Command::new("git")
+        .args(["init"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("git init");
+    Command::new("git")
+        .args(["config", "user.email", "test@example.com"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("git config");
+    Command::new("git")
+        .args(["config", "user.name", "Test"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("git config");
+    Command::new("git")
+        .args(["commit", "--allow-empty", "-m", "init"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("git commit");
+
+    let wm = crate::worktree::WorktreeManager::new(temp_dir.path().to_path_buf())
+        .expect("worktree manager");
+    let cm = crate::coworker::CoworkerManager::new(wm);
+
+    let base_dir = temp_dir.path().to_path_buf();
+    std::mem::forget(temp_dir);
+
+    let channel_router = crate::ChannelRouter::new(&base_dir, "midtown");
+    let (shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(1);
+    DaemonState::new(
+        "/tmp/test-cleanup.sock".into(),
+        cm,
+        "test-repo".to_string(),
+        vec![base_dir.clone()],
+        channel_router,
+        None,
+        10,
+        None,
+        "main".to_string(),
+        shutdown_tx,
+    )
+    .expect("daemon state")
+}
+
+fn make_tool_item(id: &str) -> crate::universal_events::UniversalItem {
+    crate::universal_events::UniversalItem {
+        item_id: id.to_string(),
+        kind: crate::universal_events::ItemKind::ToolCall,
+        content: vec![],
+        status: crate::universal_events::ItemStatus::Completed,
+        timestamp: chrono::Utc::now(),
+    }
+}
+
+#[tokio::test]
+async fn test_cleanup_coworker_state_clears_all_transient_state() {
+    let state = make_cleanup_test_state();
+    let name = "madison";
+
+    // Populate all transient state for this coworker
+    {
+        let mut cooldowns = state.cooldowns.lock().unwrap();
+        cooldowns.record("orphan_spawn", name);
+        cooldowns.record("nudge", name);
+    }
+    state.record_pending_nudge(name, "test nudge");
+    state.record_task_assignment(name, "42");
+    {
+        let mut tool_map = state.recent_tool_items.write().unwrap();
+        tool_map.insert(name.to_string(), vec![make_tool_item("item-1")]);
+    }
+
+    // Verify state was populated
+    assert!(!state.cooldowns.lock().unwrap().is_empty());
+    assert!(
+        state
+            .coworker_task_assignments
+            .lock()
+            .unwrap()
+            .contains_key(name)
+    );
+    assert!(state.recent_tool_items.read().unwrap().contains_key(name));
+
+    // Run cleanup
+    state.cleanup_coworker_state(name).await;
+
+    // All transient state for this coworker should be cleared
+    {
+        let cooldowns = state.cooldowns.lock().unwrap();
+        assert!(
+            cooldowns.is_empty(),
+            "cooldowns should be cleared for the dead coworker"
+        );
+    }
+    {
+        let pending = state.pending_nudges.lock().unwrap();
+        assert!(
+            !pending.contains_key(name),
+            "pending nudge should be cleared"
+        );
+    }
+    {
+        let assignments = state.coworker_task_assignments.lock().unwrap();
+        assert!(
+            !assignments.contains_key(name),
+            "task assignments should be cleared"
+        );
+    }
+    {
+        let tool_map = state.recent_tool_items.read().unwrap();
+        assert!(!tool_map.contains_key(name), "tool items should be cleared");
+    }
+}
+
+#[tokio::test]
+async fn test_cleanup_coworker_state_preserves_other_coworkers() {
+    let state = make_cleanup_test_state();
+
+    // Populate state for two coworkers
+    {
+        let mut cooldowns = state.cooldowns.lock().unwrap();
+        cooldowns.record("orphan_spawn", "madison");
+        cooldowns.record("orphan_spawn", "park");
+    }
+    state.record_pending_nudge("madison", "nudge madison");
+    state.record_pending_nudge("park", "nudge park");
+    state.record_task_assignment("madison", "42");
+    state.record_task_assignment("park", "43");
+    {
+        let mut tool_map = state.recent_tool_items.write().unwrap();
+        tool_map.insert("madison".to_string(), vec![make_tool_item("item-1")]);
+        tool_map.insert("park".to_string(), vec![make_tool_item("item-2")]);
+    }
+
+    // Only clean up madison
+    state.cleanup_coworker_state("madison").await;
+
+    // Park's state should be untouched
+    {
+        let cooldowns = state.cooldowns.lock().unwrap();
+        assert!(!cooldowns.is_empty(), "park's cooldowns should still exist");
+    }
+    {
+        let pending = state.pending_nudges.lock().unwrap();
+        assert!(
+            pending.contains_key("park"),
+            "park's pending nudge should still exist"
+        );
+        assert!(
+            !pending.contains_key("madison"),
+            "madison's pending nudge should be cleared"
+        );
+    }
+    {
+        let assignments = state.coworker_task_assignments.lock().unwrap();
+        assert!(
+            assignments.contains_key("park"),
+            "park's task assignment should still exist"
+        );
+    }
+    {
+        let tool_map = state.recent_tool_items.read().unwrap();
+        assert!(
+            tool_map.contains_key("park"),
+            "park's tool items should still exist"
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_cleanup_coworker_state_records_stop_time() {
+    let state = make_cleanup_test_state();
+    let name = "madison";
+
+    // No stop time initially
+    assert!(
+        !state.coworker_stop_times.read().unwrap().contains_key(name),
+        "precondition: no stop time recorded"
+    );
+
+    state.cleanup_coworker_state(name).await;
+
+    assert!(
+        state.coworker_stop_times.read().unwrap().contains_key(name),
+        "stop time should be recorded after cleanup"
+    );
+}
