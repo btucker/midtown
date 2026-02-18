@@ -296,7 +296,7 @@ fn apply_global_key(
             config.default.zellij_swap_layout = Some(parse_bool(key, value)?);
         }
         "default.zellij_chat_pane_size" => {
-            config.default.zellij_chat_pane_size = Some(parse_u8(key, value)?);
+            config.default.zellij_chat_pane_size = Some(parse_pane_size(value)?);
         }
         "default.user_display_name" => {
             config.default.user_display_name = Some(value.to_string());
@@ -352,7 +352,7 @@ fn apply_project_key(
             config.default.zellij_swap_layout = Some(parse_bool(key, value)?);
         }
         "default.zellij_chat_pane_size" => {
-            config.default.zellij_chat_pane_size = Some(parse_u8(key, value)?);
+            config.default.zellij_chat_pane_size = Some(parse_pane_size(value)?);
         }
         "default.user_display_name" => {
             config.default.user_display_name = Some(value.to_string());
@@ -433,13 +433,21 @@ fn parse_usize(key: &str, value: &str) -> Result<usize, String> {
     })
 }
 
-fn parse_u8(key: &str, value: &str) -> Result<u8, String> {
-    value.parse::<u8>().map_err(|_| {
+/// Parse a Zellij chat pane size: must be 10-90.
+fn parse_pane_size(value: &str) -> Result<u8, String> {
+    let n = value.parse::<u8>().map_err(|_| {
         format!(
-            "Invalid integer value '{}' for '{}'. Expected an integer 0-255.",
-            value, key
+            "Invalid value '{}' for 'default.zellij_chat_pane_size'. Expected an integer 10-90.",
+            value
         )
-    })
+    })?;
+    if !(10..=90).contains(&n) {
+        return Err(format!(
+            "Invalid value '{}' for 'default.zellij_chat_pane_size'. Must be between 10 and 90.",
+            value
+        ));
+    }
+    Ok(n)
 }
 
 fn parse_u16(key: &str, value: &str) -> Result<u16, String> {

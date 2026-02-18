@@ -405,6 +405,98 @@ fn set_persists_to_disk_via_project_config_load() {
     assert_eq!(loaded.default.max_coworkers, Some(5));
 }
 
+// ──────────────────────────────────────────────────────────────────────────────
+// Pane size range validation
+// ──────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn pane_size_below_minimum_returns_error() {
+    let dir = TempDir::new().unwrap();
+    let config_path = temp_global_config(&dir);
+
+    let result = set_global_key("default.zellij_chat_pane_size", "5", &config_path);
+    assert!(result.is_err());
+    let msg = result.unwrap_err();
+    assert!(
+        msg.contains("10") && msg.contains("90"),
+        "Expected range hint in: {msg}"
+    );
+}
+
+#[test]
+fn pane_size_above_maximum_returns_error() {
+    let dir = TempDir::new().unwrap();
+    let config_path = temp_global_config(&dir);
+
+    let result = set_global_key("default.zellij_chat_pane_size", "95", &config_path);
+    assert!(result.is_err());
+    let msg = result.unwrap_err();
+    assert!(
+        msg.contains("10") && msg.contains("90"),
+        "Expected range hint in: {msg}"
+    );
+}
+
+#[test]
+fn pane_size_boundary_values_are_valid() {
+    let dir = TempDir::new().unwrap();
+    let config_path = temp_global_config(&dir);
+
+    set_global_key("default.zellij_chat_pane_size", "10", &config_path).unwrap();
+    let v = get_global_key("default.zellij_chat_pane_size", &config_path).unwrap();
+    assert_eq!(v, "10");
+
+    set_global_key("default.zellij_chat_pane_size", "90", &config_path).unwrap();
+    let v = get_global_key("default.zellij_chat_pane_size", &config_path).unwrap();
+    assert_eq!(v, "90");
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Project-scope type validation errors
+// ──────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn project_scope_invalid_integer_returns_error() {
+    let dir = TempDir::new().unwrap();
+    let config_path = temp_project_config(&dir);
+
+    let result = set_project_key("default.max_coworkers", "not_a_number", &config_path);
+    assert!(result.is_err());
+    let msg = result.unwrap_err();
+    assert!(
+        msg.contains("invalid") || msg.contains("parse") || msg.contains("integer"),
+        "Expected parse error in: {msg}"
+    );
+}
+
+#[test]
+fn project_scope_invalid_personality_returns_error() {
+    let dir = TempDir::new().unwrap();
+    let config_path = temp_project_config(&dir);
+
+    let result = set_project_key("default.personality", "extreme", &config_path);
+    assert!(result.is_err());
+    let msg = result.unwrap_err();
+    assert!(
+        msg.contains("invalid") || msg.contains("personality") || msg.contains("normal"),
+        "Expected personality error in: {msg}"
+    );
+}
+
+#[test]
+fn project_scope_pane_size_out_of_range_returns_error() {
+    let dir = TempDir::new().unwrap();
+    let config_path = temp_project_config(&dir);
+
+    let result = set_project_key("default.zellij_chat_pane_size", "5", &config_path);
+    assert!(result.is_err());
+    let msg = result.unwrap_err();
+    assert!(
+        msg.contains("10") && msg.contains("90"),
+        "Expected range hint in: {msg}"
+    );
+}
+
 #[test]
 fn multiple_sets_accumulate_correctly() {
     let dir = TempDir::new().unwrap();
