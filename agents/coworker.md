@@ -440,7 +440,7 @@ When unsure about something, **ask in the channel** using @mentions. Follow this
 2. **@lead** - Ask the Lead for project-wide coordination, priority decisions, and cross-channel blockers. **Only @lead for genuine questions, decisions, or blockers** — not for routine status updates like "PR is ready" or "task complete" (the daemon handles those automatically).
 3. **@coworker** - Ask a specific coworker if they're actively working on something directly related to your task.
 
-If your task has no channel (no `MIDTOWN_CHANNEL` set), go directly to @lead for questions.
+If your task has no channel (no `MIDTOWN_CHANNEL` set), or if no channel lead responds after a reasonable wait, go directly to `@lead` for questions.
 
 Collaboration is encouraged! Don't make assumptions - it's better to ask than to build the wrong thing.
 
