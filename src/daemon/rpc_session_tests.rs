@@ -210,6 +210,18 @@ async fn test_resolve_attach_target_multi_match_error_uses_verb() {
 
 /// Insert a headless session entry into persistent state for testing.
 async fn insert_test_session(state: &DaemonState, name: &str, initial_prompt: Option<String>) {
+    insert_test_session_with_metadata(state, name, initial_prompt, "dev", None, None).await;
+}
+
+/// Insert a headless session with explicit metadata (coworker type, PR number, channel).
+async fn insert_test_session_with_metadata(
+    state: &DaemonState,
+    name: &str,
+    initial_prompt: Option<String>,
+    coworker_type: &str,
+    pr_number: Option<u64>,
+    channel: Option<String>,
+) {
     let mut ps = state.persistent_state.lock().await;
     ps.headless_sessions.insert(
         name.to_string(),
@@ -218,10 +230,10 @@ async fn insert_test_session(state: &DaemonState, name: &str, initial_prompt: Op
             last_active: chrono::Utc::now(),
             purpose: "test".to_string(),
             pid: None,
-            coworker_type: Some("dev".to_string()),
+            coworker_type: Some(coworker_type.to_string()),
             task_id: Some(42),
-            pr_number: None,
-            channel: None,
+            pr_number,
+            channel,
             working_dir: Some("/tmp/test-worktree".to_string()),
             provider: None,
             profile: None,
@@ -396,6 +408,83 @@ async fn test_session_clear_uses_lead_config_for_lead_target() {
     assert!(
         json.get("error").is_some() || json.get("result").is_some(),
         "Should return either success or spawn-failure error, got: {:?}",
+        json
+    );
+}
+
+/// Regression test: session clear for a reviewer coworker should not panic
+/// and should handle reviewer-specific metadata (coworker_type, pr_number, channel).
+#[tokio::test]
+async fn test_session_clear_handles_reviewer_metadata() {
+    let state = make_test_state();
+
+    state
+        .coworkers
+        .register(
+            "broadway",
+            "broadway",
+            "/tmp/test".to_string(),
+            None,
+            String::new(),
+            crate::auth::AuthProvider::Claude,
+            String::new(),
+        )
+        .unwrap();
+    insert_test_session_with_metadata(
+        &state,
+        "broadway",
+        Some("Review PR #42".to_string()),
+        "reviewer",
+        Some(42),
+        Some("review-42".to_string()),
+    )
+    .await;
+
+    // The spawn will fail (no real worktree), but the handler should not panic
+    // when processing reviewer metadata.
+    let resp = handle_session_clear(RequestId::Number(1), "name/broadway", &state).await;
+
+    let json = serde_json::to_value(&resp).unwrap();
+    assert!(
+        json.get("error").is_some() || json.get("result").is_some(),
+        "Should return either success or spawn-failure error for reviewer clear, got: {:?}",
+        json
+    );
+}
+
+/// Regression test: session clear for a channel-lead coworker should not panic.
+#[tokio::test]
+async fn test_session_clear_handles_channel_lead_metadata() {
+    let state = make_test_state();
+
+    state
+        .coworkers
+        .register(
+            "madison",
+            "madison",
+            "/tmp/test".to_string(),
+            None,
+            String::new(),
+            crate::auth::AuthProvider::Claude,
+            String::new(),
+        )
+        .unwrap();
+    insert_test_session_with_metadata(
+        &state,
+        "madison",
+        Some("Channel lead for feature-auth".to_string()),
+        "channel-lead",
+        None,
+        Some("feature-auth".to_string()),
+    )
+    .await;
+
+    let resp = handle_session_clear(RequestId::Number(1), "name/madison", &state).await;
+
+    let json = serde_json::to_value(&resp).unwrap();
+    assert!(
+        json.get("error").is_some() || json.get("result").is_some(),
+        "Should return either success or spawn-failure error for channel-lead clear, got: {:?}",
         json
     );
 }

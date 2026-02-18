@@ -1,7 +1,7 @@
-//! Session attach/detach RPC handlers.
+//! Session management RPC handlers.
 //!
-//! Handles `session.resolve`, `session.attach`, `session.detach`, and
-//! `session.list` methods,
+//! Handles `session.resolve`, `session.attach`, `session.detach`,
+//! `session.list`, `session.view`, and `session.clear` methods,
 //! allowing interactive terminal sessions to be connected to headless coworker
 //! processes.
 
@@ -937,6 +937,8 @@ pub(super) async fn handle_session_clear(
         let mut c = crate::launch::LaunchConfig::lead(&state.repo_name);
         c.session_mode = crate::launch::SessionMode::Fresh;
         c.initial_prompt = Some(fresh_prompt);
+        // Persist the original prompt, not the decorated "fresh restart" wrapper.
+        c.persisted_initial_prompt = session_info.initial_prompt.clone();
         c
     } else {
         let mut c = crate::launch::LaunchConfig::coworker(
@@ -947,6 +949,21 @@ pub(super) async fn handle_session_clear(
         );
         // Persist the original prompt, not the decorated "fresh restart" wrapper.
         c.persisted_initial_prompt = session_info.initial_prompt.clone();
+        // Restore role-specific metadata so reviewer/channel-lead context survives the clear.
+        if let Some(ref coworker_type) = session_info.coworker_type {
+            match coworker_type.as_str() {
+                "reviewer" => c.role = crate::launch::CoworkerRole::Reviewer,
+                "channel-lead" => {
+                    c.role = crate::launch::CoworkerRole::ChannelLead {
+                        channel_name: session_info.channel.clone().unwrap_or_default(),
+                        domain_context: String::new(),
+                    }
+                }
+                _ => {}
+            }
+        }
+        c.pr_number = session_info.pr_number;
+        c.channel = session_info.channel.clone();
         c
     };
 

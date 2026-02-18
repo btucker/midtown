@@ -302,6 +302,19 @@ impl SessionManager {
         Ok(())
     }
 
+    /// Override the stored initial_prompt for a named session.
+    ///
+    /// Used after spawn when the prompt sent to Claude (e.g., decorated "fresh restart"
+    /// message) differs from the canonical prompt that should be persisted. This ensures
+    /// `collect_session_info()` returns the canonical prompt at daemon shutdown time,
+    /// preventing accumulation of decoration prefixes across restarts.
+    pub async fn set_canonical_initial_prompt(&self, name: &str, prompt: Option<String>) {
+        let mut sessions = self.sessions.write().await;
+        if let Some(cs) = sessions.values_mut().find(|cs| cs.name == name) {
+            cs.initial_prompt = prompt;
+        }
+    }
+
     /// Send a message (nudge) to a running coworker session (by name).
     ///
     /// This writes to the session's stdin via the stream-json input protocol.

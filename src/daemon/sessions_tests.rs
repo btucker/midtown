@@ -440,6 +440,69 @@ async fn test_collect_session_info_preserves_initial_prompt() {
     );
 }
 
+/// Regression test: set_canonical_initial_prompt overrides the decorated prompt
+/// so that collect_session_info() returns the canonical mission prompt, not the
+/// "This is a fresh session restart..." wrapper.
+#[tokio::test]
+async fn test_set_canonical_initial_prompt_overrides_decorated_prompt() {
+    let sm = SessionManager::new("test-repo".to_string());
+
+    // Insert a session with a decorated prompt (what session clear produces)
+    {
+        let mut sessions = sm.sessions.write().await;
+        let slot_id = uuid::Uuid::new_v4().to_string();
+        sessions.insert(
+            slot_id.clone(),
+            CoworkerSession {
+                session: None,
+                slot_id,
+                name: "park".to_string(),
+                status: SessionStatus::Running,
+                started_at: Utc::now(),
+                session_id: Some("session-clear-1".to_string()),
+                initial_prompt: Some(
+                    "This is a fresh session restart.\n\nImplement auth endpoint".to_string(),
+                ),
+                cost_usd: 0.0,
+                last_event_at: None,
+                has_usage_limit: false,
+                usage_limit_reset_at: None,
+                has_api_error: false,
+                has_auth_error: false,
+                has_running_subagent: false,
+                has_pending_tool: false,
+                has_tool_name_conflict: false,
+                is_resume: false,
+                output_log: None,
+                output_log_path: PathBuf::new(),
+            },
+        );
+    }
+
+    // Override with the canonical prompt (what spawn_coworker does via persisted_initial_prompt)
+    sm.set_canonical_initial_prompt("park", Some("Implement auth endpoint".to_string()))
+        .await;
+
+    // Verify collect_session_info returns the canonical prompt
+    let info = sm.collect_session_info().await;
+    assert_eq!(
+        info["park"].initial_prompt,
+        Some("Implement auth endpoint".to_string()),
+        "collect_session_info() should return the canonical prompt after set_canonical_initial_prompt, \
+         not the decorated 'fresh restart' wrapper"
+    );
+}
+
+/// set_canonical_initial_prompt should be a no-op for unknown session names.
+#[tokio::test]
+async fn test_set_canonical_initial_prompt_noop_for_unknown_name() {
+    let sm = SessionManager::new("test-repo".to_string());
+
+    // Should not panic or error
+    sm.set_canonical_initial_prompt("nonexistent", Some("prompt".to_string()))
+        .await;
+}
+
 /// Regression test: collect_session_info() returns None for initial_prompt when
 /// no prompt was set (no-prompt coworkers should not have phantom prompt values).
 #[tokio::test]
