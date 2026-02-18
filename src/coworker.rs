@@ -31,7 +31,7 @@ pub const AVENUE_NAMES: &[&str] = &[
 ];
 
 /// Overflow street names for when primary avenues are exhausted.
-const OVERFLOW_NAMES: &[&str] = &["bleecker", "houston", "canal", "spring", "prince", "mercer"];
+pub const OVERFLOW_NAMES: &[&str] = &["bleecker", "houston", "canal", "spring", "prince", "mercer"];
 
 /// Check if a name is a known coworker name (avenue or overflow).
 ///
