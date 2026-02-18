@@ -237,7 +237,13 @@ fn default_channel() -> String {
 #[derive(Debug, Clone, Serialize)]
 pub struct CoworkerStatusData {
     pub name: String,
-    pub status: String,
+    /// Omitted from progress-only updates to avoid overwriting the status
+    /// (e.g., "completed") set by a spawn/status update in the frontend.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    /// Omitted from progress-only updates to avoid clobbering the task name
+    /// stored in the frontend (frontend merges via shallow spread).
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub current_task: Option<String>,
     /// Model name. Omitted from progress-only updates to avoid overwriting
     /// the model previously set by a spawn/status update.
@@ -1630,7 +1636,7 @@ pub fn coworker_status_update(
 ) -> WebUpdate {
     WebUpdate::CoworkerStatus(CoworkerStatusData {
         name: name.to_string(),
-        status: status.to_string(),
+        status: Some(status.to_string()),
         current_task: current_task.map(|s| s.to_string()),
         model: Some(model.to_string()),
         session_id: None,
@@ -1655,7 +1661,7 @@ pub fn coworker_progress_update(
 ) -> WebUpdate {
     WebUpdate::CoworkerStatus(CoworkerStatusData {
         name: name.to_string(),
-        status: "running".to_string(),
+        status: None,
         current_task: None,
         model: None,
         session_id: None,
@@ -1780,7 +1786,7 @@ mod tests {
     fn test_coworker_status_update_serialization() {
         let update = WebUpdate::CoworkerStatus(CoworkerStatusData {
             name: "lexington".to_string(),
-            status: "running".to_string(),
+            status: Some("running".to_string()),
             current_task: Some("Fix auth bug".to_string()),
             model: Some("sonnet".to_string()),
             session_id: None,
@@ -1814,6 +1820,15 @@ mod tests {
         assert!(json.contains(r#""progress":45"#));
         assert!(json.contains(r#""time_estimate":"~3m""#));
         assert!(json.contains(r#""health":"green""#));
+        // status and current_task must be absent so they don't clobber frontend state
+        assert!(
+            !json.contains("\"status\""),
+            "progress update must not include status"
+        );
+        assert!(
+            !json.contains("\"current_task\""),
+            "progress update must not include current_task"
+        );
     }
 
     #[test]
@@ -1884,7 +1899,7 @@ mod tests {
     fn test_coworker_status_update_without_task() {
         let update = WebUpdate::CoworkerStatus(CoworkerStatusData {
             name: "park".to_string(),
-            status: "stopped".to_string(),
+            status: Some("stopped".to_string()),
             current_task: None,
             model: Some("sonnet".to_string()),
             session_id: None,
