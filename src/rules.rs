@@ -402,7 +402,7 @@ pub(crate) struct StuckExemptions<'a> {
     pub usage_limited: &'a HashSet<String>,
     pub api_error: &'a HashSet<String>,
     pub auth_error: &'a HashSet<String>,
-    pub attached: &'a HashSet<String>,
+    pub attached: &'a HashMap<String, chrono::DateTime<chrono::Utc>>,
 }
 
 /// Check if a process should be considered stuck.
@@ -423,7 +423,7 @@ fn is_process_stuck(
         || hashset_contains_icase(exemptions.usage_limited, name)
         || hashset_contains_icase(exemptions.api_error, name)
         || hashset_contains_icase(exemptions.auth_error, name)
-        || hashset_contains_icase(exemptions.attached, name);
+        || exemptions.attached.contains_key(&name.to_lowercase());
 
     !is_exempt
         && health
@@ -962,7 +962,7 @@ pub(crate) struct OrphanRecoveryContext<'a> {
     pub coworkers_with_open_prs: &'a HashSet<String>,
     pub review_feedback_pr_coworkers: &'a HashSet<String>,
     pub recently_stopped: &'a HashSet<String>,
-    pub attached_coworkers: &'a HashSet<String>,
+    pub attached_coworkers: &'a HashMap<String, chrono::DateTime<chrono::Utc>>,
 }
 
 impl OrphanRecoveryContext<'_> {
@@ -975,7 +975,7 @@ impl OrphanRecoveryContext<'_> {
     /// - Owner has an open PR awaiting review without feedback (recovery would loop)
     fn should_skip_owner(&self, owner_lower: &str) -> bool {
         self.active_names.contains(owner_lower)
-            || self.attached_coworkers.contains(owner_lower)
+            || self.attached_coworkers.contains_key(owner_lower)
             || self.recently_stopped.contains(owner_lower)
             || (self.coworkers_with_open_prs.contains(owner_lower)
                 && !self.review_feedback_pr_coworkers.contains(owner_lower))
@@ -1226,6 +1226,17 @@ mod tests {
 
     fn set(items: &[&str]) -> HashSet<String> {
         items.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// Build a `HashMap<String, DateTime<Utc>>` of attached coworkers for tests.
+    ///
+    /// Uses `Utc::now()` as the attach time (tests that need to control time
+    /// should construct the map directly).
+    fn attached_map(items: &[&str]) -> HashMap<String, chrono::DateTime<chrono::Utc>> {
+        items
+            .iter()
+            .map(|s| (s.to_string(), chrono::Utc::now()))
+            .collect()
     }
 
     // -----------------------------------------------------------------------
@@ -2119,7 +2130,7 @@ mod tests {
         open_prs: HashSet<String>,
         review_feedback: HashSet<String>,
         recently_stopped: HashSet<String>,
-        attached: HashSet<String>,
+        attached: HashMap<String, chrono::DateTime<chrono::Utc>>,
     }
 
     impl OrphanCtx {
@@ -2156,7 +2167,7 @@ mod tests {
             self
         }
         fn attached(mut self, names: &[&str]) -> Self {
-            self.attached = set(names);
+            self.attached = attached_map(names);
             self
         }
         fn run(&self) -> Option<OrphanRecovery> {
@@ -2562,7 +2573,7 @@ mod tests {
         now: DateTime<Utc>,
         usage_limited: &HashSet<String>,
         api_error: &HashSet<String>,
-        attached: &HashSet<String>,
+        attached: &HashMap<String, chrono::DateTime<chrono::Utc>>,
     ) -> Vec<StuckCoworkerRestart> {
         let mut map = HashMap::new();
         map.insert(name.to_string(), health);
@@ -2585,7 +2596,7 @@ mod tests {
             now,
             &HashSet::new(),
             &HashSet::new(),
-            &HashSet::new(),
+            &HashMap::new(),
         );
         assert_eq!(restarts.len(), 1);
         assert_eq!(restarts[0].name, "riverside");
@@ -2602,7 +2613,7 @@ mod tests {
             now,
             &HashSet::new(),
             &HashSet::new(),
-            &HashSet::new(),
+            &HashMap::new(),
         );
         assert!(
             restarts.is_empty(),
@@ -2619,7 +2630,7 @@ mod tests {
             now,
             &set(&["york"]),
             &HashSet::new(),
-            &HashSet::new(),
+            &HashMap::new(),
         );
         assert!(
             restarts.is_empty(),
@@ -2638,7 +2649,7 @@ mod tests {
             now,
             &set(&["lexington"]),
             &HashSet::new(),
-            &HashSet::new(),
+            &HashMap::new(),
         );
         assert!(
             restarts.is_empty(),
@@ -2655,7 +2666,7 @@ mod tests {
             now,
             &HashSet::new(),
             &set(&["madison"]),
-            &HashSet::new(),
+            &HashMap::new(),
         );
         assert!(restarts.is_empty(), "API error coworker should be skipped");
     }
@@ -2671,7 +2682,7 @@ mod tests {
             now,
             &HashSet::new(),
             &HashSet::new(),
-            &HashSet::new(),
+            &HashMap::new(),
         );
         assert!(
             restarts.is_empty(),
@@ -2691,7 +2702,7 @@ mod tests {
             now,
             &HashSet::new(),
             &HashSet::new(),
-            &HashSet::new(),
+            &HashMap::new(),
         );
         assert!(
             restarts.is_empty(),
@@ -2708,7 +2719,7 @@ mod tests {
             now,
             &HashSet::new(),
             &HashSet::new(),
-            &set(&["park"]),
+            &attached_map(&["park"]),
         );
         assert!(
             restarts.is_empty(),
@@ -2727,7 +2738,7 @@ mod tests {
             now,
             &HashSet::new(),
             &HashSet::new(),
-            &HashSet::new(),
+            &HashMap::new(),
         );
         assert!(
             restarts.is_empty(),
@@ -3103,7 +3114,7 @@ mod tests {
             usage_limited,
             api_error: &HashSet::new(),
             auth_error: &HashSet::new(),
-            attached: &HashSet::new(),
+            attached: &HashMap::new(),
         };
         decide_stuck_reviewer_restarts(
             &map,
@@ -3191,7 +3202,7 @@ mod tests {
             usage_limited: &HashSet::new(),
             api_error: &HashSet::new(),
             auth_error: &HashSet::new(),
-            attached: &HashSet::new(),
+            attached: &HashMap::new(),
         };
         let restarts = decide_stuck_reviewer_restarts(
             &map,

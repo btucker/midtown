@@ -101,6 +101,9 @@ pub async fn evaluate_tick(
                 &orphan_claimed_ids,
             ));
             effects.extend(super::health::check_and_respawn_dead_processes(snap, state).await);
+            // Auto-detach sessions attached longer than ATTACH_TIMEOUT before ensure_lead_alive,
+            // so the lead is no longer seen as "attached" when we check whether to respawn.
+            effects.extend(super::health::detect_stale_attached_sessions(snap));
             effects.extend(super::health::ensure_lead_alive(snap));
             effects.extend(super::health::check_and_fire_reminders(snap, state).await);
             // Auto-archive channels when all tasks are completed

@@ -118,9 +118,13 @@ pub struct WorldSnapshot {
     pub headless_process_health: HashMap<String, ProcessHealth>,
 
     // ── Attached coworkers ───────────────────────────────────────────
-    /// Coworkers currently in "attached" state (interactive session).
+    /// Coworkers currently in "attached" state, mapped to their attach timestamp.
+    ///
+    /// Entries are added (with current time) on attach, removed on detach.
     /// Must be excluded from stuck detection and orphan recovery.
-    pub attached_coworkers: HashSet<String>,
+    /// The timestamp enables auto-detach of stale entries when the interactive
+    /// session ends without a proper `midtown session detach`.
+    pub attached_coworkers: HashMap<String, chrono::DateTime<chrono::Utc>>,
 
     // ── Task state ──────────────────────────────────────────────────────
     /// In-progress tasks: `(task_id, subject, owner)`.
@@ -425,7 +429,7 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
     };
 
     // ── Attached coworkers ──────────────────────────────────────────────
-    let attached_coworkers: HashSet<String> = {
+    let attached_coworkers: HashMap<String, chrono::DateTime<chrono::Utc>> = {
         let attached = state.attached_coworkers.lock().unwrap();
         attached.clone()
     };
@@ -782,7 +786,7 @@ pub(super) fn minimal_snapshot_for_test() -> WorldSnapshot {
         coworker_start_times: HashMap::new(),
         coworker_stop_times: HashMap::new(),
         headless_process_health: HashMap::new(),
-        attached_coworkers: HashSet::new(),
+        attached_coworkers: HashMap::new(),
         coworker_task_assignments: HashMap::new(),
         in_progress_tasks: vec![],
         busy_coworkers: HashSet::new(),

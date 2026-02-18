@@ -381,6 +381,14 @@ pub enum Effect {
         channel_name: String,
         session_id: String,
     },
+    /// Remove a coworker from the attached set when their interactive session
+    /// appears to have ended without a proper `midtown session detach`.
+    ///
+    /// The entry is cleared so `ensure_lead_alive()` sees the lead as detached
+    /// and respawns the headless session on the next tick. The coworker stop
+    /// time is NOT recorded here — we want an immediate respawn, not the usual
+    /// 5-minute cooldown that follows a normal stop.
+    AutoDetachCoworker { name: String },
 }
 
 /// Deduplicate nudge effects targeting the same coworker within a single batch.
@@ -1755,6 +1763,32 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                         "Failed to save daemon state after saving channel lead session: {}",
                         e
                     );
+                }
+            }
+            Effect::AutoDetachCoworker { name } => {
+                // Clear from attached set — must happen before next tick so
+                // ensure_lead_alive() sees the lead as detached and can respawn.
+                // Do NOT record stop time: we want immediate respawn, not the
+                // 5-minute LEAD_RESPAWN_COOLDOWN.
+                {
+                    let mut attached = state.attached_coworkers.lock().unwrap();
+                    attached.remove(&name);
+                }
+                warn!(
+                    "Auto-detached stale attached session for '{}' (no detach received within timeout)",
+                    name
+                );
+                let suffix = if name == "lead" {
+                    " Headless session will respawn on the next tick."
+                } else {
+                    " Session will be reassigned via normal task dispatch."
+                };
+                let msg = crate::message::Message::system(format!(
+                    "⚠️ Auto-detached stale attached session for {} — interactive session ended without detach.{}",
+                    name, suffix
+                ));
+                if let Err(e) = state.send_and_broadcast_async(&msg).await {
+                    warn!("Failed to post auto-detach message: {}", e);
                 }
             }
         }

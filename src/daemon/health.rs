@@ -446,7 +446,7 @@ pub fn check_and_restart_stuck_reviewers(snap: &snapshot::WorldSnapshot) -> Vec<
         // Skip if already excluded
         if snap.usage_limited_coworkers.contains(&name.to_lowercase())
             || snap.api_error_coworkers.contains(&name.to_lowercase())
-            || snap.attached_coworkers.contains(&name.to_lowercase())
+            || snap.attached_coworkers.contains_key(&name.to_lowercase())
             || health.has_running_subagent
             || health.has_pending_tool
         {
@@ -904,7 +904,7 @@ pub fn ensure_lead_alive(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
 
     // Check if lead is currently attached interactively — if so, the daemon
     // shouldn't spawn a headless lead that would conflict.
-    if snap.attached_coworkers.contains("lead") {
+    if snap.attached_coworkers.contains_key("lead") {
         return vec![];
     }
 
@@ -932,6 +932,41 @@ pub fn ensure_lead_alive(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
     }
 
     vec![Effect::SpawnCoworker(config)]
+}
+
+/// Detect attached sessions that have exceeded `ATTACH_TIMEOUT` without receiving a detach.
+///
+/// If an interactive session ends without `midtown session detach` (terminal crash,
+/// SSH disconnect, wrapper bug), the entry persists in `attached_coworkers` forever.
+/// `ensure_lead_alive()` sees the lead as "attached" and skips respawn, leaving
+/// the lead permanently stuck.
+///
+/// This function emits `AutoDetachCoworker` for each stale entry so the next tick
+/// clears the entry and allows `ensure_lead_alive()` to respawn the lead.
+///
+/// Pure function — no I/O, no `.await`, no mutex locks. Takes `now_utc` from the
+/// snapshot so tests can control time.
+pub(super) fn detect_stale_attached_sessions(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
+    let timeout = chrono::Duration::from_std(ATTACH_TIMEOUT).unwrap_or_default();
+    snap.attached_coworkers
+        .iter()
+        .filter_map(|(name, attached_at)| {
+            let age = snap.now_utc.signed_duration_since(*attached_at);
+            if age >= timeout {
+                info!(
+                    "Stale attached session for '{}' (attached {}s ago, timeout {}s) — auto-detaching",
+                    name,
+                    age.num_seconds(),
+                    ATTACH_TIMEOUT.as_secs()
+                );
+                Some(Effect::AutoDetachCoworker {
+                    name: name.clone(),
+                })
+            } else {
+                None
+            }
+        })
+        .collect()
 }
 
 pub(super) async fn check_and_fire_reminders(
