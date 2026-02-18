@@ -290,6 +290,9 @@ pub struct ErrorData {
 #[derive(Debug, Clone, Serialize)]
 pub struct UniversalItemsData {
     pub agent_name: String,
+    /// The channel this agent's tool calls belong to. `None` for the main lead (main channel),
+    /// `Some(channel_name)` for a channel lead (displayed only in that topic channel).
+    pub channel: Option<String>,
     pub items: Vec<crate::universal_events::UniversalItem>,
 }
 

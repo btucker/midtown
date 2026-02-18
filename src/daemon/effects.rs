@@ -100,8 +100,12 @@ pub enum Effect {
     ///
     /// Sends structured tool call data to connected web/TUI clients for
     /// real-time visualization of agent activity.
+    ///
+    /// `channel` is `None` for the main lead (displayed in the main channel)
+    /// or `Some(channel_name)` for a channel lead (displayed only in that topic channel).
     BroadcastUniversalItems {
         agent_name: String,
+        channel: Option<String>,
         items: Vec<crate::universal_events::UniversalItem>,
     },
     /// Record a cooldown entry (category + key).
@@ -748,7 +752,11 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
             } => {
                 state.broadcast_coworker_update(&name, &status, current_task.as_deref());
             }
-            Effect::BroadcastUniversalItems { agent_name, items } => {
+            Effect::BroadcastUniversalItems {
+                agent_name,
+                channel,
+                items,
+            } => {
                 // Store items in DaemonState for TUI RPC consumers (kanban.data).
                 {
                     let mut tool_map = state.recent_tool_items.write().unwrap();
@@ -762,7 +770,11 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 }
                 // Also broadcast via WebSocket for web UI consumers.
                 state.broadcast_web_update(crate::web::WebUpdate::UniversalItems(
-                    crate::web::UniversalItemsData { agent_name, items },
+                    crate::web::UniversalItemsData {
+                        agent_name,
+                        channel,
+                        items,
+                    },
                 ));
             }
             Effect::RecordCooldown { category, key } => {

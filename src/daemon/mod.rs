@@ -2881,8 +2881,13 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                 let lead_effects = stream::process_lead_output(&events);
                 effects::execute_effects(lead_effects, &state).await;
 
-                // Broadcast universal events (tool calls) to WebSocket clients
-                let universal_effects = stream::process_universal_events(&events);
+                // Broadcast universal events (tool calls) to WebSocket clients.
+                // Main lead's tool calls go to the main channel; each channel lead's
+                // tool calls are tagged with the channel name so the web UI filters them.
+                let universal_effects = {
+                    let ps = state.persistent_state.lock().await;
+                    stream::process_universal_events(&events, &ps.channel_lead_sessions)
+                };
                 effects::execute_effects(universal_effects, &state).await;
 
                 // Defense-in-depth: check process liveness via try_wait() to catch
