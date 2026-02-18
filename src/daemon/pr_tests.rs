@@ -1563,8 +1563,13 @@ fn review_complete_action_to_effects_includes_record_task_assignment() {
 ///
 /// Expected: Active coworker's PR should NOT be marked as orphaned — the coworker
 /// can always address review feedback regardless of worktree status.
+///
+/// Note: This test constructs synthetic state rather than loading the fixture directly.
+/// `collect_reviewer_effects_with_source` takes `&DaemonState`, not `&WorldSnapshot`,
+/// so the fixture (which serializes a `WorldSnapshot`) cannot be used without significant
+/// plumbing to reconstruct `DaemonState` from it. The fixture serves as documentation
+/// of the exact production scenario that triggered the bug.
 #[tokio::test]
-#[allow(clippy::await_holding_lock)]
 async fn test_active_coworker_pr_without_worktree_is_not_orphaned() {
     use crate::coworker::{Coworker, CoworkerStatus};
     use crate::worktree_registry::WorktreeRegistry;
