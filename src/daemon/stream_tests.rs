@@ -193,6 +193,77 @@ fn test_process_lead_output_empty_text_not_posted() {
     );
 }
 
+// ── leading newline trimming tests ──────────────────────────────────
+
+#[test]
+fn test_process_lead_output_trims_leading_newlines() {
+    let mut events = HashMap::new();
+    events.insert(
+        "lead".to_string(),
+        vec![StreamEvent::Assistant {
+            message: json!({
+                "content": [{"type": "text", "text": "\n\nGood, amsterdam confirmed."}]
+            }),
+            session_id: None,
+            extra: json!(null),
+        }],
+    );
+
+    let effects = process_lead_output(&events);
+    assert_eq!(effects.len(), 1);
+    match &effects[0] {
+        Effect::PostToChannel { message, .. } => {
+            assert_eq!(message, "Good, amsterdam confirmed.");
+        }
+        _ => panic!("Expected PostToChannel effect"),
+    }
+}
+
+#[test]
+fn test_process_lead_output_trims_trailing_newlines() {
+    let mut events = HashMap::new();
+    events.insert(
+        "lead".to_string(),
+        vec![StreamEvent::Assistant {
+            message: json!({
+                "content": [{"type": "text", "text": "Done.\n\n"}]
+            }),
+            session_id: None,
+            extra: json!(null),
+        }],
+    );
+
+    let effects = process_lead_output(&events);
+    assert_eq!(effects.len(), 1);
+    match &effects[0] {
+        Effect::PostToChannel { message, .. } => {
+            assert_eq!(message, "Done.");
+        }
+        _ => panic!("Expected PostToChannel effect"),
+    }
+}
+
+#[test]
+fn test_process_lead_output_whitespace_only_not_posted() {
+    let mut events = HashMap::new();
+    events.insert(
+        "lead".to_string(),
+        vec![StreamEvent::Assistant {
+            message: json!({
+                "content": [{"type": "text", "text": "\n\n  \n"}]
+            }),
+            session_id: None,
+            extra: json!(null),
+        }],
+    );
+
+    let effects = process_lead_output(&events);
+    assert!(
+        effects.is_empty(),
+        "Should not post a message that is only whitespace after trimming"
+    );
+}
+
 // ── process_universal_events tests ───────────────────────────────────
 
 #[test]

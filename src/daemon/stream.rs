@@ -44,10 +44,11 @@ pub fn process_lead_output(events: &HashMap<String, Vec<StreamEvent>>) -> Vec<Ef
 
     if let Some(lead_events) = events.get("lead") {
         let aggregated = extract_lead_text(lead_events);
-        if !aggregated.is_empty() {
+        let trimmed = aggregated.trim().to_string();
+        if !trimmed.is_empty() {
             effects.push(Effect::PostToChannel {
                 sender: "lead".to_string(),
-                message: aggregated,
+                message: trimmed,
                 channel: None, // Posts to main channel
             });
         }

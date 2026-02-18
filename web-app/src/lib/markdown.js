@@ -57,6 +57,8 @@ export function hasMermaid(text) {
  * Converts !N task references to clickable task-detail links.
  */
 export function renderContent(text) {
+  // Trim leading/trailing whitespace so messages don't render with blank lines at the top.
+  text = text.trim()
   // Escape &, <, and > for XSS defense-in-depth.
   let safe = text
     .replace(/&/g, '&amp;')
