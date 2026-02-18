@@ -378,10 +378,12 @@ async fn test_lead_pr_without_task_id_should_not_be_orphaned() {
 
     // Important: The lead's worktree exists, but NOT indexed by this branch name
     // (it's the main "lead" worktree in a different location)
+    let active_names = std::collections::HashSet::new();
 
     let effects = collect_reviewer_effects_with_source(
         None, // No branch_owners_map (simulating empty worktree map)
         &registry,
+        &active_names,
         &state,
         &[pr],
         crate::github_state::AssignmentSource::PollingFallback,
@@ -711,10 +713,12 @@ async fn test_reviewer_spawns_when_worktree_exists_but_no_current_coworker() {
     let branch_owners: std::collections::HashMap<String, String> = std::collections::HashMap::new();
 
     let state = make_test_state("test-repo");
+    let active_names = std::collections::HashSet::new();
 
     let effects = collect_reviewer_effects_with_source(
         Some(&branch_owners),
         &registry,
+        &active_names,
         &state,
         &[pr_json],
         crate::github_state::AssignmentSource::PollingFallback,
@@ -770,10 +774,12 @@ async fn test_completed_worktree_with_open_pr_gets_reviewer() {
 
     let branch_owners: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     let state = make_test_state("test-repo");
+    let active_names = std::collections::HashSet::new();
 
     let effects = collect_reviewer_effects_with_source(
         Some(&branch_owners),
         &registry,
+        &active_names,
         &state,
         &[pr_json],
         crate::github_state::AssignmentSource::PollingFallback,
@@ -842,11 +848,13 @@ async fn test_completed_worktree_with_snapshot_data() {
 
     // Create minimal test state
     let state = make_test_state("midtown");
+    let active_names = std::collections::HashSet::new();
 
     // Call the function under test with snapshot's worktree registry and synthetic PR
     let effects = collect_reviewer_effects_with_source(
         Some(&branch_owners),
         &snap.worktree_registry, // Real snapshot data with task 1323's completed worktree
+        &active_names,
         &state,
         &[pr_json], // Synthetic PR that extracts task ID 1323 from title
         crate::github_state::AssignmentSource::PollingFallback,
@@ -918,11 +926,13 @@ async fn test_lead_pr_with_non_standard_branch_gets_reviewer() {
     // The repo_owner is extracted from git remote URL at daemon startup;
     // in tests we configure it via a fake origin remote.
     let state = make_test_state_with_owner("midtown", "btucker");
+    let active_names = std::collections::HashSet::new();
 
     // Call the function under test
     let effects = collect_reviewer_effects_with_source(
         Some(&branch_owners),
         &worktree_registry,
+        &active_names,
         &state,
         &[pr_json],
         crate::github_state::AssignmentSource::PollingFallback,
@@ -1564,15 +1574,13 @@ fn review_complete_action_to_effects_includes_record_task_assignment() {
 /// Expected: Active coworker's PR should NOT be marked as orphaned — the coworker
 /// can always address review feedback regardless of worktree status.
 ///
-/// Note: This test constructs synthetic state rather than loading the fixture directly.
-/// `collect_reviewer_effects_with_source` takes `&DaemonState`, not `&WorldSnapshot`,
-/// so the fixture (which serializes a `WorldSnapshot`) cannot be used without significant
-/// plumbing to reconstruct `DaemonState` from it. The fixture serves as documentation
-/// of the exact production scenario that triggered the bug.
+/// Note: The fixture's `active_names` and `worktree_registry` are used directly via
+/// the `active_names` parameter (following the WorldSnapshot architecture pattern).
+/// The fixture serves as documentation of the exact production scenario that triggered
+/// the bug.
 #[tokio::test]
 async fn test_active_coworker_pr_without_worktree_is_not_orphaned() {
     use super::super::snapshot::WorldSnapshot;
-    use crate::coworker::{Coworker, CoworkerStatus};
 
     // Load the captured snapshot that exhibits the bug scenario
     let fixture = include_str!(
@@ -1613,21 +1621,6 @@ async fn test_active_coworker_pr_without_worktree_is_not_orphaned() {
 
     let state = make_test_state("midtown");
 
-    // Add "park" as a running coworker — the key setup for this bug
-    let park = Coworker {
-        slot_id: uuid::Uuid::new_v4().to_string(),
-        name: "park".to_string(),
-        status: CoworkerStatus::Running,
-        working_dir: "/tmp/park-worktree".to_string(),
-        started_at: chrono::Utc::now(),
-        current_task: None,
-        session_id: None,
-        model: "sonnet".to_string(),
-        provider: crate::auth::AuthProvider::Claude,
-        profile: "claude@example.com".to_string(),
-    };
-    state.coworkers.insert_for_testing(park);
-
     // Empty branch_owners_map — the bug manifests because coworker_from_branch_with_map
     // still identifies "park" as the owner via the branch prefix
     let branch_owners: std::collections::HashMap<String, String> = std::collections::HashMap::new();
@@ -1635,6 +1628,7 @@ async fn test_active_coworker_pr_without_worktree_is_not_orphaned() {
     let effects = collect_reviewer_effects_with_source(
         Some(&branch_owners),
         &snap.worktree_registry, // Real snapshot registry: no task 1483 entry
+        &snap.active_names,      // Real snapshot active_names: includes "park"
         &state,
         &[pr],
         crate::github_state::AssignmentSource::PollingFallback,
@@ -1657,5 +1651,56 @@ async fn test_active_coworker_pr_without_worktree_is_not_orphaned() {
         has_reviewer_effect,
         "Expected reviewer spawn effect for PR #1246. Effects: {:#?}",
         effects
+    );
+}
+
+/// Headless-only coworker's PR should not be marked as orphaned.
+///
+/// This test verifies that a coworker running only as a headless session (no pane,
+/// not in CoworkerManager's list_running()) is still recognized as active via
+/// the active_names parameter. Before the fix, list_running() was called directly
+/// inside collect_reviewer_effects_with_source, which only tracked pane-based
+/// coworkers — missing headless-only sessions entirely.
+#[tokio::test]
+async fn test_headless_only_coworker_pr_is_not_orphaned() {
+    let pr = json!({
+        "number": 999,
+        "headRefName": "york/task-500-headless-feature",
+        "title": "feat: Headless feature [Midtown !500]",
+        "isDraft": false,
+        "createdAt": "2026-02-17T00:00:00Z",
+        "state": "OPEN",
+        "author": {"login": "btucker"},
+        "mergeable": "MERGEABLE",
+        "statusCheckRollup": null,
+        "reviewDecision": "",
+    });
+
+    let state = make_test_state("midtown");
+
+    // active_names includes "york" (as it would from WorldSnapshot which includes
+    // headless sessions), but we do NOT insert york into state.coworkers — simulating
+    // a headless-only coworker that list_running() would miss.
+    let active_names: std::collections::HashSet<String> =
+        ["york".to_string()].into_iter().collect();
+
+    let branch_owners: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let registry = crate::worktree_registry::WorktreeRegistry::new();
+
+    let effects = collect_reviewer_effects_with_source(
+        Some(&branch_owners),
+        &registry,
+        &active_names,
+        &state,
+        &[pr],
+        crate::github_state::AssignmentSource::PollingFallback,
+    )
+    .await;
+
+    // With active_names containing "york", the PR should NOT be orphaned
+    assert!(
+        !effects.is_empty(),
+        "Headless-only coworker's PR should spawn a reviewer, not be marked as orphaned. \
+         active_names includes 'york' but state.coworkers does not (headless-only session)."
     );
 }
