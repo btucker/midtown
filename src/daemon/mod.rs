@@ -700,6 +700,11 @@ impl DaemonState {
     /// shared function, the two paths can drift out of sync — e.g., session death
     /// missing cooldown/nudge/assignment cleanup that shutdown handles. See PR #1268.
     ///
+    /// Handles: coworker deregistration, stop-time recording, coworker records,
+    /// cooldowns, pending nudges, task assignments, recent tool activity,
+    /// NamePool release, and session reverse-map cleanup (name_to_session,
+    /// session_to_name, task_to_session).
+    ///
     /// Does NOT handle session-specific operations (session_manager.shutdown vs
     /// session_manager.remove) or worktree unbinding — those differ between the
     /// intentional shutdown and session death paths.
@@ -726,6 +731,22 @@ impl DaemonState {
         {
             let mut tool_map = self.recent_tool_items.write().unwrap();
             tool_map.remove(name);
+        }
+        // Release name back to NamePool and clean up session reverse maps.
+        // Each lock is acquired and released independently (no nesting)
+        // to avoid implicit lock-ordering dependencies.
+        {
+            let mut name_pool = self.name_pool.lock().unwrap();
+            name_pool.release(name);
+        }
+        let removed_session_id = self.name_to_session.lock().unwrap().remove(name);
+        if let Some(session_id) = removed_session_id {
+            self.session_to_name.lock().unwrap().remove(&session_id);
+            // Clean up task_to_session entries pointing to this session.
+            self.task_to_session
+                .lock()
+                .unwrap()
+                .retain(|_, sid| sid != &session_id);
         }
     }
 
@@ -3109,27 +3130,11 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                     // Remove from session manager tracking (session-death-specific:
                     // shutdown path uses session_manager.shutdown() instead)
                     state.session_manager.remove(&name).await;
-                    // Clean up all transient coworker state (shared with shutdown path)
+                    // Clean up all transient coworker state (shared with shutdown path).
+                    // This includes releasing the name back to NamePool and cleaning
+                    // up session reverse maps (name_to_session, session_to_name,
+                    // task_to_session).
                     state.cleanup_coworker_state(&name).await;
-
-                    // Release name from NamePool and clean up reverse maps.
-                    // Each lock is acquired and released independently (no nesting)
-                    // to avoid implicit lock-ordering dependencies.
-                    {
-                        let mut name_pool = state.name_pool.lock().unwrap();
-                        name_pool.release(&name);
-                    }
-                    let removed_session_id =
-                        state.name_to_session.lock().unwrap().remove(&name);
-                    if let Some(session_id) = removed_session_id {
-                        state.session_to_name.lock().unwrap().remove(&session_id);
-                        // Clean up task_to_session entries pointing to this session.
-                        state
-                            .task_to_session
-                            .lock()
-                            .unwrap()
-                            .retain(|_, sid| sid != &session_id);
-                    }
 
                     // Only clear session_id when the resume itself failed
                     // (session died within 30s of a resume spawn). This means

@@ -1976,22 +1976,8 @@ async fn test_cleanup_releases_name_from_pool() {
             .insert("42".to_string(), "sid-madison".to_string());
     }
 
-    // The cleanup_coworker_state only cleans transient state (cooldowns, etc.)
-    // The name pool + reverse map cleanup happens separately in the event loop.
-    // So we test the cleanup pattern directly:
-    {
-        let mut pool = state.name_pool.lock().unwrap();
-        pool.release("madison");
-    }
-    let removed_session_id = state.name_to_session.lock().unwrap().remove("madison");
-    if let Some(session_id) = removed_session_id {
-        state.session_to_name.lock().unwrap().remove(&session_id);
-        state
-            .task_to_session
-            .lock()
-            .unwrap()
-            .retain(|_, sid| sid != &session_id);
-    }
+    // cleanup_coworker_state handles all transient state AND name pool + reverse maps.
+    state.cleanup_coworker_state("madison").await;
 
     // Verify cleanup
     assert!(
@@ -2043,19 +2029,9 @@ async fn test_cleanup_preserves_other_sessions_reverse_maps() {
         t2s.insert("43".to_string(), "sid-park".to_string());
     }
 
-    // Clean up only madison (event loop cleanup pattern)
-    {
-        state.name_pool.lock().unwrap().release("madison");
-    }
-    let removed = state.name_to_session.lock().unwrap().remove("madison");
-    if let Some(session_id) = removed {
-        state.session_to_name.lock().unwrap().remove(&session_id);
-        state
-            .task_to_session
-            .lock()
-            .unwrap()
-            .retain(|_, sid| sid != &session_id);
-    }
+    // Clean up only madison via cleanup_coworker_state (used by both
+    // intentional shutdown and session-death paths).
+    state.cleanup_coworker_state("madison").await;
 
     // Park's state should be untouched
     assert!(
@@ -2110,8 +2086,8 @@ fn test_name_pool_allocate_and_release_round_trip() {
     assert_eq!(pool.allocated_count(), 0);
 }
 
-#[test]
-fn test_cleanup_with_no_session_id_is_noop_for_reverse_maps() {
+#[tokio::test]
+async fn test_cleanup_with_no_session_id_is_noop_for_reverse_maps() {
     let state = make_cleanup_test_state();
 
     // Allocate a name but don't populate reverse maps
@@ -2124,24 +2100,40 @@ fn test_cleanup_with_no_session_id_is_noop_for_reverse_maps() {
             .unwrap();
     }
 
-    // Release name (no reverse maps to clean)
-    {
-        state.name_pool.lock().unwrap().release("madison");
-    }
-    let removed = state.name_to_session.lock().unwrap().remove("madison");
-    assert!(
-        removed.is_none(),
-        "no session to remove when reverse maps weren't populated"
-    );
+    // cleanup_coworker_state should handle releasing the name even when
+    // no reverse maps were populated (no panic, no stale state).
+    state.cleanup_coworker_state("madison").await;
 
     // Verify pool state is correct
     assert!(!state.name_pool.lock().unwrap().is_allocated("madison"));
+    assert_eq!(state.session_for_name("madison"), None);
 }
 
-#[test]
-fn test_task_to_session_cleanup_removes_all_tasks_for_session() {
+#[tokio::test]
+async fn test_task_to_session_cleanup_removes_all_tasks_for_session() {
     let state = make_cleanup_test_state();
 
+    // Allocate madison and populate reverse maps
+    {
+        state
+            .name_pool
+            .lock()
+            .unwrap()
+            .allocate(Some("madison"))
+            .unwrap();
+    }
+    {
+        state
+            .name_to_session
+            .lock()
+            .unwrap()
+            .insert("madison".to_string(), "sid-madison".to_string());
+        state
+            .session_to_name
+            .lock()
+            .unwrap()
+            .insert("sid-madison".to_string(), "madison".to_string());
+    }
     // Simulate a session with multiple tasks (unlikely but possible)
     {
         let mut t2s = state.task_to_session.lock().unwrap();
@@ -2150,15 +2142,94 @@ fn test_task_to_session_cleanup_removes_all_tasks_for_session() {
         t2s.insert("44".to_string(), "sid-park".to_string());
     }
 
-    // Clean up sid-madison's tasks using the retain pattern from the event loop
-    state
-        .task_to_session
-        .lock()
-        .unwrap()
-        .retain(|_, sid| sid != "sid-madison");
+    // cleanup_coworker_state should remove all tasks for this session
+    state.cleanup_coworker_state("madison").await;
 
     // Only park's task should remain
     let t2s = state.task_to_session.lock().unwrap();
     assert_eq!(t2s.len(), 1);
     assert_eq!(t2s.get("44"), Some(&"sid-park".to_string()));
+}
+
+/// Regression test: repeated shutdown/spawn cycles must not exhaust the NamePool.
+///
+/// Before this fix, cleanup_coworker_state didn't release names back to the pool
+/// or clear reverse maps. After enough shutdown/spawn cycles, the pool would have
+/// no names left even though no coworkers were active. This test simulates 3 full
+/// cycles of allocate → register → cleanup, then verifies the name is still
+/// available for reuse.
+#[tokio::test]
+async fn test_repeated_shutdown_spawn_cycles_do_not_exhaust_name_pool() {
+    let state = make_cleanup_test_state();
+
+    for cycle in 0..3 {
+        let session_id = format!("sid-madison-{cycle}");
+        let task_id = format!("{}", 100 + cycle);
+
+        // Simulate spawn: allocate name + populate reverse maps
+        {
+            state
+                .name_pool
+                .lock()
+                .unwrap()
+                .allocate(Some("madison"))
+                .unwrap();
+        }
+        {
+            state
+                .name_to_session
+                .lock()
+                .unwrap()
+                .insert("madison".to_string(), session_id.clone());
+            state
+                .session_to_name
+                .lock()
+                .unwrap()
+                .insert(session_id.clone(), "madison".to_string());
+            state
+                .task_to_session
+                .lock()
+                .unwrap()
+                .insert(task_id.clone(), session_id.clone());
+        }
+
+        // Verify name is allocated before cleanup
+        assert!(
+            state.name_pool.lock().unwrap().is_allocated("madison"),
+            "cycle {cycle}: madison should be allocated before cleanup"
+        );
+
+        // Simulate shutdown/session-death: cleanup_coworker_state
+        state.cleanup_coworker_state("madison").await;
+
+        // Verify cleanup released everything
+        assert!(
+            !state.name_pool.lock().unwrap().is_allocated("madison"),
+            "cycle {cycle}: madison should be released after cleanup"
+        );
+        assert_eq!(
+            state.session_for_name("madison"),
+            None,
+            "cycle {cycle}: name_to_session should be cleared"
+        );
+        assert_eq!(
+            state.name_for_session(&session_id),
+            None,
+            "cycle {cycle}: session_to_name should be cleared"
+        );
+        assert_eq!(
+            state.session_for_task(&task_id),
+            None,
+            "cycle {cycle}: task_to_session should be cleared"
+        );
+    }
+
+    // After 3 full cycles, the pool should be fully available (no leaked names)
+    let pool = state.name_pool.lock().unwrap();
+    let total = crate::coworker::AVENUE_NAMES.len() + crate::coworker::OVERFLOW_NAMES.len();
+    assert_eq!(
+        pool.available_count(),
+        total,
+        "all names should be available after repeated cleanup cycles"
+    );
 }
