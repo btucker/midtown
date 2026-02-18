@@ -841,6 +841,117 @@ pub(super) async fn handle_session_view(
     }
 }
 
+/// Handle session.clear RPC method.
+///
+/// Stops a running headless session and relaunches it as a fresh session
+/// with the same initial prompt (plus a note that it's a fresh/cleared restart)
+/// in the same worktree. Does not use --continue or --resume.
+pub(super) async fn handle_session_clear(
+    id: RequestId,
+    target: &str,
+    state: &DaemonState,
+) -> Response {
+    let name = match resolve_attach_target(target, state).await {
+        Ok(n) => n,
+        Err(e) => return Response::error(id, RpcError::new(-32602, e)),
+    };
+
+    // Get session info from persistent state
+    let session_info = {
+        let persistent = state.persistent_state.lock().await;
+        persistent.headless_sessions.get(&name).cloned()
+    };
+
+    let session_info = match session_info {
+        Some(info) => info,
+        None => {
+            return Response::error(
+                id,
+                RpcError::new(-32603, format!("No session found for coworker '{}'", name)),
+            );
+        }
+    };
+
+    // Stop the running session if alive
+    if state.session_manager.is_alive(&name).await {
+        info!("Stopping headless session '{}' for clear", name);
+        if let Err(e) = state
+            .session_manager
+            .graceful_shutdown(&name, std::time::Duration::from_secs(10))
+            .await
+        {
+            warn!("Failed to gracefully stop session '{}': {}", name, e);
+            // Try force shutdown
+            let _ = state.session_manager.shutdown(&name).await;
+        }
+        state.coworkers.deregister(&name);
+        state.record_coworker_stop_time(&name);
+    }
+
+    // Build fresh launch config (no --resume, no --continue)
+    let original_prompt = session_info.initial_prompt.as_deref().unwrap_or("");
+    let fresh_prompt = if original_prompt.is_empty() {
+        "This is a fresh session restart. Please read the channel to catch up on context."
+            .to_string()
+    } else {
+        format!(
+            "This is a fresh session restart. Your previous session was cleared.\n\n{}",
+            original_prompt
+        )
+    };
+
+    let mut config = crate::launch::LaunchConfig::coworker(
+        &name,
+        &state.repo_name,
+        crate::launch::SessionMode::Fresh,
+        Some(fresh_prompt),
+    );
+
+    // Restore working directory from persisted info
+    if let Some(ref working_dir) = session_info.working_dir {
+        config.working_dir = Some(std::path::PathBuf::from(working_dir));
+    }
+    if let Some(provider) = session_info.provider {
+        config.auth_provider = provider;
+    }
+
+    match state.spawn_coworker(&config).await {
+        Ok(()) => {
+            info!("Relaunched fresh session for '{}' after clear", name);
+
+            let _ = state
+                .send_and_broadcast_async(&crate::message::Message::system(format!(
+                    "Cleared session for {} — fresh session started",
+                    name
+                )))
+                .await;
+
+            state.broadcast_coworker_update(&name, "running", None);
+
+            Response::success(
+                id,
+                serde_json::json!({
+                    "success": true,
+                    "message": format!("Cleared and restarted fresh session for {}", name),
+                }),
+            )
+        }
+        Err(e) => {
+            warn!(
+                "Failed to relaunch session for '{}' after clear: {}",
+                name, e
+            );
+            Response::error(
+                id,
+                RpcError::new(
+                    -32603,
+                    format!("Failed to relaunch session for '{}': {}", name, e),
+                ),
+            )
+        }
+    }
+}
+
 // ============================================================================
 // Tests
 // ============================================================================
@@ -951,5 +1062,15 @@ mod tests {
         assert!(parse_attach_target("invalid").is_err());
         assert!(parse_attach_target("unknown:value").is_err());
         assert!(parse_attach_target("").is_err());
+    }
+
+    #[test]
+    fn test_parse_attach_target_for_clear_name() {
+        // Test that the existing parse_attach_target handles name targets
+        // which are reused by session.clear
+        assert_eq!(
+            parse_attach_target("name/broadway").unwrap(),
+            AttachTarget::Name("broadway".to_string())
+        );
     }
 }

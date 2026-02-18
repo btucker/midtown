@@ -812,6 +812,7 @@ impl SessionManager {
                     provider: None,      // To be filled by caller
                     profile: None,       // To be filled by caller
                     resume_on_startup: true,
+                    initial_prompt: None, // To be filled by caller
                 };
                 info_map.insert(cs.name.clone(), info);
             }
