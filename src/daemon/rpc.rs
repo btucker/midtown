@@ -399,7 +399,8 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
             let all = params.bool_or("all", false);
             let last = params.usize_param("last");
             let since = params.str_param("since");
-            super::rpc_channel::handle_channel_read(request.id, all, last, since, state)
+            let channel = params.str_param("channel");
+            super::rpc_channel::handle_channel_read(request.id, all, last, since, channel, state)
         }
 
         "channel.list" => {

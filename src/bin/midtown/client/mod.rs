@@ -228,6 +228,11 @@ impl DaemonClient {
         if let Some(duration) = since {
             params["since"] = serde_json::json!(duration);
         }
+        // If MIDTOWN_CHANNEL is set (channel lead context), read from that channel.
+        // Mirrors how channel_post() respects MIDTOWN_CHANNEL.
+        if let Ok(ch) = std::env::var("MIDTOWN_CHANNEL") {
+            params["channel"] = serde_json::json!(ch);
+        }
         self.send("channel.read", Some(params))
     }
 
