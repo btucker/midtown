@@ -411,3 +411,17 @@ fn test_process_universal_events_lead_and_channel_lead_produce_separate_effects(
         assert_eq!(channel.as_deref(), Some("features"));
     }
 }
+
+#[test]
+fn test_process_universal_events_channel_lead_registered_but_no_events_produces_no_effect() {
+    // A channel lead is registered in the session map but didn't produce any events this tick.
+    let events = HashMap::new(); // no events at all
+    let mut channel_leads = HashMap::new();
+    channel_leads.insert("web".to_string(), "some-session-id".to_string());
+
+    let effects = process_universal_events(&events, &channel_leads);
+    assert!(
+        effects.is_empty(),
+        "No effect when channel lead has no events this tick"
+    );
+}
