@@ -597,7 +597,8 @@ pub(crate) struct DaemonState {
     ///
     /// Updated by `BroadcastUniversalItems` effects as stream events arrive.
     /// Capped at `MAX_TOOL_ITEMS_PER_AGENT` per agent to bound memory.
-    /// Cleared when a channel message from the agent is posted (work phase done).
+    /// Cleared when a channel message from the agent is posted (work phase done),
+    /// and when a coworker session stops (via `cleanup_coworker_state`).
     /// Exposed via `kanban.data` RPC (live, not cached) so the TUI can display
     /// per-coworker tool activity alongside chat messages.
     pub(crate) recent_tool_items:
@@ -659,6 +660,42 @@ impl DaemonState {
     fn record_coworker_stop_time(&self, name: &str) {
         let mut stop_times = self.coworker_stop_times.write().unwrap();
         stop_times.insert(name.to_lowercase(), chrono::Utc::now());
+    }
+
+    /// Clean up all transient state for a coworker after its session stops.
+    ///
+    /// Called from both intentional shutdown (`shutdown_coworker_impl` in effects.rs)
+    /// and unexpected session death (session monitor in the event loop). Without this
+    /// shared function, the two paths can drift out of sync — e.g., session death
+    /// missing cooldown/nudge/assignment cleanup that shutdown handles. See PR #1268.
+    ///
+    /// Does NOT handle session-specific operations (session_manager.shutdown vs
+    /// session_manager.remove) or worktree unbinding — those differ between the
+    /// intentional shutdown and session death paths.
+    pub(crate) async fn cleanup_coworker_state(&self, name: &str) {
+        // Deregister from coworker manager
+        self.coworkers.deregister(name);
+        // Record stop time for lifecycle tracking
+        self.record_coworker_stop_time(name);
+        // Clean up unified coworker record (health, workflow phase, etc.)
+        {
+            let mut records = self.coworker_records.write().await;
+            records.remove(name);
+        }
+        // Clear cooldown entries (prevents stale state on respawn)
+        {
+            let mut cooldowns = self.cooldowns.lock().unwrap();
+            cooldowns.clear_for_key(name);
+        }
+        // Clear any pending nudge
+        self.clear_pending_nudge(name);
+        // Clear task assignment tracking (coworker is no longer active)
+        self.clear_coworker_assignments(name);
+        // Clear recent tool activity (prevents stale activity on respawn)
+        {
+            let mut tool_map = self.recent_tool_items.write().unwrap();
+            tool_map.remove(name);
+        }
     }
 
     /// Remove expired entries from the RPC response cache.
@@ -2926,15 +2963,11 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                     // handling is single-threaded, so no concurrent remove() is possible.
                     let failed_resume = state.session_manager.was_failed_resume(&name).await;
 
-                    state.coworkers.deregister(&name);
-                    state.record_coworker_stop_time(&name);
-                    // Remove from session manager tracking
+                    // Remove from session manager tracking (session-death-specific:
+                    // shutdown path uses session_manager.shutdown() instead)
                     state.session_manager.remove(&name).await;
-                    // Clean up coworker record
-                    {
-                        let mut records = state.coworker_records.write().await;
-                        records.remove(&name);
-                    }
+                    // Clean up all transient coworker state (shared with shutdown path)
+                    state.cleanup_coworker_state(&name).await;
 
                     // Only clear session_id when the resume itself failed
                     // (session died within 30s of a resume spawn). This means
