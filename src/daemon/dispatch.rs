@@ -157,6 +157,20 @@ fn task_completed_effects(task_id: &str, repo_name: &str, channel_message: Strin
 }
 
 // ============================================================================
+// Session-centric helpers
+// ============================================================================
+
+/// Look up the session record for a task, if one exists.
+/// Returns None if no session is associated with this task.
+fn find_session_for_task<'a>(
+    task_id: &str,
+    snap: &'a snapshot::WorldSnapshot,
+) -> Option<&'a crate::daemon::state::SessionRecord> {
+    let session_id = snap.session_task_map.get(task_id)?;
+    snap.sessions.get(session_id)
+}
+
+// ============================================================================
 // Orphan task recovery
 // ============================================================================
 
@@ -453,6 +467,81 @@ where
         ),
     );
 
+    // Set channel from task if available
+    let channel = snap
+        .all_tasks
+        .iter()
+        .find(|t| t.id == recovery.task_id)
+        .and_then(|t| t.channel.clone());
+
+    // ── Session-aware resume path ──────────────────────────────────────
+    // Check if there's a dead session record for this task that we can resume
+    // instead of spawning fresh. Reviewer tasks always get fresh sessions.
+    let session_record = find_session_for_task(&recovery.task_id, snap);
+    if let Some(record) = session_record
+        && !record.is_running
+        && !record.is_reviewer
+    {
+        info!(
+            "Resuming session {} for orphaned task !{} (owner: {})",
+            record.session_id, recovery.task_id, recovery.owner
+        );
+
+        // Prepare worktree (reuse existing or create new)
+        let wt = prepare_task_worktree(
+            &recovery.task_id,
+            &recovery.task_subject,
+            &state.repo_name,
+            snap,
+        );
+
+        let mut config = crate::launch::LaunchConfig::coworker(
+            recovery.owner.clone(),
+            state.repo_name.clone(),
+            crate::launch::SessionMode::ResumeSession(record.session_id.clone()),
+            Some(prompt),
+        );
+        config.working_dir = Some(wt.path);
+        config.channel = channel.clone();
+        config.apply_task_model(&snap.task_model_map, &recovery.task_id);
+
+        let mut effects = wt.pre_spawn_effects;
+
+        effects.push(Effect::ResumeCoworker {
+            name: recovery.owner.clone(),
+            session_id: record.session_id.clone(),
+            config,
+        });
+        effects.push(Effect::RecordTaskAssignment {
+            coworker: recovery.owner.clone(),
+            task_id: recovery.task_id.clone(),
+        });
+        effects.push(Effect::BindCoworkerToWorktree {
+            worktree_id: wt.worktree_id,
+            coworker: recovery.owner.clone(),
+        });
+        effects.push(Effect::BroadcastCoworkerUpdate {
+            name: recovery.owner.clone(),
+            status: "running".to_string(),
+            current_task: None,
+        });
+        effects.push(Effect::RecordCooldown {
+            category: "orphan_spawn".to_string(),
+            key: "global".to_string(),
+        });
+        effects.push(Effect::PostToChannel {
+            sender: "midtown".to_string(),
+            message: format!(
+                "♻️ Resumed session {} for orphaned task !{} (coworker {})",
+                record.session_id, recovery.task_id, recovery.owner
+            ),
+            channel,
+        });
+
+        return effects;
+    }
+
+    // ── Fresh spawn path (legacy / no session record) ──────────────────
     // Prepare worktree (reuse existing or create new)
     let wt = prepare_task_worktree(
         &recovery.task_id,
@@ -468,13 +557,6 @@ where
         Some(prompt),
     );
     config.working_dir = Some(wt.path);
-
-    // Set channel from task if available
-    let channel = snap
-        .all_tasks
-        .iter()
-        .find(|t| t.id == recovery.task_id)
-        .and_then(|t| t.channel.clone());
     config.channel = channel.clone();
 
     // Apply task model if available (sets both provider and model)
@@ -542,19 +624,28 @@ where
 
 /// Extract task IDs claimed by orphan recovery effects.
 ///
-/// Scans `SpawnCoworkerWithCallbacks` on_success callbacks for `RecordTaskAssignment`
-/// effects and returns all found task IDs. Used by `events.rs` to build an exclusion
-/// set for `spawn_for_pending_tasks_excluding`, preventing dual-spawn when orphan
-/// recovery and pending dispatch both target the same task in one tick.
+/// Scans effects for `RecordTaskAssignment` — both as top-level effects
+/// (session-aware resume path) and nested inside `SpawnCoworkerWithCallbacks`
+/// on_success callbacks (legacy fresh spawn path). Used by `events.rs` to build
+/// an exclusion set for `spawn_for_pending_tasks_excluding`, preventing dual-spawn
+/// when orphan recovery and pending dispatch both target the same task in one tick.
 pub(super) fn extract_claimed_task_ids_from_effects(effects: &[Effect]) -> HashSet<String> {
     let mut ids = HashSet::new();
     for effect in effects {
-        if let Effect::SpawnCoworkerWithCallbacks { on_success, .. } = effect {
-            for sub in on_success {
-                if let Effect::RecordTaskAssignment { task_id, .. } = sub {
-                    ids.insert(task_id.clone());
+        match effect {
+            // Legacy fresh spawn path: RecordTaskAssignment is nested in on_success
+            Effect::SpawnCoworkerWithCallbacks { on_success, .. } => {
+                for sub in on_success {
+                    if let Effect::RecordTaskAssignment { task_id, .. } = sub {
+                        ids.insert(task_id.clone());
+                    }
                 }
             }
+            // Session-aware resume path: RecordTaskAssignment is top-level
+            Effect::RecordTaskAssignment { task_id, .. } => {
+                ids.insert(task_id.clone());
+            }
+            _ => {}
         }
     }
     ids
@@ -2044,6 +2135,10 @@ pub fn reset_orphaned_tasks(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
 #[path = "dispatch_dev_limit_tests.rs"]
 #[cfg(test)]
 mod dispatch_dev_limit_tests;
+
+#[path = "dispatch_session_tests.rs"]
+#[cfg(test)]
+mod dispatch_session_tests;
 
 #[path = "dispatch_tests.rs"]
 #[cfg(test)]
