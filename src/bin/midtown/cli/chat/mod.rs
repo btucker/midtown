@@ -461,8 +461,9 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                                 } else {
                                     app.kill_ring = Some(killed);
                                 }
-                                app.last_was_kill = true;
                             }
+                            // Preserve kill chain even on no-op (cursor at EOL)
+                            app.last_was_kill = true;
                             app.detect_autocomplete_trigger();
                         } else {
                             app.toggle_channel_switcher();
@@ -487,56 +488,69 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                         return EventResult::Continue;
                     }
                     KeyCode::Char('u') => {
-                        // Ctrl+U: kill to beginning of line (only in InputBar)
-                        if app.focused_pane == FocusedPane::InputBar && app.input_cursor > 0 {
-                            let byte_idx =
-                                char_index_to_byte_index(&app.input_text, app.input_cursor);
-                            let killed = app.input_text[..byte_idx].to_string();
-                            app.input_text = app.input_text[byte_idx..].to_string();
-                            if prev_was_kill {
-                                let ring = app.kill_ring.get_or_insert_with(String::new);
-                                ring.push_str(&killed);
-                            } else {
-                                app.kill_ring = Some(killed);
+                        // Ctrl+U: kill to beginning of line (only in InputBar,
+                        // not when channel switcher is open)
+                        if app.focused_pane == FocusedPane::InputBar && !app.channel_switcher.show {
+                            if app.input_cursor > 0 {
+                                let byte_idx =
+                                    char_index_to_byte_index(&app.input_text, app.input_cursor);
+                                let killed = app.input_text[..byte_idx].to_string();
+                                app.input_text = app.input_text[byte_idx..].to_string();
+                                if prev_was_kill {
+                                    // Backward kill: prepend so accumulated text
+                                    // reads in screen order
+                                    let ring = app.kill_ring.get_or_insert_with(String::new);
+                                    ring.insert_str(0, &killed);
+                                } else {
+                                    app.kill_ring = Some(killed);
+                                }
+                                app.input_cursor = 0;
+                                app.detect_autocomplete_trigger();
                             }
+                            // Preserve kill chain even on no-op (cursor at pos 0)
                             app.last_was_kill = true;
-                            app.input_cursor = 0;
-                            app.detect_autocomplete_trigger();
                         }
                         return EventResult::Continue;
                     }
                     KeyCode::Char('w') => {
-                        // Ctrl+W: kill previous word (only in InputBar)
-                        if app.focused_pane == FocusedPane::InputBar && app.input_cursor > 0 {
-                            let chars: Vec<char> = app.input_text.chars().collect();
-                            let mut pos = app.input_cursor;
-                            // Skip whitespace going left
-                            while pos > 0 && chars[pos - 1].is_whitespace() {
-                                pos -= 1;
+                        // Ctrl+W: kill previous word (only in InputBar,
+                        // not when channel switcher is open)
+                        if app.focused_pane == FocusedPane::InputBar && !app.channel_switcher.show {
+                            if app.input_cursor > 0 {
+                                let chars: Vec<char> = app.input_text.chars().collect();
+                                let mut pos = app.input_cursor;
+                                // Skip whitespace going left
+                                while pos > 0 && chars[pos - 1].is_whitespace() {
+                                    pos -= 1;
+                                }
+                                // Skip non-whitespace going left
+                                while pos > 0 && !chars[pos - 1].is_whitespace() {
+                                    pos -= 1;
+                                }
+                                let word_start = pos;
+                                let start_byte =
+                                    char_index_to_byte_index(&app.input_text, word_start);
+                                let end_byte =
+                                    char_index_to_byte_index(&app.input_text, app.input_cursor);
+                                let killed = app.input_text[start_byte..end_byte].to_string();
+                                app.input_text = format!(
+                                    "{}{}",
+                                    &app.input_text[..start_byte],
+                                    &app.input_text[end_byte..]
+                                );
+                                if prev_was_kill {
+                                    // Backward kill: prepend so accumulated text
+                                    // reads in screen order
+                                    let ring = app.kill_ring.get_or_insert_with(String::new);
+                                    ring.insert_str(0, &killed);
+                                } else {
+                                    app.kill_ring = Some(killed);
+                                }
+                                app.input_cursor = word_start;
+                                app.detect_autocomplete_trigger();
                             }
-                            // Skip non-whitespace going left
-                            while pos > 0 && !chars[pos - 1].is_whitespace() {
-                                pos -= 1;
-                            }
-                            let word_start = pos;
-                            let start_byte = char_index_to_byte_index(&app.input_text, word_start);
-                            let end_byte =
-                                char_index_to_byte_index(&app.input_text, app.input_cursor);
-                            let killed = app.input_text[start_byte..end_byte].to_string();
-                            app.input_text = format!(
-                                "{}{}",
-                                &app.input_text[..start_byte],
-                                &app.input_text[end_byte..]
-                            );
-                            if prev_was_kill {
-                                let ring = app.kill_ring.get_or_insert_with(String::new);
-                                ring.push_str(&killed);
-                            } else {
-                                app.kill_ring = Some(killed);
-                            }
+                            // Preserve kill chain even on no-op (cursor at pos 0)
                             app.last_was_kill = true;
-                            app.input_cursor = word_start;
-                            app.detect_autocomplete_trigger();
                         }
                         return EventResult::Continue;
                     }
@@ -569,8 +583,10 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                         return EventResult::Continue;
                     }
                     KeyCode::Char('y') => {
-                        // Ctrl+Y: yank (paste) kill ring content at cursor (only in InputBar)
+                        // Ctrl+Y: yank (paste) kill ring content at cursor (only in InputBar,
+                        // and not when channel switcher is open)
                         if app.focused_pane == FocusedPane::InputBar
+                            && !app.channel_switcher.show
                             && let Some(ref yanked) = app.kill_ring.clone()
                         {
                             let byte_idx =
