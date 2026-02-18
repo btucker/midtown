@@ -224,6 +224,67 @@ pub fn check_claude_auth_status(repo_name: &str) {
     }
 }
 
+/// Refresh the GH_TOKEN environment variable by re-running `gh auth token`.
+///
+/// Called periodically from the daemon event loop to pick up token changes.
+/// If the user runs `gh auth login` or `gh auth refresh` externally, the stored
+/// token in the gh config changes — this function detects that and updates the
+/// daemon's process environment so newly spawned child processes inherit the
+/// fresh token.
+///
+/// Returns `true` if the token was updated, `false` if unchanged or on error.
+pub fn refresh_gh_token(github_user: &str) -> bool {
+    let output = match std::process::Command::new("gh")
+        .args(["auth", "token", "--user", github_user])
+        .output()
+    {
+        Ok(output) if output.status.success() => output,
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            warn!(
+                "gh auth token --user {} failed during refresh: {}",
+                github_user,
+                stderr.trim()
+            );
+            return false;
+        }
+        Err(e) => {
+            warn!("Failed to run `gh auth token` for refresh: {}", e);
+            return false;
+        }
+    };
+
+    let new_token = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if new_token.is_empty() {
+        warn!(
+            "gh auth token --user {} returned empty token during refresh",
+            github_user
+        );
+        return false;
+    }
+
+    let current_token = std::env::var("GH_TOKEN").unwrap_or_default();
+    if new_token == current_token {
+        return false;
+    }
+
+    // Token changed — update the process env var.
+    // SAFETY: This runs on a blocking task spawned from the main event loop.
+    // Tokio's spawn_blocking runs on a thread pool, but std::env::set_var is
+    // only unsafe because concurrent reads could race. In practice, child
+    // process spawns (which read env) are serialized through the effect executor.
+    unsafe {
+        std::env::set_var("GH_TOKEN", &new_token);
+    }
+    info!(
+        "GH_TOKEN refreshed for user: {} (token length: {} → {})",
+        github_user,
+        current_token.len(),
+        new_token.len()
+    );
+    true
+}
+
 use crate::coworker::CoworkerManager;
 use crate::daemon::effects::Effect;
 use crate::daemon::state::DaemonPersistentState;
