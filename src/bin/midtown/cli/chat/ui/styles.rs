@@ -48,15 +48,9 @@ pub fn is_dim_sender(sender: &str) -> bool {
 
 /// Get color for a sender name.
 ///
-/// For channel leads (e.g. a lead posting from topic channel "auth"), pass
-/// their names via [`get_sender_color_with_leads`] so they receive the same
-/// LightYellow treatment as the main lead.
-pub fn get_sender_color(name: &str) -> Color {
-    get_sender_color_with_leads(name, &[])
-}
-
-/// Like [`get_sender_color`], but also checks `channel_lead_names` so that
-/// channel-specific leads get LightYellow instead of the default Color::White.
+/// Pass `channel_lead_names` to give channel-specific leads (e.g. a lead
+/// posting from topic channel "auth") the same LightYellow treatment as the
+/// main lead. Pass an empty slice when no channel lead context is available.
 pub fn get_sender_color_with_leads(name: &str, channel_lead_names: &[String]) -> Color {
     match name.to_lowercase().as_str() {
         "lead" => Color::LightYellow,
