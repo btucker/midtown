@@ -2168,11 +2168,26 @@ pub(crate) async fn collect_reviewer_effects_with_source(
                 } else if let Some(owner) =
                     coworker_from_branch_with_map(head_ref, branch_owners_map)
                 {
-                    debug!(
-                        "PR #{} is orphaned (no worktree found for owner {}, branch: {}), skipping auto-review",
-                        pr_number, owner, head_ref
-                    );
-                    true
+                    // The branch identifies a coworker owner. Only treat as orphaned if
+                    // the coworker is NOT currently running — an active coworker can always
+                    // address review feedback regardless of whether a worktree is registered.
+                    let is_active = state
+                        .coworkers
+                        .get(&owner)
+                        .is_some_and(|cw| cw.status == crate::coworker::CoworkerStatus::Running);
+                    if is_active {
+                        debug!(
+                            "PR #{} has no worktree for owner {} but coworker is active, not orphaned",
+                            pr_number, owner
+                        );
+                        false
+                    } else {
+                        debug!(
+                            "PR #{} is orphaned (no worktree found for owner {}, branch: {}, coworker not running), skipping auto-review",
+                            pr_number, owner, head_ref
+                        );
+                        true
+                    }
                 } else if super::helpers::is_lead_authored_pr(pr, state.repo_owner.as_deref()) {
                     // PR is authored by the lead (repo owner) but doesn't follow lead/* naming.
                     // The lead can still address feedback from their main worktree.
