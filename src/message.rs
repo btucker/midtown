@@ -369,14 +369,15 @@ mod tests {
 
     #[test]
     fn test_backward_compatibility_struct_literal() {
-        // Old code that uses struct literals without channel field should still compile
+        // Verify that struct literal construction with all fields compiles and
+        // that channel_name() returns the default when channel is None.
         let msg = Message {
             id: "test".to_string(),
             timestamp: Utc::now(),
             from: "agent1".to_string(),
             content: "Test".to_string(),
             message_type: MessageType::Text,
-            channel: None, // Explicitly set to None for old code
+            channel: None,
             source_channel: None,
             session_id: None,
             thread_parent_id: None,

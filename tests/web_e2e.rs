@@ -526,7 +526,78 @@ fn test_web_api_channel_history() {
             msg.get("type").is_some(),
             "Message should have 'type' field"
         );
+        assert!(
+            msg.get("id")
+                .and_then(|v| v.as_str())
+                .map(|s| !s.is_empty())
+                .unwrap_or(false),
+            "Message should have non-empty 'id' field"
+        );
     }
+}
+
+/// Test that /api/channels/history filters by thread_parent_id when the query param is provided.
+#[test]
+#[ignore] // Requires built binary
+fn test_web_api_channel_history_thread_parent_id_filter() {
+    let mut fixture = match WebTestFixture::new() {
+        Some(f) => f,
+        None => return,
+    };
+
+    if !fixture.start_daemon() {
+        return;
+    }
+
+    let parent_id = "test-parent-uuid-abc123";
+
+    // Post a top-level message
+    let top_level_params = serde_json::json!({
+        "message": "Top-level message",
+        "from": "park"
+    });
+    fixture.rpc_call("channel.post", Some(top_level_params));
+
+    // Post a thread reply with thread_parent_id
+    let thread_params = serde_json::json!({
+        "message": "Thread reply",
+        "from": "york",
+        "thread_parent_id": parent_id
+    });
+    fixture.rpc_call("channel.post", Some(thread_params));
+
+    thread::sleep(Duration::from_millis(100));
+
+    // Filter history by thread_parent_id — should only return the thread reply
+    let url = format!(
+        "{}/channels/history?thread_parent_id={}",
+        fixture.api_base(),
+        parent_id
+    );
+    let response = reqwest::blocking::get(&url);
+    assert!(
+        response.is_ok(),
+        "Channel history with filter should be accessible"
+    );
+
+    let response = response.unwrap();
+    assert!(
+        response.status().is_success(),
+        "Filtered history should return 200"
+    );
+
+    let messages: Vec<serde_json::Value> = response.json().unwrap();
+    assert_eq!(
+        messages.len(),
+        1,
+        "Filtered history should return only the thread reply, got {} messages",
+        messages.len()
+    );
+    assert_eq!(
+        messages[0].get("from").and_then(|v| v.as_str()),
+        Some("york"),
+        "Filtered message should be from york"
+    );
 }
 
 /// Test that /api/status returns expected fields for kanban board.
