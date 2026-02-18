@@ -101,8 +101,10 @@ pub async fn evaluate_tick(
                 &orphan_claimed_ids,
             ));
             effects.extend(super::health::check_and_respawn_dead_processes(snap, state).await);
-            // Auto-detach sessions attached longer than ATTACH_TIMEOUT before ensure_lead_alive,
-            // so the lead is no longer seen as "attached" when we check whether to respawn.
+            // Auto-detach sessions attached longer than ATTACH_TIMEOUT. Both this function and
+            // ensure_lead_alive read the same immutable snapshot, so AutoDetachCoworker only
+            // removes the entry from DaemonState when executed in effects.rs. The lead respawn
+            // happens on the next tick, once ensure_lead_alive sees the entry is gone.
             effects.extend(super::health::detect_stale_attached_sessions(snap));
             effects.extend(super::health::ensure_lead_alive(snap));
             effects.extend(super::health::check_and_fire_reminders(snap, state).await);

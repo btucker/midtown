@@ -946,7 +946,7 @@ pub fn ensure_lead_alive(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
 ///
 /// Pure function — no I/O, no `.await`, no mutex locks. Takes `now_utc` from the
 /// snapshot so tests can control time.
-pub(super) fn detect_stale_attached_sessions(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
+pub fn detect_stale_attached_sessions(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
     let timeout = chrono::Duration::from_std(ATTACH_TIMEOUT).unwrap_or_default();
     snap.attached_coworkers
         .iter()
