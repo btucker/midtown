@@ -114,16 +114,16 @@ fn draw_chat_messages(f: &mut Frame, app: &mut App, area: Rect) {
 
     for (idx, msg) in visible.iter().enumerate() {
         let segments = mermaid::parse_content_segments(&msg.content);
-        let has_mermaid = segments
+        let has_special = segments
             .iter()
-            .any(|s| matches!(s, mermaid::ContentSegment::Mermaid(_)));
+            .any(|s| !matches!(s, mermaid::ContentSegment::Text(_)));
         let prev = if idx > 0 {
             Some(visible[idx - 1].from.as_str())
         } else {
             prev_sender
         };
 
-        if !has_mermaid {
+        if !has_special {
             let msg_lines = render_message(
                 msg,
                 inner.width as usize,

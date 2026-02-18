@@ -8,25 +8,28 @@ use std::collections::HashMap;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread;
 
-/// A segment of message content: either plain text or a mermaid diagram
+/// A segment of message content: either plain text, a mermaid diagram, or a fenced code block
 #[derive(Debug, Clone, PartialEq)]
 pub enum ContentSegment {
     /// Regular text content (may contain newlines)
     Text(String),
     /// Mermaid diagram source code
     Mermaid(String),
+    /// Non-mermaid fenced code block with language tag and source
+    CodeBlock { language: String, source: String },
 }
 
-/// Parse message content into segments, extracting mermaid code fences.
+/// Parse message content into segments, extracting mermaid code fences and fenced code blocks.
 ///
 /// Detects ```mermaid ... ``` blocks and splits the content into
-/// Text and Mermaid segments.
+/// Text, Mermaid, and CodeBlock segments.
 pub fn parse_content_segments(content: &str) -> Vec<ContentSegment> {
     let mut segments = Vec::new();
     let mut current_text = String::new();
     let mut in_mermaid = false;
     let mut mermaid_source = String::new();
-    let mut in_other_fence = false;
+    // State for a non-mermaid fence: (language, buffered_source)
+    let mut other_fence: Option<(String, String)> = None;
 
     for line in content.split('\n') {
         if in_mermaid {
@@ -44,15 +47,23 @@ pub fn parse_content_segments(content: &str) -> Vec<ContentSegment> {
                 }
                 mermaid_source.push_str(line);
             }
-        } else if in_other_fence {
+        } else if let Some((ref lang, ref mut source_buf)) = other_fence {
             if line.trim_start().starts_with("```") {
-                in_other_fence = false;
+                // End of non-mermaid code fence — emit a CodeBlock segment
+                if !current_text.is_empty() {
+                    segments.push(ContentSegment::Text(current_text.clone()));
+                    current_text.clear();
+                }
+                let language = lang.clone();
+                let source = source_buf.clone();
+                other_fence = None;
+                segments.push(ContentSegment::CodeBlock { language, source });
+            } else {
+                if !source_buf.is_empty() {
+                    source_buf.push('\n');
+                }
+                source_buf.push_str(line);
             }
-            // Pass through non-mermaid fenced content as text
-            if !current_text.is_empty() {
-                current_text.push('\n');
-            }
-            current_text.push_str(line);
         } else {
             let trimmed = line.trim_start();
             if trimmed.starts_with("```mermaid") {
@@ -64,12 +75,9 @@ pub fn parse_content_segments(content: &str) -> Vec<ContentSegment> {
                 in_mermaid = true;
                 mermaid_source.clear();
             } else if trimmed.starts_with("```") {
-                // Start of non-mermaid fence - pass through as text
-                in_other_fence = true;
-                if !current_text.is_empty() {
-                    current_text.push('\n');
-                }
-                current_text.push_str(line);
+                // Start of non-mermaid fence — extract the language tag
+                let lang = trimmed.trim_start_matches('`').trim().to_string();
+                other_fence = Some((lang, String::new()));
             } else {
                 if !current_text.is_empty() {
                     current_text.push('\n');
@@ -86,6 +94,19 @@ pub fn parse_content_segments(content: &str) -> Vec<ContentSegment> {
         }
         current_text.push_str("```mermaid\n");
         current_text.push_str(&mermaid_source);
+    }
+
+    // Handle unclosed non-mermaid fence: treat as text
+    if let Some((lang, source_buf)) = other_fence {
+        if !current_text.is_empty() {
+            current_text.push('\n');
+        }
+        current_text.push_str("```");
+        current_text.push_str(&lang);
+        if !source_buf.is_empty() {
+            current_text.push('\n');
+            current_text.push_str(&source_buf);
+        }
     }
 
     if !current_text.is_empty() {
@@ -313,7 +334,73 @@ mod tests {
         let segments = parse_content_segments(content);
         assert_eq!(
             segments,
-            vec![ContentSegment::Text("```rust\nfn main() {}\n```".into())]
+            vec![ContentSegment::CodeBlock {
+                language: "rust".to_string(),
+                source: "fn main() {}".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn test_parse_mermaid_still_works() {
+        let content = "```mermaid\ngraph TD\n  A-->B\n```";
+        let segments = parse_content_segments(content);
+        assert_eq!(
+            segments,
+            vec![ContentSegment::Mermaid("graph TD\n  A-->B".into())]
+        );
+    }
+
+    #[test]
+    fn test_parse_plain_text_unaffected() {
+        let content = "just plain text";
+        let segments = parse_content_segments(content);
+        assert_eq!(
+            segments,
+            vec![ContentSegment::Text("just plain text".to_string())]
+        );
+    }
+
+    #[test]
+    fn test_parse_code_fence_with_no_language() {
+        let content = "```\nsome code\n```";
+        let segments = parse_content_segments(content);
+        assert_eq!(
+            segments,
+            vec![ContentSegment::CodeBlock {
+                language: "".to_string(),
+                source: "some code".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn test_parse_code_fence_multiline() {
+        let content = "```python\ndef hello():\n    print('hi')\n```";
+        let segments = parse_content_segments(content);
+        assert_eq!(
+            segments,
+            vec![ContentSegment::CodeBlock {
+                language: "python".to_string(),
+                source: "def hello():\n    print('hi')".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn test_parse_text_before_and_after_code_block() {
+        let content = "Here is some code:\n```rust\nfn main() {}\n```\nAnd that's it.";
+        let segments = parse_content_segments(content);
+        assert_eq!(
+            segments,
+            vec![
+                ContentSegment::Text("Here is some code:".to_string()),
+                ContentSegment::CodeBlock {
+                    language: "rust".to_string(),
+                    source: "fn main() {}".to_string(),
+                },
+                ContentSegment::Text("And that's it.".to_string()),
+            ]
         );
     }
 
