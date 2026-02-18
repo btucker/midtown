@@ -175,7 +175,8 @@ fn test_extract_tool_events_single_tool_use() {
     let item = &items[0];
     assert_eq!(item.item_id, "call_001");
     assert!(matches!(item.kind, ItemKind::ToolCall));
-    assert!(matches!(item.status, ItemStatus::Completed));
+    // No matching tool_result in the same batch → InProgress
+    assert!(matches!(item.status, ItemStatus::InProgress));
     assert_eq!(item.timestamp, timestamp);
     assert_eq!(item.content.len(), 1);
 
@@ -517,6 +518,7 @@ fn test_extract_tool_events_user_event_non_tool_result_skipped() {
 #[test]
 fn test_extract_tool_events_mixed_assistant_and_user_events() {
     // Both a tool call and its result appear in the same event slice.
+    // The tool call should be Completed since its result is present in the same batch.
     let events = vec![
         StreamEvent::Assistant {
             message: json!({
@@ -547,7 +549,8 @@ fn test_extract_tool_events_mixed_assistant_and_user_events() {
     let items = extract_tool_events(&events, timestamp);
     assert_eq!(items.len(), 2);
 
-    // First item is the tool call
+    // Tool call with matching result in same batch → Completed
+    assert!(matches!(&items[0].status, ItemStatus::Completed));
     assert!(matches!(&items[0].content[0], ContentPart::ToolCall { .. }));
     // Second item is the tool result
     match &items[1].content[0] {
@@ -595,4 +598,74 @@ fn test_extract_tool_result_content_truncation_at_multibyte_boundary() {
         output.starts_with("xxx"),
         "output should start with the prefix"
     );
+}
+
+#[test]
+fn test_extract_tool_events_tool_use_without_result_is_in_progress() {
+    // When a tool_use appears in the batch without a matching tool_result,
+    // the call is still in flight → InProgress.
+    let events = vec![StreamEvent::Assistant {
+        message: json!({
+            "content": [{
+                "type": "tool_use",
+                "id": "call_010",
+                "name": "Read",
+                "input": {"file_path": "/tmp/foo.rs"}
+            }]
+        }),
+        session_id: None,
+        extra: json!(null),
+    }];
+
+    let timestamp = Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap();
+    let items = extract_tool_events(&events, timestamp);
+    assert_eq!(items.len(), 1);
+    assert!(
+        matches!(&items[0].status, ItemStatus::InProgress),
+        "Expected InProgress for tool_use without matching result, got {:?}",
+        items[0].status
+    );
+}
+
+#[test]
+fn test_extract_tool_events_tool_use_with_result_for_different_call_is_in_progress() {
+    // tool_use for call_011 has no matching result (call_012's result is present, not call_011's)
+    // → call_011 should be InProgress, call_012 is a stray result (Completed).
+    let events = vec![
+        StreamEvent::Assistant {
+            message: json!({
+                "content": [{
+                    "type": "tool_use",
+                    "id": "call_011",
+                    "name": "Bash",
+                    "input": {"command": "ls"}
+                }]
+            }),
+            session_id: None,
+            extra: json!(null),
+        },
+        StreamEvent::User {
+            message: json!({
+                "role": "user",
+                "content": [{
+                    "type": "tool_result",
+                    "tool_use_id": "call_012",
+                    "content": "some output"
+                }]
+            }),
+            extra: json!({}),
+        },
+    ];
+
+    let timestamp = Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap();
+    let items = extract_tool_events(&events, timestamp);
+    assert_eq!(items.len(), 2);
+
+    // call_011 has no matching result → InProgress
+    assert!(
+        matches!(&items[0].status, ItemStatus::InProgress),
+        "Expected InProgress for call_011"
+    );
+    // call_012's result is Completed
+    assert!(matches!(&items[1].status, ItemStatus::Completed));
 }

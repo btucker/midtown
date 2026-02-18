@@ -140,11 +140,38 @@ fn extract_url_host(url: &str) -> Option<&str> {
     if host.is_empty() { None } else { Some(host) }
 }
 
+/// Collect all `tool_use_id` values from `tool_result` blocks across all `User` events.
+///
+/// Used by `extract_tool_events` to determine whether a `tool_use` call already has
+/// a result in the same drain batch, which determines `InProgress` vs `Completed`.
+fn collect_completed_call_ids(events: &[StreamEvent]) -> std::collections::HashSet<String> {
+    let mut ids = std::collections::HashSet::new();
+    for event in events {
+        if let StreamEvent::User { message, .. } = event
+            && let Some(content) = message.get("content")
+            && let Some(arr) = content.as_array()
+        {
+            for block in arr {
+                if block.get("type").and_then(|t| t.as_str()) == Some("tool_result")
+                    && let Some(id) = block.get("tool_use_id").and_then(|id| id.as_str())
+                {
+                    ids.insert(id.to_string());
+                }
+            }
+        }
+    }
+    ids
+}
+
 /// Extract both tool call and tool result items from Claude stream events.
 ///
 /// Iterates over:
 /// - `StreamEvent::Assistant` events: extracts `tool_use` content blocks → `ContentPart::ToolCall`
 /// - `StreamEvent::User` events: extracts `tool_result` content blocks → `ContentPart::ToolResult`
+///
+/// A `tool_use` block is emitted as `InProgress` when no matching `tool_result` exists in the
+/// same batch, and as `Completed` when its result is present. This reflects the actual execution
+/// state: the tool call is still running if we haven't received its result yet.
 ///
 /// Uses Claude's `call_id` / `tool_use_id` as the `item_id` for deterministic output.
 /// The provided `timestamp` is applied to all extracted items.
@@ -155,6 +182,7 @@ pub fn extract_tool_events(
     timestamp: chrono::DateTime<chrono::Utc>,
 ) -> Vec<UniversalItem> {
     let mut items = Vec::new();
+    let completed_ids = collect_completed_call_ids(events);
 
     for event in events {
         match event {
@@ -179,6 +207,11 @@ pub fn extract_tool_events(
                                 .unwrap_or("")
                                 .to_string();
                             let header = semantic_header(&name, &input);
+                            let status = if completed_ids.contains(&call_id) {
+                                ItemStatus::Completed
+                            } else {
+                                ItemStatus::InProgress
+                            };
 
                             items.push(UniversalItem {
                                 item_id: call_id.clone(),
@@ -189,7 +222,7 @@ pub fn extract_tool_events(
                                     call_id,
                                     semantic_header: header,
                                 }],
-                                status: ItemStatus::Completed,
+                                status,
                                 timestamp,
                             });
                         }
