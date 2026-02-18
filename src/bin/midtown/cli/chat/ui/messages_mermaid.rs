@@ -9,6 +9,7 @@ use ratatui::{
 
 use crate::cli::chat::mermaid::{ContentSegment, MermaidCache};
 
+use super::highlight::highlight_code;
 use super::messages::{
     MessageRenderContext, build_continuation_line, build_first_content_line, push_sender_header,
 };
@@ -70,6 +71,10 @@ pub fn render_message_with_mermaid(
                     diagram_sources,
                     mermaid_to_render,
                 );
+                is_first_content_line = false;
+            }
+            ContentSegment::CodeBlock { language, source } => {
+                render_code_block_segment(language, source, &ctx, content_width, lines);
                 is_first_content_line = false;
             }
         }
@@ -147,6 +152,45 @@ fn render_mermaid_segment(
         )));
         mermaid_to_render.push(source.to_string());
     }
+}
+
+/// Render a fenced code block with syntax highlighting and borders.
+fn render_code_block_segment(
+    language: &str,
+    source: &str,
+    ctx: &MessageRenderContext,
+    _content_width: usize,
+    lines: &mut Vec<Line<'static>>,
+) {
+    let indent = " ".repeat(ctx.indent_width());
+
+    // Top border: "--- rust ---" (or "--- code ---" if no language)
+    let lang_display = if language.is_empty() {
+        "code"
+    } else {
+        language
+    };
+    let top_sep = format!("{}--- {} ---", indent, lang_display);
+    lines.push(Line::from(Span::styled(
+        top_sep,
+        Style::default().fg(Color::DarkGray),
+    )));
+
+    // Highlighted code lines
+    let highlighted = highlight_code(language, source, ctx.content_style);
+    for hl_line in highlighted {
+        // Prepend indent to each line
+        let mut spans = vec![Span::raw(indent.clone())];
+        spans.extend(hl_line.spans);
+        lines.push(Line::from(spans));
+    }
+
+    // Bottom border
+    let bottom_sep = format!("{}--- end ---", indent);
+    lines.push(Line::from(Span::styled(
+        bottom_sep,
+        Style::default().fg(Color::DarkGray),
+    )));
 }
 
 #[cfg(test)]

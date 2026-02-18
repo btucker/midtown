@@ -1779,6 +1779,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "shell-escape",
+ "syntect",
  "tailf",
  "tempfile",
  "thiserror 2.0.18",

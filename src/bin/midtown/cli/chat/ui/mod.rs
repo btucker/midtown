@@ -11,6 +11,7 @@
 
 mod board;
 mod chat;
+pub mod highlight;
 pub mod messages;
 pub mod messages_mermaid;
 pub mod styles;

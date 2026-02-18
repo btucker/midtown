@@ -67,6 +67,9 @@ portable-pty = "0.8"
 # Mermaid diagram rendering
 selkie-rs = { version = "0.3", default-features = false }
 
+# Syntax highlighting for code blocks
+syntect = { version = "5", default-features = false, features = ["default-themes", "default-syntaxes", "regex-fancy"] }
+
 # Async file tailing for instant message updates
 tailf = "0.1"
 futures = "0.3"
