@@ -3,6 +3,7 @@
 //! Organized into focused submodules:
 //! - `board`: Kanban task swimlanes and coworker status table
 //! - `chat`: Message display, input bar, and autocomplete dropdown
+//! - `highlight`: Syntax highlighting for fenced code blocks
 //! - `messages`: Message rendering (sender headers, timestamps, content layout)
 //! - `messages_mermaid`: Mermaid diagram rendering within messages
 //! - `styles`: Shared color and sender classification helpers
@@ -11,7 +12,7 @@
 
 mod board;
 mod chat;
-pub mod highlight;
+mod highlight;
 pub mod messages;
 pub mod messages_mermaid;
 pub mod styles;

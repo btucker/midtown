@@ -1,11 +1,11 @@
-use ratatui::style::{Color, Style};
+use ratatui::style::Color;
 
 use super::highlight_code;
 
 #[test]
 fn test_highlight_rust_code() {
     let source = "fn main() {\n    let x = 42;\n    println!(\"{}\", x);\n}";
-    let lines = highlight_code("rust", source, Style::default());
+    let lines = highlight_code("rust", source);
 
     assert!(!lines.is_empty(), "Should produce at least one line");
 
@@ -37,7 +37,7 @@ fn test_highlight_rust_code() {
 fn test_highlight_unknown_language_fallback() {
     let source = "some unknown language content\nwith multiple lines";
     // Should not panic; produces plain output
-    let lines = highlight_code("unknownlanguagexyz", source, Style::default());
+    let lines = highlight_code("unknownlanguagexyz", source);
 
     assert!(
         !lines.is_empty(),
@@ -59,7 +59,7 @@ fn test_highlight_unknown_language_fallback() {
 
 #[test]
 fn test_highlight_empty_source() {
-    let lines = highlight_code("rust", "", Style::default());
+    let lines = highlight_code("rust", "");
     // Empty source should produce empty lines without panicking
     assert!(lines.is_empty(), "Empty source should produce no lines");
 }

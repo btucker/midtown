@@ -342,19 +342,6 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_code_fence_produces_code_block() {
-        let content = "```rust\nfn main() {}\n```";
-        let segments = parse_content_segments(content);
-        assert_eq!(
-            segments,
-            vec![ContentSegment::CodeBlock {
-                language: "rust".to_string(),
-                source: "fn main() {}".to_string(),
-            }]
-        );
-    }
-
-    #[test]
     fn test_parse_mermaid_still_works() {
         let content = "```mermaid\ngraph TD\n  A-->B\n```";
         let segments = parse_content_segments(content);

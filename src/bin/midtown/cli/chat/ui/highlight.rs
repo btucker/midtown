@@ -17,8 +17,9 @@ static THEME_SET: Lazy<ThemeSet> = Lazy::new(ThemeSet::load_defaults);
 
 /// Highlight source code and return ratatui Lines with colored spans.
 ///
-/// Falls back to plain monospace styling if the language is unknown.
-pub fn highlight_code(language: &str, source: &str, _base_style: Style) -> Vec<Line<'static>> {
+/// Uses syntect with the base16-ocean.dark theme. Falls back to plain text
+/// syntax highlighting if the language is unknown.
+pub fn highlight_code(language: &str, source: &str) -> Vec<Line<'static>> {
     if source.is_empty() {
         return Vec::new();
     }
