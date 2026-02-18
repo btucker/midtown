@@ -1851,15 +1851,17 @@ pub fn build_description_based_completion_effects(snap: &snapshot::WorldSnapshot
                 ));
             }
         } else {
-            // Path 2: No explicit PR field - fall back to text extraction
-            // This supports meta-tasks that track multiple PRs
-            let mut all_text = task.subject.clone();
-            if let Some(desc) = &task.description {
-                all_text.push('\n');
-                all_text.push_str(desc);
-            }
-
-            let pr_numbers = crate::tasks::extract_pr_numbers_from_text(&all_text);
+            // Path 2: No explicit PR field - extract PR numbers from subject only.
+            //
+            // This supports meta-tasks like "Merge reviewed PRs: #901, #902, #903"
+            // or sub-tasks like "Address PR #904 review feedback" where the PR
+            // numbers appear in the task title.
+            //
+            // Deliberately exclude task.description: descriptions often contain PR
+            // numbers as contextual background (e.g., "the bug first appeared in
+            // PR #1273..."), and scanning them causes false positives where a
+            // task is auto-completed because PRs it merely mentions have merged.
+            let pr_numbers = crate::tasks::extract_pr_numbers_from_text(&task.subject);
 
             // Skip if no PR references found
             if pr_numbers.is_empty() {
