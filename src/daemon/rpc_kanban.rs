@@ -196,6 +196,13 @@ pub(crate) async fn handle_kanban_data(id: RequestId, state: &DaemonState) -> Re
         active_coworkers
             .iter()
             .filter_map(|cw| {
+                // Skip channel lead sessions — they are scoped to a specific topic
+                // channel and must not appear in the general coworker status panel.
+                // The lead session itself also uses a reserved name and is excluded.
+                if is_channel_lead(&cw.name) || cw.name.eq_ignore_ascii_case("lead") {
+                    return None;
+                }
+
                 // Get coworker's workflow state from records
                 let record = coworker_records.get(&cw.name);
                 let workflow_phase = record.and_then(|r| r.workflow_phase);
@@ -281,6 +288,15 @@ pub(crate) async fn handle_kanban_data(id: RequestId, state: &DaemonState) -> Re
 // ============================================================================
 // Kanban / PR data helpers
 // ============================================================================
+
+/// Returns true if the coworker name identifies a channel lead session.
+///
+/// Channel leads use the `ch-<channel>` naming convention established in
+/// `launch::channel_lead_session_name()`. They are scoped to a specific topic
+/// channel and must not appear in the general coworker status list.
+pub(crate) fn is_channel_lead(name: &str) -> bool {
+    name.starts_with("ch-")
+}
 
 /// TTL for kanban data cache (60 seconds).
 ///

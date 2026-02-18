@@ -2,6 +2,36 @@
 
 use super::*;
 
+// ============================================================================
+// Tests for channel lead filtering — channel leads must not appear in the
+// kanban coworker list (they are scoped to their specific channel)
+// ============================================================================
+
+#[test]
+fn test_is_channel_lead_with_ch_prefix() {
+    assert!(is_channel_lead("ch-auth-refactor"));
+    assert!(is_channel_lead("ch-web-interface"));
+    assert!(is_channel_lead("ch-daemon-core"));
+    assert!(is_channel_lead("ch-"));
+}
+
+#[test]
+fn test_is_channel_lead_regular_coworkers() {
+    assert!(!is_channel_lead("madison"));
+    assert!(!is_channel_lead("broadway"));
+    assert!(!is_channel_lead("amsterdam"));
+    assert!(!is_channel_lead("park"));
+    assert!(!is_channel_lead("lead"));
+}
+
+#[test]
+fn test_is_channel_lead_case_sensitivity() {
+    // Channel lead names are always lowercase (from channel_lead_session_name)
+    assert!(is_channel_lead("ch-auth"));
+    assert!(!is_channel_lead("CH-auth")); // uppercase prefix is not a channel lead
+    assert!(!is_channel_lead("Ch-auth"));
+}
+
 #[test]
 fn test_current_cache_serves_stale_data_on_coworker_change() {
     // This test documents the current bug: KANBAN_CACHE uses only repo_hash
