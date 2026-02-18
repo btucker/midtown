@@ -1957,6 +1957,7 @@ async fn collect_reviewer_effects(
     collect_reviewer_effects_with_source(
         Some(&snap.worktree_branch_owners),
         &snap.worktree_registry,
+        &snap.active_names,
         state,
         prs,
         crate::github_state::AssignmentSource::PollingFallback,
@@ -1967,6 +1968,7 @@ async fn collect_reviewer_effects(
 pub(crate) async fn collect_reviewer_effects_with_source(
     branch_owners_map: Option<&std::collections::HashMap<String, String>>,
     worktree_registry: &crate::worktree_registry::WorktreeRegistry,
+    active_names: &std::collections::HashSet<String>,
     state: &DaemonState,
     prs: &[serde_json::Value],
     source: crate::github_state::AssignmentSource,
@@ -2172,15 +2174,12 @@ pub(crate) async fn collect_reviewer_effects_with_source(
                     coworker_from_branch_with_map(head_ref, branch_owners_map)
                 {
                     // The branch identifies a coworker owner. Only treat as orphaned if
-                    // the coworker is NOT currently running — an active coworker can always
+                    // the coworker is NOT currently active — an active coworker can always
                     // address review feedback regardless of whether a worktree is registered.
-                    let running_names: std::collections::HashSet<String> = state
-                        .coworkers
-                        .list_running()
-                        .into_iter()
-                        .map(|cw| cw.name.to_lowercase())
-                        .collect();
-                    let is_active = running_names.contains(&owner.to_lowercase());
+                    // Uses the caller-provided active_names (from WorldSnapshot) which includes
+                    // both pane-based and headless sessions, unlike list_running() which only
+                    // tracks pane-based coworkers.
+                    let is_active = active_names.contains(&owner.to_lowercase());
                     if is_active {
                         debug!(
                             "PR #{} has no worktree for owner {} but coworker is active, not orphaned",
@@ -2581,6 +2580,7 @@ pub(super) async fn process_pending_review_spawns(
         let effects = collect_reviewer_effects_with_source(
             Some(&branch_owners),
             &snap.worktree_registry,
+            &snap.active_names,
             state,
             &[pr],
             crate::github_state::AssignmentSource::Webhook,
@@ -2647,6 +2647,20 @@ pub(super) async fn handle_ci_completion_for_review_spawn(
         (branch_owners, ps.worktree_registry.clone())
     };
 
+    // Build active_names including both pane-based and headless sessions,
+    // matching the WorldSnapshot construction in snapshot.rs
+    let mut active_names: std::collections::HashSet<String> = state
+        .coworkers
+        .list_running()
+        .into_iter()
+        .map(|cw| cw.name.to_lowercase())
+        .collect();
+    for name in state.session_manager.list_names().await {
+        if state.session_manager.is_alive(&name).await {
+            active_names.insert(name.to_lowercase());
+        }
+    }
+
     // Fetch PR data to check if it needs review
     let output = match tokio::process::Command::new("gh")
         .args([
@@ -2705,6 +2719,7 @@ pub(super) async fn handle_ci_completion_for_review_spawn(
     let effects = collect_reviewer_effects_with_source(
         Some(&branch_owners),
         &worktree_registry,
+        &active_names,
         state,
         &[pr],
         crate::github_state::AssignmentSource::Webhook,
