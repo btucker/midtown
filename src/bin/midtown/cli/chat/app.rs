@@ -3143,6 +3143,7 @@ pub(super) mod tests {
                 channel: None,
                 source_channel: None,
                 session_id: None,
+                thread_parent_id: None,
             })
             .collect();
 
@@ -3271,6 +3272,7 @@ pub(super) mod tests {
                 channel: None,
                 source_channel: None,
                 session_id: None,
+                thread_parent_id: None,
             })
             .collect();
 
@@ -3347,6 +3349,7 @@ pub(super) mod tests {
                 channel: None,
                 source_channel: None,
                 session_id: None,
+                thread_parent_id: None,
             })
             .collect();
 
@@ -3402,6 +3405,7 @@ pub(super) mod tests {
                 channel: None,
                 source_channel: None,
                 session_id: None,
+                thread_parent_id: None,
             })
             .collect();
 
@@ -3462,6 +3466,7 @@ pub(super) mod tests {
                 channel: None,
                 source_channel: None,
                 session_id: None,
+                thread_parent_id: None,
             })
             .collect();
 

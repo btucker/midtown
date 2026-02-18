@@ -97,6 +97,10 @@ pub struct Message {
     /// or legacy messages before session tracking was added.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
+    /// Optional thread parent message ID. When set, this message is a reply
+    /// in a thread started by the message with this ID.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_parent_id: Option<String>,
 }
 
 impl Message {
@@ -126,6 +130,7 @@ impl Message {
             channel: None,
             source_channel: None,
             session_id: None,
+            thread_parent_id: None,
         }
     }
 
@@ -154,7 +159,21 @@ impl Message {
             channel: Some(channel.into()),
             source_channel: None,
             session_id: None,
+            thread_parent_id: None,
         }
+    }
+
+    /// Create a thread reply message for a specific channel.
+    pub fn thread_reply(
+        channel: impl Into<String>,
+        from: impl Into<String>,
+        content: impl Into<String>,
+        thread_parent_id: impl Into<String>,
+        message_type: MessageType,
+    ) -> Self {
+        let mut msg = Self::for_channel(channel, from, content, message_type);
+        msg.thread_parent_id = Some(thread_parent_id.into());
+        msg
     }
 
     /// Get the channel name (defaults to "midtown" if not set).
@@ -360,6 +379,7 @@ mod tests {
             channel: None, // Explicitly set to None for old code
             source_channel: None,
             session_id: None,
+            thread_parent_id: None,
         };
         assert_eq!(msg.channel_name(), "midtown"); // channel_name() handles None
     }
@@ -371,5 +391,37 @@ mod tests {
         let parsed: Message = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.channel_name(), "pr-discussion");
         assert_eq!(parsed.from, "agent1");
+    }
+
+    #[test]
+    fn test_thread_parent_id_serialization() {
+        let mut msg = Message::text("agent1", "Reply in thread");
+        msg.thread_parent_id = Some("parent-uuid-123".to_string());
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("thread_parent_id"));
+        assert!(json.contains("parent-uuid-123"));
+        let parsed: Message = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.thread_parent_id, Some("parent-uuid-123".to_string()));
+    }
+
+    #[test]
+    fn test_thread_parent_id_defaults_to_none() {
+        let msg = Message::text("agent1", "Top-level message");
+        assert_eq!(msg.thread_parent_id, None);
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(!json.contains("thread_parent_id")); // skip_serializing_if = None
+    }
+
+    #[test]
+    fn test_backward_compat_no_thread_parent_id() {
+        let old_json = r#"{
+            "id": "test-id",
+            "timestamp": "2026-01-01T00:00:00Z",
+            "from": "agent1",
+            "content": "Hello",
+            "type": "text"
+        }"#;
+        let msg: Message = serde_json::from_str(old_json).unwrap();
+        assert_eq!(msg.thread_parent_id, None);
     }
 }
