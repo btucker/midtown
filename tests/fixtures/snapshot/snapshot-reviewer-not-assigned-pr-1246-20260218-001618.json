@@ -4913,7 +4913,7 @@
     "channel11",
     "web-interface"
   ],
-  "attached_coworkers": [],
+  "attached_coworkers": {},
   "auth_error_coworkers": [],
   "busy_coworkers": [
     "madison",
