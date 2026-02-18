@@ -62,6 +62,9 @@ pub struct HeadlessSessionInfo {
     /// sessions marked `true` are recovered automatically during startup.
     #[serde(default = "default_resume_on_startup")]
     pub resume_on_startup: bool,
+    /// Full initial prompt sent to this session (for session clear/restart).
+    #[serde(default)]
+    pub initial_prompt: Option<String>,
 }
 
 fn default_resume_on_startup() -> bool {

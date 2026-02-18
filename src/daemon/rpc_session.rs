@@ -278,15 +278,22 @@ async fn resolve_attach_target_candidates(
 }
 
 /// Resolve an attach target to exactly one coworker name.
-async fn resolve_attach_target(target: &str, state: &DaemonState) -> Result<String, String> {
+///
+/// `verb` controls the error message wording (e.g., "attach", "clear", "detach").
+async fn resolve_attach_target(
+    target: &str,
+    state: &DaemonState,
+    verb: &str,
+) -> Result<String, String> {
     let mut names = resolve_attach_target_candidates(target, state).await?;
     match names.len() {
-        0 => Err(format!("No attachable sessions for target '{}'", target)),
+        0 => Err(format!("No sessions for target '{}'", target)),
         1 => Ok(names.remove(0)),
         _ => Err(format!(
-            "Multiple sessions match '{}': {}. Choose one via `midtown session attach name/<coworker>`.",
+            "Multiple sessions match '{}': {}. Choose one via `midtown session {} name/<coworker>`.",
             target,
-            names.join(", ")
+            names.join(", "),
+            verb,
         )),
     }
 }
@@ -409,7 +416,7 @@ pub(super) async fn handle_session_attach(
     target: &str,
     state: &DaemonState,
 ) -> Response {
-    let name = match resolve_attach_target(target, state).await {
+    let name = match resolve_attach_target(target, state, "attach").await {
         Ok(n) => n,
         Err(e) => return Response::error(id, RpcError::new(-32602, e)),
     };
@@ -781,7 +788,7 @@ pub(super) async fn handle_session_view(
     target: &str,
     state: &DaemonState,
 ) -> Response {
-    let name = match resolve_attach_target(target, state).await {
+    let name = match resolve_attach_target(target, state, "view").await {
         Ok(n) => n,
         Err(e) => return Response::error(id, RpcError::new(-32602, e)),
     };
@@ -841,115 +848,179 @@ pub(super) async fn handle_session_view(
     }
 }
 
+/// Handle session.clear RPC method.
+///
+/// Stops a running headless session and relaunches it as a fresh session
+/// with the same initial prompt (plus a note that it's a fresh/cleared restart)
+/// in the same worktree. Does not use --continue or --resume.
+pub(super) async fn handle_session_clear(
+    id: RequestId,
+    target: &str,
+    state: &DaemonState,
+) -> Response {
+    let name = match resolve_attach_target(target, state, "clear").await {
+        Ok(n) => n,
+        Err(e) => return Response::error(id, RpcError::new(-32602, e)),
+    };
+
+    // Get session info from persistent state
+    let session_info = {
+        let persistent = state.persistent_state.lock().await;
+        persistent.headless_sessions.get(&name).cloned()
+    };
+
+    let session_info = match session_info {
+        Some(info) => info,
+        None => {
+            return Response::error(
+                id,
+                RpcError::new(-32603, format!("No session found for coworker '{}'", name)),
+            );
+        }
+    };
+
+    // Guard: refuse to clear a session that is currently interactively attached.
+    // When attached, the headless session is paused (is_alive() returns false), but
+    // spawning a fresh headless process would conflict with the interactive session.
+    {
+        let attached = state.attached_coworkers.lock().unwrap();
+        if attached.contains_key(&name.to_lowercase()) {
+            return Response::error(
+                id,
+                RpcError::new(
+                    -32602,
+                    format!(
+                        "Coworker '{}' is currently attached interactively. \
+                         Detach first with `midtown session detach {}`.",
+                        name, name
+                    ),
+                ),
+            );
+        }
+    }
+
+    // Stop the running session if alive
+    if state.session_manager.is_alive(&name).await {
+        info!("Stopping headless session '{}' for clear", name);
+        if let Err(e) = state
+            .session_manager
+            .graceful_shutdown(&name, std::time::Duration::from_secs(10))
+            .await
+        {
+            warn!("Failed to gracefully stop session '{}': {}", name, e);
+            // Try force shutdown
+            let _ = state.session_manager.shutdown(&name).await;
+        }
+    }
+
+    // Unconditionally clean up all coworker state (cooldowns, nudges, tasks,
+    // tool items, etc.) regardless of whether the session was alive. A dead
+    // session still has stale registrations that would block spawn_coworker.
+    state.cleanup_coworker_state(&name).await;
+
+    // Build fresh launch config (no --resume, no --continue)
+    let original_prompt = session_info.initial_prompt.as_deref().unwrap_or("");
+    let fresh_prompt = if original_prompt.is_empty() {
+        "This is a fresh session restart. Please read the channel to catch up on context."
+            .to_string()
+    } else {
+        format!(
+            "This is a fresh session restart. Your previous session was cleared.\n\n{}",
+            original_prompt
+        )
+    };
+
+    let mut config = if name == "lead" {
+        let mut c = crate::launch::LaunchConfig::lead(&state.repo_name);
+        c.session_mode = crate::launch::SessionMode::Fresh;
+        c.initial_prompt = Some(fresh_prompt);
+        c
+    } else {
+        crate::launch::LaunchConfig::coworker(
+            &name,
+            &state.repo_name,
+            crate::launch::SessionMode::Fresh,
+            Some(fresh_prompt),
+        )
+    };
+
+    // Restore working directory: lead uses canonical worktree, coworkers use persisted path
+    if name == "lead" {
+        let lead_wt = crate::paths::lead_worktree_path(&state.repo_name);
+        if lead_wt.exists() {
+            config.working_dir = Some(lead_wt);
+        }
+    } else if let Some(ref working_dir) = session_info.working_dir {
+        config.working_dir = Some(std::path::PathBuf::from(working_dir));
+    }
+    if let Some(provider) = session_info.provider {
+        config.auth_provider = provider;
+    }
+
+    match state.spawn_coworker(&config).await {
+        Ok(()) => {
+            info!("Relaunched fresh session for '{}' after clear", name);
+
+            // Restore original session metadata in persistent state.
+            // spawn_coworker() persisted the decorated fresh_prompt as initial_prompt
+            // and generic coworker_type/task_id/pr_number/channel values. We restore
+            // from the pre-clear session_info so that:
+            // - subsequent `session clear` calls don't compound the prefix
+            // - reviewer metadata survives across clear + daemon restart
+            {
+                let mut ps = state.persistent_state.lock().await;
+                if let Some(entry) = ps.headless_sessions.get_mut(&name) {
+                    entry.initial_prompt = session_info.initial_prompt.clone();
+                    entry.coworker_type = session_info.coworker_type.clone();
+                    entry.task_id = session_info.task_id;
+                    entry.pr_number = session_info.pr_number;
+                    entry.channel = session_info.channel.clone();
+                }
+                if let Err(e) = ps.save_for_repo(&state.repo_name) {
+                    warn!(
+                        "Failed to save persistent state after restoring initial_prompt for '{}': {}",
+                        name, e
+                    );
+                }
+            }
+
+            let _ = state
+                .send_and_broadcast_async(&crate::message::Message::system(format!(
+                    "Cleared session for {} — fresh session started",
+                    name
+                )))
+                .await;
+
+            state.broadcast_coworker_update(&name, "running", None);
+
+            Response::success(
+                id,
+                serde_json::json!({
+                    "success": true,
+                    "message": format!("Cleared and restarted fresh session for {}", name),
+                }),
+            )
+        }
+        Err(e) => {
+            warn!(
+                "Failed to relaunch session for '{}' after clear: {}",
+                name, e
+            );
+            Response::error(
+                id,
+                RpcError::new(
+                    -32603,
+                    format!("Failed to relaunch session for '{}': {}", name, e),
+                ),
+            )
+        }
+    }
+}
+
 // ============================================================================
 // Tests
 // ============================================================================
 
+#[path = "rpc_session_tests.rs"]
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_parse_attach_target_name() {
-        assert_eq!(
-            parse_attach_target("name:park").unwrap(),
-            AttachTarget::Name("park".to_string())
-        );
-        // Names are lowercased
-        assert_eq!(
-            parse_attach_target("name:Park").unwrap(),
-            AttachTarget::Name("park".to_string())
-        );
-    }
-
-    #[test]
-    fn test_parse_attach_target_name_empty() {
-        assert!(parse_attach_target("name:").is_err());
-    }
-
-    #[test]
-    fn test_parse_attach_target_name_slash() {
-        assert_eq!(
-            parse_attach_target("name/park").unwrap(),
-            AttachTarget::Name("park".to_string())
-        );
-    }
-
-    #[test]
-    fn test_parse_attach_target_task() {
-        assert_eq!(
-            parse_attach_target("task:42").unwrap(),
-            AttachTarget::Task(42)
-        );
-    }
-
-    #[test]
-    fn test_parse_attach_target_task_slash() {
-        assert_eq!(
-            parse_attach_target("task/42").unwrap(),
-            AttachTarget::Task(42)
-        );
-    }
-
-    #[test]
-    fn test_parse_attach_target_task_invalid() {
-        assert!(parse_attach_target("task:abc").is_err());
-        assert!(parse_attach_target("task:-1").is_err());
-    }
-
-    #[test]
-    fn test_parse_attach_target_pr() {
-        assert_eq!(
-            parse_attach_target("pr:123").unwrap(),
-            AttachTarget::Pr(123)
-        );
-    }
-
-    #[test]
-    fn test_parse_attach_target_provider_session() {
-        assert_eq!(
-            parse_attach_target("claude/abc-123").unwrap(),
-            AttachTarget::PlatformSession {
-                platform: crate::auth::AuthProvider::Claude,
-                session_id: "abc-123".to_string()
-            }
-        );
-        assert_eq!(
-            parse_attach_target("codex/thread-1").unwrap(),
-            AttachTarget::PlatformSession {
-                platform: crate::auth::AuthProvider::Codex,
-                session_id: "thread-1".to_string()
-            }
-        );
-    }
-
-    #[test]
-    fn test_parse_attach_target_platform_only() {
-        assert_eq!(
-            parse_attach_target("claude").unwrap(),
-            AttachTarget::Platform(crate::auth::AuthProvider::Claude)
-        );
-        assert_eq!(
-            parse_attach_target("openai").unwrap(),
-            AttachTarget::Platform(crate::auth::AuthProvider::Codex)
-        );
-    }
-
-    #[test]
-    fn test_parse_attach_target_rejects_zai_platform() {
-        assert!(parse_attach_target("zai/abc-123").is_err());
-        assert!(parse_attach_target("z.ai/abc-123").is_err());
-    }
-
-    #[test]
-    fn test_parse_attach_target_pr_invalid() {
-        assert!(parse_attach_target("pr:abc").is_err());
-    }
-
-    #[test]
-    fn test_parse_attach_target_invalid_format() {
-        assert!(parse_attach_target("invalid").is_err());
-        assert!(parse_attach_target("unknown:value").is_err());
-        assert!(parse_attach_target("").is_err());
-    }
-}
+mod tests;

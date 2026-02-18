@@ -71,6 +71,7 @@ fn test_headless_session_info_roundtrip() {
         provider: Some(crate::auth::AuthProvider::Codex),
         profile: Some("test-profile".to_string()),
         resume_on_startup: true,
+        initial_prompt: None,
     };
     let json = serde_json::to_string(&info).unwrap();
     let parsed: HeadlessSessionInfo = serde_json::from_str(&json).unwrap();
@@ -102,6 +103,7 @@ fn test_headless_sessions_in_persistent_state() {
             provider: Some(crate::auth::AuthProvider::Claude),
             profile: Some("test-profile".to_string()),
             resume_on_startup: true,
+            initial_prompt: None,
         },
     );
 
@@ -166,6 +168,7 @@ fn test_headless_session_provider_persistence() {
             provider: Some(crate::auth::AuthProvider::Codex),
             profile: Some("test-profile".to_string()),
             resume_on_startup: true,
+            initial_prompt: None,
         },
     );
 
@@ -444,6 +447,7 @@ fn test_channel_lead_session_info_coworker_type_and_channel() {
             provider: Some(crate::auth::AuthProvider::Claude),
             profile: None,
             resume_on_startup: true,
+            initial_prompt: None,
         },
     );
 

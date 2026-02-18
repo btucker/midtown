@@ -19,6 +19,7 @@ fn test_headless_info(
         provider: Some(crate::auth::AuthProvider::Claude),
         profile: Some("test-profile".to_string()),
         resume_on_startup: true,
+        initial_prompt: None,
     }
 }
 

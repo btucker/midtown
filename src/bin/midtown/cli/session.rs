@@ -31,6 +31,11 @@ pub enum SessionCommand {
         /// Session target (coworker name, task/<id>, pr/<number>, claude, etc.)
         target: String,
     },
+    /// Clear a session: stop it and restart fresh with the same initial prompt.
+    Clear {
+        /// Session target (coworker name, task/<id>, pr/<number>, etc.)
+        target: String,
+    },
 }
 
 #[derive(Args, Debug, Clone)]
@@ -239,6 +244,7 @@ pub fn handle(cmd: &SessionCommand, client: &DaemonClient) -> Result<Response, S
         SessionCommand::Detach { name } => client.session_detach(name),
         SessionCommand::List => client.session_list(),
         SessionCommand::View { target } => client.session_view(target),
+        SessionCommand::Clear { target } => client.session_clear(target),
     }
 }
 

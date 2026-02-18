@@ -127,6 +127,7 @@ fn test_headless_sessions_preserved_after_restart() {
             provider: None,
             profile: Some("test@example.com".to_string()),
             resume_on_startup: true,
+            initial_prompt: None,
         },
     );
     headless_sessions.insert(
@@ -144,6 +145,7 @@ fn test_headless_sessions_preserved_after_restart() {
             provider: None,
             profile: Some("test@example.com".to_string()),
             resume_on_startup: true,
+            initial_prompt: None,
         },
     );
 
@@ -314,6 +316,7 @@ fn test_persistent_state_prevents_duplicate_spawns() {
             provider: None,
             profile: Some("test@example.com".to_string()),
             resume_on_startup: true,
+            initial_prompt: None,
         },
     );
     headless_sessions.insert(
@@ -331,6 +334,7 @@ fn test_persistent_state_prevents_duplicate_spawns() {
             provider: None,
             profile: Some("test@example.com".to_string()),
             resume_on_startup: true,
+            initial_prompt: None,
         },
     );
 

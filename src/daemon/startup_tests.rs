@@ -22,6 +22,7 @@ fn test_session_info(
         provider: None,
         profile: None,
         resume_on_startup: true,
+        initial_prompt: None,
     }
 }
 
@@ -207,6 +208,7 @@ async fn test_startup_recovery_sets_lead_role() {
                 provider: None,
                 profile: None,
                 resume_on_startup: true,
+                initial_prompt: None,
             },
         );
     }

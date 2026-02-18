@@ -1100,6 +1100,7 @@ impl DaemonState {
                     provider: Some(config.auth_provider),
                     profile: Some(profile),
                     resume_on_startup: true,
+                    initial_prompt: config.initial_prompt.clone(),
                 },
             );
             if let Err(e) = ps.save_for_repo(&self.repo_name) {
@@ -2036,6 +2037,7 @@ fn parse_historical_session_info_from_log(
         provider,
         profile: None,
         resume_on_startup: false,
+        initial_prompt: None,
     })
 }
 

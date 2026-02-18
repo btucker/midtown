@@ -549,6 +549,11 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
             super::rpc_session::handle_session_view(request.id, target, state).await
         }
 
+        "session.clear" => {
+            let target = require_str!(params, "target", request.id);
+            super::rpc_session::handle_session_clear(request.id, target, state).await
+        }
+
         // ---- Headed wrapper intercom ----
         "headed.register" => {
             let session = require_str!(params, "session", request.id);

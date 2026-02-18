@@ -485,6 +485,14 @@ impl DaemonClient {
         self.send("session.list", None)
     }
 
+    /// Clear a session: stop it and relaunch as fresh with the same initial prompt.
+    pub fn session_clear(&self, target: &str) -> Result<Response, String> {
+        self.send(
+            "session.clear",
+            Some(serde_json::json!({ "target": target })),
+        )
+    }
+
     /// View a session's current output (PTY for headed, JSONL for headless).
     pub fn session_view(&self, target: &str) -> Result<Response, String> {
         let result = self.send_raw(
