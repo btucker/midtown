@@ -231,14 +231,23 @@ fn append_tool_activity_lines(
 
         let color = get_sender_color(agent);
 
-        // Agent name header: "amsterdam working…"
-        lines.push(Line::from(vec![
-            Span::styled(
-                agent.clone(),
-                Style::default().fg(color).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" working\u{2026}", Style::default().fg(Color::DarkGray)),
-        ]));
+        // Agent name header: "amsterdam working…" only while last call is in-progress (›).
+        let is_working = headers
+            .last()
+            .and_then(|h| h.chars().next())
+            .map(|c| c == '\u{203a}') // ›
+            .unwrap_or(false);
+        let mut header_spans = vec![Span::styled(
+            agent.clone(),
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+        )];
+        if is_working {
+            header_spans.push(Span::styled(
+                " working\u{2026}",
+                Style::default().fg(Color::DarkGray),
+            ));
+        }
+        lines.push(Line::from(header_spans));
 
         // Show up to 3 most recent tool calls (last 3, most recent last).
         // Each header starts with a prefix char (✓/✗/›) followed by a space and the description.
@@ -581,5 +590,190 @@ mod tests {
         let text = "Line 1\nLine 2\nLine 3";
         let height = calculate_input_bar_height(text, 80);
         assert_eq!(height, 5, "3 content lines + 2 border lines = 5");
+    }
+
+    fn make_activity(
+        entries: &[(&str, &[&str])],
+    ) -> std::collections::HashMap<String, Vec<String>> {
+        entries
+            .iter()
+            .map(|(agent, headers)| {
+                (
+                    agent.to_string(),
+                    headers.iter().map(|h| h.to_string()).collect(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_count_tool_activity_lines_empty() {
+        let activity = make_activity(&[]);
+        assert_eq!(count_tool_activity_lines(&activity), 0);
+    }
+
+    #[test]
+    fn test_count_tool_activity_lines_one_agent_two_calls() {
+        let activity = make_activity(&[("amsterdam", &["✓ Read foo.rs", "› Write bar.rs"])]);
+        // 1 separator + 1 agent header + 2 tool lines = 4
+        assert_eq!(count_tool_activity_lines(&activity), 4);
+    }
+
+    #[test]
+    fn test_count_tool_activity_lines_skips_empty_agents() {
+        let activity = make_activity(&[("amsterdam", &["✓ Read foo.rs"]), ("park", &[])]);
+        // 1 separator + 1 agent header + 1 tool line = 3
+        assert_eq!(count_tool_activity_lines(&activity), 3);
+    }
+
+    #[test]
+    fn test_count_tool_activity_lines_caps_at_three() {
+        let activity = make_activity(&[("amsterdam", &["✓ a", "✓ b", "✓ c", "✓ d", "› e"])]);
+        // 1 separator + 1 agent header + 3 (capped) = 5
+        assert_eq!(count_tool_activity_lines(&activity), 5);
+    }
+
+    #[test]
+    fn test_append_tool_activity_lines_empty() {
+        let activity = make_activity(&[]);
+        let mut lines = Vec::new();
+        append_tool_activity_lines(&activity, &mut lines);
+        assert!(lines.is_empty());
+    }
+
+    #[test]
+    fn test_append_tool_activity_lines_success_prefix_green() {
+        let activity = make_activity(&[("amsterdam", &["\u{2713} Read foo.rs"])]);
+        let mut lines = Vec::new();
+        append_tool_activity_lines(&activity, &mut lines);
+
+        // lines[0] = blank separator, lines[1] = agent header, lines[2] = tool call
+        assert_eq!(lines.len(), 3);
+
+        let tool_line = &lines[2];
+        // 3 spans: indent, prefix char, description
+        assert_eq!(tool_line.spans.len(), 3);
+        assert_eq!(tool_line.spans[1].content, "\u{2713}");
+        assert_eq!(
+            tool_line.spans[1].style.fg,
+            Some(Color::Green),
+            "✓ prefix should be green"
+        );
+        assert_eq!(tool_line.spans[2].content, " Read foo.rs");
+        assert_eq!(
+            tool_line.spans[2].style.fg,
+            Some(Color::DarkGray),
+            "success description should be dark gray"
+        );
+    }
+
+    #[test]
+    fn test_append_tool_activity_lines_error_prefix_red() {
+        let activity = make_activity(&[("amsterdam", &["\u{2717} Write bar.rs"])]);
+        let mut lines = Vec::new();
+        append_tool_activity_lines(&activity, &mut lines);
+
+        let tool_line = &lines[2];
+        assert_eq!(tool_line.spans[1].content, "\u{2717}");
+        assert_eq!(
+            tool_line.spans[1].style.fg,
+            Some(Color::Red),
+            "✗ prefix should be red"
+        );
+        assert_eq!(
+            tool_line.spans[2].style.fg,
+            Some(Color::Red),
+            "error description should also be red"
+        );
+    }
+
+    #[test]
+    fn test_append_tool_activity_lines_in_progress_prefix_gray() {
+        let activity = make_activity(&[("amsterdam", &["\u{203a} Grep pattern"])]);
+        let mut lines = Vec::new();
+        append_tool_activity_lines(&activity, &mut lines);
+
+        let tool_line = &lines[2];
+        assert_eq!(tool_line.spans[1].content, "\u{203a}");
+        assert_eq!(
+            tool_line.spans[1].style.fg,
+            Some(Color::DarkGray),
+            "› prefix should be dark gray"
+        );
+    }
+
+    #[test]
+    fn test_append_tool_activity_lines_shows_last_three() {
+        let activity = make_activity(&[(
+            "amsterdam",
+            &["✓ first", "✓ second", "✓ third", "✓ fourth", "› fifth"],
+        )]);
+        let mut lines = Vec::new();
+        append_tool_activity_lines(&activity, &mut lines);
+
+        // separator + agent header + 3 tool lines = 5
+        assert_eq!(lines.len(), 5);
+        // Should show last 3: third, fourth, fifth
+        assert!(lines[2].spans[2].content.contains("third"));
+        assert!(lines[3].spans[2].content.contains("fourth"));
+        assert!(lines[4].spans[2].content.contains("fifth"));
+    }
+
+    #[test]
+    fn test_working_shown_when_last_call_is_in_progress() {
+        // Last header is in-progress (›) — "working…" should appear
+        let activity = make_activity(&[("amsterdam", &["✓ Read foo.rs", "› Write bar.rs"])]);
+        let mut lines = Vec::new();
+        append_tool_activity_lines(&activity, &mut lines);
+
+        // lines[1] is the agent header line
+        let header_line = &lines[1];
+        let full_text: String = header_line
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(
+            full_text.contains("working"),
+            "expected 'working…' when last call is in-progress, got: {full_text:?}"
+        );
+    }
+
+    #[test]
+    fn test_working_hidden_when_all_calls_completed() {
+        // Last header is completed (✓) — "working…" should NOT appear
+        let activity = make_activity(&[("amsterdam", &["✓ Read foo.rs", "✓ Write bar.rs"])]);
+        let mut lines = Vec::new();
+        append_tool_activity_lines(&activity, &mut lines);
+
+        let header_line = &lines[1];
+        let full_text: String = header_line
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(
+            !full_text.contains("working"),
+            "expected no 'working…' when all calls completed, got: {full_text:?}"
+        );
+    }
+
+    #[test]
+    fn test_working_hidden_when_last_call_errored() {
+        // Last header is error (✗) — "working…" should NOT appear
+        let activity = make_activity(&[("amsterdam", &["✓ Read foo.rs", "✗ Write bar.rs"])]);
+        let mut lines = Vec::new();
+        append_tool_activity_lines(&activity, &mut lines);
+
+        let header_line = &lines[1];
+        let full_text: String = header_line
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(
+            !full_text.contains("working"),
+            "expected no 'working…' when last call errored, got: {full_text:?}"
+        );
     }
 }

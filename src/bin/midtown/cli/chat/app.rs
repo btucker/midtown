@@ -2699,6 +2699,10 @@ mod autocomplete_tests;
 #[cfg(test)]
 mod spinner_tests;
 
+#[path = "tool_activity_tests.rs"]
+#[cfg(test)]
+mod tool_activity_tests;
+
 #[cfg(test)]
 pub(super) mod tests {
     use super::*;
