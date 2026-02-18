@@ -327,10 +327,10 @@ fn test_usage_limit_nudge_dedup() {
 ///
 /// Expected sequence:
 /// - Tick 1: `detect_stale_attached_sessions` emits `AutoDetachCoworker { name: "lead" }`.
-///           `ensure_lead_alive` sees lead still in `attached_coworkers` (same immutable snapshot),
-///           so it does NOT spawn the lead. Harness applies `AutoDetachCoworker`, clearing the entry.
+///   `ensure_lead_alive` sees lead still in `attached_coworkers` (same immutable snapshot),
+///   so it does NOT spawn the lead. Harness applies `AutoDetachCoworker`, clearing the entry.
 /// - Tick 2: `detect_stale_attached_sessions` emits nothing (entry gone).
-///           `ensure_lead_alive` sees lead not in `attached_coworkers` and not running, so it spawns.
+///   `ensure_lead_alive` sees lead not in `attached_coworkers` and not running, so it spawns.
 #[test]
 fn test_auto_detach_stale_lead_then_respawn() {
     let fixture =
