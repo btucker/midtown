@@ -2496,6 +2496,121 @@ fn test_reset_orphaned_tasks_pr_reference_closed_pr_resets() {
 }
 
 #[test]
+fn test_reset_orphaned_tasks_ownerless_no_pr_resets() {
+    // Bug !1480 (part 1): Ownerless in_progress tasks (owner cleared when coworker
+    // went on break) were silently skipped — never reset to pending, never dispatched.
+    // Fix: ownerless tasks with no open PR should be reset to pending immediately.
+    let in_progress = vec![(
+        "200".to_string(),
+        "Fix some bug".to_string(),
+        "".to_string(), // ownerless
+    )];
+    let tasks_with_open_prs = HashMap::new();
+    let active_names = HashSet::new();
+
+    let snap = make_reconcile_snapshot(in_progress, tasks_with_open_prs, active_names);
+    let effects = reset_orphaned_tasks(&snap);
+
+    assert_eq!(
+        effects.len(),
+        1,
+        "Should reset ownerless in_progress task with no PR to pending. Got: {:?}",
+        effects
+    );
+    match &effects[0] {
+        Effect::ResetTaskToPending { task_id, .. } => {
+            assert_eq!(task_id, "200");
+        }
+        other => panic!("Expected ResetTaskToPending, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_reset_orphaned_tasks_ownerless_with_pr_reference_in_subject_protects() {
+    // Bug !1480 (part 2): An ownerless in_progress task whose subject references an
+    // open PR should be protected by the subject-PR guard. Before the fix, ownerless
+    // tasks were skipped entirely (early-continue), so they were never reset *or*
+    // protected — the guard was unreachable. After the fix, the subject-PR guard fires
+    // before the ownerless check, actively protecting these tasks.
+    //
+    // To prove the subject-PR guard is the mechanism (not the old early-continue), this
+    // test is paired with the _closed_pr variant below: a closed PR reference causes
+    // the ownerless reset to fire, while an open PR reference prevents it.
+    let in_progress = vec![(
+        "200".to_string(),
+        "Address review feedback on PR #42".to_string(),
+        "".to_string(), // ownerless
+    )];
+    let tasks_with_open_prs = HashMap::new(); // Task doesn't OWN the PR
+    let active_names = HashSet::new();
+
+    let mut snap = make_reconcile_snapshot(in_progress, tasks_with_open_prs, active_names);
+    snap.open_prs_data = vec![serde_json::json!({"number": 42})]; // PR #42 is open
+
+    let effects = reset_orphaned_tasks(&snap);
+    assert!(
+        effects.is_empty(),
+        "Should not reset ownerless task referencing open PR #42 in subject. Got: {:?}",
+        effects
+    );
+}
+
+#[test]
+fn test_reset_orphaned_tasks_ownerless_with_closed_pr_reference_resets() {
+    // Companion to the _protects test above: when the referenced PR is closed (not in
+    // open_prs_data), the subject-PR guard does not fire, and the ownerless task should
+    // be reset to pending. This proves the guard is the active protection mechanism.
+    let in_progress = vec![(
+        "200".to_string(),
+        "Address review feedback on PR #42".to_string(),
+        "".to_string(), // ownerless
+    )];
+    let tasks_with_open_prs = HashMap::new();
+    let active_names = HashSet::new();
+
+    let snap = make_reconcile_snapshot(in_progress, tasks_with_open_prs, active_names);
+    // open_prs_data is empty — PR #42 is closed
+
+    let effects = reset_orphaned_tasks(&snap);
+    assert_eq!(
+        effects.len(),
+        1,
+        "Should reset ownerless task referencing closed PR to pending. Got: {:?}",
+        effects
+    );
+    match &effects[0] {
+        Effect::ResetTaskToPending { task_id, .. } => {
+            assert_eq!(task_id, "200");
+        }
+        other => panic!("Expected ResetTaskToPending, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_reset_orphaned_tasks_ownerless_with_github_open_pr_task_ids_protects() {
+    // Ownerless tasks should also be protected when github_open_pr_task_ids contains
+    // the task (even if tasks_with_open_prs is empty). This tests the first PR guard
+    // for ownerless tasks, complementing the subject-PR reference tests above.
+    let in_progress = vec![(
+        "200".to_string(),
+        "Fix some bug".to_string(),
+        "".to_string(), // ownerless
+    )];
+    let tasks_with_open_prs = HashMap::new();
+    let active_names = HashSet::new();
+
+    let mut snap = make_reconcile_snapshot(in_progress, tasks_with_open_prs, active_names);
+    snap.github_open_pr_task_ids.insert("200".to_string(), 99); // Task is tracked by GitHub as having open PR #99
+
+    let effects = reset_orphaned_tasks(&snap);
+    assert!(
+        effects.is_empty(),
+        "Should not reset ownerless task with github_open_pr_task_ids entry. Got: {:?}",
+        effects
+    );
+}
+
+#[test]
 fn test_grouped_task_skips_if_already_assigned() {
     // Regression test for nudge/spawn loop bug, using captured production snapshot.
     // Scenario: Task !1107 (pending, no owner) references PR #912 in its subject.
