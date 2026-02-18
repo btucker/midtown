@@ -396,7 +396,16 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
             let message = require_str!(params, "message", request.id);
             let from = params.str_or("from", "lead");
             let channel = params.str_param("channel");
-            super::rpc_channel::handle_channel_post(request.id, from, message, channel, state).await
+            let thread_parent_id = params.str_param("thread_parent_id");
+            super::rpc_channel::handle_channel_post(
+                request.id,
+                from,
+                message,
+                channel,
+                thread_parent_id,
+                state,
+            )
+            .await
         }
 
         "channel.read" => {

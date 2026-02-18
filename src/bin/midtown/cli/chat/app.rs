@@ -1212,7 +1212,7 @@ impl App {
         // are delivered even when the daemon is down. Making this async would
         // require restructuring the entire event loop.
         let daemon_result = DaemonClient::connect()
-            .and_then(|client| client.channel_post_as(message, sender, channel_name));
+            .and_then(|client| client.channel_post_as(message, sender, channel_name, None));
 
         // If daemon RPC succeeds, we're done
         if daemon_result.is_ok() {

@@ -93,6 +93,7 @@ pub(super) async fn handle_channel_post(
     from: &str,
     message: &str,
     channel: Option<&str>,
+    thread_parent_id: Option<&str>,
     state: &DaemonState,
 ) -> Response {
     // Clean up shell escaping artifacts (e.g. "\!" from bash history expansion escaping)
@@ -138,7 +139,17 @@ pub(super) async fn handle_channel_post(
 
     // Use provided channel or default to main channel
     let channel_name = channel.unwrap_or_else(|| state.channel_router.default_channel_name());
-    let msg = Message::for_channel(channel_name, from, content.clone(), msg_type.clone());
+    let msg = if let Some(parent_id) = thread_parent_id {
+        Message::thread_reply(
+            channel_name,
+            from,
+            content.clone(),
+            parent_id,
+            msg_type.clone(),
+        )
+    } else {
+        Message::for_channel(channel_name, from, content.clone(), msg_type.clone())
+    };
 
     // Use async version to avoid blocking the runtime during file lock acquisition
     if let Err(e) = state.send_and_broadcast_async(&msg).await {
@@ -543,8 +554,15 @@ mod tests {
             .await
             .expect("register headed adapter");
 
-        let response =
-            handle_channel_post(1_i64.into(), "user", "please check this", None, &state).await;
+        let response = handle_channel_post(
+            1_i64.into(),
+            "user",
+            "please check this",
+            None,
+            None,
+            &state,
+        )
+        .await;
         assert!(response.error.is_none(), "channel.post should succeed");
 
         let (messages, _capture) = state
@@ -566,8 +584,15 @@ mod tests {
             .await
             .expect("register headed adapter");
 
-        let response =
-            handle_channel_post(2_i64.into(), "york", "@lead need a review", None, &state).await;
+        let response = handle_channel_post(
+            2_i64.into(),
+            "york",
+            "@lead need a review",
+            None,
+            None,
+            &state,
+        )
+        .await;
         assert!(response.error.is_none(), "channel.post should succeed");
 
         let (messages, _capture) = state
@@ -637,6 +662,7 @@ mod tests {
             "user",
             "hello topic",
             Some("auth-refactor"),
+            None,
             &state,
         )
         .await;
@@ -664,7 +690,8 @@ mod tests {
             .expect("register headed adapter");
 
         // Post to main channel (None = default channel)
-        let response = handle_channel_post(2_i64.into(), "user", "hello main", None, &state).await;
+        let response =
+            handle_channel_post(2_i64.into(), "user", "hello main", None, None, &state).await;
         assert!(response.error.is_none(), "channel.post should succeed");
 
         let (messages, _capture) = state
@@ -689,11 +716,18 @@ mod tests {
         let state = make_test_state("midtown-test-channel-read-channel");
 
         // Post a message to the topic channel
-        let _r =
-            handle_channel_post(1_i64.into(), "user", "hello topic", Some("auth"), &state).await;
+        let _r = handle_channel_post(
+            1_i64.into(),
+            "user",
+            "hello topic",
+            Some("auth"),
+            None,
+            &state,
+        )
+        .await;
 
         // Post a different message to the main channel
-        let _r = handle_channel_post(2_i64.into(), "user", "hello main", None, &state).await;
+        let _r = handle_channel_post(2_i64.into(), "user", "hello main", None, None, &state).await;
 
         // Reading from the topic channel should return only the topic message
         let response = handle_channel_read(999.into(), true, None, None, Some("auth"), &state);
@@ -712,6 +746,61 @@ mod tests {
         );
     }
 
+    /// Verify that passing thread_parent_id to handle_channel_post results in the
+    /// message being stored with thread_parent_id set in the channel log.
+    #[tokio::test]
+    async fn test_channel_post_with_thread_parent_id() {
+        let state = make_test_state("midtown-test-thread-parent-id");
+        let parent_id = "parent-msg-uuid-123";
+
+        // Post a thread reply
+        let response = handle_channel_post(
+            1_i64.into(),
+            "york",
+            "This is a reply in a thread",
+            None,
+            Some(parent_id),
+            &state,
+        )
+        .await;
+        assert!(response.error.is_none(), "channel.post should succeed");
+
+        // Read back messages and verify thread_parent_id is set
+        let channel = state.channel_router.default_channel().unwrap();
+        let messages = channel.read_all().unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(
+            messages[0].thread_parent_id,
+            Some(parent_id.to_string()),
+            "Message should have thread_parent_id set"
+        );
+    }
+
+    /// Verify that posting without thread_parent_id still works (None case).
+    #[tokio::test]
+    async fn test_channel_post_without_thread_parent_id() {
+        let state = make_test_state("midtown-test-no-thread-parent-id");
+
+        let response = handle_channel_post(
+            1_i64.into(),
+            "york",
+            "Top-level message",
+            None,
+            None,
+            &state,
+        )
+        .await;
+        assert!(response.error.is_none(), "channel.post should succeed");
+
+        let channel = state.channel_router.default_channel().unwrap();
+        let messages = channel.read_all().unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(
+            messages[0].thread_parent_id, None,
+            "Message should not have thread_parent_id set"
+        );
+    }
+
     #[tokio::test]
     async fn test_channel_read_with_last_parameter() {
         let state = make_test_state("midtown-test-channel-read-last");
@@ -719,7 +808,7 @@ mod tests {
         // Post 10 messages to the channel
         for i in 1..=10 {
             let msg = format!("Test message {}", i);
-            let _response = handle_channel_post(i.into(), "test", &msg, None, &state).await;
+            let _response = handle_channel_post(i.into(), "test", &msg, None, None, &state).await;
         }
 
         // Request last 3 messages

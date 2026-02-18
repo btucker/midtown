@@ -3033,6 +3033,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                     sender,
                     content,
                     channel,
+                    None, // thread_parent_id: mobile/WebSocket thread support is Task 3
                     &state,
                 ).await;
             }
