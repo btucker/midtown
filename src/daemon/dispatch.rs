@@ -651,6 +651,171 @@ pub(super) fn extract_claimed_task_ids_from_effects(effects: &[Effect]) -> HashS
     ids
 }
 
+/// Session-aware dispatch: check if in_progress tasks have associated sessions
+/// and attempt recovery through session data when available.
+///
+/// This complements `check_and_recover_orphans` by providing a session-first
+/// lookup path. Tasks with session records get their preferred name and
+/// working directory preserved across restarts.
+///
+/// Returns effects using existing Effect variants (SpawnCoworkerWithCallbacks, etc.)
+/// since session-centric Effect variants are not yet implemented.
+pub fn dispatch_via_sessions(
+    snap: &snapshot::WorldSnapshot,
+    state: &DaemonState,
+) -> Vec<effects::Effect> {
+    // Check cooldown - skip if we dispatched too recently
+    {
+        let cooldowns = state.cooldowns.lock().unwrap();
+        if !cooldowns.check("session_dispatch", "global", SESSION_DISPATCH_COOLDOWN) {
+            debug!("Session dispatch cooldown active");
+            return vec![];
+        }
+    }
+
+    if snap.in_progress_tasks.is_empty() {
+        return vec![];
+    }
+
+    let mut effects = Vec::new();
+
+    for (task_id, task_subject, owner) in &snap.in_progress_tasks {
+        // Only handle tasks that have session records. Tasks without session
+        // records are left for the existing check_and_recover_orphans path.
+        let session_id = match snap.session_task_map.get(task_id) {
+            Some(id) => id,
+            None => continue,
+        };
+
+        let record = match snap.sessions.get(session_id) {
+            Some(r) => r,
+            None => {
+                warn!(
+                    "Session {} referenced by task !{} not found in sessions map",
+                    session_id, task_id
+                );
+                continue;
+            }
+        };
+
+        // If the session is running, the task is handled -- skip.
+        if record.is_running {
+            debug!(
+                "Task !{} has running session {} -- no recovery needed",
+                task_id, record.session_id
+            );
+            continue;
+        }
+
+        // Session is stopped -- attempt recovery using session data.
+        // Use preferred_name for name continuity.
+        let coworker_name = record
+            .preferred_name
+            .as_deref()
+            .or(record.current_name.as_deref())
+            .unwrap_or(owner);
+
+        // Check per-coworker spawn failure cooldown
+        {
+            let cooldowns = state.cooldowns.lock().unwrap();
+            if !cooldowns.check("spawn_failure", coworker_name, SPAWN_FAILURE_COOLDOWN) {
+                debug!(
+                    "Spawn failure cooldown active for {} -- skipping session dispatch for task !{}",
+                    coworker_name, task_id
+                );
+                continue;
+            }
+        }
+
+        info!(
+            "Session dispatch: recovering task !{} via stopped session {} (preferred_name: {})",
+            task_id, record.session_id, coworker_name
+        );
+
+        let plan_section = build_plan_prompt_section(task_id, snap);
+        let prompt = format_task_prompt(
+            task_id,
+            &format!(
+                "You've been assigned task !{}: {}. Your previous session was interrupted but your worktree and branch are still intact. Check your git status and get started!{}",
+                task_id, task_subject, plan_section
+            ),
+        );
+
+        let working_dir = std::path::PathBuf::from(&record.working_dir);
+
+        let mut config = crate::launch::LaunchConfig::coworker(
+            coworker_name.to_string(),
+            state.repo_name.clone(),
+            crate::launch::SessionMode::Fresh,
+            Some(prompt),
+        );
+        config.working_dir = Some(working_dir);
+
+        let channel = snap
+            .all_tasks
+            .iter()
+            .find(|t| t.id == *task_id)
+            .and_then(|t| t.channel.clone());
+        config.channel = channel.clone();
+
+        config.apply_task_model(&snap.task_model_map, task_id);
+
+        let on_success = vec![
+            Effect::RecordTaskAssignment {
+                coworker: coworker_name.to_string(),
+                task_id: task_id.clone(),
+            },
+            Effect::BroadcastCoworkerUpdate {
+                name: coworker_name.to_string(),
+                status: "running".to_string(),
+                current_task: None,
+            },
+            Effect::RecordCooldown {
+                category: "session_dispatch".to_string(),
+                key: "global".to_string(),
+            },
+            Effect::PostToChannel {
+                sender: "midtown".to_string(),
+                message: format!(
+                    "Session dispatch: recovered task !{} via session {} (coworker {})",
+                    task_id, record.session_id, coworker_name
+                ),
+                channel,
+            },
+        ];
+
+        effects.push(Effect::SpawnCoworkerWithCallbacks {
+            config,
+            on_success,
+            on_failure: vec![
+                Effect::RecordCooldown {
+                    category: "spawn_failure".to_string(),
+                    key: coworker_name.to_string(),
+                },
+                Effect::ResetTaskToPending {
+                    task_id: task_id.clone(),
+                    repo_name: snap.repo_name.clone(),
+                },
+                Effect::PostToChannel {
+                    sender: "midtown".to_string(),
+                    message: format!(
+                        "Task !{} reset to pending - session dispatch for {} failed (backing off for {}s)",
+                        task_id,
+                        coworker_name,
+                        SPAWN_FAILURE_COOLDOWN.as_secs()
+                    ),
+                    channel: None,
+                },
+            ],
+        });
+
+        // Only spawn one coworker per tick (same rate limiting as orphan recovery)
+        break;
+    }
+
+    effects
+}
+
 /// Gather data and build effects for nudging coworkers discovered on daemon startup.
 ///
 /// Gather data and build effects for nudging coworkers discovered on daemon startup.
