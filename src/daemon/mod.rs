@@ -2046,44 +2046,6 @@ async fn persist_sessions_for_restart(state: &DaemonState) -> crate::Result<()> 
     Ok(())
 }
 
-/// Nudge the channel lead for a task's associated channel.
-///
-/// Looks up the task's channel in `task_channel`, then checks whether a channel
-/// lead session exists for that channel. If both are found, sends `message` to
-/// the channel lead via the session manager.
-///
-/// Skips silently if the task has no channel mapping, the channel is "midtown"
-/// (main channel has no lead), or no channel lead session is registered.
-async fn nudge_channel_lead_for_task(task_id: &str, message: &str, state: &DaemonState) {
-    let channel_name = {
-        let ps = state.persistent_state.lock().await;
-        let channel = ps.task_channel.get(task_id).cloned();
-        // Only nudge if there's a registered channel lead session for this channel
-        let channel_name = channel.as_deref().unwrap_or("midtown");
-        if channel_name == "midtown" || !ps.channel_lead_sessions.contains_key(channel_name) {
-            return;
-        }
-        channel_name.to_string()
-    };
-
-    if let Err(e) = state
-        .session_manager
-        .send_message(&channel_name, message)
-        .await
-    {
-        debug!(
-            "Failed to nudge channel lead '{}' for task !{}: {}",
-            channel_name, task_id, e
-        );
-    } else {
-        info!(
-            "Nudged channel lead '{}': {}",
-            channel_name,
-            message.chars().take(60).collect::<String>()
-        );
-    }
-}
-
 /// Run the full snapshot→evaluate→execute pipeline for a daemon event.
 async fn run_tick(event: &events::DaemonEvent, state: &DaemonState) {
     let mut snap = snapshot::collect_world_snapshot(state).await;
@@ -2663,20 +2625,20 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                     // NOTE: Task auto-completion has been moved to the PR merged handler
                     // to avoid completing tasks before review feedback is addressed and CI passes.
 
-                    if !pr_effects.is_empty() {
-                        effects::execute_effects(pr_effects, &state).await;
-                    }
-
                     // Nudge the channel lead when a PR is opened for a task in their channel
-                    if let Some(task_id) =
-                        crate::tasks::extract_task_id_from_pr_title(&pr_opened.title)
-                    {
+                    if let Some(task_id) = pr_task_id {
                         let nudge_msg = format!(
                             "PR #{} opened for task !{}: {}",
                             pr_opened.pr_number, task_id, pr_opened.title
                         );
-                        nudge_channel_lead_for_task(&task_id.to_string(), &nudge_msg, &state)
-                            .await;
+                        pr_effects.push(effects::Effect::NudgeChannelLead {
+                            task_id: task_id.to_string(),
+                            message: nudge_msg,
+                        });
+                    }
+
+                    if !pr_effects.is_empty() {
+                        effects::execute_effects(pr_effects, &state).await;
                     }
                 }
 
@@ -2719,12 +2681,11 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                                 "PR #{} merged for task !{}",
                                 pr_merged_info.pr_number, task_id
                             );
-                            nudge_channel_lead_for_task(
-                                &task_id.to_string(),
-                                &nudge_msg,
-                                &state,
-                            )
-                            .await;
+                            let channel_lead_effect = effects::Effect::NudgeChannelLead {
+                                task_id: task_id.to_string(),
+                                message: nudge_msg,
+                            };
+                            effects::execute_effects(vec![channel_lead_effect], &state).await;
                         }
                     }
                 }

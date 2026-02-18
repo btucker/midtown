@@ -3246,7 +3246,11 @@ pub(super) async fn handle_webhook_ci_failure(
             "CI check '{}' failed on PR #{} for task !{}",
             failure.check_name, pr_number, task_id
         );
-        super::nudge_channel_lead_for_task(task_id, &channel_nudge, state).await;
+        let channel_lead_effect = super::effects::Effect::NudgeChannelLead {
+            task_id: task_id.clone(),
+            message: channel_nudge,
+        };
+        super::effects::execute_effects(vec![channel_lead_effect], state).await;
     }
 }
 

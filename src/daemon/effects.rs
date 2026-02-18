@@ -48,6 +48,13 @@ pub enum Effect {
     },
     /// Nudge the Lead by sending a message via headed intercom or session manager.
     NudgeLead { message: String },
+    /// Nudge a channel lead by task ID.
+    ///
+    /// Looks up the task's channel from `WorldSnapshot::task_channel`, then
+    /// sends `message` to the channel lead session via the session manager.
+    /// Skips silently if the task has no channel mapping, the channel is "midtown",
+    /// or no channel lead session is registered for that channel.
+    NudgeChannelLead { task_id: String, message: String },
     /// Resume a stopped headless coworker session.
     ///
     /// Uses `SessionManager::spawn` with `SessionMode::ResumeSession` to
@@ -595,6 +602,41 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
             }
             Effect::NudgeLead { message } => {
                 state.nudge_lead(&message).await;
+            }
+            Effect::NudgeChannelLead { task_id, message } => {
+                let channel_name = {
+                    let ps = state.persistent_state.lock().await;
+                    let channel = ps.task_channel.get(&task_id).cloned();
+                    let channel_name = channel.as_deref().unwrap_or("midtown");
+                    if channel_name == "midtown"
+                        || !ps.channel_lead_sessions.contains_key(channel_name)
+                    {
+                        None
+                    } else {
+                        Some(channel_name.to_string())
+                    }
+                };
+                if let Some(channel_name) = channel_name {
+                    match state
+                        .session_manager
+                        .send_message(&channel_name, &message)
+                        .await
+                    {
+                        Ok(()) => {
+                            info!(
+                                "Nudged channel lead '{}': {}",
+                                channel_name,
+                                message.chars().take(60).collect::<String>()
+                            );
+                        }
+                        Err(e) => {
+                            debug!(
+                                "Failed to nudge channel lead '{}' for task !{}: {}",
+                                channel_name, task_id, e
+                            );
+                        }
+                    }
+                }
             }
             Effect::ResumeCoworker {
                 name,

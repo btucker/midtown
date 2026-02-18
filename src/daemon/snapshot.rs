@@ -159,6 +159,11 @@ pub struct WorldSnapshot {
     /// initial prompt when spawning for a task with an execution skill.
     #[serde(default)]
     pub task_execution_skill_map: HashMap<String, String>,
+    /// Channel lead session mapping for nudge routing.
+    /// Maps channel name → session ID. Used by effects.rs to deliver
+    /// `NudgeChannelLead` effects without locking persistent state.
+    #[serde(default)]
+    pub channel_lead_sessions: HashMap<String, String>,
 
     // ── PR / GitHub state ───────────────────────────────────────────────
     /// Coworkers who have at least one open PR.
@@ -450,14 +455,21 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
     let pending_tasks_without_owners =
         crate::tasks::get_pending_tasks_without_owners_for_repo(&state.repo_name);
 
-    // Task-to-channel, task-to-model, task-to-plan, and task-to-execution-skill mappings
-    let (task_channel, task_model_map, task_plan_map, task_execution_skill_map) = {
+    // Task-to-channel, task-to-model, task-to-plan, task-to-execution-skill, and channel-lead mappings
+    let (
+        task_channel,
+        task_model_map,
+        task_plan_map,
+        task_execution_skill_map,
+        channel_lead_sessions,
+    ) = {
         let ps = state.persistent_state.lock().await;
         (
             ps.task_channel.clone(),
             ps.task_model.clone(),
             ps.task_plan.clone(),
             ps.task_execution_skill.clone(),
+            ps.channel_lead_sessions.clone(),
         )
     };
 
@@ -705,6 +717,7 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
         task_model_map,
         task_plan_map,
         task_execution_skill_map,
+        channel_lead_sessions,
         coworkers_with_open_prs,
         coworkers_with_merged_prs,
         merged_pr_numbers,
@@ -780,6 +793,7 @@ pub(super) fn minimal_snapshot_for_test() -> WorldSnapshot {
         task_model_map: HashMap::new(),
         task_plan_map: HashMap::new(),
         task_execution_skill_map: HashMap::new(),
+        channel_lead_sessions: HashMap::new(),
         coworkers_with_open_prs: HashSet::new(),
         coworkers_with_merged_prs: HashSet::new(),
         merged_pr_numbers: HashSet::new(),
