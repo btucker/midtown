@@ -120,6 +120,14 @@ impl Channel {
             )));
         }
 
+        // Reject names reserved for coworker sessions to prevent naming collisions.
+        if crate::coworker::AVENUE_NAMES.contains(&channel_name.as_str()) {
+            return Err(crate::Error::InvalidMessage(format!(
+                "Channel name '{}' is reserved for coworker sessions and cannot be used as a channel name",
+                channel_name
+            )));
+        }
+
         fs::create_dir_all(&base_dir)?;
         fs::create_dir_all(base_dir.join("cursors"))?;
 
@@ -1227,6 +1235,31 @@ mod tests {
         assert!(Channel::new(temp_dir.path(), "my-channel").is_ok());
         assert!(Channel::new(temp_dir.path(), "feature_123").is_ok());
         assert!(Channel::new(temp_dir.path(), "midtown").is_ok());
+    }
+
+    #[test]
+    fn test_channel_name_rejects_coworker_avenue_names() {
+        // These names are reserved for coworker sessions; creating a channel with
+        // the same name would collide with the channel lead session for that coworker.
+        let temp_dir = TempDir::new().unwrap();
+        for name in [
+            "lexington",
+            "park",
+            "madison",
+            "broadway",
+            "amsterdam",
+            "columbus",
+            "riverside",
+            "york",
+            "pleasant",
+            "vernon",
+        ] {
+            assert!(
+                Channel::new(temp_dir.path(), name).is_err(),
+                "Channel name '{}' should be rejected as a reserved coworker avenue name",
+                name
+            );
+        }
     }
 
     #[test]
