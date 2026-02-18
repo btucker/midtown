@@ -29,8 +29,14 @@ pub enum CoworkerRole {
     Reviewer,
     /// Lead — uses lead.md + common.md, unrestricted settings
     Lead,
-    /// Channel lead — uses channel-lead.md, domain expert for a topic channel
-    ChannelLead(String),
+    /// Channel lead — uses channel-lead.md with channel name injected.
+    /// Read-only: brainstorming and domain expertise for a topic channel.
+    ChannelLead {
+        /// The channel this lead is responsible for.
+        channel_name: String,
+        /// Domain context injected at startup (e.g., recent tasks, PRs).
+        domain_context: String,
+    },
 }
 
 /// All configuration needed to launch a Claude CLI process.
@@ -198,6 +204,19 @@ pub fn build_agent_env_vars(
     env
 }
 
+/// Compute the session name for a channel lead.
+///
+/// Channel lead sessions are named `ch-{channel_name}` to avoid collision with
+/// coworker names, which are drawn from the same Manhattan avenue name pool that
+/// could overlap with topic channel names (e.g., a "park" channel would collide
+/// with the "park" coworker slot).
+///
+/// The `channel_lead_sessions` HashMap continues to use the bare channel name as
+/// its key; only the session manager name uses this prefix.
+pub fn channel_lead_session_name(channel_name: &str) -> String {
+    format!("ch-{}", channel_name)
+}
+
 impl LaunchConfig {
     /// Create a config for a standard coworker.
     ///
@@ -319,33 +338,45 @@ impl LaunchConfig {
 
     /// Create a config for a channel lead session.
     ///
-    /// Channel leads are persistent headless sessions that act as domain experts
-    /// for their topic channel. They use `channel-lead.md` as their system prompt
-    /// and post responses to their channel.
+    /// Channel leads are long-lived conversational sessions that accumulate
+    /// domain expertise for a topic channel. They use the channel-lead.md
+    /// system prompt, run with read-only tool access, and post responses to
+    /// their channel via `midtown channel post --channel {name}`.
     ///
-    /// The `model` should be resolved from `ChannelLeadsConfig::model_for_channel()`
-    /// before calling this constructor, enabling per-channel model selection from
-    /// project config.
+    /// The `domain_context` is injected into the system prompt at spawn time.
+    /// On first spawn it can be empty; accumulated context comes from session persistence.
+    ///
+    /// The session name is prefixed with "ch-" (e.g., "ch-auth" for channel "auth")
+    /// to avoid collision with coworker names, which are drawn from the same Manhattan
+    /// avenue name pool that could overlap with topic channel names.
     pub fn channel_lead(
         channel_name: impl Into<String>,
         repo_name: impl Into<String>,
         session_mode: SessionMode,
-        model: impl Into<String>,
+        domain_context: impl Into<String>,
     ) -> Self {
-        let channel_name = channel_name.into();
+        let channel_name_str = channel_name.into();
+        let session_name = channel_lead_session_name(&channel_name_str);
         let repo = repo_name.into();
         let team = crate::mailbox::team_name_for_repo(&repo);
+        let domain_ctx = domain_context.into();
         LaunchConfig {
-            name: channel_name.clone(),
+            name: session_name,
             session_mode,
-            role: CoworkerRole::ChannelLead(channel_name.clone()),
-            initial_prompt: None,
+            role: CoworkerRole::ChannelLead {
+                channel_name: channel_name_str.clone(),
+                domain_context: domain_ctx,
+            },
+            initial_prompt: Some(format!(
+                "Read the recent messages in #{channel_name_str} for context, then introduce yourself as the domain expert for this channel.",
+                channel_name_str = channel_name_str
+            )),
             additional_dirs: vec![],
             pr_number: None,
             team_name: Some(team),
             working_dir: None,
-            model: model.into(),
-            channel: Some(channel_name),
+            model: "sonnet".to_string(),
+            channel: Some(channel_name_str),
             auth_profile_dir: None,
             auth_provider: crate::auth::AuthProvider::Claude,
         }
@@ -365,13 +396,14 @@ impl LaunchConfig {
             CoworkerRole::Reviewer => crate::agents::reviewer_system_prompt(&self.name),
             CoworkerRole::Lead => crate::agents::lead_system_prompt(),
             CoworkerRole::Coworker => crate::agents::coworker_system_prompt(&self.name),
-            CoworkerRole::ChannelLead(channel_name) => {
-                crate::agents::channel_lead_system_prompt(channel_name, "No context yet.")
-            }
+            CoworkerRole::ChannelLead {
+                channel_name,
+                domain_context,
+            } => crate::agents::channel_lead_system_prompt(channel_name, domain_context),
         };
 
         // Save the lead system prompt to disk for attach resumption
-        if self.role == CoworkerRole::Lead {
+        if matches!(self.role, CoworkerRole::Lead) {
             let prompt_file = crate::paths::lead_system_prompt_file(project_name);
             if let Some(parent) = prompt_file.parent() {
                 let _ = std::fs::create_dir_all(parent);
@@ -1025,29 +1057,36 @@ mod tests {
     #[test]
     fn test_launch_config_channel_lead_factory() {
         let config =
-            LaunchConfig::channel_lead("daemon-architecture", "myrepo", SessionMode::Fresh, "opus");
-        assert_eq!(config.name, "daemon-architecture");
+            LaunchConfig::channel_lead("daemon-architecture", "myrepo", SessionMode::Fresh, "");
+        // Session name is prefixed with "ch-" to avoid collision with coworker names
+        assert_eq!(config.name, "ch-daemon-architecture");
         assert_eq!(
             config.role,
-            CoworkerRole::ChannelLead("daemon-architecture".to_string())
+            CoworkerRole::ChannelLead {
+                channel_name: "daemon-architecture".to_string(),
+                domain_context: "".to_string(),
+            }
         );
-        assert_eq!(config.model, "opus");
+        assert_eq!(config.model, "sonnet");
         assert_eq!(config.channel, Some("daemon-architecture".to_string()));
         assert_eq!(config.team_name, Some("midtown-myrepo".to_string()));
-        assert!(config.initial_prompt.is_none());
+        assert!(config.initial_prompt.is_some());
         assert!(config.pr_number.is_none());
     }
 
     #[test]
-    fn test_launch_config_channel_lead_default_model() {
-        let config =
-            LaunchConfig::channel_lead("web-interface", "myrepo", SessionMode::Fresh, "sonnet");
-        assert_eq!(config.model, "sonnet");
+    fn test_channel_lead_session_name() {
+        assert_eq!(channel_lead_session_name("auth"), "ch-auth");
+        assert_eq!(
+            channel_lead_session_name("web-interface"),
+            "ch-web-interface"
+        );
+        assert_eq!(channel_lead_session_name("park"), "ch-park");
     }
 
     #[test]
     fn test_channel_lead_headless_config_has_system_prompt() {
-        let config = LaunchConfig::channel_lead("tui", "myrepo", SessionMode::Fresh, "sonnet");
+        let config = LaunchConfig::channel_lead("tui", "myrepo", SessionMode::Fresh, "");
         let headless = config.to_headless_config("midtown");
         // Channel lead system prompt references the channel name
         assert!(

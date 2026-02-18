@@ -678,7 +678,7 @@ impl DaemonState {
             .coworkers
             .list_running()
             .iter()
-            .filter(|cw| !cw.name.eq_ignore_ascii_case("lead"))
+            .filter(|cw| !cw.name.eq_ignore_ascii_case("lead") && !cw.name.starts_with("ch-"))
             .count();
         non_lead_count >= self.max_coworkers + REVIEW_HEADROOM
     }
@@ -696,7 +696,7 @@ impl DaemonState {
             .coworkers
             .list_running()
             .iter()
-            .filter(|cw| !cw.name.eq_ignore_ascii_case("lead"))
+            .filter(|cw| !cw.name.eq_ignore_ascii_case("lead") && !cw.name.starts_with("ch-"))
             .count();
         non_lead_count >= self.max_coworkers
     }
@@ -906,7 +906,7 @@ impl DaemonState {
                     crate::launch::CoworkerRole::Reviewer => "reviewer".to_string(),
                     crate::launch::CoworkerRole::Lead => "lead".to_string(),
                     crate::launch::CoworkerRole::Coworker => "coworker".to_string(),
-                    crate::launch::CoworkerRole::ChannelLead(_) => "channel-lead".to_string(),
+                    crate::launch::CoworkerRole::ChannelLead { .. } => "channel-lead".to_string(),
                 },
             };
             if let Err(e) = crate::mailbox::upsert_team_member(team_name, member) {
@@ -999,7 +999,7 @@ impl DaemonState {
                     pid: self.session_manager.get_pid(&name).await,
                     coworker_type: match &config.role {
                         crate::launch::CoworkerRole::Reviewer => Some("reviewer".to_string()),
-                        crate::launch::CoworkerRole::ChannelLead(_) => {
+                        crate::launch::CoworkerRole::ChannelLead { .. } => {
                             Some("channel-lead".to_string())
                         }
                         _ => Some("dev".to_string()),
@@ -2412,6 +2412,17 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
         effects::execute_effects(recovery_effects, &state).await;
     }
 
+    // Recover channel lead sessions for active (non-archived) topic channels.
+    let channel_lead_effects =
+        startup::recover_channel_lead_sessions(&state.persistent_state, &repo_name).await;
+    if !channel_lead_effects.is_empty() {
+        info!(
+            "Executing {} channel lead recovery effect(s)",
+            channel_lead_effects.len()
+        );
+        effects::execute_effects(channel_lead_effects, &state).await;
+    }
+
     let mut sigterm = signal(SignalKind::terminate())?;
     let mut sigint = signal(SignalKind::interrupt())?;
     // Subscribe to shutdown broadcasts (triggered by RPC exec-restart handler)
@@ -2798,6 +2809,21 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                             {
                                 info!("Backfilling session_id for '{}': {}", name, sid);
                                 info.session_id = sid.clone();
+                                needs_persist_save = true;
+                            }
+                            // Also backfill channel_lead_sessions for ch-* sessions.
+                            // Channel leads use the "ch-{channel}" name prefix; strip it
+                            // to get the channel name key used in channel_lead_sessions.
+                            if let Some(channel_name) = name.strip_prefix("ch-")
+                                && let Some(stored_id) =
+                                    ps.channel_lead_sessions.get_mut(channel_name)
+                                && (stored_id.is_empty() || stored_id != sid)
+                            {
+                                info!(
+                                    "Backfilling channel lead session_id for '{}': {}",
+                                    channel_name, sid
+                                );
+                                *stored_id = sid.clone();
                                 needs_persist_save = true;
                             }
                         }

@@ -1695,7 +1695,7 @@ pub fn handle_view(project: Option<&str>, attach: bool) -> Result<Response, Stri
 
         let cwd = super::session::ensure_attach_worktree("lead", cwd)?;
         let lead_shell_command = super::session::build_attach_shell_command(
-            &cwd, "lead", provider, session_id, None, None,
+            &cwd, "lead", provider, session_id, None,
             false, // include_detach: midtown view calls session_detach explicitly on exit
         )?;
 

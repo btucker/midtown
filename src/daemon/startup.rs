@@ -468,6 +468,15 @@ pub async fn recover_headless_sessions(
                     // Reviewer coworker
                     LaunchConfig::reviewer(&name, pr_num)
                 }
+                (Some("channel-lead"), _, _) => {
+                    // Channel leads are recovered separately by recover_channel_lead_sessions().
+                    // Skip here to avoid launching with the wrong (dev coworker) system prompt.
+                    info!(
+                        "Skipping channel lead session '{}' — will be recovered by channel lead recovery",
+                        name
+                    );
+                    continue;
+                }
                 _ => {
                     // Fallback: generic dev coworker
                     warn!(
@@ -570,6 +579,109 @@ pub async fn recoverable_session_pids(
         .filter(|info| info.resume_on_startup)
         .filter_map(|info| info.pid)
         .collect()
+}
+
+/// Recover channel lead sessions from persisted state after daemon restart.
+///
+/// For each active (non-archived) topic channel:
+/// - If a session ID is persisted in `channel_lead_sessions`, emit a `SpawnCoworker`
+///   with `SessionMode::ResumeSession` to resume it.
+/// - If no session ID is persisted, emit a `SpawnCoworker` with `SessionMode::Fresh`
+///   to start a new channel lead session.
+///
+/// The "midtown" main channel is excluded — it uses the Lead session, not a channel lead.
+pub async fn recover_channel_lead_sessions(
+    persistent_state: &tokio::sync::Mutex<crate::daemon::state::DaemonPersistentState>,
+    repo_name: &str,
+) -> Vec<crate::daemon::effects::Effect> {
+    let base_dir = crate::paths::projects_dir_for_repo(repo_name);
+    recover_channel_lead_sessions_from(persistent_state, repo_name, &base_dir).await
+}
+
+/// Inner implementation for `recover_channel_lead_sessions`, separated for testability.
+///
+/// Takes an explicit `base_dir` to allow tests to use a temporary directory instead
+/// of the real `~/.midtown/projects/<repo>/` path.
+pub(crate) async fn recover_channel_lead_sessions_from(
+    persistent_state: &tokio::sync::Mutex<crate::daemon::state::DaemonPersistentState>,
+    repo_name: &str,
+    base_dir: &std::path::Path,
+) -> Vec<crate::daemon::effects::Effect> {
+    use crate::daemon::effects::Effect;
+    use crate::launch::{LaunchConfig, SessionMode};
+
+    let mut effects = Vec::new();
+
+    // List active (non-archived) channels
+    let channels = match crate::channel::Channel::list(base_dir, false, None) {
+        Ok(channels) => channels,
+        Err(e) => {
+            warn!("Failed to list channels for channel lead recovery: {}", e);
+            return effects;
+        }
+    };
+
+    // Filter to topic channels only (exclude main "midtown" channel)
+    let topic_channels: Vec<_> = channels
+        .into_iter()
+        .filter(|c| !c.is_archived && c.name != "midtown")
+        .collect();
+
+    if topic_channels.is_empty() {
+        return effects;
+    }
+
+    let channel_lead_sessions = {
+        let ps = persistent_state.lock().await;
+        ps.channel_lead_sessions.clone()
+    };
+
+    info!(
+        "Recovering {} channel lead session(s): {:?}",
+        topic_channels.len(),
+        topic_channels.iter().map(|c| &c.name).collect::<Vec<_>>()
+    );
+
+    for channel_info in &topic_channels {
+        let channel_name = &channel_info.name;
+
+        let session_mode = if let Some(session_id) =
+            channel_lead_sessions.get(channel_name.as_str())
+            && !session_id.is_empty()
+        {
+            info!(
+                "Resuming channel lead session for '{}': {}",
+                channel_name, session_id
+            );
+            SessionMode::ResumeSession(session_id.clone())
+        } else {
+            info!(
+                "No saved session for channel lead '{}', spawning fresh",
+                channel_name
+            );
+            SessionMode::Fresh
+        };
+
+        let config = LaunchConfig::channel_lead(
+            channel_name.as_str(),
+            repo_name,
+            session_mode,
+            "", // domain_context: empty at startup, accumulates via session persistence
+        );
+
+        effects.push(Effect::SpawnCoworker(config));
+
+        // Register the channel in channel_lead_sessions if not already there
+        // (empty session ID placeholder; backfilled when init event arrives)
+        if !channel_lead_sessions.contains_key(channel_name.as_str()) {
+            effects.push(Effect::SaveChannelLeadSession {
+                channel_name: channel_name.clone(),
+                session_id: String::new(), // placeholder; backfilled on init event
+            });
+        }
+    }
+
+    effects
 }
 
 #[path = "startup_tests.rs"]
