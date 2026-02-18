@@ -130,18 +130,22 @@ The web interface is a Svelte 5 + Vite SPA served on port 47022:
 
 ## Universal Events Pipeline
 
-The `universal_events` module (`src/universal_events/`) provides a provider-agnostic event model for structured agent activity. It captures tool calls from Claude Code's `stream-json` output and broadcasts them to WebSocket clients as structured data, parallel to the existing text pipeline.
+The `universal_events` module (`src/universal_events/`) provides a provider-agnostic event model for structured agent activity. It captures tool calls and tool results from Claude Code's `stream-json` output, stores them in daemon memory, and broadcasts them to WebSocket clients and TUI as structured data, parallel to the existing text pipeline.
 
 **Data flow:**
 ```
-StreamEvent (NDJSON drain) → extract_tool_calls() → Vec<UniversalItem>
-    → Effect::BroadcastUniversalItems → WebUpdate::UniversalItems → WebSocket clients
+StreamEvent (NDJSON drain) → extract_tool_events() → Vec<UniversalItem>
+    → Effect::BroadcastUniversalItems → DaemonState.recent_tool_items (per-agent ring buffer)
+                                      → WebUpdate::UniversalItems → WebSocket clients
+                                      → kanban.data RPC → TUI tool activity display
 ```
 
 - **Types** (`mod.rs`): `UniversalItem`, `ItemKind`, `ContentPart`, `ItemStatus` — agent-agnostic, extensible to other providers.
-- **Claude converter** (`claude.rs`): Pure function `extract_tool_calls()` that extracts `tool_use` content blocks from `StreamEvent::Assistant` events.
+- **Claude converter** (`claude.rs`): Pure function `extract_tool_events()` that extracts both `tool_use` content blocks from `StreamEvent::Assistant` events and `tool_result` blocks from `StreamEvent::User` events. Each tool call is emitted with a `semantic_header` (human-readable description of the operation) and each tool result carries success/error status.
 - **Integration** (`daemon/stream.rs`): `process_universal_events()` iterates all agents' events, calls the converter, and returns `BroadcastUniversalItems` effects.
-- **Broadcast**: The `BroadcastUniversalItems` effect sends `WebUpdate::UniversalItems` to all connected WebSocket clients. Agent name is carried at the envelope level (`UniversalItemsData`), not per-item.
+- **Broadcast**: The `BroadcastUniversalItems` effect sends `WebUpdate::UniversalItems` to all connected WebSocket clients and updates `DaemonState.recent_tool_items` (a `RwLock<HashMap<String, Vec<UniversalItem>>>`, capped at `MAX_TOOL_ITEMS_PER_AGENT=20` items per agent). Agent name is carried at the envelope level (`UniversalItemsData`), not per-item.
+- **TUI rendering**: The TUI polls `kanban.data` which calls `collect_tool_activity()` to serialize `recent_tool_items`. The TUI renders a compact activity strip at the bottom of the chat pane showing the most recent tool calls per active agent, using `semantic_header` for tool call labels and "✓ ok" / "✗ error" for tool results.
+- **Lifecycle**: Tool activity for a coworker is cleared from `recent_tool_items` when the coworker shuts down (in `shutdown_coworker_impl()`), preventing ghost activity from persisting when the avenue name is reused.
 
 ## Headed Intercom RPC
 

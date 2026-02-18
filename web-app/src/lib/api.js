@@ -119,6 +119,7 @@ export function switchProject(projectName, webhookPort) {
     releaseTime: null,
   })
   usageData.set([])
+  agentToolItems.set({})
   connected.set(false)
 
   // Set the new active project

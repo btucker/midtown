@@ -220,10 +220,10 @@ fn test_process_universal_events_text_only_no_effects() {
 }
 
 #[test]
-fn test_process_universal_events_tool_use_produces_effect() {
+fn test_process_universal_events_lead_tool_use_produces_effect() {
     let mut events = HashMap::new();
     events.insert(
-        "lexington".to_string(),
+        "lead".to_string(),
         vec![StreamEvent::Assistant {
             message: json!({
                 "content": [{"type": "tool_use", "id": "tc_1", "name": "Read", "input": {"path": "/foo"}}]
@@ -236,7 +236,7 @@ fn test_process_universal_events_tool_use_produces_effect() {
     assert_eq!(effects.len(), 1);
     match &effects[0] {
         Effect::BroadcastUniversalItems { agent_name, items } => {
-            assert_eq!(agent_name, "lexington");
+            assert_eq!(agent_name, "lead");
             assert_eq!(items.len(), 1);
         }
         _ => panic!("Expected BroadcastUniversalItems effect"),
@@ -244,7 +244,25 @@ fn test_process_universal_events_tool_use_produces_effect() {
 }
 
 #[test]
-fn test_process_universal_events_multiple_agents() {
+fn test_process_universal_events_coworker_tool_use_ignored() {
+    let mut events = HashMap::new();
+    events.insert(
+        "lexington".to_string(),
+        vec![StreamEvent::Assistant {
+            message: json!({
+                "content": [{"type": "tool_use", "id": "tc_1", "name": "Read", "input": {"path": "/foo"}}]
+            }),
+            session_id: None,
+            extra: json!(null),
+        }],
+    );
+    // Coworker tool calls are not shown to the user — only lead tool calls are.
+    let effects = process_universal_events(&events);
+    assert!(effects.is_empty());
+}
+
+#[test]
+fn test_process_universal_events_only_lead_when_multiple_agents() {
     let mut events = HashMap::new();
     events.insert(
         "lead".to_string(),
@@ -266,6 +284,13 @@ fn test_process_universal_events_multiple_agents() {
             extra: json!(null),
         }],
     );
+    // Only the lead's tool calls produce an effect; coworker events are ignored.
     let effects = process_universal_events(&events);
-    assert_eq!(effects.len(), 2);
+    assert_eq!(effects.len(), 1);
+    match &effects[0] {
+        Effect::BroadcastUniversalItems { agent_name, .. } => {
+            assert_eq!(agent_name, "lead");
+        }
+        _ => panic!("Expected BroadcastUniversalItems effect"),
+    }
 }
