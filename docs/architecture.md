@@ -12,6 +12,7 @@ The daemon handles:
 - GitHub webhook processing (PR events, CI status, reviews)
 - PR polling for merge conflicts and stuck conditions
 - @mention routing between team members
+- Topic channel message routing to channel leads
 - Headed wrapper intercom RPC endpoints (`headed.register/poll/ack/...`)
 
 ## Daemon Startup Sequence
@@ -46,6 +47,18 @@ Each coworker runs as:
 - Nudges are delivered via stdin JSON, and health is monitored via stdout stream events
 
 Coworkers are named after Manhattan avenues: lexington, park, madison, broadway, amsterdam, columbus, riverside, york, pleasant, vernon.
+
+## Channel Leads
+
+Channel leads are headless Claude Code sessions attached to individual topic channels. Where coworkers are temporary implementers that come and go with tasks, channel leads are long-lived domain experts that accumulate context across conversations.
+
+**Role:** A channel lead brainstorms, maintains living design documents, answers domain questions, and tracks awareness of active tasks and PRs in its channel. It does not write code, open PRs, or create tasks. When implementation work is needed, it escalates to @lead.
+
+**Message routing:** When a user posts to a topic channel (any non-main channel), `handle_channel_post` in `src/daemon/mod.rs` nudges the channel lead for that channel via `SessionManager::send_message`. If no channel lead session is alive for that channel, the message is silently skipped — it remains in the channel log and is available when the channel lead next starts up. Main channel behavior is unchanged. Note: `route_mentions()` is intentionally disabled for topic channels — user `@coworker` and `@all` mentions in topic channels are silently dropped; only the channel lead nudge path is active.
+
+**System prompt:** Channel leads use the `agents/channel-lead.md` template, instantiated with `{channel_name}` and `{domain_context}` via `channel_lead_system_prompt()` in `src/agents.rs`.
+
+**Coworker guidance:** Coworkers are instructed to `@{channel-name}` for domain questions (e.g., architecture, design decisions) and to reserve `@lead` for coordination, task, and priority questions.
 
 ## Channel Sync
 

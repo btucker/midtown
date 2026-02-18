@@ -427,6 +427,20 @@ Each coworker runs as:
 
 Coworkers are named after Manhattan avenues: lexington, park, madison, broadway, amsterdam, columbus, riverside, york, pleasant, vernon.
 
+### Channel Leads
+
+Each topic channel can have a **channel lead** — a headless Claude Code session that acts as a domain expert for that channel. Channel leads accumulate context across conversations and are available to answer domain questions.
+
+**What channel leads do:**
+- Brainstorm with the user on domain topics in their channel
+- Maintain living design documents, architecture notes, and decision logs
+- Answer domain questions with accumulated context
+- Receive user messages posted to their topic channel
+
+**What channel leads don't do:** Channel leads don't write code, open PRs, or create tasks. When implementation work is needed, they escalate to @lead.
+
+Coworkers use `@{channel-name}` for domain questions (e.g., `@auth-refactor can you explain the token expiry logic?`) and reserve `@lead` for coordination and priority questions.
+
 ### Channel Sync
 
 Coworkers stay synchronized via a Claude Code Stop hook. When Claude pauses, the hook reads new channel messages and checks for unclaimed tasks. This means coworkers automatically receive updates at natural pause points.
