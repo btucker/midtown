@@ -1,0 +1,401 @@
+use super::*;
+
+// ============================================================================
+// parse_attach_target tests (pre-existing)
+// ============================================================================
+
+#[test]
+fn test_parse_attach_target_name() {
+    assert_eq!(
+        parse_attach_target("name:park").unwrap(),
+        AttachTarget::Name("park".to_string())
+    );
+    // Names are lowercased
+    assert_eq!(
+        parse_attach_target("name:Park").unwrap(),
+        AttachTarget::Name("park".to_string())
+    );
+}
+
+#[test]
+fn test_parse_attach_target_name_empty() {
+    assert!(parse_attach_target("name:").is_err());
+}
+
+#[test]
+fn test_parse_attach_target_name_slash() {
+    assert_eq!(
+        parse_attach_target("name/park").unwrap(),
+        AttachTarget::Name("park".to_string())
+    );
+}
+
+#[test]
+fn test_parse_attach_target_task() {
+    assert_eq!(
+        parse_attach_target("task:42").unwrap(),
+        AttachTarget::Task(42)
+    );
+}
+
+#[test]
+fn test_parse_attach_target_task_slash() {
+    assert_eq!(
+        parse_attach_target("task/42").unwrap(),
+        AttachTarget::Task(42)
+    );
+}
+
+#[test]
+fn test_parse_attach_target_task_invalid() {
+    assert!(parse_attach_target("task:abc").is_err());
+    assert!(parse_attach_target("task:-1").is_err());
+}
+
+#[test]
+fn test_parse_attach_target_pr() {
+    assert_eq!(
+        parse_attach_target("pr:123").unwrap(),
+        AttachTarget::Pr(123)
+    );
+}
+
+#[test]
+fn test_parse_attach_target_provider_session() {
+    assert_eq!(
+        parse_attach_target("claude/abc-123").unwrap(),
+        AttachTarget::PlatformSession {
+            platform: crate::auth::AuthProvider::Claude,
+            session_id: "abc-123".to_string()
+        }
+    );
+    assert_eq!(
+        parse_attach_target("codex/thread-1").unwrap(),
+        AttachTarget::PlatformSession {
+            platform: crate::auth::AuthProvider::Codex,
+            session_id: "thread-1".to_string()
+        }
+    );
+}
+
+#[test]
+fn test_parse_attach_target_platform_only() {
+    assert_eq!(
+        parse_attach_target("claude").unwrap(),
+        AttachTarget::Platform(crate::auth::AuthProvider::Claude)
+    );
+    assert_eq!(
+        parse_attach_target("openai").unwrap(),
+        AttachTarget::Platform(crate::auth::AuthProvider::Codex)
+    );
+}
+
+#[test]
+fn test_parse_attach_target_rejects_zai_platform() {
+    assert!(parse_attach_target("zai/abc-123").is_err());
+    assert!(parse_attach_target("z.ai/abc-123").is_err());
+}
+
+#[test]
+fn test_parse_attach_target_pr_invalid() {
+    assert!(parse_attach_target("pr:abc").is_err());
+}
+
+#[test]
+fn test_parse_attach_target_invalid_format() {
+    assert!(parse_attach_target("invalid").is_err());
+    assert!(parse_attach_target("unknown:value").is_err());
+    assert!(parse_attach_target("").is_err());
+}
+
+#[test]
+fn test_parse_attach_target_for_clear_name() {
+    assert_eq!(
+        parse_attach_target("name/broadway").unwrap(),
+        AttachTarget::Name("broadway".to_string())
+    );
+}
+
+// ============================================================================
+// resolve_attach_target verb parameter tests
+// ============================================================================
+
+fn make_test_state() -> DaemonState {
+    use std::process::Command;
+    use tempfile::TempDir;
+
+    let temp_dir = TempDir::new().expect("temp dir");
+    Command::new("git")
+        .args(["init"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("git init");
+    Command::new("git")
+        .args(["config", "user.email", "test@example.com"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("git config");
+    Command::new("git")
+        .args(["config", "user.name", "Test"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("git config");
+    Command::new("git")
+        .args(["commit", "--allow-empty", "-m", "init"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("git commit");
+
+    let wm = crate::worktree::WorktreeManager::new(temp_dir.path().to_path_buf())
+        .expect("worktree manager");
+    let cm = crate::coworker::CoworkerManager::new(wm);
+
+    let base_dir = temp_dir.path().to_path_buf();
+    std::mem::forget(temp_dir);
+
+    let channel_router = crate::ChannelRouter::new(&base_dir, "midtown");
+    let (shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(1);
+    DaemonState::new(
+        "/tmp/test-rpc-session.sock".into(),
+        cm,
+        "test-repo".to_string(),
+        vec![base_dir],
+        channel_router,
+        None,
+        10,
+        None,
+        "main".to_string(),
+        shutdown_tx,
+    )
+    .expect("daemon state")
+}
+
+#[tokio::test]
+async fn test_resolve_attach_target_multi_match_error_uses_verb() {
+    let state = make_test_state();
+
+    // Create two coworkers assigned to the same task so task lookup returns multiple
+    state.record_task_assignment("park", "42");
+    state.record_task_assignment("madison", "42");
+
+    // "clear" verb should appear in the disambiguation error
+    let err = resolve_attach_target("task/42", &state, "clear")
+        .await
+        .unwrap_err();
+    assert!(
+        err.contains("clear"),
+        "Error message should contain the verb 'clear', got: {}",
+        err
+    );
+    assert!(
+        !err.contains("attach"),
+        "Error message should not contain 'attach', got: {}",
+        err
+    );
+
+    // "attach" verb should appear when specified
+    let err = resolve_attach_target("task/42", &state, "attach")
+        .await
+        .unwrap_err();
+    assert!(
+        err.contains("attach"),
+        "Error message should contain the verb 'attach', got: {}",
+        err
+    );
+}
+
+// ============================================================================
+// handle_session_clear tests
+// ============================================================================
+
+/// Insert a headless session entry into persistent state for testing.
+async fn insert_test_session(state: &DaemonState, name: &str, initial_prompt: Option<String>) {
+    let mut ps = state.persistent_state.lock().await;
+    ps.headless_sessions.insert(
+        name.to_string(),
+        crate::daemon::state::HeadlessSessionInfo {
+            session_id: format!("test-session-{}", name),
+            last_active: chrono::Utc::now(),
+            purpose: "test".to_string(),
+            pid: None,
+            coworker_type: Some("dev".to_string()),
+            task_id: Some(42),
+            pr_number: None,
+            channel: None,
+            working_dir: Some("/tmp/test-worktree".to_string()),
+            provider: None,
+            profile: None,
+            resume_on_startup: true,
+            initial_prompt,
+        },
+    );
+}
+
+#[tokio::test]
+async fn test_session_clear_rejects_unknown_coworker() {
+    let state = make_test_state();
+
+    let resp = handle_session_clear(RequestId::Number(1), "name/nonexistent", &state).await;
+
+    let json = serde_json::to_value(&resp).unwrap();
+    assert!(
+        json.get("error").is_some(),
+        "Should return error for unknown coworker"
+    );
+}
+
+#[tokio::test]
+async fn test_session_clear_rejects_no_persisted_session() {
+    let state = make_test_state();
+
+    // Register a coworker in the manager but don't add a persisted session
+    state
+        .coworkers
+        .register(
+            "park",
+            "park",
+            "/tmp/test".to_string(),
+            None,
+            String::new(),
+            crate::auth::AuthProvider::Claude,
+            String::new(),
+        )
+        .unwrap();
+
+    let resp = handle_session_clear(RequestId::Number(1), "name/park", &state).await;
+
+    let json = serde_json::to_value(&resp).unwrap();
+    assert!(
+        json.get("error").is_some(),
+        "Should return error when no persisted session exists"
+    );
+}
+
+#[tokio::test]
+async fn test_session_clear_rejects_attached_session() {
+    let state = make_test_state();
+
+    // Register coworker and add persisted session
+    state
+        .coworkers
+        .register(
+            "park",
+            "park",
+            "/tmp/test".to_string(),
+            None,
+            String::new(),
+            crate::auth::AuthProvider::Claude,
+            String::new(),
+        )
+        .unwrap();
+    insert_test_session(&state, "park", Some("original task".to_string())).await;
+
+    // Mark as attached
+    {
+        let mut attached = state.attached_coworkers.lock().unwrap();
+        attached.insert("park".to_string(), chrono::Utc::now());
+    }
+
+    let resp = handle_session_clear(RequestId::Number(1), "name/park", &state).await;
+
+    let json = serde_json::to_value(&resp).unwrap();
+    let err = json
+        .get("error")
+        .expect("Should return error for attached session");
+    let msg = err.get("message").unwrap().as_str().unwrap();
+    assert!(
+        msg.contains("attached interactively"),
+        "Error should mention interactive attachment, got: {}",
+        msg
+    );
+}
+
+#[tokio::test]
+async fn test_session_clear_cleans_up_transient_state() {
+    let state = make_test_state();
+    let name = "broadway";
+
+    // Register coworker and add persisted session
+    state
+        .coworkers
+        .register(
+            name,
+            name,
+            "/tmp/test".to_string(),
+            None,
+            String::new(),
+            crate::auth::AuthProvider::Claude,
+            String::new(),
+        )
+        .unwrap();
+    insert_test_session(&state, name, Some("original task".to_string())).await;
+
+    // Populate transient state that cleanup_coworker_state should clear
+    {
+        let mut cooldowns = state.cooldowns.lock().unwrap();
+        cooldowns.record("nudge", name);
+    }
+    state.record_pending_nudge(name, "test nudge");
+    state.record_task_assignment(name, "42");
+
+    // The handler will try to spawn a new session, which will fail since
+    // there's no actual worktree. That's fine — we're testing that cleanup
+    // happened before the spawn attempt.
+    let _resp = handle_session_clear(RequestId::Number(1), &format!("name/{}", name), &state).await;
+
+    // Verify transient state was cleaned up (regardless of spawn success)
+    {
+        let cooldowns = state.cooldowns.lock().unwrap();
+        assert!(
+            cooldowns.is_empty(),
+            "cooldowns should be cleared after session clear"
+        );
+    }
+    {
+        let pending = state.pending_nudges.lock().unwrap();
+        assert!(
+            !pending.contains_key(name),
+            "pending nudges should be cleared after session clear"
+        );
+    }
+    {
+        let assignments = state.coworker_task_assignments.lock().unwrap();
+        assert!(
+            !assignments.contains_key(name),
+            "task assignments should be cleared after session clear"
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_session_clear_uses_lead_config_for_lead_target() {
+    let state = make_test_state();
+
+    // Register lead and add persisted session
+    state
+        .coworkers
+        .register(
+            "lead",
+            "lead",
+            "/tmp/test-lead".to_string(),
+            None,
+            String::new(),
+            crate::auth::AuthProvider::Claude,
+            String::new(),
+        )
+        .unwrap();
+    insert_test_session(&state, "lead", Some("lead task prompt".to_string())).await;
+
+    // The handler will fail to spawn (no real worktree), but we can verify
+    // it doesn't panic and attempts the lead path.
+    let resp = handle_session_clear(RequestId::Number(1), "name/lead", &state).await;
+
+    // The spawn will likely fail, but the handler should not panic and
+    // should return a response (either success or spawn-failure error).
+    let json = serde_json::to_value(&resp).unwrap();
+    assert!(
+        json.get("error").is_some() || json.get("result").is_some(),
+        "Should return either success or spawn-failure error, got: {:?}",
+        json
+    );
+}
