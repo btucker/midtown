@@ -239,8 +239,12 @@ fn set_and_get_project_daemon_webhook_secret() {
     let config_path = temp_project_config(&dir);
 
     set_project_key("daemon.webhook_secret", "my-secret", &config_path).unwrap();
+    // Secret is masked in output for security; verify it persisted by reading the file directly.
     let value = get_project_key("daemon.webhook_secret", &config_path).unwrap();
-    assert_eq!(value, "my-secret");
+    assert_eq!(value, "****");
+    let contents = std::fs::read_to_string(&config_path).unwrap();
+    let loaded: midtown::config::FullProjectConfig = toml::from_str(&contents).unwrap();
+    assert_eq!(loaded.daemon.webhook_secret.as_deref(), Some("my-secret"));
 }
 
 #[test]
@@ -495,6 +499,109 @@ fn project_scope_pane_size_out_of_range_returns_error() {
         msg.contains("10") && msg.contains("90"),
         "Expected range hint in: {msg}"
     );
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// webhook_restart_interval_secs coverage
+// ──────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn set_and_get_global_webhook_restart_interval_secs() {
+    let dir = TempDir::new().unwrap();
+    let config_path = temp_global_config(&dir);
+
+    set_global_key("daemon.webhook_restart_interval_secs", "600", &config_path).unwrap();
+    let value = get_global_key("daemon.webhook_restart_interval_secs", &config_path).unwrap();
+    assert_eq!(value, "600");
+}
+
+#[test]
+fn set_and_get_project_webhook_restart_interval_secs() {
+    let dir = TempDir::new().unwrap();
+    let config_path = temp_project_config(&dir);
+
+    set_project_key("daemon.webhook_restart_interval_secs", "120", &config_path).unwrap();
+    let value = get_project_key("daemon.webhook_restart_interval_secs", &config_path).unwrap();
+    assert_eq!(value, "120");
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Corrupt config error propagation
+// ──────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn corrupt_project_config_get_returns_error() {
+    let dir = TempDir::new().unwrap();
+    let config_path = temp_project_config(&dir);
+    std::fs::write(&config_path, "this is not valid toml ][[[").unwrap();
+
+    let result = get_project_key("default.max_coworkers", &config_path);
+    assert!(result.is_err());
+    let msg = result.unwrap_err();
+    assert!(
+        msg.contains("syntax error") || msg.contains("parse") || msg.contains("TOML"),
+        "Expected parse error in: {msg}"
+    );
+}
+
+#[test]
+fn corrupt_project_config_list_returns_error() {
+    let dir = TempDir::new().unwrap();
+    let config_path = temp_project_config(&dir);
+    std::fs::write(&config_path, "this is not valid toml ][[[").unwrap();
+
+    let result = list_project_config(&config_path);
+    assert!(result.is_err());
+    let msg = result.unwrap_err();
+    assert!(
+        msg.contains("syntax error") || msg.contains("parse") || msg.contains("TOML"),
+        "Expected parse error in: {msg}"
+    );
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Webhook secret masking
+// ──────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn get_webhook_secret_returns_masked_value() {
+    let dir = TempDir::new().unwrap();
+    let config_path = temp_global_config(&dir);
+
+    set_global_key("daemon.webhook_secret", "super-secret-token", &config_path).unwrap();
+    let value = get_global_key("daemon.webhook_secret", &config_path).unwrap();
+    assert_eq!(value, "****", "Expected secret to be masked, got: {value}");
+    assert!(
+        !value.contains("super-secret-token"),
+        "Secret must not appear in output"
+    );
+}
+
+#[test]
+fn list_global_masks_webhook_secret() {
+    let dir = TempDir::new().unwrap();
+    let config_path = temp_global_config(&dir);
+
+    set_global_key("daemon.webhook_secret", "super-secret-token", &config_path).unwrap();
+    let output = list_global_config(&config_path).unwrap();
+    assert!(
+        output.contains("****"),
+        "Expected masked secret in list output: {output}"
+    );
+    assert!(
+        !output.contains("super-secret-token"),
+        "Secret must not appear in list output"
+    );
+}
+
+#[test]
+fn get_project_webhook_secret_returns_masked_value() {
+    let dir = TempDir::new().unwrap();
+    let config_path = temp_project_config(&dir);
+
+    set_project_key("daemon.webhook_secret", "proj-secret", &config_path).unwrap();
+    let value = get_project_key("daemon.webhook_secret", &config_path).unwrap();
+    assert_eq!(value, "****", "Expected secret to be masked, got: {value}");
 }
 
 #[test]

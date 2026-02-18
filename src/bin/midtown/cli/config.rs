@@ -52,6 +52,7 @@ const VALID_KEYS: &[&str] = &[
     "daemon.pr_poll_interval_secs",
     "daemon.chat_monitor_enabled",
     "daemon.github_user",
+    "daemon.webhook_restart_interval_secs",
     "daemon.worktree_cleanup_retention_hours",
 ];
 
@@ -152,7 +153,7 @@ pub fn set_global_key(key: &str, value: &str, config_path: &Path) -> Result<(), 
 pub fn get_project_key(key: &str, config_path: &Path) -> Result<String, String> {
     validate_key(key)?;
 
-    let config = load_project_config(config_path);
+    let config = load_project_config(config_path)?;
     Ok(project_field_value(&config, key))
 }
 
@@ -162,7 +163,7 @@ pub fn get_project_key(key: &str, config_path: &Path) -> Result<String, String> 
 pub fn set_project_key(key: &str, value: &str, config_path: &Path) -> Result<(), String> {
     validate_key(key)?;
 
-    let mut config = load_project_config_checked(config_path)?;
+    let mut config = load_project_config(config_path)?;
     apply_project_key(&mut config, key, value)?;
     config
         .save_to(config_path)
@@ -188,7 +189,7 @@ pub fn list_global_config(config_path: &Path) -> Result<String, String> {
 ///
 /// Output includes the config file path and all supported keys with their current values.
 pub fn list_project_config(config_path: &Path) -> Result<String, String> {
-    let config = load_project_config(config_path);
+    let config = load_project_config(config_path)?;
     let mut lines = Vec::new();
     lines.push(format!("Config: {}", config_path.display()));
     lines.push(String::new());
@@ -222,11 +223,12 @@ fn load_global_config(path: &Path) -> Result<midtown::config::GlobalConfig, Stri
     })
 }
 
-/// Load FullProjectConfig from an arbitrary path, with parse error propagation.
+/// Load FullProjectConfig from an arbitrary path.
 ///
-/// Returns an error if the file exists but cannot be parsed, to prevent overwriting
-/// the user's config with defaults.
-fn load_project_config_checked(path: &Path) -> Result<midtown::config::FullProjectConfig, String> {
+/// Returns an error if the file exists but cannot be read or parsed, to prevent
+/// a subsequent `save_to` call from silently overwriting the user's config with defaults,
+/// and so that `get`/`list` surface corruption rather than showing silent defaults.
+fn load_project_config(path: &Path) -> Result<midtown::config::FullProjectConfig, String> {
     if !path.exists() {
         return Ok(midtown::config::FullProjectConfig::default());
     }
@@ -241,15 +243,18 @@ fn load_project_config_checked(path: &Path) -> Result<midtown::config::FullProje
     })
 }
 
-/// Load FullProjectConfig from an arbitrary path (for testing with temp files).
-fn load_project_config(path: &Path) -> midtown::config::FullProjectConfig {
-    midtown::config::FullProjectConfig::load_from(path).unwrap_or_default()
-}
-
 /// Format an `Option<T>` for display: value or `"(not set)"`.
 fn fmt_opt<T: std::fmt::Display>(opt: Option<T>) -> String {
     match opt {
         Some(v) => v.to_string(),
+        None => "(not set)".to_string(),
+    }
+}
+
+/// Format an optional secret string: `****` when set, `(not set)` when absent.
+fn fmt_secret(opt: Option<&str>) -> String {
+    match opt {
+        Some(_) => "****".to_string(),
         None => "(not set)".to_string(),
     }
 }
@@ -266,10 +271,13 @@ fn global_field_value(config: &midtown::config::GlobalConfig, key: &str) -> Stri
         "default.user_display_name" => fmt_opt(config.default.user_display_name.as_deref()),
         "default.bin_command" => fmt_opt(config.default.bin_command.as_deref()),
         "daemon.webhook_port" => fmt_opt(config.daemon.webhook_port),
-        "daemon.webhook_secret" => fmt_opt(config.daemon.webhook_secret.as_deref()),
+        "daemon.webhook_secret" => fmt_secret(config.daemon.webhook_secret.as_deref()),
         "daemon.pr_poll_interval_secs" => fmt_opt(config.daemon.pr_poll_interval_secs),
         "daemon.chat_monitor_enabled" => fmt_opt(config.daemon.chat_monitor_enabled),
         "daemon.github_user" => fmt_opt(config.daemon.github_user.as_deref()),
+        "daemon.webhook_restart_interval_secs" => {
+            fmt_opt(config.daemon.webhook_restart_interval_secs)
+        }
         "daemon.worktree_cleanup_retention_hours" => {
             fmt_opt(config.daemon.worktree_cleanup_retention_hours)
         }
@@ -294,10 +302,13 @@ fn project_field_value(config: &midtown::config::FullProjectConfig, key: &str) -
         "default.user_display_name" => fmt_opt(config.default.user_display_name.as_deref()),
         "default.bin_command" => fmt_opt(config.default.bin_command.as_deref()),
         "daemon.webhook_port" => fmt_opt(config.daemon.webhook_port),
-        "daemon.webhook_secret" => fmt_opt(config.daemon.webhook_secret.as_deref()),
+        "daemon.webhook_secret" => fmt_secret(config.daemon.webhook_secret.as_deref()),
         "daemon.pr_poll_interval_secs" => fmt_opt(config.daemon.pr_poll_interval_secs),
         "daemon.chat_monitor_enabled" => fmt_opt(config.daemon.chat_monitor_enabled),
         "daemon.github_user" => fmt_opt(config.daemon.github_user.as_deref()),
+        "daemon.webhook_restart_interval_secs" => {
+            fmt_opt(config.daemon.webhook_restart_interval_secs)
+        }
         "daemon.worktree_cleanup_retention_hours" => {
             fmt_opt(config.daemon.worktree_cleanup_retention_hours)
         }
@@ -356,12 +367,18 @@ fn apply_global_key(
         "daemon.github_user" => {
             config.daemon.github_user = Some(value.to_string());
         }
+        "daemon.webhook_restart_interval_secs" => {
+            config.daemon.webhook_restart_interval_secs = Some(parse_u64(key, value)?);
+        }
         "daemon.worktree_cleanup_retention_hours" => {
             config.daemon.worktree_cleanup_retention_hours = Some(parse_u64(key, value)?);
         }
-        _ => {
-            return Err(format!("Unknown key '{}'", key));
-        }
+        // validate_key() is called before every write, so this arm is unreachable.
+        // If it fires, a key was added to VALID_KEYS without adding a write arm here.
+        _ => unreachable!(
+            "key '{}' passed validate_key but has no write arm in apply_global_key",
+            key
+        ),
     }
     Ok(())
 }
@@ -412,12 +429,18 @@ fn apply_project_key(
         "daemon.github_user" => {
             config.daemon.github_user = Some(value.to_string());
         }
+        "daemon.webhook_restart_interval_secs" => {
+            config.daemon.webhook_restart_interval_secs = Some(parse_u64(key, value)?);
+        }
         "daemon.worktree_cleanup_retention_hours" => {
             config.daemon.worktree_cleanup_retention_hours = Some(parse_u64(key, value)?);
         }
-        _ => {
-            return Err(format!("Unknown key '{}'", key));
-        }
+        // validate_key() is called before every write, so this arm is unreachable.
+        // If it fires, a key was added to VALID_KEYS without adding a write arm here.
+        _ => unreachable!(
+            "key '{}' passed validate_key but has no write arm in apply_project_key",
+            key
+        ),
     }
     Ok(())
 }
