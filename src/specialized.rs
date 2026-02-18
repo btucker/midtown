@@ -65,12 +65,13 @@
 //! let result = SpecializedCoworker::execute(&role, request, None, None, Some(timeout)).await?;
 //! ```
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
+use crate::auth::AuthProvider;
 use crate::headless::{HeadlessConfig, HeadlessSession, StreamEvent};
 
 /// Trait defining the behavior of a specialized coworker role.
@@ -189,6 +190,8 @@ impl SpecializedCoworker {
         session_id: Option<String>,
         cwd: Option<PathBuf>,
         timeout: Option<Duration>,
+        auth_provider: AuthProvider,
+        auth_profile_dir: &Path,
     ) -> Result<SpecializedResult<R::Response>, SpecializedError>
     where
         R: SpecializedRole,
@@ -204,7 +207,17 @@ impl SpecializedCoworker {
         );
 
         // Attempt execution (may retry once on corruption)
-        match Self::execute_inner(role, &request, session_id.clone(), cwd.clone(), timeout).await {
+        match Self::execute_inner(
+            role,
+            &request,
+            session_id.clone(),
+            cwd.clone(),
+            timeout,
+            auth_provider,
+            auth_profile_dir,
+        )
+        .await
+        {
             Ok(result) => Ok(result),
             Err(SpecializedError::Io(ref e)) if is_resume && Self::is_corruption_error(e) => {
                 warn!(
@@ -212,9 +225,17 @@ impl SpecializedCoworker {
                     role.role_name()
                 );
                 // Retry with fresh session (no session_id)
-                Self::execute_inner(role, &request, None, cwd, timeout)
-                    .await
-                    .map_err(|e| SpecializedError::CorruptionRetryFailed(Box::new(e)))
+                Self::execute_inner(
+                    role,
+                    &request,
+                    None,
+                    cwd,
+                    timeout,
+                    auth_provider,
+                    auth_profile_dir,
+                )
+                .await
+                .map_err(|e| SpecializedError::CorruptionRetryFailed(Box::new(e)))
             }
             Err(e) => Err(e),
         }
@@ -227,10 +248,21 @@ impl SpecializedCoworker {
         session_id: Option<String>,
         cwd: Option<PathBuf>,
         timeout: Duration,
+        auth_provider: AuthProvider,
+        auth_profile_dir: &Path,
     ) -> Result<SpecializedResult<R::Response>, SpecializedError>
     where
         R: SpecializedRole,
     {
+        let env = crate::launch::build_agent_env_vars(
+            role.role_name(),
+            &crate::launch::CoworkerRole::Coworker,
+            &None, // no team
+            &None, // no channel
+            auth_provider,
+            auth_profile_dir,
+        );
+
         let config = HeadlessConfig {
             model: role.model().to_string(),
             system_prompt: role.system_prompt(),
@@ -251,8 +283,8 @@ impl SpecializedCoworker {
             agent_name: None,
             settings_path: None,
             setting_sources: None,
-            auth_provider: crate::auth::AuthProvider::Claude,
-            env: std::collections::BTreeMap::new(),
+            auth_provider,
+            env,
         };
 
         let mut session = if let Some(ref sid) = session_id {

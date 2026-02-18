@@ -12,6 +12,7 @@ use std::time::Duration;
 use tokio::sync::Semaphore;
 use tracing::{info, warn};
 
+use crate::auth::AuthProvider;
 use crate::message::Message;
 use crate::specialized::{SpecializedCoworker, SpecializedRole};
 
@@ -127,6 +128,8 @@ pub async fn generate_insight_diagram(
     cwd: PathBuf,
     repo_name: String,
     channel_name: Option<String>,
+    auth_provider: AuthProvider,
+    auth_profile_dir: PathBuf,
 ) {
     // Limit concurrent architect sessions to prevent resource exhaustion.
     // If all permits are taken, skip this diagram rather than queuing up.
@@ -155,6 +158,8 @@ pub async fn generate_insight_diagram(
         None, // No session resume for one-shot architect
         Some(cwd),
         Some(SESSION_TIMEOUT),
+        auth_provider,
+        &auth_profile_dir,
     )
     .await
     {

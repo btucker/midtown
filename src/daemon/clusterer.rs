@@ -8,13 +8,14 @@
 //! Unlike the architect (one-shot), the clusterer session persists across
 //! invocations to maintain consistent channel grouping strategies.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde::Serialize;
 use tracing::{info, warn};
 
 use super::specialized::{SpecializedCoworker, SpecializedRole};
+use crate::auth::AuthProvider;
 use crate::daemon::state::DaemonPersistentState;
 
 /// Timeout for a single clusterer invocation.
@@ -166,6 +167,8 @@ pub async fn assign_channel(
     request: ClustererRequest,
     cwd: PathBuf,
     persistent_state: &mut DaemonPersistentState,
+    auth_provider: AuthProvider,
+    auth_profile_dir: &Path,
 ) -> Result<ClustererResponse, String> {
     let role = ClustererRole;
     let session_id = persistent_state.clusterer_session_id.clone();
@@ -176,7 +179,16 @@ pub async fn assign_channel(
         session_id.is_some()
     );
 
-    let result = SpecializedCoworker::execute(&role, request, session_id, Some(cwd), None).await;
+    let result = SpecializedCoworker::execute(
+        &role,
+        request,
+        session_id,
+        Some(cwd),
+        None,
+        auth_provider,
+        auth_profile_dir,
+    )
+    .await;
 
     match result {
         Ok(result) => {

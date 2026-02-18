@@ -78,13 +78,25 @@ pub(super) async fn handle_insight_report(
         state.all_repo_paths.first().cloned().unwrap_or_default()
     };
 
+    // Resolve auth for the architect session
+    let auth_provider = crate::auth::AuthProvider::Claude;
+    let auth_profile_dir =
+        crate::auth::active_profile_dir_for_project_with_provider(&state.repo_name, auth_provider);
+
     // Spawn the architect task asynchronously
     let repo_name = state.repo_name.clone();
     let insight_owned = insight.to_string();
     let channel_owned = channel.map(|s| s.to_string());
     tokio::spawn(async move {
-        super::architect::generate_insight_diagram(insight_owned, cwd, repo_name, channel_owned)
-            .await;
+        super::architect::generate_insight_diagram(
+            insight_owned,
+            cwd,
+            repo_name,
+            channel_owned,
+            auth_provider,
+            auth_profile_dir,
+        )
+        .await;
     });
 
     Response::success(

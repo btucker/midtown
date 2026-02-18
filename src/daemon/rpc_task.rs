@@ -276,11 +276,16 @@ async fn invoke_clusterer_for_task(
         .ok_or("No repo paths configured")?
         .clone();
 
+    // Resolve auth for the clusterer session
+    let auth_provider = crate::auth::AuthProvider::Claude;
+    let auth_profile_dir =
+        crate::auth::active_profile_dir_for_project_with_provider(&state.repo_name, auth_provider);
+
     // Lock persistent state to pass to clusterer
     let mut ps = state.persistent_state.lock().await;
 
     // Invoke clusterer
-    let diff = assign_channel(request, cwd, &mut ps).await?;
+    let diff = assign_channel(request, cwd, &mut ps, auth_provider, &auth_profile_dir).await?;
 
     // Save persistent state with updated session ID
     if let Err(e) = ps.save_for_repo(&state.repo_name) {
