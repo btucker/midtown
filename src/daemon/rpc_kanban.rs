@@ -388,6 +388,12 @@ fn compute_coworker_state_hash(coworker_records: &HashMap<String, CoworkerRecord
     )> = coworker_records
         .iter()
         .filter_map(|(name, record)| {
+            // Skip channel leads and the lead session — they don't appear in the kanban
+            // response (mirroring the filter in handle_kanban_data's output section).
+            if is_channel_lead(name) || name.eq_ignore_ascii_case("lead") {
+                return None;
+            }
+
             // Skip idle coworkers (they don't appear in the kanban response)
             if matches!(
                 record.workflow_phase,

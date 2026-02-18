@@ -447,3 +447,47 @@ fn test_cache_key_stable_when_idle_coworker_updates_progress() {
         "Idle coworker progress must not affect the cache key (idle coworkers are excluded)"
     );
 }
+
+#[test]
+fn test_cache_key_stable_when_channel_lead_phase_changes() {
+    // Channel leads are excluded from the kanban coworker list (they're scoped
+    // to a specific topic channel). The hash function must mirror this exclusion:
+    // a channel lead's phase or task change must NOT change the cache key.
+    use crate::coworker_state::WorkflowPhase;
+
+    // Baseline: one regular coworker active
+    let mut base_records = HashMap::new();
+    base_records.insert(
+        "madison".to_string(),
+        make_record(Some(WorkflowPhase::Developing), Some(1500), None),
+    );
+
+    // Same regular coworker + a channel lead in Developing phase
+    let mut records_with_ch_lead_dev = base_records.clone();
+    records_with_ch_lead_dev.insert(
+        "ch-auth".to_string(),
+        make_record(Some(WorkflowPhase::Developing), Some(777), None),
+    );
+
+    // Same regular coworker + the same channel lead, now in PullRequest phase
+    let mut records_with_ch_lead_pr = base_records.clone();
+    records_with_ch_lead_pr.insert(
+        "ch-auth".to_string(),
+        make_record(Some(WorkflowPhase::PullRequest), Some(777), None),
+    );
+
+    let hash_base = super::compute_coworker_state_hash(&base_records);
+    let hash_with_ch_dev = super::compute_coworker_state_hash(&records_with_ch_lead_dev);
+    let hash_with_ch_pr = super::compute_coworker_state_hash(&records_with_ch_lead_pr);
+
+    // Channel leads must be invisible to the hash — adding one or changing its
+    // phase/task must not change the cache key.
+    assert_eq!(
+        hash_base, hash_with_ch_dev,
+        "Adding a channel lead must NOT change the cache key"
+    );
+    assert_eq!(
+        hash_with_ch_dev, hash_with_ch_pr,
+        "Channel lead phase change (Developing→PullRequest) must NOT change the cache key"
+    );
+}
