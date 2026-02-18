@@ -75,6 +75,11 @@ impl Default for ProcessHealth {
     }
 }
 
+/// Default value for `lead_session_refresh_interval_secs` when deserializing from older snapshots.
+fn default_lead_refresh_interval() -> u64 {
+    crate::daemon::constants::DEFAULT_LEAD_SESSION_REFRESH_INTERVAL_SECS
+}
+
 /// Number of recent channel messages to include in WorldSnapshot captures.
 const SNAPSHOT_CHANNEL_MESSAGE_COUNT: usize = 50;
 
@@ -294,6 +299,12 @@ pub struct WorldSnapshot {
     /// PR number → branch name mapping from the worktree registry for merged PRs.
     /// Used by `collect_merged_pr_cleanup_effects()` to generate cleanup effects without I/O.
     pub merged_pr_branches: HashMap<u64, String>,
+
+    // ── Lead session refresh ─────────────────────────────────────────────
+    /// Interval for periodic lead session refresh in seconds (0 = disabled).
+    /// From daemon config — available to pure decision functions.
+    #[serde(default = "default_lead_refresh_interval")]
+    pub lead_session_refresh_interval_secs: u64,
 
     // ── Limits & timing ─────────────────────────────────────────────────
     /// Whether the daemon is at the absolute coworker limit (max capacity).
@@ -693,6 +704,16 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
         )
     };
 
+    // ── Lead session refresh interval ──────────────────────────────────
+    let lead_session_refresh_interval_secs = {
+        let cfg = crate::config::get_project_daemon_config(&state.repo_name);
+        std::env::var("MIDTOWN_LEAD_SESSION_REFRESH_INTERVAL")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .or(cfg.lead_session_refresh_interval_secs)
+            .unwrap_or(crate::daemon::constants::DEFAULT_LEAD_SESSION_REFRESH_INTERVAL_SECS)
+    };
+
     // ── Limits & timing ─────────────────────────────────────────────────
     let channel_lead_names: std::collections::HashSet<String> =
         channel_lead_sessions.keys().cloned().collect();
@@ -757,6 +778,7 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
         worktree_registry,
         worktree_branch_owners,
         merged_pr_branches,
+        lead_session_refresh_interval_secs,
         is_at_coworker_limit,
         is_at_dev_limit,
         now_utc,
@@ -831,6 +853,7 @@ pub(super) fn minimal_snapshot_for_test() -> WorldSnapshot {
         worktree_branch_owners: HashMap::new(),
         worktree_registry: crate::worktree_registry::WorktreeRegistry::default(),
         merged_pr_branches: HashMap::new(),
+        lead_session_refresh_interval_secs: 5400,
         is_at_coworker_limit: false,
         is_at_dev_limit: false,
         now_utc: Utc::now(),

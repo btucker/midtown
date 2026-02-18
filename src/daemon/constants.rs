@@ -81,6 +81,13 @@ pub(super) const ATTACH_TIMEOUT: Duration = Duration::from_secs(600);
 /// disruptive than a coworker cycling too fast.
 pub(super) const LEAD_RESPAWN_COOLDOWN: Duration = Duration::from_secs(300);
 
+/// Default interval for periodic lead session refresh to prevent context drift (90 minutes).
+///
+/// Long lead sessions accumulate context and the LLM can start forgetting system
+/// prompt instructions. Periodic refresh restarts the session for a clean slate.
+/// Set to 0 in config to disable.
+pub const DEFAULT_LEAD_SESSION_REFRESH_INTERVAL_SECS: u64 = 90 * 60;
+
 /// Cooldown between orphan recovery spawns (2 seconds).
 /// Tradeoff: Multiple orphan recoveries happen faster vs. spawn storm risk. At 2s with
 /// ORPHAN_CHECK_INTERVAL_SECS=5s, we can recover multiple tasks quickly without overwhelming

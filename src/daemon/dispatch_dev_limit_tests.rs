@@ -176,6 +176,7 @@ fn make_dev_limit_snapshot(
         channel_messages: vec![],
         archived_channels: std::collections::HashSet::new(),
         daemon_logs: vec![],
+        lead_session_refresh_interval_secs: 5400,
         is_at_coworker_limit: false,
         tasks_with_worktrees: std::collections::HashSet::new(),
         task_worktree_map: std::collections::HashMap::new(),

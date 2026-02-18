@@ -498,6 +498,7 @@ impl SandboxSection {
 /// - `MIDTOWN_WEBHOOK_RESTART_INTERVAL`
 /// - `MIDTOWN_PR_POLL_INTERVAL`
 /// - `MIDTOWN_CHAT_MONITOR` (set to 0 to disable)
+/// - `MIDTOWN_LEAD_SESSION_REFRESH_INTERVAL` (set to 0 to disable)
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct DaemonSection {
     /// Port for the webhook server (default: 47023, set to 0 to disable)
@@ -530,6 +531,11 @@ pub struct DaemonSection {
     /// Set to 0 to disable time-based cleanup (only PR-merge cleanup will run).
     #[serde(default)]
     pub worktree_cleanup_retention_hours: Option<u64>,
+
+    /// Interval in seconds for periodic lead session refresh to prevent context drift (default: 5400 = 90 min).
+    /// Set to 0 to disable periodic refresh.
+    #[serde(default)]
+    pub lead_session_refresh_interval_secs: Option<u64>,
 }
 
 impl DaemonSection {
@@ -553,6 +559,9 @@ impl DaemonSection {
             worktree_cleanup_retention_hours: other
                 .worktree_cleanup_retention_hours
                 .or(self.worktree_cleanup_retention_hours),
+            lead_session_refresh_interval_secs: other
+                .lead_session_refresh_interval_secs
+                .or(self.lead_session_refresh_interval_secs),
         }
     }
 }
@@ -1750,6 +1759,7 @@ name = "solo"
             chat_monitor_enabled: Some(true),
             github_user: Some("global-user".to_string()),
             worktree_cleanup_retention_hours: None,
+            lead_session_refresh_interval_secs: None,
         };
 
         let project = DaemonSection {
@@ -1760,6 +1770,7 @@ name = "solo"
             chat_monitor_enabled: None,
             github_user: None,
             worktree_cleanup_retention_hours: None,
+            lead_session_refresh_interval_secs: None,
         };
 
         let merged = global.merge(&project);
@@ -1781,6 +1792,7 @@ name = "solo"
             chat_monitor_enabled: None,
             github_user: None,
             worktree_cleanup_retention_hours: None,
+            lead_session_refresh_interval_secs: None,
         };
 
         let empty = DaemonSection::default();

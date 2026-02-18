@@ -182,6 +182,8 @@ pub struct DaemonConfig {
     /// GitHub username for `gh` CLI authentication.
     /// When set, runs `gh auth switch --user <github_user>` at daemon startup.
     pub github_user: Option<String>,
+    /// Interval in seconds for periodic lead session refresh (0 = disabled).
+    pub lead_session_refresh_interval_secs: u64,
 }
 
 impl Default for DaemonConfig {
@@ -248,6 +250,14 @@ impl Default for DaemonConfig {
             .ok()
             .or_else(|| daemon_section.github_user.clone());
 
+        // Lead session refresh interval: env var -> config.toml -> default
+        let lead_session_refresh_interval_secs =
+            std::env::var("MIDTOWN_LEAD_SESSION_REFRESH_INTERVAL")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .or(daemon_section.lead_session_refresh_interval_secs)
+                .unwrap_or(crate::daemon::constants::DEFAULT_LEAD_SESSION_REFRESH_INTERVAL_SECS);
+
         // Max concurrent coworkers: env var > project config > global config > default (16)
         let max_coworkers = std::env::var("MIDTOWN_MAX_COWORKERS")
             .ok()
@@ -283,6 +293,7 @@ impl Default for DaemonConfig {
             max_coworkers,
             project_name: None,
             github_user,
+            lead_session_refresh_interval_secs,
         }
     }
 }

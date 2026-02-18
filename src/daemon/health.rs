@@ -934,6 +934,75 @@ pub fn ensure_lead_alive(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
     vec![Effect::SpawnCoworker(config)]
 }
 
+/// Periodically refresh the lead session to prevent context drift.
+///
+/// Long lead sessions accumulate context and the LLM starts forgetting
+/// system prompt instructions. This function shuts down the lead session
+/// when it has been running longer than `lead_session_refresh_interval_secs`.
+/// The existing `ensure_lead_alive()` respawns it on the next tick.
+///
+/// Returns no effects if:
+/// - The refresh interval is 0 (disabled)
+/// - The lead is not running (already handled by ensure_lead_alive)
+/// - The lead has been running for less than the refresh interval
+/// - The lead is attached interactively (don't cycle an interactive session)
+///
+/// Pure function — no I/O, no `.await`, no mutex locks.
+pub fn maybe_refresh_lead_session(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
+    let interval_secs = snap.lead_session_refresh_interval_secs;
+    if interval_secs == 0 {
+        return vec![];
+    }
+
+    // Don't refresh an interactively attached session
+    if snap.attached_coworkers.contains_key("lead") {
+        return vec![];
+    }
+
+    // Find the lead in active coworkers
+    let lead = snap
+        .active_coworkers
+        .iter()
+        .find(|c| c.name.eq_ignore_ascii_case("lead"));
+
+    let lead = match lead {
+        Some(l) => l,
+        None => return vec![],
+    };
+
+    // Check how long the lead has been running
+    let start_time = match snap.coworker_start_times.get("lead") {
+        Some(t) => t,
+        None => return vec![],
+    };
+
+    let age = snap.now_utc.signed_duration_since(*start_time);
+    let threshold = chrono::Duration::seconds(interval_secs as i64);
+
+    if age < threshold {
+        return vec![];
+    }
+
+    info!(
+        age_secs = age.num_seconds(),
+        interval_secs = interval_secs,
+        "Lead session has been running too long — scheduling periodic refresh"
+    );
+
+    vec![
+        Effect::PostToChannel {
+            sender: "midtown".to_string(),
+            message: "Restarting lead session for a fresh context.".to_string(),
+            channel: None,
+        },
+        Effect::ShutdownCoworker {
+            name: lead.name.clone(),
+            message: "Time for a fresh session. Restarting now — will be back shortly.".to_string(),
+            session_id: lead.session_id.clone(),
+        },
+    ]
+}
+
 /// Detect attached sessions that have exceeded `ATTACH_TIMEOUT` without receiving a detach.
 ///
 /// If an interactive session ends without `midtown session detach` (terminal crash,
