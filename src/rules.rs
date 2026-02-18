@@ -218,11 +218,30 @@ impl CoworkerRecord {
     }
 }
 
+/// Default progress percentage for a workflow phase transition.
+///
+/// Returns `Some(pct)` for phases that represent meaningful milestones, or
+/// `None` for phases like Idle and Debugging that don't map to progress.
+fn phase_default_progress(phase: crate::coworker_state::WorkflowPhase) -> Option<u8> {
+    use crate::coworker_state::WorkflowPhase;
+    match phase {
+        WorkflowPhase::Claiming => Some(5),
+        WorkflowPhase::Developing => Some(25),
+        WorkflowPhase::Testing => Some(65),
+        WorkflowPhase::PullRequest => Some(85),
+        WorkflowPhase::Reviewing => Some(50),
+        WorkflowPhase::Completed => Some(100),
+        WorkflowPhase::Idle | WorkflowPhase::Debugging => None,
+    }
+}
+
 /// Update the workflow phase for a coworker (from RPC state report).
 ///
-/// When `progress` is `None`, existing progress is preserved if the phase
-/// hasn't changed (e.g., hook fires without progress info). When the phase
-/// changes, progress is cleared since it belonged to the previous phase.
+/// When `progress` is `None` and the phase changes, injects the default
+/// progress for the new phase so time estimates have data points even when
+/// coworkers don't explicitly report. Explicit `--progress` values always
+/// override phase defaults. Within the same phase, `None` preserves existing
+/// progress (e.g., hook fires without progress info).
 pub(crate) fn set_workflow(
     records: &mut HashMap<String, CoworkerRecord>,
     name: &str,
@@ -237,7 +256,15 @@ pub(crate) fn set_workflow(
     record.workflow_phase = Some(phase);
     record.task_id = task_id;
 
-    match progress {
+    let effective_progress = progress.or_else(|| {
+        if phase_changed {
+            phase_default_progress(phase)
+        } else {
+            None
+        }
+    });
+
+    match effective_progress {
         Some(p) => {
             record.progress = Some(p);
             // Add to progress history for time estimation
@@ -248,6 +275,7 @@ pub(crate) fn set_workflow(
             }
         }
         None if phase_changed => {
+            // Phase changed to one with no default (Idle, Debugging) — clear progress
             record.progress = None;
             record.progress_history.clear();
         }
@@ -3279,10 +3307,10 @@ mod tests {
     }
 
     #[test]
-    fn set_workflow_phase_change_without_progress_clears_it() {
-        // When switching to a new phase (e.g., developing → pull-request)
-        // without providing progress, the old progress should be cleared
-        // because it's from a different phase.
+    fn set_workflow_phase_change_without_progress_injects_default() {
+        // When switching to a new phase without providing explicit progress,
+        // the default progress for that phase should be injected so time
+        // estimates have data points even when coworkers don't report explicitly.
         let mut records = HashMap::new();
 
         set_workflow(
@@ -3293,7 +3321,7 @@ mod tests {
             Some(80),
         );
 
-        // Phase changes to pull-request without progress — should clear
+        // Phase changes to pull-request without progress — should inject default (85%)
         set_workflow(
             &mut records,
             "york",
@@ -3302,8 +3330,150 @@ mod tests {
             None,
         );
         assert_eq!(
+            records["york"].progress,
+            Some(85),
+            "progress should be set to phase default (85% for pull-request) on phase change"
+        );
+    }
+
+    #[test]
+    fn set_workflow_phase_default_claiming() {
+        let mut records = HashMap::new();
+        set_workflow(
+            &mut records,
+            "york",
+            crate::coworker_state::WorkflowPhase::Claiming,
+            Some(42),
+            None,
+        );
+        assert_eq!(records["york"].progress, Some(5));
+    }
+
+    #[test]
+    fn set_workflow_phase_default_developing() {
+        let mut records = HashMap::new();
+        set_workflow(
+            &mut records,
+            "york",
+            crate::coworker_state::WorkflowPhase::Developing,
+            Some(42),
+            None,
+        );
+        assert_eq!(records["york"].progress, Some(25));
+    }
+
+    #[test]
+    fn set_workflow_phase_default_testing() {
+        let mut records = HashMap::new();
+        set_workflow(
+            &mut records,
+            "york",
+            crate::coworker_state::WorkflowPhase::Testing,
+            Some(42),
+            None,
+        );
+        assert_eq!(records["york"].progress, Some(65));
+    }
+
+    #[test]
+    fn set_workflow_phase_default_reviewing() {
+        let mut records = HashMap::new();
+        set_workflow(
+            &mut records,
+            "york",
+            crate::coworker_state::WorkflowPhase::Reviewing,
+            Some(42),
+            None,
+        );
+        assert_eq!(records["york"].progress, Some(50));
+    }
+
+    #[test]
+    fn set_workflow_phase_default_completed() {
+        let mut records = HashMap::new();
+        set_workflow(
+            &mut records,
+            "york",
+            crate::coworker_state::WorkflowPhase::Completed,
+            Some(42),
+            None,
+        );
+        assert_eq!(records["york"].progress, Some(100));
+    }
+
+    #[test]
+    fn set_workflow_explicit_progress_overrides_phase_default() {
+        // When explicit progress is provided, it always wins over the default.
+        let mut records = HashMap::new();
+        set_workflow(
+            &mut records,
+            "york",
+            crate::coworker_state::WorkflowPhase::Developing,
+            Some(42),
+            Some(45),
+        );
+        assert_eq!(
+            records["york"].progress,
+            Some(45),
+            "explicit progress should override phase default"
+        );
+    }
+
+    #[test]
+    fn set_workflow_phase_default_added_to_history() {
+        // Phase-default progress should be recorded in progress_history
+        // so time estimation can use it as a data point.
+        let mut records = HashMap::new();
+
+        set_workflow(
+            &mut records,
+            "york",
+            crate::coworker_state::WorkflowPhase::Claiming,
+            Some(42),
+            None,
+        );
+        set_workflow(
+            &mut records,
+            "york",
+            crate::coworker_state::WorkflowPhase::Developing,
+            Some(42),
+            None,
+        );
+
+        assert_eq!(
+            records["york"].progress_history.len(),
+            2,
+            "both phase defaults should be in history for time estimation"
+        );
+        assert_eq!(records["york"].progress_history[0].0, 5);
+        assert_eq!(records["york"].progress_history[1].0, 25);
+    }
+
+    #[test]
+    fn set_workflow_idle_and_debugging_have_no_default() {
+        // Idle and Debugging phases don't represent progress milestones,
+        // so they shouldn't inject a default — progress should be cleared.
+        let mut records = HashMap::new();
+
+        // Start with some progress
+        set_workflow(
+            &mut records,
+            "york",
+            crate::coworker_state::WorkflowPhase::Developing,
+            Some(42),
+            Some(40),
+        );
+
+        set_workflow(
+            &mut records,
+            "york",
+            crate::coworker_state::WorkflowPhase::Idle,
+            None,
+            None,
+        );
+        assert_eq!(
             records["york"].progress, None,
-            "progress should be cleared on phase change even with None"
+            "idle phase should clear progress"
         );
     }
 }
