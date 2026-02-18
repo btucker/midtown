@@ -694,7 +694,6 @@ async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoRespo
     let persistent_state =
         crate::daemon::state::DaemonPersistentState::load_for_repo(&state.config.repo)
             .unwrap_or_default();
-
     // Channel lead names for filtering (channel leads must not appear in coworker status)
     let channel_lead_names: std::collections::HashSet<String> = persistent_state
         .channel_lead_sessions
