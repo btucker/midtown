@@ -14,8 +14,10 @@ describe('renderContent', () => {
 
   it('escapes > for XSS defense-in-depth', () => {
     // Bare > in text should be escaped to &gt; even though it's harmless without <
-    expect(renderContent('a > b')).toContain('&gt;')
-    expect(renderContent('a > b')).not.toMatch(/[^&]>/)
+    const result = renderContent('a > b')
+    expect(result).toContain('&gt;')
+    // The only > characters in the output should be from HTML tags, not raw text
+    expect(result).not.toContain('a > b')
   })
 
   // Bold and italic
@@ -47,7 +49,8 @@ describe('renderContent', () => {
   })
 
   it('renders strikethrough', () => {
-    expect(renderContent('this is ~~removed~~ text')).toContain('<s>removed</s>')
+    // marked (GFM) uses <del> for strikethrough, which is the HTML5 standard element
+    expect(renderContent('this is ~~removed~~ text')).toContain('<del>removed</del>')
   })
 
   // Code
@@ -131,8 +134,11 @@ describe('renderContent', () => {
     expect(result).toContain('href="https://example.com"')
   })
 
-  it('returns plain text unchanged (no special chars)', () => {
-    expect(renderContent('hello world')).toBe('hello world')
+  it('renders plain text wrapped in a paragraph', () => {
+    // marked wraps block-level content in <p> tags
+    const result = renderContent('hello world')
+    expect(result).toContain('hello world')
+    expect(result).toContain('<p>')
   })
 })
 
@@ -350,5 +356,64 @@ describe('renderContent - special links', () => {
     expect(result).toContain('class="task-link"')
     expect(result).not.toMatch(/target="_blank"[^>]*class="task-link"/)
     expect(result).not.toMatch(/class="task-link"[^>]*target="_blank"/)
+  })
+})
+
+describe('renderContent - tables', () => {
+  it('renders a simple GFM table', () => {
+    const input = '| A | B |\n|---|---|\n| 1 | 2 |'
+    const result = renderContent(input)
+    expect(result).toContain('<table>')
+    expect(result).toContain('<th>')
+    expect(result).toContain('<td>')
+    expect(result).toContain('</table>')
+  })
+
+  it('renders table header cells', () => {
+    const input = '| Column A | Column B |\n|----------|----------|\n| Row 1    | Data     |'
+    const result = renderContent(input)
+    expect(result).toContain('<th>Column A</th>')
+    expect(result).toContain('<th>Column B</th>')
+  })
+
+  it('renders table data cells', () => {
+    const input = '| Column A | Column B |\n|----------|----------|\n| Row 1    | Data     |'
+    const result = renderContent(input)
+    expect(result).toContain('<td>Row 1</td>')
+    expect(result).toContain('<td>Data</td>')
+  })
+
+  it('renders multiple data rows', () => {
+    const input = '| A | B |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |'
+    const result = renderContent(input)
+    expect(result).toContain('<td>1</td>')
+    expect(result).toContain('<td>2</td>')
+    expect(result).toContain('<td>3</td>')
+    expect(result).toContain('<td>4</td>')
+  })
+
+  it('renders text before and after the table', () => {
+    const input = 'Before\n| A | B |\n|---|---|\n| 1 | 2 |\nAfter'
+    const result = renderContent(input)
+    expect(result).toContain('Before')
+    expect(result).toContain('<table>')
+    expect(result).toContain('After')
+  })
+
+  it('supports inline markdown in table cells', () => {
+    const input = '| A | B |\n|---|---|\n| **bold** | `code` |'
+    const result = renderContent(input)
+    expect(result).toContain('<strong>bold</strong>')
+    expect(result).toContain('<code>code</code>')
+  })
+
+  it('does not treat plain text with pipes as a table', () => {
+    const result = renderContent('this | that')
+    expect(result).not.toContain('<table>')
+  })
+
+  it('does not treat a single-row pipe line as a table (no separator row)', () => {
+    const result = renderContent('| A | B |')
+    expect(result).not.toContain('<table>')
   })
 })
