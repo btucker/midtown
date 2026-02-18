@@ -342,8 +342,10 @@ pub struct App {
     pub main_area_y: u16,
     /// Bottom Y (exclusive) of the main content area
     pub main_area_bottom: u16,
-    /// Kill ring: stores the last killed (cut) text for emacs-style kill commands
+    /// Kill ring: stores killed (cut) text for emacs-style Ctrl+Y yank
     pub kill_ring: Option<String>,
+    /// Whether the previous command was a kill — consecutive kills append to the kill ring
+    pub last_was_kill: bool,
 }
 
 /// Autocomplete state for @mentions, #channels, and !task-ids
@@ -489,6 +491,7 @@ impl App {
             main_area_y: 0,
             main_area_bottom: u16::MAX,
             kill_ring: None,
+            last_was_kill: false,
         };
 
         // Initial load
@@ -2783,6 +2786,7 @@ pub(super) mod tests {
             main_area_y: 0,
             main_area_bottom: u16::MAX,
             kill_ring: None,
+            last_was_kill: false,
         }
     }
 
