@@ -807,6 +807,7 @@ impl SessionManager {
                     coworker_type: None, // To be filled by caller
                     task_id: None,       // To be filled by caller
                     pr_number: None,     // To be filled by caller
+                    channel: None,       // To be filled by caller
                     working_dir: None,   // To be filled by caller
                     provider: None,      // To be filled by caller
                     profile: None,       // To be filled by caller

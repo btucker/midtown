@@ -34,7 +34,7 @@ pub struct HeadlessSessionInfo {
     /// OS process ID for zombie detection and cleanup.
     #[serde(default)]
     pub pid: Option<u32>,
-    /// Coworker type: "dev" or "reviewer".
+    /// Coworker type: "dev", "reviewer", or "channel-lead".
     #[serde(default)]
     pub coworker_type: Option<String>,
     /// Task ID if this is a dev coworker working on a task.
@@ -43,6 +43,9 @@ pub struct HeadlessSessionInfo {
     /// PR number if this is a reviewer coworker.
     #[serde(default)]
     pub pr_number: Option<u64>,
+    /// Channel name if this is a channel-lead coworker.
+    #[serde(default)]
+    pub channel: Option<String>,
     /// Working directory (worktree path) for this session.
     #[serde(default)]
     pub working_dir: Option<String>,

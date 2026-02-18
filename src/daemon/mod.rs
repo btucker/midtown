@@ -906,6 +906,7 @@ impl DaemonState {
                     crate::launch::CoworkerRole::Reviewer => "reviewer".to_string(),
                     crate::launch::CoworkerRole::Lead => "lead".to_string(),
                     crate::launch::CoworkerRole::Coworker => "coworker".to_string(),
+                    crate::launch::CoworkerRole::ChannelLead(_) => "channel-lead".to_string(),
                 },
             };
             if let Err(e) = crate::mailbox::upsert_team_member(team_name, member) {
@@ -996,12 +997,16 @@ impl DaemonState {
                         .map(|p| p.chars().take(120).collect::<String>())
                         .unwrap_or_default(),
                     pid: self.session_manager.get_pid(&name).await,
-                    coworker_type: match config.role {
+                    coworker_type: match &config.role {
                         crate::launch::CoworkerRole::Reviewer => Some("reviewer".to_string()),
+                        crate::launch::CoworkerRole::ChannelLead(_) => {
+                            Some("channel-lead".to_string())
+                        }
                         _ => Some("dev".to_string()),
                     },
                     task_id: None,
                     pr_number: config.pr_number,
+                    channel: config.channel.clone(),
                     working_dir: Some(working_dir_for_persist),
                     provider: Some(config.auth_provider),
                     profile: Some(profile),
@@ -1937,6 +1942,7 @@ fn parse_historical_session_info_from_log(
         coworker_type: Some("dev".to_string()),
         task_id,
         pr_number: None,
+        channel: None,
         working_dir,
         provider,
         profile: None,

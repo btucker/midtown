@@ -66,6 +66,7 @@ fn test_headless_session_info_roundtrip() {
         coworker_type: Some("dev".to_string()),
         task_id: Some(5),
         pr_number: None,
+        channel: None,
         working_dir: Some("/path/to/worktree".to_string()),
         provider: Some(crate::auth::AuthProvider::Codex),
         profile: Some("test-profile".to_string()),
@@ -96,6 +97,7 @@ fn test_headless_sessions_in_persistent_state() {
             coworker_type: Some("dev".to_string()),
             task_id: Some(3),
             pr_number: None,
+            channel: None,
             working_dir: Some("/path/to/park-worktree".to_string()),
             provider: Some(crate::auth::AuthProvider::Claude),
             profile: Some("test-profile".to_string()),
@@ -159,6 +161,7 @@ fn test_headless_session_provider_persistence() {
             coworker_type: Some("dev".to_string()),
             task_id: Some(42),
             pr_number: None,
+            channel: None,
             working_dir: Some("/path/to/madison-worktree".to_string()),
             provider: Some(crate::auth::AuthProvider::Codex),
             profile: Some("test-profile".to_string()),
@@ -419,4 +422,43 @@ fn test_task_model_overwrite_and_remove() {
     let json = serde_json::to_string_pretty(&state).unwrap();
     let loaded: DaemonPersistentState = serde_json::from_str(&json).unwrap();
     assert!(loaded.task_model.is_empty());
+}
+
+#[test]
+fn test_channel_lead_session_info_coworker_type_and_channel() {
+    // Bug 1: HeadlessSessionInfo for a channel lead must persist coworker_type="channel-lead"
+    // and the channel name, so the attach path can reconstruct the correct role.
+    let mut state = DaemonPersistentState::default();
+    state.headless_sessions.insert(
+        "amsterdam".to_string(),
+        HeadlessSessionInfo {
+            session_id: "session-ch-123".to_string(),
+            last_active: Utc::now(),
+            purpose: "channel lead for daemon-architecture".to_string(),
+            pid: Some(42),
+            coworker_type: Some("channel-lead".to_string()),
+            task_id: None,
+            pr_number: None,
+            channel: Some("daemon-architecture".to_string()),
+            working_dir: None,
+            provider: Some(crate::auth::AuthProvider::Claude),
+            profile: None,
+            resume_on_startup: true,
+        },
+    );
+
+    let json = serde_json::to_string(&state).unwrap();
+    let loaded: DaemonPersistentState = serde_json::from_str(&json).unwrap();
+
+    let info = loaded.headless_sessions.get("amsterdam").unwrap();
+    assert_eq!(
+        info.coworker_type.as_deref(),
+        Some("channel-lead"),
+        "coworker_type should be 'channel-lead', not 'dev'"
+    );
+    assert_eq!(
+        info.channel.as_deref(),
+        Some("daemon-architecture"),
+        "channel name should be persisted and restored"
+    );
 }

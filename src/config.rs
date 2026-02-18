@@ -199,6 +199,10 @@ pub struct FullProjectConfig {
     /// Sandbox configuration (additional writable paths)
     #[serde(default)]
     pub sandbox: SandboxSection,
+
+    /// Channel lead configuration (per-channel model selection)
+    #[serde(default)]
+    pub channel_leads: ChannelLeadsConfig,
 }
 
 impl FullProjectConfig {
@@ -242,6 +246,7 @@ impl FullProjectConfig {
             daemon: DaemonSection::default(),
             channels: ChannelsSection::default(),
             sandbox: SandboxSection::default(),
+            channel_leads: ChannelLeadsConfig::default(),
         }
     }
 
@@ -412,6 +417,43 @@ pub struct ChannelsSection {
     /// Example: ["tui", "web-interface", "daemon", "auth", "docs"]
     #[serde(default)]
     pub seed: Vec<String>,
+}
+
+/// Channel lead configuration section.
+///
+/// Configures per-channel model selection for channel leads.
+///
+/// Example:
+/// ```toml
+/// [channel_leads]
+/// default_model = "sonnet"
+///
+/// [channel_leads.overrides]
+/// "daemon-architecture" = "opus"
+/// "web-interface" = "sonnet"
+/// ```
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct ChannelLeadsConfig {
+    /// Default model for channel leads (default: "sonnet").
+    #[serde(default)]
+    pub default_model: Option<String>,
+
+    /// Per-channel model overrides. Keys are channel names, values are model names.
+    #[serde(default)]
+    pub overrides: std::collections::HashMap<String, String>,
+}
+
+impl ChannelLeadsConfig {
+    /// Get the model to use for a given channel.
+    ///
+    /// Priority: per-channel override → default_model → "sonnet".
+    pub fn model_for_channel(&self, channel_name: &str) -> String {
+        self.overrides
+            .get(channel_name)
+            .cloned()
+            .or_else(|| self.default_model.clone())
+            .unwrap_or_else(|| "sonnet".to_string())
+    }
 }
 
 /// Sandbox configuration section.
@@ -829,6 +871,17 @@ pub fn get_project_sandbox_config(project_name: &str) -> SandboxSection {
         Some(proj) => global.sandbox.merge(&proj.sandbox),
         None => global.sandbox,
     }
+}
+
+/// Get the channel lead configuration for a project.
+///
+/// Returns the `[channel_leads]` section from the project config, or a default
+/// (empty) config if not set. Channel lead config is project-specific only —
+/// there is no global default for per-channel model overrides.
+pub fn get_channel_leads_config(project_name: &str) -> ChannelLeadsConfig {
+    FullProjectConfig::load(project_name)
+        .map(|full| full.channel_leads)
+        .unwrap_or_default()
 }
 
 /// Get the effective configuration for a project.
@@ -2643,6 +2696,89 @@ allowed_paths = ["~/.cargo", "~/.rustup", "/opt/toolchain"]
         assert!(
             dirs.iter().any(|d| d.ends_with(".claude")),
             "Should include ~/.claude"
+        );
+    }
+
+    #[test]
+    fn test_channel_leads_default_model() {
+        let config = ChannelLeadsConfig::default();
+        assert_eq!(config.model_for_channel("any-channel"), "sonnet");
+    }
+
+    #[test]
+    fn test_channel_leads_configured_default() {
+        let config = ChannelLeadsConfig {
+            default_model: Some("opus".to_string()),
+            overrides: std::collections::HashMap::new(),
+        };
+        assert_eq!(config.model_for_channel("any-channel"), "opus");
+    }
+
+    #[test]
+    fn test_channel_leads_per_channel_override() {
+        let mut overrides = std::collections::HashMap::new();
+        overrides.insert("daemon-architecture".to_string(), "opus".to_string());
+        let config = ChannelLeadsConfig {
+            default_model: Some("sonnet".to_string()),
+            overrides,
+        };
+        assert_eq!(config.model_for_channel("daemon-architecture"), "opus");
+        assert_eq!(config.model_for_channel("web-interface"), "sonnet");
+    }
+
+    #[test]
+    fn test_channel_leads_override_takes_precedence_over_default() {
+        let mut overrides = std::collections::HashMap::new();
+        overrides.insert("tui".to_string(), "haiku".to_string());
+        let config = ChannelLeadsConfig {
+            default_model: Some("opus".to_string()),
+            overrides,
+        };
+        assert_eq!(config.model_for_channel("tui"), "haiku");
+    }
+
+    #[test]
+    fn test_channel_leads_toml_parsing() {
+        let toml = r#"
+[channel_leads]
+default_model = "sonnet"
+
+[channel_leads.overrides]
+"daemon-architecture" = "opus"
+"web-interface" = "sonnet"
+"#;
+        let config: FullProjectConfig = toml::from_str(toml).unwrap();
+        assert_eq!(
+            config.channel_leads.default_model.as_deref(),
+            Some("sonnet")
+        );
+        assert_eq!(
+            config
+                .channel_leads
+                .model_for_channel("daemon-architecture"),
+            "opus"
+        );
+        assert_eq!(
+            config.channel_leads.model_for_channel("web-interface"),
+            "sonnet"
+        );
+        assert_eq!(
+            config.channel_leads.model_for_channel("unknown-channel"),
+            "sonnet"
+        );
+    }
+
+    #[test]
+    fn test_channel_leads_toml_minimal() {
+        // No channel_leads section — all defaults
+        let toml = r#"
+[project]
+name = "test"
+"#;
+        let config: FullProjectConfig = toml::from_str(toml).unwrap();
+        assert_eq!(
+            config.channel_leads.model_for_channel("any-channel"),
+            "sonnet"
         );
     }
 }
