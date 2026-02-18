@@ -149,6 +149,7 @@ fn make_dev_limit_snapshot(
         task_model_map: std::collections::HashMap::new(),
         task_plan_map: std::collections::HashMap::new(),
         task_execution_skill_map: std::collections::HashMap::new(),
+        channel_lead_sessions: std::collections::HashMap::new(),
         coworkers_with_open_prs: std::collections::HashSet::new(),
         coworkers_with_merged_prs: std::collections::HashSet::new(),
         merged_pr_numbers: std::collections::HashSet::new(),

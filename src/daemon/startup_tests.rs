@@ -1,5 +1,7 @@
 use super::*;
 
+use crate::daemon::effects::Effect;
+use crate::daemon::state::DaemonPersistentState;
 use chrono::Utc;
 
 /// Create a test HeadlessSessionInfo.
@@ -440,4 +442,288 @@ fn test_check_sandbox_context_detects_nesting() {
             "check_sandbox_context() should return None when not nested"
         );
     }
+}
+
+// ── Channel lead session recovery tests ───────────────────────────────
+
+/// Create temporary channel files for testing.
+///
+/// Returns the temp dir (must be kept alive) and the base_dir path.
+fn create_temp_channels(channel_names: &[&str]) -> (tempfile::TempDir, std::path::PathBuf) {
+    let tmp = tempfile::TempDir::new().expect("create temp dir");
+    let base_dir = tmp.path().to_path_buf();
+    let channels_dir = base_dir.join("channels");
+    std::fs::create_dir_all(&channels_dir).expect("create channels dir");
+    for name in channel_names {
+        let channel_file = channels_dir.join(format!("{}.jsonl", name));
+        std::fs::write(&channel_file, "").expect("create channel file");
+    }
+    (tmp, base_dir)
+}
+
+/// Create an archived channel file (has `.archived.jsonl` extension).
+fn create_archived_channel(base_dir: &std::path::Path, channel_name: &str) {
+    let channels_dir = base_dir.join("channels");
+    std::fs::create_dir_all(&channels_dir).expect("create channels dir");
+    let channel_file = channels_dir.join(format!("{}.archived.jsonl", channel_name));
+    std::fs::write(&channel_file, "").expect("create archived channel file");
+}
+
+#[tokio::test]
+async fn test_recover_channel_lead_sessions_empty() {
+    // No channels → no effects
+    let (_tmp, base_dir) = create_temp_channels(&[]);
+    let persistent_state = tokio::sync::Mutex::new(DaemonPersistentState::default());
+
+    let effects =
+        recover_channel_lead_sessions_from(&persistent_state, "test-repo", &base_dir).await;
+
+    assert!(
+        effects.is_empty(),
+        "No channels should produce no effects, got: {:?}",
+        effects
+    );
+}
+
+#[tokio::test]
+async fn test_recover_channel_lead_sessions_only_midtown_excluded() {
+    // Only the main "midtown" channel — no topic channels → no effects
+    let tmp = tempfile::TempDir::new().expect("create temp dir");
+    let base_dir = tmp.path().to_path_buf();
+    // Create legacy channel.jsonl (detected as "midtown" channel by Channel::list)
+    std::fs::write(base_dir.join("channel.jsonl"), "").expect("create channel.jsonl");
+
+    let persistent_state = tokio::sync::Mutex::new(DaemonPersistentState::default());
+    let effects =
+        recover_channel_lead_sessions_from(&persistent_state, "test-repo", &base_dir).await;
+
+    assert!(
+        effects.is_empty(),
+        "Only midtown channel should produce no effects, got: {:?}",
+        effects
+    );
+}
+
+#[tokio::test]
+async fn test_recover_channel_lead_sessions_archived_excluded() {
+    // Only an archived channel → no effects
+    let tmp = tempfile::TempDir::new().expect("create temp dir");
+    let base_dir = tmp.path().to_path_buf();
+    create_archived_channel(&base_dir, "old-feature");
+
+    let persistent_state = tokio::sync::Mutex::new(DaemonPersistentState::default());
+    let effects =
+        recover_channel_lead_sessions_from(&persistent_state, "test-repo", &base_dir).await;
+
+    assert!(
+        effects.is_empty(),
+        "Only archived channel should produce no effects, got: {:?}",
+        effects
+    );
+}
+
+#[tokio::test]
+async fn test_recover_channel_lead_sessions_fresh_spawn() {
+    // One active topic channel without a saved session → SpawnCoworker(Fresh) + placeholder
+    let (_tmp, base_dir) = create_temp_channels(&["auth"]);
+    let persistent_state = tokio::sync::Mutex::new(DaemonPersistentState::default());
+
+    let effects =
+        recover_channel_lead_sessions_from(&persistent_state, "test-repo", &base_dir).await;
+
+    // Expect: SpawnCoworker(Fresh) + SaveChannelLeadSession placeholder
+    assert_eq!(effects.len(), 2, "Expected 2 effects, got: {:?}", effects);
+
+    match &effects[0] {
+        Effect::SpawnCoworker(config) => {
+            assert_eq!(config.name, "ch-auth");
+            assert_eq!(config.session_mode, crate::launch::SessionMode::Fresh);
+        }
+        other => panic!("Expected SpawnCoworker, got {:?}", other),
+    }
+
+    match &effects[1] {
+        Effect::SaveChannelLeadSession {
+            channel_name,
+            session_id,
+        } => {
+            assert_eq!(channel_name, "auth");
+            assert!(
+                session_id.is_empty(),
+                "Placeholder should have empty session_id"
+            );
+        }
+        other => panic!("Expected SaveChannelLeadSession, got {:?}", other),
+    }
+}
+
+#[tokio::test]
+async fn test_recover_channel_lead_sessions_resume_with_saved_session() {
+    // One active topic channel with a saved session ID → SpawnCoworker(ResumeSession)
+    let (_tmp, base_dir) = create_temp_channels(&["payments"]);
+
+    let persistent_state = tokio::sync::Mutex::new(DaemonPersistentState::default());
+    {
+        let mut ps = persistent_state.lock().await;
+        ps.channel_lead_sessions
+            .insert("payments".to_string(), "session-abc-123".to_string());
+    }
+
+    let effects =
+        recover_channel_lead_sessions_from(&persistent_state, "test-repo", &base_dir).await;
+
+    // Expect: only SpawnCoworker(ResumeSession) — no SaveChannelLeadSession since entry exists
+    assert_eq!(effects.len(), 1, "Expected 1 effect, got: {:?}", effects);
+
+    match &effects[0] {
+        Effect::SpawnCoworker(config) => {
+            assert_eq!(config.name, "ch-payments");
+            assert_eq!(
+                config.session_mode,
+                crate::launch::SessionMode::ResumeSession("session-abc-123".to_string())
+            );
+        }
+        other => panic!("Expected SpawnCoworker, got {:?}", other),
+    }
+}
+
+#[tokio::test]
+async fn test_recover_channel_lead_sessions_empty_session_id_spawns_fresh() {
+    // Saved session entry exists but with empty string → should spawn fresh
+    let (_tmp, base_dir) = create_temp_channels(&["auth"]);
+
+    let persistent_state = tokio::sync::Mutex::new(DaemonPersistentState::default());
+    {
+        let mut ps = persistent_state.lock().await;
+        // Empty session ID (placeholder set during a previous fresh spawn)
+        ps.channel_lead_sessions
+            .insert("auth".to_string(), String::new());
+    }
+
+    let effects =
+        recover_channel_lead_sessions_from(&persistent_state, "test-repo", &base_dir).await;
+
+    // With an empty session ID, should spawn fresh (not resume)
+    // No SaveChannelLeadSession since entry already exists in the map
+    assert_eq!(effects.len(), 1, "Expected 1 effect, got: {:?}", effects);
+
+    match &effects[0] {
+        Effect::SpawnCoworker(config) => {
+            assert_eq!(config.name, "ch-auth");
+            assert_eq!(config.session_mode, crate::launch::SessionMode::Fresh);
+        }
+        other => panic!("Expected SpawnCoworker(Fresh), got {:?}", other),
+    }
+}
+
+#[tokio::test]
+async fn test_recover_channel_lead_sessions_multiple_channels() {
+    // Two topic channels: one with a saved session, one without
+    let (_tmp, base_dir) = create_temp_channels(&["web-interface", "payments"]);
+
+    let persistent_state = tokio::sync::Mutex::new(DaemonPersistentState::default());
+    {
+        let mut ps = persistent_state.lock().await;
+        ps.channel_lead_sessions
+            .insert("payments".to_string(), "session-pay-456".to_string());
+        // web-interface has no saved session
+    }
+
+    let effects =
+        recover_channel_lead_sessions_from(&persistent_state, "test-repo", &base_dir).await;
+
+    // payments: 1 SpawnCoworker(Resume)
+    // web-interface: 1 SpawnCoworker(Fresh) + 1 SaveChannelLeadSession placeholder
+    assert_eq!(effects.len(), 3, "Expected 3 effects, got: {:?}", effects);
+
+    let spawns: Vec<_> = effects
+        .iter()
+        .filter(|e| matches!(e, Effect::SpawnCoworker(_)))
+        .collect();
+    let saves: Vec<_> = effects
+        .iter()
+        .filter(|e| matches!(e, Effect::SaveChannelLeadSession { .. }))
+        .collect();
+
+    assert_eq!(spawns.len(), 2, "Should have 2 SpawnCoworker effects");
+    assert_eq!(
+        saves.len(),
+        1,
+        "Should have 1 SaveChannelLeadSession effect"
+    );
+
+    // Verify the resume is for payments
+    let resume = spawns.iter().find(|e| {
+        matches!(
+            e,
+            Effect::SpawnCoworker(c) if c.session_mode == crate::launch::SessionMode::ResumeSession("session-pay-456".to_string())
+        )
+    });
+    assert!(resume.is_some(), "Should have a resume for 'payments'");
+
+    // Verify the fresh is for web-interface (session name is prefixed)
+    let fresh = spawns.iter().find(|e| {
+        matches!(
+            e,
+            Effect::SpawnCoworker(c)
+                if c.name == "ch-web-interface" && c.session_mode == crate::launch::SessionMode::Fresh
+        )
+    });
+    assert!(
+        fresh.is_some(),
+        "Should have a fresh spawn for 'web-interface'"
+    );
+
+    // Verify the placeholder save is for web-interface
+    if let Some(Effect::SaveChannelLeadSession {
+        channel_name,
+        session_id,
+    }) = saves.first().copied()
+    {
+        assert_eq!(channel_name, "web-interface");
+        assert!(session_id.is_empty());
+    }
+}
+
+#[tokio::test]
+async fn test_recover_channel_lead_sessions_mixed_archived_and_active() {
+    // Mix of active and archived channels — only active topic channels get leads
+    let (_tmp, base_dir) = create_temp_channels(&["auth", "billing"]);
+    create_archived_channel(&base_dir, "old-feature");
+
+    let persistent_state = tokio::sync::Mutex::new(DaemonPersistentState::default());
+
+    let effects =
+        recover_channel_lead_sessions_from(&persistent_state, "test-repo", &base_dir).await;
+
+    // auth + billing → 2 SpawnCoworker(Fresh) + 2 SaveChannelLeadSession placeholders
+    // old-feature (archived) → excluded
+    assert_eq!(effects.len(), 4, "Expected 4 effects, got: {:?}", effects);
+
+    let spawns: Vec<_> = effects
+        .iter()
+        .filter(|e| matches!(e, Effect::SpawnCoworker(_)))
+        .collect();
+    assert_eq!(spawns.len(), 2);
+
+    let channel_names: Vec<_> = spawns
+        .iter()
+        .filter_map(|e| {
+            if let Effect::SpawnCoworker(c) = e {
+                Some(c.name.as_str())
+            } else {
+                None
+            }
+        })
+        .collect();
+    // Session names are prefixed with "ch-" to avoid coworker name collisions
+    assert!(channel_names.contains(&"ch-auth"), "auth should be spawned");
+    assert!(
+        channel_names.contains(&"ch-billing"),
+        "billing should be spawned"
+    );
+    assert!(
+        !channel_names.contains(&"old-feature") && !channel_names.contains(&"ch-old-feature"),
+        "old-feature should not be spawned"
+    );
 }
