@@ -28,6 +28,10 @@
   // Filter messages by active channel
   let channelMessages = $derived($messagesByChannel[$activeChannel] || [])
 
+  // Tool call items for the active channel.
+  // Main channel ('midtown') shows the lead's tool calls; topic channels show their channel lead's.
+  let activeChannelToolItems = $derived($agentToolItems[$activeChannel] || [])
+
   // Autocomplete filtering and data preparation
   function getAutocompleteItems(type, query) {
     const lowerQuery = query.toLowerCase()
@@ -617,18 +621,18 @@
         {/each}
       {/if}
 
-      <!-- Tool call activity strips — one per active coworker with recent tool calls -->
-      {#each Object.entries($agentToolItems) as [agentName, toolItems]}
-        {#if toolItems.length > 0}
-          <div class="mt-[3px]">
-            <div class="flex items-center gap-[7px] whitespace-nowrap overflow-hidden text-ellipsis">
-              <span class="font-bold text-[0.85rem]" style="color: {getSenderColor(agentName)}">{agentName}</span>
-              <span class="text-[#3a6a3a] text-[0.78rem] select-none">working…</span>
-            </div>
-            <ToolActivity {agentName} items={toolItems} />
+      <!-- Tool call activity strip for the active channel's lead.
+           Main channel shows the lead's tool calls; topic channels show their channel lead's. -->
+      {#if activeChannelToolItems.length > 0}
+        {@const agentName = $activeChannel === 'midtown' ? 'lead' : $activeChannel}
+        <div class="mt-[3px]">
+          <div class="flex items-center gap-[7px] whitespace-nowrap overflow-hidden text-ellipsis">
+            <span class="font-bold text-[0.85rem]" style="color: {getSenderColor(agentName)}">{agentName}</span>
+            <span class="text-[#3a6a3a] text-[0.78rem] select-none">working…</span>
           </div>
-        {/if}
-      {/each}
+          <ToolActivity {agentName} items={activeChannelToolItems} />
+        </div>
+      {/if}
 
       {#if $leadTyping}
         <div class="flex items-center gap-[7px] py-[5px] mt-[5px] opacity-70">

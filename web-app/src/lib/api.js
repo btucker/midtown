@@ -449,13 +449,15 @@ function handleUpdate(update) {
       }
       break
     case 'universal_items':
-      // Tool call activity from a coworker session.
-      // data: { agent_name: string, items: UniversalItem[] }
-      agentToolItems.update((byAgent) => {
-        const name = update.data.agent_name
-        const existing = byAgent[name] || []
+      // Tool call activity keyed by channel.
+      // data: { agent_name: string, channel: string|null, items: UniversalItem[] }
+      // channel is null for the main lead (store under 'midtown'), or a topic channel name
+      // for channel leads (store under that channel name).
+      agentToolItems.update((byChannel) => {
+        const channelKey = update.data.channel ?? 'midtown'
+        const existing = byChannel[channelKey] || []
         const merged = [...existing, ...update.data.items].slice(-MAX_TOOL_ITEMS_PER_AGENT)
-        return { ...byAgent, [name]: merged }
+        return { ...byChannel, [channelKey]: merged }
       })
       break
     case 'error':

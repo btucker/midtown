@@ -56,23 +56,47 @@ pub fn process_lead_output(events: &HashMap<String, Vec<StreamEvent>>) -> Vec<Ef
     effects
 }
 
-/// Process lead stream events and generate universal event broadcast effects.
+/// Process lead and channel lead stream events and generate universal event broadcast effects.
 ///
-/// Only processes the lead agent's events — coworker tool calls are not shown
-/// to the user. Extracts tool calls and results using the Claude converter and
-/// returns broadcast effects if the lead produced any tool events.
-pub fn process_universal_events(events: &HashMap<String, Vec<StreamEvent>>) -> Vec<Effect> {
+/// For the main channel, only the lead's tool calls are shown. For each topic channel
+/// that has an active channel lead, that lead's tool calls are broadcast with the
+/// channel name so the web UI can display them only when viewing that topic channel.
+///
+/// Coworker tool calls are never shown.
+pub fn process_universal_events(
+    events: &HashMap<String, Vec<StreamEvent>>,
+    channel_lead_sessions: &HashMap<String, String>,
+) -> Vec<Effect> {
     let timestamp = chrono::Utc::now();
     let mut effects = Vec::new();
+
+    // Main lead → shown in the main channel (channel = None).
     if let Some(lead_events) = events.get("lead") {
         let items = crate::universal_events::claude::extract_tool_events(lead_events, timestamp);
         if !items.is_empty() {
             effects.push(Effect::BroadcastUniversalItems {
                 agent_name: "lead".to_string(),
+                channel: None,
                 items,
             });
         }
     }
+
+    // Channel leads → shown only in their respective topic channels.
+    // Each channel lead's session name equals the channel name (see launch::channel_lead_session_name).
+    for channel_name in channel_lead_sessions.keys() {
+        if let Some(cl_events) = events.get(channel_name.as_str()) {
+            let items = crate::universal_events::claude::extract_tool_events(cl_events, timestamp);
+            if !items.is_empty() {
+                effects.push(Effect::BroadcastUniversalItems {
+                    agent_name: channel_name.clone(),
+                    channel: Some(channel_name.clone()),
+                    items,
+                });
+            }
+        }
+    }
+
     effects
 }
 
