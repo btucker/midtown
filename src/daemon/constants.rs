@@ -137,6 +137,13 @@ pub(super) const AUTH_ERROR_SHUTDOWN_COOLDOWN: Duration = Duration::from_secs(30
 /// Number of coworker slots reserved for reviewers.
 pub(super) const REVIEW_HEADROOM: usize = 2;
 
+/// TTL for the negative review cache in `is_pr_reviewed` (2 minutes).
+///
+/// When a PR is confirmed to have no Claude review, we cache that result for this
+/// duration to avoid repeated `gh pr view` GraphQL calls on every poll tick.
+/// After 2 minutes, we re-check in case a review was posted in the meantime.
+pub(super) const PR_REVIEW_NEGATIVE_CACHE_SECS: u64 = 120;
+
 // ---------------------------------------------------------------------------
 // Stuck detection constants (nudge lead when things are stuck)
 // ---------------------------------------------------------------------------

@@ -282,8 +282,13 @@ pub(crate) async fn handle_kanban_data(id: RequestId, state: &DaemonState) -> Re
 // Kanban / PR data helpers
 // ============================================================================
 
-/// TTL for kanban data cache (30 seconds, matching web server's CACHE_TTL).
-const KANBAN_CACHE_TTL: Duration = Duration::from_secs(30);
+/// TTL for kanban data cache (60 seconds).
+///
+/// The cache key includes coworker state (task assignments, workflow phases), so it
+/// invalidates automatically on meaningful changes. The TTL provides a backstop to
+/// ensure freshness even when coworker state is stable. 60s (up from 30s) halves
+/// GraphQL API usage while keeping the kanban board acceptably up-to-date.
+const KANBAN_CACHE_TTL: Duration = Duration::from_secs(60);
 
 /// Timeout for considering the lead session "actively working".
 ///
@@ -344,18 +349,27 @@ fn serialize_tool_activity(
 ///
 /// The hash includes:
 /// - Coworker count
-/// - Each coworker's name, task_id, and progress
+/// - Each coworker's name, task_id, and workflow phase
 ///
-/// When any of these change (coworker spawns/shuts down, task assigned, phase changes, progress updates),
+/// When any of these change (coworker spawns/shuts down, task assigned, phase changes),
 /// the hash changes and the cache misses, ensuring fresh data is fetched.
+/// Progress is intentionally excluded — see `compute_coworker_state_hash` for details.
 fn compute_coworker_state_hash(coworker_records: &HashMap<String, CoworkerRecord>) -> u64 {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
 
     let mut hasher = DefaultHasher::new();
 
-    // Collect (name, task_id, progress) tuples and sort by name for deterministic hashing
-    let mut state: Vec<(&String, Option<u32>, Option<u8>)> = coworker_records
+    // Collect (name, task_id, phase) tuples and sort by name for deterministic hashing.
+    // Progress is intentionally excluded: it changes frequently (every `midtown state --progress N`
+    // call) and including it would cause a cache miss and a new GraphQL API call on every progress
+    // update. The cached response includes progress data that grows stale within the 30s TTL window,
+    // which is acceptable — kanban consumers don't need sub-second progress precision.
+    let mut state: Vec<(
+        &String,
+        Option<u32>,
+        Option<crate::coworker_state::WorkflowPhase>,
+    )> = coworker_records
         .iter()
         .filter_map(|(name, record)| {
             // Skip idle coworkers (they don't appear in the kanban response)
@@ -367,16 +381,18 @@ fn compute_coworker_state_hash(coworker_records: &HashMap<String, CoworkerRecord
                 return None;
             }
 
-            Some((name, record.task_id, record.progress))
+            Some((name, record.task_id, record.workflow_phase))
         })
         .collect();
 
     state.sort_by(|a, b| a.0.cmp(b.0));
 
-    for (name, task_id, progress) in state {
+    for (name, task_id, phase) in state {
         name.hash(&mut hasher);
         task_id.hash(&mut hasher);
-        progress.hash(&mut hasher);
+        // WorkflowPhase derives Hash, so Option<WorkflowPhase> is also Hash. This correctly
+        // distinguishes Developing from PullRequest, etc., while excluding progress.
+        phase.hash(&mut hasher);
     }
 
     hasher.finish()
