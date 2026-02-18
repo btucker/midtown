@@ -2107,9 +2107,10 @@ pub(crate) async fn collect_reviewer_effects_with_source(
             }
         }
 
-        // Skip orphaned PRs (PRs whose author has no active worktree or can't be determined).
-        // These should not get auto-review spawned since the author can't address feedback.
-        // The main PR loop already posts warnings for orphaned PRs with critical issues.
+        // Skip orphaned PRs (PRs whose author has no active worktree, no running coworker,
+        // or can't be determined). These should not get auto-review spawned since the author
+        // can't address feedback. The main PR loop already posts warnings for orphaned PRs
+        // with critical issues.
         let head_ref = pr.get("headRefName").and_then(|s| s.as_str()).unwrap_or("");
         let title = pr.get("title").and_then(|s| s.as_str()).unwrap_or("");
 
@@ -2122,6 +2123,8 @@ pub(crate) async fn collect_reviewer_effects_with_source(
         // 1. Look up by PR number (if the PR was linked to a worktree via webhook)
         // 2. Look up by task ID extracted from PR title (most reliable for task-based PRs)
         // 3. Fall back to branch name lookup (for non-task PRs or legacy workflows)
+        // 4. If no worktree found and the branch identifies a coworker owner, check whether
+        //    that coworker is currently running (active coworkers can always address feedback)
         let worktree = worktree_registry
             .get_by_pr(pr_number)
             .or_else(|| {
@@ -2168,11 +2171,29 @@ pub(crate) async fn collect_reviewer_effects_with_source(
                 } else if let Some(owner) =
                     coworker_from_branch_with_map(head_ref, branch_owners_map)
                 {
-                    debug!(
-                        "PR #{} is orphaned (no worktree found for owner {}, branch: {}), skipping auto-review",
-                        pr_number, owner, head_ref
-                    );
-                    true
+                    // The branch identifies a coworker owner. Only treat as orphaned if
+                    // the coworker is NOT currently running — an active coworker can always
+                    // address review feedback regardless of whether a worktree is registered.
+                    let running_names: std::collections::HashSet<String> = state
+                        .coworkers
+                        .list_running()
+                        .into_iter()
+                        .map(|cw| cw.name.to_lowercase())
+                        .collect();
+                    let is_active = running_names.contains(&owner.to_lowercase());
+                    if is_active {
+                        debug!(
+                            "PR #{} has no worktree for owner {} but coworker is active, not orphaned",
+                            pr_number, owner
+                        );
+                        false
+                    } else {
+                        debug!(
+                            "PR #{} is orphaned (no worktree found for owner {}, branch: {}, coworker not running), skipping auto-review",
+                            pr_number, owner, head_ref
+                        );
+                        true
+                    }
                 } else if super::helpers::is_lead_authored_pr(pr, state.repo_owner.as_deref()) {
                     // PR is authored by the lead (repo owner) but doesn't follow lead/* naming.
                     // The lead can still address feedback from their main worktree.

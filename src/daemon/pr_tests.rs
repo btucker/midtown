@@ -1544,3 +1544,118 @@ fn review_complete_action_to_effects_includes_record_task_assignment() {
         "review_complete_action_to_effects on_success must include RecordTaskAssignment for cross-tick dedup"
     );
 }
+
+/// Bug: Active coworker's PR is incorrectly marked as orphaned when its worktree is missing.
+///
+/// Scenario (from snapshot snapshot-reviewer-not-assigned-pr-1246-20260218-001618.json):
+/// - PR #1246 belongs to "park" (branch: "park/task-1483-kill-ring-yank-v2")
+/// - "park" is an actively running coworker
+/// - Task 1483's worktree was never registered (or was cleaned up)
+/// - No entry in worktree_registry for this PR's task ID
+///
+/// The orphan detection logic checks:
+/// 1. `worktree_registry.get_by_pr(1246)` → None
+/// 2. Extract task_id 1483 from title → no worktree with task_id="1483" → None
+/// 3. `worktree_registry.get_by_branch("park/task-1483-...")` → None
+/// 4. `worktree = None` → check `is_lead_branch` → false
+/// 5. `coworker_from_branch_with_map` → returns `Some("park")` (matches prefix)
+/// 6. **Incorrectly marks PR as orphaned** even though park is actively running
+///
+/// Expected: Active coworker's PR should NOT be marked as orphaned — the coworker
+/// can always address review feedback regardless of worktree status.
+///
+/// Note: This test constructs synthetic state rather than loading the fixture directly.
+/// `collect_reviewer_effects_with_source` takes `&DaemonState`, not `&WorldSnapshot`,
+/// so the fixture (which serializes a `WorldSnapshot`) cannot be used without significant
+/// plumbing to reconstruct `DaemonState` from it. The fixture serves as documentation
+/// of the exact production scenario that triggered the bug.
+#[tokio::test]
+async fn test_active_coworker_pr_without_worktree_is_not_orphaned() {
+    use super::super::snapshot::WorldSnapshot;
+    use crate::coworker::{Coworker, CoworkerStatus};
+
+    // Load the captured snapshot that exhibits the bug scenario
+    let fixture = include_str!(
+        "../../tests/fixtures/snapshot/snapshot-reviewer-not-assigned-pr-1246-20260218-001618.json"
+    );
+    let snap: WorldSnapshot =
+        serde_json::from_str(fixture).expect("Failed to deserialize WorldSnapshot from fixture");
+
+    // Verify the snapshot captures the bug scenario:
+    // park is running and task 1483 has no worktree entry.
+    assert!(
+        snap.active_names.contains("park"),
+        "Snapshot should show park as an active coworker"
+    );
+    let task_1483_worktree = snap
+        .worktree_registry
+        .all_assignments()
+        .values()
+        .find(|a| a.task_id.as_deref() == Some("1483"));
+    assert!(
+        task_1483_worktree.is_none(),
+        "Snapshot should have no worktree entry for task 1483 (the bug scenario)"
+    );
+
+    // PR #1246 in GitHub API format (collect_reviewer_effects_with_source expects this format)
+    let pr = json!({
+        "number": 1246,
+        "headRefName": "park/task-1483-kill-ring-yank-v2",
+        "title": "feat: Add kill ring append for consecutive kills and Ctrl+Y yank [Midtown !1483]",
+        "isDraft": false,
+        "createdAt": "2026-02-17T00:00:00Z",  // Old enough to pass review delay
+        "state": "OPEN",
+        "author": {"login": "btucker"},
+        "mergeable": "MERGEABLE",
+        "statusCheckRollup": null,
+        "reviewDecision": "",
+    });
+
+    let state = make_test_state("midtown");
+
+    // Add "park" as a running coworker — the key setup for this bug
+    let park = Coworker {
+        slot_id: uuid::Uuid::new_v4().to_string(),
+        name: "park".to_string(),
+        status: CoworkerStatus::Running,
+        working_dir: "/tmp/park-worktree".to_string(),
+        started_at: chrono::Utc::now(),
+        current_task: None,
+        session_id: None,
+        model: "sonnet".to_string(),
+        provider: crate::auth::AuthProvider::Claude,
+        profile: "claude@example.com".to_string(),
+    };
+    state.coworkers.insert_for_testing(park);
+
+    // Empty branch_owners_map — the bug manifests because coworker_from_branch_with_map
+    // still identifies "park" as the owner via the branch prefix
+    let branch_owners: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+
+    let effects = collect_reviewer_effects_with_source(
+        Some(&branch_owners),
+        &snap.worktree_registry, // Real snapshot registry: no task 1483 entry
+        &state,
+        &[pr],
+        crate::github_state::AssignmentSource::PollingFallback,
+    )
+    .await;
+
+    // Bug: Previously returned 0 effects (PR incorrectly marked as orphaned)
+    // Expected: Should spawn a reviewer (park is active and can address feedback)
+    assert!(
+        !effects.is_empty(),
+        "Active coworker's PR without worktree should spawn a reviewer, not be marked as orphaned. \
+         PR #1246 belongs to running coworker 'park' but has no worktree for task 1483."
+    );
+
+    let has_reviewer_effect = effects.iter().any(|e| {
+        matches!(e, Effect::SpawnCoworkerWithCallbacks { .. })
+            || matches!(e, Effect::AssignReviewer { pr_number, .. } if *pr_number == 1246)
+    });
+    assert!(
+        has_reviewer_effect,
+        "Expected reviewer spawn effect for PR #1246. Effects: {:#?}",
+        effects
+    );
+}
