@@ -66,6 +66,14 @@ pub(super) const ORPHAN_CHECK_INTERVAL_SECS: u64 = 5;
 /// relevant now that dual-dispatch is fixed and worktree collision guards are in place.
 pub(super) const MINIMUM_COWORKER_LIFETIME: Duration = Duration::from_secs(60);
 
+/// How long an attached session can persist without a detach before being auto-detached (10 min).
+///
+/// If the interactive session ends without a proper `midtown session detach` (terminal crash,
+/// SSH disconnect, wrapper bug), the entry stays in `attached_coworkers` forever and the
+/// lead can never respawn. Auto-detach clears stale entries so `ensure_lead_alive()` can
+/// respawn the lead on the next tick.
+pub(super) const ATTACH_TIMEOUT: Duration = Duration::from_secs(600);
+
 /// Cooldown before the lead session is automatically respawned after stopping (5 minutes).
 /// The lead may have stopped intentionally (auth error, manual detach/reattach). A long
 /// cooldown prevents crash loops where a broken lead respawns repeatedly within seconds.

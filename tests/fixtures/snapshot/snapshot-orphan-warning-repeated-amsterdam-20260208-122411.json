@@ -8,354 +8,354 @@
   "active_reviewers": [],
   "all_tasks": [],
   "api_error_coworkers": [],
-  "attached_coworkers": [],
+  "attached_coworkers": {},
   "busy_coworkers": [],
   "channel_messages": [
     {
-      "content": "🚀 Called in columbus to address merge conflict on PR #783",
+      "content": "\ud83d\ude80 Called in columbus to address merge conflict on PR #783",
       "from": "midtown",
       "id": "83e00dd0-4faf-42b9-a2ad-e5dd91f27a34",
       "timestamp": "2026-02-08T11:37:21.705491Z",
       "type": "text"
     },
     {
-      "content": "🚀 Called in madison to address CI failed on PR #780",
+      "content": "\ud83d\ude80 Called in madison to address CI failed on PR #780",
       "from": "midtown",
       "id": "9be02464-a4de-4480-95b6-b027b84e1aaa",
       "timestamp": "2026-02-08T11:37:21.710087Z",
       "type": "text"
     },
     {
-      "content": "🚀 Called in madison to address CI failed on PR #776",
+      "content": "\ud83d\ude80 Called in madison to address CI failed on PR #776",
       "from": "midtown",
       "id": "c225d5d0-176a-4a85-b7d3-753092046a9b",
       "timestamp": "2026-02-08T11:38:21.142534Z",
       "type": "text"
     },
     {
-      "content": "🚀 Called in columbus to address CI green with feedback on PR #783",
+      "content": "\ud83d\ude80 Called in columbus to address CI green with feedback on PR #783",
       "from": "midtown",
       "id": "b013c764-7ea9-4a73-9f86-17389a5f5365",
       "timestamp": "2026-02-08T11:38:21.146756Z",
       "type": "text"
     },
     {
-      "content": "🚀 Called in madison to address review feedback on PR #780",
+      "content": "\ud83d\ude80 Called in madison to address review feedback on PR #780",
       "from": "midtown",
       "id": "9fb68019-8c71-4b26-8f82-cdb9b27c2e5a",
       "timestamp": "2026-02-08T11:40:21.305509Z",
       "type": "text"
     },
     {
-      "content": "🚀 Called in madison to address review feedback on PR #776",
+      "content": "\ud83d\ude80 Called in madison to address review feedback on PR #776",
       "from": "midtown",
       "id": "24706197-d357-464e-aaf3-d600cc47c378",
       "timestamp": "2026-02-08T11:41:21.108229Z",
       "type": "text"
     },
     {
-      "content": "🚀 Called in madison to address review feedback on PR #769",
+      "content": "\ud83d\ude80 Called in madison to address review feedback on PR #769",
       "from": "midtown",
       "id": "62dd064a-78b2-4863-a3b4-01d24cf99c19",
       "timestamp": "2026-02-08T11:42:20.913297Z",
       "type": "text"
     },
     {
-      "content": "🚀 Called in madison to address review feedback on PR #782",
+      "content": "\ud83d\ude80 Called in madison to address review feedback on PR #782",
       "from": "midtown",
       "id": "7a0438fc-22ce-4810-8a95-4e8b66f7c9fd",
       "timestamp": "2026-02-08T11:43:21.398588Z",
       "type": "text"
     },
     {
-      "content": "🚀 Called in madison to address CI green with feedback on PR #769",
+      "content": "\ud83d\ude80 Called in madison to address CI green with feedback on PR #769",
       "from": "midtown",
       "id": "145fe239-8988-4cb6-a1f5-c352df013524",
       "timestamp": "2026-02-08T11:44:20.985732Z",
       "type": "text"
     },
     {
-      "content": "🚀 Called in madison to address CI failed on PR #782",
+      "content": "\ud83d\ude80 Called in madison to address CI failed on PR #782",
       "from": "midtown",
       "id": "97533565-c9b6-45c8-b1e9-e21c7454d6a8",
       "timestamp": "2026-02-08T11:46:21.352121Z",
       "type": "text"
     },
     {
-      "content": "🚀 Called in columbus to address review feedback on PR #783",
+      "content": "\ud83d\ude80 Called in columbus to address review feedback on PR #783",
       "from": "midtown",
       "id": "6e79dfce-e89f-433a-ad15-1d5f318eda77",
       "timestamp": "2026-02-08T11:46:21.358232Z",
       "type": "text"
     },
     {
-      "content": "🚀 Called in columbus to address merge conflict on PR #783",
+      "content": "\ud83d\ude80 Called in columbus to address merge conflict on PR #783",
       "from": "midtown",
       "id": "ac10eaa5-7c07-4684-a3b1-ca9162a0e29f",
       "timestamp": "2026-02-08T11:48:21.472049Z",
       "type": "text"
     },
     {
-      "content": "🚀 Called in madison to address CI failed on PR #780",
+      "content": "\ud83d\ude80 Called in madison to address CI failed on PR #780",
       "from": "midtown",
       "id": "a9c5337a-40ff-4cf0-bcb8-ce69c2af98da",
       "timestamp": "2026-02-08T11:48:21.476649Z",
       "type": "text"
     },
     {
-      "content": "🚀 Called in madison to address CI failed on PR #776",
+      "content": "\ud83d\ude80 Called in madison to address CI failed on PR #776",
       "from": "midtown",
       "id": "b1d29f06-8c09-47e6-acff-acb06b6b15be",
       "timestamp": "2026-02-08T11:49:21.555996Z",
       "type": "text"
     },
     {
-      "content": "🚀 Called in columbus to address CI green with feedback on PR #783",
+      "content": "\ud83d\ude80 Called in columbus to address CI green with feedback on PR #783",
       "from": "midtown",
       "id": "34a535ca-d2d7-4ba6-a3e0-b0ccb2d3785c",
       "timestamp": "2026-02-08T11:49:21.560967Z",
       "type": "text"
     },
     {
-      "content": "🚀 Called in madison to address review feedback on PR #780",
+      "content": "\ud83d\ude80 Called in madison to address review feedback on PR #780",
       "from": "midtown",
       "id": "19c28c2b-2701-40c3-bf12-1672645f369e",
       "timestamp": "2026-02-08T11:50:21.495867Z",
       "type": "text"
     },
     {
-      "content": "🚀 Called in madison to address review feedback on PR #776",
+      "content": "\ud83d\ude80 Called in madison to address review feedback on PR #776",
       "from": "midtown",
       "id": "6c4584bf-ace9-4199-b44e-ae9748ed2747",
       "timestamp": "2026-02-08T11:52:21.424837Z",
       "type": "text"
     },
     {
-      "content": "🚀 Called in madison to address review feedback on PR #782",
+      "content": "\ud83d\ude80 Called in madison to address review feedback on PR #782",
       "from": "midtown",
       "id": "a5c49990-66d3-483f-86fe-e3f9e200cf07",
       "timestamp": "2026-02-08T11:53:21.513583Z",
       "type": "text"
     },
     {
-      "content": "🚀 Called in madison to address review feedback on PR #769",
+      "content": "\ud83d\ude80 Called in madison to address review feedback on PR #769",
       "from": "midtown",
       "id": "73f6dfbf-edd8-4495-b6c1-325bb487513d",
       "timestamp": "2026-02-08T11:54:21.162576Z",
       "type": "text"
     },
     {
-      "content": "🚀 Called in madison to address CI green with feedback on PR #769",
+      "content": "\ud83d\ude80 Called in madison to address CI green with feedback on PR #769",
       "from": "midtown",
       "id": "181007f1-2af5-4b86-b7a1-4649ce616985",
       "timestamp": "2026-02-08T11:55:21.468569Z",
       "type": "text"
     },
     {
-      "content": "🚀 Called in madison to address CI failed on PR #782",
+      "content": "\ud83d\ude80 Called in madison to address CI failed on PR #782",
       "from": "midtown",
       "id": "155ff39a-766f-470f-94f5-d6a8945cf93b",
       "timestamp": "2026-02-08T11:56:21.511652Z",
       "type": "text"
     },
     {
-      "content": "🚀 Called in columbus to address review feedback on PR #783",
+      "content": "\ud83d\ude80 Called in columbus to address review feedback on PR #783",
       "from": "midtown",
       "id": "52cd07ee-8d86-4235-8151-7e6684874800",
       "timestamp": "2026-02-08T11:56:21.516032Z",
       "type": "text"
     },
     {
-      "content": "🚀 Called in columbus to address merge conflict on PR #783",
+      "content": "\ud83d\ude80 Called in columbus to address merge conflict on PR #783",
       "from": "midtown",
       "id": "89401f98-cb26-49ef-9139-8c6296bd5b67",
       "timestamp": "2026-02-08T11:59:21.096268Z",
       "type": "text"
     },
     {
-      "content": "🚀 Called in madison to address CI failed on PR #780",
+      "content": "\ud83d\ude80 Called in madison to address CI failed on PR #780",
       "from": "midtown",
       "id": "fdb9c34c-57bd-41f8-8622-fc7886605d42",
       "timestamp": "2026-02-08T11:59:21.101062Z",
       "type": "text"
     },
     {
-      "content": "🚀 Called in madison to address CI failed on PR #776",
+      "content": "\ud83d\ude80 Called in madison to address CI failed on PR #776",
       "from": "midtown",
       "id": "c4918c0f-3bd1-4322-b5b9-bdc658c68760",
       "timestamp": "2026-02-08T12:00:21.008605Z",
       "type": "text"
     },
     {
-      "content": "🚀 Called in columbus to address CI green with feedback on PR #783",
+      "content": "\ud83d\ude80 Called in columbus to address CI green with feedback on PR #783",
       "from": "midtown",
       "id": "08ccb9b6-2496-45c4-978f-1a01e9cfa08c",
       "timestamp": "2026-02-08T12:00:21.012913Z",
       "type": "text"
     },
     {
-      "content": "🚀 Called in madison to address review feedback on PR #780",
+      "content": "\ud83d\ude80 Called in madison to address review feedback on PR #780",
       "from": "midtown",
       "id": "6455a080-2a0f-455a-ac05-1b84db3c83ad",
       "timestamp": "2026-02-08T12:01:21.204001Z",
       "type": "text"
     },
     {
-      "content": "🚀 Called in madison to address review feedback on PR #776",
+      "content": "\ud83d\ude80 Called in madison to address review feedback on PR #776",
       "from": "midtown",
       "id": "4270b0b8-c25c-4c55-9d79-96368e555cce",
       "timestamp": "2026-02-08T12:03:21.509100Z",
       "type": "text"
     },
     {
-      "content": "🚀 Called in madison to address review feedback on PR #782",
+      "content": "\ud83d\ude80 Called in madison to address review feedback on PR #782",
       "from": "midtown",
       "id": "dffc0968-a7fd-451d-8566-9f527d65aaee",
       "timestamp": "2026-02-08T12:04:21.231307Z",
       "type": "text"
     },
     {
-      "content": "🚀 Called in madison to address review feedback on PR #769",
+      "content": "\ud83d\ude80 Called in madison to address review feedback on PR #769",
       "from": "midtown",
       "id": "4ce704e9-cede-4e77-99d7-925147ac0087",
       "timestamp": "2026-02-08T12:05:21.225284Z",
       "type": "text"
     },
     {
-      "content": "🚀 Called in madison to address CI green with feedback on PR #769",
+      "content": "\ud83d\ude80 Called in madison to address CI green with feedback on PR #769",
       "from": "midtown",
       "id": "9dbae918-65a8-4e0e-aebc-26878f61ddbb",
       "timestamp": "2026-02-08T12:06:21.435260Z",
       "type": "text"
     },
     {
-      "content": "🚀 Called in madison to address CI failed on PR #782",
+      "content": "\ud83d\ude80 Called in madison to address CI failed on PR #782",
       "from": "midtown",
       "id": "24127ca1-abec-45a1-974e-5f654c86a7e3",
       "timestamp": "2026-02-08T12:07:21.071049Z",
       "type": "text"
     },
     {
-      "content": "🚀 Called in columbus to address review feedback on PR #783",
+      "content": "\ud83d\ude80 Called in columbus to address review feedback on PR #783",
       "from": "midtown",
       "id": "0cd1a7d3-fca7-44a5-aa2e-ef8acebdd1ef",
       "timestamp": "2026-02-08T12:07:21.075463Z",
       "type": "text"
     },
     {
-      "content": "🚀 Called in columbus to address merge conflict on PR #783",
+      "content": "\ud83d\ude80 Called in columbus to address merge conflict on PR #783",
       "from": "midtown",
       "id": "d6d46b25-faa3-459d-9b3f-6c51e0276e8d",
       "timestamp": "2026-02-08T12:09:21.548776Z",
       "type": "text"
     },
     {
-      "content": "🚀 Called in madison to address CI failed on PR #780",
+      "content": "\ud83d\ude80 Called in madison to address CI failed on PR #780",
       "from": "midtown",
       "id": "3c5633f9-6b54-4792-afe3-4ec8967b061e",
       "timestamp": "2026-02-08T12:09:21.552676Z",
       "type": "text"
     },
     {
-      "content": "🚀 Called in madison to address CI failed on PR #776",
+      "content": "\ud83d\ude80 Called in madison to address CI failed on PR #776",
       "from": "midtown",
       "id": "41d356bf-74c7-49b7-bb34-5a6331521577",
       "timestamp": "2026-02-08T12:10:21.470713Z",
       "type": "text"
     },
     {
-      "content": "🚀 Called in columbus to address CI green with feedback on PR #783",
+      "content": "\ud83d\ude80 Called in columbus to address CI green with feedback on PR #783",
       "from": "midtown",
       "id": "d7a86f6c-53e0-4ad4-83be-95abc25f7582",
       "timestamp": "2026-02-08T12:10:21.475526Z",
       "type": "text"
     },
     {
-      "content": "🚀 Called in madison to address review feedback on PR #780",
+      "content": "\ud83d\ude80 Called in madison to address review feedback on PR #780",
       "from": "midtown",
       "id": "2f513501-f8e6-4461-a24f-0a3acdabfd83",
       "timestamp": "2026-02-08T12:11:21.568611Z",
       "type": "text"
     },
     {
-      "content": "🚀 Called in madison to address review feedback on PR #776",
+      "content": "\ud83d\ude80 Called in madison to address review feedback on PR #776",
       "from": "midtown",
       "id": "f7d7b993-0ffe-435c-8a7e-6d91b76d0a94",
       "timestamp": "2026-02-08T12:14:21.183129Z",
       "type": "text"
     },
     {
-      "content": "🚀 Called in madison to address review feedback on PR #782",
+      "content": "\ud83d\ude80 Called in madison to address review feedback on PR #782",
       "from": "midtown",
       "id": "5c72d55d-9fd0-400b-a866-dc1a43d8a622",
       "timestamp": "2026-02-08T12:15:21.401237Z",
       "type": "text"
     },
     {
-      "content": "🚀 Called in madison to address review feedback on PR #769",
+      "content": "\ud83d\ude80 Called in madison to address review feedback on PR #769",
       "from": "midtown",
       "id": "0a8d485e-21bb-498f-b8a2-33daaf7797df",
       "timestamp": "2026-02-08T12:16:20.989172Z",
       "type": "text"
     },
     {
-      "content": "🚀 Called in madison to address CI failed on PR #782",
+      "content": "\ud83d\ude80 Called in madison to address CI failed on PR #782",
       "from": "midtown",
       "id": "393ef0eb-3f07-4889-8039-22a03a57c6e9",
       "timestamp": "2026-02-08T12:17:21.220148Z",
       "type": "text"
     },
     {
-      "content": "🚀 Called in columbus to address review feedback on PR #783",
+      "content": "\ud83d\ude80 Called in columbus to address review feedback on PR #783",
       "from": "midtown",
       "id": "cb5b987e-d7e3-48ba-88ad-a44c02963215",
       "timestamp": "2026-02-08T12:17:21.225065Z",
       "type": "text"
     },
     {
-      "content": "🚀 Called in madison to address CI green with feedback on PR #769",
+      "content": "\ud83d\ude80 Called in madison to address CI green with feedback on PR #769",
       "from": "midtown",
       "id": "09f67972-30f9-41dd-a7f7-b87bfa04fd80",
       "timestamp": "2026-02-08T12:18:21.018627Z",
       "type": "text"
     },
     {
-      "content": "🚀 Called in columbus to address merge conflict on PR #783",
+      "content": "\ud83d\ude80 Called in columbus to address merge conflict on PR #783",
       "from": "midtown",
       "id": "5aeb3bdc-d1ba-4602-917c-0996256d4983",
       "timestamp": "2026-02-08T12:20:21.555645Z",
       "type": "text"
     },
     {
-      "content": "🚀 Called in madison to address CI failed on PR #780",
+      "content": "\ud83d\ude80 Called in madison to address CI failed on PR #780",
       "from": "midtown",
       "id": "f8c84eba-056d-40ea-ab7b-64d647f554f7",
       "timestamp": "2026-02-08T12:20:21.559998Z",
       "type": "text"
     },
     {
-      "content": "🚀 Called in madison to address CI failed on PR #776",
+      "content": "\ud83d\ude80 Called in madison to address CI failed on PR #776",
       "from": "midtown",
       "id": "2c1c567b-acde-4e1c-8675-8fa42d09f573",
       "timestamp": "2026-02-08T12:21:21.135846Z",
       "type": "text"
     },
     {
-      "content": "🚀 Called in columbus to address CI green with feedback on PR #783",
+      "content": "\ud83d\ude80 Called in columbus to address CI green with feedback on PR #783",
       "from": "midtown",
       "id": "5783a7ba-e971-44a2-a843-e895174d3363",
       "timestamp": "2026-02-08T12:21:21.140081Z",
       "type": "text"
     },
     {
-      "content": "🚀 Called in madison to address review feedback on PR #780",
+      "content": "\ud83d\ude80 Called in madison to address review feedback on PR #780",
       "from": "midtown",
       "id": "26d9aa5a-06fd-4244-a6be-11a79a361cb7",
       "timestamp": "2026-02-08T12:22:21.384756Z",
       "type": "text"
     },
     {
-      "content": "⚠️ @lead Orphaned worktrees with unmerged commits (not on any PR): amsterdam. Please investigate and decide whether to merge or delete these branches.",
+      "content": "\u26a0\ufe0f @lead Orphaned worktrees with unmerged commits (not on any PR): amsterdam. Please investigate and decide whether to merge or delete these branches.",
       "from": "system",
       "id": "e0da9e67-d0b0-4da0-a3cc-0d1f12604f6d",
       "timestamp": "2026-02-08T12:22:30.732709Z",

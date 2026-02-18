@@ -139,7 +139,7 @@ fn make_dev_limit_snapshot(
         coworker_start_times: std::collections::HashMap::new(),
         coworker_stop_times: std::collections::HashMap::new(),
         headless_process_health: std::collections::HashMap::new(),
-        attached_coworkers: std::collections::HashSet::new(),
+        attached_coworkers: std::collections::HashMap::new(),
         in_progress_tasks: vec![],
         busy_coworkers: std::collections::HashSet::new(),
         coworker_task_assignments: std::collections::HashMap::new(),

@@ -320,6 +320,90 @@ fn test_usage_limit_nudge_dedup() {
     );
 }
 
+/// Test the two-tick auto-detach → respawn sequence for a stale attached lead.
+///
+/// This is the core scenario the fix addresses: the lead is stuck in "attached" state
+/// because the interactive session ended without a detach call (crash/SSH disconnect).
+///
+/// Expected sequence:
+/// - Tick 1: `detect_stale_attached_sessions` emits `AutoDetachCoworker { name: "lead" }`.
+///   `ensure_lead_alive` sees lead still in `attached_coworkers` (same immutable snapshot),
+///   so it does NOT spawn the lead. Harness applies `AutoDetachCoworker`, clearing the entry.
+/// - Tick 2: `detect_stale_attached_sessions` emits nothing (entry gone).
+///   `ensure_lead_alive` sees lead not in `attached_coworkers` and not running, so it spawns.
+#[test]
+fn test_auto_detach_stale_lead_then_respawn() {
+    let fixture =
+        include_str!("fixtures/snapshot/snapshot-reviewer-not-spawning-20260214-003545.json");
+    let mut harness = MultiTickHarness::from_json(fixture).unwrap();
+
+    // Set up: lead is attached but stale (15 min ago, past the 10-min ATTACH_TIMEOUT).
+    // Also ensure lead is not running so ensure_lead_alive would spawn it once detached.
+    let stale_attach_time = harness.snapshot().now_utc - chrono::Duration::minutes(15);
+    harness
+        .snapshot_mut()
+        .attached_coworkers
+        .insert("lead".to_string(), stale_attach_time);
+    harness.snapshot_mut().active_names.remove("lead");
+    harness
+        .snapshot_mut()
+        .active_coworkers
+        .retain(|c| c.name.to_lowercase() != "lead");
+    harness
+        .snapshot_mut()
+        .running_coworkers
+        .retain(|c| c.name.to_lowercase() != "lead");
+
+    // Tick 1: detect_stale_attached_sessions emits AutoDetachCoworker;
+    //         ensure_lead_alive sees lead as still attached (same snapshot) and does NOT spawn.
+    let effects1 = harness.tick(&DaemonEvent::TaskDispatchTick);
+
+    let auto_detach_count = effects1
+        .iter()
+        .filter(|e| matches!(e, Effect::AutoDetachCoworker { name } if name == "lead"))
+        .count();
+    let spawn_count_1 = effects1
+        .iter()
+        .filter(|e| matches!(e, Effect::SpawnCoworker(c) if c.name.to_lowercase() == "lead"))
+        .count();
+
+    assert_eq!(
+        auto_detach_count, 1,
+        "Tick 1 should emit AutoDetachCoworker for stale lead"
+    );
+    assert_eq!(
+        spawn_count_1, 0,
+        "Tick 1 should NOT spawn lead — respawn happens on the next tick after detach"
+    );
+
+    // After tick 1, harness applied AutoDetachCoworker, so lead is no longer in attached_coworkers.
+    assert!(
+        !harness.snapshot().attached_coworkers.contains_key("lead"),
+        "After tick 1, lead should be removed from attached_coworkers"
+    );
+
+    // Tick 2: lead not attached, not running → ensure_lead_alive spawns it.
+    let effects2 = harness.tick(&DaemonEvent::TaskDispatchTick);
+
+    let auto_detach_count_2 = effects2
+        .iter()
+        .filter(|e| matches!(e, Effect::AutoDetachCoworker { name } if name == "lead"))
+        .count();
+    let spawn_count_2 = effects2
+        .iter()
+        .filter(|e| matches!(e, Effect::SpawnCoworker(c) if c.name.to_lowercase() == "lead"))
+        .count();
+
+    assert_eq!(
+        auto_detach_count_2, 0,
+        "Tick 2 should not emit AutoDetachCoworker again (entry already cleared)"
+    );
+    assert_eq!(
+        spawn_count_2, 1,
+        "Tick 2 should spawn the lead now that it is no longer attached"
+    );
+}
+
 /// Test multi-tick behavior with a long sequence (5 ticks).
 ///
 /// Verifies that effects monotonically decrease (or stay at zero) as state stabilizes.

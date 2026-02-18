@@ -331,7 +331,7 @@ pub(super) async fn handle_session_resolve(
             let coworker = running_coworkers.get(&name);
             let provider = info.provider.unwrap_or(crate::auth::AuthProvider::Claude);
             let platform = platform_for_provider(info.provider);
-            let attached_now = attached.contains(&name);
+            let attached_now = attached.contains_key(&name);
             let running = coworker.is_some();
             let cwd = coworker
                 .map(|cw| cw.working_dir.clone())
@@ -417,7 +417,7 @@ pub(super) async fn handle_session_attach(
     // Guard against double-attach
     {
         let attached = state.attached_coworkers.lock().unwrap();
-        if attached.contains(&name.to_lowercase()) {
+        if attached.contains_key(&name.to_lowercase()) {
             return Response::error(
                 id,
                 RpcError::new(-32602, format!("Coworker '{}' is already attached", name)),
@@ -537,10 +537,11 @@ pub(super) async fn handle_session_attach(
         );
     }
 
-    // Mark as attached so stuck detection and orphan recovery skip this coworker
+    // Mark as attached so stuck detection and orphan recovery skip this coworker.
+    // Store attach timestamp for stale-session auto-detach.
     {
         let mut attached = state.attached_coworkers.lock().unwrap();
-        attached.insert(name.to_lowercase());
+        attached.insert(name.to_lowercase(), chrono::Utc::now());
     }
 
     // Post to channel
@@ -719,7 +720,7 @@ pub(super) async fn handle_session_list(id: RequestId, state: &DaemonState) -> R
         .headless_sessions
         .iter()
         .map(|(name, info)| {
-            let status = if attached.contains(&name.to_lowercase()) {
+            let status = if attached.contains_key(&name.to_lowercase()) {
                 "attached"
             } else if running_coworkers.contains(&name.to_lowercase()) {
                 "running"

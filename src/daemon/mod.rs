@@ -76,8 +76,8 @@ pub use events::DaemonEvent;
 #[doc(hidden)]
 pub use health::{
     check_and_restart_stuck_reviewers, check_and_restart_tool_name_conflicts,
-    check_and_shutdown_idle_coworkers, check_for_usage_limits, ensure_lead_alive,
-    maybe_nudge_usage_limit_expiry,
+    check_and_shutdown_idle_coworkers, check_for_usage_limits, detect_stale_attached_sessions,
+    ensure_lead_alive, maybe_nudge_usage_limit_expiry,
 };
 #[doc(hidden)]
 pub use pr::{collect_merged_pr_cleanup_effects, reconcile_orphaned_prs};
@@ -550,8 +550,9 @@ pub(crate) struct DaemonState {
     /// When the Lead attaches to a headless coworker via `midtown session attach`,
     /// the headless process is paused and replaced with an interactive session.
     /// During this period, the coworker must be exempt from stuck detection and
-    /// orphan recovery. Entries are added on attach, removed on detach.
-    attached_coworkers: std::sync::Mutex<HashSet<String>>,
+    /// orphan recovery. Entries are added on attach, removed on detach or via
+    /// auto-detach (`Effect::AutoDetachCoworker`) after `ATTACH_TIMEOUT`.
+    attached_coworkers: std::sync::Mutex<HashMap<String, chrono::DateTime<chrono::Utc>>>,
     /// Manages running headless coworker sessions.
     ///
     /// Owns the child processes and provides spawn/nudge/shutdown primitives.
@@ -863,7 +864,7 @@ impl DaemonState {
             reviewer_escalations_posted: std::sync::Mutex::new(HashSet::new()),
             review_note_tracker: std::sync::Mutex::new(HashMap::new()),
             headless_health: std::sync::RwLock::new(HashMap::new()),
-            attached_coworkers: std::sync::Mutex::new(HashSet::new()),
+            attached_coworkers: std::sync::Mutex::new(HashMap::new()),
             session_manager: sessions::SessionManager::new(session_manager_repo_name),
             rpc_response_cache: Mutex::new(HashMap::new()),
             kanban_cache: rpc_kanban::KanbanCache::new(),

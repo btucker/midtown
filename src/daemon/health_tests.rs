@@ -46,7 +46,7 @@ fn test_usage_limit_nudge_only_targets_running_coworkers() {
         coworker_start_times: HashMap::new(),
         coworker_stop_times: HashMap::new(),
         headless_process_health: HashMap::new(),
-        attached_coworkers: HashSet::new(),
+        attached_coworkers: HashMap::new(),
         in_progress_tasks: vec![],
         busy_coworkers: HashSet::new(),
         coworker_task_assignments: HashMap::new(),
@@ -211,7 +211,7 @@ fn test_check_for_usage_limits_with_reset_time() {
         coworker_start_times: HashMap::new(),
         coworker_stop_times: HashMap::new(),
         headless_process_health: health,
-        attached_coworkers: HashSet::new(),
+        attached_coworkers: HashMap::new(),
         busy_coworkers: HashSet::new(),
         in_progress_tasks: vec![],
         pending_tasks_without_owners: vec![],
@@ -296,7 +296,7 @@ fn test_check_for_usage_limits_already_scheduled() {
         coworker_start_times: HashMap::new(),
         coworker_stop_times: HashMap::new(),
         headless_process_health: HashMap::new(),
-        attached_coworkers: HashSet::new(),
+        attached_coworkers: HashMap::new(),
         busy_coworkers: HashSet::new(),
         in_progress_tasks: vec![],
         pending_tasks_without_owners: vec![],
@@ -416,7 +416,7 @@ fn empty_snap() -> snapshot::WorldSnapshot {
         coworker_start_times: HashMap::new(),
         coworker_stop_times: HashMap::new(),
         headless_process_health: HashMap::new(),
-        attached_coworkers: HashSet::new(),
+        attached_coworkers: HashMap::new(),
         busy_coworkers: HashSet::new(),
         in_progress_tasks: vec![],
         pending_tasks_without_owners: vec![],
@@ -534,10 +534,67 @@ fn ensure_lead_alive_respawns_after_cooldown() {
 #[test]
 fn ensure_lead_alive_skips_when_attached() {
     let mut snap = empty_snap();
-    snap.attached_coworkers.insert("lead".to_string());
+    snap.attached_coworkers
+        .insert("lead".to_string(), chrono::Utc::now());
     let effects = ensure_lead_alive(&snap);
     assert!(
         effects.is_empty(),
         "Should not spawn headless lead when attached interactively"
+    );
+}
+
+// -----------------------------------------------------------------------
+// detect_stale_attached_sessions tests
+// -----------------------------------------------------------------------
+
+#[test]
+fn detect_stale_attached_sessions_no_op_when_recent() {
+    // Attached 5 minutes ago — well within the 10-minute timeout
+    let mut snap = empty_snap();
+    let recent = snap.now_utc - chrono::Duration::minutes(5);
+    snap.attached_coworkers.insert("lead".to_string(), recent);
+    let effects = detect_stale_attached_sessions(&snap);
+    assert!(
+        effects.is_empty(),
+        "Session attached 5 min ago should not be auto-detached (timeout is 10 min)"
+    );
+}
+
+#[test]
+fn detect_stale_attached_sessions_auto_detaches_after_timeout() {
+    // Attached 15 minutes ago — past the 10-minute timeout
+    let mut snap = empty_snap();
+    let stale = snap.now_utc - chrono::Duration::minutes(15);
+    snap.attached_coworkers.insert("lead".to_string(), stale);
+    let effects = detect_stale_attached_sessions(&snap);
+    assert_eq!(
+        effects.len(),
+        1,
+        "Session attached 15 min ago should be auto-detached"
+    );
+    assert!(
+        matches!(&effects[0], Effect::AutoDetachCoworker { name } if name == "lead"),
+        "Effect should be AutoDetachCoworker for lead"
+    );
+}
+
+#[test]
+fn detect_stale_attached_sessions_handles_multiple() {
+    // One stale (15 min), one fresh (5 min) — only stale gets detached
+    let mut snap = empty_snap();
+    let stale = snap.now_utc - chrono::Duration::minutes(15);
+    let fresh = snap.now_utc - chrono::Duration::minutes(5);
+    snap.attached_coworkers.insert("lead".to_string(), stale);
+    snap.attached_coworkers
+        .insert("amsterdam".to_string(), fresh);
+    let effects = detect_stale_attached_sessions(&snap);
+    assert_eq!(
+        effects.len(),
+        1,
+        "Only the stale session should be auto-detached"
+    );
+    assert!(
+        matches!(&effects[0], Effect::AutoDetachCoworker { name } if name == "lead"),
+        "Effect should be AutoDetachCoworker for lead (the stale one)"
     );
 }

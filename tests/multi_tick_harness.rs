@@ -59,7 +59,7 @@ use midtown::tasks::{Task, TaskStatus};
 ///
 /// ### TaskDispatchTick
 /// - Called: `reset_orphaned_tasks`, `check_for_duplicate_task_workers`,
-///   `ensure_lead_alive`
+///   `detect_stale_attached_sessions`, `ensure_lead_alive`
 /// - Skipped (needs DaemonState): `check_and_recover_orphans`,
 ///   `spawn_for_pending_tasks`, `check_and_respawn_dead_processes`,
 ///   `check_and_fire_reminders`
@@ -126,6 +126,9 @@ impl MultiTickHarness {
                 let mut effects = Vec::new();
                 effects.extend(midtown::daemon::reset_orphaned_tasks(&self.snapshot));
                 effects.extend(midtown::daemon::check_for_duplicate_task_workers(
+                    &self.snapshot,
+                ));
+                effects.extend(midtown::daemon::detect_stale_attached_sessions(
                     &self.snapshot,
                 ));
                 effects.extend(midtown::daemon::ensure_lead_alive(&self.snapshot));
@@ -222,6 +225,9 @@ impl MultiTickHarness {
                 }
                 Effect::CreateTask { subject, pr, .. } => {
                     self.create_task(subject, *pr);
+                }
+                Effect::AutoDetachCoworker { name } => {
+                    self.snapshot.attached_coworkers.remove(name);
                 }
                 Effect::RecordCooldown { .. } => {
                     // Cooldowns are tracked in DaemonState, not WorldSnapshot.

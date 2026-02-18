@@ -161,7 +161,7 @@ messages through a poll+ack contract.
 
 **DaemonState fields for intercom support:**
 - `headed_sessions: Mutex<HashMap<String, HeadedSessionState>>` — Per-session queue + lease.
-- `attached_coworkers: Mutex<HashSet<String>>` — Tracks interactive attach/detach state for headless coworkers.
+- `attached_coworkers: Mutex<HashMap<String, DateTime<Utc>>>` — Tracks interactive attach/detach state for headless coworkers. Keys are coworker names; values are the attach timestamp. Entries are added on `midtown session attach`, removed on `midtown session detach` or via `Effect::AutoDetachCoworker` (auto-detach after `ATTACH_TIMEOUT` = 10 min, to recover from crash/disconnect without detach).
 
 ## Reminders
 
