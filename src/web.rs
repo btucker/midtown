@@ -142,6 +142,7 @@ impl Default for WebConfig {
 pub struct MobileChannelPost {
     pub content: String,
     pub channel: Option<String>,
+    pub thread_parent_id: Option<String>,
 }
 
 /// Shared state for WebSocket connections
@@ -224,6 +225,8 @@ pub enum WebUpdate {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ChannelMessageData {
+    /// Unique message identifier
+    pub id: String,
     pub from: String,
     pub content: String,
     pub timestamp: String,
@@ -235,6 +238,10 @@ pub struct ChannelMessageData {
     /// Optional source channel for cross-posted insights (None if not a cross-post)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_channel: Option<String>,
+    /// Optional thread parent message ID. When set, this message is a reply
+    /// in a thread started by the message with this ID.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thread_parent_id: Option<String>,
 }
 
 #[allow(dead_code)] // Used by serde default attribute
@@ -309,6 +316,8 @@ pub enum ClientMessage {
         content: String,
         #[serde(default)]
         channel: Option<String>,
+        #[serde(default)]
+        thread_parent_id: Option<String>,
     },
     /// Request full channel history
     #[serde(rename = "get_history")]
@@ -466,6 +475,9 @@ async fn api_channels_create(
 struct ChannelHistoryQuery {
     /// Optional channel name to filter by. If not provided, returns all messages from the main channel.
     channel: Option<String>,
+    /// Optional thread parent ID to filter by. If provided, only return messages
+    /// that are replies to the message with this ID.
+    thread_parent_id: Option<String>,
 }
 
 /// Get channel message history
@@ -500,15 +512,24 @@ async fn api_channel_history(
 
     let response: Vec<ChannelMessageData> = messages
         .into_iter()
+        .filter(|m| {
+            // If thread_parent_id filter is specified, only return messages in that thread
+            match &params.thread_parent_id {
+                Some(parent_id) => m.thread_parent_id.as_deref() == Some(parent_id.as_str()),
+                None => true, // No filter: return all messages (backward compatible)
+            }
+        })
         .map(|m| {
             let channel = m.channel_name().to_string();
             ChannelMessageData {
+                id: m.id.clone(),
                 from: m.from,
                 content: m.content,
                 timestamp: m.timestamp.to_rfc3339(),
                 msg_type: format!("{:?}", m.message_type).to_lowercase(),
                 channel,
                 source_channel: m.source_channel,
+                thread_parent_id: m.thread_parent_id,
             }
         })
         .collect();
@@ -1622,7 +1643,11 @@ async fn handle_client_message(text: &str, state: &Arc<WebState>) -> Result<(), 
         serde_json::from_str(text).map_err(|e| format!("Invalid message format: {}", e))?;
 
     match msg {
-        ClientMessage::SendMessage { content, channel } => {
+        ClientMessage::SendMessage {
+            content,
+            channel,
+            thread_parent_id,
+        } => {
             // Forward to the daemon for processing (handles channel write,
             // WebSocket broadcast, and side-effects like nudging the Lead)
             state
@@ -1630,6 +1655,7 @@ async fn handle_client_message(text: &str, state: &Arc<WebState>) -> Result<(), 
                 .send(MobileChannelPost {
                     content: content.clone(),
                     channel: channel.clone(),
+                    thread_parent_id: thread_parent_id.clone(),
                 })
                 .await
                 .map_err(|e| format!("Failed to forward message to daemon: {}", e))?;
@@ -1811,12 +1837,14 @@ pub fn broadcast_coworker_status(
 /// Build a `WebUpdate` for a channel message.
 pub fn channel_message_update(message: &Message) -> WebUpdate {
     WebUpdate::ChannelMessage(ChannelMessageData {
+        id: message.id.clone(),
         from: message.from.clone(),
         content: message.content.clone(),
         timestamp: message.timestamp.to_rfc3339(),
         msg_type: format!("{:?}", message.message_type).to_lowercase(),
         channel: message.channel_name().to_string(),
         source_channel: message.source_channel.clone(),
+        thread_parent_id: message.thread_parent_id.clone(),
     })
 }
 
@@ -1834,9 +1862,14 @@ mod tests {
         let json = r#"{"type": "send_message", "content": "Hello world"}"#;
         let msg: ClientMessage = serde_json::from_str(json).unwrap();
         match msg {
-            ClientMessage::SendMessage { content, channel } => {
+            ClientMessage::SendMessage {
+                content,
+                channel,
+                thread_parent_id,
+            } => {
                 assert_eq!(content, "Hello world");
                 assert_eq!(channel, None); // No channel specified
+                assert_eq!(thread_parent_id, None);
             }
             _ => panic!("Expected SendMessage"),
         }
@@ -1847,9 +1880,14 @@ mod tests {
         let json = r#"{"type": "send_message", "content": "Hello", "channel": "auth-refactor"}"#;
         let msg: ClientMessage = serde_json::from_str(json).unwrap();
         match msg {
-            ClientMessage::SendMessage { content, channel } => {
+            ClientMessage::SendMessage {
+                content,
+                channel,
+                thread_parent_id,
+            } => {
                 assert_eq!(content, "Hello");
                 assert_eq!(channel, Some("auth-refactor".to_string()));
+                assert_eq!(thread_parent_id, None);
             }
             _ => panic!("Expected SendMessage"),
         }
@@ -1888,12 +1926,14 @@ mod tests {
     #[test]
     fn test_web_update_serialization() {
         let update = WebUpdate::ChannelMessage(ChannelMessageData {
+            id: "test-id".to_string(),
             from: "test".to_string(),
             content: "Hello".to_string(),
             timestamp: "2024-01-01T00:00:00Z".to_string(),
             msg_type: "text".to_string(),
             channel: "midtown".to_string(),
             source_channel: None,
+            thread_parent_id: None,
         });
 
         let json = serde_json::to_string(&update).unwrap();
@@ -2225,12 +2265,14 @@ mod tests {
     #[test]
     fn test_source_channel_omitted_in_serialization_when_none() {
         let data = ChannelMessageData {
+            id: "test-id".to_string(),
             from: "test".to_string(),
             content: "Hello".to_string(),
             timestamp: "2024-01-01T00:00:00Z".to_string(),
             msg_type: "text".to_string(),
             channel: "midtown".to_string(),
             source_channel: None,
+            thread_parent_id: None,
         };
         let json = serde_json::to_string(&data).unwrap();
         // skip_serializing_if = "Option::is_none" should omit source_channel
@@ -2251,12 +2293,14 @@ mod tests {
         // Requirement 2: WebSocket broadcasts include channel field
         // ChannelMessageData includes a channel field that defaults to "midtown"
         let msg_with_channel = ChannelMessageData {
+            id: "test-id-1".to_string(),
             from: "park".to_string(),
             content: "test message".to_string(),
             timestamp: "2024-01-01T00:00:00Z".to_string(),
             msg_type: "text".to_string(),
             channel: "auth-refactor".to_string(),
             source_channel: None,
+            thread_parent_id: None,
         };
         assert_eq!(msg_with_channel.channel, "auth-refactor");
 
@@ -2266,12 +2310,14 @@ mod tests {
 
         // Default channel behavior
         let msg_default = ChannelMessageData {
+            id: "test-id-2".to_string(),
             from: "test".to_string(),
             content: "hello".to_string(),
             timestamp: "2024-01-01T00:00:00Z".to_string(),
             msg_type: "text".to_string(),
             channel: default_channel(),
             source_channel: None,
+            thread_parent_id: None,
         };
         assert_eq!(msg_default.channel, "midtown");
 
@@ -2525,5 +2571,103 @@ mod tests {
         assert!(json.contains("lexington"));
         assert!(json.contains("Should I proceed with the migration?"));
         assert!(json.contains(r#""id":42"#));
+    }
+
+    #[test]
+    fn test_send_message_with_thread_parent_id() {
+        let json = r#"{"type": "send_message", "content": "thread reply", "thread_parent_id": "parent-uuid-123"}"#;
+        let msg: ClientMessage = serde_json::from_str(json).unwrap();
+        match msg {
+            ClientMessage::SendMessage {
+                content,
+                channel,
+                thread_parent_id,
+            } => {
+                assert_eq!(content, "thread reply");
+                assert_eq!(channel, None);
+                assert_eq!(thread_parent_id, Some("parent-uuid-123".to_string()));
+            }
+            _ => panic!("Expected SendMessage"),
+        }
+    }
+
+    #[test]
+    fn test_channel_message_data_with_thread_parent_id() {
+        let data = ChannelMessageData {
+            id: "msg-1".to_string(),
+            from: "park".to_string(),
+            content: "thread reply".to_string(),
+            timestamp: "2024-01-01T00:00:00Z".to_string(),
+            msg_type: "text".to_string(),
+            channel: "midtown".to_string(),
+            source_channel: None,
+            thread_parent_id: Some("parent-uuid-123".to_string()),
+        };
+        let json = serde_json::to_string(&data).unwrap();
+        assert!(json.contains("thread_parent_id"));
+        assert!(json.contains("parent-uuid-123"));
+        assert!(json.contains("\"id\":\"msg-1\""));
+    }
+
+    #[test]
+    fn test_channel_message_data_thread_parent_id_omitted_when_none() {
+        let data = ChannelMessageData {
+            id: "msg-2".to_string(),
+            from: "test".to_string(),
+            content: "top-level message".to_string(),
+            timestamp: "2024-01-01T00:00:00Z".to_string(),
+            msg_type: "text".to_string(),
+            channel: "midtown".to_string(),
+            source_channel: None,
+            thread_parent_id: None,
+        };
+        let json = serde_json::to_string(&data).unwrap();
+        assert!(!json.contains("thread_parent_id"));
+    }
+
+    #[test]
+    fn test_channel_message_update_includes_thread_parent_id() {
+        let mut msg = crate::message::Message::text("lexington", "thread reply");
+        msg.thread_parent_id = Some("parent-abc".to_string());
+        let update = channel_message_update(&msg);
+        match update {
+            WebUpdate::ChannelMessage(data) => {
+                assert_eq!(data.thread_parent_id, Some("parent-abc".to_string()));
+                assert!(!data.id.is_empty(), "id should be populated from message");
+            }
+            _ => panic!("Expected ChannelMessage"),
+        }
+    }
+
+    #[test]
+    fn test_channel_message_update_thread_parent_id_none_for_top_level() {
+        let msg = crate::message::Message::text("madison", "top-level");
+        let update = channel_message_update(&msg);
+        match update {
+            WebUpdate::ChannelMessage(data) => {
+                assert_eq!(data.thread_parent_id, None);
+            }
+            _ => panic!("Expected ChannelMessage"),
+        }
+    }
+
+    #[test]
+    fn test_mobile_channel_post_with_thread_parent_id() {
+        let post = MobileChannelPost {
+            content: "thread reply from mobile".to_string(),
+            channel: Some("auth".to_string()),
+            thread_parent_id: Some("parent-xyz".to_string()),
+        };
+        assert_eq!(post.thread_parent_id, Some("parent-xyz".to_string()));
+    }
+
+    #[test]
+    fn test_mobile_channel_post_without_thread_parent_id() {
+        let post = MobileChannelPost {
+            content: "regular message".to_string(),
+            channel: None,
+            thread_parent_id: None,
+        };
+        assert_eq!(post.thread_parent_id, None);
     }
 }
