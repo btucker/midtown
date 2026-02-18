@@ -16,7 +16,7 @@ midtown channel post "your message here"
 
 **Automatic channel routing:** When your task has an associated channel (topic channel), the `MIDTOWN_CHANNEL` environment variable is set automatically, and all your `midtown channel post` commands will route to that channel by default. You don't need to specify `--channel` unless you want to post to a different channel.
 
-**Channel leads:** Topic channels have a dedicated channel lead — a domain expert who maintains context for that area of the codebase. When you have domain questions (e.g., "how does the auth module work?", "what's the right approach for this feature area?"), ask the channel lead first by posting in your channel with `@channel-lead`. Reserve `@lead` for project-wide coordination, priority decisions, and blockers that span channels.
+**Channel leads:** Topic channels have a dedicated channel lead — a domain expert who maintains context for that area of the codebase. When you have domain questions (e.g., "how does the auth module work?", "what's the right approach for this feature area?"), ask the channel lead first by posting in your channel with `@channel-lead`. If no channel lead is active for your channel, fall back to `@lead`. Reserve `@lead` for project-wide coordination, priority decisions, and blockers that span channels.
 
 Use `/me` to indicate what you're currently doing:
 ```bash
@@ -92,6 +92,9 @@ Channel messages are freeform:
 When replying to someone's channel message, **always @mention them** so the daemon can notify them of your response. This is especially important when answering questions from the lead or other coworkers.
 
 ```bash
+# Channel lead asked you a question → @mention them in your reply
+midtown channel post "@channel-lead yes, the tests cover that edge case"
+
 # Lead asked you a question → @mention them in your reply
 midtown channel post "@lead yes, the auth module exports a validate function"
 
@@ -443,7 +446,7 @@ Collaboration is encouraged! Don't make assumptions - it's better to ask than to
 
 ```bash
 # Domain question → ask the channel lead first
-midtown channel post "@channel-lead does the auth module export a validate function?"
+midtown channel post "@channel-lead how does the auth module handle token refresh?"
 
 # Project coordination or cross-channel blocker → ask lead
 midtown channel post "@lead should I handle the error case here, or let it bubble up?"
