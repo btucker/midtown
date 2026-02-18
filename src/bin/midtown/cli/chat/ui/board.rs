@@ -56,9 +56,11 @@ pub fn draw_board_panel(f: &mut Frame, app: &mut App, area: Rect) -> (Vec<Hyperl
     // Default channel matches the daemon's ChannelRouter default ("midtown")
     let main_channel = "midtown";
 
-    // Clone task and channel data to avoid holding borrows on app
+    // Clone task, PR, coworker, and channel data to avoid holding borrows on app
     // This allows us to mutate app.task_line_map later
     let tasks_clone: Vec<KanbanTask> = app.tasks.clone();
+    let prs_clone: Vec<KanbanPr> = app.prs.clone();
+    let coworkers_clone = app.coworkers.clone();
     let available_channels_clone = app.available_channels.clone();
     let show_archived = app.show_archived_channels;
 
@@ -134,8 +136,24 @@ pub fn draw_board_panel(f: &mut Frame, app: &mut App, area: Rect) -> (Vec<Hyperl
             let wrapped_lines = wrap_content(&task_line, wrap_width);
             current_line += wrapped_lines.len() as u16;
 
-            // Phase status label always adds one line below the task title
-            current_line += 1;
+            // Phase label line is only emitted when there is a label
+            let task_pr = prs_clone.iter().find(|pr| {
+                pr.task_id
+                    .map(|id| id.to_string() == task.id)
+                    .unwrap_or(false)
+            });
+            let coworker_phase = coworkers_clone.iter().find_map(|cw| {
+                if cw.task_id.map(|id| id.to_string()) == Some(task.id.clone()) {
+                    cw.phase.as_deref()
+                } else {
+                    None
+                }
+            });
+            if task_phase_label(task, task_pr, coworker_phase).is_some() {
+                // Register the label line for click-to-attach as well
+                task_line_map.insert(current_line, (task.id.clone(), task.owner.clone()));
+                current_line += 1;
+            }
         }
     }
 
@@ -237,6 +255,11 @@ pub fn task_phase_label(
             }
         }
         Some(pr) => {
+            // Merge conflicts take priority over everything else
+            if pr.has_conflicts {
+                return Some("conflict");
+            }
+
             // CI takes priority when running or failed
             match pr.ci_status {
                 CiStatus::Running => return Some("ci"),
@@ -247,8 +270,8 @@ pub fn task_phase_label(
             // Review has been posted — check if feedback is being addressed or done
             if pr.review_posted {
                 // Coworker actively working = addressing feedback
-                let addressing_feedback =
-                    matches!(coworker_phase, Some("developing" | "debugging" | "testing"));
+                // coworker_phase holds abbreviations from WorkflowPhase::abbreviation()
+                let addressing_feedback = matches!(coworker_phase, Some("dev" | "debug" | "test"));
                 if addressing_feedback {
                     return Some("fix");
                 }
@@ -264,12 +287,7 @@ pub fn task_phase_label(
                 return Some("rvw");
             }
 
-            // CI passed, no reviewer yet = done (auto-merge pending)
-            if matches!(pr.ci_status, CiStatus::Passed) {
-                return Some("done");
-            }
-
-            // PR open, no review activity
+            // PR open, no review activity yet
             Some("pr")
         }
     }
@@ -373,14 +391,15 @@ fn render_task_item(
     }
 
     // Second line: phase status label in gray, indented to align with task text
-    let label = task_phase_label(task, task_pr, coworker_phase);
-    let label_text = label.unwrap_or("");
-    // Indent to align with the task ID (same as bullet_prefix_width)
-    let label_line = format!("{:width$}{}", "", label_text, width = bullet_prefix_width);
-    lines.push(Line::from(vec![Span::styled(
-        label_line,
-        Style::default().fg(Color::DarkGray),
-    )]));
+    // Only emitted when there is a label (pending tasks with no PR get no extra line)
+    if let Some(label_text) = task_phase_label(task, task_pr, coworker_phase) {
+        // Indent to align with the task ID (same as bullet_prefix_width)
+        let label_line = format!("{:width$}{}", "", label_text, width = bullet_prefix_width);
+        lines.push(Line::from(vec![Span::styled(
+            label_line,
+            Style::default().fg(Color::DarkGray),
+        )]));
+    }
 }
 
 /// Draw the coworker status section (bottom of board sidebar)
@@ -745,8 +764,8 @@ mod tests {
 
         render_task_item(&app, &task, "midtown", &indentation, 80, &mut lines);
 
-        // Each task renders a title line + a phase label line
-        assert_eq!(lines.len(), 2);
+        // Pending task with no PR: only the title line (no label line)
+        assert_eq!(lines.len(), 1);
         let spans = &lines[0].spans;
         assert_eq!(spans.len(), 2);
         // Bullet span: 1-space indent + no indent (level 0) = " ● "
@@ -765,8 +784,8 @@ mod tests {
 
         render_task_item(&app, &task, "midtown", &indentation, 80, &mut lines);
 
-        // Each task renders a title line + a phase label line
-        assert_eq!(lines.len(), 2);
+        // Pending task with no PR: only the title line (no label line)
+        assert_eq!(lines.len(), 1);
         let spans = &lines[0].spans;
         assert_eq!(spans.len(), 2);
         // Bullet span: 1-space indent + 2-space indent (level 1) = "   ● "
@@ -785,8 +804,8 @@ mod tests {
 
         render_task_item(&app, &task, "midtown", &indentation, 80, &mut lines);
 
-        // Each task renders a title line + a phase label line
-        assert_eq!(lines.len(), 2);
+        // Pending task with no PR: only the title line (no label line)
+        assert_eq!(lines.len(), 1);
         let spans = &lines[0].spans;
         // Bullet span: 1-space indent + 6-space indent (level 3) = "       ● "
         assert_eq!(spans[0].content.as_ref(), "       ● ");
@@ -1373,11 +1392,8 @@ mod tests {
         let mut pr = make_pr(1);
         pr.review_posted = true;
         pr.reviewer = Some("york".to_string());
-        // Coworker is developing = addressing feedback
-        assert_eq!(
-            task_phase_label(&task, Some(&pr), Some("developing")),
-            Some("fix")
-        );
+        // coworker_phase holds abbreviations: "dev" not "developing"
+        assert_eq!(task_phase_label(&task, Some(&pr), Some("dev")), Some("fix"));
     }
 
     #[test]
@@ -1386,8 +1402,22 @@ mod tests {
         let mut pr = make_pr(1);
         pr.review_posted = true;
         pr.reviewer = Some("york".to_string());
+        // coworker_phase holds abbreviations: "debug" not "debugging"
         assert_eq!(
-            task_phase_label(&task, Some(&pr), Some("debugging")),
+            task_phase_label(&task, Some(&pr), Some("debug")),
+            Some("fix")
+        );
+    }
+
+    #[test]
+    fn test_phase_label_review_posted_coworker_testing() {
+        let task = make_task("1", vec![]);
+        let mut pr = make_pr(1);
+        pr.review_posted = true;
+        pr.reviewer = Some("york".to_string());
+        // coworker_phase holds abbreviations: "test" not "testing"
+        assert_eq!(
+            task_phase_label(&task, Some(&pr), Some("test")),
             Some("fix")
         );
     }
@@ -1406,12 +1436,13 @@ mod tests {
     }
 
     #[test]
-    fn test_phase_label_done_ci_passed_no_reviewer() {
+    fn test_phase_label_ci_passed_no_reviewer_shows_pr() {
+        // PR with CI passing but no reviewer assigned should show "pr", not "done"
+        // "done" means feedback addressed and CI green — but no review has happened yet
         let task = make_task("1", vec![]);
         let mut pr = make_pr(1);
         pr.ci_status = CiStatus::Passed;
-        // CI passed, no reviewer needed (e.g. auto-merge)
-        assert_eq!(task_phase_label(&task, Some(&pr), None), Some("done"));
+        assert_eq!(task_phase_label(&task, Some(&pr), None), Some("pr"));
     }
 
     #[test]
@@ -1439,7 +1470,8 @@ mod tests {
     }
 
     #[test]
-    fn test_phase_label_pending_task_empty_label_line() {
+    fn test_phase_label_pending_task_no_extra_line() {
+        // Pending task with no PR produces only 1 line (no blank label line)
         let app = test_app();
         let task = make_task("3", vec![]); // pending, no PR
         let indentation = HashMap::from([("3".to_string(), 0)]);
@@ -1447,12 +1479,24 @@ mod tests {
 
         render_task_item(&app, &task, "midtown", &indentation, 80, &mut lines);
 
-        // Still 2 lines, but the label line content is blank (no label for pending task)
-        assert_eq!(lines.len(), 2);
-        let label_line = &lines[1];
-        let span = &label_line.spans[0];
-        // The label is empty, line is just spaces for indentation
-        assert!(!span.content.contains("dev"));
-        assert!(!span.content.contains("pr"));
+        assert_eq!(
+            lines.len(),
+            1,
+            "pending task should produce only a title line"
+        );
+    }
+
+    #[test]
+    fn test_phase_label_conflicts_takes_priority_over_ci() {
+        // PR with merge conflicts should show "conflict", not "ci"
+        let task = make_task("1", vec![]);
+        let mut pr = make_pr(1);
+        pr.has_conflicts = true;
+        pr.ci_status = CiStatus::Failed;
+        assert_eq!(
+            task_phase_label(&task, Some(&pr), None),
+            Some("conflict"),
+            "has_conflicts should take priority over CI status"
+        );
     }
 }
