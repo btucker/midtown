@@ -74,6 +74,28 @@ pub(super) fn get_coworkers_with_open_prs(state: &DaemonState) -> Vec<String> {
     }
 }
 
+/// Resolve a PR's owner via the session-centric path:
+/// PR number → task_id → session_id → session.current_name.
+///
+/// Returns `Some(name)` if a session record exists with a current name allocation,
+/// or `None` if any link in the chain is missing (no task association, no session,
+/// or session is suspended with no name).
+///
+/// This gives session-based routing priority over branch-name parsing. When a
+/// coworker is reassigned to a different name on restart, the session record
+/// tracks the current name, so PRs route to the correct coworker.
+fn resolve_pr_owner_from_session(
+    pr_number: u64,
+    pr_task_associations: &HashMap<u64, String>,
+    session_task_map: &HashMap<String, String>,
+    sessions: &HashMap<String, super::state::SessionRecord>,
+) -> Option<String> {
+    let task_id = pr_task_associations.get(&pr_number)?;
+    let session_id = session_task_map.get(task_id)?;
+    let session = sessions.get(session_id)?;
+    session.current_name.clone()
+}
+
 /// Data extracted from persistent state for PR decision-making.
 ///
 /// Bundles channel routing and session context extraction into a single
@@ -86,6 +108,9 @@ struct PrContext {
     task_channel: HashMap<String, String>,
     /// Session context for the target PR (if the PR has a stored author session)
     session_context: Option<crate::rules::PrSessionContext>,
+    /// Name → session ID mapping for session-based nudge targeting.
+    /// Enables NudgeCoworker effects to carry session_id for direct delivery.
+    name_session_map: HashMap<String, String>,
 }
 
 impl PrContext {
@@ -117,10 +142,23 @@ impl PrContext {
                     pr_number,
                 });
 
+        // Build name → session_id mapping from session records for nudge targeting.
+        let name_session_map: HashMap<String, String> = ps
+            .sessions
+            .iter()
+            .filter_map(|(session_id, record)| {
+                record
+                    .current_name
+                    .as_ref()
+                    .map(|name| (name.clone(), session_id.clone()))
+            })
+            .collect();
+
         Self {
             pr_task_associations,
             task_channel: ps.task_channel.clone(),
             session_context,
+            name_session_map,
         }
     }
 
@@ -138,10 +176,22 @@ impl PrContext {
             })
             .collect();
 
+        let name_session_map: HashMap<String, String> = ps
+            .sessions
+            .iter()
+            .filter_map(|(session_id, record)| {
+                record
+                    .current_name
+                    .as_ref()
+                    .map(|name| (name.clone(), session_id.clone()))
+            })
+            .collect();
+
         Self {
             pr_task_associations,
             task_channel: ps.task_channel.clone(),
             session_context: None,
+            name_session_map,
         }
     }
 
@@ -683,8 +733,18 @@ pub(super) async fn poll_prs_for_issues(
         let head_ref = pr.get("headRefName").and_then(|s| s.as_str()).unwrap_or("");
         let title = pr.get("title").and_then(|s| s.as_str()).unwrap_or("");
 
-        // Try to map branch to a coworker owner
-        let owner_opt = coworker_from_branch_with_map(head_ref, Some(&snap.worktree_branch_owners));
+        // Try session-based owner resolution first:
+        // PR number → task_id → session_id → session.current_name
+        // Falls back to branch-based resolution if no session record exists.
+        let session_owner = resolve_pr_owner_from_session(
+            pr_number,
+            &snap.pr_task_associations,
+            &snap.session_task_map,
+            &snap.sessions,
+        );
+        let owner_opt = session_owner.or_else(|| {
+            coworker_from_branch_with_map(head_ref, Some(&snap.worktree_branch_owners))
+        });
 
         // Check for actionable issues
         let issues = detect_pr_issues(pr);
@@ -973,12 +1033,18 @@ async fn collect_green_with_feedback_effects(
         let head_ref = pr.get("headRefName").and_then(|s| s.as_str()).unwrap_or("");
         let title = pr.get("title").and_then(|s| s.as_str()).unwrap_or("");
 
-        // Only process coworker-owned PRs (validates branch prefix against known names)
-        let owner =
-            match coworker_from_branch_with_map(head_ref, Some(&snap.worktree_branch_owners)) {
-                Some(o) => o,
-                None => continue, // Not a coworker PR (e.g., dependabot, btucker/*)
-            };
+        // Only process coworker-owned PRs — session-first, branch fallback.
+        let owner = match resolve_pr_owner_from_session(
+            pr_number,
+            &snap.pr_task_associations,
+            &snap.session_task_map,
+            &snap.sessions,
+        )
+        .or_else(|| coworker_from_branch_with_map(head_ref, Some(&snap.worktree_branch_owners)))
+        {
+            Some(o) => o,
+            None => continue, // Not a coworker PR (e.g., dependabot, btucker/*)
+        };
 
         // Bug fix (!1067): Clear cooldown if owner is not active (died or went idle).
         // Without this, if a coworker is spawned to address review feedback but dies
@@ -1066,10 +1132,11 @@ fn pr_action_to_effects(
 
     match action {
         PrAction::NudgeOwner { owner, message } => {
+            let session_id = ctx.name_session_map.get(&owner).cloned();
             vec![Effect::NudgeCoworkerWithCallbacks {
                 name: owner,
                 message,
-                session_id: None,
+                session_id,
                 on_success: vec![Effect::RecordPrNudge {
                     pr_number,
                     issue_type,
@@ -1742,10 +1809,11 @@ fn comment_action_to_effects(
 
     match action {
         PrAction::NudgeOwner { owner, message } => {
+            let session_id = ctx.name_session_map.get(&owner).cloned();
             vec![Effect::NudgeCoworkerWithCallbacks {
                 name: owner,
                 message,
-                session_id: None,
+                session_id,
                 on_success: vec![Effect::RecordPrNudge {
                     pr_number,
                     issue_type,
@@ -2367,10 +2435,11 @@ fn review_complete_action_to_effects(
 
     match action {
         PrAction::NudgeOwner { owner, message } => {
+            let session_id = ctx.name_session_map.get(&owner).cloned();
             vec![Effect::NudgeCoworkerWithCallbacks {
                 name: owner,
                 message,
-                session_id: None,
+                session_id,
                 on_success: vec![Effect::RecordPrNudge {
                     pr_number,
                     issue_type,

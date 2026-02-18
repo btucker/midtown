@@ -1043,6 +1043,7 @@ fn make_pr_context_with_task(pr_number: u64, task_id: &str) -> PrContext {
         pr_task_associations,
         task_channel: std::collections::HashMap::new(),
         session_context: None,
+        name_session_map: std::collections::HashMap::new(),
     }
 }
 
@@ -1052,6 +1053,7 @@ fn make_pr_context_empty() -> PrContext {
         pr_task_associations: std::collections::HashMap::new(),
         task_channel: std::collections::HashMap::new(),
         session_context: None,
+        name_session_map: std::collections::HashMap::new(),
     }
 }
 
@@ -1364,6 +1366,7 @@ fn pr_action_to_effects_includes_record_task_assignment() {
         pr_task_associations,
         task_channel: HashMap::new(),
         session_context: None,
+        name_session_map: HashMap::new(),
     };
 
     // Call pr_action_to_effects with SpawnOwner action
@@ -1417,6 +1420,7 @@ fn comment_action_to_effects_includes_record_task_assignment() {
         pr_task_associations,
         task_channel: HashMap::new(),
         session_context: None,
+        name_session_map: HashMap::new(),
     };
 
     let effects = comment_action_to_effects(
@@ -1466,6 +1470,7 @@ fn handoff_to_coworker_effects_includes_record_task_assignment() {
         pr_task_associations,
         task_channel: HashMap::new(),
         session_context: None,
+        name_session_map: HashMap::new(),
     };
 
     let effects = handoff_to_coworker_effects(
@@ -1518,6 +1523,7 @@ fn review_complete_action_to_effects_includes_record_task_assignment() {
         pr_task_associations,
         task_channel: HashMap::new(),
         session_context: None,
+        name_session_map: HashMap::new(),
     };
 
     let effects = review_complete_action_to_effects(
@@ -1703,4 +1709,281 @@ async fn test_headless_only_coworker_pr_is_not_orphaned() {
         "Headless-only coworker's PR should spawn a reviewer, not be marked as orphaned. \
          active_names includes 'york' but state.coworkers does not (headless-only session)."
     );
+}
+
+// ── Session-based PR owner resolution tests ────────────────────────────
+
+/// When a session record exists for a PR's task, the session's current_name
+/// should be preferred over the branch-based owner resolution.
+///
+/// Scenario: PR #42 is linked to task "123" via pr_task_associations. Task "123"
+/// maps to session "sess-abc" in session_task_map. Session "sess-abc" has
+/// current_name "madison". But the branch name is "lexington/fix-auth".
+///
+/// Expected: owner is "madison" (from session), not "lexington" (from branch).
+#[test]
+fn test_resolve_pr_owner_from_session_prefers_session_over_branch() {
+    let pr_task_associations: HashMap<u64, String> =
+        [(42, "123".to_string())].into_iter().collect();
+    let session_task_map: HashMap<String, String> = [("123".to_string(), "sess-abc".to_string())]
+        .into_iter()
+        .collect();
+    let sessions: HashMap<String, crate::daemon::state::SessionRecord> = [(
+        "sess-abc".to_string(),
+        crate::daemon::state::SessionRecord {
+            session_id: "sess-abc".to_string(),
+            task_id: Some("123".to_string()),
+            current_name: Some("madison".to_string()),
+            preferred_name: None,
+            working_dir: "/tmp/test".to_string(),
+            branch: Some("lexington/fix-auth".to_string()),
+            pr_number: Some(42),
+            initial_prompt: None,
+            is_reviewer: false,
+            coworker_type: "dev".to_string(),
+            is_running: true,
+            created_at: chrono::Utc::now(),
+            resume_on_startup: false,
+        },
+    )]
+    .into_iter()
+    .collect();
+
+    let result =
+        resolve_pr_owner_from_session(42, &pr_task_associations, &session_task_map, &sessions);
+    assert_eq!(
+        result,
+        Some("madison".to_string()),
+        "Session-based resolution should return 'madison' (the session's current_name)"
+    );
+}
+
+/// When no session record exists for a PR, the session-based lookup should
+/// return None, allowing the caller to fall back to branch-based resolution.
+#[test]
+fn test_resolve_pr_owner_from_session_returns_none_without_session() {
+    let pr_task_associations: HashMap<u64, String> = HashMap::new();
+    let session_task_map: HashMap<String, String> = HashMap::new();
+    let sessions: HashMap<String, crate::daemon::state::SessionRecord> = HashMap::new();
+
+    let result =
+        resolve_pr_owner_from_session(42, &pr_task_associations, &session_task_map, &sessions);
+    assert_eq!(
+        result, None,
+        "Should return None when no session data exists for the PR"
+    );
+}
+
+/// When the session record exists but has no current_name (suspended session),
+/// the lookup should return None so the caller falls back to branch-based resolution.
+#[test]
+fn test_resolve_pr_owner_from_session_returns_none_for_suspended_session() {
+    let pr_task_associations: HashMap<u64, String> =
+        [(42, "123".to_string())].into_iter().collect();
+    let session_task_map: HashMap<String, String> = [("123".to_string(), "sess-abc".to_string())]
+        .into_iter()
+        .collect();
+    let sessions: HashMap<String, crate::daemon::state::SessionRecord> = [(
+        "sess-abc".to_string(),
+        crate::daemon::state::SessionRecord {
+            session_id: "sess-abc".to_string(),
+            task_id: Some("123".to_string()),
+            current_name: None, // suspended — no name allocated
+            preferred_name: Some("lexington".to_string()),
+            working_dir: "/tmp/test".to_string(),
+            branch: Some("lexington/fix-auth".to_string()),
+            pr_number: Some(42),
+            initial_prompt: None,
+            is_reviewer: false,
+            coworker_type: "dev".to_string(),
+            is_running: false,
+            created_at: chrono::Utc::now(),
+            resume_on_startup: false,
+        },
+    )]
+    .into_iter()
+    .collect();
+
+    let result =
+        resolve_pr_owner_from_session(42, &pr_task_associations, &session_task_map, &sessions);
+    assert_eq!(
+        result, None,
+        "Should return None when session has no current_name (suspended)"
+    );
+}
+
+/// Integration test: poll_prs_for_issues uses session-based owner resolution
+/// when available. PR branch is "lexington/fix-auth" but session record says
+/// current_name is "madison". The owner should be "madison".
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn test_poll_prs_session_based_owner_resolution() {
+    use super::super::snapshot::minimal_snapshot_for_test;
+
+    // PR with branch "lexington/fix-auth" but session says owner is "madison"
+    let pr_json = json!({
+        "number": 42,
+        "headRefName": "lexington/fix-auth",
+        "title": "Fix authentication bug [Midtown !123]",
+        "mergeable": "CONFLICTING",
+        "statusCheckRollup": null,
+        "reviewDecision": null,
+        "isDraft": false,
+        "createdAt": "2026-02-17T00:00:00Z",
+        "state": "OPEN",
+        "author": {"login": "btucker"},
+    });
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let pr_list_file = temp_dir.path().join("pr_list.json");
+    std::fs::write(
+        &pr_list_file,
+        serde_json::to_string(&vec![pr_json]).unwrap(),
+    )
+    .unwrap();
+
+    let _path_guard = PATH_LOCK.lock().unwrap();
+    let original_path = std::env::var("PATH").unwrap_or_default();
+    let mock_gh_dir = temp_dir.path().join("bin");
+    std::fs::create_dir_all(&mock_gh_dir).unwrap();
+    let mock_gh_script = mock_gh_dir.join("gh");
+
+    #[cfg(unix)]
+    {
+        std::fs::write(
+            &mock_gh_script,
+            format!("#!/bin/bash\ncat {}", pr_list_file.display()),
+        )
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&mock_gh_script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    unsafe {
+        std::env::set_var(
+            "PATH",
+            format!("{}:{}", mock_gh_dir.display(), original_path),
+        );
+    }
+
+    let mut snap = minimal_snapshot_for_test();
+
+    // Set up session data: PR #42 → task "123" → session "sess-abc" → current_name "madison"
+    snap.pr_task_associations = [(42, "123".to_string())].into_iter().collect();
+    snap.session_task_map = [("123".to_string(), "sess-abc".to_string())]
+        .into_iter()
+        .collect();
+    snap.sessions = [(
+        "sess-abc".to_string(),
+        crate::daemon::state::SessionRecord {
+            session_id: "sess-abc".to_string(),
+            task_id: Some("123".to_string()),
+            current_name: Some("madison".to_string()),
+            preferred_name: None,
+            working_dir: "/tmp/test".to_string(),
+            branch: Some("lexington/fix-auth".to_string()),
+            pr_number: Some(42),
+            initial_prompt: None,
+            is_reviewer: false,
+            coworker_type: "dev".to_string(),
+            is_running: true,
+            created_at: chrono::Utc::now(),
+            resume_on_startup: false,
+        },
+    )]
+    .into_iter()
+    .collect();
+
+    // Madison has an active worktree (so the PR is not orphaned)
+    snap.worktree_branch_owners = [("lexington/fix-auth".to_string(), "madison".to_string())]
+        .into_iter()
+        .collect();
+    snap.active_names = ["madison".to_string()].into_iter().collect();
+    snap.active_coworkers = vec![crate::coworker::Coworker {
+        slot_id: "test-slot".to_string(),
+        name: "madison".to_string(),
+        status: crate::coworker::CoworkerStatus::Running,
+        working_dir: "/tmp/test".to_string(),
+        started_at: chrono::Utc::now(),
+        current_task: None,
+        session_id: Some("sess-abc".to_string()),
+        model: "sonnet".to_string(),
+        provider: crate::auth::AuthProvider::default(),
+        profile: "default".to_string(),
+    }];
+    snap.running_coworkers = snap.active_coworkers.clone();
+
+    let state = make_test_state("test-repo");
+
+    let result = poll_prs_for_issues(&snap, &state).await;
+
+    unsafe {
+        std::env::set_var("PATH", original_path);
+    }
+    drop(_path_guard);
+
+    let effects = result.expect("poll_prs_for_issues should succeed");
+
+    // With session-based resolution, the owner is "madison" (not "lexington").
+    // The PR has a merge conflict, so we expect a nudge to "madison".
+    let nudges_madison = effects.iter().any(|e| match e {
+        Effect::NudgeCoworkerWithCallbacks { name, .. } => name == "madison",
+        Effect::NudgeCoworker { name, .. } => name == "madison",
+        _ => false,
+    });
+
+    // With session-based owner resolution, the nudge should target "madison"
+    // (the session's current_name), not "lexington" (the branch prefix).
+    assert!(
+        nudges_madison,
+        "Expected nudge to 'madison' (session-based owner), not 'lexington' (branch-based). Effects: {:#?}",
+        effects
+    );
+}
+
+/// The name_session_map in PrContext should be used by action_to_effects functions
+/// to populate session_id on NudgeCoworker effects.
+#[test]
+fn test_pr_context_name_session_map_provides_session_id_for_nudge() {
+    let ctx = PrContext {
+        pr_task_associations: HashMap::new(),
+        task_channel: HashMap::new(),
+        session_context: None,
+        name_session_map: [("madison".to_string(), "sess-abc".to_string())]
+            .into_iter()
+            .collect(),
+    };
+
+    // Simulate NudgeOwner action → should populate session_id from name_session_map
+    let action = crate::rules::PrAction::NudgeOwner {
+        owner: "madison".to_string(),
+        message: "PR #42 has a merge conflict".to_string(),
+    };
+
+    let state = make_test_state("test-repo");
+    let effects = pr_action_to_effects(
+        action,
+        42,
+        "Fix auth bug",
+        PrIssueType::MergeConflict,
+        &state,
+        &ctx,
+    );
+
+    // The NudgeCoworkerWithCallbacks effect should have session_id populated
+    let nudge_effect = effects
+        .iter()
+        .find(|e| matches!(e, Effect::NudgeCoworkerWithCallbacks { .. }));
+    assert!(
+        nudge_effect.is_some(),
+        "Expected NudgeCoworkerWithCallbacks effect"
+    );
+
+    if let Some(Effect::NudgeCoworkerWithCallbacks { session_id, .. }) = nudge_effect {
+        assert_eq!(
+            *session_id,
+            Some("sess-abc".to_string()),
+            "session_id should be populated from name_session_map"
+        );
+    }
 }
