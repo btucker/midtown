@@ -56,10 +56,17 @@ pub(crate) async fn handle_kanban_data(id: RequestId, state: &DaemonState) -> Re
         compute_coworker_state_hash(&coworker_records, &cache_channel_lead_names)
     };
 
-    // Combine repo hash and coworker state hash for the final cache key
+    // Combine repo hash, coworker state hash, and channel lead names for the final cache key.
+    // Channel lead names must be included because they appear in the cached `channel_leads`
+    // response field — if the set changes (lead added/removed), the cache must be invalidated.
+    // Sort the names before hashing for determinism (HashSet iteration order is not guaranteed).
+    let mut sorted_lead_names: Vec<&String> = cache_channel_lead_names.iter().collect();
+    sorted_lead_names.sort();
+
     let mut cache_key_hasher = DefaultHasher::new();
     repo_hash.hash(&mut cache_key_hasher);
     coworker_state_hash.hash(&mut cache_key_hasher);
+    sorted_lead_names.hash(&mut cache_key_hasher);
     let cache_key = cache_key_hasher.finish();
 
     // Check cache first

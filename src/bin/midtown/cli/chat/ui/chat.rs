@@ -148,7 +148,7 @@ fn draw_chat_messages(f: &mut Frame, app: &mut App, area: Rect) {
     {
         let mut lines = cache.lines.clone();
         lines.truncate(msg_height);
-        append_tool_activity_lines(&app.tool_activity, &mut lines);
+        append_tool_activity_lines(&app.tool_activity, &mut lines, &app.channel_lead_names);
         let paragraph = Paragraph::new(lines);
         f.render_widget(block, area);
         f.render_widget(paragraph, inner);
@@ -232,7 +232,11 @@ fn draw_chat_messages(f: &mut Frame, app: &mut App, area: Rect) {
 
     // Append live tool activity (not cached — changes independently of messages).
     let mut final_lines = visible_lines;
-    append_tool_activity_lines(&app.tool_activity, &mut final_lines);
+    append_tool_activity_lines(
+        &app.tool_activity,
+        &mut final_lines,
+        &app.channel_lead_names,
+    );
 
     let paragraph = Paragraph::new(final_lines);
 
@@ -265,8 +269,9 @@ fn count_tool_activity_lines(
 fn append_tool_activity_lines(
     tool_activity: &std::collections::HashMap<String, Vec<String>>,
     lines: &mut Vec<Line<'static>>,
+    channel_lead_names: &[String],
 ) {
-    use super::styles::get_sender_color;
+    use super::styles::get_sender_color_with_leads;
 
     // Only render if at least one agent has non-empty headers
     let has_activity = tool_activity.values().any(|h| !h.is_empty());
@@ -287,7 +292,7 @@ fn append_tool_activity_lines(
             continue;
         }
 
-        let color = get_sender_color(agent);
+        let color = get_sender_color_with_leads(agent, channel_lead_names);
 
         // Agent name header: "amsterdam working…"
         lines.push(Line::from(vec![
@@ -611,7 +616,7 @@ mod tests {
     fn test_append_tool_activity_lines_empty_map() {
         let activity: HashMap<String, Vec<String>> = HashMap::new();
         let mut lines: Vec<Line<'static>> = Vec::new();
-        append_tool_activity_lines(&activity, &mut lines);
+        append_tool_activity_lines(&activity, &mut lines, &[]);
         assert!(
             lines.is_empty(),
             "No lines should be emitted for empty activity"
@@ -622,7 +627,7 @@ mod tests {
     fn test_append_tool_activity_lines_empty_headers() {
         let activity = make_activity("amsterdam", vec![]);
         let mut lines: Vec<Line<'static>> = Vec::new();
-        append_tool_activity_lines(&activity, &mut lines);
+        append_tool_activity_lines(&activity, &mut lines, &[]);
         assert!(lines.is_empty(), "No lines for agent with empty headers");
     }
 
@@ -630,7 +635,7 @@ mod tests {
     fn test_append_tool_activity_lines_in_progress_prefix_color() {
         let activity = make_activity("amsterdam", vec!["› Read foo.rs"]);
         let mut lines: Vec<Line<'static>> = Vec::new();
-        append_tool_activity_lines(&activity, &mut lines);
+        append_tool_activity_lines(&activity, &mut lines, &[]);
 
         // Lines: blank separator, agent header, tool call line
         assert_eq!(lines.len(), 3);
@@ -654,7 +659,7 @@ mod tests {
     fn test_append_tool_activity_lines_success_prefix_color() {
         let activity = make_activity("amsterdam", vec!["✓ Read foo.rs"]);
         let mut lines: Vec<Line<'static>> = Vec::new();
-        append_tool_activity_lines(&activity, &mut lines);
+        append_tool_activity_lines(&activity, &mut lines, &[]);
 
         let call_line = &lines[2];
         assert_eq!(
@@ -673,7 +678,7 @@ mod tests {
     fn test_append_tool_activity_lines_error_prefix_color() {
         let activity = make_activity("amsterdam", vec!["✗ Run tests"]);
         let mut lines: Vec<Line<'static>> = Vec::new();
-        append_tool_activity_lines(&activity, &mut lines);
+        append_tool_activity_lines(&activity, &mut lines, &[]);
 
         let call_line = &lines[2];
         assert_eq!(
@@ -689,6 +694,28 @@ mod tests {
     }
 
     #[test]
+    fn test_append_tool_activity_lines_channel_lead_color() {
+        // A channel lead ("auth") posting tool activity must display with LightYellow,
+        // matching their message color in the chat — not the default Color::White for
+        // unknown senders.
+        let activity = make_activity("auth", vec!["› Read config.toml"]);
+        let channel_lead_names: Vec<String> = vec!["auth".to_string()];
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        append_tool_activity_lines(&activity, &mut lines, &channel_lead_names);
+
+        // Lines: blank separator, agent header, tool call line
+        assert_eq!(lines.len(), 3);
+        let header_line = &lines[1];
+
+        // The agent name span (first span) should be LightYellow for channel leads
+        assert_eq!(
+            header_line.spans[0].style.fg,
+            Some(Color::LightYellow),
+            "Channel lead 'auth' in tool activity strip must be LightYellow, not White"
+        );
+    }
+
+    #[test]
     fn test_append_tool_activity_lines_shows_only_most_recent() {
         // 5 headers — should show only the last 1 (most recent)
         let activity = make_activity(
@@ -696,7 +723,7 @@ mod tests {
             vec!["✓ call1", "✓ call2", "✓ call3", "✓ call4", "› call5"],
         );
         let mut lines: Vec<Line<'static>> = Vec::new();
-        append_tool_activity_lines(&activity, &mut lines);
+        append_tool_activity_lines(&activity, &mut lines, &[]);
 
         // blank sep + agent header + 1 call line
         assert_eq!(lines.len(), 3, "Should emit blank + agent + 1 call line");

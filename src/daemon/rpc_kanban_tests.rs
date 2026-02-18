@@ -464,6 +464,71 @@ fn test_cache_key_stable_when_idle_coworker_updates_progress() {
     );
 }
 
+/// Test that the full cache key (repo + coworker state + channel leads) changes
+/// when the set of channel leads changes.
+///
+/// This covers a bug where `channel_lead_names` appeared in the kanban response
+/// (`channel_leads` field) but was not included in the cache key — so when a
+/// channel lead was added or removed, the cached response served stale data.
+#[test]
+fn test_cache_key_changes_when_channel_lead_set_changes() {
+    use crate::coworker_state::WorkflowPhase;
+
+    // Helper: compute the same combined key that handle_kanban_data computes.
+    // repo_hash + coworker_state_hash + sorted channel_lead_names → final key.
+    fn combined_key(
+        repo_hash: u64,
+        records: &HashMap<String, crate::rules::CoworkerRecord>,
+        channel_leads: &std::collections::HashSet<String>,
+    ) -> u64 {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+
+        let coworker_hash = super::compute_coworker_state_hash(records, channel_leads);
+
+        let mut sorted_names: Vec<&String> = channel_leads.iter().collect();
+        sorted_names.sort();
+
+        let mut hasher = DefaultHasher::new();
+        repo_hash.hash(&mut hasher);
+        coworker_hash.hash(&mut hasher);
+        sorted_names.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    let repo_hash: u64 = 42;
+
+    let mut records = HashMap::new();
+    records.insert(
+        "madison".to_string(),
+        make_record(Some(WorkflowPhase::Developing), Some(1500), None),
+    );
+
+    // No channel leads
+    let no_leads: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // One channel lead added
+    let with_lead: std::collections::HashSet<String> =
+        ["auth"].iter().map(|s| s.to_string()).collect();
+    // A different channel lead
+    let with_other_lead: std::collections::HashSet<String> =
+        ["tui"].iter().map(|s| s.to_string()).collect();
+
+    let key_no_leads = combined_key(repo_hash, &records, &no_leads);
+    let key_with_lead = combined_key(repo_hash, &records, &with_lead);
+    let key_with_other_lead = combined_key(repo_hash, &records, &with_other_lead);
+
+    // After the fix: adding a channel lead must change the cache key.
+    assert_ne!(
+        key_no_leads, key_with_lead,
+        "Cache key must change when a channel lead is added"
+    );
+    // Adding a different channel lead must also produce a different key.
+    assert_ne!(
+        key_with_lead, key_with_other_lead,
+        "Cache key must differ for different channel lead sets"
+    );
+}
+
 #[test]
 fn test_cache_key_stable_when_channel_lead_phase_changes() {
     // Channel leads are excluded from the kanban coworker list (they're scoped
