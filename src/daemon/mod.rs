@@ -1664,9 +1664,8 @@ impl DaemonState {
 
     /// Look up the session ID currently holding a given name.
     ///
-    /// Infrastructure for the session-centric model — used by effect handlers
-    /// and RPC adapters once the session-centric migration is further along.
-    #[allow(dead_code)] // Scaffold-ahead-of-use for session-centric tasks (Task 9+)
+    /// Used by chat @mention routing for session-targeted nudge delivery,
+    /// and by effect handlers for session-centric dispatch.
     pub(crate) fn session_for_name(&self, name: &str) -> Option<String> {
         self.name_to_session.lock().unwrap().get(name).cloned()
     }
