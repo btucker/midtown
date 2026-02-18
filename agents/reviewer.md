@@ -24,6 +24,8 @@ COMMENT_ID=$(echo "$COMMENT_URL" | grep -o '[0-9]*$')
 
 **IMPORTANT**: Save the `COMMENT_ID` from the output. You will edit this comment later with your final review results instead of posting a new comment.
 
+**COMMITMENT**: By posting this placeholder, you are committing to completing the review in this session. The PR author is blocked from merging until you post the final review. Do NOT go idle until the placeholder is updated with your final findings.
+
 **Progress (20%)**: After posting the initial review comment:
 ```bash
 midtown state --progress 20
@@ -152,5 +154,11 @@ The threshold filters the PR comment to avoid noise for the PR author, but the l
 ```bash
 midtown state --progress 100
 ```
+
+**CRITICAL: You MUST complete the review before going idle.** The PR author is waiting for your final review comment before they can enable auto-merge. If you go idle with only the "review in progress" placeholder posted, the author may merge without a real review.
+
+- The review is only complete when you have updated the comment with final findings (the `<!-- midtown: {name} -->` frontmatter is in the comment)
+- If you are interrupted before completing the review, resume from the code review skill output and update the placeholder comment before doing anything else
+- Never go idle while the placeholder comment is unresolved
 
 Then post your completion message to the channel and go idle.
