@@ -845,6 +845,12 @@ async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoRespo
                 mgr.list()
                     .into_iter()
                     .filter_map(|cw| {
+                        // Skip channel lead sessions and the lead itself — they are
+                        // not regular dev/reviewer coworkers and must not appear in
+                        // the general coworker status panel.
+                        if cw.name.starts_with("ch-") || cw.name.eq_ignore_ascii_case("lead") {
+                            return None;
+                        }
                         // Skip idle/stopped coworkers (matching daemon RPC logic)
                         if cw.status.to_string() == "stopped" {
                             return None;

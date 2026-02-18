@@ -420,9 +420,16 @@ function handleUpdate(update) {
         })
       }
       break
-    case 'coworker_status':
+    case 'coworker_status': {
+      // Skip channel lead sessions (ch-<channel>) and the lead itself.
+      // Channel leads are scoped to a specific topic channel and must not
+      // appear in the general coworker status panel.
+      const name = update.data.name
+      if (name && (name.startsWith('ch-') || name.toLowerCase() === 'lead')) {
+        break
+      }
       coworkers.update((list) => {
-        const idx = list.findIndex((c) => c.name === update.data.name)
+        const idx = list.findIndex((c) => c.name === name)
         if (idx >= 0) {
           list[idx] = { ...list[idx], ...update.data }
           return [...list]
@@ -430,6 +437,7 @@ function handleUpdate(update) {
         return [...list, update.data]
       })
       break
+    }
     case 'lead_typing':
       leadTyping.set(update.data.working)
       // Auto-dismiss after 45s if no further updates (safety net).
