@@ -217,6 +217,9 @@ pub enum WebUpdate {
     /// Universal event items from agent sessions
     #[serde(rename = "universal_items")]
     UniversalItems(UniversalItemsData),
+    /// A coworker is waiting for user input (AskUserQuestion tool call)
+    #[serde(rename = "coworker_question")]
+    CoworkerQuestion(CoworkerQuestionData),
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -288,6 +291,14 @@ pub struct UniversalItemsData {
     pub items: Vec<crate::universal_events::UniversalItem>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct CoworkerQuestionData {
+    pub id: u64,
+    pub coworker_name: String,
+    pub question: String,
+    pub timestamp: String,
+}
+
 /// WebSocket message from client
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type")]
@@ -311,6 +322,12 @@ pub enum ClientMessage {
     /// Send a special key (like Escape) to a coworker or the lead
     #[serde(rename = "send_key")]
     SendKey { target: String, key: String },
+    /// Answer a coworker's pending question
+    #[serde(rename = "answer_question")]
+    AnswerQuestion {
+        coworker_name: String,
+        answer: String,
+    },
 }
 
 /// Create the web server router
@@ -1637,6 +1654,48 @@ async fn handle_client_message(text: &str, state: &Arc<WebState>) -> Result<(), 
                 target
             ));
         }
+        ClientMessage::AnswerQuestion {
+            coworker_name,
+            answer,
+        } => {
+            // Validate inputs
+            if coworker_name.is_empty()
+                || !coworker_name
+                    .chars()
+                    .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+            {
+                return Err("Invalid coworker name".to_string());
+            }
+            if answer.is_empty() {
+                return Err("Empty answer".to_string());
+            }
+
+            // Forward to daemon via coworker.nudge RPC (which clears the pending question and delivers the answer)
+            use std::io::{BufRead, BufReader, Write};
+            use std::os::unix::net::UnixStream;
+            let socket = crate::paths::daemon_socket_for_repo(&state.config.repo);
+            let mut stream = UnixStream::connect(&socket)
+                .map_err(|e| format!("Failed to connect to daemon: {}", e))?;
+            stream.set_write_timeout(Some(Duration::from_secs(5))).ok();
+            stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
+            let request = serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "coworker.nudge",
+                "params": {
+                    "from": "lead",
+                    "name": coworker_name,
+                    "message": answer,
+                },
+                "id": 1
+            });
+            writeln!(stream, "{}", request).map_err(|e| format!("Failed to send nudge: {}", e))?;
+            stream.flush().ok();
+            // Read response (optional - fire and forget is fine but good to check)
+            let mut reader = BufReader::new(stream);
+            let mut line = String::new();
+            reader.read_line(&mut line).ok();
+            info!("Answered question from {}: {}", coworker_name, answer);
+        }
     }
 
     Ok(())
@@ -2334,5 +2393,91 @@ mod tests {
             Some(reviewer_internal_task_id),
             "Should NOT display reviewer's internal task ID"
         );
+    }
+
+    #[test]
+    fn test_client_message_answer_question_parsing() {
+        let json = r#"{"type": "answer_question", "coworker_name": "lexington", "answer": "yes, proceed with the refactor"}"#;
+        let msg: ClientMessage = serde_json::from_str(json).unwrap();
+        match msg {
+            ClientMessage::AnswerQuestion {
+                coworker_name,
+                answer,
+            } => {
+                assert_eq!(coworker_name, "lexington");
+                assert_eq!(answer, "yes, proceed with the refactor");
+            }
+            _ => panic!("Expected AnswerQuestion"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_answer_question_invalid_coworker_name() {
+        // Verify that an invalid coworker name (with special chars) returns an error.
+        let (updates_tx, _) = broadcast::channel(10);
+        let (channel_post_tx, _) = mpsc::channel(10);
+
+        let state = Arc::new(WebState {
+            config: WebConfig::default(),
+            updates_tx,
+            coworkers: None,
+            channel_post_tx,
+            push_manager: None,
+            all_repo_paths: Vec::new(),
+            default_branch: "main".to_string(),
+            max_coworkers: 8,
+            repo_name_cache: std::sync::RwLock::new(std::collections::HashMap::new()),
+        });
+
+        let json =
+            r#"{"type": "answer_question", "coworker_name": "../../etc/passwd", "answer": "test"}"#;
+        let result = handle_client_message(json, &state).await;
+
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err();
+        assert!(err_msg.contains("Invalid coworker name"));
+    }
+
+    #[tokio::test]
+    async fn test_answer_question_empty_answer() {
+        // Verify that an empty answer returns an error.
+        let (updates_tx, _) = broadcast::channel(10);
+        let (channel_post_tx, _) = mpsc::channel(10);
+
+        let state = Arc::new(WebState {
+            config: WebConfig::default(),
+            updates_tx,
+            coworkers: None,
+            channel_post_tx,
+            push_manager: None,
+            all_repo_paths: Vec::new(),
+            default_branch: "main".to_string(),
+            max_coworkers: 8,
+            repo_name_cache: std::sync::RwLock::new(std::collections::HashMap::new()),
+        });
+
+        let json = r#"{"type": "answer_question", "coworker_name": "lexington", "answer": ""}"#;
+        let result = handle_client_message(json, &state).await;
+
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err();
+        assert!(err_msg.contains("Empty answer"));
+    }
+
+    #[test]
+    fn test_coworker_question_data_serialization() {
+        // Verify that CoworkerQuestionData serializes correctly for the WebSocket.
+        let data = CoworkerQuestionData {
+            id: 42,
+            coworker_name: "lexington".to_string(),
+            question: "Should I proceed with the migration?".to_string(),
+            timestamp: "2024-01-01T00:00:00Z".to_string(),
+        };
+        let update = WebUpdate::CoworkerQuestion(data);
+        let json = serde_json::to_string(&update).unwrap();
+        assert!(json.contains("coworker_question"));
+        assert!(json.contains("lexington"));
+        assert!(json.contains("Should I proceed with the migration?"));
+        assert!(json.contains(r#""id":42"#));
     }
 }

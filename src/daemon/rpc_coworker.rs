@@ -437,6 +437,12 @@ pub(super) async fn handle_coworker_nudge(
     message: &str,
     state: &DaemonState,
 ) -> Response {
+    // Clear any pending questions from this coworker — the nudge delivers the answer.
+    {
+        let mut questions = state.pending_questions.lock().unwrap();
+        questions.retain(|q| q.coworker_name != name);
+    }
+
     // Always enqueue to headed intercom for wrapper-managed sessions.
     state.enqueue_headed_nudge(name, message).await;
 
@@ -489,6 +495,31 @@ pub(super) async fn handle_coworker_asking(
     let nudge_message = format!("{} is asking: {}", name, question);
     state.nudge_lead(&nudge_message).await;
 
+    // Assign a unique ID and store the question in pending state.
+    let question_id = state
+        .pending_question_id_counter
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let timestamp = chrono::Utc::now();
+    {
+        let mut questions = state.pending_questions.lock().unwrap();
+        questions.push(super::PendingQuestion {
+            id: question_id,
+            coworker_name: name.to_string(),
+            question: question.to_string(),
+            timestamp,
+        });
+    }
+
+    // Broadcast the pending question to WebSocket clients (e.g., TUI).
+    state.broadcast_web_update(crate::web::WebUpdate::CoworkerQuestion(
+        crate::web::CoworkerQuestionData {
+            id: question_id,
+            coworker_name: name.to_string(),
+            question: question.to_string(),
+            timestamp: timestamp.to_rfc3339(),
+        },
+    ));
+
     info!("Coworker {} asking: {}", name, question);
     Response::success(
         id,
@@ -497,6 +528,28 @@ pub(super) async fn handle_coworker_asking(
             "message": format!("Notified Lead about question from {}", name),
         }),
     )
+}
+
+/// Handle coworker.questions RPC method.
+///
+/// Returns the list of pending questions from coworkers waiting for Lead input.
+/// Used by the TUI to display unanswered questions that need attention.
+pub(super) async fn handle_coworker_questions(id: RequestId, state: &DaemonState) -> Response {
+    let questions: Vec<serde_json::Value> = {
+        let questions = state.pending_questions.lock().unwrap();
+        questions
+            .iter()
+            .map(|q| {
+                serde_json::json!({
+                    "id": q.id,
+                    "coworker_name": q.coworker_name,
+                    "question": q.question,
+                    "timestamp": q.timestamp.to_rfc3339(),
+                })
+            })
+            .collect()
+    };
+    Response::success(id, serde_json::json!({ "questions": questions }))
 }
 
 // ============================================================================
@@ -523,3 +576,7 @@ async fn task_has_open_pr(task_id: &str, state: &DaemonState) -> bool {
         .values()
         .any(|session| session.task_id.as_deref() == Some(task_id))
 }
+
+#[path = "rpc_coworker_tests.rs"]
+#[cfg(test)]
+mod tests;

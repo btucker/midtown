@@ -110,6 +110,22 @@ pub(crate) struct TaskAssignment {
     pub task_id: String,
 }
 
+/// An in-memory record of a coworker's pending question (from AskUserQuestion tool).
+///
+/// Ephemeral — lost on daemon restart. Questions are cleared when the coworker
+/// receives a nudge (i.e., when the Lead answers the question).
+#[derive(Debug, Clone)]
+pub(crate) struct PendingQuestion {
+    /// Unique identifier for this question (monotonically increasing).
+    pub id: u64,
+    /// Name of the coworker waiting for an answer.
+    pub coworker_name: String,
+    /// The question text from the AskUserQuestion tool call.
+    pub question: String,
+    /// When the question was received.
+    pub timestamp: chrono::DateTime<chrono::Utc>,
+}
+
 /// Max messages buffered per headed session before dropping oldest entries.
 const HEADED_SESSION_QUEUE_MAX: usize = 200;
 /// Lease timeout for headed adapters (seconds without heartbeat/poll).
@@ -643,6 +659,14 @@ pub(crate) struct DaemonState {
     /// Enables O(1) lookup of the session working on a given task. Updated when
     /// a session is initialised with a task and cleared when the session stops.
     pub(crate) task_to_session: std::sync::Mutex<HashMap<String, String>>,
+    /// Pending questions from coworkers waiting for Lead input (AskUserQuestion tool).
+    ///
+    /// Ephemeral — lost on daemon restart. Entries are added by `handle_coworker_asking`
+    /// and removed when the coworker receives a nudge via `handle_coworker_nudge`.
+    /// The counter is used to assign monotonically increasing IDs.
+    pub(crate) pending_questions: std::sync::Mutex<Vec<PendingQuestion>>,
+    /// Counter for assigning unique IDs to pending questions.
+    pending_question_id_counter: std::sync::atomic::AtomicU64,
 }
 
 impl DaemonState {
@@ -1006,6 +1030,8 @@ impl DaemonState {
             name_to_session: std::sync::Mutex::new(name_to_session),
             session_to_name: std::sync::Mutex::new(session_to_name),
             task_to_session: std::sync::Mutex::new(task_to_session),
+            pending_questions: std::sync::Mutex::new(Vec::new()),
+            pending_question_id_counter: std::sync::atomic::AtomicU64::new(1),
         })
     }
 

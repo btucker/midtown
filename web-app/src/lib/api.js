@@ -19,6 +19,7 @@ import {
   authSwitching,
   usageData,
   agentToolItems,
+  pendingQuestions,
 } from './store.js'
 
 // Maximum number of tool call items retained per agent in the activity store.
@@ -409,6 +410,9 @@ function handleUpdate(update) {
           delete updated[msg.from.toLowerCase()]
           return updated
         })
+        // Clear pending question for this coworker when they post a message
+        // (indicates they got an answer or moved on)
+        pendingQuestions.update((qs) => qs.filter((q) => q.coworker_name.toLowerCase() !== msg.from.toLowerCase()))
       }
       break
     case 'coworker_status': {
@@ -441,6 +445,13 @@ function handleUpdate(update) {
         return { ...byChannel, [channelKey]: merged }
       })
       break
+    case 'coworker_question':
+      pendingQuestions.update((qs) => {
+        // Replace existing question from same coworker (only one question per coworker at a time)
+        const filtered = qs.filter((q) => q.coworker_name !== update.data.coworker_name)
+        return [...filtered, update.data]
+      })
+      break
     case 'error':
       // Invoke all registered error callbacks and then clear them
       errorCallbacks.forEach((callback) => callback(update.data.message))
@@ -463,6 +474,21 @@ export function sendMessage(content, channel = null) {
       message.channel = channel
     }
     ws.send(JSON.stringify(message))
+  } else {
+    console.error('WebSocket not connected')
+  }
+}
+
+// Answer a coworker's pending question
+export function sendAnswer(coworkerName, answer) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({
+      type: 'answer_question',
+      coworker_name: coworkerName,
+      answer,
+    }))
+    // Optimistically remove from pending questions
+    pendingQuestions.update((qs) => qs.filter((q) => q.coworker_name !== coworkerName))
   } else {
     console.error('WebSocket not connected')
   }

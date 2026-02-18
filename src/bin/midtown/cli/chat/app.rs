@@ -39,6 +39,17 @@ impl MessageRenderCache {
     }
 }
 
+/// A pending question from a coworker waiting for user input
+#[derive(Debug, Clone)]
+pub struct PendingQuestion {
+    #[allow(dead_code)] // Available for future use (e.g., dismiss/answer by ID)
+    pub id: u64,
+    pub coworker_name: String,
+    pub question: String,
+    #[allow(dead_code)] // Available for future use (e.g., sorting, age display)
+    pub timestamp: chrono::DateTime<chrono::Utc>,
+}
+
 /// Data fetched from background thread for kanban refresh
 struct KanbanData {
     prs: Vec<KanbanPr>,
@@ -54,6 +65,8 @@ struct KanbanData {
     /// Recent tool call activity per agent: agent name → list of semantic headers.
     /// Populated from kanban.data RPC `tool_activity` field (live, not cached).
     tool_activity: HashMap<String, Vec<String>>,
+    /// Pending questions from coworkers waiting for user input
+    pending_questions: Vec<PendingQuestion>,
 }
 
 /// Coworker status information for the TUI board sidebar
@@ -242,6 +255,8 @@ pub struct App {
     pub tool_activity: HashMap<String, Vec<String>>,
     /// Maximum number of coworkers allowed
     pub max_coworkers: usize,
+    /// Pending questions from coworkers waiting for user input
+    pub pending_questions: Vec<PendingQuestion>,
     /// Repository name with owner (e.g., "btucker/midtown")
     /// Used for constructing GitHub PR URLs in kanban hyperlinks
     pub repo_name: String,
@@ -446,6 +461,7 @@ impl App {
             lead_working: false,
             tool_activity: HashMap::new(),
             max_coworkers: 10, // Default, will be updated from daemon
+            pending_questions: Vec::new(),
             repo_name,
             kanban_last_refresh: Instant::now() - KANBAN_REFRESH_INTERVAL, // Force initial refresh
             kanban_receiver: None,
@@ -555,6 +571,7 @@ impl App {
                     self.lead_working = data.lead_working;
                     self.tool_activity = data.tool_activity;
                     self.max_coworkers = data.max_coworkers;
+                    self.pending_questions = data.pending_questions;
                     // Update repo info from daemon if available
                     if !data.repos.is_empty() {
                         let new_repos: Vec<RepoInfo> = data
@@ -727,6 +744,7 @@ impl App {
                         HashMap::new(),
                     )
                 });
+            let pending_questions = fetch_pending_questions_via_rpc();
             // Ignore send error if receiver dropped (app closed)
             let _ = tx.send(KanbanData {
                 prs,
@@ -736,6 +754,7 @@ impl App {
                 max_coworkers,
                 lead_working,
                 tool_activity,
+                pending_questions,
             });
         });
     }
@@ -2494,6 +2513,49 @@ fn fetch_kanban_data_via_rpc() -> Option<(
     ))
 }
 
+/// Fetch pending questions from coworkers via daemon RPC.
+///
+/// Returns a (possibly empty) list of questions waiting for user input.
+/// Silently returns empty on connection failure so the TUI degrades gracefully.
+fn fetch_pending_questions_via_rpc() -> Vec<PendingQuestion> {
+    use crate::client::DaemonClient;
+
+    let client = match DaemonClient::connect() {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+    let data = match client.coworker_questions() {
+        Ok(d) => d,
+        Err(_) => return Vec::new(),
+    };
+
+    data.get("questions")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|q| {
+                    let id = q.get("id").and_then(|v| v.as_u64())?;
+                    let coworker_name =
+                        q.get("coworker_name").and_then(|v| v.as_str())?.to_string();
+                    let question = q.get("question").and_then(|v| v.as_str())?.to_string();
+                    let timestamp = q
+                        .get("timestamp")
+                        .and_then(|v| v.as_str())
+                        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                        .map(|dt| dt.with_timezone(&chrono::Utc))
+                        .unwrap_or_else(chrono::Utc::now);
+                    Some(PendingQuestion {
+                        id,
+                        coworker_name,
+                        question,
+                        timestamp,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Convert a list of serialized `UniversalItem`s into display strings.
 ///
 /// ToolResult items are folded into their matching ToolCall: when a ToolResult
@@ -2785,6 +2847,7 @@ pub(super) mod tests {
             lead_working: false,
             tool_activity: HashMap::new(),
             max_coworkers: 10, // Test default
+            pending_questions: Vec::new(),
             repo_name: "test".to_string(),
             kanban_last_refresh: Instant::now(),
             kanban_receiver: None,
