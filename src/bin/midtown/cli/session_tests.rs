@@ -197,6 +197,7 @@ fn test_to_cli_args_resume_includes_all_flags() {
         channel: None,
         auth_profile_dir: None,
         auth_provider: midtown::auth::AuthProvider::Claude,
+        persisted_initial_prompt: None,
     };
 
     let settings = std::env::temp_dir().join("test-cli-args-settings.json");
@@ -269,6 +270,7 @@ fn test_to_cli_args_fresh_generates_session_id() {
         channel: None,
         auth_profile_dir: None,
         auth_provider: midtown::auth::AuthProvider::Claude,
+        persisted_initial_prompt: None,
     };
 
     let settings = std::env::temp_dir().join("test-cli-args-settings2.json");
@@ -310,6 +312,7 @@ fn test_to_cli_args_coworker_restricts_settings() {
         channel: None,
         auth_profile_dir: None,
         auth_provider: midtown::auth::AuthProvider::Claude,
+        persisted_initial_prompt: None,
     };
 
     let settings = std::env::temp_dir().join("test-settings.json");
@@ -481,6 +484,7 @@ fn test_to_cli_args_includes_model_flag() {
         channel: None,
         auth_profile_dir: None,
         auth_provider: midtown::auth::AuthProvider::Claude,
+        persisted_initial_prompt: None,
     };
 
     let settings = std::env::temp_dir().join("test-model-settings.json");
@@ -519,6 +523,7 @@ fn test_to_cli_args_coworker_gets_sonnet_model() {
         channel: None,
         auth_profile_dir: None,
         auth_provider: midtown::auth::AuthProvider::Claude,
+        persisted_initial_prompt: None,
     };
 
     let settings = std::env::temp_dir().join("test-model-settings2.json");

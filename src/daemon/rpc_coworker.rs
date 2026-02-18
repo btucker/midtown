@@ -78,6 +78,7 @@ pub(super) async fn handle_coworker_spawn(
         channel: None,
         auth_profile_dir: None,
         auth_provider: provider, // Resolved by spawn_coworker()
+        persisted_initial_prompt: None,
     };
 
     // Spawn via the headless path (creates worktree + headless session)

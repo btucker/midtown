@@ -788,6 +788,7 @@ pub(crate) fn build_attach_shell_command(
                 channel: None,
                 auth_profile_dir: Some(profile_dir.clone()),
                 auth_provider: provider,
+                persisted_initial_prompt: None,
             };
 
             // Write system prompt to temp file

@@ -1099,7 +1099,13 @@ impl DaemonState {
                     provider: Some(config.auth_provider),
                     profile: Some(profile),
                     resume_on_startup: true,
-                    initial_prompt: config.initial_prompt.clone(),
+                    // Use persisted_initial_prompt when set (e.g., session clear sends a
+                    // decorated "fresh restart" message but stores the original prompt).
+                    // Falls back to initial_prompt when not overridden.
+                    initial_prompt: config
+                        .persisted_initial_prompt
+                        .clone()
+                        .or_else(|| config.initial_prompt.clone()),
                 },
             );
             if let Err(e) = ps.save_for_repo(&self.repo_name) {
