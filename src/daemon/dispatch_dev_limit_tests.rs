@@ -469,3 +469,54 @@ fn test_dev_cap_without_lead_unaffected() {
         effects
     );
 }
+
+/// Channel leads should not consume dev slots in the dispatch coworker count.
+///
+/// Scenario: max_coworkers=2, 3 running sessions: "lexington" (dev), "auth" (channel lead),
+/// "web" (channel lead). The dispatch loop's `current_coworker_count` must only count
+/// lexington → 1 dev < dev_cap=2 → task dispatch IS emitted.
+#[test]
+fn test_dispatch_excludes_channel_leads_from_dev_count() {
+    let state = make_test_state_with_max(2);
+
+    // Register the dev coworker in CoworkerManager so next_available_name()
+    // skips "lexington" and returns another name for the new task.
+    state
+        .coworkers
+        .insert_for_testing(make_running_coworker("lexington"));
+
+    // 3 running sessions: 1 dev + 2 channel leads
+    let running = vec![
+        make_running_coworker("lexington"),
+        make_running_coworker("auth"),
+        make_running_coworker("web"),
+    ];
+
+    let pending = vec![make_pending_task("99")];
+
+    // Build snapshot with channel_lead_sessions populated so dispatch excludes them
+    let mut snap = make_dev_limit_snapshot(running, pending, false);
+    snap.channel_lead_sessions
+        .insert("auth".to_string(), "session-auth-123".to_string());
+    snap.channel_lead_sessions
+        .insert("web".to_string(), "session-web-456".to_string());
+
+    let effects = crate::daemon::dispatch::spawn_for_pending_tasks(&snap, &state);
+
+    // Only 1 dev coworker (lexington) < dev_cap=2 → task dispatch IS emitted.
+    // Without the fix, channel leads would inflate the count to 3 ≥ 2 → no dispatch.
+    let has_task_effect = effects.iter().any(|e| {
+        matches!(
+            e,
+            crate::daemon::effects::Effect::AssignAndSpawn { .. }
+                | crate::daemon::effects::Effect::SpawnCoworkerWithCallbacks { .. }
+                | crate::daemon::effects::Effect::NudgeCoworkerWithCallbacks { .. }
+        )
+    });
+    assert!(
+        has_task_effect,
+        "Expected task dispatch effect: channel leads must not count toward dev cap. \
+         Effects: {:?}",
+        effects
+    );
+}

@@ -36,19 +36,19 @@ pub(crate) async fn handle_kanban_data(id: RequestId, state: &DaemonState) -> Re
     // Clone data needed for cache key computation
     let all_repo_paths = state.all_repo_paths.clone();
 
-    // Compute a hash of all repo paths for cache keying
-    let mut hasher = DefaultHasher::new();
-    for path in &all_repo_paths {
-        path.hash(&mut hasher);
-    }
-    let repo_hash = hasher.finish();
-
     // Extract channel lead names early for cache key computation (best-effort)
     let cache_channel_lead_names: std::collections::HashSet<String> = state
         .persistent_state
         .try_lock()
         .map(|ps| ps.channel_lead_sessions.keys().cloned().collect())
         .unwrap_or_default();
+
+    // Compute a hash of all repo paths for cache keying
+    let mut hasher = DefaultHasher::new();
+    for path in &all_repo_paths {
+        path.hash(&mut hasher);
+    }
+    let repo_hash = hasher.finish();
 
     // Compute a hash of coworker state for cache invalidation
     let coworker_state_hash = {

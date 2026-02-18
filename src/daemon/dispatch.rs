@@ -1440,14 +1440,20 @@ pub(super) fn spawn_for_pending_tasks_excluding(
     // Use running coworkers from snapshot, not all coworkers from internal map.
     // The internal map includes stopped coworkers until they're cleaned up, which
     // incorrectly blocks task dispatch when all coworkers are stopped.
-    // Exclude the lead: a headless lead session counts as "running" in the
-    // CoworkerManager but is not a dev/reviewer slot. Including it would consume
-    // one of the dev slots, causing the daemon to under-spawn whenever the lead
-    // runs headless.
+    // Exclude the lead and channel leads: headless lead and channel lead sessions
+    // register in CoworkerManager but are not dev/reviewer slots. Including them
+    // would incorrectly consume dev slots and cause under-spawning.
+    let channel_lead_names: std::collections::HashSet<&str> = snap
+        .channel_lead_sessions
+        .keys()
+        .map(|s| s.as_str())
+        .collect();
     let current_coworker_count = snap
         .running_coworkers
         .iter()
-        .filter(|cw| !cw.name.eq_ignore_ascii_case("lead"))
+        .filter(|cw| {
+            !cw.name.eq_ignore_ascii_case("lead") && !channel_lead_names.contains(cw.name.as_str())
+        })
         .count();
 
     for task in pending_unowned.iter() {
