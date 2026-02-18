@@ -24,17 +24,23 @@ const OPS_SENDERS: &[&str] = &["midtown", "github", "system", "daemon"];
 /// Maximum number of recent ops messages to display in the mini-channel.
 const OPS_MAX_MESSAGES: usize = 20;
 
+/// Senders whose /me actions stay in the main chat (not ops).
+const NON_COWORKER_SENDERS: &[&str] = &["lead", "user"];
+
 /// Returns true if the message belongs in the Ops mini-channel.
 ///
 /// Ops messages are:
 /// - Messages from system/daemon senders (midtown, github, system, daemon)
-/// - Action messages (/me) from any sender (coworker status updates)
+/// - Action messages (/me) from coworkers only (not lead or user)
 pub fn is_ops_message(from: &str, msg_type: &MessageType, content: &str) -> bool {
     let sender = from.to_lowercase();
     if OPS_SENDERS.iter().any(|&s| s == sender) {
         return true;
     }
-    // /me action messages = coworker workflow status updates
+    // /me action messages = coworker workflow status updates; exclude lead/user
+    if NON_COWORKER_SENDERS.iter().any(|&s| s == sender) {
+        return false;
+    }
     if *msg_type == MessageType::Action || content.starts_with("/me ") {
         return true;
     }
@@ -460,7 +466,7 @@ fn render_task_item(
 
 /// Draw the Midtown Ops mini-channel (bottom of board sidebar).
 ///
-/// Displays system messages and /me action messages in a compact scrollable view.
+/// Displays system messages and coworker /me action messages in a compact scrollable view.
 /// The most recent `ops_messages` entries are shown (already in chronological order).
 fn draw_ops_mini_channel(f: &mut Frame, ops_messages: &[&midtown::Message], area: Rect) {
     // Split: header line + content
@@ -1679,103 +1685,6 @@ mod tests {
         );
     }
 
-    // --- is_ops_message tests ---
-
-    #[test]
-    fn test_is_ops_message_midtown_sender() {
-        assert!(is_ops_message("midtown", &MessageType::Text, "hello"));
-        assert!(is_ops_message("MIDTOWN", &MessageType::Text, "hello"));
-    }
-
-    #[test]
-    fn test_is_ops_message_github_sender() {
-        assert!(is_ops_message("github", &MessageType::System, "CI passed"));
-    }
-
-    #[test]
-    fn test_is_ops_message_system_sender() {
-        assert!(is_ops_message("system", &MessageType::System, "restart"));
-        assert!(is_ops_message("daemon", &MessageType::System, "spawned"));
-    }
-
-    #[test]
-    fn test_is_ops_message_action_type() {
-        // Action type (MessageType::Action) from any sender is an ops message
-        assert!(is_ops_message(
-            "york",
-            &MessageType::Action,
-            "/me developing"
-        ));
-        assert!(is_ops_message(
-            "lead",
-            &MessageType::Action,
-            "/me reviewing"
-        ));
-    }
-
-    #[test]
-    fn test_is_ops_message_slash_me_content() {
-        // /me prefix in content = ops message even with Text type
-        assert!(is_ops_message("park", &MessageType::Text, "/me idle"));
-    }
-
-    #[test]
-    fn test_is_ops_message_regular_conversation() {
-        // Regular conversation from coworkers/lead/user is NOT ops
-        assert!(!is_ops_message("york", &MessageType::Text, "Hello team"));
-        assert!(!is_ops_message("lead", &MessageType::Text, "Looks good"));
-        assert!(!is_ops_message(
-            "user",
-            &MessageType::Text,
-            "What's the status?"
-        ));
-    }
-
-    #[test]
-    fn test_draw_ops_mini_channel_renders_without_panic() {
-        use midtown::{Message, MessageType};
-        use ratatui::Terminal;
-        use ratatui::backend::TestBackend;
-
-        let backend = TestBackend::new(40, 8);
-        let mut terminal = Terminal::new(backend).unwrap();
-
-        let msgs: Vec<midtown::Message> = vec![
-            {
-                let mut m = Message::system("CI checks passed");
-                m.from = "github".to_string();
-                m
-            },
-            Message::new("york", "/me developing task 1583", MessageType::Action),
-        ];
-        let refs: Vec<&midtown::Message> = msgs.iter().collect();
-
-        terminal
-            .draw(|f| {
-                let area = f.area();
-                draw_ops_mini_channel(f, &refs, area);
-            })
-            .unwrap();
-        // No panic = success
-    }
-
-    #[test]
-    fn test_draw_ops_mini_channel_empty_messages() {
-        use ratatui::Terminal;
-        use ratatui::backend::TestBackend;
-
-        let backend = TestBackend::new(40, 5);
-        let mut terminal = Terminal::new(backend).unwrap();
-
-        terminal
-            .draw(|f| {
-                let area = f.area();
-                draw_ops_mini_channel(f, &[], area);
-            })
-            .unwrap();
-        // Empty state renders without panic
-    }
-
     #[test]
     fn test_draw_board_panel_includes_ops_section() {
         use ratatui::Terminal;
@@ -1812,3 +1721,7 @@ mod tests {
         );
     }
 }
+
+#[path = "board_tests.rs"]
+#[cfg(test)]
+mod board_tests;
