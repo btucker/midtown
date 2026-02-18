@@ -2,6 +2,8 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
+use chrono::{DateTime, Utc};
+use midtown::MessageType;
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
@@ -16,6 +18,35 @@ use super::super::app::{
 use super::Hyperlink;
 use super::text::wrap_content;
 
+/// Senders whose messages always belong in the Ops channel.
+const OPS_SENDERS: &[&str] = &["midtown", "github", "system", "daemon"];
+
+/// Maximum number of recent ops messages to display in the mini-channel.
+const OPS_MAX_MESSAGES: usize = 20;
+
+/// Returns true if the message belongs in the Ops mini-channel.
+///
+/// Ops messages are:
+/// - Messages from system/daemon senders (midtown, github, system, daemon)
+/// - Action messages (/me) from any sender (coworker status updates)
+pub fn is_ops_message(from: &str, msg_type: &MessageType, content: &str) -> bool {
+    let sender = from.to_lowercase();
+    if OPS_SENDERS.iter().any(|&s| s == sender) {
+        return true;
+    }
+    // /me action messages = coworker workflow status updates
+    if *msg_type == MessageType::Action || content.starts_with("/me ") {
+        return true;
+    }
+    false
+}
+
+/// Format a timestamp for the ops mini-channel (HH:MM).
+fn format_ops_time(ts: &DateTime<Utc>) -> String {
+    use chrono::Timelike;
+    format!("{:02}:{:02}", ts.hour(), ts.minute())
+}
+
 /// Draw the board panel (left side) with channel list
 ///
 /// Returns (hyperlinks, tasks_area) where tasks_area is the rect containing the task list
@@ -25,7 +56,7 @@ pub fn draw_board_panel(f: &mut Frame, app: &mut App, area: Rect) -> (Vec<Hyperl
     app.task_line_map.clear();
     app.channel_line_map.clear();
 
-    // Split board area vertically: tasks at top, coworkers at bottom
+    // Split board area vertically: tasks at top, coworkers + ops at bottom
     let active_coworker_count = app
         .coworkers
         .iter()
@@ -37,16 +68,36 @@ pub fn draw_board_panel(f: &mut Frame, app: &mut App, area: Rect) -> (Vec<Hyperl
         0
     };
 
+    // Ops mini-channel: fixed height (header + N message rows + 2 borders)
+    // Show at most OPS_MAX_MESSAGES rows but cap at 8 visible lines to avoid
+    // crowding the task list on short terminals.
+    //
+    // Clone the filtered ops messages to avoid holding an immutable borrow on
+    // app.messages while draw_coworker_status takes app mutably below.
+    let ops_messages: Vec<midtown::Message> = {
+        let recent: Vec<_> = app
+            .messages
+            .iter()
+            .filter(|m| is_ops_message(&m.from, &m.message_type, &m.content))
+            .rev()
+            .take(OPS_MAX_MESSAGES)
+            .collect();
+        recent.into_iter().rev().cloned().collect()
+    };
+    let ops_visible_rows = ops_messages.len().min(8) as u16;
+    // Header line + visible rows + 2 borders = ops_section_height
+    let ops_section_height = 1 + ops_visible_rows + 2;
+
+    // Build layout constraints: tasks always grow, then coworkers (if any), then ops
+    let mut constraints = vec![Constraint::Min(10)];
+    if coworker_section_height > 0 {
+        constraints.push(Constraint::Length(coworker_section_height));
+    }
+    constraints.push(Constraint::Length(ops_section_height));
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints(if coworker_section_height > 0 {
-            vec![
-                Constraint::Min(10),
-                Constraint::Length(coworker_section_height),
-            ]
-        } else {
-            vec![Constraint::Min(10)]
-        })
+        .constraints(constraints)
         .split(area);
 
     let tasks_area = chunks[0];
@@ -196,9 +247,14 @@ pub fn draw_board_panel(f: &mut Frame, app: &mut App, area: Rect) -> (Vec<Hyperl
     let paragraph = Paragraph::new(lines).block(block);
     f.render_widget(paragraph, tasks_area);
 
+    // Determine the chunk index for each optional section
+    let mut chunk_idx = 1usize;
     if coworker_section_height > 0 {
-        draw_coworker_status(f, app, chunks[1]);
+        draw_coworker_status(f, app, chunks[chunk_idx]);
+        chunk_idx += 1;
     }
+    let ops_refs: Vec<&midtown::Message> = ops_messages.iter().collect();
+    draw_ops_mini_channel(f, &ops_refs, chunks[chunk_idx]);
 
     (hyperlinks, tasks_area)
 }
@@ -399,6 +455,127 @@ fn render_task_item(
             label_line,
             Style::default().fg(Color::DarkGray),
         )]));
+    }
+}
+
+/// Draw the Midtown Ops mini-channel (bottom of board sidebar).
+///
+/// Displays system messages and /me action messages in a compact scrollable view.
+/// The most recent `ops_messages` entries are shown (already in chronological order).
+fn draw_ops_mini_channel(f: &mut Frame, ops_messages: &[&midtown::Message], area: Rect) {
+    // Split: header line + content
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1), // Header line
+            Constraint::Min(0),    // Message rows
+        ])
+        .split(area);
+
+    // Render the bordered container
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::DarkGray));
+    f.render_widget(block, area);
+
+    // Header: "MIDTOWN OPS" in dim style, inside the border
+    let header = Paragraph::new(Line::from(vec![Span::styled(
+        " MIDTOWN OPS",
+        Style::default()
+            .fg(Color::DarkGray)
+            .add_modifier(Modifier::BOLD),
+    )]));
+    f.render_widget(header, chunks[0]);
+
+    // Message rows (inside border = area shrunk by 1 on each side)
+    let inner = Rect {
+        x: area.x + 1,
+        y: area.y + 1,
+        width: area.width.saturating_sub(2),
+        height: area.height.saturating_sub(2),
+    };
+
+    if ops_messages.is_empty() {
+        let empty = Paragraph::new(Line::from(vec![Span::styled(
+            "No ops messages",
+            Style::default().fg(Color::DarkGray),
+        )]));
+        f.render_widget(empty, inner);
+        return;
+    }
+
+    // Build message lines (most recent at bottom)
+    let content_width = inner.width.saturating_sub(1) as usize; // 1 for left pad
+    let mut lines: Vec<Line<'static>> = Vec::new();
+
+    for msg in ops_messages {
+        let time_str = format_ops_time(&msg.timestamp);
+        let is_action = msg.message_type == MessageType::Action || msg.content.starts_with("/me ");
+
+        let sender_color = ops_sender_color(&msg.from);
+
+        if is_action {
+            // Format: "HH:MM * name content"
+            let content = msg.content.trim_start_matches("/me").trim().to_string();
+            let prefix = format!("{time_str} * ");
+            let name = msg.from.clone();
+            let remaining = content_width.saturating_sub(prefix.len() + name.len() + 1);
+            let body = if remaining > 0 && content.len() > remaining {
+                format!("{}..", &content[..remaining.saturating_sub(2)])
+            } else {
+                content.clone()
+            };
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!("{time_str} "),
+                    Style::default().fg(Color::Rgb(50, 50, 50)),
+                ),
+                Span::styled("* ", Style::default().fg(sender_color)),
+                Span::styled(name, Style::default().fg(sender_color)),
+                Span::styled(
+                    format!(" {body}"),
+                    Style::default().fg(Color::Rgb(90, 90, 90)),
+                ),
+            ]));
+        } else {
+            // Format: "HH:MM sender: message"
+            let sender = msg.from.clone();
+            let prefix_len = time_str.len() + 1 + sender.len() + 2; // " HH:MM sender: "
+            let remaining = content_width.saturating_sub(prefix_len);
+            let body = if remaining > 0 && msg.content.len() > remaining {
+                format!("{}..", &msg.content[..remaining.saturating_sub(2)])
+            } else {
+                msg.content.clone()
+            };
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!("{time_str} "),
+                    Style::default().fg(Color::Rgb(50, 50, 50)),
+                ),
+                Span::styled(sender, Style::default().fg(sender_color)),
+                Span::styled(
+                    format!(": {body}"),
+                    Style::default().fg(Color::Rgb(90, 90, 90)),
+                ),
+            ]));
+        }
+    }
+
+    // Show the last N lines that fit in the available height
+    let available_height = inner.height as usize;
+    let start = lines.len().saturating_sub(available_height);
+    let visible_lines: Vec<Line<'static>> = lines.into_iter().skip(start).collect();
+
+    let paragraph = Paragraph::new(visible_lines);
+    f.render_widget(paragraph, inner);
+}
+
+/// Map a sender name to a dim TUI color for the ops mini-channel.
+fn ops_sender_color(name: &str) -> Color {
+    match name.to_lowercase().as_str() {
+        "midtown" | "system" | "daemon" | "github" => Color::Rgb(80, 80, 80),
+        "lead" => Color::Rgb(180, 180, 100),
+        _ => Color::Rgb(120, 160, 120), // coworker names: muted green
     }
 }
 
@@ -1204,11 +1381,12 @@ mod tests {
             .unwrap();
 
         let tasks_area = returned_tasks_area.unwrap();
-        // 2 active coworkers → section height = 2 + 3 = 5
-        // tasks_area height should be 40 - 5 = 35
+        // 2 active coworkers → coworker section height = 2 + 3 = 5
+        // ops mini-channel always present: with 0 ops messages → ops section height = 1 + 0 + 2 = 3
+        // tasks_area height should be 40 - 5 - 3 = 32
         assert_eq!(
-            tasks_area.height, 35,
-            "tasks area height should leave exactly 5 rows for 2 coworkers"
+            tasks_area.height, 32,
+            "tasks area height should leave exactly 5 rows for 2 coworkers + 3 rows for ops section"
         );
     }
 
@@ -1258,10 +1436,11 @@ mod tests {
             .unwrap();
 
         let tasks_area = returned_tasks_area.unwrap();
-        // Only 1 active coworker → section height = 1 + 3 = 4
-        // tasks_area height should be 40 - 4 = 36
+        // Only 1 active coworker → coworker section height = 1 + 3 = 4
+        // ops mini-channel always present: with 0 ops messages → ops section height = 1 + 0 + 2 = 3
+        // tasks_area height should be 40 - 4 - 3 = 33
         assert_eq!(
-            tasks_area.height, 36,
+            tasks_area.height, 33,
             "idle coworkers should not inflate section height (only 1 active coworker)"
         );
     }
@@ -1497,6 +1676,139 @@ mod tests {
             task_phase_label(&task, Some(&pr), None),
             Some("conflict"),
             "has_conflicts should take priority over CI status"
+        );
+    }
+
+    // --- is_ops_message tests ---
+
+    #[test]
+    fn test_is_ops_message_midtown_sender() {
+        assert!(is_ops_message("midtown", &MessageType::Text, "hello"));
+        assert!(is_ops_message("MIDTOWN", &MessageType::Text, "hello"));
+    }
+
+    #[test]
+    fn test_is_ops_message_github_sender() {
+        assert!(is_ops_message("github", &MessageType::System, "CI passed"));
+    }
+
+    #[test]
+    fn test_is_ops_message_system_sender() {
+        assert!(is_ops_message("system", &MessageType::System, "restart"));
+        assert!(is_ops_message("daemon", &MessageType::System, "spawned"));
+    }
+
+    #[test]
+    fn test_is_ops_message_action_type() {
+        // Action type (MessageType::Action) from any sender is an ops message
+        assert!(is_ops_message(
+            "york",
+            &MessageType::Action,
+            "/me developing"
+        ));
+        assert!(is_ops_message(
+            "lead",
+            &MessageType::Action,
+            "/me reviewing"
+        ));
+    }
+
+    #[test]
+    fn test_is_ops_message_slash_me_content() {
+        // /me prefix in content = ops message even with Text type
+        assert!(is_ops_message("park", &MessageType::Text, "/me idle"));
+    }
+
+    #[test]
+    fn test_is_ops_message_regular_conversation() {
+        // Regular conversation from coworkers/lead/user is NOT ops
+        assert!(!is_ops_message("york", &MessageType::Text, "Hello team"));
+        assert!(!is_ops_message("lead", &MessageType::Text, "Looks good"));
+        assert!(!is_ops_message(
+            "user",
+            &MessageType::Text,
+            "What's the status?"
+        ));
+    }
+
+    #[test]
+    fn test_draw_ops_mini_channel_renders_without_panic() {
+        use midtown::{Message, MessageType};
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let backend = TestBackend::new(40, 8);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let msgs: Vec<midtown::Message> = vec![
+            {
+                let mut m = Message::system("CI checks passed");
+                m.from = "github".to_string();
+                m
+            },
+            Message::new("york", "/me developing task 1583", MessageType::Action),
+        ];
+        let refs: Vec<&midtown::Message> = msgs.iter().collect();
+
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                draw_ops_mini_channel(f, &refs, area);
+            })
+            .unwrap();
+        // No panic = success
+    }
+
+    #[test]
+    fn test_draw_ops_mini_channel_empty_messages() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let backend = TestBackend::new(40, 5);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                draw_ops_mini_channel(f, &[], area);
+            })
+            .unwrap();
+        // Empty state renders without panic
+    }
+
+    #[test]
+    fn test_draw_board_panel_includes_ops_section() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let backend = TestBackend::new(80, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let mut app = test_app();
+        // Add an ops message so the section is non-trivial
+        app.messages
+            .push_back(midtown::Message::system("test ops msg"));
+
+        let mut returned_tasks_area = None;
+
+        terminal
+            .draw(|f| {
+                let area = ratatui::layout::Rect {
+                    x: 0,
+                    y: 0,
+                    width: 80,
+                    height: 40,
+                };
+                let (_links, tasks_area) = draw_board_panel(f, &mut app, area);
+                returned_tasks_area = Some(tasks_area);
+            })
+            .unwrap();
+
+        let tasks_area = returned_tasks_area.unwrap();
+        // Ops section always present; tasks_area should be smaller than total height
+        assert!(
+            tasks_area.height < 40,
+            "tasks_area should be smaller than total height when ops section is present"
         );
     }
 }
