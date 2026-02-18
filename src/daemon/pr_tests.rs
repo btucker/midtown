@@ -1571,10 +1571,33 @@ fn review_complete_action_to_effects_includes_record_task_assignment() {
 /// of the exact production scenario that triggered the bug.
 #[tokio::test]
 async fn test_active_coworker_pr_without_worktree_is_not_orphaned() {
+    use super::super::snapshot::WorldSnapshot;
     use crate::coworker::{Coworker, CoworkerStatus};
-    use crate::worktree_registry::WorktreeRegistry;
 
-    // PR #1246 from the captured snapshot
+    // Load the captured snapshot that exhibits the bug scenario
+    let fixture = include_str!(
+        "../../tests/fixtures/snapshot/snapshot-reviewer-not-assigned-pr-1246-20260218-001618.json"
+    );
+    let snap: WorldSnapshot =
+        serde_json::from_str(fixture).expect("Failed to deserialize WorldSnapshot from fixture");
+
+    // Verify the snapshot captures the bug scenario:
+    // park is running and task 1483 has no worktree entry.
+    assert!(
+        snap.active_names.contains("park"),
+        "Snapshot should show park as an active coworker"
+    );
+    let task_1483_worktree = snap
+        .worktree_registry
+        .all_assignments()
+        .values()
+        .find(|a| a.task_id.as_deref() == Some("1483"));
+    assert!(
+        task_1483_worktree.is_none(),
+        "Snapshot should have no worktree entry for task 1483 (the bug scenario)"
+    );
+
+    // PR #1246 in GitHub API format (collect_reviewer_effects_with_source expects this format)
     let pr = json!({
         "number": 1246,
         "headRefName": "park/task-1483-kill-ring-yank-v2",
@@ -1605,23 +1628,20 @@ async fn test_active_coworker_pr_without_worktree_is_not_orphaned() {
     };
     state.coworkers.insert_for_testing(park);
 
-    // Empty worktree registry — task 1483 has no worktree entry
-    let registry = WorktreeRegistry::new();
-
     // Empty branch_owners_map — the bug manifests because coworker_from_branch_with_map
     // still identifies "park" as the owner via the branch prefix
     let branch_owners: std::collections::HashMap<String, String> = std::collections::HashMap::new();
 
     let effects = collect_reviewer_effects_with_source(
         Some(&branch_owners),
-        &registry,
+        &snap.worktree_registry, // Real snapshot registry: no task 1483 entry
         &state,
         &[pr],
         crate::github_state::AssignmentSource::PollingFallback,
     )
     .await;
 
-    // Bug: Currently returns 0 effects (PR is incorrectly marked as orphaned)
+    // Bug: Previously returned 0 effects (PR incorrectly marked as orphaned)
     // Expected: Should spawn a reviewer (park is active and can address feedback)
     assert!(
         !effects.is_empty(),

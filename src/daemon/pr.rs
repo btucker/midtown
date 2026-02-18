@@ -1973,15 +1973,6 @@ pub(crate) async fn collect_reviewer_effects_with_source(
 ) -> Vec<Effect> {
     let mut effects: Vec<Effect> = Vec::new();
 
-    // Build the set of running coworker names once, mirroring collect_world_snapshot().
-    // Avoids per-PR state queries for liveness checks below.
-    let running_names: std::collections::HashSet<String> = state
-        .coworkers
-        .list_running()
-        .into_iter()
-        .map(|cw| cw.name.to_lowercase())
-        .collect();
-
     for pr in prs {
         let pr_number = pr.get("number").and_then(|n| n.as_u64()).unwrap_or(0);
         if pr_number == 0 {
@@ -2117,9 +2108,9 @@ pub(crate) async fn collect_reviewer_effects_with_source(
         }
 
         // Skip orphaned PRs (PRs whose author has no active worktree, no running coworker,
-        // or whose author can't be determined). These should not get auto-review spawned
-        // since the author can't address feedback. The main PR loop already posts warnings
-        // for orphaned PRs with critical issues.
+        // or can't be determined). These should not get auto-review spawned since the author
+        // can't address feedback. The main PR loop already posts warnings for orphaned PRs
+        // with critical issues.
         let head_ref = pr.get("headRefName").and_then(|s| s.as_str()).unwrap_or("");
         let title = pr.get("title").and_then(|s| s.as_str()).unwrap_or("");
 
@@ -2128,12 +2119,12 @@ pub(crate) async fn collect_reviewer_effects_with_source(
         // may differ from the PR branch owner), so we can't rely on matching the
         // owner name. Instead, check if a worktree exists for this PR's task.
         //
-        // Try multiple strategies to find the worktree or confirm the PR is not orphaned:
+        // Try multiple strategies to find the worktree:
         // 1. Look up by PR number (if the PR was linked to a worktree via webhook)
         // 2. Look up by task ID extracted from PR title (most reliable for task-based PRs)
         // 3. Fall back to branch name lookup (for non-task PRs or legacy workflows)
-        // 4. If no worktree entry found, check if the branch-identified coworker is running
-        //    (active coworkers can address feedback regardless of worktree registration)
+        // 4. If no worktree found and the branch identifies a coworker owner, check whether
+        //    that coworker is currently running (active coworkers can always address feedback)
         let worktree = worktree_registry
             .get_by_pr(pr_number)
             .or_else(|| {
@@ -2183,6 +2174,12 @@ pub(crate) async fn collect_reviewer_effects_with_source(
                     // The branch identifies a coworker owner. Only treat as orphaned if
                     // the coworker is NOT currently running — an active coworker can always
                     // address review feedback regardless of whether a worktree is registered.
+                    let running_names: std::collections::HashSet<String> = state
+                        .coworkers
+                        .list_running()
+                        .into_iter()
+                        .map(|cw| cw.name.to_lowercase())
+                        .collect();
                     let is_active = running_names.contains(&owner.to_lowercase());
                     if is_active {
                         debug!(
