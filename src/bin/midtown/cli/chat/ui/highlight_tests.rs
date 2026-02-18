@@ -102,6 +102,7 @@ fn test_code_block_segment_renders_with_borders() {
         None,
         &current_tasks,
         None,
+        &[],
         &cache,
         &mut lines,
         &mut diagram_sources,

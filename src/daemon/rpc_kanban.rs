@@ -277,12 +277,14 @@ pub(crate) async fn handle_kanban_data(id: RequestId, state: &DaemonState) -> Re
     };
 
     // Build the cacheable response (WITHOUT lead_working or tool_activity — they're live state)
+    let channel_leads: Vec<&String> = channel_lead_names.iter().collect();
     let mut response_data = serde_json::json!({
         "prs": prs,
         "merged_prs": merged_prs,
         "repos": repos,
         "coworkers": coworkers_data,
         "max_coworkers": state.max_coworkers,
+        "channel_leads": channel_leads,
     });
 
     state.kanban_cache.set(response_data.clone(), cache_key);

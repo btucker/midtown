@@ -29,12 +29,13 @@ pub fn render_message_with_mermaid(
     prev_sender: Option<&str>,
     current_tasks: &HashMap<String, String>,
     user_display_name: Option<&str>,
+    channel_lead_names: &[String],
     mermaid_cache: &MermaidCache,
     lines: &mut Vec<Line<'static>>,
     diagram_sources: &mut Vec<String>,
     mermaid_to_render: &mut Vec<String>,
 ) {
-    let ctx = MessageRenderContext::new(msg, prev_sender, user_display_name);
+    let ctx = MessageRenderContext::new(msg, prev_sender, user_display_name, channel_lead_names);
 
     let content_width = ctx.content_width(width);
     if content_width == 0 {
