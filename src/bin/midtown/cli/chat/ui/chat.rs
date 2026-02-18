@@ -240,12 +240,30 @@ fn append_tool_activity_lines(
             Span::styled(" working\u{2026}", Style::default().fg(Color::DarkGray)),
         ]));
 
-        // Show up to 3 most recent tool calls (last 3, most recent last)
+        // Show up to 3 most recent tool calls (last 3, most recent last).
+        // Each header starts with a prefix char (✓/✗/›) followed by a space and the description.
         let start = headers.len().saturating_sub(3);
         for header in &headers[start..] {
+            // Split prefix character from the rest of the description.
+            // Format is "<prefix_char> <description>" where prefix is a single Unicode char.
+            let mut chars = header.chars();
+            let prefix = chars.next().unwrap_or('›');
+            let description: String = chars.collect::<String>().trim_start().to_string();
+
+            let prefix_color = match prefix {
+                '\u{2713}' => Color::Green, // ✓
+                '\u{2717}' => Color::Red,   // ✗
+                _ => Color::DarkGray,       // › or anything else
+            };
+            let text_color = match prefix {
+                '\u{2717}' => Color::Red,
+                _ => Color::DarkGray,
+            };
+
             lines.push(Line::from(vec![
-                Span::styled("  \u{203a} ", Style::default().fg(Color::DarkGray)),
-                Span::styled(header.clone(), Style::default().fg(Color::DarkGray)),
+                Span::styled("  ", Style::default()),
+                Span::styled(prefix.to_string(), Style::default().fg(prefix_color)),
+                Span::styled(format!(" {description}"), Style::default().fg(text_color)),
             ]));
         }
     }

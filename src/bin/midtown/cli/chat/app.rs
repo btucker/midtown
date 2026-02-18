@@ -2455,7 +2455,7 @@ fn fetch_kanban_data_via_rpc() -> Option<(
                 .map(|(agent, items)| {
                     let headers: Vec<String> = items
                         .as_array()
-                        .map(|arr| arr.iter().filter_map(extract_semantic_header).collect())
+                        .map(|arr| extract_tool_activity_headers(arr))
                         .unwrap_or_default();
                     (agent.clone(), headers)
                 })
@@ -2474,34 +2474,58 @@ fn fetch_kanban_data_via_rpc() -> Option<(
     ))
 }
 
-/// Extract a human-readable label from a serialized `UniversalItem`.
+/// Convert a list of serialized `UniversalItem`s into display strings.
 ///
-/// For `ToolCall` content parts, returns the `semantic_header`.
-/// For `ToolResult` parts, returns "✓ result" or "✗ error".
-/// Returns `None` if no recognizable content is found.
-fn extract_semantic_header(item: &serde_json::Value) -> Option<String> {
-    let content = item.get("content")?.as_array()?;
-    for part in content {
-        if let Some(call) = part.get("ToolCall") {
-            let header = call
-                .get("semantic_header")
-                .and_then(|v| v.as_str())
-                .unwrap_or_else(|| call.get("name").and_then(|v| v.as_str()).unwrap_or("?"));
-            return Some(header.to_string());
-        }
-        if let Some(result) = part.get("ToolResult") {
-            let is_error = result
-                .get("is_error")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-            return Some(if is_error {
-                "\u{2717} error".to_string()
-            } else {
-                "\u{2713} ok".to_string()
-            });
+/// ToolResult items are folded into their matching ToolCall: when a ToolResult
+/// exists for a call, the ToolCall header gains a `✓` (success) or `✗` (error)
+/// prefix. In-progress calls (no result yet) use `›`. ToolResult items are
+/// not emitted as standalone entries.
+fn extract_tool_activity_headers(items: &[serde_json::Value]) -> Vec<String> {
+    use std::collections::HashMap;
+
+    // First pass: collect result status keyed by call_id.
+    let mut result_status: HashMap<&str, bool> = HashMap::new();
+    for item in items {
+        if let Some(content) = item.get("content").and_then(|v| v.as_array()) {
+            for part in content {
+                if let Some(result) = part.get("ToolResult")
+                    && let Some(call_id) = result.get("call_id").and_then(|v| v.as_str())
+                {
+                    let is_error = result
+                        .get("is_error")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+                    result_status.insert(call_id, is_error);
+                }
+            }
         }
     }
-    None
+
+    // Second pass: emit one display string per ToolCall, annotated with result status.
+    let mut headers = Vec::new();
+    for item in items {
+        if let Some(content) = item.get("content").and_then(|v| v.as_array()) {
+            for part in content {
+                if let Some(call) = part.get("ToolCall") {
+                    let header = call
+                        .get("semantic_header")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_else(|| {
+                            call.get("name").and_then(|v| v.as_str()).unwrap_or("?")
+                        });
+                    let call_id = call.get("call_id").and_then(|v| v.as_str()).unwrap_or("");
+                    let display = match result_status.get(call_id) {
+                        Some(false) => format!("\u{2713} {header}"), // ✓ header
+                        Some(true) => format!("\u{2717} {header}"),  // ✗ header
+                        None => format!("\u{203a} {header}"),        // › header (in-progress)
+                    };
+                    headers.push(display);
+                    break; // one ToolCall per item
+                }
+            }
+        }
+    }
+    headers
 }
 
 /// Cache for default branch names, keyed by repo full name (or empty string for current repo).
