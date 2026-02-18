@@ -239,12 +239,28 @@ pub struct CoworkerStatusData {
     pub name: String,
     pub status: String,
     pub current_task: Option<String>,
-    pub model: String,
+    /// Model name. Omitted from progress-only updates to avoid overwriting
+    /// the model previously set by a spawn/status update.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
     /// Claude session ID for this coworker session, if known.
     /// Enables the web UI to distinguish between multiple sessions
     /// that share the same coworker name.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
+    /// Workflow phase abbreviation (e.g., "dev", "test", "PR").
+    /// Present when coworker has reported a phase via `midtown state`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub phase: Option<String>,
+    /// Progress percentage (0-100) reported by the coworker.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub progress: Option<u8>,
+    /// Human-readable estimated time remaining (e.g., "~3m", "~30s").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub time_estimate: Option<String>,
+    /// Health status color: "green", "yellow", or "red".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub health: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1616,8 +1632,37 @@ pub fn coworker_status_update(
         name: name.to_string(),
         status: status.to_string(),
         current_task: current_task.map(|s| s.to_string()),
-        model: model.to_string(),
+        model: Some(model.to_string()),
         session_id: None,
+        phase: None,
+        progress: None,
+        time_estimate: None,
+        health: None,
+    })
+}
+
+/// Build a `WebUpdate` for a coworker progress/phase change.
+///
+/// Sent when a coworker reports state via `midtown state <phase> --progress <pct>`.
+/// This allows the web UI to update progress bars and ETA in real time without
+/// waiting for the next 30s status poll.
+pub fn coworker_progress_update(
+    name: &str,
+    phase: Option<String>,
+    progress: Option<u8>,
+    time_estimate: Option<String>,
+    health: Option<String>,
+) -> WebUpdate {
+    WebUpdate::CoworkerStatus(CoworkerStatusData {
+        name: name.to_string(),
+        status: "running".to_string(),
+        current_task: None,
+        model: None,
+        session_id: None,
+        phase,
+        progress,
+        time_estimate,
+        health,
     })
 }
 
@@ -1737,8 +1782,12 @@ mod tests {
             name: "lexington".to_string(),
             status: "running".to_string(),
             current_task: Some("Fix auth bug".to_string()),
-            model: "sonnet".to_string(),
+            model: Some("sonnet".to_string()),
             session_id: None,
+            phase: None,
+            progress: None,
+            time_estimate: None,
+            health: None,
         });
 
         let json = serde_json::to_string(&update).unwrap();
@@ -1746,6 +1795,25 @@ mod tests {
         assert!(json.contains("lexington"));
         assert!(json.contains("running"));
         assert!(json.contains("Fix auth bug"));
+    }
+
+    #[test]
+    fn test_coworker_progress_update_serialization() {
+        let update = coworker_progress_update(
+            "madison",
+            Some("dev".to_string()),
+            Some(45),
+            Some("~3m".to_string()),
+            Some("green".to_string()),
+        );
+
+        let json = serde_json::to_string(&update).unwrap();
+        assert!(json.contains("coworker_status"));
+        assert!(json.contains("madison"));
+        assert!(json.contains(r#""phase":"dev""#));
+        assert!(json.contains(r#""progress":45"#));
+        assert!(json.contains(r#""time_estimate":"~3m""#));
+        assert!(json.contains(r#""health":"green""#));
     }
 
     #[test]
@@ -1818,8 +1886,12 @@ mod tests {
             name: "park".to_string(),
             status: "stopped".to_string(),
             current_task: None,
-            model: "sonnet".to_string(),
+            model: Some("sonnet".to_string()),
             session_id: None,
+            phase: None,
+            progress: None,
+            time_estimate: None,
+            health: None,
         });
 
         let json = serde_json::to_string(&update).unwrap();

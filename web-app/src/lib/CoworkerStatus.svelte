@@ -57,17 +57,29 @@
     </div>
     <div class="p-1.5">
       {#each activeCoworkers as cw}
-        <div class="flex items-center gap-1.5 px-1.5 py-1 font-mono text-sm leading-normal">
-          <span class="shrink-0 text-base leading-none text-[#d7af5f]">{getSpinner()}</span>
-          <span class="shrink-0 font-medium lowercase" style="color: {getHealthColor(cw.health)}">{cw.name}</span>
-          {#if cw.phase}
-            <span class="hidden text-[0.75rem] text-[#808080] sm:inline">{cw.phase}</span>
-          {/if}
+        <div class="flex flex-col gap-0.5 px-1.5 py-1 font-mono text-sm leading-normal">
+          <div class="flex items-center gap-1.5">
+            <span class="shrink-0 text-base leading-none text-[#d7af5f]">{getSpinner()}</span>
+            <span class="shrink-0 font-medium lowercase" style="color: {getHealthColor(cw.health)}">{cw.name}</span>
+            {#if cw.phase}
+              <span class="hidden text-[0.75rem] text-[#808080] sm:inline">{cw.phase}</span>
+            {/if}
+            <span class="flex-1"></span>
+            {#if cw.time_estimate}
+              <span class="text-[0.7rem] text-[#5faf5f]">{cw.time_estimate}</span>
+            {:else if cw.progress !== undefined && cw.progress !== null}
+              <span class="text-[0.7rem] text-[#5fafaf]">{cw.progress}%</span>
+            {/if}
+          </div>
           {#if cw.progress !== undefined && cw.progress !== null}
-            <span class="hidden text-[0.7rem] text-[#5fafaf] md:inline">{cw.progress}%</span>
-          {/if}
-          {#if cw.time_estimate}
-            <span class="text-[0.7rem] text-[#5faf5f]">{cw.time_estimate}</span>
+            <div class="ml-[26px] flex items-center gap-1.5">
+              <div class="flex-1 h-1 bg-[#2a2a2a] rounded-full overflow-hidden">
+                <div
+                  class="h-full bg-[#5fafaf] rounded-full transition-all duration-500"
+                  style="width: {cw.progress}%"
+                ></div>
+              </div>
+            </div>
           {/if}
         </div>
       {/each}

@@ -376,15 +376,40 @@ pub(super) async fn handle_coworker_report_state(
         state.clear_coworker_assignments(name);
     }
 
-    // Store in unified coworker record
-    let status_display = {
+    // Store in unified coworker record and capture updated progress for broadcast
+    let (status_display, phase_abbrev, updated_progress, time_estimate) = {
         let mut records = state.coworker_records.write().await;
         crate::rules::set_workflow(&mut records, name, phase, task_id, progress);
-        records
-            .get(name)
-            .and_then(|r| r.display_status())
-            .unwrap_or_default()
+        let record = records.get(name);
+        let display = record.and_then(|r| r.display_status()).unwrap_or_default();
+        let phase_abbrev = record
+            .and_then(|r| r.workflow_phase)
+            .map(|p| p.abbreviation().to_string());
+        let updated_progress = record.and_then(|r| r.progress);
+        let time_estimate = record.and_then(|r| r.format_time_remaining());
+        (display, phase_abbrev, updated_progress, time_estimate)
     };
+
+    // Broadcast progress/phase update to web UI so it doesn't have to wait for the 30s poll
+    let health = {
+        let health_guard = state.headless_health.read().unwrap();
+        health_guard.get(name).map(|h| {
+            if !h.is_alive {
+                "red".to_string()
+            } else if h.has_usage_limit || h.has_api_error {
+                "yellow".to_string()
+            } else {
+                "green".to_string()
+            }
+        })
+    };
+    state.broadcast_web_update(crate::web::coworker_progress_update(
+        name,
+        phase_abbrev,
+        updated_progress,
+        time_estimate,
+        health,
+    ));
 
     info!("Coworker {} reported state: {}", name, status_display);
     Response::success(
