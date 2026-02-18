@@ -34,9 +34,12 @@ pub struct HeadlessSessionInfo {
     /// OS process ID for zombie detection and cleanup.
     #[serde(default)]
     pub pid: Option<u32>,
-    /// Coworker type: "dev" or "reviewer".
+    /// Coworker type: "dev", "reviewer", or "channel-lead".
     #[serde(default)]
     pub coworker_type: Option<String>,
+    /// Channel name for channel-lead coworkers. Used to reconstruct the role on attach.
+    #[serde(default)]
+    pub channel_name: Option<String>,
     /// Task ID if this is a dev coworker working on a task.
     #[serde(default)]
     pub task_id: Option<u64>,

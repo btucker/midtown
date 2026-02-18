@@ -64,6 +64,7 @@ fn test_headless_session_info_roundtrip() {
         purpose: "task !5: Add auth endpoint".to_string(),
         pid: Some(12345),
         coworker_type: Some("dev".to_string()),
+        channel_name: None,
         task_id: Some(5),
         pr_number: None,
         working_dir: Some("/path/to/worktree".to_string()),
@@ -94,6 +95,7 @@ fn test_headless_sessions_in_persistent_state() {
             purpose: "task !3: Fix login bug".to_string(),
             pid: Some(9999),
             coworker_type: Some("dev".to_string()),
+            channel_name: None,
             task_id: Some(3),
             pr_number: None,
             working_dir: Some("/path/to/park-worktree".to_string()),
@@ -157,6 +159,7 @@ fn test_headless_session_provider_persistence() {
             purpose: "task !42: Add feature".to_string(),
             pid: Some(5555),
             coworker_type: Some("dev".to_string()),
+            channel_name: None,
             task_id: Some(42),
             pr_number: None,
             working_dir: Some("/path/to/madison-worktree".to_string()),
@@ -419,4 +422,44 @@ fn test_task_model_overwrite_and_remove() {
     let json = serde_json::to_string_pretty(&state).unwrap();
     let loaded: DaemonPersistentState = serde_json::from_str(&json).unwrap();
     assert!(loaded.task_model.is_empty());
+}
+
+#[test]
+fn test_channel_lead_session_info_persists_coworker_type_and_channel_name() {
+    // Issue 1: coworker_type was always "dev" for ChannelLead due to wildcard match.
+    // Verify that the HeadlessSessionInfo stores "channel-lead" and the channel name.
+    let info = HeadlessSessionInfo {
+        session_id: "ch-session-123".to_string(),
+        last_active: Utc::now(),
+        purpose: "channel lead for daemon-architecture".to_string(),
+        pid: Some(12345),
+        coworker_type: Some("channel-lead".to_string()),
+        channel_name: Some("daemon-architecture".to_string()),
+        task_id: None,
+        pr_number: None,
+        working_dir: Some("/path/to/worktree".to_string()),
+        provider: Some(crate::auth::AuthProvider::Claude),
+        profile: Some("test-profile".to_string()),
+        resume_on_startup: true,
+    };
+
+    let json = serde_json::to_string(&info).unwrap();
+    let parsed: HeadlessSessionInfo = serde_json::from_str(&json).unwrap();
+
+    assert_eq!(parsed.coworker_type, Some("channel-lead".to_string()));
+    assert_eq!(parsed.channel_name, Some("daemon-architecture".to_string()));
+}
+
+#[test]
+fn test_channel_lead_session_info_backward_compat_no_channel_name() {
+    // Existing state files without channel_name should deserialize with None default.
+    let json = r#"{
+        "session_id": "old-ch-session",
+        "last_active": "2026-02-09T10:00:00Z",
+        "purpose": "channel lead for daemon-architecture",
+        "coworker_type": "channel-lead"
+    }"#;
+    let info: HeadlessSessionInfo = serde_json::from_str(json).unwrap();
+    assert_eq!(info.coworker_type, Some("channel-lead".to_string()));
+    assert_eq!(info.channel_name, None);
 }

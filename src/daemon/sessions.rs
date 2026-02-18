@@ -805,6 +805,7 @@ impl SessionManager {
                     purpose: String::new(), // To be filled by caller
                     pid,
                     coworker_type: None, // To be filled by caller
+                    channel_name: None,  // To be filled by caller
                     task_id: None,       // To be filled by caller
                     pr_number: None,     // To be filled by caller
                     working_dir: None,   // To be filled by caller

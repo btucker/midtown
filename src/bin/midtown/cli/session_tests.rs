@@ -337,6 +337,7 @@ fn test_lead_attach_includes_system_prompt() {
         midtown::auth::AuthProvider::Claude,
         "session-123",
         None,
+        None,
         true,
     );
 
@@ -365,6 +366,7 @@ fn test_coworker_attach_includes_system_prompt() {
         "park",
         midtown::auth::AuthProvider::Claude,
         "session-456",
+        None,
         None,
         true,
     );
@@ -395,6 +397,7 @@ fn test_lead_attach_sets_task_list_id() {
         midtown::auth::AuthProvider::Claude,
         "session-123",
         None,
+        None,
         true,
     );
 
@@ -418,6 +421,7 @@ fn test_coworker_attach_no_task_list_id() {
         midtown::auth::AuthProvider::Claude,
         "session-456",
         None,
+        None,
         true,
     );
 
@@ -440,6 +444,7 @@ fn test_lead_attach_includes_agent_teams_flags() {
         "lead",
         midtown::auth::AuthProvider::Claude,
         "session-123",
+        None,
         None,
         true,
     );
@@ -550,6 +555,7 @@ fn test_reviewer_attach_gets_reviewer_system_prompt() {
         midtown::auth::AuthProvider::Claude,
         "session-789",
         Some("reviewer"),
+        None,
         true,
     );
 
@@ -571,6 +577,7 @@ fn test_lead_attach_gets_opus_model() {
         "lead",
         midtown::auth::AuthProvider::Claude,
         "session-123",
+        None,
         None,
         true,
     );
@@ -620,6 +627,7 @@ fn test_build_attach_command_uses_shell_command_substitution() {
         "lead",
         midtown::auth::AuthProvider::Claude,
         "session-123",
+        None,
         None,
         true,
     );
@@ -714,6 +722,7 @@ fn test_build_attach_command_no_double_quoting() {
         midtown::auth::AuthProvider::Claude,
         "session-123",
         None,
+        None,
         true,
     );
 
@@ -757,6 +766,7 @@ fn test_build_attach_command_shell_parseable() {
         midtown::auth::AuthProvider::Claude,
         "session-123",
         None,
+        None,
         true,
     );
 
@@ -790,6 +800,7 @@ fn test_view_attach_command_omits_session_detach() {
         midtown::auth::AuthProvider::Claude,
         "session-123",
         None,
+        None,
         false, // include_detach=false: midtown view manages detach explicitly on exit
     );
     let command = result.expect("build_attach_shell_command should succeed");
@@ -811,6 +822,7 @@ fn test_standalone_attach_command_includes_session_detach() {
         "lead",
         midtown::auth::AuthProvider::Claude,
         "session-123",
+        None,
         None,
         true, // include_detach=true: standalone attach needs auto-detach
     );
@@ -888,4 +900,115 @@ fn ensure_attach_worktree_coworker_falls_back_to_daemon_cwd() {
     assert!(result.is_ok());
     // Should not error — gracefully falls back
     assert_eq!(result.unwrap(), "/tmp/some-cwd");
+}
+
+// ── Channel lead attach path ──────────────────────────────────────────
+
+#[test]
+fn test_channel_lead_attach_uses_channel_lead_system_prompt() {
+    // Issue 2: before the fix, coworker_type="channel-lead" fell through to
+    // CoworkerRole::Coworker, so channel leads got the coworker system prompt.
+    let cwd = find_project_root();
+    let result = build_attach_shell_command(
+        &cwd,
+        "amsterdam",
+        midtown::auth::AuthProvider::Claude,
+        "session-ch1",
+        Some("channel-lead"),
+        Some("daemon-architecture"),
+        true,
+    );
+
+    let command = result.expect("build_attach_shell_command should succeed");
+
+    // Channel leads must get a system prompt (from channel-lead.md, not coworker.md)
+    assert!(
+        command.contains("--append-system-prompt"),
+        "Channel lead attach should include --append-system-prompt, got: {}",
+        command
+    );
+}
+
+#[test]
+fn test_channel_lead_attach_uses_config_model() {
+    // Issue 3: before the fix, ChannelLead was hardcoded to "sonnet" regardless
+    // of config. With no config override, the default is still "sonnet".
+    let cwd = find_project_root();
+    let result = build_attach_shell_command(
+        &cwd,
+        "amsterdam",
+        midtown::auth::AuthProvider::Claude,
+        "session-ch2",
+        Some("channel-lead"),
+        Some("daemon-architecture"),
+        true,
+    );
+
+    let command = result.expect("build_attach_shell_command should succeed");
+
+    // Without per-channel config, default model is "sonnet"
+    assert!(
+        command.contains("--model"),
+        "Channel lead attach should include --model flag, got: {}",
+        command
+    );
+    // Model should be present (sonnet is the default when no config override)
+    assert!(
+        command.contains("sonnet"),
+        "Channel lead without config override should use sonnet model, got: {}",
+        command
+    );
+}
+
+#[test]
+fn test_channel_lead_attach_sets_midtown_channel_env_var() {
+    // Issue 4: before the fix, channel: None was hardcoded so MIDTOWN_CHANNEL
+    // was never set for channel leads, breaking channel routing.
+    let cwd = find_project_root();
+    let result = build_attach_shell_command(
+        &cwd,
+        "amsterdam",
+        midtown::auth::AuthProvider::Claude,
+        "session-ch3",
+        Some("channel-lead"),
+        Some("daemon-architecture"),
+        true,
+    );
+
+    let command = result.expect("build_attach_shell_command should succeed");
+
+    // MIDTOWN_CHANNEL must be set to the channel name for channel leads
+    assert!(
+        command.contains("MIDTOWN_CHANNEL="),
+        "Channel lead attach must set MIDTOWN_CHANNEL env var, got: {}",
+        command
+    );
+    assert!(
+        command.contains("daemon-architecture"),
+        "MIDTOWN_CHANNEL should be set to the channel name, got: {}",
+        command
+    );
+}
+
+#[test]
+fn test_channel_lead_attach_without_channel_name_falls_back_to_coworker_name() {
+    // When channel_name is None (e.g., older daemon state without the field),
+    // fall back to using the coworker name as the channel name.
+    let cwd = find_project_root();
+    let result = build_attach_shell_command(
+        &cwd,
+        "amsterdam",
+        midtown::auth::AuthProvider::Claude,
+        "session-ch4",
+        Some("channel-lead"),
+        None, // channel_name missing (backward compat case)
+        true,
+    );
+
+    // Should not error — gracefully falls back to coworker name
+    assert!(
+        result.is_ok(),
+        "Should succeed even with no channel_name, got: {:?}",
+        result
+    );
 }

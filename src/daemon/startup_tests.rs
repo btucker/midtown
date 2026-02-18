@@ -13,6 +13,7 @@ fn test_session_info(
         purpose: format!("test session for {}", name),
         pid: Some(99999), // Non-existent PID
         coworker_type: Some("dev".to_string()),
+        channel_name: None,
         task_id,
         pr_number: None,
         working_dir: Some("/tmp/test".to_string()),
@@ -197,6 +198,7 @@ async fn test_startup_recovery_sets_lead_role() {
                 purpose: "lead session".to_string(),
                 pid: Some(99999),
                 coworker_type: None,
+                channel_name: None,
                 task_id: None,
                 pr_number: None,
                 working_dir: Some("/tmp/test".to_string()),

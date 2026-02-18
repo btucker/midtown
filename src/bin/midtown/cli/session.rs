@@ -297,6 +297,10 @@ fn handle_attach(target: &AttachArgs, client: &DaemonClient) -> Result<Response,
             .get("coworker_type")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
+        let channel_name = info
+            .get("channel_name")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
         if let Err(e) = midtown::platform_launch::run_platform_prelaunch_hook(provider) {
             eprintln!(
                 "Warning: Platform pre-launch hook failed (continuing): {}",
@@ -315,6 +319,7 @@ fn handle_attach(target: &AttachArgs, client: &DaemonClient) -> Result<Response,
             provider,
             session_id,
             coworker_type.as_deref(),
+            channel_name.as_deref(),
             true, // include_detach: standalone attach resumes headless when pane closes
         )?;
         let launcher = PaneLauncher::detect();
@@ -713,6 +718,7 @@ pub(crate) fn build_attach_shell_command(
     provider: midtown::auth::AuthProvider,
     session_id: &str,
     coworker_type: Option<&str>,
+    channel_name: Option<&str>,
     include_detach: bool,
 ) -> Result<String, String> {
     let repo_name = midtown::paths::detect_repo_name_from_dir(Path::new(cwd))
@@ -726,6 +732,9 @@ pub(crate) fn build_attach_shell_command(
         midtown::launch::CoworkerRole::Lead
     } else if coworker_type == Some("reviewer") {
         midtown::launch::CoworkerRole::Reviewer
+    } else if coworker_type == Some("channel-lead") {
+        // channel_name is stored in HeadlessSessionInfo and passed through the RPC response
+        midtown::launch::CoworkerRole::ChannelLead(channel_name.unwrap_or(name).to_string())
     } else {
         midtown::launch::CoworkerRole::Coworker
     };
@@ -733,12 +742,18 @@ pub(crate) fn build_attach_shell_command(
     // Get team name for this repo
     let team_name = Some(midtown::mailbox::team_name_for_repo(&repo_name));
 
+    // For channel leads, restore the channel routing context so MIDTOWN_CHANNEL is set
+    let channel = match &role {
+        midtown::launch::CoworkerRole::ChannelLead(ch) => Some(ch.clone()),
+        _ => None,
+    };
+
     // Build common env vars using the shared function
     let env_map = midtown::launch::build_agent_env_vars(
         name,
         &role,
         &team_name,
-        &None, // channel not set for attach sessions
+        &channel,
         provider,
         &profile_dir,
     );
@@ -773,13 +788,15 @@ pub(crate) fn build_attach_shell_command(
                 pr_number: None,
                 team_name: team_name.clone(),
                 working_dir: None,
-                model: match role {
+                model: match &role {
                     midtown::launch::CoworkerRole::Lead
                     | midtown::launch::CoworkerRole::Reviewer => "opus".to_string(),
-                    midtown::launch::CoworkerRole::Coworker
-                    | midtown::launch::CoworkerRole::ChannelLead(_) => "sonnet".to_string(),
+                    midtown::launch::CoworkerRole::Coworker => "sonnet".to_string(),
+                    midtown::launch::CoworkerRole::ChannelLead(ch) => {
+                        midtown::config::get_channel_leads_config(&repo_name).model_for_channel(ch)
+                    }
                 },
-                channel: None,
+                channel: channel.clone(),
                 auth_profile_dir: Some(profile_dir.clone()),
                 auth_provider: provider,
             };

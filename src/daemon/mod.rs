@@ -987,9 +987,16 @@ impl DaemonState {
                         .map(|p| p.chars().take(120).collect::<String>())
                         .unwrap_or_default(),
                     pid: self.session_manager.get_pid(&name).await,
-                    coworker_type: match config.role {
+                    coworker_type: match &config.role {
                         crate::launch::CoworkerRole::Reviewer => Some("reviewer".to_string()),
+                        crate::launch::CoworkerRole::ChannelLead(_) => {
+                            Some("channel-lead".to_string())
+                        }
                         _ => Some("dev".to_string()),
+                    },
+                    channel_name: match &config.role {
+                        crate::launch::CoworkerRole::ChannelLead(ch) => Some(ch.clone()),
+                        _ => None,
                     },
                     task_id: None,
                     pr_number: config.pr_number,
@@ -1912,6 +1919,7 @@ fn parse_historical_session_info_from_log(
         purpose,
         pid: None,
         coworker_type: Some("dev".to_string()),
+        channel_name: None,
         task_id,
         pr_number: None,
         working_dir,

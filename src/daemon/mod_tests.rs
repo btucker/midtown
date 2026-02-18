@@ -12,6 +12,7 @@ fn test_headless_info(
         purpose: "test".to_string(),
         pid: Some(12345),
         coworker_type: Some("dev".to_string()),
+        channel_name: None,
         task_id,
         pr_number: None,
         working_dir: Some("/tmp/worktree".to_string()),
