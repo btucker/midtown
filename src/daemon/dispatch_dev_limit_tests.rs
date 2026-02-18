@@ -3,6 +3,8 @@
 //! These tests verify that the dev spawn cap equals max_coworkers and that
 //! REVIEW_HEADROOM allows reviewers to exceed max_coworkers (not reduce dev slots).
 
+use std::collections::HashMap;
+
 use crate::daemon::constants::REVIEW_HEADROOM;
 
 #[test]
@@ -188,6 +190,10 @@ fn make_dev_limit_snapshot(
         repo_owner: None,
         github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
         freshly_fetched_rate_limit: None,
+        sessions: HashMap::new(),
+        session_task_map: HashMap::new(),
+        session_name_map: HashMap::new(),
+        name_session_map: HashMap::new(),
     }
 }
 

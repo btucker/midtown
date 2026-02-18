@@ -106,6 +106,7 @@ pub struct WorldSnapshot {
     pub active_names: HashSet<String>,
     /// Session IDs of active coworkers (for session-first lookups).
     /// Populated alongside `active_names` during snapshot collection.
+    #[serde(default)]
     pub active_session_ids: HashSet<String>,
     /// Tmux session name (e.g., "midtown-projectname").
     pub session_name: String,
@@ -319,6 +320,32 @@ pub struct WorldSnapshot {
     /// to determine if a PR is authored by the lead (repo owner).
     #[serde(default)]
     pub repo_owner: Option<String>,
+
+    // ── Session-centric fields (new model) ──────────────────────────────
+    /// All session records, keyed by session_id.
+    ///
+    /// Populated from `DaemonPersistentState::sessions` during snapshot collection.
+    /// Initially empty until sessions are recorded via `Effect::RecordSession`.
+    #[serde(default)]
+    pub sessions: HashMap<String, crate::daemon::state::SessionRecord>,
+
+    /// Task ID → session ID mapping (reverse of SessionRecord.task_id).
+    ///
+    /// Enables O(1) lookup: "which session is working on task X?"
+    #[serde(default)]
+    pub session_task_map: HashMap<String, String>,
+
+    /// Session ID → current name mapping (only running sessions have names).
+    ///
+    /// Enables O(1) lookup: "what name does session X currently hold?"
+    #[serde(default)]
+    pub session_name_map: HashMap<String, String>,
+
+    /// Name → session ID reverse mapping (for @mention routing).
+    ///
+    /// Enables O(1) lookup: "which session currently holds name X?"
+    #[serde(default)]
+    pub name_session_map: HashMap<String, String>,
 }
 
 /// Read the last N lines from the daemon log file.
@@ -723,6 +750,30 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
     let repo_name = state.repo_name.clone();
     let repo_owner = state.repo_owner.clone();
 
+    // ── Session-centric fields ───────────────────────────────────────────
+    let (sessions, session_task_map, session_name_map, name_session_map) = {
+        let persistent = state.persistent_state.lock().await;
+        let sessions = persistent.sessions.clone();
+        let mut session_task_map: HashMap<String, String> = HashMap::new();
+        let mut session_name_map: HashMap<String, String> = HashMap::new();
+        let mut name_session_map: HashMap<String, String> = HashMap::new();
+        for (session_id, record) in &sessions {
+            if let Some(task_id) = &record.task_id {
+                session_task_map.insert(task_id.clone(), session_id.clone());
+            }
+            if let Some(name) = &record.current_name {
+                session_name_map.insert(session_id.clone(), name.clone());
+                name_session_map.insert(name.clone(), session_id.clone());
+            }
+        }
+        (
+            sessions,
+            session_task_map,
+            session_name_map,
+            name_session_map,
+        )
+    };
+
     let snapshot = WorldSnapshot {
         active_coworkers,
         running_coworkers,
@@ -784,6 +835,10 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
         now_utc,
         repo_name,
         repo_owner,
+        sessions,
+        session_task_map,
+        session_name_map,
+        name_session_map,
     };
 
     // Log full snapshot at trace level for debugging and test case generation
@@ -861,6 +916,10 @@ pub(super) fn minimal_snapshot_for_test() -> WorldSnapshot {
         repo_owner: None,
         github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
         freshly_fetched_rate_limit: None,
+        sessions: HashMap::new(),
+        session_task_map: HashMap::new(),
+        session_name_map: HashMap::new(),
+        name_session_map: HashMap::new(),
     }
 }
 

@@ -71,6 +71,43 @@ fn default_resume_on_startup() -> bool {
     true
 }
 
+/// A session record for the session-centric coworker model.
+///
+/// Keyed by `session_id` in `DaemonPersistentState::sessions`.
+/// Tracks the full lifecycle of a headless coworker session — from spawn
+/// through suspend/resume cycles to final shutdown. Unlike `HeadlessSessionInfo`
+/// (which is keyed by coworker name), `SessionRecord` is keyed by session ID,
+/// allowing names to be reassigned between sessions.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionRecord {
+    /// Platform-agnostic session ID (opaque string from Claude Code).
+    pub session_id: String,
+    /// Task this session is working on (e.g., "1561").
+    pub task_id: Option<String>,
+    /// Current name allocation (None if suspended/name released).
+    pub current_name: Option<String>,
+    /// Preferred name for next resume (the name it had last time).
+    pub preferred_name: Option<String>,
+    /// Worktree path for this session.
+    pub working_dir: String,
+    /// Git branch the session is working on.
+    pub branch: Option<String>,
+    /// Associated PR number (set when coworker opens a PR).
+    pub pr_number: Option<u64>,
+    /// Initial prompt used to start the session (for restart/clear).
+    pub initial_prompt: Option<String>,
+    /// Whether this is a reviewer session (ephemeral, never resumed after shutdown).
+    pub is_reviewer: bool,
+    /// Coworker type: "dev", "reviewer", or "channel-lead".
+    pub coworker_type: String,
+    /// Whether the session process is currently running.
+    pub is_running: bool,
+    /// When the session was created.
+    pub created_at: DateTime<Utc>,
+    /// Whether to resume this session on daemon restart.
+    pub resume_on_startup: bool,
+}
+
 /// All persistent daemon state in one struct.
 ///
 /// Serialized to `~/.midtown/projects/<repo>/daemon-state.json`.
@@ -154,6 +191,14 @@ pub struct DaemonPersistentState {
     /// startup and when channels are created. Shut down when channels are archived.
     #[serde(default)]
     pub channel_lead_sessions: HashMap<String, String>,
+
+    /// Session records for the session-centric coworker model.
+    ///
+    /// Maps session_id → SessionRecord. The session-centric model uses this
+    /// as the primary store for coworker state, replacing the name-keyed
+    /// `headless_sessions` map over time. During migration, both maps coexist.
+    #[serde(default)]
+    pub sessions: HashMap<String, SessionRecord>,
 }
 
 impl DaemonPersistentState {
@@ -259,6 +304,7 @@ impl DaemonPersistentState {
             clusterer_session_id: None,
             clusterer_consecutive_failures: 0,
             channel_lead_sessions: HashMap::new(),
+            sessions: HashMap::new(),
         };
 
         // Save the unified file

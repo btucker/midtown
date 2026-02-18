@@ -98,6 +98,10 @@ fn test_usage_limit_nudge_only_targets_running_coworkers() {
         repo_owner: None,
         github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
         freshly_fetched_rate_limit: None,
+        sessions: HashMap::new(),
+        session_task_map: HashMap::new(),
+        session_name_map: HashMap::new(),
+        name_session_map: HashMap::new(),
     };
 
     let effects = maybe_nudge_usage_limit_expiry(&snap);
@@ -263,6 +267,10 @@ fn test_check_for_usage_limits_with_reset_time() {
         repo_owner: None,
         github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
         freshly_fetched_rate_limit: None,
+        sessions: HashMap::new(),
+        session_task_map: HashMap::new(),
+        session_name_map: HashMap::new(),
+        name_session_map: HashMap::new(),
     };
 
     let effects = check_for_usage_limits(&snap);
@@ -349,6 +357,10 @@ fn test_check_for_usage_limits_already_scheduled() {
         repo_owner: None,
         github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
         freshly_fetched_rate_limit: None,
+        sessions: HashMap::new(),
+        session_task_map: HashMap::new(),
+        session_name_map: HashMap::new(),
+        name_session_map: HashMap::new(),
     };
 
     let effects = check_for_usage_limits(&snap);
@@ -470,6 +482,10 @@ fn empty_snap() -> snapshot::WorldSnapshot {
         repo_owner: None,
         github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
         freshly_fetched_rate_limit: None,
+        sessions: HashMap::new(),
+        session_task_map: HashMap::new(),
+        session_name_map: HashMap::new(),
+        name_session_map: HashMap::new(),
     }
 }
 

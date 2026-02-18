@@ -1218,6 +1218,10 @@ fn test_spawn_for_pending_tasks_generates_registry_effects_new_task() {
         repo_owner: None,
         github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
         freshly_fetched_rate_limit: None,
+        sessions: HashMap::new(),
+        session_task_map: HashMap::new(),
+        session_name_map: HashMap::new(),
+        name_session_map: HashMap::new(),
     };
 
     let state = make_test_state();
@@ -1370,6 +1374,10 @@ fn test_spawn_for_pending_tasks_reuses_worktree_for_owned_task() {
         repo_owner: None,
         github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
         freshly_fetched_rate_limit: None,
+        sessions: HashMap::new(),
+        session_task_map: HashMap::new(),
+        session_name_map: HashMap::new(),
+        name_session_map: HashMap::new(),
     };
 
     let state = make_test_state();
@@ -1497,6 +1505,10 @@ fn test_spawn_for_pending_tasks_skips_when_owner_has_pending_task() {
         repo_owner: None,
         github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
         freshly_fetched_rate_limit: None,
+        sessions: HashMap::new(),
+        session_task_map: HashMap::new(),
+        session_name_map: HashMap::new(),
+        name_session_map: HashMap::new(),
     };
 
     let state = make_test_state();
@@ -1594,6 +1606,10 @@ fn test_spawn_owner_includes_record_task_assignment_for_cross_tick_dedup() {
         repo_owner: None,
         github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
         freshly_fetched_rate_limit: None,
+        sessions: HashMap::new(),
+        session_task_map: HashMap::new(),
+        session_name_map: HashMap::new(),
+        name_session_map: HashMap::new(),
     };
 
     let state = make_test_state();
@@ -1695,6 +1711,10 @@ fn test_cross_tick_dedup_skips_in_flight_owned_task() {
         repo_owner: None,
         github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
         freshly_fetched_rate_limit: None,
+        sessions: HashMap::new(),
+        session_task_map: HashMap::new(),
+        session_name_map: HashMap::new(),
+        name_session_map: HashMap::new(),
     };
 
     let state = make_test_state();
@@ -1825,6 +1845,10 @@ fn test_cross_case_dedup_prevents_same_coworker_from_case1_and_case2() {
         repo_owner: None,
         github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
         freshly_fetched_rate_limit: None,
+        sessions: HashMap::new(),
+        session_task_map: HashMap::new(),
+        session_name_map: HashMap::new(),
+        name_session_map: HashMap::new(),
     };
 
     let state = make_test_state();
@@ -1930,6 +1954,10 @@ fn test_spawn_for_pending_tasks_skips_via_snapshot_assignment_check() {
         repo_owner: None,
         github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
         freshly_fetched_rate_limit: None,
+        sessions: HashMap::new(),
+        session_task_map: HashMap::new(),
+        session_name_map: HashMap::new(),
+        name_session_map: HashMap::new(),
     };
 
     let state = make_test_state();
@@ -2020,6 +2048,10 @@ fn test_orphan_recovery_reuses_existing_task_worktree() {
         repo_owner: None,
         github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
         freshly_fetched_rate_limit: None,
+        sessions: HashMap::new(),
+        session_task_map: HashMap::new(),
+        session_name_map: HashMap::new(),
+        name_session_map: HashMap::new(),
     };
 
     let state = make_test_state();
@@ -2168,6 +2200,10 @@ fn test_orphan_recovery_creates_new_worktree_when_none_exists() {
         repo_owner: None,
         github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
         freshly_fetched_rate_limit: None,
+        sessions: HashMap::new(),
+        session_task_map: HashMap::new(),
+        session_name_map: HashMap::new(),
+        name_session_map: HashMap::new(),
     };
 
     let state = make_test_state();
@@ -2339,6 +2375,10 @@ fn test_spawn_for_pending_unowned_reuses_existing_worktree() {
         repo_owner: None,
         github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
         freshly_fetched_rate_limit: None,
+        sessions: HashMap::new(),
+        session_task_map: HashMap::new(),
+        session_name_map: HashMap::new(),
+        name_session_map: HashMap::new(),
     };
 
     let state = make_test_state();
@@ -2491,6 +2531,10 @@ fn make_reconcile_snapshot(
         repo_owner: None,
         github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
         freshly_fetched_rate_limit: None,
+        sessions: HashMap::new(),
+        session_task_map: HashMap::new(),
+        session_name_map: HashMap::new(),
+        name_session_map: HashMap::new(),
     }
 }
 
@@ -3116,6 +3160,10 @@ fn test_spawn_for_pending_tasks_when_all_coworkers_are_gone() {
         repo_owner: None,
         github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
         freshly_fetched_rate_limit: None,
+        sessions: HashMap::new(),
+        session_task_map: HashMap::new(),
+        session_name_map: HashMap::new(),
+        name_session_map: HashMap::new(),
     };
 
     let state = make_test_state();
@@ -3774,6 +3822,10 @@ fn test_spawn_extracts_model_alias_from_provider_model_format() {
         repo_owner: None,
         github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
         freshly_fetched_rate_limit: None,
+        sessions: HashMap::new(),
+        session_task_map: HashMap::new(),
+        session_name_map: HashMap::new(),
+        name_session_map: HashMap::new(),
     };
 
     let state = make_test_state();
@@ -3881,6 +3933,10 @@ fn test_orphan_recovery_marks_task_in_flight() {
         now_utc: chrono::Utc::now(),
         repo_name: "test-repo".to_string(),
         repo_owner: None,
+        sessions: HashMap::new(),
+        session_task_map: HashMap::new(),
+        session_name_map: HashMap::new(),
+        name_session_map: HashMap::new(),
     };
 
     let state = make_test_state();
@@ -4161,6 +4217,10 @@ fn test_stale_task_cleanup_false_positive_task_about_merged_pr() {
         repo_owner: None,
         github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
         freshly_fetched_rate_limit: None,
+        sessions: HashMap::new(),
+        session_task_map: HashMap::new(),
+        session_name_map: HashMap::new(),
+        name_session_map: HashMap::new(),
     };
 
     let state = make_test_state();
@@ -4262,6 +4322,10 @@ fn test_stale_task_cleanup_correct_behavior_with_explicit_pr_field() {
         repo_owner: None,
         github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
         freshly_fetched_rate_limit: None,
+        sessions: HashMap::new(),
+        session_task_map: HashMap::new(),
+        session_name_map: HashMap::new(),
+        name_session_map: HashMap::new(),
     };
 
     let state = make_test_state();
