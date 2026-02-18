@@ -43,10 +43,17 @@ pub(crate) async fn handle_kanban_data(id: RequestId, state: &DaemonState) -> Re
     }
     let repo_hash = hasher.finish();
 
+    // Extract channel lead names early for cache key computation (best-effort)
+    let cache_channel_lead_names: std::collections::HashSet<String> = state
+        .persistent_state
+        .try_lock()
+        .map(|ps| ps.channel_lead_sessions.keys().cloned().collect())
+        .unwrap_or_default();
+
     // Compute a hash of coworker state for cache invalidation
     let coworker_state_hash = {
         let coworker_records = state.coworker_records.read().await;
-        compute_coworker_state_hash(&coworker_records)
+        compute_coworker_state_hash(&coworker_records, &cache_channel_lead_names)
     };
 
     // Combine repo hash and coworker state hash for the final cache key
@@ -74,10 +81,12 @@ pub(crate) async fn handle_kanban_data(id: RequestId, state: &DaemonState) -> Re
     // Cache miss - fetch fresh data
     debug!("Cache miss, fetching fresh kanban data");
 
-    // Get reviewer assignments and worktree registry from persistent state (best-effort via try_lock)
-    let (reviewer_assignments, worktree_pr_map): (
+    // Get reviewer assignments, worktree registry, and channel lead names from persistent state
+    // (best-effort via try_lock)
+    let (reviewer_assignments, worktree_pr_map, channel_lead_names): (
         HashMap<u64, crate::github_state::PrReviewerAssignment>,
         HashMap<String, u64>,
+        std::collections::HashSet<String>,
     ) = state
         .persistent_state
         .try_lock()
@@ -94,7 +103,9 @@ pub(crate) async fn handle_kanban_data(id: RequestId, state: &DaemonState) -> Re
                     Some((coworker.clone(), pr_number))
                 })
                 .collect();
-            (assignments, wt_map)
+            let cl_names: std::collections::HashSet<String> =
+                ps.channel_lead_sessions.keys().cloned().collect();
+            (assignments, wt_map, cl_names)
         })
         .unwrap_or_default();
 
@@ -199,7 +210,9 @@ pub(crate) async fn handle_kanban_data(id: RequestId, state: &DaemonState) -> Re
                 // Skip channel lead sessions — they are scoped to a specific topic
                 // channel and must not appear in the general coworker status panel.
                 // The lead session itself also uses a reserved name and is excluded.
-                if is_channel_lead(&cw.name) || cw.name.eq_ignore_ascii_case("lead") {
+                if is_channel_lead(&cw.name, &channel_lead_names)
+                    || cw.name.eq_ignore_ascii_case("lead")
+                {
                     return None;
                 }
 
@@ -291,11 +304,14 @@ pub(crate) async fn handle_kanban_data(id: RequestId, state: &DaemonState) -> Re
 
 /// Returns true if the coworker name identifies a channel lead session.
 ///
-/// Channel leads use the `ch-<channel>` naming convention established in
-/// `launch::channel_lead_session_name()`. They are scoped to a specific topic
-/// channel and must not appear in the general coworker status list.
-pub(crate) fn is_channel_lead(name: &str) -> bool {
-    name.starts_with("ch-")
+/// Channel leads are tracked in `DaemonPersistentState::channel_lead_sessions`.
+/// They are scoped to a specific topic channel and must not appear in the
+/// general coworker status list.
+pub(crate) fn is_channel_lead(
+    name: &str,
+    channel_lead_names: &std::collections::HashSet<String>,
+) -> bool {
+    channel_lead_names.contains(name)
 }
 
 /// TTL for kanban data cache (60 seconds).
@@ -370,7 +386,10 @@ fn serialize_tool_activity(
 /// When any of these change (coworker spawns/shuts down, task assigned, phase changes),
 /// the hash changes and the cache misses, ensuring fresh data is fetched.
 /// Progress is intentionally excluded — see `compute_coworker_state_hash` for details.
-fn compute_coworker_state_hash(coworker_records: &HashMap<String, CoworkerRecord>) -> u64 {
+fn compute_coworker_state_hash(
+    coworker_records: &HashMap<String, CoworkerRecord>,
+    channel_lead_names: &std::collections::HashSet<String>,
+) -> u64 {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
 
@@ -390,7 +409,7 @@ fn compute_coworker_state_hash(coworker_records: &HashMap<String, CoworkerRecord
         .filter_map(|(name, record)| {
             // Skip channel leads and the lead session — they don't appear in the kanban
             // response (mirroring the filter in handle_kanban_data's output section).
-            if is_channel_lead(name) || name.eq_ignore_ascii_case("lead") {
+            if is_channel_lead(name, channel_lead_names) || name.eq_ignore_ascii_case("lead") {
                 return None;
             }
 

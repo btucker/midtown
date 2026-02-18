@@ -206,15 +206,11 @@ pub fn build_agent_env_vars(
 
 /// Compute the session name for a channel lead.
 ///
-/// Channel lead sessions are named `ch-{channel_name}` to avoid collision with
-/// coworker names, which are drawn from the same Manhattan avenue name pool that
-/// could overlap with topic channel names (e.g., a "park" channel would collide
-/// with the "park" coworker slot).
-///
-/// The `channel_lead_sessions` HashMap continues to use the bare channel name as
-/// its key; only the session manager name uses this prefix.
+/// Channel lead sessions are named after their channel directly (e.g., "web" for
+/// the "web" channel). The daemon identifies channel leads via `channel_lead_sessions`
+/// in persistent state rather than by name prefix.
 pub fn channel_lead_session_name(channel_name: &str) -> String {
-    format!("ch-{}", channel_name)
+    channel_name.to_string()
 }
 
 impl LaunchConfig {
@@ -346,9 +342,9 @@ impl LaunchConfig {
     /// The `domain_context` is injected into the system prompt at spawn time.
     /// On first spawn it can be empty; accumulated context comes from session persistence.
     ///
-    /// The session name is prefixed with "ch-" (e.g., "ch-auth" for channel "auth")
-    /// to avoid collision with coworker names, which are drawn from the same Manhattan
-    /// avenue name pool that could overlap with topic channel names.
+    /// The session name equals the channel name directly (e.g., "auth" for channel "auth").
+    /// Channel leads are identified via `channel_lead_sessions` in persistent state,
+    /// not by a name prefix.
     pub fn channel_lead(
         channel_name: impl Into<String>,
         repo_name: impl Into<String>,
@@ -1058,8 +1054,8 @@ mod tests {
     fn test_launch_config_channel_lead_factory() {
         let config =
             LaunchConfig::channel_lead("daemon-architecture", "myrepo", SessionMode::Fresh, "");
-        // Session name is prefixed with "ch-" to avoid collision with coworker names
-        assert_eq!(config.name, "ch-daemon-architecture");
+        // Session name is the channel name directly
+        assert_eq!(config.name, "daemon-architecture");
         assert_eq!(
             config.role,
             CoworkerRole::ChannelLead {
@@ -1076,12 +1072,9 @@ mod tests {
 
     #[test]
     fn test_channel_lead_session_name() {
-        assert_eq!(channel_lead_session_name("auth"), "ch-auth");
-        assert_eq!(
-            channel_lead_session_name("web-interface"),
-            "ch-web-interface"
-        );
-        assert_eq!(channel_lead_session_name("park"), "ch-park");
+        assert_eq!(channel_lead_session_name("auth"), "auth");
+        assert_eq!(channel_lead_session_name("web-interface"), "web-interface");
+        assert_eq!(channel_lead_session_name("park"), "park");
     }
 
     #[test]

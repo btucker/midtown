@@ -304,6 +304,115 @@ fn test_lead_does_not_count_against_dev_cap() {
     );
 }
 
+/// Channel leads should not count against the dev limit.
+///
+/// Scenario: max_coworkers=3, 3 running sessions: "lexington" (dev), "web" (channel lead),
+/// "features" (channel lead). Only lexington should count toward the dev cap.
+#[test]
+fn test_channel_leads_excluded_from_dev_limit() {
+    let state = make_test_state_with_max(3);
+
+    // Register all 3 running sessions
+    for name in &["lexington", "web", "features"] {
+        state
+            .coworkers
+            .insert_for_testing(make_running_coworker(name));
+    }
+
+    let channel_lead_names: std::collections::HashSet<String> =
+        ["web".to_string(), "features".to_string()]
+            .into_iter()
+            .collect();
+
+    // Only 1 real dev coworker (lexington) < max_coworkers=3 → not at dev limit
+    assert!(
+        !state.is_at_dev_limit(&channel_lead_names),
+        "Channel leads should not count toward dev limit"
+    );
+
+    // Without channel_lead_names, all 3 would count → at dev limit (3 >= 3)
+    let empty: std::collections::HashSet<String> = std::collections::HashSet::new();
+    assert!(
+        state.is_at_dev_limit(&empty),
+        "Without exclusion, all 3 running sessions count toward dev limit"
+    );
+}
+
+/// Channel leads should not count against the absolute coworker limit.
+///
+/// Scenario: max_coworkers=2, REVIEW_HEADROOM=2, absolute cap = 4.
+/// 4 running sessions: "lexington", "park" (devs), "web", "auth" (channel leads).
+/// Only 2 devs < 4 absolute cap → not at coworker limit.
+#[test]
+fn test_channel_leads_excluded_from_coworker_limit() {
+    let state = make_test_state_with_max(2);
+
+    for name in &["lexington", "park", "web", "auth"] {
+        state
+            .coworkers
+            .insert_for_testing(make_running_coworker(name));
+    }
+
+    let channel_lead_names: std::collections::HashSet<String> =
+        ["web".to_string(), "auth".to_string()]
+            .into_iter()
+            .collect();
+
+    // 2 devs < max_coworkers(2) + REVIEW_HEADROOM(2) = 4 → not at coworker limit
+    assert!(
+        !state.is_at_coworker_limit(&channel_lead_names),
+        "Channel leads should not count toward coworker limit"
+    );
+}
+
+/// has_available_coworker_slot should respect channel lead exclusion.
+#[test]
+fn test_has_available_slot_excludes_channel_leads() {
+    let state = make_test_state_with_max(3);
+
+    // Register 3 sessions: 1 dev + 2 channel leads
+    for name in &["lexington", "web", "features"] {
+        state
+            .coworkers
+            .insert_for_testing(make_running_coworker(name));
+    }
+
+    let channel_lead_names: std::collections::HashSet<String> =
+        ["web".to_string(), "features".to_string()]
+            .into_iter()
+            .collect();
+
+    // Only 1 dev coworker < absolute cap, and names are available
+    assert!(
+        state.has_available_coworker_slot(&channel_lead_names),
+        "Should have available slot when channel leads are excluded"
+    );
+}
+
+/// Both lead AND channel leads should be excluded simultaneously.
+#[test]
+fn test_lead_and_channel_leads_both_excluded() {
+    let state = make_test_state_with_max(3);
+
+    // 5 running sessions: lead + 2 devs + 2 channel leads
+    for name in &["lead", "lexington", "park", "web", "auth"] {
+        state
+            .coworkers
+            .insert_for_testing(make_running_coworker(name));
+    }
+
+    let channel_lead_names: std::collections::HashSet<String> =
+        ["web".to_string(), "auth".to_string()]
+            .into_iter()
+            .collect();
+
+    // Only 2 real dev coworkers (lexington, park) < max_coworkers=3 → not at dev limit
+    assert!(
+        !state.is_at_dev_limit(&channel_lead_names),
+        "Lead and channel leads should both be excluded from dev limit"
+    );
+}
+
 /// When the lead is NOT in running_coworkers, dev cap (= max_coworkers) behaves normally.
 #[test]
 fn test_dev_cap_without_lead_unaffected() {

@@ -587,8 +587,8 @@ fn test_lead_attach_gets_opus_model() {
 
 // ── Shell quoting note: channel-lead attach tests removed ─────────────
 // Channel lead attach no longer reconstructs role from coworker_type in
-// build_attach_shell_command; channel leads are identified by "ch-" session
-// name prefix (e.g., "ch-auth") set at spawn time.
+// build_attach_shell_command; channel leads are identified by their channel
+// name directly (e.g., "auth") tracked in channel_lead_sessions persistent state.
 
 // ── Shell quoting ──────────────────────────────────────────────────────
 

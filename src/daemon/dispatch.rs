@@ -1564,7 +1564,12 @@ pub(super) fn spawn_for_pending_tasks_excluding(
         let coworker_name = if let Some(name) = grouped_name {
             name
         } else {
-            let Some(name) = state.coworkers.next_available_name() else {
+            let channel_lead_names: std::collections::HashSet<String> =
+                snap.channel_lead_sessions.keys().cloned().collect();
+            let Some(name) = state
+                .coworkers
+                .next_available_name_excluding(&channel_lead_names)
+            else {
                 debug!("No available coworker slots for unowned task !{}", task.id);
                 break;
             };
