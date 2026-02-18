@@ -369,43 +369,70 @@ fn handle_login(
         }
     }
 
-    // Original logic for Claude and Codex
-    println!(
-        "Launching {} with profile '{}'...",
-        provider.cli_command(),
-        email
-    );
-    println!("Config dir: {}", profile_dir.display());
-    println!();
-    println!(
-        "Run login/auth commands inside the {} session to authenticate.",
-        provider.cli_command()
-    );
-    println!("Once authenticated, exit the session. The tokens will be cached");
-    println!("in {} for future use.", profile_dir.display());
-    println!();
+    // Claude provider: run `claude auth login --email <email>` directly.
+    // This enters the OAuth flow with the email pre-populated — no interactive session needed.
+    // Codex provider: falls through to the generic interactive session below.
+    if provider == midtown::auth::AuthProvider::Claude {
+        println!("Launching Claude OAuth login for '{}'...", email);
+        println!("Config dir: {}", profile_dir.display());
+        println!();
 
-    let status = std::process::Command::new(provider.cli_command())
-        .env(provider.env_var(), &profile_dir)
-        .stdin(std::process::Stdio::inherit())
-        .stdout(std::process::Stdio::inherit())
-        .stderr(std::process::Stdio::inherit())
-        .status()
-        .map_err(|e| {
-            format!(
-                "Failed to launch {}: {}. Is {} installed?",
-                provider.cli_command(),
-                e,
-                provider.cli_command()
-            )
-        })?;
+        let status = std::process::Command::new("claude")
+            .args(["auth", "login", "--email", email])
+            .env("CLAUDE_CONFIG_DIR", &profile_dir)
+            .stdin(std::process::Stdio::inherit())
+            .stdout(std::process::Stdio::inherit())
+            .stderr(std::process::Stdio::inherit())
+            .status()
+            .map_err(|e| {
+                format!(
+                    "Failed to launch claude auth login: {}. Is Claude CLI installed?",
+                    e
+                )
+            })?;
 
-    if !status.success() {
-        return Err(format!(
-            "{} exited with status: {}",
+        if !status.success() {
+            return Err(format!("claude auth login exited with status: {}", status));
+        }
+    } else {
+        // Codex: launch interactive session for manual auth
+        println!(
+            "Launching {} with profile '{}'...",
             provider.cli_command(),
-            status
-        ));
+            email
+        );
+        println!("Config dir: {}", profile_dir.display());
+        println!();
+        println!(
+            "Run login/auth commands inside the {} session to authenticate.",
+            provider.cli_command()
+        );
+        println!("Once authenticated, exit the session. The tokens will be cached");
+        println!("in {} for future use.", profile_dir.display());
+        println!();
+
+        let status = std::process::Command::new(provider.cli_command())
+            .env(provider.env_var(), &profile_dir)
+            .stdin(std::process::Stdio::inherit())
+            .stdout(std::process::Stdio::inherit())
+            .stderr(std::process::Stdio::inherit())
+            .status()
+            .map_err(|e| {
+                format!(
+                    "Failed to launch {}: {}. Is {} installed?",
+                    provider.cli_command(),
+                    e,
+                    provider.cli_command()
+                )
+            })?;
+
+        if !status.success() {
+            return Err(format!(
+                "{} exited with status: {}",
+                provider.cli_command(),
+                status
+            ));
+        }
     }
 
     // Re-run profile setup after login to promote any new non-auth files

@@ -2439,6 +2439,10 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
         }
     }
 
+    // Check Claude auth status before spawning any sessions.
+    // Gives immediate feedback in the log if auth is expired/missing.
+    startup::check_claude_auth_status(&repo_name);
+
     // Recover headless coworker sessions from persisted state (session survival).
     // Spawns new processes with --resume <session_id> to continue previous work.
     // Old processes are NOT killed — they die naturally from broken pipes after
@@ -2512,6 +2516,13 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
     // Skip the first tick (which fires immediately)
     rate_limit_check_interval.tick().await;
     info!("GitHub rate limit check interval set to 120s");
+
+    // Timer for periodic GH_TOKEN refresh (every 5 minutes).
+    // Picks up token changes if the user runs `gh auth login` or `gh auth refresh` externally.
+    let gh_token_refresh_user = config.github_user.clone();
+    let mut gh_token_refresh_interval = tokio::time::interval(std::time::Duration::from_secs(300));
+    // Skip the first tick (token was just fetched at startup)
+    gh_token_refresh_interval.tick().await;
 
     // Timer for periodic channel rotation
     let mut channel_rotation_interval = interval(CHANNEL_ROTATION_CHECK_INTERVAL);
@@ -3081,6 +3092,17 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
             // Runs every 2 minutes to monitor API consumption for adaptive throttling.
             _ = rate_limit_check_interval.tick() => {
                 run_tick(&events::DaemonEvent::RateLimitCheckTick, &state).await;
+            }
+
+            // Periodic GH_TOKEN refresh: re-run `gh auth token` to pick up
+            // externally refreshed credentials (e.g., user ran `gh auth login`).
+            _ = gh_token_refresh_interval.tick() => {
+                if let Some(ref github_user) = gh_token_refresh_user {
+                    let user = github_user.clone();
+                    tokio::task::spawn_blocking(move || {
+                        startup::refresh_gh_token(&user);
+                    });
+                }
             }
 
             // Handle SIGTERM

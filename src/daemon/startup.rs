@@ -160,6 +160,131 @@ pub fn check_sandbox_context() -> Option<String> {
     None
 }
 
+/// Check Claude CLI authentication status before spawning any sessions.
+///
+/// Runs `claude auth status --output json` with `CLAUDE_CONFIG_DIR` pointing to the
+/// project's active auth profile directory. Logs the result so operators get immediate
+/// feedback on auth state at daemon startup rather than discovering failures reactively.
+///
+/// The daemon continues regardless — auth may be fixed via `midtown auth login` while
+/// the daemon is running.
+pub fn check_claude_auth_status(repo_name: &str) {
+    let profile_dir = crate::auth::active_profile_dir_for_project_with_provider(
+        repo_name,
+        crate::auth::AuthProvider::Claude,
+    );
+
+    let output = match std::process::Command::new("claude")
+        .args(["auth", "status", "--output", "json"])
+        .env("CLAUDE_CONFIG_DIR", &profile_dir)
+        .output()
+    {
+        Ok(output) => output,
+        Err(e) => {
+            warn!(
+                "Failed to run `claude auth status`: {}. Is Claude CLI installed?",
+                e
+            );
+            return;
+        }
+    };
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // Parse JSON output: {"loggedIn": true/false, "email": "..."}
+    let json: serde_json::Value = match serde_json::from_str(stdout.trim()) {
+        Ok(v) => v,
+        Err(e) => {
+            warn!(
+                "Failed to parse `claude auth status` output: {}. Raw: {}",
+                e,
+                stdout.trim()
+            );
+            return;
+        }
+    };
+
+    let logged_in = json
+        .get("loggedIn")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let email = json.get("email").and_then(|v| v.as_str()).map(String::from);
+
+    if logged_in {
+        if let Some(ref email) = email {
+            info!("Claude auth verified: {}", email);
+        } else {
+            info!("Claude auth verified (no email in response)");
+        }
+    } else {
+        warn!(
+            "Claude auth not valid. Sessions will fail until auth is fixed. \
+             Run `midtown auth login <email>` to authenticate."
+        );
+    }
+}
+
+/// Refresh the GH_TOKEN environment variable by re-running `gh auth token`.
+///
+/// Called periodically from the daemon event loop to pick up token changes.
+/// If the user runs `gh auth login` or `gh auth refresh` externally, the stored
+/// token in the gh config changes — this function detects that and updates the
+/// daemon's process environment so newly spawned child processes inherit the
+/// fresh token.
+///
+/// Returns `true` if the token was updated, `false` if unchanged or on error.
+pub fn refresh_gh_token(github_user: &str) -> bool {
+    let output = match std::process::Command::new("gh")
+        .args(["auth", "token", "--user", github_user])
+        .output()
+    {
+        Ok(output) if output.status.success() => output,
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            warn!(
+                "gh auth token --user {} failed during refresh: {}",
+                github_user,
+                stderr.trim()
+            );
+            return false;
+        }
+        Err(e) => {
+            warn!("Failed to run `gh auth token` for refresh: {}", e);
+            return false;
+        }
+    };
+
+    let new_token = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if new_token.is_empty() {
+        warn!(
+            "gh auth token --user {} returned empty token during refresh",
+            github_user
+        );
+        return false;
+    }
+
+    let current_token = std::env::var("GH_TOKEN").unwrap_or_default();
+    if new_token == current_token {
+        return false;
+    }
+
+    // Token changed — update the process env var.
+    // SAFETY: This runs on a blocking task spawned from the main event loop.
+    // Tokio's spawn_blocking runs on a thread pool, but std::env::set_var is
+    // only unsafe because concurrent reads could race. In practice, child
+    // process spawns (which read env) are serialized through the effect executor.
+    unsafe {
+        std::env::set_var("GH_TOKEN", &new_token);
+    }
+    info!(
+        "GH_TOKEN refreshed for user: {} (token length: {} → {})",
+        github_user,
+        current_token.len(),
+        new_token.len()
+    );
+    true
+}
+
 use crate::coworker::CoworkerManager;
 use crate::daemon::effects::Effect;
 use crate::daemon::state::DaemonPersistentState;

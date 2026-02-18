@@ -1611,18 +1611,38 @@ impl App {
         items
     }
 
-    /// Get !task autocomplete items
+    /// Get !task autocomplete items.
+    /// When query is empty, shows in_progress tasks first (most useful default).
     fn get_task_items(&self, query: &str) -> Vec<AutocompleteItem> {
-        self.tasks
-            .iter()
-            .filter(|task| {
-                task.id.starts_with(query) || task.subject.to_lowercase().starts_with(query)
-            })
-            .map(|task| AutocompleteItem {
-                value: format!("!{}", task.id),
-                description: Some(task.subject.clone()),
-            })
-            .collect()
+        let to_item = |task: &KanbanTask| AutocompleteItem {
+            value: format!("!{}", task.id),
+            description: Some(task.subject.clone()),
+        };
+
+        if query.is_empty() {
+            // Show in_progress tasks first, then pending
+            let mut items: Vec<AutocompleteItem> = self
+                .tasks
+                .iter()
+                .filter(|t| matches!(t.status, TaskStatus::InProgress))
+                .map(to_item)
+                .collect();
+            items.extend(
+                self.tasks
+                    .iter()
+                    .filter(|t| !matches!(t.status, TaskStatus::InProgress))
+                    .map(to_item),
+            );
+            items
+        } else {
+            self.tasks
+                .iter()
+                .filter(|task| {
+                    task.id.starts_with(query) || task.subject.to_lowercase().starts_with(query)
+                })
+                .map(to_item)
+                .collect()
+        }
     }
 
     /// Insert the selected autocomplete item into the input text
