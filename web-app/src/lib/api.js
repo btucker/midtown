@@ -20,6 +20,8 @@ import {
   usageData,
   agentToolItems,
   pendingQuestions,
+  detailPanelData,
+  threadData,
 } from './store.js'
 
 // Maximum number of tool call items retained per agent in the activity store.
@@ -118,6 +120,7 @@ export function switchProject(projectName, webhookPort) {
   })
   usageData.set([])
   agentToolItems.set({})
+  threadData.set(null)
   connected.set(false)
 
   // Set the new active project
@@ -182,6 +185,25 @@ export async function fetchHistory(channelName = null) {
             byChannel[name] = []
           }
           byChannel[name].push(msg)
+        }
+
+        // Compute thread reply counts for each parent message
+        for (const channelMsgs of Object.values(byChannel)) {
+          const replyCountMap = {}
+          const lastReplyMap = {}
+          for (const m of channelMsgs) {
+            if (m.thread_parent_id) {
+              replyCountMap[m.thread_parent_id] = (replyCountMap[m.thread_parent_id] || 0) + 1
+              lastReplyMap[m.thread_parent_id] = m
+            }
+          }
+          // Annotate parent messages with reply_count and last_reply
+          for (const m of channelMsgs) {
+            if (replyCountMap[m.id]) {
+              m.reply_count = replyCountMap[m.id]
+              m.last_reply = lastReplyMap[m.id]
+            }
+          }
         }
 
         messagesByChannel.set(byChannel)
@@ -378,21 +400,53 @@ export function clearErrorCallback(id) {
 // Handle incoming WebSocket updates
 function handleUpdate(update) {
   switch (update.type) {
-    case 'channel_message':
+    case 'channel_message': {
       const msg = update.data
       const channelName = msg.channel || 'midtown'
 
-      // Add to legacy messages array
-      messages.update((msgs) => [...msgs, msg])
+      if (msg.thread_parent_id) {
+        // Thread reply — update thread panel if open for this parent, and
+        // bump reply_count on the parent message, but do NOT add to the
+        // main channel timeline.
+        threadData.update((td) => {
+          if (td && td.parentMessage.id === msg.thread_parent_id) {
+            return { ...td, messages: [...td.messages, msg] }
+          }
+          return td
+        })
 
-      // Add to channel-specific messages
-      messagesByChannel.update((byChannel) => {
-        const channelMsgs = byChannel[channelName] || []
-        return {
-          ...byChannel,
-          [channelName]: [...channelMsgs, msg],
-        }
-      })
+        // Increment reply_count on the parent message in messagesByChannel
+        messagesByChannel.update((byChannel) => {
+          const channelMsgs = byChannel[channelName]
+          if (!channelMsgs) return byChannel
+          return {
+            ...byChannel,
+            [channelName]: channelMsgs.map((m) => {
+              if (m.id === msg.thread_parent_id) {
+                return {
+                  ...m,
+                  reply_count: (m.reply_count || 0) + 1,
+                  last_reply: msg,
+                }
+              }
+              return m
+            }),
+          }
+        })
+      } else {
+        // Top-level message — existing behavior
+        // Add to legacy messages array
+        messages.update((msgs) => [...msgs, msg])
+
+        // Add to channel-specific messages
+        messagesByChannel.update((byChannel) => {
+          const channelMsgs = byChannel[channelName] || []
+          return {
+            ...byChannel,
+            [channelName]: [...channelMsgs, msg],
+          }
+        })
+      }
 
       // Update channel list - increment unread if not viewing this channel
       const currentActiveChannel = get(activeChannel)
@@ -426,6 +480,7 @@ function handleUpdate(update) {
         // removal in sendAnswer(), or (3) a new coworker_question event replacing it.
       }
       break
+    }
     case 'coworker_status': {
       // Skip channel lead sessions (ch-<channel>) and the lead itself.
       // Channel leads are scoped to a specific topic channel and must not
@@ -474,7 +529,7 @@ function handleUpdate(update) {
 }
 
 // Send a message to the lead via WebSocket
-export function sendMessage(content, channel = null) {
+export function sendMessage(content, channel = null, threadParentId = null) {
   if (ws && ws.readyState === WebSocket.OPEN) {
     const message = {
       type: 'send_message',
@@ -483,6 +538,9 @@ export function sendMessage(content, channel = null) {
     // Include channel if specified (null/undefined means use default)
     if (channel) {
       message.channel = channel
+    }
+    if (threadParentId) {
+      message.thread_parent_id = threadParentId
     }
     ws.send(JSON.stringify(message))
   } else {
@@ -622,4 +680,37 @@ export async function uploadFile(file) {
     console.error('Failed to upload file:', err)
     return { ok: false, error: 'Network error' }
   }
+}
+
+// Fetch thread replies for a given parent message
+export async function fetchThread(channelName, parentMessageId) {
+  try {
+    const params = new URLSearchParams({
+      channel: channelName,
+      thread_parent_id: parentMessageId,
+    })
+    const res = await fetch(`${getApiBase()}/channels/history?${params}`)
+    if (res.ok) {
+      const data = await res.json()
+      return data
+    }
+  } catch (err) {
+    console.warn('Failed to fetch thread:', err)
+  }
+  return []
+}
+
+// Open a thread panel for the given parent message
+export function openThread(parentMessage, channelName) {
+  // Close detail panel if open (mutually exclusive)
+  detailPanelData.set(null)
+  // Fetch thread replies and set store
+  fetchThread(channelName, parentMessage.id).then((messages) => {
+    threadData.set({ parentMessage, channelName, messages })
+  })
+}
+
+// Close the thread panel
+export function closeThread() {
+  threadData.set(null)
 }
