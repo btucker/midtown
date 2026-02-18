@@ -337,6 +337,7 @@ fn test_lead_attach_includes_system_prompt() {
         midtown::auth::AuthProvider::Claude,
         "session-123",
         None,
+        None,
         true,
     );
 
@@ -365,6 +366,7 @@ fn test_coworker_attach_includes_system_prompt() {
         "park",
         midtown::auth::AuthProvider::Claude,
         "session-456",
+        None,
         None,
         true,
     );
@@ -395,6 +397,7 @@ fn test_lead_attach_sets_task_list_id() {
         midtown::auth::AuthProvider::Claude,
         "session-123",
         None,
+        None,
         true,
     );
 
@@ -418,6 +421,7 @@ fn test_coworker_attach_no_task_list_id() {
         midtown::auth::AuthProvider::Claude,
         "session-456",
         None,
+        None,
         true,
     );
 
@@ -440,6 +444,7 @@ fn test_lead_attach_includes_agent_teams_flags() {
         "lead",
         midtown::auth::AuthProvider::Claude,
         "session-123",
+        None,
         None,
         true,
     );
@@ -550,6 +555,7 @@ fn test_reviewer_attach_gets_reviewer_system_prompt() {
         midtown::auth::AuthProvider::Claude,
         "session-789",
         Some("reviewer"),
+        None,
         true,
     );
 
@@ -572,6 +578,7 @@ fn test_lead_attach_gets_opus_model() {
         midtown::auth::AuthProvider::Claude,
         "session-123",
         None,
+        None,
         true,
     );
 
@@ -582,6 +589,109 @@ fn test_lead_attach_gets_opus_model() {
         command.contains("--model") && command.contains("opus"),
         "Lead attach should use opus model, got: {}",
         command
+    );
+}
+
+// ── Channel lead attach ───────────────────────────────────────────────
+
+#[test]
+fn test_channel_lead_attach_gets_channel_lead_system_prompt() {
+    // Bug 2: attach path must use channel-lead system prompt (not coworker)
+    let cwd = find_project_root();
+    let result = build_attach_shell_command(
+        &cwd,
+        "amsterdam",
+        midtown::auth::AuthProvider::Claude,
+        "session-ch1",
+        Some("channel-lead"),
+        Some("daemon-architecture"),
+        true,
+    );
+
+    let command = result.expect("build_attach_shell_command should succeed");
+
+    // System prompt file should be written; attach command wraps it with $(cat ...)
+    assert!(
+        command.contains("$(cat") && command.contains("midtown-attach-"),
+        "Channel lead attach should use system prompt temp file, got: {}",
+        command
+    );
+
+    // Should include --setting-sources (coworker behavior)
+    assert!(
+        command.contains("--setting-sources"),
+        "Channel lead attach should restrict setting sources, got: {}",
+        command
+    );
+}
+
+#[test]
+fn test_channel_lead_attach_uses_sonnet_model_by_default() {
+    // Bug 3: without config override, channel lead defaults to "sonnet"
+    let cwd = find_project_root();
+    let result = build_attach_shell_command(
+        &cwd,
+        "amsterdam",
+        midtown::auth::AuthProvider::Claude,
+        "session-ch2",
+        Some("channel-lead"),
+        Some("unconfigured-channel"),
+        true,
+    );
+
+    let command = result.expect("build_attach_shell_command should succeed");
+
+    // Default model for channel leads is "sonnet"
+    assert!(
+        command.contains("--model") && command.contains("sonnet"),
+        "Channel lead attach should default to sonnet model, got: {}",
+        command
+    );
+}
+
+#[test]
+fn test_channel_lead_attach_sets_midtown_channel_env_var() {
+    // Bug 4: MIDTOWN_CHANNEL must be set for channel-lead attach
+    let cwd = find_project_root();
+    let result = build_attach_shell_command(
+        &cwd,
+        "amsterdam",
+        midtown::auth::AuthProvider::Claude,
+        "session-ch3",
+        Some("channel-lead"),
+        Some("tui-channel"),
+        true,
+    );
+
+    let command = result.expect("build_attach_shell_command should succeed");
+
+    // MIDTOWN_CHANNEL should be set to the channel name
+    assert!(
+        command.contains("MIDTOWN_CHANNEL="),
+        "Channel lead attach must set MIDTOWN_CHANNEL env var, got: {}",
+        command
+    );
+}
+
+#[test]
+fn test_channel_lead_attach_falls_back_to_name_when_no_channel() {
+    // Bug 2: if channel is None but coworker_type is "channel-lead", fall back to name
+    let cwd = find_project_root();
+    let result = build_attach_shell_command(
+        &cwd,
+        "amsterdam",
+        midtown::auth::AuthProvider::Claude,
+        "session-ch4",
+        Some("channel-lead"),
+        None, // no channel provided — fall back to name
+        true,
+    );
+
+    // Should succeed (not panic or error)
+    assert!(
+        result.is_ok(),
+        "Channel lead attach with no channel name should succeed, got: {:?}",
+        result.err()
     );
 }
 
@@ -620,6 +730,7 @@ fn test_build_attach_command_uses_shell_command_substitution() {
         "lead",
         midtown::auth::AuthProvider::Claude,
         "session-123",
+        None,
         None,
         true,
     );
@@ -714,6 +825,7 @@ fn test_build_attach_command_no_double_quoting() {
         midtown::auth::AuthProvider::Claude,
         "session-123",
         None,
+        None,
         true,
     );
 
@@ -757,6 +869,7 @@ fn test_build_attach_command_shell_parseable() {
         midtown::auth::AuthProvider::Claude,
         "session-123",
         None,
+        None,
         true,
     );
 
@@ -790,6 +903,7 @@ fn test_view_attach_command_omits_session_detach() {
         midtown::auth::AuthProvider::Claude,
         "session-123",
         None,
+        None,
         false, // include_detach=false: midtown view manages detach explicitly on exit
     );
     let command = result.expect("build_attach_shell_command should succeed");
@@ -811,6 +925,7 @@ fn test_standalone_attach_command_includes_session_detach() {
         "lead",
         midtown::auth::AuthProvider::Claude,
         "session-123",
+        None,
         None,
         true, // include_detach=true: standalone attach needs auto-detach
     );

@@ -14,6 +14,7 @@ fn test_headless_info(
         coworker_type: Some("dev".to_string()),
         task_id,
         pr_number: None,
+        channel: None,
         working_dir: Some("/tmp/worktree".to_string()),
         provider: Some(crate::auth::AuthProvider::Claude),
         profile: Some("test-profile".to_string()),

@@ -564,6 +564,7 @@ pub(super) async fn handle_session_attach(
             "name": name,
             "provider": provider.as_str(),
             "coworker_type": info.coworker_type,
+            "channel": info.channel,
         }),
     )
 }
