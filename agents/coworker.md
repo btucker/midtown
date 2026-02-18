@@ -16,6 +16,8 @@ midtown channel post "your message here"
 
 **Automatic channel routing:** When your task has an associated channel (topic channel), the `MIDTOWN_CHANNEL` environment variable is set automatically, and all your `midtown channel post` commands will route to that channel by default. You don't need to specify `--channel` unless you want to post to a different channel.
 
+**Channel leads:** Topic channels have a dedicated channel lead — a domain expert who maintains context for that area of the codebase. When you have domain questions (e.g., "how does the auth module work?", "what's the right approach for this feature area?"), ask the channel lead first by posting in your channel with `@channel-lead`. If no channel lead is active for your channel, fall back to `@lead`. Reserve `@lead` for project-wide coordination, priority decisions, and blockers that span channels.
+
 Use `/me` to indicate what you're currently doing:
 ```bash
 midtown channel post "/me investigating the auth bug"
@@ -83,12 +85,16 @@ These are approximate — use your judgment based on task complexity. Update pro
 Channel messages are freeform:
 - Progress milestones: `/me found the root cause in auth.rs`
 - Blocked: `blocked on task 3, need API spec clarified`
-- Questions: `@Lead should this handle the edge case?`
+- Domain questions: `@channel-lead should this handle the edge case?`
+- Coordination questions: `@lead is task 3 a blocker here, or can I proceed?`
 
 ### Replying to Messages
 When replying to someone's channel message, **always @mention them** so the daemon can notify them of your response. This is especially important when answering questions from the lead or other coworkers.
 
 ```bash
+# Channel lead asked you a question → @mention them in your reply
+midtown channel post "@channel-lead yes, the tests cover that edge case"
+
 # Lead asked you a question → @mention them in your reply
 midtown channel post "@lead yes, the auth module exports a validate function"
 
@@ -428,14 +434,23 @@ The key distinction: **don't poll** (repeatedly checking status), but **do use `
 - If blocked, post to channel and move to another task
 
 ### Asking Questions
-When unsure about something, **ask in the channel** using @mentions:
+When unsure about something, **ask in the channel** using @mentions. Follow this escalation hierarchy:
 
-- **@lead** - Ask the Lead when you need clarification on requirements, priorities, or approach. **Only @lead for genuine questions, decisions, or blockers** — not for routine status updates like "PR is ready" or "task complete" (the daemon handles those automatically).
-- **@coworker** - Ask other coworkers if they're working on something related to your task
+1. **@channel-lead** - Ask the channel lead for domain questions within your task's channel. Channel leads are domain experts with persistent context for their area. Use this for: "how does X work?", "what's the right approach for this feature area?", "does this module have a validate function?"
+2. **@lead** - Ask the Lead for project-wide coordination, priority decisions, and cross-channel blockers. **Only @lead for genuine questions, decisions, or blockers** — not for routine status updates like "PR is ready" or "task complete" (the daemon handles those automatically).
+3. **@coworker** - Ask a specific coworker if they're actively working on something directly related to your task.
+
+If your task has no channel (no `MIDTOWN_CHANNEL` set), or if no channel lead responds after a reasonable wait, go directly to `@lead` for questions.
 
 Collaboration is encouraged! Don't make assumptions - it's better to ask than to build the wrong thing.
 
 ```bash
+# Domain question → ask the channel lead first
+midtown channel post "@channel-lead how does the auth module handle token refresh?"
+
+# Project coordination or cross-channel blocker → ask lead
 midtown channel post "@lead should I handle the error case here, or let it bubble up?"
+
+# Another coworker actively working on something related
 midtown channel post "@amsterdam you're working on the auth module - does it export a validate function?"
 ```
