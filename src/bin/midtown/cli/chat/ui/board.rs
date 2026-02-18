@@ -24,17 +24,23 @@ const OPS_SENDERS: &[&str] = &["midtown", "github", "system", "daemon"];
 /// Maximum number of recent ops messages to display in the mini-channel.
 const OPS_MAX_MESSAGES: usize = 20;
 
+/// Senders whose /me actions stay in the main chat (not ops).
+const NON_COWORKER_SENDERS: &[&str] = &["lead", "user"];
+
 /// Returns true if the message belongs in the Ops mini-channel.
 ///
 /// Ops messages are:
 /// - Messages from system/daemon senders (midtown, github, system, daemon)
-/// - Action messages (/me) from any sender (coworker status updates)
+/// - Action messages (/me) from coworkers only (not lead or user)
 pub fn is_ops_message(from: &str, msg_type: &MessageType, content: &str) -> bool {
     let sender = from.to_lowercase();
     if OPS_SENDERS.iter().any(|&s| s == sender) {
         return true;
     }
-    // /me action messages = coworker workflow status updates
+    // /me action messages = coworker workflow status updates; exclude lead/user
+    if NON_COWORKER_SENDERS.iter().any(|&s| s == sender) {
+        return false;
+    }
     if *msg_type == MessageType::Action || content.starts_with("/me ") {
         return true;
     }
@@ -1700,13 +1706,14 @@ mod tests {
 
     #[test]
     fn test_is_ops_message_action_type() {
-        // Action type (MessageType::Action) from any sender is an ops message
+        // Action type (MessageType::Action) from coworkers is an ops message
         assert!(is_ops_message(
             "york",
             &MessageType::Action,
             "/me developing"
         ));
-        assert!(is_ops_message(
+        // lead and user action messages stay in main chat
+        assert!(!is_ops_message(
             "lead",
             &MessageType::Action,
             "/me reviewing"
@@ -1728,6 +1735,31 @@ mod tests {
             "user",
             &MessageType::Text,
             "What's the status?"
+        ));
+    }
+
+    #[test]
+    fn test_is_ops_message_lead_user_slash_me_not_ops() {
+        // lead and user /me actions stay in main chat, not ops
+        assert!(!is_ops_message(
+            "lead",
+            &MessageType::Action,
+            "/me reviewing"
+        ));
+        assert!(!is_ops_message(
+            "lead",
+            &MessageType::Text,
+            "/me checking things"
+        ));
+        assert!(!is_ops_message(
+            "user",
+            &MessageType::Action,
+            "/me asking a question"
+        ));
+        assert!(!is_ops_message(
+            "user",
+            &MessageType::Text,
+            "/me doing something"
         ));
     }
 
