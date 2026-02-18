@@ -240,12 +240,30 @@ fn append_tool_activity_lines(
             Span::styled(" working\u{2026}", Style::default().fg(Color::DarkGray)),
         ]));
 
-        // Show up to 3 most recent tool calls (last 3, most recent last)
+        // Show up to 3 most recent tool calls (last 3, most recent last).
+        // Each header starts with a prefix char (✓/✗/›) followed by a space and the description.
         let start = headers.len().saturating_sub(3);
         for header in &headers[start..] {
+            // Split prefix character from the rest of the description.
+            // Format is "<prefix_char> <description>" where prefix is a single Unicode char.
+            let mut chars = header.chars();
+            let prefix = chars.next().unwrap_or('›');
+            let description: String = chars.collect::<String>().trim_start().to_string();
+
+            let prefix_color = match prefix {
+                '\u{2713}' => Color::Green, // ✓
+                '\u{2717}' => Color::Red,   // ✗
+                _ => Color::DarkGray,       // › or anything else
+            };
+            let text_color = match prefix {
+                '\u{2717}' => Color::Red,
+                _ => Color::DarkGray,
+            };
+
             lines.push(Line::from(vec![
-                Span::styled("  \u{203a} ", Style::default().fg(Color::DarkGray)),
-                Span::styled(header.clone(), Style::default().fg(Color::DarkGray)),
+                Span::styled("  ", Style::default()),
+                Span::styled(prefix.to_string(), Style::default().fg(prefix_color)),
+                Span::styled(format!(" {description}"), Style::default().fg(text_color)),
             ]));
         }
     }
@@ -514,7 +532,131 @@ pub fn draw_channel_switcher_overlay(f: &mut Frame, app: &App, area: Rect) {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
+    use ratatui::style::Color;
+
     use super::*;
+
+    // --- append_tool_activity_lines tests ---
+
+    fn make_activity(agent: &str, headers: Vec<&str>) -> HashMap<String, Vec<String>> {
+        let mut map = HashMap::new();
+        map.insert(
+            agent.to_string(),
+            headers.iter().map(|s| s.to_string()).collect(),
+        );
+        map
+    }
+
+    #[test]
+    fn test_append_tool_activity_lines_empty_map() {
+        let activity: HashMap<String, Vec<String>> = HashMap::new();
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        append_tool_activity_lines(&activity, &mut lines);
+        assert!(
+            lines.is_empty(),
+            "No lines should be emitted for empty activity"
+        );
+    }
+
+    #[test]
+    fn test_append_tool_activity_lines_empty_headers() {
+        let activity = make_activity("amsterdam", vec![]);
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        append_tool_activity_lines(&activity, &mut lines);
+        assert!(lines.is_empty(), "No lines for agent with empty headers");
+    }
+
+    #[test]
+    fn test_append_tool_activity_lines_in_progress_prefix_color() {
+        let activity = make_activity("amsterdam", vec!["› Read foo.rs"]);
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        append_tool_activity_lines(&activity, &mut lines);
+
+        // Lines: blank separator, agent header, tool call line
+        assert_eq!(lines.len(), 3);
+        let call_line = &lines[2];
+        // Three spans: "  ", "›", " Read foo.rs"
+        assert_eq!(call_line.spans.len(), 3);
+        // Prefix span should be DarkGray for in-progress
+        assert_eq!(
+            call_line.spans[1].style.fg,
+            Some(Color::DarkGray),
+            "In-progress prefix should be DarkGray"
+        );
+        assert_eq!(
+            call_line.spans[2].style.fg,
+            Some(Color::DarkGray),
+            "In-progress text should be DarkGray"
+        );
+    }
+
+    #[test]
+    fn test_append_tool_activity_lines_success_prefix_color() {
+        let activity = make_activity("amsterdam", vec!["✓ Read foo.rs"]);
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        append_tool_activity_lines(&activity, &mut lines);
+
+        let call_line = &lines[2];
+        assert_eq!(
+            call_line.spans[1].style.fg,
+            Some(Color::Green),
+            "Success prefix should be Green"
+        );
+        assert_eq!(
+            call_line.spans[2].style.fg,
+            Some(Color::DarkGray),
+            "Success text should be DarkGray"
+        );
+    }
+
+    #[test]
+    fn test_append_tool_activity_lines_error_prefix_color() {
+        let activity = make_activity("amsterdam", vec!["✗ Run tests"]);
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        append_tool_activity_lines(&activity, &mut lines);
+
+        let call_line = &lines[2];
+        assert_eq!(
+            call_line.spans[1].style.fg,
+            Some(Color::Red),
+            "Error prefix should be Red"
+        );
+        assert_eq!(
+            call_line.spans[2].style.fg,
+            Some(Color::Red),
+            "Error text should be Red"
+        );
+    }
+
+    #[test]
+    fn test_append_tool_activity_lines_shows_at_most_3_recent() {
+        // 5 headers — should show only the last 3
+        let activity = make_activity(
+            "amsterdam",
+            vec!["✓ call1", "✓ call2", "✓ call3", "✓ call4", "› call5"],
+        );
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        append_tool_activity_lines(&activity, &mut lines);
+
+        // blank sep + agent header + 3 call lines
+        assert_eq!(lines.len(), 5, "Should emit blank + agent + 3 call lines");
+
+        // The last call line should be for "call5"
+        let last = &lines[4];
+        let text: String = last.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(
+            text.contains("call5"),
+            "Last line should be call5, got: {text}"
+        );
+        // call3 and call4 should also appear
+        let line3_text: String = lines[2].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(
+            line3_text.contains("call3"),
+            "Third call line should be call3"
+        );
+    }
 
     #[test]
     fn test_calculate_input_bar_height_empty_text() {

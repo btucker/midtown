@@ -2455,7 +2455,7 @@ fn fetch_kanban_data_via_rpc() -> Option<(
                 .map(|(agent, items)| {
                     let headers: Vec<String> = items
                         .as_array()
-                        .map(|arr| arr.iter().filter_map(extract_semantic_header).collect())
+                        .map(|arr| extract_tool_activity_headers(arr))
                         .unwrap_or_default();
                     (agent.clone(), headers)
                 })
@@ -2474,34 +2474,58 @@ fn fetch_kanban_data_via_rpc() -> Option<(
     ))
 }
 
-/// Extract a human-readable label from a serialized `UniversalItem`.
+/// Convert a list of serialized `UniversalItem`s into display strings.
 ///
-/// For `ToolCall` content parts, returns the `semantic_header`.
-/// For `ToolResult` parts, returns "✓ result" or "✗ error".
-/// Returns `None` if no recognizable content is found.
-fn extract_semantic_header(item: &serde_json::Value) -> Option<String> {
-    let content = item.get("content")?.as_array()?;
-    for part in content {
-        if let Some(call) = part.get("ToolCall") {
-            let header = call
-                .get("semantic_header")
-                .and_then(|v| v.as_str())
-                .unwrap_or_else(|| call.get("name").and_then(|v| v.as_str()).unwrap_or("?"));
-            return Some(header.to_string());
-        }
-        if let Some(result) = part.get("ToolResult") {
-            let is_error = result
-                .get("is_error")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-            return Some(if is_error {
-                "\u{2717} error".to_string()
-            } else {
-                "\u{2713} ok".to_string()
-            });
+/// ToolResult items are folded into their matching ToolCall: when a ToolResult
+/// exists for a call, the ToolCall header gains a `✓` (success) or `✗` (error)
+/// prefix. In-progress calls (no result yet) use `›`. ToolResult items are
+/// not emitted as standalone entries.
+fn extract_tool_activity_headers(items: &[serde_json::Value]) -> Vec<String> {
+    use std::collections::HashMap;
+
+    // First pass: collect result status keyed by call_id.
+    let mut result_status: HashMap<&str, bool> = HashMap::new();
+    for item in items {
+        if let Some(content) = item.get("content").and_then(|v| v.as_array()) {
+            for part in content {
+                if let Some(result) = part.get("ToolResult")
+                    && let Some(call_id) = result.get("call_id").and_then(|v| v.as_str())
+                {
+                    let is_error = result
+                        .get("is_error")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+                    result_status.insert(call_id, is_error);
+                }
+            }
         }
     }
-    None
+
+    // Second pass: emit one display string per ToolCall, annotated with result status.
+    let mut headers = Vec::new();
+    for item in items {
+        if let Some(content) = item.get("content").and_then(|v| v.as_array()) {
+            for part in content {
+                if let Some(call) = part.get("ToolCall") {
+                    let header = call
+                        .get("semantic_header")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_else(|| {
+                            call.get("name").and_then(|v| v.as_str()).unwrap_or("?")
+                        });
+                    let call_id = call.get("call_id").and_then(|v| v.as_str()).unwrap_or("");
+                    let display = match result_status.get(call_id) {
+                        Some(false) => format!("\u{2713} {header}"), // ✓ header
+                        Some(true) => format!("\u{2717} {header}"),  // ✗ header
+                        None => format!("\u{203a} {header}"),        // › header (in-progress)
+                    };
+                    headers.push(display);
+                    break; // one ToolCall per item
+                }
+            }
+        }
+    }
+    headers
 }
 
 /// Cache for default branch names, keyed by repo full name (or empty string for current repo).
@@ -3667,5 +3691,108 @@ pub(super) mod tests {
         assert!(!App::is_valid_channel_name("has\0null"));
         assert!(!App::is_valid_channel_name("emoji🎉"));
         assert!(!App::is_valid_channel_name("semi;colon"));
+    }
+
+    // --- extract_tool_activity_headers tests ---
+
+    fn tool_call_item(
+        call_id: &str,
+        name: &str,
+        semantic_header: Option<&str>,
+    ) -> serde_json::Value {
+        let mut call = serde_json::json!({
+            "call_id": call_id,
+            "name": name,
+        });
+        if let Some(header) = semantic_header {
+            call["semantic_header"] = serde_json::Value::String(header.to_string());
+        }
+        serde_json::json!({"content": [{"ToolCall": call}]})
+    }
+
+    fn tool_result_item(call_id: &str, is_error: bool) -> serde_json::Value {
+        serde_json::json!({"content": [{"ToolResult": {"call_id": call_id, "is_error": is_error}}]})
+    }
+
+    #[test]
+    fn test_extract_tool_activity_headers_empty() {
+        let result = extract_tool_activity_headers(&[]);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_extract_tool_activity_headers_in_progress() {
+        let items = vec![tool_call_item("id1", "Read", Some("Read foo.rs"))];
+        let result = extract_tool_activity_headers(&items);
+        assert_eq!(result, vec!["› Read foo.rs"]);
+    }
+
+    #[test]
+    fn test_extract_tool_activity_headers_success() {
+        let items = vec![
+            tool_call_item("id1", "Read", Some("Read foo.rs")),
+            tool_result_item("id1", false),
+        ];
+        let result = extract_tool_activity_headers(&items);
+        assert_eq!(result, vec!["✓ Read foo.rs"]);
+    }
+
+    #[test]
+    fn test_extract_tool_activity_headers_error() {
+        let items = vec![
+            tool_call_item("id1", "Bash", Some("Run tests")),
+            tool_result_item("id1", true),
+        ];
+        let result = extract_tool_activity_headers(&items);
+        assert_eq!(result, vec!["✗ Run tests"]);
+    }
+
+    #[test]
+    fn test_extract_tool_activity_headers_falls_back_to_name() {
+        // No semantic_header — should use "name" field
+        let items = vec![tool_call_item("id1", "Read", None)];
+        let result = extract_tool_activity_headers(&items);
+        assert_eq!(result, vec!["› Read"]);
+    }
+
+    #[test]
+    fn test_extract_tool_activity_headers_multiple_calls() {
+        // Three calls: first completed, second errored, third in-progress
+        let items = vec![
+            tool_call_item("id1", "Read", Some("Read foo.rs")),
+            tool_result_item("id1", false),
+            tool_call_item("id2", "Bash", Some("Run tests")),
+            tool_result_item("id2", true),
+            tool_call_item("id3", "Write", Some("Write bar.rs")),
+        ];
+        let result = extract_tool_activity_headers(&items);
+        assert_eq!(
+            result,
+            vec!["✓ Read foo.rs", "✗ Run tests", "› Write bar.rs"]
+        );
+    }
+
+    #[test]
+    fn test_extract_tool_activity_headers_result_before_call() {
+        // Result appears before its matching ToolCall — should still annotate correctly
+        // since first pass collects all results regardless of order.
+        let items = vec![
+            tool_result_item("id1", false),
+            tool_call_item("id1", "Read", Some("Read foo.rs")),
+        ];
+        let result = extract_tool_activity_headers(&items);
+        assert_eq!(result, vec!["✓ Read foo.rs"]);
+    }
+
+    #[test]
+    fn test_extract_tool_activity_headers_skips_tool_result_items() {
+        // ToolResult items should not appear as standalone entries in the output.
+        let items = vec![
+            tool_call_item("id1", "Read", Some("Read foo.rs")),
+            tool_result_item("id1", false),
+        ];
+        let result = extract_tool_activity_headers(&items);
+        assert_eq!(result.len(), 1, "Only one entry (the ToolCall)");
+        assert_eq!(result[0], "✓ Read foo.rs");
     }
 }
