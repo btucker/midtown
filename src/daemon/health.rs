@@ -240,15 +240,17 @@ pub(super) async fn check_and_restart_stuck_coworkers(
         &exemptions,
         snap.now_utc,
         COWORKER_STUCK_DURATION,
+        &snap.name_session_map,
     );
 
     let mut effects = Vec::new();
     for restart in restarts {
         info!(
-            "Coworker {} no events for {}s — restarting for task !{}",
+            "Coworker {} no events for {}s — restarting for task !{} (session: {:?})",
             restart.name,
             COWORKER_STUCK_DURATION.as_secs(),
-            restart.task_id
+            restart.task_id,
+            restart.session_id
         );
 
         let prompt = format_task_prompt(
@@ -280,7 +282,7 @@ pub(super) async fn check_and_restart_stuck_coworkers(
         effects.push(Effect::ShutdownCoworker {
             name: restart.name.clone(),
             message: String::new(),
-            session_id: None,
+            session_id: restart.session_id.clone(),
         });
         effects.push(Effect::SpawnCoworker(config));
         effects.push(Effect::PostToChannel {
@@ -324,6 +326,7 @@ pub fn check_and_restart_stuck_reviewers(snap: &snapshot::WorldSnapshot) -> Vec<
         snap.now_utc,
         REVIEWER_STUCK_DURATION,
         MAX_REVIEWER_RESTARTS,
+        &snap.name_session_map,
     );
 
     let mut effects = Vec::new();
@@ -331,19 +334,20 @@ pub fn check_and_restart_stuck_reviewers(snap: &snapshot::WorldSnapshot) -> Vec<
         let new_restart_count = restart.restart_count + 1;
 
         info!(
-            "Reviewer {} stuck reviewing PR #{} (no events for {}s, restart {}/{})",
+            "Reviewer {} stuck reviewing PR #{} (no events for {}s, restart {}/{}, session: {:?})",
             restart.name,
             restart.pr_number,
             REVIEWER_STUCK_DURATION.as_secs(),
             new_restart_count,
             MAX_REVIEWER_RESTARTS,
+            restart.session_id,
         );
 
         // Shut down the stuck reviewer
         effects.push(Effect::ShutdownCoworker {
             name: restart.name.clone(),
             message: String::new(),
-            session_id: None,
+            session_id: restart.session_id.clone(),
         });
 
         // Respawn with incremented restart count
@@ -818,6 +822,7 @@ pub(super) async fn check_and_respawn_dead_processes(
     let respawns = crate::rules::decide_dead_process_respawns(
         &snap.headless_process_health,
         &snap.in_progress_tasks,
+        &snap.name_session_map,
     );
 
     let mut effects = Vec::new();
@@ -833,8 +838,8 @@ pub(super) async fn check_and_respawn_dead_processes(
         }
 
         warn!(
-            "Coworker {} process died (exit code {}) — restarting for task !{}",
-            respawn.name, respawn.exit_code, respawn.task_id
+            "Coworker {} process died (exit code {}) — restarting for task !{} (session: {:?})",
+            respawn.name, respawn.exit_code, respawn.task_id, respawn.session_id
         );
 
         let prompt = format_task_prompt(
@@ -866,7 +871,7 @@ pub(super) async fn check_and_respawn_dead_processes(
         effects.push(Effect::ShutdownCoworker {
             name: respawn.name.clone(),
             message: String::new(),
-            session_id: None,
+            session_id: respawn.session_id.clone(),
         });
         effects.push(Effect::SpawnCoworker(config));
         effects.push(Effect::RecordCooldown {

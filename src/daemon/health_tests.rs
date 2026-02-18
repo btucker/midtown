@@ -792,3 +792,239 @@ fn test_maybe_refresh_lead_session_no_start_time() {
         "No refresh should happen when lead has no start time recorded"
     );
 }
+
+// -----------------------------------------------------------------------
+// Session ID propagation tests (health → effects)
+// -----------------------------------------------------------------------
+
+#[test]
+fn stuck_coworker_restart_propagates_session_id_to_shutdown_effect() {
+    use crate::coworker::{Coworker, CoworkerStatus};
+
+    let now = chrono::Utc::now();
+    let mut snap = empty_snap();
+    snap.now_utc = now;
+
+    // Active coworker with a stuck health entry
+    snap.active_coworkers.push(Coworker {
+        slot_id: uuid::Uuid::new_v4().to_string(),
+        name: "riverside".to_string(),
+        status: CoworkerStatus::Running,
+        working_dir: "/tmp/test".to_string(),
+        started_at: now - chrono::Duration::minutes(30),
+        current_task: Some("42".to_string()),
+        session_id: Some("session-stuck-abc".to_string()),
+        model: "sonnet".to_string(),
+        provider: crate::auth::AuthProvider::Claude,
+        profile: crate::auth::DEFAULT_PROFILE.to_string(),
+    });
+
+    // Stuck health: no events for 10 minutes
+    snap.headless_process_health.insert(
+        "riverside".to_string(),
+        snapshot::ProcessHealth {
+            is_alive: true,
+            last_event_at: Some(now - chrono::Duration::minutes(10)),
+            has_usage_limit: false,
+            usage_limit_reset_at: None,
+            has_api_error: false,
+            has_auth_error: false,
+            has_running_subagent: false,
+            has_pending_tool: false,
+            has_tool_name_conflict: false,
+            exit_code: None,
+        },
+    );
+
+    // In-progress task owned by riverside
+    snap.in_progress_tasks.push((
+        "42".to_string(),
+        "Fix bug".to_string(),
+        "riverside".to_string(),
+    ));
+
+    // Session mapping: riverside → session-stuck-abc
+    snap.name_session_map
+        .insert("riverside".to_string(), "session-stuck-abc".to_string());
+
+    // We can't call check_and_restart_stuck_coworkers directly because it needs DaemonState,
+    // but we can verify the pure decision layer populates session_id correctly.
+    let exemptions = crate::rules::StuckExemptions {
+        usage_limited: &snap.usage_limited_coworkers,
+        api_error: &snap.api_error_coworkers,
+        auth_error: &snap.auth_error_coworkers,
+        attached: &snap.attached_coworkers,
+    };
+    let restarts = crate::rules::decide_stuck_coworker_restarts(
+        &snap.headless_process_health,
+        &snap.in_progress_tasks,
+        &exemptions,
+        snap.now_utc,
+        Duration::from_secs(180),
+        &snap.name_session_map,
+    );
+
+    assert_eq!(restarts.len(), 1);
+    assert_eq!(
+        restarts[0].session_id,
+        Some("session-stuck-abc".to_string()),
+        "stuck coworker restart should carry session_id from name_session_map"
+    );
+}
+
+#[test]
+fn dead_process_respawn_propagates_session_id() {
+    let now = chrono::Utc::now();
+    let mut snap = empty_snap();
+    snap.now_utc = now;
+
+    // Dead health entry
+    snap.headless_process_health.insert(
+        "york".to_string(),
+        snapshot::ProcessHealth {
+            is_alive: false,
+            exit_code: Some(137),
+            last_event_at: Some(now - chrono::Duration::seconds(60)),
+            has_usage_limit: false,
+            usage_limit_reset_at: None,
+            has_api_error: false,
+            has_auth_error: false,
+            has_running_subagent: false,
+            has_pending_tool: false,
+            has_tool_name_conflict: false,
+        },
+    );
+
+    // In-progress task
+    snap.in_progress_tasks.push((
+        "99".to_string(),
+        "Add feature".to_string(),
+        "york".to_string(),
+    ));
+
+    // Session mapping
+    snap.name_session_map
+        .insert("york".to_string(), "session-dead-xyz".to_string());
+
+    let respawns = crate::rules::decide_dead_process_respawns(
+        &snap.headless_process_health,
+        &snap.in_progress_tasks,
+        &snap.name_session_map,
+    );
+
+    assert_eq!(respawns.len(), 1);
+    assert_eq!(
+        respawns[0].session_id,
+        Some("session-dead-xyz".to_string()),
+        "dead process respawn should carry session_id from name_session_map"
+    );
+}
+
+#[test]
+fn stuck_reviewer_restart_propagates_session_id() {
+    let now = chrono::Utc::now();
+    let mut snap = empty_snap();
+    snap.now_utc = now;
+
+    // Stuck reviewer health
+    snap.headless_process_health.insert(
+        "amsterdam".to_string(),
+        snapshot::ProcessHealth {
+            is_alive: true,
+            last_event_at: Some(now - chrono::Duration::minutes(10)),
+            has_usage_limit: false,
+            usage_limit_reset_at: None,
+            has_api_error: false,
+            has_auth_error: false,
+            has_running_subagent: false,
+            has_pending_tool: false,
+            has_tool_name_conflict: false,
+            exit_code: None,
+        },
+    );
+
+    // Reviewer assignment
+    snap.reviewer_pr_assignments
+        .insert("amsterdam".to_string(), 77);
+
+    // Session mapping
+    snap.name_session_map
+        .insert("amsterdam".to_string(), "session-rev-999".to_string());
+
+    let exemptions = crate::rules::StuckExemptions {
+        usage_limited: &snap.usage_limited_coworkers,
+        api_error: &snap.api_error_coworkers,
+        auth_error: &snap.auth_error_coworkers,
+        attached: &snap.attached_coworkers,
+    };
+    let restarts = crate::rules::decide_stuck_reviewer_restarts(
+        &snap.headless_process_health,
+        &snap.reviewer_pr_assignments,
+        &snap.reviewer_restart_counts,
+        &exemptions,
+        snap.now_utc,
+        Duration::from_secs(300),
+        2,
+        &snap.name_session_map,
+    );
+
+    assert_eq!(restarts.len(), 1);
+    assert_eq!(
+        restarts[0].session_id,
+        Some("session-rev-999".to_string()),
+        "stuck reviewer restart should carry session_id from name_session_map"
+    );
+}
+
+#[test]
+fn session_id_is_none_when_no_session_mapping_exists() {
+    let now = chrono::Utc::now();
+    let mut snap = empty_snap();
+    snap.now_utc = now;
+
+    // Stuck health with no session mapping
+    snap.headless_process_health.insert(
+        "broadway".to_string(),
+        snapshot::ProcessHealth {
+            is_alive: true,
+            last_event_at: Some(now - chrono::Duration::minutes(10)),
+            has_usage_limit: false,
+            usage_limit_reset_at: None,
+            has_api_error: false,
+            has_auth_error: false,
+            has_running_subagent: false,
+            has_pending_tool: false,
+            has_tool_name_conflict: false,
+            exit_code: None,
+        },
+    );
+
+    snap.in_progress_tasks.push((
+        "55".to_string(),
+        "Refactor module".to_string(),
+        "broadway".to_string(),
+    ));
+
+    // No name_session_map entry for broadway
+
+    let exemptions = crate::rules::StuckExemptions {
+        usage_limited: &snap.usage_limited_coworkers,
+        api_error: &snap.api_error_coworkers,
+        auth_error: &snap.auth_error_coworkers,
+        attached: &snap.attached_coworkers,
+    };
+    let restarts = crate::rules::decide_stuck_coworker_restarts(
+        &snap.headless_process_health,
+        &snap.in_progress_tasks,
+        &exemptions,
+        snap.now_utc,
+        Duration::from_secs(180),
+        &snap.name_session_map,
+    );
+
+    assert_eq!(restarts.len(), 1);
+    assert_eq!(
+        restarts[0].session_id, None,
+        "session_id should be None when no mapping exists in name_session_map"
+    );
+}
