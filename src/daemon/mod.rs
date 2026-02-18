@@ -2134,13 +2134,23 @@ async fn run_tick(event: &events::DaemonEvent, state: &DaemonState) {
 /// Returns `DaemonExitStatus` to indicate whether the caller should exit
 /// or re-exec the daemon binary (for sandbox-safe restarts).
 pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
-    // Install panic hook so unhandled panics are logged to stderr before aborting
+    // Install panic hook so unhandled panics are logged to both stderr AND daemon.log.
+    // The daemon often runs detached (stderr is lost), so writing to the log file
+    // ensures panics are visible for post-mortem debugging.
+    let panic_log_path = crate::paths::daemon_log_file();
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        eprintln!(
-            "=== DAEMON PANIC at {} ===",
-            chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
-        );
+        let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
+        let panic_msg = format!("=== DAEMON PANIC at {} ===\n{}\n", timestamp, info);
+        eprintln!("{}", panic_msg);
+        // Also append to daemon.log so the panic is visible even when stderr is lost
+        if let Ok(mut f) = std::fs::File::options()
+            .append(true)
+            .create(true)
+            .open(&panic_log_path)
+        {
+            let _ = std::io::Write::write_all(&mut f, panic_msg.as_bytes());
+        }
         default_hook(info);
     }));
 
