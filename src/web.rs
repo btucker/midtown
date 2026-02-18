@@ -115,6 +115,14 @@ static MULTI_USAGE_CACHE: KeyedTtlCache<String, Vec<crate::usage::UsageData>> =
 /// TTL for usage data cache (2 minutes, matching TUI refresh interval).
 const USAGE_CACHE_TTL: Duration = Duration::from_secs(120);
 
+/// TTL for repo status cache (commit hash, CI status, latest release).
+///
+/// These values change infrequently: commits land every few minutes at most,
+/// CI runs take minutes to complete, and releases are rare. Using 30s (same as
+/// PR cache) causes 3 unnecessary REST API calls per 30s poll cycle.
+/// 5 minutes strikes a balance between freshness and API conservation.
+const REPO_STATUS_CACHE_TTL: Duration = Duration::from_secs(300);
+
 /// Configuration for the web server
 #[derive(Debug, Clone)]
 pub struct WebConfig {
@@ -881,14 +889,17 @@ async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoRespo
             .unwrap_or_default()
     };
 
-    // Fetch repo status with TTL cache (blocking I/O)
+    // Fetch repo status with TTL cache (blocking I/O).
+    // Uses a longer TTL than PR data: commits/CI/releases change infrequently.
     let default_branch = state.default_branch.clone();
     let repo_status = tokio::task::spawn_blocking(move || {
-        REPO_STATUS_CACHE.get(CACHE_TTL).unwrap_or_else(|| {
-            let status = fetch_repo_status(&default_branch);
-            REPO_STATUS_CACHE.set(status.clone());
-            status
-        })
+        REPO_STATUS_CACHE
+            .get(REPO_STATUS_CACHE_TTL)
+            .unwrap_or_else(|| {
+                let status = fetch_repo_status(&default_branch);
+                REPO_STATUS_CACHE.set(status.clone());
+                status
+            })
     })
     .await
     .unwrap_or_default();

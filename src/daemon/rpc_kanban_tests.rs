@@ -269,3 +269,151 @@ fn test_serialize_tool_activity_with_tool_result() {
     assert_eq!(content["call_id"], "call_002");
     assert!(!content["is_error"].as_bool().unwrap());
 }
+
+// ============================================================================
+// Tests for compute_coworker_state_hash — cache key stability fix
+// ============================================================================
+
+/// Build a CoworkerRecord with the given phase, task_id, and progress.
+fn make_record(
+    phase: Option<crate::coworker_state::WorkflowPhase>,
+    task_id: Option<u32>,
+    progress: Option<u8>,
+) -> crate::rules::CoworkerRecord {
+    crate::rules::CoworkerRecord {
+        workflow_phase: phase,
+        task_id,
+        progress,
+        ..Default::default()
+    }
+}
+
+#[test]
+fn test_cache_key_stable_on_progress_update() {
+    // Progress updates should NOT change the cache key — they were the root cause
+    // of excessive GraphQL API calls (every `midtown state --progress N` caused
+    // a cache miss and a new API call).
+
+    use crate::coworker_state::WorkflowPhase;
+
+    let mut records_before = HashMap::new();
+    records_before.insert(
+        "madison".to_string(),
+        make_record(Some(WorkflowPhase::Developing), Some(1234), Some(20)),
+    );
+
+    let mut records_after = HashMap::new();
+    records_after.insert(
+        "madison".to_string(),
+        make_record(Some(WorkflowPhase::Developing), Some(1234), Some(60)),
+    );
+
+    // Use the real function from the parent module (not the local test helper below)
+    let hash_before = super::compute_coworker_state_hash(&records_before);
+    let hash_after = super::compute_coworker_state_hash(&records_after);
+
+    assert_eq!(
+        hash_before, hash_after,
+        "Progress update (20→60) must NOT change the cache key"
+    );
+}
+
+#[test]
+fn test_cache_key_changes_on_phase_transition() {
+    use crate::coworker_state::WorkflowPhase;
+
+    let mut records_dev = HashMap::new();
+    records_dev.insert(
+        "york".to_string(),
+        make_record(Some(WorkflowPhase::Developing), Some(1500), Some(80)),
+    );
+
+    let mut records_pr = HashMap::new();
+    records_pr.insert(
+        "york".to_string(),
+        make_record(Some(WorkflowPhase::PullRequest), Some(1500), Some(90)),
+    );
+
+    let hash_dev = super::compute_coworker_state_hash(&records_dev);
+    let hash_pr = super::compute_coworker_state_hash(&records_pr);
+
+    assert_ne!(
+        hash_dev, hash_pr,
+        "Phase transition (Developing→PullRequest) must change the cache key"
+    );
+}
+
+#[test]
+fn test_cache_key_changes_on_task_assignment() {
+    use crate::coworker_state::WorkflowPhase;
+
+    let mut records_no_task = HashMap::new();
+    records_no_task.insert(
+        "lexington".to_string(),
+        make_record(Some(WorkflowPhase::Claiming), None, None),
+    );
+
+    let mut records_with_task = HashMap::new();
+    records_with_task.insert(
+        "lexington".to_string(),
+        make_record(Some(WorkflowPhase::Developing), Some(999), None),
+    );
+
+    let hash_no_task = super::compute_coworker_state_hash(&records_no_task);
+    let hash_with_task = super::compute_coworker_state_hash(&records_with_task);
+
+    assert_ne!(
+        hash_no_task, hash_with_task,
+        "Task assignment must change the cache key"
+    );
+}
+
+#[test]
+fn test_cache_key_changes_on_coworker_spawn() {
+    use crate::coworker_state::WorkflowPhase;
+
+    // No coworkers
+    let records_empty: HashMap<String, crate::rules::CoworkerRecord> = HashMap::new();
+
+    // One coworker spawned
+    let mut records_one = HashMap::new();
+    records_one.insert(
+        "amsterdam".to_string(),
+        make_record(Some(WorkflowPhase::Developing), Some(1200), None),
+    );
+
+    let hash_empty = super::compute_coworker_state_hash(&records_empty);
+    let hash_one = super::compute_coworker_state_hash(&records_one);
+
+    assert_ne!(
+        hash_empty, hash_one,
+        "Coworker spawn must change the cache key"
+    );
+}
+
+#[test]
+fn test_cache_key_stable_when_idle_coworker_updates_progress() {
+    // Idle coworkers are excluded from the hash entirely, so their progress
+    // updates definitely should not affect the cache key.
+    use crate::coworker_state::WorkflowPhase;
+
+    let mut records_idle_no_progress = HashMap::new();
+    records_idle_no_progress.insert(
+        "riverside".to_string(),
+        make_record(Some(WorkflowPhase::Idle), Some(1400), None),
+    );
+
+    let mut records_idle_with_progress = HashMap::new();
+    records_idle_with_progress.insert(
+        "riverside".to_string(),
+        make_record(Some(WorkflowPhase::Idle), Some(1400), Some(100)),
+    );
+
+    let hash_no_progress = super::compute_coworker_state_hash(&records_idle_no_progress);
+    let hash_with_progress = super::compute_coworker_state_hash(&records_idle_with_progress);
+
+    assert_eq!(
+        hash_no_progress, hash_with_progress,
+        "Idle coworker progress must not affect the cache key (idle coworkers are excluded)"
+    );
+}

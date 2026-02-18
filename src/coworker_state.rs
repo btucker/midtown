@@ -7,7 +7,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Workflow phases for coworker status tracking.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, clap::ValueEnum)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, clap::ValueEnum)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkflowPhase {
     /// Claiming a task ("claim")

@@ -601,6 +601,15 @@ pub(crate) struct DaemonState {
     /// per-coworker tool activity alongside chat messages.
     pub(crate) recent_tool_items:
         std::sync::RwLock<HashMap<String, Vec<crate::universal_events::UniversalItem>>>,
+    /// Negative cache for `is_pr_reviewed`: PR numbers confirmed NOT to have a review yet.
+    ///
+    /// `is_pr_reviewed` caches positive results (reviewed) in persistent state forever.
+    /// Without this cache, every unreviewed PR triggers a `gh pr view` GraphQL call on
+    /// every PR poll tick (~every 45s). With this cache, we suppress repeat calls for
+    /// PRs confirmed unreviewed within the last `PR_REVIEW_NEGATIVE_CACHE_SECS` seconds.
+    ///
+    /// Short TTL (2 min) ensures we eventually detect the review after it's posted.
+    pr_review_negative_cache: std::sync::Mutex<HashMap<u64, std::time::Instant>>,
 }
 
 impl DaemonState {
@@ -732,13 +741,32 @@ impl DaemonState {
             }
         }
 
+        // Negative cache: skip the API call if we recently confirmed no review exists.
+        // This prevents a gh pr view GraphQL call on every poll tick for each unreviewed PR.
+        {
+            let neg_cache = self.pr_review_negative_cache.lock().unwrap();
+            if let Some(checked_at) = neg_cache.get(&pr_number)
+                && checked_at.elapsed().as_secs() < PR_REVIEW_NEGATIVE_CACHE_SECS
+            {
+                debug!(
+                    "PR #{} not reviewed (negative cache hit, skipping API call)",
+                    pr_number
+                );
+                return false;
+            }
+        }
+
         // Slow path: check via API calls
         let has_review = pr::pr_has_claude_review_uncached(pr_number);
 
-        // Cache positive results (review status is monotonic)
         if has_review {
+            // Cache positive results permanently (reviews are monotonic — they don't disappear)
             let mut ps = self.persistent_state.lock().await;
             ps.github.mark_reviewed_pr(pr_number);
+        } else {
+            // Cache negative result with TTL to avoid repeated API calls
+            let mut neg_cache = self.pr_review_negative_cache.lock().unwrap();
+            neg_cache.insert(pr_number, std::time::Instant::now());
         }
 
         has_review
@@ -839,6 +867,7 @@ impl DaemonState {
             session_manager: sessions::SessionManager::new(session_manager_repo_name),
             rpc_response_cache: Mutex::new(HashMap::new()),
             kanban_cache: rpc_kanban::KanbanCache::new(),
+            pr_review_negative_cache: std::sync::Mutex::new(HashMap::new()),
             draining: std::sync::atomic::AtomicBool::new(false),
             restart_requested: std::sync::atomic::AtomicBool::new(false),
             shutdown_tx,
