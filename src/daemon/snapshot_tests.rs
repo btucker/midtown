@@ -105,6 +105,10 @@ fn test_world_snapshot_has_coworker_stop_times() {
         repo_owner: None,
         github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
         freshly_fetched_rate_limit: None,
+        sessions: HashMap::new(),
+        session_task_map: HashMap::new(),
+        session_name_map: HashMap::new(),
+        name_session_map: HashMap::new(),
     };
 
     assert_eq!(snapshot.coworker_stop_times.len(), 2);
@@ -207,6 +211,10 @@ fn test_snapshot_debug_context_empty_by_default() {
         repo_owner: None,
         github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
         freshly_fetched_rate_limit: None,
+        sessions: HashMap::new(),
+        session_task_map: HashMap::new(),
+        session_name_map: HashMap::new(),
+        name_session_map: HashMap::new(),
     };
 
     assert!(snapshot.channel_messages.is_empty());
@@ -389,6 +397,10 @@ fn test_sessions_for_name() {
         repo_owner: None,
         github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
         freshly_fetched_rate_limit: None,
+        sessions: HashMap::new(),
+        session_task_map: HashMap::new(),
+        session_name_map: HashMap::new(),
+        name_session_map: HashMap::new(),
     };
 
     // "lexington" has two sessions
@@ -475,6 +487,10 @@ fn test_active_session_ids_in_snapshot() {
         repo_owner: None,
         github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
         freshly_fetched_rate_limit: None,
+        sessions: HashMap::new(),
+        session_task_map: HashMap::new(),
+        session_name_map: HashMap::new(),
+        name_session_map: HashMap::new(),
     };
 
     assert_eq!(snapshot.active_session_ids.len(), 2);
@@ -483,4 +499,106 @@ fn test_active_session_ids_in_snapshot() {
 
     let json = serde_json::to_string(&snapshot).expect("should serialize");
     assert!(json.contains("active_session_ids"));
+}
+
+/// Test that session-centric fields exist in WorldSnapshot and default to empty.
+///
+/// These fields are added for the session-centric coworker model refactor.
+/// The `#[serde(default)]` attribute ensures existing fixture JSON (which lacks
+/// these fields) still deserializes correctly with empty maps.
+#[test]
+fn test_snapshot_includes_session_fields() {
+    // Verify fields exist and default to empty in a constructed snapshot
+    let snapshot = WorldSnapshot {
+        active_coworkers: vec![],
+        running_coworkers: vec![],
+        coworker_snapshots: vec![],
+        active_names: HashSet::new(),
+        active_session_ids: HashSet::new(),
+        session_name: "midtown-test".to_string(),
+        coworker_start_times: HashMap::new(),
+        coworker_stop_times: HashMap::new(),
+        headless_process_health: HashMap::new(),
+        attached_coworkers: HashMap::new(),
+        in_progress_tasks: vec![],
+        busy_coworkers: HashSet::new(),
+        coworker_task_assignments: HashMap::new(),
+        all_tasks: vec![],
+        pending_tasks_with_owners: vec![],
+        pending_tasks_without_owners: vec![],
+        task_channel: HashMap::new(),
+        task_model_map: HashMap::new(),
+        task_plan_map: HashMap::new(),
+        task_execution_skill_map: HashMap::new(),
+        channel_lead_sessions: HashMap::new(),
+        coworkers_with_open_prs: HashSet::new(),
+        coworkers_with_merged_prs: HashSet::new(),
+        merged_pr_numbers: HashSet::new(),
+        ci_passed_pr_coworkers: HashSet::new(),
+        review_feedback_pr_coworkers: HashSet::new(),
+        open_prs_data: vec![],
+        github_open_pr_task_ids: HashMap::new(),
+        pending_task_owners: HashSet::new(),
+        tasks_with_open_prs: HashMap::new(),
+        pr_task_associations: HashMap::new(),
+        active_reviewers: HashSet::new(),
+        reviewer_pr_assignments: HashMap::new(),
+        reviewed_prs: HashSet::new(),
+        prs_needing_review: 0,
+        reviewer_restart_counts: HashMap::new(),
+        reviewer_escalations_posted: HashSet::new(),
+        coworkers_with_unblocked_deps: HashSet::new(),
+        usage_limit_nudge_scheduled: false,
+        usage_limit_nudge_at: None,
+        usage_limited_coworkers: HashSet::new(),
+        api_error_coworkers: HashSet::new(),
+        auth_error_coworkers: HashSet::new(),
+        tool_name_conflict_coworkers: HashSet::new(),
+        channel_messages: vec![],
+        archived_channels: HashSet::new(),
+        daemon_logs: vec![],
+        tasks_with_worktrees: HashSet::new(),
+        task_worktree_map: HashMap::new(),
+        worktree_branch_owners: HashMap::new(),
+        worktree_registry: crate::worktree_registry::WorktreeRegistry::default(),
+        merged_pr_branches: HashMap::new(),
+        lead_session_refresh_interval_secs: 5400,
+        is_at_coworker_limit: false,
+        is_at_dev_limit: false,
+        now_utc: Utc::now(),
+        repo_name: "test-repo".to_string(),
+        repo_owner: None,
+        github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
+        freshly_fetched_rate_limit: None,
+        // Session-centric fields (new model)
+        sessions: HashMap::new(),
+        session_task_map: HashMap::new(),
+        session_name_map: HashMap::new(),
+        name_session_map: HashMap::new(),
+    };
+
+    assert!(snapshot.sessions.is_empty());
+    assert!(snapshot.session_task_map.is_empty());
+    assert!(snapshot.session_name_map.is_empty());
+    assert!(snapshot.name_session_map.is_empty());
+
+    // Verify backward compat: JSON that lacks session-centric fields deserializes correctly.
+    // Serialize the snapshot, remove session fields, then deserialize to confirm defaults.
+    let json = serde_json::to_string(&snapshot).expect("should serialize");
+    let mut v: serde_json::Value = serde_json::from_str(&json).expect("should parse");
+    // Strip session-centric fields to simulate an older snapshot that predates the model
+    v.as_object_mut().map(|o| {
+        o.remove("sessions");
+        o.remove("session_task_map");
+        o.remove("session_name_map");
+        o.remove("name_session_map");
+        o
+    });
+    let stripped_json = serde_json::to_string(&v).expect("should re-serialize");
+    let deserialized: WorldSnapshot =
+        serde_json::from_str(&stripped_json).expect("stripped fixture should deserialize");
+    assert!(deserialized.sessions.is_empty());
+    assert!(deserialized.session_task_map.is_empty());
+    assert!(deserialized.session_name_map.is_empty());
+    assert!(deserialized.name_session_map.is_empty());
 }
