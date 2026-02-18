@@ -244,7 +244,7 @@ fn test_process_universal_events_lead_tool_use_produces_effect() {
 }
 
 #[test]
-fn test_process_universal_events_coworker_tool_use_ignored() {
+fn test_process_universal_events_coworker_tool_use_produces_effect() {
     let mut events = HashMap::new();
     events.insert(
         "lexington".to_string(),
@@ -256,13 +256,20 @@ fn test_process_universal_events_coworker_tool_use_ignored() {
             extra: json!(null),
         }],
     );
-    // Coworker tool calls are not shown to the user — only lead tool calls are.
+    // Coworker tool calls are now broadcast to the web UI.
     let effects = process_universal_events(&events);
-    assert!(effects.is_empty());
+    assert_eq!(effects.len(), 1);
+    match &effects[0] {
+        Effect::BroadcastUniversalItems { agent_name, items } => {
+            assert_eq!(agent_name, "lexington");
+            assert_eq!(items.len(), 1);
+        }
+        _ => panic!("Expected BroadcastUniversalItems effect"),
+    }
 }
 
 #[test]
-fn test_process_universal_events_only_lead_when_multiple_agents() {
+fn test_process_universal_events_all_agents_when_multiple() {
     let mut events = HashMap::new();
     events.insert(
         "lead".to_string(),
@@ -284,13 +291,16 @@ fn test_process_universal_events_only_lead_when_multiple_agents() {
             extra: json!(null),
         }],
     );
-    // Only the lead's tool calls produce an effect; coworker events are ignored.
+    // Both lead and coworker tool calls produce effects.
     let effects = process_universal_events(&events);
-    assert_eq!(effects.len(), 1);
-    match &effects[0] {
-        Effect::BroadcastUniversalItems { agent_name, .. } => {
-            assert_eq!(agent_name, "lead");
-        }
-        _ => panic!("Expected BroadcastUniversalItems effect"),
-    }
+    assert_eq!(effects.len(), 2);
+    let agent_names: std::collections::HashSet<&str> = effects
+        .iter()
+        .filter_map(|e| match e {
+            Effect::BroadcastUniversalItems { agent_name, .. } => Some(agent_name.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(agent_names.contains("lead"));
+    assert!(agent_names.contains("park"));
 }
