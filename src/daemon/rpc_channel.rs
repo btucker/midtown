@@ -96,7 +96,8 @@ pub(super) async fn handle_channel_post(
     state: &DaemonState,
 ) -> Response {
     // Clean up shell escaping artifacts (e.g. "\!" from bash history expansion escaping)
-    let message = unescape_shell_artifacts(message);
+    // and trim leading/trailing whitespace so channel messages don't start with blank lines.
+    let message = unescape_shell_artifacts(message.trim());
 
     // Check for /me prefix (IRC-style action)
     let (content, msg_type) = if let Some(action) = message.strip_prefix("/me ") {
