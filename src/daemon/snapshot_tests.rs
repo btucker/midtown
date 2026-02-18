@@ -587,13 +587,12 @@ fn test_snapshot_includes_session_fields() {
     let json = serde_json::to_string(&snapshot).expect("should serialize");
     let mut v: serde_json::Value = serde_json::from_str(&json).expect("should parse");
     // Strip session-centric fields to simulate an older snapshot that predates the model
-    v.as_object_mut().map(|o| {
+    if let Some(o) = v.as_object_mut() {
         o.remove("sessions");
         o.remove("session_task_map");
         o.remove("session_name_map");
         o.remove("name_session_map");
-        o
-    });
+    }
     let stripped_json = serde_json::to_string(&v).expect("should re-serialize");
     let deserialized: WorldSnapshot =
         serde_json::from_str(&stripped_json).expect("stripped fixture should deserialize");
