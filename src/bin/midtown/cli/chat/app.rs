@@ -223,6 +223,9 @@ pub struct App {
     /// Test-only: captures the channel argument from the last post_message call
     #[cfg(test)]
     pub last_posted_channel: Option<String>,
+    /// Test-only: tracks whether load_channel_messages was called
+    #[cfg(test)]
+    pub load_channel_messages_called: bool,
     /// Tasks for the kanban board
     pub tasks: Vec<KanbanTask>,
     /// Open PRs for the kanban board (Review column)
@@ -432,6 +435,8 @@ impl App {
             test_mode: false,
             #[cfg(test)]
             last_posted_channel: None,
+            #[cfg(test)]
+            load_channel_messages_called: false,
             tasks: Vec::new(),
             prs: Vec::new(),
             merged_prs: Vec::new(),
@@ -1000,6 +1005,10 @@ impl App {
 
     /// Load messages from the currently selected channel
     fn load_channel_messages(&mut self) {
+        #[cfg(test)]
+        {
+            self.load_channel_messages_called = true;
+        }
         let channel_repo =
             midtown::paths::detect_repo_name().unwrap_or_else(|| "default".to_string());
         let base_dir = midtown::paths::projects_dir_for_repo(&channel_repo);
@@ -1763,6 +1772,13 @@ impl App {
             .clone();
 
         // Switch to the selected channel
+        let channel_repo =
+            midtown::paths::detect_repo_name().unwrap_or_else(|| "default".to_string());
+        let base_dir = midtown::paths::projects_dir_for_repo(&channel_repo);
+        self.selected_channel_archived = base_dir
+            .join("channels")
+            .join(format!("{}.archived.jsonl", &selected_channel))
+            .exists();
         self.selected_channel = selected_channel.clone();
 
         // Update board selection to the selected channel
@@ -1774,8 +1790,8 @@ impl App {
         self.channel_switcher.filtered_channels.clear();
         self.channel_switcher.selected_index = 0;
 
-        // Scroll to bottom when switching channels
-        self.scroll_to_bottom();
+        // Load messages from the newly selected channel
+        self.load_channel_messages();
     }
 
     /// Dismiss the channel switcher without selecting
@@ -2704,6 +2720,8 @@ pub(super) mod tests {
             test_mode: true, // Prevent daemon communication in tests
             #[cfg(test)]
             last_posted_channel: None,
+            #[cfg(test)]
+            load_channel_messages_called: false,
             tasks: Vec::new(),
             prs: Vec::new(),
             merged_prs: Vec::new(),
