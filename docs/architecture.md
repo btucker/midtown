@@ -12,6 +12,7 @@ The daemon handles:
 - GitHub webhook processing (PR events, CI status, reviews)
 - PR polling for merge conflicts and stuck conditions
 - @mention routing between team members
+- Topic channel message routing to channel leads
 - Headed wrapper intercom RPC endpoints (`headed.register/poll/ack/...`)
 
 ## Daemon Startup Sequence
@@ -36,8 +37,6 @@ When the daemon starts, it executes a careful cleanup and recovery sequence in `
 
 6. **Session recovery** — `recover_headless_sessions()` generates `ResumeCoworker` effects for each resumable session. The old process is NOT killed here — it dies naturally from the broken pipe when its previous daemon's handles are closed. A fresh `claude --resume <session_id>` process is spawned to continue the session.
 
-7. **Channel lead recovery** — `recover_channel_lead_sessions()` resumes or spawns channel leads for all active (non-archived) topic channels. Channel leads with saved session IDs are resumed; channels without a saved ID get a fresh lead spawned. The main "midtown" channel is excluded.
-
 ## Coworkers
 
 Each coworker runs as:
@@ -51,28 +50,13 @@ Coworkers are named after Manhattan avenues: lexington, park, madison, broadway,
 
 ## Channel Leads
 
-Channel leads are persistent headless Claude Code sessions attached to individual topic channels. Where coworkers are temporary implementers that come and go with tasks, channel leads are long-lived domain experts that accumulate context across conversations.
+Channel leads are headless Claude Code sessions attached to individual topic channels. Where coworkers are temporary implementers that come and go with tasks, channel leads are long-lived domain experts that accumulate context across conversations.
 
-**Role:** A channel lead is read-only — it brainstorms, maintains living design documents, answers domain questions, and tracks awareness of active tasks and PRs in its channel. It does not write code, open PRs, or create tasks. When implementation work is needed, it escalates to @lead.
+**Role:** A channel lead brainstorms, maintains living design documents, answers domain questions, and tracks awareness of active tasks and PRs in its channel. It does not write code, open PRs, or create tasks. When implementation work is needed, it escalates to @lead.
 
-**Session lifecycle:**
-- Created automatically when a new topic channel is created (`CreateChannel` effect)
-- Shut down automatically when a channel is archived (`ArchiveChannel` effect)
-- Session IDs are persisted in `DaemonPersistentState.channel_lead_sessions` (channel_name → session_id), so channel leads survive daemon restarts
-- On startup, `recover_channel_lead_sessions()` resumes sessions with saved IDs or spawns fresh leads for active topic channels (excluding the "midtown" main channel and archived channels)
+**Message routing:** When a user posts to a topic channel (any non-main channel), `handle_channel_post` in `src/daemon/mod.rs` nudges the channel lead for that channel via `SessionManager::send_message`. If no channel lead session is alive for that channel, the message is silently skipped — it remains in the channel log and is available when the channel lead next starts up. Main channel behavior is unchanged. Note: `route_mentions()` is intentionally disabled for topic channels — user `@coworker` and `@all` mentions in topic channels are silently dropped; only the channel lead nudge path is active.
 
-**Session naming:** A channel lead's session name equals its channel name (e.g., channel `auth-refactor` → session `auth-refactor`). This allows the daemon to address nudges to the correct lead without a separate lookup table.
-
-**Nudges:** The daemon nudges channel leads for events in their domain:
-- A user posts to the topic channel → `handle_channel_post` routes the message to the channel lead via `SessionManager::send_message`
-- A new task is assigned to the channel → `resolve_channel_lead_for_task()` identifies the lead and nudges it
-- A PR is opened, merged, or fails CI for a channel's task → the daemon nudges the channel lead alongside the coworker
-
-**Persistent effects:**
-- `SaveChannelLeadSession` — writes session ID to persistent state after initial spawn
-- `RemoveChannelLeadSession` — removes the session entry when a channel is archived
-
-**System prompt:** Channel leads use the `agents/channel-lead.md` template, which is instantiated with `{channel_name}` and `{domain_context}` substitutions via `channel_lead_system_prompt()` in `src/agents.rs`.
+**System prompt:** Channel leads use the `agents/channel-lead.md` template, instantiated with `{channel_name}` and `{domain_context}` via `channel_lead_system_prompt()` in `src/agents.rs`.
 
 **Coworker guidance:** Coworkers are instructed to `@{channel-name}` for domain questions (e.g., architecture, design decisions) and to reserve `@lead` for coordination, task, and priority questions.
 

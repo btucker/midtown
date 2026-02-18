@@ -231,21 +231,7 @@ zellij_chat_pane_size = 40      # Wider chat for this project
 
 [daemon]
 webhook_port = 47023              # Auto-assigned if not set
-
-[channel_leads]
-default_model = "sonnet"          # Default model for all channel leads
-
-[channel_leads.overrides]
-"daemon-architecture" = "opus"    # Per-channel model override
-"web-interface" = "sonnet"
 ```
-
-The `[channel_leads]` section configures channel lead sessions:
-
-- `default_model` — Model used for all channel leads unless overridden (defaults to `"sonnet"`)
-- `[channel_leads.overrides]` — Per-channel model selection; override keys are channel names
-
-Model resolution priority: per-channel override → `default_model` → `"sonnet"`.
 
 The `[project]` section defines:
 
@@ -443,15 +429,15 @@ Coworkers are named after Manhattan avenues: lexington, park, madison, broadway,
 
 ### Channel Leads
 
-Each topic channel can have a **channel lead** — a persistent headless Claude Code session that acts as a domain expert for that channel. Channel leads are long-lived: they accumulate context across conversations, survive daemon restarts via session resume, and are created/destroyed automatically when channels are created or archived.
+Each topic channel can have a **channel lead** — a headless Claude Code session that acts as a domain expert for that channel. Channel leads accumulate context across conversations and are available to answer domain questions.
 
 **What channel leads do:**
 - Brainstorm with the user on domain topics in their channel
 - Maintain living design documents, architecture notes, and decision logs
-- Answer domain questions with accumulated context from their persistent session
-- Receive nudges about new tasks, opened/merged PRs, and CI failures in their channel
+- Answer domain questions with accumulated context
+- Receive user messages posted to their topic channel
 
-**What channel leads don't do:** Channel leads are read-only — they don't write code, open PRs, or create tasks. When implementation work is needed, they escalate to @lead.
+**What channel leads don't do:** Channel leads don't write code, open PRs, or create tasks. When implementation work is needed, they escalate to @lead.
 
 Coworkers use `@{channel-name}` for domain questions (e.g., `@auth-refactor can you explain the token expiry logic?`) and reserve `@lead` for coordination and priority questions.
 
