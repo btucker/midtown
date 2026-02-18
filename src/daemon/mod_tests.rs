@@ -1976,22 +1976,8 @@ async fn test_cleanup_releases_name_from_pool() {
             .insert("42".to_string(), "sid-madison".to_string());
     }
 
-    // The cleanup_coworker_state only cleans transient state (cooldowns, etc.)
-    // The name pool + reverse map cleanup happens separately in the event loop.
-    // So we test the cleanup pattern directly:
-    {
-        let mut pool = state.name_pool.lock().unwrap();
-        pool.release("madison");
-    }
-    let removed_session_id = state.name_to_session.lock().unwrap().remove("madison");
-    if let Some(session_id) = removed_session_id {
-        state.session_to_name.lock().unwrap().remove(&session_id);
-        state
-            .task_to_session
-            .lock()
-            .unwrap()
-            .retain(|_, sid| sid != &session_id);
-    }
+    // cleanup_coworker_state handles all transient state AND name pool + reverse maps.
+    state.cleanup_coworker_state("madison").await;
 
     // Verify cleanup
     assert!(
@@ -2043,19 +2029,9 @@ async fn test_cleanup_preserves_other_sessions_reverse_maps() {
         t2s.insert("43".to_string(), "sid-park".to_string());
     }
 
-    // Clean up only madison (event loop cleanup pattern)
-    {
-        state.name_pool.lock().unwrap().release("madison");
-    }
-    let removed = state.name_to_session.lock().unwrap().remove("madison");
-    if let Some(session_id) = removed {
-        state.session_to_name.lock().unwrap().remove(&session_id);
-        state
-            .task_to_session
-            .lock()
-            .unwrap()
-            .retain(|_, sid| sid != &session_id);
-    }
+    // Clean up only madison via cleanup_coworker_state (used by both
+    // intentional shutdown and session-death paths).
+    state.cleanup_coworker_state("madison").await;
 
     // Park's state should be untouched
     assert!(
@@ -2110,8 +2086,8 @@ fn test_name_pool_allocate_and_release_round_trip() {
     assert_eq!(pool.allocated_count(), 0);
 }
 
-#[test]
-fn test_cleanup_with_no_session_id_is_noop_for_reverse_maps() {
+#[tokio::test]
+async fn test_cleanup_with_no_session_id_is_noop_for_reverse_maps() {
     let state = make_cleanup_test_state();
 
     // Allocate a name but don't populate reverse maps
@@ -2124,24 +2100,40 @@ fn test_cleanup_with_no_session_id_is_noop_for_reverse_maps() {
             .unwrap();
     }
 
-    // Release name (no reverse maps to clean)
-    {
-        state.name_pool.lock().unwrap().release("madison");
-    }
-    let removed = state.name_to_session.lock().unwrap().remove("madison");
-    assert!(
-        removed.is_none(),
-        "no session to remove when reverse maps weren't populated"
-    );
+    // cleanup_coworker_state should handle releasing the name even when
+    // no reverse maps were populated (no panic, no stale state).
+    state.cleanup_coworker_state("madison").await;
 
     // Verify pool state is correct
     assert!(!state.name_pool.lock().unwrap().is_allocated("madison"));
+    assert_eq!(state.session_for_name("madison"), None);
 }
 
-#[test]
-fn test_task_to_session_cleanup_removes_all_tasks_for_session() {
+#[tokio::test]
+async fn test_task_to_session_cleanup_removes_all_tasks_for_session() {
     let state = make_cleanup_test_state();
 
+    // Allocate madison and populate reverse maps
+    {
+        state
+            .name_pool
+            .lock()
+            .unwrap()
+            .allocate(Some("madison"))
+            .unwrap();
+    }
+    {
+        state
+            .name_to_session
+            .lock()
+            .unwrap()
+            .insert("madison".to_string(), "sid-madison".to_string());
+        state
+            .session_to_name
+            .lock()
+            .unwrap()
+            .insert("sid-madison".to_string(), "madison".to_string());
+    }
     // Simulate a session with multiple tasks (unlikely but possible)
     {
         let mut t2s = state.task_to_session.lock().unwrap();
@@ -2150,12 +2142,8 @@ fn test_task_to_session_cleanup_removes_all_tasks_for_session() {
         t2s.insert("44".to_string(), "sid-park".to_string());
     }
 
-    // Clean up sid-madison's tasks using the retain pattern from the event loop
-    state
-        .task_to_session
-        .lock()
-        .unwrap()
-        .retain(|_, sid| sid != "sid-madison");
+    // cleanup_coworker_state should remove all tasks for this session
+    state.cleanup_coworker_state("madison").await;
 
     // Only park's task should remain
     let t2s = state.task_to_session.lock().unwrap();
