@@ -140,6 +140,11 @@ pub struct CoworkerSession {
     /// Used to detect failed resume attempts: if a resume session exits quickly,
     /// the session_id is stale and should be cleared for fresh spawn.
     pub is_resume: bool,
+    /// The original initial prompt sent to this session at spawn time.
+    /// Stored here so collect_session_info() can include it in shutdown-time
+    /// persistence, allowing `session clear` to reuse the canonical mission
+    /// prompt after daemon restarts.
+    pub initial_prompt: Option<String>,
     /// File handle for writing stream events to JSONL log.
     /// Used for debugging and `midtown coworker view`.
     output_log: Option<std::fs::File>,
@@ -190,6 +195,7 @@ impl CoworkerSession {
             has_pending_tool: false,
             has_tool_name_conflict: false,
             is_resume: false,
+            initial_prompt: None,
             output_log,
             output_log_path,
         }
@@ -279,6 +285,7 @@ impl SessionManager {
             session_id.clone(),
         );
         cs.is_resume = is_resume;
+        cs.initial_prompt = initial_prompt.map(|s| s.to_string());
         sessions.insert(slot_id.to_string(), cs);
 
         if let Some(ref sid) = session_id {
@@ -293,6 +300,19 @@ impl SessionManager {
             );
         }
         Ok(())
+    }
+
+    /// Override the stored initial_prompt for a named session.
+    ///
+    /// Used after spawn when the prompt sent to Claude (e.g., decorated "fresh restart"
+    /// message) differs from the canonical prompt that should be persisted. This ensures
+    /// `collect_session_info()` returns the canonical prompt at daemon shutdown time,
+    /// preventing accumulation of decoration prefixes across restarts.
+    pub async fn set_canonical_initial_prompt(&self, name: &str, prompt: Option<String>) {
+        let mut sessions = self.sessions.write().await;
+        if let Some(cs) = sessions.values_mut().find(|cs| cs.name == name) {
+            cs.initial_prompt = prompt;
+        }
     }
 
     /// Send a message (nudge) to a running coworker session (by name).
@@ -812,7 +832,7 @@ impl SessionManager {
                     provider: None,      // To be filled by caller
                     profile: None,       // To be filled by caller
                     resume_on_startup: true,
-                    initial_prompt: None, // To be filled by caller
+                    initial_prompt: cs.initial_prompt.clone(),
                 };
                 info_map.insert(cs.name.clone(), info);
             }

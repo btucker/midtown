@@ -80,6 +80,16 @@ pub struct LaunchConfig {
     pub auth_profile_dir: Option<PathBuf>,
     /// Auth provider for this session. Determines which auth env var is set.
     pub auth_provider: crate::auth::AuthProvider,
+    /// Override for the `initial_prompt` stored in `HeadlessSessionInfo` at spawn time.
+    ///
+    /// When `Some`, `spawn_coworker` persists this value instead of `initial_prompt`.
+    /// Use this when the actual message sent to Claude (in `initial_prompt`) differs
+    /// from the canonical prompt to store — for example, `session clear` sends a
+    /// decorated "fresh restart" message but wants to persist the *original* prompt
+    /// so repeated clears don't accumulate the decoration.
+    ///
+    /// When `None`, `spawn_coworker` falls back to persisting `initial_prompt`.
+    pub persisted_initial_prompt: Option<String>,
 }
 
 /// The shell command string and generated session ID (if fresh).
@@ -239,6 +249,7 @@ impl LaunchConfig {
             channel: None,
             auth_profile_dir: None,
             auth_provider: crate::auth::AuthProvider::Claude,
+            persisted_initial_prompt: None,
         }
     }
 
@@ -261,6 +272,7 @@ impl LaunchConfig {
             channel: None,
             auth_profile_dir: None,
             auth_provider: crate::auth::AuthProvider::Claude,
+            persisted_initial_prompt: None,
         }
     }
 
@@ -284,6 +296,7 @@ impl LaunchConfig {
             channel: None,
             auth_profile_dir: None,
             auth_provider: crate::auth::AuthProvider::Claude,
+            persisted_initial_prompt: None,
         }
     }
 
@@ -329,6 +342,7 @@ impl LaunchConfig {
             channel: None,
             auth_profile_dir: None,
             auth_provider: crate::auth::AuthProvider::Claude,
+            persisted_initial_prompt: None,
         }
     }
 
@@ -375,6 +389,7 @@ impl LaunchConfig {
             channel: Some(channel_name_str),
             auth_profile_dir: None,
             auth_provider: crate::auth::AuthProvider::Claude,
+            persisted_initial_prompt: None,
         }
     }
 

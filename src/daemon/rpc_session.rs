@@ -1,7 +1,7 @@
-//! Session attach/detach RPC handlers.
+//! Session management RPC handlers.
 //!
-//! Handles `session.resolve`, `session.attach`, `session.detach`, and
-//! `session.list` methods,
+//! Handles `session.resolve`, `session.attach`, `session.detach`,
+//! `session.list`, `session.view`, and `session.clear` methods,
 //! allowing interactive terminal sessions to be connected to headless coworker
 //! processes.
 
@@ -918,7 +918,10 @@ pub(super) async fn handle_session_clear(
     // session still has stale registrations that would block spawn_coworker.
     state.cleanup_coworker_state(&name).await;
 
-    // Build fresh launch config (no --resume, no --continue)
+    // Build fresh launch config (no --resume, no --continue).
+    // The decorated "fresh restart" message is sent to Claude as the initial prompt,
+    // but we store the *original* prompt via persisted_initial_prompt so that
+    // repeated clears don't accumulate the "This is a fresh session restart" prefix.
     let original_prompt = session_info.initial_prompt.as_deref().unwrap_or("");
     let fresh_prompt = if original_prompt.is_empty() {
         "This is a fresh session restart. Please read the channel to catch up on context."
@@ -934,14 +937,34 @@ pub(super) async fn handle_session_clear(
         let mut c = crate::launch::LaunchConfig::lead(&state.repo_name);
         c.session_mode = crate::launch::SessionMode::Fresh;
         c.initial_prompt = Some(fresh_prompt);
+        // Persist the original prompt, not the decorated "fresh restart" wrapper.
+        c.persisted_initial_prompt = session_info.initial_prompt.clone();
         c
     } else {
-        crate::launch::LaunchConfig::coworker(
+        let mut c = crate::launch::LaunchConfig::coworker(
             &name,
             &state.repo_name,
             crate::launch::SessionMode::Fresh,
             Some(fresh_prompt),
-        )
+        );
+        // Persist the original prompt, not the decorated "fresh restart" wrapper.
+        c.persisted_initial_prompt = session_info.initial_prompt.clone();
+        // Restore role-specific metadata so reviewer/channel-lead context survives the clear.
+        if let Some(ref coworker_type) = session_info.coworker_type {
+            match coworker_type.as_str() {
+                "reviewer" => c.role = crate::launch::CoworkerRole::Reviewer,
+                "channel-lead" => {
+                    c.role = crate::launch::CoworkerRole::ChannelLead {
+                        channel_name: session_info.channel.clone().unwrap_or_default(),
+                        domain_context: String::new(),
+                    }
+                }
+                _ => {}
+            }
+        }
+        c.pr_number = session_info.pr_number;
+        c.channel = session_info.channel.clone();
+        c
     };
 
     // Restore working directory: lead uses canonical worktree, coworkers use persisted path
@@ -960,29 +983,6 @@ pub(super) async fn handle_session_clear(
     match state.spawn_coworker(&config).await {
         Ok(()) => {
             info!("Relaunched fresh session for '{}' after clear", name);
-
-            // Restore original session metadata in persistent state.
-            // spawn_coworker() persisted the decorated fresh_prompt as initial_prompt
-            // and generic coworker_type/task_id/pr_number/channel values. We restore
-            // from the pre-clear session_info so that:
-            // - subsequent `session clear` calls don't compound the prefix
-            // - reviewer metadata survives across clear + daemon restart
-            {
-                let mut ps = state.persistent_state.lock().await;
-                if let Some(entry) = ps.headless_sessions.get_mut(&name) {
-                    entry.initial_prompt = session_info.initial_prompt.clone();
-                    entry.coworker_type = session_info.coworker_type.clone();
-                    entry.task_id = session_info.task_id;
-                    entry.pr_number = session_info.pr_number;
-                    entry.channel = session_info.channel.clone();
-                }
-                if let Err(e) = ps.save_for_repo(&state.repo_name) {
-                    warn!(
-                        "Failed to save persistent state after restoring initial_prompt for '{}': {}",
-                        name, e
-                    );
-                }
-            }
 
             let _ = state
                 .send_and_broadcast_async(&crate::message::Message::system(format!(

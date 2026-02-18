@@ -59,6 +59,38 @@ fn test_merge_headless_sessions_preserves_history_and_marks_running_resumable() 
     assert!(persisted["madison"].resume_on_startup);
 }
 
+/// Regression test: when set_canonical_initial_prompt is used during spawn,
+/// the canonical prompt in CoworkerSession.initial_prompt flows through
+/// collect_session_info() → merge_headless_sessions() without being overwritten
+/// by the decorated "fresh restart" prompt.
+#[test]
+fn test_merge_headless_sessions_preserves_canonical_initial_prompt() {
+    let mut persisted = HashMap::new();
+
+    // Simulate the correctly-persisted state at spawn time (via persisted_initial_prompt)
+    let mut correctly_persisted = test_headless_info("sid-park", Some(10));
+    correctly_persisted.initial_prompt = Some("Implement auth endpoint".to_string());
+    persisted.insert("park".to_string(), correctly_persisted);
+
+    // Simulate what collect_session_info() returns — because set_canonical_initial_prompt
+    // was called, CoworkerSession.initial_prompt holds the canonical prompt (not decorated).
+    let mut running_info = test_headless_info("sid-park-new", Some(10));
+    running_info.initial_prompt = Some("Implement auth endpoint".to_string());
+
+    let mut running = HashMap::new();
+    running.insert("park".to_string(), running_info);
+
+    let running_count = merge_headless_sessions(&mut persisted, running);
+
+    assert_eq!(running_count, 1);
+    assert_eq!(
+        persisted["park"].initial_prompt,
+        Some("Implement auth endpoint".to_string()),
+        "After merge, initial_prompt should be the canonical prompt, not a decorated version"
+    );
+    assert_eq!(persisted["park"].session_id, "sid-park-new");
+}
+
 #[test]
 fn test_merge_headless_sessions_marks_all_historical_when_none_running() {
     let mut persisted = HashMap::new();

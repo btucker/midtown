@@ -24,6 +24,7 @@ fn test_lead_system_prompt_saved_on_spawn() {
         channel: None,
         auth_provider: crate::auth::AuthProvider::Claude,
         auth_profile_dir: None,
+        persisted_initial_prompt: None,
     };
 
     // Convert to headless config (this should save the system prompt)

@@ -15,6 +15,7 @@ fn make_spawn(name: &str) -> Effect {
         channel: None,
         auth_profile_dir: None,
         auth_provider: crate::auth::AuthProvider::Claude,
+        persisted_initial_prompt: None,
     })
 }
 
@@ -89,6 +90,7 @@ fn make_spawn_with_callbacks(name: &str) -> Effect {
         channel: None,
         auth_profile_dir: None,
         auth_provider: crate::auth::AuthProvider::Claude,
+        persisted_initial_prompt: None,
     };
     Effect::SpawnCoworkerWithCallbacks {
         config,
@@ -111,6 +113,7 @@ fn make_assign_and_spawn(name: &str) -> Effect {
         channel: None,
         auth_profile_dir: None,
         auth_provider: crate::auth::AuthProvider::Claude,
+        persisted_initial_prompt: None,
     };
     Effect::AssignAndSpawn {
         task_id: "1".to_string(),
@@ -173,6 +176,7 @@ fn dedup_preserves_registry_effects_from_dropped_spawns() {
         channel: None,
         auth_profile_dir: None,
         auth_provider: crate::auth::AuthProvider::Claude,
+        persisted_initial_prompt: None,
     };
 
     let config2 = config1.clone();
@@ -281,6 +285,7 @@ fn dedup_prevents_double_spawn_for_same_task() {
         channel: None,
         auth_profile_dir: None,
         auth_provider: crate::auth::AuthProvider::Claude,
+        persisted_initial_prompt: None,
     };
 
     let config_york = LaunchConfig {
@@ -296,6 +301,7 @@ fn dedup_prevents_double_spawn_for_same_task() {
         channel: None,
         auth_profile_dir: None,
         auth_provider: crate::auth::AuthProvider::Claude,
+        persisted_initial_prompt: None,
     };
 
     // Orphan recovery spawns amsterdam for task 123

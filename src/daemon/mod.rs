@@ -1021,6 +1021,15 @@ impl DaemonState {
             )
             .await?;
 
+        // If persisted_initial_prompt is set (e.g., session clear), override the
+        // CoworkerSession's stored prompt so collect_session_info() returns the
+        // canonical prompt at daemon shutdown — not the decorated "fresh restart" wrapper.
+        if let Some(ref canonical) = config.persisted_initial_prompt {
+            self.session_manager
+                .set_canonical_initial_prompt(&name, Some(canonical.clone()))
+                .await;
+        }
+
         // Register in the CoworkerManager tracking map (keyed by slot_id)
         // session_id is None initially — it arrives later via the init StreamEvent
         // Extract profile name from auth_profile_dir.
@@ -1099,7 +1108,13 @@ impl DaemonState {
                     provider: Some(config.auth_provider),
                     profile: Some(profile),
                     resume_on_startup: true,
-                    initial_prompt: config.initial_prompt.clone(),
+                    // Use persisted_initial_prompt when set (e.g., session clear sends a
+                    // decorated "fresh restart" message but stores the original prompt).
+                    // Falls back to initial_prompt when not overridden.
+                    initial_prompt: config
+                        .persisted_initial_prompt
+                        .clone()
+                        .or_else(|| config.initial_prompt.clone()),
                 },
             );
             if let Err(e) = ps.save_for_repo(&self.repo_name) {

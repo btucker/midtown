@@ -49,6 +49,7 @@ async fn insert_test_session(sm: &SessionManager, name: &str, status: SessionSta
             status,
             started_at: Utc::now(),
             session_id: None,
+            initial_prompt: None,
             cost_usd: 0.0,
             last_event_at: None,
             has_usage_limit: false,
@@ -221,6 +222,7 @@ async fn test_spawn_with_session_id_sets_session_id_immediately() {
                 status: SessionStatus::Running,
                 started_at: Utc::now(),
                 session_id: Some(known_session_id.to_string()),
+                initial_prompt: None,
                 cost_usd: 0.0,
                 last_event_at: None,
                 has_usage_limit: false,
@@ -352,6 +354,7 @@ async fn test_graceful_shutdown_all_preserves_session_info() {
                 status: SessionStatus::Running,
                 started_at: Utc::now(),
                 session_id: Some("session-abc-123".to_string()),
+                initial_prompt: None,
                 cost_usd: 1.5,
                 last_event_at: None,
                 has_usage_limit: false,
@@ -381,5 +384,163 @@ async fn test_graceful_shutdown_all_preserves_session_info() {
     assert_eq!(
         session_info["madison"].session_id, "session-abc-123",
         "Session ID must be preserved for restart recovery"
+    );
+}
+
+/// Regression test: collect_session_info() must preserve initial_prompt.
+///
+/// Bug: collect_session_info() was setting initial_prompt: None unconditionally
+/// (with a "To be filled by caller" comment) but no caller ever filled it.
+/// After a daemon restart via shutdown-time persistence, initial_prompt would
+/// be lost — causing `session clear` to fall back to a generic message instead
+/// of the coworker's actual mission prompt.
+#[tokio::test]
+async fn test_collect_session_info_preserves_initial_prompt() {
+    let sm = SessionManager::new("test-repo".to_string());
+
+    {
+        let mut sessions = sm.sessions.write().await;
+        let slot_id = uuid::Uuid::new_v4().to_string();
+        sessions.insert(
+            slot_id.clone(),
+            CoworkerSession {
+                session: None,
+                slot_id,
+                name: "madison".to_string(),
+                status: SessionStatus::Running,
+                started_at: Utc::now(),
+                session_id: Some("session-abc-456".to_string()),
+                initial_prompt: Some("Implement the auth endpoint for task !42".to_string()),
+                cost_usd: 0.0,
+                last_event_at: None,
+                has_usage_limit: false,
+                usage_limit_reset_at: None,
+                has_api_error: false,
+                has_auth_error: false,
+                has_running_subagent: false,
+                has_pending_tool: false,
+                has_tool_name_conflict: false,
+                is_resume: false,
+                output_log: None,
+                output_log_path: PathBuf::new(),
+            },
+        );
+    }
+
+    let session_info = sm.collect_session_info().await;
+    assert!(
+        session_info.contains_key("madison"),
+        "collect_session_info() should include the session"
+    );
+    assert_eq!(
+        session_info["madison"].initial_prompt,
+        Some("Implement the auth endpoint for task !42".to_string()),
+        "collect_session_info() must preserve initial_prompt from CoworkerSession \
+         so it survives daemon shutdown→restart cycles"
+    );
+}
+
+/// Regression test: set_canonical_initial_prompt overrides the decorated prompt
+/// so that collect_session_info() returns the canonical mission prompt, not the
+/// "This is a fresh session restart..." wrapper.
+#[tokio::test]
+async fn test_set_canonical_initial_prompt_overrides_decorated_prompt() {
+    let sm = SessionManager::new("test-repo".to_string());
+
+    // Insert a session with a decorated prompt (what session clear produces)
+    {
+        let mut sessions = sm.sessions.write().await;
+        let slot_id = uuid::Uuid::new_v4().to_string();
+        sessions.insert(
+            slot_id.clone(),
+            CoworkerSession {
+                session: None,
+                slot_id,
+                name: "park".to_string(),
+                status: SessionStatus::Running,
+                started_at: Utc::now(),
+                session_id: Some("session-clear-1".to_string()),
+                initial_prompt: Some(
+                    "This is a fresh session restart.\n\nImplement auth endpoint".to_string(),
+                ),
+                cost_usd: 0.0,
+                last_event_at: None,
+                has_usage_limit: false,
+                usage_limit_reset_at: None,
+                has_api_error: false,
+                has_auth_error: false,
+                has_running_subagent: false,
+                has_pending_tool: false,
+                has_tool_name_conflict: false,
+                is_resume: false,
+                output_log: None,
+                output_log_path: PathBuf::new(),
+            },
+        );
+    }
+
+    // Override with the canonical prompt (what spawn_coworker does via persisted_initial_prompt)
+    sm.set_canonical_initial_prompt("park", Some("Implement auth endpoint".to_string()))
+        .await;
+
+    // Verify collect_session_info returns the canonical prompt
+    let info = sm.collect_session_info().await;
+    assert_eq!(
+        info["park"].initial_prompt,
+        Some("Implement auth endpoint".to_string()),
+        "collect_session_info() should return the canonical prompt after set_canonical_initial_prompt, \
+         not the decorated 'fresh restart' wrapper"
+    );
+}
+
+/// set_canonical_initial_prompt should be a no-op for unknown session names.
+#[tokio::test]
+async fn test_set_canonical_initial_prompt_noop_for_unknown_name() {
+    let sm = SessionManager::new("test-repo".to_string());
+
+    // Should not panic or error
+    sm.set_canonical_initial_prompt("nonexistent", Some("prompt".to_string()))
+        .await;
+}
+
+/// Regression test: collect_session_info() returns None for initial_prompt when
+/// no prompt was set (no-prompt coworkers should not have phantom prompt values).
+#[tokio::test]
+async fn test_collect_session_info_preserves_none_initial_prompt() {
+    let sm = SessionManager::new("test-repo".to_string());
+
+    {
+        let mut sessions = sm.sessions.write().await;
+        let slot_id = uuid::Uuid::new_v4().to_string();
+        sessions.insert(
+            slot_id.clone(),
+            CoworkerSession {
+                session: None,
+                slot_id,
+                name: "park".to_string(),
+                status: SessionStatus::Running,
+                started_at: Utc::now(),
+                session_id: Some("session-xyz-789".to_string()),
+                initial_prompt: None,
+                cost_usd: 0.0,
+                last_event_at: None,
+                has_usage_limit: false,
+                usage_limit_reset_at: None,
+                has_api_error: false,
+                has_auth_error: false,
+                has_running_subagent: false,
+                has_pending_tool: false,
+                has_tool_name_conflict: false,
+                is_resume: false,
+                output_log: None,
+                output_log_path: PathBuf::new(),
+            },
+        );
+    }
+
+    let session_info = sm.collect_session_info().await;
+    assert_eq!(
+        session_info["park"].initial_prompt, None,
+        "collect_session_info() should return None when no initial_prompt was set"
     );
 }
