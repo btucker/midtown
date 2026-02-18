@@ -1,6 +1,7 @@
 mod auth;
 mod channel;
 mod chat;
+mod config;
 mod coworker;
 mod daemon;
 mod diagram;
@@ -15,6 +16,7 @@ mod task;
 
 pub use auth::AuthCommand;
 pub use channel::ChannelCommand;
+pub use config::ConfigCommand;
 pub use coworker::CoworkerCommand;
 pub use diagram::DiagramCommand;
 pub use e2e::E2eCommand;
@@ -177,6 +179,11 @@ pub fn handle_remind(
     client: &DaemonClient,
 ) -> Result<Response, String> {
     lead::handle_remind(cmd, client)
+}
+
+/// Handle `midtown config` subcommands (get/set/list) — no daemon required.
+pub fn handle_config(cmd: &ConfigCommand) -> Result<Response, String> {
+    config::handle(cmd)
 }
 
 /// Handle `midtown webserver stop` command
