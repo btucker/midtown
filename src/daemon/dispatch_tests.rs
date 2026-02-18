@@ -4856,3 +4856,96 @@ fn test_dispatch_via_sessions_respects_cooldown() {
         effects
     );
 }
+
+#[test]
+fn test_session_dispatch_excludes_task_from_pending_dispatch() {
+    // Integration test: verifies that when dispatch_via_sessions recovers a task,
+    // that task ID flows through extract_claimed_task_ids_from_effects and is
+    // excluded from spawn_for_pending_tasks_excluding, preventing double-spawning.
+    //
+    // Scenario: Task !42 is in_progress (stopped session) AND also appears as
+    // pending (race condition in the same snapshot). Session dispatch should claim
+    // it, and pending dispatch should skip it.
+    use crate::tasks::{Task, TaskStatus};
+    use std::time::SystemTime;
+
+    let session = make_test_session_record(
+        "sess-abc",
+        Some("42"),
+        Some("lexington"),
+        "/tmp/worktree",
+        false, // stopped
+    );
+    let sessions = [("sess-abc".to_string(), session)].into_iter().collect();
+    let session_task_map = [("42".to_string(), "sess-abc".to_string())]
+        .into_iter()
+        .collect();
+
+    let snap = snapshot::WorldSnapshot {
+        // Task !42 is in_progress, owned by lexington (stopped session)
+        in_progress_tasks: vec![(
+            "42".to_string(),
+            "Add auth endpoint".to_string(),
+            "lexington".to_string(),
+        )],
+        // Same task also appears as pending without owner (snapshot race)
+        pending_tasks_without_owners: vec![Task {
+            id: "42".to_string(),
+            subject: "Add auth endpoint".to_string(),
+            status: TaskStatus::Pending,
+            owner: None,
+            blocked_by: vec![],
+            description: None,
+            channel: None,
+            pr: None,
+            created_at: Some(SystemTime::now()),
+        }],
+        sessions,
+        session_task_map,
+        is_at_dev_limit: false,
+        is_at_coworker_limit: false,
+        ..make_session_dispatch_snapshot(vec![], HashMap::new(), HashMap::new())
+    };
+
+    let state = make_test_state();
+
+    // Step 1: Session dispatch recovers the task
+    let session_effects = dispatch_via_sessions(&snap, &state);
+    assert!(
+        !session_effects.is_empty(),
+        "Session dispatch should produce effects for stopped session"
+    );
+
+    // Step 2: Extract claimed IDs (as events.rs does)
+    let session_claimed_ids = extract_claimed_task_ids_from_effects(&session_effects);
+    assert!(
+        session_claimed_ids.contains("42"),
+        "Session dispatch should claim task !42"
+    );
+
+    // Step 3: Pending dispatch with exclusion set should skip task !42
+    let pending_effects = spawn_for_pending_tasks_excluding(&snap, &state, &session_claimed_ids);
+
+    // Verify no spawn targets task !42
+    let pending_spawns_for_42: Vec<_> = pending_effects
+        .iter()
+        .filter(|e| {
+            match e {
+                Effect::AssignAndSpawn { task_id, .. } => task_id == "42",
+                Effect::SpawnCoworkerWithCallbacks { on_success, .. } => {
+                    on_success.iter().any(|sub| {
+                        matches!(sub, Effect::RecordTaskAssignment { task_id, .. } if task_id == "42")
+                    })
+                }
+                _ => false,
+            }
+        })
+        .collect();
+
+    assert!(
+        pending_spawns_for_42.is_empty(),
+        "Pending dispatch should skip task !42 because session dispatch already claimed it. \
+         Got {} spawn effects for task !42.",
+        pending_spawns_for_42.len()
+    );
+}
