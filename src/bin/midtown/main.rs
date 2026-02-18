@@ -9,8 +9,8 @@ mod cli;
 mod client;
 
 use cli::{
-    AuthCommand, ChannelCommand, CoworkerCommand, DiagramCommand, E2eCommand, HeadedWrapperCommand,
-    HookCommand, PrCommand, SessionCommand, TaskCommand,
+    AuthCommand, ChannelCommand, ConfigCommand, CoworkerCommand, DiagramCommand, E2eCommand,
+    HeadedWrapperCommand, HookCommand, PrCommand, SessionCommand, TaskCommand,
 };
 use client::DaemonClient;
 
@@ -113,6 +113,11 @@ enum Commands {
         /// Attach to the Lead session and open it in a split pane
         #[arg(long)]
         attach: bool,
+    },
+    /// Config management commands (get/set/list)
+    Config {
+        #[command(subcommand)]
+        command: ConfigCommand,
     },
     /// Project management commands
     Project {
@@ -528,6 +533,13 @@ fn main() {
         return;
     }
 
+    // Config commands (no daemon required — reads/writes config files directly)
+    if let Commands::Config { command } = &command {
+        let result = cli::handle_config(command);
+        handle_result(format, result);
+        return;
+    }
+
     // Lead commands
     if let Commands::Lead { command } = &command {
         let result = match command {
@@ -926,6 +938,7 @@ fn main() {
         | Commands::View { .. }
         | Commands::Lead { .. }
         | Commands::Project { .. }
+        | Commands::Config { .. }
         | Commands::Chat
         | Commands::E2e { .. }
         | Commands::Auth { .. }
