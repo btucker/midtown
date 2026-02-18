@@ -700,6 +700,11 @@ impl DaemonState {
     /// shared function, the two paths can drift out of sync — e.g., session death
     /// missing cooldown/nudge/assignment cleanup that shutdown handles. See PR #1268.
     ///
+    /// Handles: coworker deregistration, stop-time recording, coworker records,
+    /// cooldowns, pending nudges, task assignments, recent tool activity,
+    /// NamePool release, and session reverse-map cleanup (name_to_session,
+    /// session_to_name, task_to_session).
+    ///
     /// Does NOT handle session-specific operations (session_manager.shutdown vs
     /// session_manager.remove) or worktree unbinding — those differ between the
     /// intentional shutdown and session death paths.
