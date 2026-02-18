@@ -96,17 +96,29 @@
     {:else}
       <div class="flex flex-col gap-2">
         {#each $coworkers as cw}
-          <div class="flex items-center gap-2 p-2 bg-[#262626] rounded-lg font-mono text-sm">
-            <span class="text-base text-[#d7af5f]">{getSpinner()}</span>
-            <span class="font-medium lowercase" style="color: {getHealthColor(cw.health)}">{cw.name}</span>
-            {#if cw.phase}
-              <span class="hidden text-[0.75rem] text-[#808080] sm:inline">{cw.phase}</span>
-            {/if}
+          <div class="flex flex-col gap-1 p-2 bg-[#262626] rounded-lg font-mono text-sm">
+            <div class="flex items-center gap-2">
+              <span class="text-base text-[#d7af5f]">{getSpinner()}</span>
+              <span class="font-medium lowercase" style="color: {getHealthColor(cw.health)}">{cw.name}</span>
+              {#if cw.phase}
+                <span class="text-[0.75rem] text-[#808080]">{cw.phase}</span>
+              {/if}
+              <span class="flex-1"></span>
+              {#if cw.time_estimate}
+                <span class="text-[0.7rem] text-[#5faf5f]">{cw.time_estimate}</span>
+              {:else if cw.progress != null}
+                <span class="text-[0.7rem] text-[#5fafaf]">{cw.progress}%</span>
+              {/if}
+            </div>
             {#if cw.progress != null}
-              <span class="hidden text-[0.7rem] text-[#5fafaf] md:inline">{cw.progress}%</span>
-            {/if}
-            {#if cw.time_estimate}
-              <span class="text-[0.7rem] text-[#5faf5f]">{cw.time_estimate}</span>
+              <div class="flex items-center gap-2 ml-7">
+                <div class="flex-1 h-1.5 bg-[#3a3a3a] rounded-full overflow-hidden">
+                  <div
+                    class="h-full bg-[#5fafaf] rounded-full transition-all duration-500"
+                    style="width: {cw.progress}%"
+                  ></div>
+                </div>
+              </div>
             {/if}
           </div>
         {/each}
