@@ -312,14 +312,17 @@ fn check_daemon_health() -> bool {
 /// Read channel messages and return them (for stop hook sync).
 fn read_channel_messages() -> Result<Vec<midtown::Message>, String> {
     if let Some(repo) = detect_git_repo() {
-        let channel = midtown::Channel::for_repo(&repo)
-            .map_err(|e| format!("Failed to open channel: {}", e))?;
-        let messages = channel
-            .read_since_cursor("lead")
-            .map_err(|e| format!("Failed to read channel: {}", e))?;
-        return Ok(messages);
+        return read_channel_messages_for_repo(&repo);
     }
     Ok(Vec::new())
+}
+
+/// Read channel messages for a given repo, respecting `MIDTOWN_CHANNEL`.
+fn read_channel_messages_for_repo(repo: &str) -> Result<Vec<midtown::Message>, String> {
+    let channel = open_channel_for_hook(repo)?;
+    channel
+        .read_since_cursor("lead")
+        .map_err(|e| format!("Failed to read channel: {}", e))
 }
 
 /// Format channel messages for display in stop hook reason.
@@ -880,9 +883,7 @@ fn post_question_to_channel(agent: &str, question: &str) -> Result<(), String> {
     let message = midtown::Message::text(agent, format!("Question for Lead: {}", question));
     channel
         .send(&message)
-        .map_err(|e| format!("Failed to post to channel: {}", e))?;
-
-    Ok(())
+        .map_err(|e| format!("Failed to post to channel: {}", e))
 }
 
 /// Try to detect the current git repository name.
@@ -1263,6 +1264,39 @@ Second insight
         }
 
         unsafe { std::env::remove_var("MIDTOWN_CHANNEL") };
+        let _ = std::fs::remove_dir_all(&projects_dir);
+    }
+
+    #[test]
+    fn test_read_channel_messages_uses_topic_channel() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+
+        // When MIDTOWN_CHANNEL is set, read_channel_messages() should read from the topic
+        // channel, not the main "midtown" channel — consistent with the other hook functions.
+        let repo = format!("test-read-channel-msg-{}", std::process::id());
+        let projects_dir = midtown::paths::projects_dir_for_repo(&repo);
+        let _ = std::fs::remove_dir_all(&projects_dir);
+
+        // Post a message to the topic channel
+        let topic_ch = midtown::Channel::for_repo_named(&repo, "tui").unwrap();
+        let msg = midtown::Message::text("lead", "topic channel message");
+        topic_ch.send(&msg).unwrap();
+
+        // With MIDTOWN_CHANNEL set, should read from topic channel
+        unsafe { std::env::set_var("MIDTOWN_CHANNEL", "tui") };
+        let messages = read_channel_messages_for_repo(&repo).unwrap();
+        assert!(
+            messages
+                .iter()
+                .any(|m| m.content.contains("topic channel message")),
+            "should read messages from the topic channel"
+        );
+
+        // Main channel should have no messages
+        unsafe { std::env::remove_var("MIDTOWN_CHANNEL") };
+        let main_messages = read_channel_messages_for_repo(&repo).unwrap();
+        assert!(main_messages.is_empty(), "main channel should be empty");
+
         let _ = std::fs::remove_dir_all(&projects_dir);
     }
 
