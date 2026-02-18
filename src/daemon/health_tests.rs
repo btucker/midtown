@@ -733,3 +733,46 @@ fn test_maybe_refresh_lead_session_skips_attached() {
         "No refresh should happen when lead is attached interactively"
     );
 }
+
+#[test]
+fn test_maybe_refresh_lead_session_no_lead_in_active_coworkers() {
+    // No lead in active_coworkers → no effects
+    let mut snap = empty_snap();
+    snap.lead_session_refresh_interval_secs = 90 * 60;
+    // Don't add any coworkers — lead is missing from active_coworkers
+
+    let effects = maybe_refresh_lead_session(&snap);
+    assert!(
+        effects.is_empty(),
+        "No refresh should happen when lead is not in active_coworkers"
+    );
+}
+
+#[test]
+fn test_maybe_refresh_lead_session_no_start_time() {
+    use crate::coworker::{Coworker, CoworkerStatus};
+    // Lead is in active_coworkers but missing from coworker_start_times → no effects
+    let mut snap = empty_snap();
+    snap.lead_session_refresh_interval_secs = 90 * 60;
+    let started = snap.now_utc - chrono::Duration::minutes(120);
+    let lead = Coworker {
+        slot_id: uuid::Uuid::new_v4().to_string(),
+        name: "lead".to_string(),
+        status: CoworkerStatus::Running,
+        working_dir: "/tmp/test".to_string(),
+        started_at: started,
+        current_task: None,
+        session_id: None,
+        model: "sonnet".to_string(),
+        provider: crate::auth::AuthProvider::Claude,
+        profile: crate::auth::DEFAULT_PROFILE.to_string(),
+    };
+    snap.active_coworkers.push(lead);
+    // Intentionally don't insert into coworker_start_times
+
+    let effects = maybe_refresh_lead_session(&snap);
+    assert!(
+        effects.is_empty(),
+        "No refresh should happen when lead has no start time recorded"
+    );
+}
