@@ -59,9 +59,6 @@ export const coworkers = writable([])
 // Maximum number of coworkers that can be spawned
 export const maxCoworkers = writable(8)
 
-// Lead typing/working indicator
-export const leadTyping = writable(false)
-
 // Daemon status
 export const daemonStatus = writable(null)
 

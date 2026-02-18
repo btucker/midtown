@@ -7,7 +7,6 @@ import {
   connected,
   coworkers,
   maxCoworkers,
-  leadTyping,
   daemonStatus,
   kanbanData,
   repoStatus,
@@ -29,7 +28,6 @@ let ws = null
 let reconnectTimeout = null
 let statusPollInterval = null
 let usagePollInterval = null
-let leadTypingTimeout = null
 
 // Base URL for the current project's daemon API.
 // Always connects via the project's webhook port.
@@ -106,7 +104,6 @@ export function switchProject(projectName, webhookPort) {
   channels.set([{ name: 'midtown', unread: 0, has_pr: false, ci_status: null }])
   activeChannel.set('midtown')
   coworkers.set([])
-  leadTyping.set(false)
   daemonStatus.set(null)
   kanbanData.set({ backlog: [], inProgress: [], review: [], done: [] })
   repoStatus.set({
@@ -404,12 +401,6 @@ function handleUpdate(update) {
         return channelList
       })
 
-      // Dismiss typing indicator when lead posts a message
-      if (msg.from?.toLowerCase() === 'lead') {
-        leadTyping.set(false)
-        if (leadTypingTimeout) clearTimeout(leadTypingTimeout)
-      }
-
       // Clear tool activity for the sender when they post a message —
       // their work phase is done and the activity strip should reset.
       if (msg.from && msg.from.toLowerCase() !== 'lead' && msg.from.toLowerCase() !== 'midtown') {
@@ -438,16 +429,6 @@ function handleUpdate(update) {
       })
       break
     }
-    case 'lead_typing':
-      leadTyping.set(update.data.working)
-      // Auto-dismiss after 45s if no further updates (safety net).
-      // The daemon uses a 30s grace period before sending working=false,
-      // so this client timeout should be longer to avoid premature dismissal.
-      if (leadTypingTimeout) clearTimeout(leadTypingTimeout)
-      if (update.data.working) {
-        leadTypingTimeout = setTimeout(() => leadTyping.set(false), 45000)
-      }
-      break
     case 'universal_items':
       // Tool call activity keyed by channel.
       // data: { agent_name: string, channel: string|null, items: UniversalItem[] }
