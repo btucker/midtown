@@ -241,6 +241,29 @@ The `[project]` section defines:
 
 For single-repo projects, only `name` is needed; `repos` and `primary_repo` are inferred from the working directory. This config is auto-created on first `midtown start`.
 
+### Managing Config via CLI
+
+You can read and write config settings without editing TOML files directly:
+
+```bash
+# List all settings (project config, inferred from cwd)
+midtown config list
+
+# List global settings
+midtown config list --global
+
+# Get a single setting
+midtown config get default.max_coworkers
+midtown config get daemon.webhook_port --global
+
+# Set a setting (persisted to config.toml, comments preserved)
+midtown config set default.personality fun
+midtown config set default.max_coworkers 6
+midtown config set daemon.webhook_port 47099 --global
+```
+
+Without `--global`, commands operate on the project config inferred from the current directory. With `--global`, they operate on `~/.midtown/config.toml`.
+
 ### Environment Variable Overrides
 
 Daemon settings can be overridden with environment variables:

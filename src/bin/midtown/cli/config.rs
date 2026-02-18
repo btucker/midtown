@@ -129,7 +129,7 @@ fn validate_key(key: &str) -> Result<(), String> {
 pub fn get_global_key(key: &str, config_path: &Path) -> Result<String, String> {
     validate_key(key)?;
 
-    let config = load_global_config(config_path);
+    let config = load_global_config(config_path)?;
     Ok(global_field_value(&config, key))
 }
 
@@ -139,7 +139,7 @@ pub fn get_global_key(key: &str, config_path: &Path) -> Result<String, String> {
 pub fn set_global_key(key: &str, value: &str, config_path: &Path) -> Result<(), String> {
     validate_key(key)?;
 
-    let mut config = load_global_config(config_path);
+    let mut config = load_global_config(config_path)?;
     apply_global_key(&mut config, key, value)?;
     config
         .save_to(config_path)
@@ -162,7 +162,7 @@ pub fn get_project_key(key: &str, config_path: &Path) -> Result<String, String> 
 pub fn set_project_key(key: &str, value: &str, config_path: &Path) -> Result<(), String> {
     validate_key(key)?;
 
-    let mut config = load_project_config(config_path);
+    let mut config = load_project_config_checked(config_path)?;
     apply_project_key(&mut config, key, value)?;
     config
         .save_to(config_path)
@@ -173,7 +173,7 @@ pub fn set_project_key(key: &str, value: &str, config_path: &Path) -> Result<(),
 ///
 /// Output includes the config file path and all supported keys with their current values.
 pub fn list_global_config(config_path: &Path) -> Result<String, String> {
-    let config = load_global_config(config_path);
+    let config = load_global_config(config_path)?;
     let mut lines = Vec::new();
     lines.push(format!("Config: {}", config_path.display()));
     lines.push(String::new());
@@ -204,14 +204,41 @@ pub fn list_project_config(config_path: &Path) -> Result<String, String> {
 // ──────────────────────────────────────────────────────────────────────────────
 
 /// Load GlobalConfig from an arbitrary path (for testing with temp files).
-fn load_global_config(path: &Path) -> midtown::config::GlobalConfig {
+///
+/// Returns an error if the file exists but cannot be read or parsed, to prevent
+/// a subsequent `save_to` call from silently overwriting the user's config with defaults.
+fn load_global_config(path: &Path) -> Result<midtown::config::GlobalConfig, String> {
     if !path.exists() {
-        return midtown::config::GlobalConfig::default();
+        return Ok(midtown::config::GlobalConfig::default());
     }
-    match std::fs::read_to_string(path) {
-        Ok(contents) => toml::from_str(&contents).unwrap_or_default(),
-        Err(_) => midtown::config::GlobalConfig::default(),
+    let contents = std::fs::read_to_string(path)
+        .map_err(|e| format!("Failed to read config file {}: {}", path.display(), e))?;
+    toml::from_str(&contents).map_err(|e| {
+        format!(
+            "Config file {} has a syntax error: {}\nFix the file manually before using 'midtown config set'.",
+            path.display(),
+            e
+        )
+    })
+}
+
+/// Load FullProjectConfig from an arbitrary path, with parse error propagation.
+///
+/// Returns an error if the file exists but cannot be parsed, to prevent overwriting
+/// the user's config with defaults.
+fn load_project_config_checked(path: &Path) -> Result<midtown::config::FullProjectConfig, String> {
+    if !path.exists() {
+        return Ok(midtown::config::FullProjectConfig::default());
     }
+    let contents = std::fs::read_to_string(path)
+        .map_err(|e| format!("Failed to read config file {}: {}", path.display(), e))?;
+    toml::from_str(&contents).map_err(|e| {
+        format!(
+            "Config file {} has a syntax error: {}\nFix the file manually before using 'midtown config set'.",
+            path.display(),
+            e
+        )
+    })
 }
 
 /// Load FullProjectConfig from an arbitrary path (for testing with temp files).
@@ -246,7 +273,12 @@ fn global_field_value(config: &midtown::config::GlobalConfig, key: &str) -> Stri
         "daemon.worktree_cleanup_retention_hours" => {
             fmt_opt(config.daemon.worktree_cleanup_retention_hours)
         }
-        _ => "(not set)".to_string(),
+        // validate_key() is called before every read, so this arm is unreachable.
+        // If it fires, a key was added to VALID_KEYS without adding a read arm here.
+        _ => unreachable!(
+            "key '{}' passed validate_key but has no read arm in global_field_value",
+            key
+        ),
     }
 }
 
@@ -269,7 +301,12 @@ fn project_field_value(config: &midtown::config::FullProjectConfig, key: &str) -
         "daemon.worktree_cleanup_retention_hours" => {
             fmt_opt(config.daemon.worktree_cleanup_retention_hours)
         }
-        _ => "(not set)".to_string(),
+        // validate_key() is called before every read, so this arm is unreachable.
+        // If it fires, a key was added to VALID_KEYS without adding a read arm here.
+        _ => unreachable!(
+            "key '{}' passed validate_key but has no read arm in project_field_value",
+            key
+        ),
     }
 }
 
