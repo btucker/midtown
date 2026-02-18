@@ -31,7 +31,7 @@ cargo fmt -- --check
 
 **Shared build cache (sccache)**: Midtown uses many worktrees simultaneously. sccache shares compiled dependency artifacts across all of them, so new worktrees build in ~15-30s instead of ~2-4min (only the `midtown` crate recompiles).
 
-One-time setup:
+**One-time setup** (modifies `~/.cargo/config.toml`, which applies globally to all Rust projects on this machine):
 ```bash
 cargo install sccache
 
@@ -40,12 +40,12 @@ cargo install sccache
 # rustc-wrapper = "sccache"
 # [env]
 # CARGO_INCREMENTAL = "0"
-# SCCACHE_DIR = "/Users/<you>/.midtown/sccache"
+# SCCACHE_DIR = "/Users/<you>/.midtown/sccache"  # absolute path required (~ not expanded in TOML)
 
 sccache --show-stats   # verify cache hits after a second build
 ```
 
-The cache lives at `~/.midtown/sccache` (writable in the midtown sandboxed environment). `CARGO_INCREMENTAL=0` is required — incremental compilation and sccache are competing strategies, and disabling incremental enables cross-worktree sharing.
+The cache lives at `~/.midtown/sccache` (writable in the midtown sandboxed environment). `CARGO_INCREMENTAL=0` is required — incremental compilation and sccache are competing strategies, and disabling incremental enables cross-worktree sharing. Note: this also disables incremental compilation for single-worktree `cargo test` iterations, but sccache's cross-worktree sharing more than compensates when running multiple worktrees.
 
 **Test file placement**: Put unit tests in separate files (`src/daemon/pr_tests.rs`) rather than inline `#[cfg(test)] mod tests` blocks. Use `#[path = "pr_tests.rs"] #[cfg(test)] mod tests;` in the source file to maintain private access. This keeps PR diffs focused — reviewers can see how much is test vs. implementation at a glance. Integration/E2E tests go in `tests/` as usual.
 
