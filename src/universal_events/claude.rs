@@ -268,7 +268,8 @@ fn extract_tool_result_content(block: &serde_json::Value) -> String {
         _ => String::new(),
     };
     if full.len() > MAX_TOOL_RESULT_OUTPUT_BYTES {
-        full[..MAX_TOOL_RESULT_OUTPUT_BYTES].to_string()
+        let boundary = full.floor_char_boundary(MAX_TOOL_RESULT_OUTPUT_BYTES);
+        full[..boundary].to_string()
     } else {
         full
     }

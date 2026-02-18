@@ -560,3 +560,39 @@ fn test_extract_tool_events_mixed_assistant_and_user_events() {
         _ => panic!("Expected ToolResult"),
     }
 }
+
+#[test]
+fn test_extract_tool_result_content_truncation_at_multibyte_boundary() {
+    // Regression test: daemon panicked with "byte index 256 is not a char boundary"
+    // when tool result content contained multi-byte UTF-8 characters (e.g., →) and
+    // the 256-byte truncation point fell inside one of those characters.
+    //
+    // Build a string where byte 256 falls inside the 3-byte → character (bytes 254..257).
+    let prefix = "x".repeat(254); // 254 ASCII bytes
+    let content = format!("{}→ more text after arrow", prefix); // → is 3 bytes at pos 254..257
+    assert!(
+        content.len() > 256,
+        "test string must exceed MAX_TOOL_RESULT_OUTPUT_BYTES"
+    );
+    assert!(
+        !content.is_char_boundary(256),
+        "byte 256 must be inside a multi-byte char for this test"
+    );
+
+    let block = json!({
+        "type": "tool_result",
+        "tool_use_id": "call_multibyte",
+        "content": content
+    });
+
+    // This should not panic
+    let output = extract_tool_result_content(&block);
+    assert!(
+        output.len() <= 257,
+        "output should be truncated near MAX_TOOL_RESULT_OUTPUT_BYTES"
+    );
+    assert!(
+        output.starts_with("xxx"),
+        "output should start with the prefix"
+    );
+}
