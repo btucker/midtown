@@ -339,6 +339,13 @@ impl DaemonClient {
         )
     }
 
+    /// Fetch all pending questions from coworkers waiting for user input.
+    ///
+    /// Returns the raw JSON value so the caller can parse `questions` array directly.
+    pub fn coworker_questions(&self) -> Result<serde_json::Value, String> {
+        self.send_raw("coworker.questions", None)
+    }
+
     // Task commands
 
     #[allow(clippy::too_many_arguments)]

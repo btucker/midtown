@@ -19,6 +19,7 @@ import {
   authSwitching,
   usageData,
   agentToolItems,
+  pendingQuestions,
 } from './store.js'
 
 // Maximum number of tool call items retained per agent in the activity store.
@@ -215,6 +216,16 @@ export async function fetchStatus() {
   } catch (err) {
     console.error('Failed to fetch status:', err)
   }
+  // Hydrate pending questions from daemon (survives page refresh / WebSocket reconnect)
+  try {
+    const res = await fetch(`${getApiBase()}/questions`)
+    if (res.ok) {
+      const data = await res.json()
+      pendingQuestions.set(data.questions || [])
+    }
+  } catch {
+    // Non-critical — questions will arrive via WebSocket events
+  }
 }
 
 // Fetch API usage data (session + weekly utilization)
@@ -409,6 +420,10 @@ function handleUpdate(update) {
           delete updated[msg.from.toLowerCase()]
           return updated
         })
+        // Note: pending questions are NOT cleared on channel messages. A coworker
+        // posting a /me status update does not mean their question was answered.
+        // Questions are cleared by: (1) the daemon via nudge delivery, (2) optimistic
+        // removal in sendAnswer(), or (3) a new coworker_question event replacing it.
       }
       break
     case 'coworker_status': {
@@ -441,6 +456,13 @@ function handleUpdate(update) {
         return { ...byChannel, [channelKey]: merged }
       })
       break
+    case 'coworker_question':
+      pendingQuestions.update((qs) => {
+        // Replace existing question from same coworker (only one question per coworker at a time)
+        const filtered = qs.filter((q) => q.coworker_name !== update.data.coworker_name)
+        return [...filtered, update.data]
+      })
+      break
     case 'error':
       // Invoke all registered error callbacks and then clear them
       errorCallbacks.forEach((callback) => callback(update.data.message))
@@ -463,6 +485,21 @@ export function sendMessage(content, channel = null) {
       message.channel = channel
     }
     ws.send(JSON.stringify(message))
+  } else {
+    console.error('WebSocket not connected')
+  }
+}
+
+// Answer a coworker's pending question
+export function sendAnswer(coworkerName, answer) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({
+      type: 'answer_question',
+      coworker_name: coworkerName,
+      answer,
+    }))
+    // Optimistically remove from pending questions
+    pendingQuestions.update((qs) => qs.filter((q) => q.coworker_name !== coworkerName))
   } else {
     console.error('WebSocket not connected')
   }

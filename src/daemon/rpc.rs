@@ -373,6 +373,10 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
             super::rpc_coworker::handle_coworker_asking(request.id, name, question, state).await
         }
 
+        "coworker.questions" => {
+            super::rpc_coworker::handle_coworker_questions(request.id, state).await
+        }
+
         // ---- Lead lifecycle ----
         "lead.spawn" => {
             let provider = match parse_provider_param(params) {

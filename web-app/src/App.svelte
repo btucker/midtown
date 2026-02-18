@@ -5,6 +5,7 @@
   import ChannelList from '$lib/ChannelList.svelte'
   import ChannelHeader from '$lib/ChannelHeader.svelte'
   import DetailPanel from '$lib/DetailPanel.svelte'
+  import PendingQuestions from '$lib/PendingQuestions.svelte'
   import Status from '$lib/Status.svelte'
   import Tmux from '$lib/Tmux.svelte'
   import CoworkerStatus from '$lib/CoworkerStatus.svelte'
@@ -217,6 +218,7 @@
         {#if activeView === 'board'}
           <div class="channel-main">
             <ChannelHeader />
+            <PendingQuestions />
             <Channel />
           </div>
 

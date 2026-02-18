@@ -127,3 +127,7 @@ export const showArchivedChannels = writable(false)
 // Format: { 'midtown': [{ item_id, kind, content, status, timestamp }, ...], 'web': [...], ... }
 // Each array holds the most recent items (capped at MAX_TOOL_ITEMS_PER_AGENT) for display.
 export const agentToolItems = writable({})
+
+// Pending questions from coworkers waiting for user input
+// Format: [{ id, coworker_name, question, timestamp }, ...]
+export const pendingQuestions = writable([])

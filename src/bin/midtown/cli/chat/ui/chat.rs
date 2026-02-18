@@ -10,7 +10,7 @@ use ratatui::{
 
 use crate::cli::chat::mermaid;
 
-use super::super::app::{App, FocusedPane, MessageRenderCache};
+use super::super::app::{App, FocusedPane, MessageRenderCache, PendingQuestion};
 use super::messages::render_message;
 use super::messages_mermaid::render_message_with_mermaid;
 use super::text::wrap_content;
@@ -19,9 +19,14 @@ use super::text::wrap_content;
 pub fn draw_chat_panel(f: &mut Frame, app: &mut App, area: Rect) {
     let input_bar_height = calculate_input_bar_height(&app.input_text, area.width);
 
+    // Reserve space for pending questions banner when questions are present.
+    // Each question takes 2 lines: the question itself and the answer hint.
+    let questions_height = pending_questions_height(&app.pending_questions);
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
+            Constraint::Length(questions_height),
             Constraint::Min(5),
             Constraint::Length(1),
             Constraint::Length(input_bar_height),
@@ -29,14 +34,19 @@ pub fn draw_chat_panel(f: &mut Frame, app: &mut App, area: Rect) {
         .split(area);
 
     // Store input area for click detection
-    app.input_area = Some(chunks[2]);
+    app.input_area = Some(chunks[3]);
 
-    draw_chat_messages(f, app, chunks[0]);
-    draw_lead_indicator(f, app, chunks[1]);
-    draw_input_bar(f, app, chunks[2]);
+    // Draw pending questions banner (collapsed to 0 height when empty)
+    if questions_height > 0 {
+        let questions = app.pending_questions.clone();
+        draw_pending_questions(f, &questions, chunks[0]);
+    }
+    draw_chat_messages(f, app, chunks[1]);
+    draw_lead_indicator(f, app, chunks[2]);
+    draw_input_bar(f, app, chunks[3]);
 
     if app.autocomplete.show {
-        draw_autocomplete_dropdown(f, app, chunks[2]);
+        draw_autocomplete_dropdown(f, app, chunks[3]);
     }
 }
 
@@ -55,6 +65,52 @@ fn draw_lead_indicator(f: &mut Frame, app: &mut App, area: Rect) {
         Line::from("")
     };
     let paragraph = Paragraph::new(line);
+    f.render_widget(paragraph, area);
+}
+
+/// Compute the number of lines needed to display pending questions.
+///
+/// Returns 0 when there are no questions (no space reserved).
+/// Each question occupies 2 lines: the question line and the answer hint.
+fn pending_questions_height(questions: &[PendingQuestion]) -> u16 {
+    if questions.is_empty() {
+        0
+    } else {
+        // 2 lines per question (question + hint)
+        (questions.len() as u16) * 2
+    }
+}
+
+/// Draw a banner showing pending questions from coworkers.
+///
+/// Each question is shown as:
+///   [coworker_name asks]: question text
+///   (answer with: midtown coworker nudge --to <name> --message "your answer")
+fn draw_pending_questions(f: &mut Frame, questions: &[PendingQuestion], area: Rect) {
+    let mut lines: Vec<Line<'static>> = Vec::new();
+
+    for q in questions {
+        // Question line: bold yellow "[name asks]: question"
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("[{} asks]: ", q.coworker_name),
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(q.question.clone(), Style::default().fg(Color::Yellow)),
+        ]));
+        // Hint line: dim gray answer instruction
+        lines.push(Line::from(vec![Span::styled(
+            format!(
+                "  (answer: midtown coworker nudge --to {} --message \"...\")",
+                q.coworker_name
+            ),
+            Style::default().fg(Color::DarkGray),
+        )]));
+    }
+
+    let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
     f.render_widget(paragraph, area);
 }
 
