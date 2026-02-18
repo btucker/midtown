@@ -369,3 +369,59 @@ fn test_task_autocomplete_uses_prefix_matching() {
     assert_eq!(items.len(), 1);
     assert_eq!(items[0].value, "!1234");
 }
+
+#[test]
+fn test_task_autocomplete_empty_query_shows_in_progress_first() {
+    use super::{KanbanTask, TaskStatus};
+
+    let mut app = test_app();
+
+    app.tasks = vec![
+        KanbanTask {
+            id: "100".to_string(),
+            subject: "Pending task A".to_string(),
+            owner: None,
+            status: TaskStatus::Pending,
+            modified_at: None,
+            channel: None,
+            blocked_by: Vec::new(),
+        },
+        KanbanTask {
+            id: "200".to_string(),
+            subject: "In-progress task B".to_string(),
+            owner: Some("park".to_string()),
+            status: TaskStatus::InProgress,
+            modified_at: None,
+            channel: None,
+            blocked_by: Vec::new(),
+        },
+        KanbanTask {
+            id: "300".to_string(),
+            subject: "Pending task C".to_string(),
+            owner: None,
+            status: TaskStatus::Pending,
+            modified_at: None,
+            channel: None,
+            blocked_by: Vec::new(),
+        },
+        KanbanTask {
+            id: "400".to_string(),
+            subject: "In-progress task D".to_string(),
+            owner: Some("madison".to_string()),
+            status: TaskStatus::InProgress,
+            modified_at: None,
+            channel: None,
+            blocked_by: Vec::new(),
+        },
+    ];
+
+    // Empty query should show all tasks, with in_progress first
+    let items = app.get_task_items("");
+    assert_eq!(items.len(), 4, "Should show all tasks");
+    // First two should be in_progress tasks
+    assert_eq!(items[0].value, "!200", "First should be in_progress task");
+    assert_eq!(items[1].value, "!400", "Second should be in_progress task");
+    // Then pending tasks
+    assert_eq!(items[2].value, "!100", "Third should be pending task");
+    assert_eq!(items[3].value, "!300", "Fourth should be pending task");
+}
