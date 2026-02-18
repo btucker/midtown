@@ -756,9 +756,12 @@ pub(crate) async fn recover_channel_lead_sessions_from(
         return effects;
     }
 
-    let channel_lead_sessions = {
+    let (channel_lead_sessions, headless_sessions) = {
         let ps = persistent_state.lock().await;
-        ps.channel_lead_sessions.clone()
+        (
+            ps.channel_lead_sessions.clone(),
+            ps.headless_sessions.clone(),
+        )
     };
 
     info!(
@@ -770,9 +773,17 @@ pub(crate) async fn recover_channel_lead_sessions_from(
     for channel_info in &topic_channels {
         let channel_name = &channel_info.name;
 
+        // Cross-check headless_sessions: if the death handler cleared headless_sessions[name]
+        // after a failed resume, don't attempt to resume even if channel_lead_sessions still
+        // holds a stale session ID (the death handler fix clears both, but this is defense-in-depth).
+        let headless_session_id_cleared = headless_sessions
+            .get(channel_name.as_str())
+            .is_some_and(|info| info.session_id.is_empty());
+
         let session_mode = if let Some(session_id) =
             channel_lead_sessions.get(channel_name.as_str())
             && !session_id.is_empty()
+            && !headless_session_id_cleared
         {
             info!(
                 "Resuming channel lead session for '{}': {}",
@@ -780,10 +791,17 @@ pub(crate) async fn recover_channel_lead_sessions_from(
             );
             SessionMode::ResumeSession(session_id.clone())
         } else {
-            info!(
-                "No saved session for channel lead '{}', spawning fresh",
-                channel_name
-            );
+            if headless_session_id_cleared {
+                info!(
+                    "Skipping stale session ID for channel lead '{}': headless_sessions entry was cleared after failed resume",
+                    channel_name
+                );
+            } else {
+                info!(
+                    "No saved session for channel lead '{}', spawning fresh",
+                    channel_name
+                );
+            }
             SessionMode::Fresh
         };
 

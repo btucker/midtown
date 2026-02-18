@@ -3023,6 +3023,19 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                             );
                             info.session_id.clear();
                         }
+                        // Also clear channel_lead_sessions for channel lead sessions.
+                        // Channel leads use the channel name as their session name, so
+                        // name == channel_name. Without this, the stale ID persists in
+                        // channel_lead_sessions and causes a crash loop on daemon restart.
+                        if let Some(stored_id) = ps.channel_lead_sessions.get_mut(name.as_str())
+                            && !stored_id.is_empty()
+                        {
+                            info!(
+                                "Clearing stale channel_lead_sessions entry for '{}' after failed resume (was: {})",
+                                name, stored_id
+                            );
+                            stored_id.clear();
+                        }
                         if let Err(e) = ps.save_for_repo(&state.repo_name) {
                             warn!("Failed to save persistent state after clearing session_id: {}", e);
                         }

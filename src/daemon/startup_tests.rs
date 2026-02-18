@@ -687,6 +687,88 @@ async fn test_recover_channel_lead_sessions_multiple_channels() {
     }
 }
 
+/// Regression test for the stale session ID crash on daemon restart.
+///
+/// Scenario: A channel lead session previously failed to resume (e.g., 'No conversation found').
+/// The death handler cleared `headless_sessions[name].session_id` but did NOT clear
+/// `channel_lead_sessions[channel_name]`. On next daemon restart, the stale ID was used
+/// to attempt another resume — crashing the session again in a loop.
+///
+/// The fix: `recover_channel_lead_sessions_from()` cross-checks `headless_sessions`
+/// before attempting resume. If `headless_sessions[name].session_id` is empty (already
+/// cleared), spawn fresh even if `channel_lead_sessions` still has a stale ID.
+#[tokio::test]
+async fn test_recover_channel_lead_sessions_skips_resume_when_headless_session_id_cleared() {
+    // channel_lead_sessions has a stale session ID (not yet cleared by the death handler fix)
+    // but headless_sessions[name].session_id is empty (was cleared after failed resume)
+    let (_tmp, base_dir) = create_temp_channels(&["auth"]);
+
+    let persistent_state = tokio::sync::Mutex::new(DaemonPersistentState::default());
+    {
+        let mut ps = persistent_state.lock().await;
+        // Stale session ID in channel_lead_sessions — the old bug: not cleared on failed resume
+        ps.channel_lead_sessions
+            .insert("auth".to_string(), "stale-session-id-xyz".to_string());
+        // headless_sessions[name].session_id is empty — cleared by death handler
+        let mut session = test_session_info("auth", None);
+        session.session_id = String::new(); // cleared after failed resume
+        ps.headless_sessions.insert("auth".to_string(), session);
+    }
+
+    let effects =
+        recover_channel_lead_sessions_from(&persistent_state, "test-repo", &base_dir).await;
+
+    // Should spawn Fresh (not ResumeSession with stale ID)
+    assert_eq!(effects.len(), 1, "Expected 1 effect, got: {:?}", effects);
+
+    match &effects[0] {
+        Effect::SpawnCoworker(config) => {
+            assert_eq!(config.name, "auth");
+            assert_eq!(
+                config.session_mode,
+                crate::launch::SessionMode::Fresh,
+                "Should spawn Fresh when headless_sessions session_id is empty, but got Resume with stale ID"
+            );
+        }
+        other => panic!("Expected SpawnCoworker(Fresh), got {:?}", other),
+    }
+}
+
+/// Companion test: when headless_sessions still has a valid (non-empty) session ID,
+/// the stale-session cross-check should NOT interfere — resume should proceed normally.
+#[tokio::test]
+async fn test_recover_channel_lead_sessions_resumes_when_headless_session_id_matches() {
+    let (_tmp, base_dir) = create_temp_channels(&["auth"]);
+
+    let persistent_state = tokio::sync::Mutex::new(DaemonPersistentState::default());
+    {
+        let mut ps = persistent_state.lock().await;
+        ps.channel_lead_sessions
+            .insert("auth".to_string(), "valid-session-abc".to_string());
+        // headless_sessions[name].session_id is non-empty (session was healthy)
+        let session = test_session_info("auth", None); // session_id = "session-auth"
+        ps.headless_sessions.insert("auth".to_string(), session);
+    }
+
+    let effects =
+        recover_channel_lead_sessions_from(&persistent_state, "test-repo", &base_dir).await;
+
+    // Should still resume — don't regress the happy path
+    assert_eq!(effects.len(), 1, "Expected 1 effect, got: {:?}", effects);
+
+    match &effects[0] {
+        Effect::SpawnCoworker(config) => {
+            assert_eq!(config.name, "auth");
+            assert_eq!(
+                config.session_mode,
+                crate::launch::SessionMode::ResumeSession("valid-session-abc".to_string()),
+                "Should resume when headless session is healthy"
+            );
+        }
+        other => panic!("Expected SpawnCoworker(ResumeSession), got {:?}", other),
+    }
+}
+
 #[tokio::test]
 async fn test_recover_channel_lead_sessions_mixed_archived_and_active() {
     // Mix of active and archived channels — only active topic channels get leads
