@@ -2439,6 +2439,10 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
         }
     }
 
+    // Check Claude auth status before spawning any sessions.
+    // Gives immediate feedback in the log if auth is expired/missing.
+    startup::check_claude_auth_status(&repo_name);
+
     // Recover headless coworker sessions from persisted state (session survival).
     // Spawns new processes with --resume <session_id> to continue previous work.
     // Old processes are NOT killed — they die naturally from broken pipes after

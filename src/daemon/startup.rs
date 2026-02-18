@@ -160,6 +160,70 @@ pub fn check_sandbox_context() -> Option<String> {
     None
 }
 
+/// Check Claude CLI authentication status before spawning any sessions.
+///
+/// Runs `claude auth status --output json` with `CLAUDE_CONFIG_DIR` pointing to the
+/// project's active auth profile directory. Logs the result so operators get immediate
+/// feedback on auth state at daemon startup rather than discovering failures reactively.
+///
+/// The daemon continues regardless — auth may be fixed via `midtown auth login` while
+/// the daemon is running.
+pub fn check_claude_auth_status(repo_name: &str) {
+    let profile_dir = crate::auth::active_profile_dir_for_project_with_provider(
+        repo_name,
+        crate::auth::AuthProvider::Claude,
+    );
+
+    let output = match std::process::Command::new("claude")
+        .args(["auth", "status", "--output", "json"])
+        .env("CLAUDE_CONFIG_DIR", &profile_dir)
+        .output()
+    {
+        Ok(output) => output,
+        Err(e) => {
+            warn!(
+                "Failed to run `claude auth status`: {}. Is Claude CLI installed?",
+                e
+            );
+            return;
+        }
+    };
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // Parse JSON output: {"loggedIn": true/false, "email": "..."}
+    let json: serde_json::Value = match serde_json::from_str(stdout.trim()) {
+        Ok(v) => v,
+        Err(e) => {
+            warn!(
+                "Failed to parse `claude auth status` output: {}. Raw: {}",
+                e,
+                stdout.trim()
+            );
+            return;
+        }
+    };
+
+    let logged_in = json
+        .get("loggedIn")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let email = json.get("email").and_then(|v| v.as_str()).map(String::from);
+
+    if logged_in {
+        if let Some(ref email) = email {
+            info!("Claude auth verified: {}", email);
+        } else {
+            info!("Claude auth verified (no email in response)");
+        }
+    } else {
+        warn!(
+            "Claude auth not valid. Sessions will fail until auth is fixed. \
+             Run `midtown auth login <email>` to authenticate."
+        );
+    }
+}
+
 use crate::coworker::CoworkerManager;
 use crate::daemon::effects::Effect;
 use crate::daemon::state::DaemonPersistentState;
