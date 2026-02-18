@@ -211,9 +211,6 @@ pub enum WebUpdate {
     /// Coworker status changed
     #[serde(rename = "coworker_status")]
     CoworkerStatus(CoworkerStatusData),
-    /// Lead is actively working (typing indicator)
-    #[serde(rename = "lead_typing")]
-    LeadTyping(LeadTypingData),
     /// Error response for a client action
     #[serde(rename = "error")]
     Error(ErrorData),
@@ -275,11 +272,6 @@ pub struct CoworkerStatusData {
     /// Health status color: "green", "yellow", or "red".
     #[serde(skip_serializing_if = "Option::is_none")]
     pub health: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct LeadTypingData {
-    pub working: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1711,12 +1703,6 @@ pub fn broadcast_coworker_status(
     let _ = tx.send(coworker_status_update(name, status, current_task, model));
 }
 
-/// Broadcast lead typing/working status to all WebSocket clients
-pub fn broadcast_lead_typing(tx: &broadcast::Sender<WebUpdate>, working: bool) {
-    let update = WebUpdate::LeadTyping(LeadTypingData { working });
-    let _ = tx.send(update);
-}
-
 /// Build a `WebUpdate` for a channel message.
 pub fn channel_message_update(message: &Message) -> WebUpdate {
     WebUpdate::ChannelMessage(ChannelMessageData {
@@ -1857,18 +1843,6 @@ mod tests {
             !json.contains("\"current_task\""),
             "progress update must not include current_task"
         );
-    }
-
-    #[test]
-    fn test_lead_typing_update_serialization() {
-        let update = WebUpdate::LeadTyping(LeadTypingData { working: true });
-        let json = serde_json::to_string(&update).unwrap();
-        assert!(json.contains("lead_typing"));
-        assert!(json.contains(r#""working":true"#));
-
-        let update = WebUpdate::LeadTyping(LeadTypingData { working: false });
-        let json = serde_json::to_string(&update).unwrap();
-        assert!(json.contains(r#""working":false"#));
     }
 
     #[test]

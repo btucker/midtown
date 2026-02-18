@@ -5,7 +5,7 @@
    * Props:
    *   agentName  — coworker name (e.g. "amsterdam")
    *   items      — UniversalItem[] for this agent (newest last)
-   *   maxVisible — how many items to show when collapsed (default: 3)
+   *   maxVisible — max lines to show (default: 3); collapsed shows 1
    */
   let { agentName, items = [], maxVisible = 3 } = $props()
 
@@ -39,8 +39,9 @@
 
   // Most recent items first for display
   let sorted = $derived([...merged].reverse())
-  let visible = $derived(expanded ? sorted : sorted.slice(0, maxVisible))
-  let hasMore = $derived(sorted.length > maxVisible)
+  // Collapsed: show only the 1 most recent item; expanded: show up to maxVisible
+  let visible = $derived(expanded ? sorted.slice(0, maxVisible) : sorted.slice(0, 1))
+  let hasMore = $derived(sorted.length > 1 && !expanded)
 
   function describeItem(item) {
     for (const part of item.content) {
@@ -87,9 +88,16 @@
     {#if hasMore}
       <button
         class="text-[#3a5a5a] hover:text-[#5fafaf] text-[0.78rem] mt-[1px] bg-transparent border-none cursor-pointer p-0"
-        onclick={() => { expanded = !expanded }}
+        onclick={() => { expanded = true }}
       >
-        {expanded ? '▲ show less' : `▼ ${sorted.length - maxVisible} more`}
+        ▼ {sorted.length - 1} more
+      </button>
+    {:else if expanded && sorted.length > 1}
+      <button
+        class="text-[#3a5a5a] hover:text-[#5fafaf] text-[0.78rem] mt-[1px] bg-transparent border-none cursor-pointer p-0"
+        onclick={() => { expanded = false }}
+      >
+        ▲ less
       </button>
     {/if}
   </div>

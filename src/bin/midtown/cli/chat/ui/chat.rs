@@ -192,7 +192,7 @@ fn count_tool_activity_lines(
             continue;
         }
         count += 1; // agent name header
-        count += headers.len().min(3); // up to 3 tool call lines
+        count += 1; // 1 most recent tool call line
     }
     if count > 0 {
         count += 1; // blank separator before activity strip
@@ -240,9 +240,9 @@ fn append_tool_activity_lines(
             Span::styled(" working\u{2026}", Style::default().fg(Color::DarkGray)),
         ]));
 
-        // Show up to 3 most recent tool calls (last 3, most recent last).
+        // Show the most recent tool call (last item, most recent last).
         // Each header starts with a prefix char (✓/✗/›) followed by a space and the description.
-        let start = headers.len().saturating_sub(3);
+        let start = headers.len().saturating_sub(1);
         for header in &headers[start..] {
             // Split prefix character from the rest of the description.
             // Format is "<prefix_char> <description>" where prefix is a single Unicode char.
@@ -631,8 +631,8 @@ mod tests {
     }
 
     #[test]
-    fn test_append_tool_activity_lines_shows_at_most_3_recent() {
-        // 5 headers — should show only the last 3
+    fn test_append_tool_activity_lines_shows_only_most_recent() {
+        // 5 headers — should show only the last 1 (most recent)
         let activity = make_activity(
             "amsterdam",
             vec!["✓ call1", "✓ call2", "✓ call3", "✓ call4", "› call5"],
@@ -640,21 +640,15 @@ mod tests {
         let mut lines: Vec<Line<'static>> = Vec::new();
         append_tool_activity_lines(&activity, &mut lines);
 
-        // blank sep + agent header + 3 call lines
-        assert_eq!(lines.len(), 5, "Should emit blank + agent + 3 call lines");
+        // blank sep + agent header + 1 call line
+        assert_eq!(lines.len(), 3, "Should emit blank + agent + 1 call line");
 
-        // The last call line should be for "call5"
-        let last = &lines[4];
+        // The single call line should be for "call5" (most recent)
+        let last = &lines[2];
         let text: String = last.spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(
             text.contains("call5"),
-            "Last line should be call5, got: {text}"
-        );
-        // call3 and call4 should also appear
-        let line3_text: String = lines[2].spans.iter().map(|s| s.content.as_ref()).collect();
-        assert!(
-            line3_text.contains("call3"),
-            "Third call line should be call3"
+            "Only line should be call5 (most recent), got: {text}"
         );
     }
 

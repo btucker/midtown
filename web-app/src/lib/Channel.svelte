@@ -1,5 +1,5 @@
 <script>
-  import { messages, messagesByChannel, activeChannel, channels, coworkers, leadTyping, kanbanData, repoStatus, repoStatuses, daemonStatus, detailPanelData, isWideScreen, agentToolItems } from './store.js'
+  import { messages, messagesByChannel, activeChannel, channels, coworkers, kanbanData, repoStatus, repoStatuses, daemonStatus, detailPanelData, isWideScreen, agentToolItems } from './store.js'
   import { sendMessage, uploadFile } from './api.js'
   import { tick, onMount } from 'svelte'
   import MermaidDiagram from './MermaidDiagram.svelte'
@@ -621,30 +621,29 @@
         {/each}
       {/if}
 
-      <!-- Tool call activity strip for the active channel's lead.
-           Main channel shows the lead's tool calls; topic channels show their channel lead's.
-           "working…" is shown only when at least one item is still InProgress. -->
-      {#if activeChannelToolItems.length > 0}
-        {@const agentName = $activeChannel === 'midtown' ? 'lead' : $activeChannel}
+      <!-- Unified activity strip: shows the active channel's lead name, bouncing dots,
+           and tool call activity. In the main channel, uses lead_working (same signal as
+           the TUI braille spinner) to drive the dots. In topic channels, InProgress tool
+           items drive the dots (channel leads don't have a separate lead_working signal). -->
+      {@const agentName = $activeChannel === 'midtown' ? 'lead' : $activeChannel}
+      {@const isLeadWorking = $activeChannel === 'midtown' ? !!$daemonStatus?.lead_working : false}
+      {@const hasInProgressItems = activeChannelToolItems.some((item) => item.status === 'InProgress')}
+      {@const showDots = isLeadWorking || hasInProgressItems}
+      {#if activeChannelToolItems.length > 0 || isLeadWorking}
         <div class="mt-[3px]">
           <div class="flex items-center gap-[7px] whitespace-nowrap overflow-hidden text-ellipsis">
             <span class="font-bold text-[0.85rem]" style="color: {getSenderColor(agentName)}">{agentName}</span>
-            {#if activeChannelToolItems.some((item) => item.status === 'InProgress')}
-              <span class="text-[#3a6a3a] text-[0.78rem] select-none">working…</span>
+            {#if showDots}
+              <span class="typing-dots flex gap-[3px] items-center">
+                <span class="dot w-[5px] h-[5px] rounded-full" style="background-color: {getSenderColor(agentName)}"></span>
+                <span class="dot w-[5px] h-[5px] rounded-full" style="background-color: {getSenderColor(agentName)}"></span>
+                <span class="dot w-[5px] h-[5px] rounded-full" style="background-color: {getSenderColor(agentName)}"></span>
+              </span>
             {/if}
           </div>
-          <ToolActivity {agentName} items={activeChannelToolItems} />
-        </div>
-      {/if}
-
-      {#if $leadTyping}
-        <div class="flex items-center gap-[7px] py-[5px] mt-[5px] opacity-70">
-          <span class="font-bold text-[0.85rem]" style="color: {AVENUE_COLORS.lead}">lead</span>
-          <span class="typing-dots flex gap-[3px] items-center">
-            <span class="dot w-[5px] h-[5px] rounded-full bg-[#d7d787]"></span>
-            <span class="dot w-[5px] h-[5px] rounded-full bg-[#d7d787]"></span>
-            <span class="dot w-[5px] h-[5px] rounded-full bg-[#d7d787]"></span>
-          </span>
+          {#if activeChannelToolItems.length > 0}
+            <ToolActivity {agentName} items={activeChannelToolItems} />
+          {/if}
         </div>
       {/if}
   </div>
