@@ -67,6 +67,8 @@ struct KanbanData {
     tool_activity: HashMap<String, Vec<String>>,
     /// Pending questions from coworkers waiting for user input
     pending_questions: Vec<PendingQuestion>,
+    /// Names of active channel leads (e.g. "auth", "tui"), for sender color assignment.
+    channel_lead_names: Vec<String>,
 }
 
 /// Coworker status information for the TUI board sidebar
@@ -328,6 +330,9 @@ pub struct App {
     spinner_frame: usize,
     /// Last time the spinner frame was advanced (for time-based animation)
     spinner_last_tick: Instant,
+    /// Names of active channel leads (e.g. "auth", "tui"), populated from kanban data.
+    /// Used to color their messages LightYellow like the main lead.
+    pub channel_lead_names: Vec<String>,
     /// List of all available channels (including empty ones)
     pub available_channels: Vec<midtown::ChannelInfo>,
     /// Last time available channels were refreshed
@@ -493,6 +498,7 @@ impl App {
             show_archived_channels: false,
             spinner_frame: 0,
             spinner_last_tick: Instant::now(),
+            channel_lead_names: Vec::new(),
             available_channels: Vec::new(),
             channels_last_refresh: Instant::now() - CHANNELS_REFRESH_INTERVAL, // Force initial refresh
             project_name: channel_repo.clone(),
@@ -572,6 +578,7 @@ impl App {
                     self.tool_activity = data.tool_activity;
                     self.max_coworkers = data.max_coworkers;
                     self.pending_questions = data.pending_questions;
+                    self.channel_lead_names = data.channel_lead_names;
                     // Update repo info from daemon if available
                     if !data.repos.is_empty() {
                         let new_repos: Vec<RepoInfo> = data
@@ -732,18 +739,27 @@ impl App {
         self.kanban_receiver = Some(rx);
 
         thread::spawn(move || {
-            let (prs, merged_prs, repos, coworkers, max_coworkers, lead_working, tool_activity) =
-                fetch_kanban_data_via_rpc().unwrap_or_else(|| {
-                    (
-                        fetch_prs(),
-                        fetch_merged_prs(),
-                        Vec::new(),
-                        Vec::new(),
-                        10,
-                        false,
-                        HashMap::new(),
-                    )
-                });
+            let (
+                prs,
+                merged_prs,
+                repos,
+                coworkers,
+                max_coworkers,
+                lead_working,
+                tool_activity,
+                channel_lead_names,
+            ) = fetch_kanban_data_via_rpc().unwrap_or_else(|| {
+                (
+                    fetch_prs(),
+                    fetch_merged_prs(),
+                    Vec::new(),
+                    Vec::new(),
+                    10,
+                    false,
+                    HashMap::new(),
+                    Vec::new(),
+                )
+            });
             let pending_questions = fetch_pending_questions_via_rpc();
             // Ignore send error if receiver dropped (app closed)
             let _ = tx.send(KanbanData {
@@ -755,6 +771,7 @@ impl App {
                 lead_working,
                 tool_activity,
                 pending_questions,
+                channel_lead_names,
             });
         });
     }
@@ -2285,6 +2302,7 @@ fn fetch_kanban_data_via_rpc() -> Option<(
     usize,
     bool,
     HashMap<String, Vec<String>>,
+    Vec<String>,
 )> {
     use crate::client::DaemonClient;
 
@@ -2502,6 +2520,17 @@ fn fetch_kanban_data_via_rpc() -> Option<(
         })
         .unwrap_or_default();
 
+    // Parse channel_leads: list of channel lead names (e.g. ["auth", "tui"])
+    let channel_leads: Vec<String> = data
+        .get("channel_leads")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
+
     Some((
         prs,
         merged_prs,
@@ -2510,6 +2539,7 @@ fn fetch_kanban_data_via_rpc() -> Option<(
         max_coworkers,
         lead_working,
         tool_activity,
+        channel_leads,
     ))
 }
 
@@ -2879,6 +2909,7 @@ pub(super) mod tests {
             show_archived_channels: false,
             spinner_frame: 0,
             spinner_last_tick: Instant::now(),
+            channel_lead_names: Vec::new(),
             available_channels: Vec::new(),
             channels_last_refresh: Instant::now(),
             project_name: "test".to_string(),

@@ -10,7 +10,7 @@ use ratatui::{
 use midtown::MessageType;
 
 use super::TIMESTAMP_GUTTER_WIDTH;
-use super::styles::{get_sender_color, is_dim_sender, is_system_like_sender};
+use super::styles::{get_sender_color_with_leads, is_dim_sender, is_system_like_sender};
 
 /// Precomputed values shared by message rendering functions.
 ///
@@ -32,6 +32,7 @@ impl MessageRenderContext {
         msg: &midtown::Message,
         prev_sender: Option<&str>,
         user_display_name: Option<&str>,
+        channel_lead_names: &[String],
     ) -> Self {
         use chrono::Local;
 
@@ -44,7 +45,7 @@ impl MessageRenderContext {
             msg.from.clone()
         };
 
-        let color = get_sender_color(&display_from);
+        let color = get_sender_color_with_leads(&display_from, channel_lead_names);
         let show_sender = prev_sender.is_none_or(|prev| prev != msg.from);
 
         let content_style = match msg.message_type {
@@ -196,8 +197,9 @@ pub fn render_message(
     prev_sender: Option<&str>,
     current_tasks: &HashMap<String, String>,
     user_display_name: Option<&str>,
+    channel_lead_names: &[String],
 ) -> Vec<Line<'static>> {
-    let ctx = MessageRenderContext::new(msg, prev_sender, user_display_name);
+    let ctx = MessageRenderContext::new(msg, prev_sender, user_display_name, channel_lead_names);
 
     let content_width = ctx.content_width(width);
     if content_width == 0 {
@@ -366,8 +368,8 @@ mod tests {
 
         // New layout: name line, then 3 content lines (timestamp + 2 continuations)
         // Total = 4 lines: sender, timestamp+line1, indent+line2, indent+line3
-        let short_lines = render_message(&short_name_msg, 80, None, &current_tasks, None);
-        let long_lines = render_message(&long_name_msg, 80, None, &current_tasks, None);
+        let short_lines = render_message(&short_name_msg, 80, None, &current_tasks, None, &[]);
+        let long_lines = render_message(&long_name_msg, 80, None, &current_tasks, None, &[]);
 
         assert_eq!(short_lines.len(), 4, "Expected 4 lines: sender + 3 content");
         assert_eq!(long_lines.len(), 4, "Expected 4 lines: sender + 3 content");
@@ -419,15 +421,15 @@ mod tests {
         let current_tasks = HashMap::new();
 
         // First message (no previous sender) - shows sender line + timestamp line
-        let lines1 = render_message(&msg1, 80, None, &current_tasks, None);
+        let lines1 = render_message(&msg1, 80, None, &current_tasks, None, &[]);
         assert_eq!(lines1.len(), 2); // sender line + timestamp+content line
 
         // Second message from same sender - shows only timestamp + content (no sender)
-        let lines2 = render_message(&msg2, 80, Some("columbus"), &current_tasks, None);
+        let lines2 = render_message(&msg2, 80, Some("columbus"), &current_tasks, None, &[]);
         assert_eq!(lines2.len(), 1); // just timestamp + content
 
         // Different sender - shows blank line + sender line + timestamp line
-        let lines3 = render_message(&msg2, 80, Some("lexington"), &current_tasks, None);
+        let lines3 = render_message(&msg2, 80, Some("lexington"), &current_tasks, None, &[]);
         assert_eq!(lines3.len(), 3); // blank + sender line + timestamp+content line
 
         // Verify first message has sender name on first line
@@ -462,7 +464,7 @@ mod tests {
         // Action messages now follow standard format:
         // Line 0: actor name (when sender changes)
         // Line 1: " HH:MM * message" with * in actor color
-        let lines = render_message(&msg, 80, None, &current_tasks, None);
+        let lines = render_message(&msg, 80, None, &current_tasks, None, &[]);
         assert_eq!(lines.len(), 2, "Expected 2 lines: actor name + message");
 
         // First line should be actor name
@@ -526,7 +528,7 @@ mod tests {
         let current_tasks = HashMap::new();
 
         // System messages render through standard path: sender line + timestamp line
-        let lines = render_message(&msg, 80, None, &current_tasks, None);
+        let lines = render_message(&msg, 80, None, &current_tasks, None, &[]);
         assert_eq!(lines.len(), 2); // sender line + content line
 
         // First line is the sender name
@@ -561,7 +563,7 @@ mod tests {
         let mut all_lines: Vec<Line> = Vec::new();
         let mut prev_sender: Option<&str> = None;
         for msg in &messages {
-            let msg_lines = render_message(msg, 80, prev_sender, &current_tasks, None);
+            let msg_lines = render_message(msg, 80, prev_sender, &current_tasks, None, &[]);
             all_lines.extend(msg_lines);
             prev_sender = Some(&msg.from);
         }
@@ -640,7 +642,14 @@ mod tests {
         let mut at_bottom_lines: Vec<Line> = Vec::new();
         let mut prev_sender: Option<&str> = None;
         for msg in at_bottom_messages {
-            at_bottom_lines.extend(render_message(msg, 80, prev_sender, &current_tasks, None));
+            at_bottom_lines.extend(render_message(
+                msg,
+                80,
+                prev_sender,
+                &current_tasks,
+                None,
+                &[],
+            ));
             prev_sender = Some(&msg.from);
         }
 
@@ -648,7 +657,14 @@ mod tests {
         let mut scrolled_one_lines: Vec<Line> = Vec::new();
         let mut prev_sender: Option<&str> = None;
         for msg in scrolled_one_messages {
-            scrolled_one_lines.extend(render_message(msg, 80, prev_sender, &current_tasks, None));
+            scrolled_one_lines.extend(render_message(
+                msg,
+                80,
+                prev_sender,
+                &current_tasks,
+                None,
+                &[],
+            ));
             prev_sender = Some(&msg.from);
         }
 
@@ -742,7 +758,8 @@ mod tests {
             session_id: None,
         };
 
-        let daemon_lines = render_message(&daemon_msg, 80, Some("madison"), &current_tasks, None);
+        let daemon_lines =
+            render_message(&daemon_msg, 80, Some("madison"), &current_tasks, None, &[]);
         assert!(
             count_blank_lines(&daemon_lines) == 1,
             "Should have blank line before daemon message after regular sender"
@@ -759,7 +776,8 @@ mod tests {
             source_channel: None,
             session_id: None,
         };
-        let daemon_lines2 = render_message(&daemon_msg2, 80, Some("daemon"), &current_tasks, None);
+        let daemon_lines2 =
+            render_message(&daemon_msg2, 80, Some("daemon"), &current_tasks, None, &[]);
         assert_eq!(
             count_blank_lines(&daemon_lines2),
             0,
@@ -777,7 +795,8 @@ mod tests {
             source_channel: None,
             session_id: None,
         };
-        let github_lines = render_message(&github_msg, 80, Some("daemon"), &current_tasks, None);
+        let github_lines =
+            render_message(&github_msg, 80, Some("daemon"), &current_tasks, None, &[]);
         assert_eq!(
             count_blank_lines(&github_lines),
             1,
@@ -795,7 +814,7 @@ mod tests {
             source_channel: None,
             session_id: None,
         };
-        let park_lines = render_message(&park_msg, 80, Some("daemon"), &current_tasks, None);
+        let park_lines = render_message(&park_msg, 80, Some("daemon"), &current_tasks, None, &[]);
         assert_eq!(
             count_blank_lines(&park_lines),
             1,
@@ -835,7 +854,8 @@ mod tests {
             source_channel: None,
             session_id: None,
         };
-        let github_lines = render_message(&github_msg, 80, Some("daemon"), &current_tasks, None);
+        let github_lines =
+            render_message(&github_msg, 80, Some("daemon"), &current_tasks, None, &[]);
         assert_eq!(
             count_blank_lines(&github_lines),
             1,
@@ -852,14 +872,16 @@ mod tests {
             source_channel: None,
             session_id: None,
         };
-        let daemon_lines = render_message(&daemon_msg, 80, Some("github"), &current_tasks, None);
+        let daemon_lines =
+            render_message(&daemon_msg, 80, Some("github"), &current_tasks, None, &[]);
         assert_eq!(
             count_blank_lines(&daemon_lines),
             1,
             "Should have blank line between github and daemon messages"
         );
 
-        let github_lines2 = render_message(&github_msg, 80, Some("park"), &current_tasks, None);
+        let github_lines2 =
+            render_message(&github_msg, 80, Some("park"), &current_tasks, None, &[]);
         assert_eq!(
             count_blank_lines(&github_lines2),
             1,
@@ -876,7 +898,7 @@ mod tests {
             source_channel: None,
             session_id: None,
         };
-        let park_lines = render_message(&park_msg, 80, Some("github"), &current_tasks, None);
+        let park_lines = render_message(&park_msg, 80, Some("github"), &current_tasks, None, &[]);
         assert_eq!(
             count_blank_lines(&park_lines),
             1,
@@ -884,7 +906,7 @@ mod tests {
         );
 
         // Test: github content should still be DarkGray
-        let github_lines3 = render_message(&github_msg, 80, None, &current_tasks, None);
+        let github_lines3 = render_message(&github_msg, 80, None, &current_tasks, None, &[]);
         assert!(
             github_lines3.len() >= 2,
             "Github message should have sender + content lines"
@@ -921,7 +943,7 @@ mod tests {
             "Fix chat TUI timestamp formatting".to_string(),
         );
 
-        let lines = render_message(&msg, 80, None, &current_tasks, None);
+        let lines = render_message(&msg, 80, None, &current_tasks, None, &[]);
 
         let first_line_content: String =
             lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
@@ -939,7 +961,7 @@ mod tests {
         );
 
         let empty_tasks = HashMap::new();
-        let lines_no_task = render_message(&msg, 80, None, &empty_tasks, None);
+        let lines_no_task = render_message(&msg, 80, None, &empty_tasks, None, &[]);
         let first_line_no_task: String = lines_no_task[0]
             .spans
             .iter()
@@ -976,7 +998,7 @@ mod tests {
             "This is a very long task description that should be truncated".to_string(),
         );
 
-        let lines = render_message(&msg, 30, None, &current_tasks, None);
+        let lines = render_message(&msg, 30, None, &current_tasks, None, &[]);
         let first_line_content: String =
             lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
 
@@ -1004,7 +1026,7 @@ mod tests {
         let mut current_tasks = HashMap::new();
         current_tasks.insert("park".to_string(), "Fix something".to_string());
 
-        let lines = render_message(&msg, 80, None, &current_tasks, None);
+        let lines = render_message(&msg, 80, None, &current_tasks, None, &[]);
         let first_line_content: String =
             lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
 
@@ -1021,7 +1043,7 @@ mod tests {
 
         let current_tasks = HashMap::new();
 
-        let lines = render_message(&msg, 80, None, &current_tasks, None);
+        let lines = render_message(&msg, 80, None, &current_tasks, None, &[]);
 
         assert!(
             lines.len() >= 2,
@@ -1054,7 +1076,7 @@ mod tests {
         let current_tasks = HashMap::new();
         let width = 60;
 
-        let lines = render_message(&msg, width, None, &current_tasks, None);
+        let lines = render_message(&msg, width, None, &current_tasks, None, &[]);
 
         assert!(
             lines.len() >= 3,
@@ -1093,7 +1115,7 @@ mod tests {
         let msg = test_message(table_content);
         let current_tasks = HashMap::new();
 
-        let lines = render_message(&msg, 80, None, &current_tasks, None);
+        let lines = render_message(&msg, 80, None, &current_tasks, None, &[]);
 
         // Find the header row line and data row line in the output
         let header_line = lines

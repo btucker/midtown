@@ -46,10 +46,21 @@ pub fn is_dim_sender(sender: &str) -> bool {
     )
 }
 
-/// Get color for a sender name
+/// Get color for a sender name.
+///
+/// For channel leads (e.g. a lead posting from topic channel "auth"), pass
+/// their names via [`get_sender_color_with_leads`] so they receive the same
+/// LightYellow treatment as the main lead.
 pub fn get_sender_color(name: &str) -> Color {
+    get_sender_color_with_leads(name, &[])
+}
+
+/// Like [`get_sender_color`], but also checks `channel_lead_names` so that
+/// channel-specific leads get LightYellow instead of the default Color::White.
+pub fn get_sender_color_with_leads(name: &str, channel_lead_names: &[String]) -> Color {
     match name.to_lowercase().as_str() {
-        "lead" | "user" => Color::LightYellow,
+        "lead" => Color::LightYellow,
+        "user" => Color::White,
         "daemon" | "github" | "midtown" | "system" => Color::DarkGray,
         _ => {
             // Check avenue colors
@@ -58,9 +69,16 @@ pub fn get_sender_color(name: &str) -> Color {
                     return *color;
                 }
             }
-            // Custom user display names get the same color as lead/user
+            // Custom user display names get the same color as the main lead
             if midtown::config::get_user_display_name()
                 .is_some_and(|dn| dn.eq_ignore_ascii_case(name))
+            {
+                return Color::LightYellow;
+            }
+            // Channel leads post with from = channel name (e.g. "auth", "tui")
+            if channel_lead_names
+                .iter()
+                .any(|lead| lead.eq_ignore_ascii_case(name))
             {
                 return Color::LightYellow;
             }
