@@ -1,6 +1,6 @@
 <script>
-  import { messages, messagesByChannel, activeChannel, channels, coworkers, kanbanData, repoStatus, repoStatuses, daemonStatus, detailPanelData, isWideScreen, agentToolItems } from './store.js'
-  import { sendMessage, uploadFile } from './api.js'
+  import { messages, messagesByChannel, activeChannel, channels, coworkers, kanbanData, repoStatus, repoStatuses, daemonStatus, detailPanelData, isWideScreen, agentToolItems, threadData } from './store.js'
+  import { sendMessage, uploadFile, closeThread } from './api.js'
   import { tick, onMount } from 'svelte'
   import MermaidDiagram from './MermaidDiagram.svelte'
   import { parseSegments, hasMermaid, renderContent } from './markdown.js'
@@ -257,6 +257,7 @@
         if (task) {
           // Desktop (>= 1025px): use DetailPanel; Mobile/tablet: use modal
           if ($isWideScreen) {
+            closeThread()
             detailPanelData.set({ type: 'task', data: task })
           } else {
             selectedTask = task
@@ -271,6 +272,7 @@
           if ($isWideScreen) {
             const pr = findPr(prNum)
             if (pr) {
+              closeThread()
               detailPanelData.set({
                 type: 'pr',
                 data: {
@@ -296,6 +298,7 @@
         // Find the coworker in the store
         const coworker = $coworkers.find((cw) => cw.name.toLowerCase() === coworkerName.toLowerCase())
         if (coworker && $isWideScreen) {
+          closeThread()
           detailPanelData.set({
             type: 'coworker',
             data: {

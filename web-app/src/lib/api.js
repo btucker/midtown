@@ -156,6 +156,26 @@ export function getApiBase() {
   return projectApiBase ? `${projectApiBase}/api` : '/api'
 }
 
+// Compute reply_count and last_reply on parent messages, then filter out
+// thread replies so only top-level messages appear in the main timeline.
+function annotateThreadReplyCounts(msgs) {
+  const replyCountMap = {}
+  const lastReplyMap = {}
+  for (const m of msgs) {
+    if (m.thread_parent_id) {
+      replyCountMap[m.thread_parent_id] = (replyCountMap[m.thread_parent_id] || 0) + 1
+      lastReplyMap[m.thread_parent_id] = m
+    }
+  }
+  return msgs
+    .filter((m) => !m.thread_parent_id)
+    .map((m) =>
+      replyCountMap[m.id]
+        ? { ...m, reply_count: replyCountMap[m.id], last_reply: lastReplyMap[m.id] }
+        : m
+    )
+}
+
 // Fetch channel message history
 // If channelName is provided, fetches only that channel's messages.
 // Otherwise, fetches all messages from the main channel.
@@ -170,9 +190,10 @@ export async function fetchHistory(channelName = null) {
 
       if (channelName) {
         // Fetching a specific channel - update only that channel's messages
+        const channelMsgs = annotateThreadReplyCounts(data)
         messagesByChannel.update((byChannel) => ({
           ...byChannel,
-          [channelName]: data,
+          [channelName]: channelMsgs,
         }))
       } else {
         // Fetching all messages (initial load) - group by channel
@@ -187,23 +208,9 @@ export async function fetchHistory(channelName = null) {
           byChannel[name].push(msg)
         }
 
-        // Compute thread reply counts for each parent message
-        for (const channelMsgs of Object.values(byChannel)) {
-          const replyCountMap = {}
-          const lastReplyMap = {}
-          for (const m of channelMsgs) {
-            if (m.thread_parent_id) {
-              replyCountMap[m.thread_parent_id] = (replyCountMap[m.thread_parent_id] || 0) + 1
-              lastReplyMap[m.thread_parent_id] = m
-            }
-          }
-          // Annotate parent messages with reply_count and last_reply
-          for (const m of channelMsgs) {
-            if (replyCountMap[m.id]) {
-              m.reply_count = replyCountMap[m.id]
-              m.last_reply = lastReplyMap[m.id]
-            }
-          }
+        // Compute reply counts and filter thread replies from main timeline
+        for (const [ch, channelMsgs] of Object.entries(byChannel)) {
+          byChannel[ch] = annotateThreadReplyCounts(channelMsgs)
         }
 
         messagesByChannel.set(byChannel)
@@ -704,9 +711,10 @@ export async function fetchThread(channelName, parentMessageId) {
 export function openThread(parentMessage, channelName) {
   // Close detail panel if open (mutually exclusive)
   detailPanelData.set(null)
-  // Fetch thread replies and set store
-  fetchThread(channelName, parentMessage.id).then((messages) => {
-    threadData.set({ parentMessage, channelName, messages })
+  // Show panel immediately with loading state, then populate with replies
+  threadData.set({ parentMessage, channelName, messages: [] })
+  fetchThread(channelName, parentMessage.id).then((replies) => {
+    threadData.set({ parentMessage, channelName, messages: replies })
   })
 }
 
