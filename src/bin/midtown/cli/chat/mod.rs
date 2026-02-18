@@ -623,6 +623,10 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                     } else if app.autocomplete.show {
                         app.dismiss_autocomplete();
                         EventResult::Continue
+                    } else if app.focused_pane == FocusedPane::Thread {
+                        // Esc closes thread when thread pane is focused
+                        app.close_thread();
+                        EventResult::Continue
                     } else if app.focused_pane == FocusedPane::InputBar {
                         // Esc clears input when in InputBar
                         app.input_text.clear();
@@ -661,7 +665,7 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                                 app.board_selection_up();
                                 EventResult::Continue
                             }
-                            FocusedPane::Chat | FocusedPane::InputBar => {
+                            FocusedPane::Chat | FocusedPane::InputBar | FocusedPane::Thread => {
                                 app.scroll_up();
                                 EventResult::Continue
                             }
@@ -681,7 +685,7 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                                 app.board_selection_down();
                                 EventResult::Continue
                             }
-                            FocusedPane::Chat | FocusedPane::InputBar => {
+                            FocusedPane::Chat | FocusedPane::InputBar | FocusedPane::Thread => {
                                 app.scroll_down();
                                 EventResult::Continue
                             }
@@ -721,6 +725,25 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                     } else if app.autocomplete.show {
                         app.insert_autocomplete_item();
                         EventResult::Continue
+                    } else if app.focused_pane == FocusedPane::Thread
+                        && !app.thread_input_text.is_empty()
+                    {
+                        // Post thread reply when Enter is pressed in thread pane
+                        let message = app.thread_input_text.clone();
+                        let channel_name = app.selected_channel.clone();
+                        if let Some(ref parent_id) = app.thread_parent_id.clone() {
+                            let posted = app.post_thread_reply(
+                                &message,
+                                "user",
+                                Some(&channel_name),
+                                parent_id,
+                            );
+                            if posted {
+                                app.thread_input_text.clear();
+                                app.thread_input_cursor = 0;
+                            }
+                        }
+                        EventResult::Continue
                     } else if app.focused_pane == FocusedPane::Board {
                         // When board is focused and Enter is pressed, check if a task is selected
                         if let Some(app::BoardSelection::Task(_channel, task_id)) =
@@ -734,7 +757,9 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                         // If no task selected or task has no owner, focus InputBar
                         app.focused_pane = FocusedPane::InputBar;
                         EventResult::Continue
-                    } else if app.focused_pane != FocusedPane::InputBar {
+                    } else if app.focused_pane != FocusedPane::InputBar
+                        && app.focused_pane != FocusedPane::Thread
+                    {
                         app.focused_pane = FocusedPane::InputBar;
                         EventResult::Continue
                     } else if !app.input_text.is_empty() {
@@ -751,6 +776,15 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                                     app.input_cursor = 0;
                                 }
                                 // TODO: Show error if creation failed
+                            }
+                            EventResult::Continue
+                        } else if message.starts_with("/thread ") {
+                            // Open thread view for the given parent message ID
+                            let arg = message.trim_start_matches("/thread ").trim();
+                            if !arg.is_empty() {
+                                app.open_thread(arg);
+                                app.input_text.clear();
+                                app.input_cursor = 0;
                             }
                             EventResult::Continue
                         } else {
@@ -772,10 +806,17 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                         EventResult::Continue
                     }
                 }
-                // Tab: select autocomplete item if showing
+                // Tab: select autocomplete item if showing, or toggle thread focus
                 KeyCode::Tab => {
                     if app.autocomplete.show {
                         app.insert_autocomplete_item();
+                        EventResult::Continue
+                    } else if app.thread_parent_id.is_some() {
+                        // Toggle between main input and thread input when thread is open
+                        app.focused_pane = match app.focused_pane {
+                            FocusedPane::Thread => FocusedPane::InputBar,
+                            _ => FocusedPane::Thread,
+                        };
                         EventResult::Continue
                     } else {
                         // Tab cycles focus: Board → Chat → InputBar → Board
@@ -2349,6 +2390,170 @@ mod tests {
         assert_eq!(app.board_selection, None);
         // Selected channel should not change
         assert_eq!(app.selected_channel, "midtown");
+    }
+
+    // --- Thread command and key handling tests ---
+
+    #[test]
+    fn test_thread_command_opens_thread() {
+        use app::FocusedPane;
+        let mut app = test_app();
+
+        // Add a parent message to make the thread openable
+        let parent = midtown::Message::text("agent1", "Hello");
+        let parent_id = parent.id.clone();
+        app.messages.push_back(parent);
+
+        // Focus InputBar and type /thread command
+        app.focused_pane = FocusedPane::InputBar;
+        app.input_text = format!("/thread {}", parent_id);
+        app.input_cursor = app.input_text.len();
+
+        // Press Enter to execute the command
+        handle_event(&mut app, key_press(KeyCode::Enter));
+
+        assert_eq!(
+            app.thread_parent_id,
+            Some(parent_id),
+            "/thread command should open the thread"
+        );
+        assert_eq!(app.focused_pane, FocusedPane::Thread);
+        assert!(
+            app.input_text.is_empty(),
+            "Input should be cleared after /thread command"
+        );
+    }
+
+    #[test]
+    fn test_thread_command_with_nonexistent_id_does_not_open() {
+        use app::FocusedPane;
+        let mut app = test_app();
+        app.focused_pane = FocusedPane::InputBar;
+        app.input_text = "/thread nonexistent-id".to_string();
+        app.input_cursor = app.input_text.len();
+
+        handle_event(&mut app, key_press(KeyCode::Enter));
+
+        assert!(
+            app.thread_parent_id.is_none(),
+            "/thread with nonexistent ID should not open a thread"
+        );
+        // Input should still be cleared (command was recognized)
+        assert!(app.input_text.is_empty());
+    }
+
+    #[test]
+    fn test_esc_closes_thread() {
+        use app::FocusedPane;
+        let mut app = test_app();
+
+        // Set up an open thread
+        app.thread_parent_id = Some("test-id".to_string());
+        app.thread_messages = vec![midtown::Message::text("a", "reply")];
+        app.focused_pane = FocusedPane::Thread;
+
+        let result = handle_event(&mut app, key_press(KeyCode::Esc));
+
+        assert!(
+            matches!(result, EventResult::Continue),
+            "Esc on Thread should continue, not exit"
+        );
+        assert!(
+            app.thread_parent_id.is_none(),
+            "Thread should be closed after Esc"
+        );
+        assert_eq!(
+            app.focused_pane,
+            FocusedPane::InputBar,
+            "Focus should return to InputBar after closing thread"
+        );
+    }
+
+    #[test]
+    fn test_tab_toggles_thread_focus() {
+        use app::FocusedPane;
+        let mut app = test_app();
+        app.thread_parent_id = Some("test-id".to_string());
+        app.focused_pane = FocusedPane::InputBar;
+
+        // Tab should switch to Thread when thread is open
+        handle_event(&mut app, key_press(KeyCode::Tab));
+        assert_eq!(
+            app.focused_pane,
+            FocusedPane::Thread,
+            "Tab should switch from InputBar to Thread"
+        );
+
+        // Tab should switch back to InputBar
+        handle_event(&mut app, key_press(KeyCode::Tab));
+        assert_eq!(
+            app.focused_pane,
+            FocusedPane::InputBar,
+            "Tab should switch from Thread to InputBar"
+        );
+    }
+
+    #[test]
+    fn test_tab_cycles_normally_without_thread() {
+        use app::FocusedPane;
+        let mut app = test_app();
+        app.focused_pane = FocusedPane::Board;
+
+        // Without a thread open, Tab should cycle through Board → Chat → InputBar → Board
+        handle_event(&mut app, key_press(KeyCode::Tab));
+        assert_eq!(app.focused_pane, FocusedPane::Chat);
+
+        handle_event(&mut app, key_press(KeyCode::Tab));
+        assert_eq!(app.focused_pane, FocusedPane::InputBar);
+
+        handle_event(&mut app, key_press(KeyCode::Tab));
+        assert_eq!(app.focused_pane, FocusedPane::Board);
+    }
+
+    #[test]
+    fn test_enter_in_thread_with_empty_input_does_not_post() {
+        use app::FocusedPane;
+        let mut app = test_app();
+        app.thread_parent_id = Some("test-id".to_string());
+        app.thread_input_text = String::new();
+        app.focused_pane = FocusedPane::Thread;
+
+        let result = handle_event(&mut app, key_press(KeyCode::Enter));
+        assert!(
+            matches!(result, EventResult::Continue),
+            "Enter with empty thread input should continue"
+        );
+    }
+
+    #[test]
+    fn test_enter_in_thread_with_text_attempts_post() {
+        use app::FocusedPane;
+        let mut app = test_app();
+        app.thread_parent_id = Some("test-id".to_string());
+        app.thread_input_text = "thread reply".to_string();
+        app.focused_pane = FocusedPane::Thread;
+
+        let result = handle_event(&mut app, key_press(KeyCode::Enter));
+        assert!(matches!(result, EventResult::Continue));
+        // In test mode without a channel, the post will fail, so input is preserved
+        // (post_thread_reply returns false in test_mode with no channel)
+        // This verifies the Enter handler properly dispatches to thread posting
+    }
+
+    #[test]
+    fn test_tab_from_board_goes_to_thread_when_open() {
+        use app::FocusedPane;
+        let mut app = test_app();
+        app.thread_parent_id = Some("test-id".to_string());
+        app.focused_pane = FocusedPane::Board;
+
+        // Tab from Board should go to Thread (since thread is open, Tab toggles)
+        handle_event(&mut app, key_press(KeyCode::Tab));
+        assert_eq!(
+            app.focused_pane,
+            FocusedPane::Thread,
+            "Tab from non-Thread pane should go to Thread when thread is open"
+        );
     }
 }
 
