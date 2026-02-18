@@ -258,7 +258,9 @@ pub(crate) fn set_workflow(
 
     let effective_progress = progress.or_else(|| {
         if phase_changed {
-            phase_default_progress(phase)
+            // Phase default should only advance progress, never regress it.
+            // E.g. PullRequest (85%) → Reviewing (default 50%) keeps 85%.
+            phase_default_progress(phase).map(|d| d.max(record.progress.unwrap_or(0)))
         } else {
             None
         }
@@ -3474,6 +3476,69 @@ mod tests {
         assert_eq!(
             records["york"].progress, None,
             "idle phase should clear progress"
+        );
+    }
+
+    #[test]
+    fn set_workflow_phase_default_does_not_regress_progress() {
+        // Transitioning PullRequest (85%) → Reviewing (50%) without explicit
+        // progress should NOT drop progress backwards.
+        let mut records = HashMap::new();
+
+        // Arrive at PullRequest with explicit 85% progress
+        set_workflow(
+            &mut records,
+            "york",
+            crate::coworker_state::WorkflowPhase::PullRequest,
+            Some(42),
+            Some(85),
+        );
+        assert_eq!(records["york"].progress, Some(85));
+
+        // Transition to Reviewing (default 50%) without explicit progress
+        set_workflow(
+            &mut records,
+            "york",
+            crate::coworker_state::WorkflowPhase::Reviewing,
+            Some(42),
+            None,
+        );
+        // Phase default (50%) must not overwrite higher existing progress (85%)
+        assert_eq!(
+            records["york"].progress,
+            Some(85),
+            "phase default should not regress progress below existing value"
+        );
+    }
+
+    #[test]
+    fn set_workflow_phase_default_advances_low_progress() {
+        // If existing progress is lower than the phase default, the default
+        // should advance it (the normal case of forward progress).
+        let mut records = HashMap::new();
+
+        // Coworker starts in Developing with explicit 30% progress
+        set_workflow(
+            &mut records,
+            "york",
+            crate::coworker_state::WorkflowPhase::Developing,
+            Some(42),
+            Some(30),
+        );
+
+        // Transition to Testing (default 65%) without explicit progress
+        set_workflow(
+            &mut records,
+            "york",
+            crate::coworker_state::WorkflowPhase::Testing,
+            Some(42),
+            None,
+        );
+        // Phase default (65%) > existing (30%) → should advance to 65
+        assert_eq!(
+            records["york"].progress,
+            Some(65),
+            "phase default should advance progress when higher than existing"
         );
     }
 }
