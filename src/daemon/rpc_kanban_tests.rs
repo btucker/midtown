@@ -223,6 +223,76 @@ fn test_lead_activity_detection_alive_no_events() {
     assert!(!is_session_actively_working(Some(&health)));
 }
 
+// ============================================================================
+// Tests for serialize_tool_activity — tool item cleanup on session death
+// ============================================================================
+
+fn make_tool_item(id: &str) -> crate::universal_events::UniversalItem {
+    crate::universal_events::UniversalItem {
+        item_id: id.to_string(),
+        kind: crate::universal_events::ItemKind::ToolCall,
+        content: vec![],
+        status: crate::universal_events::ItemStatus::Completed,
+        timestamp: Utc::now(),
+    }
+}
+
+#[test]
+fn test_serialize_tool_activity_shows_items_for_active_coworker() {
+    // When a coworker has tool items, they appear in the serialized output.
+    let mut tool_map = HashMap::new();
+    tool_map.insert("madison".to_string(), vec![make_tool_item("item-1")]);
+
+    let result = serialize_tool_activity(&tool_map);
+    assert!(
+        result["madison"].is_array(),
+        "active coworker tool items should appear in serialized output"
+    );
+    assert_eq!(
+        result["madison"].as_array().unwrap().len(),
+        1,
+        "should have exactly one tool item"
+    );
+}
+
+#[test]
+fn test_serialize_tool_activity_empty_after_coworker_removal() {
+    // Simulates what happens when session death cleanup removes a coworker's
+    // tool items. After removal, the coworker should not appear in the output.
+    let mut tool_map = HashMap::new();
+    tool_map.insert("madison".to_string(), vec![make_tool_item("item-1")]);
+
+    // Simulate session death cleanup: remove the coworker's tool items
+    tool_map.remove("madison");
+
+    let result = serialize_tool_activity(&tool_map);
+    assert!(
+        result["madison"].is_null(),
+        "dead coworker tool items should not appear in serialized output after cleanup"
+    );
+}
+
+#[test]
+fn test_serialize_tool_activity_only_removes_dead_coworker() {
+    // When one coworker dies, other coworkers' tool items remain untouched.
+    let mut tool_map = HashMap::new();
+    tool_map.insert("madison".to_string(), vec![make_tool_item("item-1")]);
+    tool_map.insert("park".to_string(), vec![make_tool_item("item-2")]);
+
+    // Only madison died — remove only their tool items
+    tool_map.remove("madison");
+
+    let result = serialize_tool_activity(&tool_map);
+    assert!(
+        result["madison"].is_null(),
+        "dead coworker should not have tool items"
+    );
+    assert!(
+        result["park"].is_array(),
+        "surviving coworker tool items should be unaffected"
+    );
+}
+
 #[test]
 fn test_lead_activity_detection_future_timestamp() {
     // Clock skew: last_event_at is in the future — should NOT report active

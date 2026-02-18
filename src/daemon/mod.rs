@@ -2924,6 +2924,11 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                         let mut records = state.coworker_records.write().await;
                         records.remove(&name);
                     }
+                    // Clear recent tool activity (prevents stale activity on respawn)
+                    {
+                        let mut tool_map = state.recent_tool_items.write().unwrap();
+                        tool_map.remove(&name);
+                    }
 
                     // Only clear session_id when the resume itself failed
                     // (session died within 30s of a resume spawn). This means
