@@ -14,7 +14,10 @@ use crate::session_key::SessionKey;
 use crate::worktree::{WorktreeError, WorktreeManager};
 
 /// Primary Manhattan avenue names used for coworker naming.
-const AVENUE_NAMES: &[&str] = &[
+///
+/// Also used by channel validation to reject these reserved names
+/// (a channel named "park" would collide with the "park" channel lead session).
+pub const AVENUE_NAMES: &[&str] = &[
     "lexington",
     "park",
     "madison",
