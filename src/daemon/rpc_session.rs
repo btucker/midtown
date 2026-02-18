@@ -961,14 +961,20 @@ pub(super) async fn handle_session_clear(
         Ok(()) => {
             info!("Relaunched fresh session for '{}' after clear", name);
 
-            // Restore the original initial_prompt in persistent state.
-            // spawn_coworker() persisted the decorated fresh_prompt as initial_prompt,
-            // but we want the canonical original prompt preserved so that subsequent
-            // `session clear` calls don't compound the "fresh session restart" prefix.
+            // Restore original session metadata in persistent state.
+            // spawn_coworker() persisted the decorated fresh_prompt as initial_prompt
+            // and generic coworker_type/task_id/pr_number/channel values. We restore
+            // from the pre-clear session_info so that:
+            // - subsequent `session clear` calls don't compound the prefix
+            // - reviewer metadata survives across clear + daemon restart
             {
                 let mut ps = state.persistent_state.lock().await;
                 if let Some(entry) = ps.headless_sessions.get_mut(&name) {
                     entry.initial_prompt = session_info.initial_prompt.clone();
+                    entry.coworker_type = session_info.coworker_type.clone();
+                    entry.task_id = session_info.task_id;
+                    entry.pr_number = session_info.pr_number;
+                    entry.channel = session_info.channel.clone();
                 }
                 if let Err(e) = ps.save_for_repo(&state.repo_name) {
                     warn!(
