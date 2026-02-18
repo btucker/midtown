@@ -833,6 +833,36 @@
     color: #888;
   }
 
+  /* Tables */
+  :global(.message-text table),
+  :global(.action-text table) {
+    border-collapse: collapse;
+    margin: 6px 0;
+    font-size: 0.88em;
+  }
+
+  :global(.message-text th),
+  :global(.action-text th) {
+    background: #1e2a1e;
+    color: #87d787;
+    padding: 4px 10px;
+    text-align: left;
+    border: 1px solid #2a3a2a;
+    font-weight: 600;
+  }
+
+  :global(.message-text td),
+  :global(.action-text td) {
+    padding: 3px 10px;
+    border: 1px solid #2a2a2a;
+    color: #c0c0c0;
+  }
+
+  :global(.message-text tr:nth-child(even) td),
+  :global(.action-text tr:nth-child(even) td) {
+    background: #141414;
+  }
+
   /* Typing indicator bounce animation */
   @keyframes typing-bounce {
     0%, 80%, 100% {

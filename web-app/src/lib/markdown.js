@@ -1,7 +1,19 @@
 // Pure utility functions for markdown rendering and mermaid detection.
 // Extracted from Channel.svelte for testability.
 
-import snarkdown from 'snarkdown'
+import { marked, Renderer } from 'marked'
+
+// Configure marked with a custom renderer that suppresses underscore-based
+// italic rendering. Identifiers like `function_name` should not become italic.
+const renderer = new Renderer()
+renderer.em = ({ raw }) => {
+  if (raw.startsWith('_')) {
+    return raw
+  }
+  return false // fall through to default rendering
+}
+
+marked.use({ renderer, gfm: true, breaks: false })
 
 /**
  * Split text into segments of plain text and mermaid code blocks.
@@ -36,10 +48,10 @@ export function hasMermaid(text) {
 }
 
 /**
- * Render markdown formatting via snarkdown.
+ * Render markdown formatting via marked (GFM).
  * Pre-escapes <, >, and & for XSS protection.
  * Restores > at line starts for blockquote support before markdown processing.
- * Auto-links bare URLs and ensures all links open in new tabs.
+ * Auto-links bare URLs (handled natively by marked GFM mode).
  * Disables underscore-based italic rendering (keeps asterisk-based italics).
  * Converts #channel references to clickable channel-switch links.
  * Converts !N task references to clickable task-detail links.
@@ -54,29 +66,17 @@ export function renderContent(text) {
   // Restore > at line starts for markdown blockquotes.
   safe = safe.replace(/^(&gt;)+/gm, (m) => m.replace(/&gt;/g, '>'))
 
-  // Escape underscores to prevent them from being interpreted as italic markers.
-  // Use a placeholder that won't conflict with markdown syntax.
-  safe = safe.replace(/_/g, '\x01UNDERSCORE\x01')
-
-  // Auto-link bare URLs before markdown processing.
-  // Protect existing markdown links and inline code from URL conversion.
-  const preserved = []
-  safe = safe.replace(/`[^`]+`/g, (m) => {
-    preserved.push(m)
-    return `\x00${preserved.length - 1}\x00`
-  })
-  safe = safe.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (m) => {
-    preserved.push(m)
-    return `\x00${preserved.length - 1}\x00`
-  })
-  safe = safe.replace(/(^|[\s(])(https?:\/\/[^\s)]+)/gm, '$1[$2]($2)')
-  safe = safe.replace(/\x00(\d+)\x00/g, (_, i) => preserved[i])
-
   // Protect existing markdown links and inline code before converting special references
   // This prevents conflicts when special references appear inside markdown syntax
   const preservedItems = []
 
-  // Preserve inline code spans first
+  // Preserve fenced code blocks first (before inline code spans)
+  safe = safe.replace(/```[\s\S]*?```/g, (m) => {
+    preservedItems.push(m)
+    return `\x02PRESERVE${preservedItems.length - 1}\x02`
+  })
+
+  // Preserve inline code spans
   safe = safe.replace(/`[^`]+`/g, (m) => {
     preservedItems.push(m)
     return `\x02PRESERVE${preservedItems.length - 1}\x02`
@@ -88,14 +88,14 @@ export function renderContent(text) {
     return `\x02PRESERVE${preservedItems.length - 1}\x02`
   })
 
-  // Now convert special references to markdown-style links (processed BEFORE snarkdown)
+  // Now convert special references to markdown-style links (processed BEFORE marked)
   // Order matters: we must protect already-converted links from being re-matched
 
   // Helper function to preserve and restore conversions between each pattern
   function preserveAndReplace(text, pattern, replacement) {
     const tempPreserved = []
     // First, protect already-converted markdown links (our special URL schemes)
-    text = text.replace(/\[([^\]]+)\]\((channel|task|pr):[^)]+\)/g, (m) => {
+    text = text.replace(/\[([^\]]+)\]\((channel|task|pr|coworker):[^)]+\)/g, (m) => {
       tempPreserved.push(m)
       return `\x03TEMP${tempPreserved.length - 1}\x03`
     })
@@ -134,14 +134,10 @@ export function renderContent(text) {
   // Restore preserved user-written markdown links and code blocks
   safe = safe.replace(/\x02PRESERVE(\d+)\x02/g, (_, i) => preservedItems[i])
 
-  // Render markdown
-  let html = snarkdown(safe)
-
-  // Restore underscores after markdown processing
-  html = html.replace(/\x01UNDERSCORE\x01/g, '_')
+  // Render markdown via marked (GFM: tables, strikethrough, auto-links)
+  let html = marked.parse(safe)
 
   // Convert our special URL schemes to proper links with classes and data attributes
-  // Use [^<]* instead of [^<]+ to handle empty link text
   html = html.replace(/<a href="channel:([^"]+)">([^<]*)<\/a>/g, (match, channelName, text) => {
     return `<a href="#" class="channel-link" data-channel="${channelName}">${text}</a>`
   })
@@ -167,5 +163,5 @@ export function renderContent(text) {
   html = html.replace(/<a target="_blank" rel="noopener" (href="#" class="pr-link")/g, '<a $1')
   html = html.replace(/<a target="_blank" rel="noopener" (href="#" class="coworker-link")/g, '<a $1')
 
-  return html
+  return html.trim()
 }
