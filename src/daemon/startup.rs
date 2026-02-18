@@ -631,9 +631,12 @@ pub(crate) async fn recover_channel_lead_sessions_from(
         return effects;
     }
 
-    let channel_lead_sessions = {
+    let (channel_lead_sessions, headless_sessions) = {
         let ps = persistent_state.lock().await;
-        ps.channel_lead_sessions.clone()
+        (
+            ps.channel_lead_sessions.clone(),
+            ps.headless_sessions.clone(),
+        )
     };
 
     info!(
@@ -649,11 +652,26 @@ pub(crate) async fn recover_channel_lead_sessions_from(
             channel_lead_sessions.get(channel_name.as_str())
             && !session_id.is_empty()
         {
-            info!(
-                "Resuming channel lead session for '{}': {}",
-                channel_name, session_id
-            );
-            SessionMode::ResumeSession(session_id.clone())
+            // Defensive cross-check: if headless_sessions has an entry for this
+            // channel lead with an empty session_id, it was cleared after a failed
+            // resume. Using the stale channel_lead_sessions ID would cause another
+            // "No conversation found" failure. Spawn fresh instead.
+            let headless_cleared = headless_sessions
+                .get(channel_name.as_str())
+                .is_some_and(|info| info.session_id.is_empty());
+            if headless_cleared {
+                warn!(
+                    "Skipping stale session ID for channel lead '{}' (headless_sessions entry was cleared after failed resume); spawning fresh",
+                    channel_name
+                );
+                SessionMode::Fresh
+            } else {
+                info!(
+                    "Resuming channel lead session for '{}': {}",
+                    channel_name, session_id
+                );
+                SessionMode::ResumeSession(session_id.clone())
+            }
         } else {
             info!(
                 "No saved session for channel lead '{}', spawning fresh",

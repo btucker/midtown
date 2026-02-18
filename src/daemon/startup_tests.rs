@@ -726,3 +726,149 @@ async fn test_recover_channel_lead_sessions_mixed_archived_and_active() {
         "old-feature should not be spawned"
     );
 }
+
+// ── Tests for stale channel_lead_sessions cross-check ────────────────
+//
+// Bug: when a channel lead session fails to resume, mod.rs clears
+// headless_sessions[name].session_id but does NOT clear
+// channel_lead_sessions[channel_name]. On the next daemon restart,
+// recover_channel_lead_sessions_from() sees the stale session ID in
+// channel_lead_sessions and tries to resume it, getting "No conversation
+// found" and crashing.
+//
+// Fix: recover_channel_lead_sessions_from() should cross-check the
+// session ID against headless_sessions — if the headless_sessions entry
+// has an empty session_id (was already cleared), spawn fresh instead of
+// resuming with the stale ID.
+
+#[tokio::test]
+async fn test_recover_channel_lead_sessions_ignores_stale_id_when_headless_entry_cleared() {
+    // Scenario: channel_lead_sessions has a session ID, but the corresponding
+    // headless_sessions entry has an empty session_id (cleared after failed resume).
+    // Should spawn fresh, not try to resume with the stale ID.
+    let (_tmp, base_dir) = create_temp_channels(&["auth"]);
+
+    let persistent_state = tokio::sync::Mutex::new(DaemonPersistentState::default());
+    {
+        let mut ps = persistent_state.lock().await;
+        // Stale entry in channel_lead_sessions
+        ps.channel_lead_sessions
+            .insert("auth".to_string(), "stale-session-abc".to_string());
+        // headless_sessions entry was cleared after failed resume
+        ps.headless_sessions.insert(
+            "auth".to_string(),
+            crate::daemon::state::HeadlessSessionInfo {
+                session_id: String::new(), // cleared
+                last_active: chrono::Utc::now(),
+                purpose: "channel lead for auth".to_string(),
+                pid: None,
+                coworker_type: Some("channel-lead".to_string()),
+                task_id: None,
+                pr_number: None,
+                channel: Some("auth".to_string()),
+                working_dir: None,
+                provider: None,
+                profile: None,
+                resume_on_startup: true,
+            },
+        );
+    }
+
+    let effects =
+        recover_channel_lead_sessions_from(&persistent_state, "test-repo", &base_dir).await;
+
+    // Should spawn fresh, not resume with the stale ID
+    assert_eq!(effects.len(), 1, "Expected 1 effect, got: {:?}", effects);
+    match &effects[0] {
+        Effect::SpawnCoworker(config) => {
+            assert_eq!(config.name, "auth");
+            assert_eq!(
+                config.session_mode,
+                crate::launch::SessionMode::Fresh,
+                "Should spawn fresh when headless_sessions has cleared session_id, got: {:?}",
+                config.session_mode
+            );
+        }
+        other => panic!("Expected SpawnCoworker(Fresh), got {:?}", other),
+    }
+}
+
+#[tokio::test]
+async fn test_recover_channel_lead_sessions_still_resumes_when_headless_has_matching_id() {
+    // Sanity check: if both channel_lead_sessions and headless_sessions have
+    // the same non-empty session ID, still do the resume (no regression).
+    let (_tmp, base_dir) = create_temp_channels(&["auth"]);
+
+    let persistent_state = tokio::sync::Mutex::new(DaemonPersistentState::default());
+    {
+        let mut ps = persistent_state.lock().await;
+        ps.channel_lead_sessions
+            .insert("auth".to_string(), "live-session-xyz".to_string());
+        ps.headless_sessions.insert(
+            "auth".to_string(),
+            crate::daemon::state::HeadlessSessionInfo {
+                session_id: "live-session-xyz".to_string(), // matches
+                last_active: chrono::Utc::now(),
+                purpose: "channel lead for auth".to_string(),
+                pid: Some(12345),
+                coworker_type: Some("channel-lead".to_string()),
+                task_id: None,
+                pr_number: None,
+                channel: Some("auth".to_string()),
+                working_dir: None,
+                provider: None,
+                profile: None,
+                resume_on_startup: true,
+            },
+        );
+    }
+
+    let effects =
+        recover_channel_lead_sessions_from(&persistent_state, "test-repo", &base_dir).await;
+
+    assert_eq!(effects.len(), 1, "Expected 1 effect, got: {:?}", effects);
+    match &effects[0] {
+        Effect::SpawnCoworker(config) => {
+            assert_eq!(config.name, "auth");
+            assert_eq!(
+                config.session_mode,
+                crate::launch::SessionMode::ResumeSession("live-session-xyz".to_string()),
+                "Should still resume when headless_sessions has matching session_id"
+            );
+        }
+        other => panic!("Expected SpawnCoworker(ResumeSession), got {:?}", other),
+    }
+}
+
+#[tokio::test]
+async fn test_recover_channel_lead_sessions_resumes_when_no_headless_entry() {
+    // If channel_lead_sessions has a session ID but there's no headless_sessions
+    // entry for that channel lead (e.g., daemon state was partially updated),
+    // fall back to resuming with the session ID from channel_lead_sessions.
+    // This preserves existing behavior for older state formats.
+    let (_tmp, base_dir) = create_temp_channels(&["auth"]);
+
+    let persistent_state = tokio::sync::Mutex::new(DaemonPersistentState::default());
+    {
+        let mut ps = persistent_state.lock().await;
+        ps.channel_lead_sessions
+            .insert("auth".to_string(), "session-no-headless".to_string());
+        // No headless_sessions entry for "auth"
+    }
+
+    let effects =
+        recover_channel_lead_sessions_from(&persistent_state, "test-repo", &base_dir).await;
+
+    assert_eq!(effects.len(), 1, "Expected 1 effect, got: {:?}", effects);
+    match &effects[0] {
+        Effect::SpawnCoworker(config) => {
+            assert_eq!(config.name, "auth");
+            assert_eq!(
+                config.session_mode,
+                crate::launch::SessionMode::ResumeSession("session-no-headless".to_string()),
+                "Should resume when no headless_sessions entry exists"
+            );
+        }
+        other => panic!("Expected SpawnCoworker(ResumeSession), got {:?}", other),
+    }
+}

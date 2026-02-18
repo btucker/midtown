@@ -2953,6 +2953,19 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                             );
                             info.session_id.clear();
                         }
+                        // Also clear the channel_lead_sessions entry for this name if one
+                        // exists — channel lead session names match their channel names, so
+                        // a stale channel_lead_sessions entry would cause the next daemon
+                        // restart to attempt a resume with a dead session ID.
+                        if let Some(session_id) = ps.channel_lead_sessions.get_mut(name.as_str())
+                            && !session_id.is_empty()
+                        {
+                            info!(
+                                "Clearing stale channel_lead_sessions entry for '{}' after failed resume",
+                                name
+                            );
+                            session_id.clear();
+                        }
                         if let Err(e) = ps.save_for_repo(&state.repo_name) {
                             warn!("Failed to save persistent state after clearing session_id: {}", e);
                         }
