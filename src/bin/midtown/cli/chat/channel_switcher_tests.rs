@@ -198,3 +198,34 @@ fn test_channel_switcher_navigation_with_many_channels() {
         "board_selection should match"
     );
 }
+
+#[test]
+fn test_channel_switcher_loads_messages_from_new_channel() {
+    // Regression test: switching channels via Ctrl+K must call
+    // load_channel_messages() to load messages from the new channel,
+    // not just scroll_to_bottom(). Before the fix,
+    // channel_switcher_select() called scroll_to_bottom() which only
+    // reset scroll_offset without loading any messages.
+
+    let mut app = test_app();
+    app.channel_switcher.show = true;
+    app.channel_switcher.filtered_channels = vec![app::ChannelSwitcherItem {
+        name: "frontend".to_string(),
+        unread_count: 1,
+    }];
+    app.channel_switcher.selected_index = 0;
+    app.selected_channel = "midtown".to_string();
+
+    assert!(
+        !app.load_channel_messages_called,
+        "load_channel_messages should not have been called yet"
+    );
+
+    let result = handle_event(&mut app, key_press(KeyCode::Enter));
+    assert!(matches!(result, EventResult::Continue));
+
+    assert!(
+        app.load_channel_messages_called,
+        "channel_switcher_select must call load_channel_messages(), not scroll_to_bottom()"
+    );
+}
