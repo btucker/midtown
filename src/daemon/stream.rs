@@ -56,18 +56,19 @@ pub fn process_lead_output(events: &HashMap<String, Vec<StreamEvent>>) -> Vec<Ef
     effects
 }
 
-/// Process all agents' stream events and generate universal event broadcast effects.
+/// Process lead stream events and generate universal event broadcast effects.
 ///
-/// Iterates all agents' events, extracts tool calls and results using the Claude
-/// converter, and returns broadcast effects for any agents that produced tool events.
+/// Only processes the lead agent's events — coworker tool calls are not shown
+/// to the user. Extracts tool calls and results using the Claude converter and
+/// returns broadcast effects if the lead produced any tool events.
 pub fn process_universal_events(events: &HashMap<String, Vec<StreamEvent>>) -> Vec<Effect> {
     let timestamp = chrono::Utc::now();
     let mut effects = Vec::new();
-    for (agent_name, agent_events) in events {
-        let items = crate::universal_events::claude::extract_tool_events(agent_events, timestamp);
+    if let Some(lead_events) = events.get("lead") {
+        let items = crate::universal_events::claude::extract_tool_events(lead_events, timestamp);
         if !items.is_empty() {
             effects.push(Effect::BroadcastUniversalItems {
-                agent_name: agent_name.clone(),
+                agent_name: "lead".to_string(),
                 items,
             });
         }
