@@ -1274,7 +1274,8 @@ impl App {
     ///
     /// This captures all inputs that affect the rendered output of draw_chat_messages():
     /// scroll position, message count, terminal width, selection mode, last message ID
-    /// as a proxy for content changes, task state, and mermaid render state.
+    /// as a proxy for content changes, task state, mermaid render state, and tool
+    /// activity (which affects msg_height via count_tool_activity_lines).
     pub fn message_cache_key(&self, width: u16) -> u64 {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
@@ -1294,6 +1295,14 @@ impl App {
         // the completed count changes and we need to re-render to show the diagram
         // instead of the "rendering..." placeholder.
         self.mermaid_cache.completed_count().hash(&mut hasher);
+        // Hash tool activity — changes msg_height via count_tool_activity_lines,
+        // so a cache hit with different tool activity would apply wrong truncation.
+        let mut agents: Vec<&String> = self.tool_activity.keys().collect();
+        agents.sort();
+        for agent in agents {
+            agent.hash(&mut hasher);
+            self.tool_activity[agent].len().hash(&mut hasher);
+        }
         hasher.finish()
     }
 

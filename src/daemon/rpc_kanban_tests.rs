@@ -218,7 +218,7 @@ fn test_serialize_tool_activity_with_tool_call() {
                 call_id: "call_001".to_string(),
                 semantic_header: "$ git status".to_string(),
             }],
-            status: ItemStatus::InProgress,
+            status: ItemStatus::Completed,
             timestamp: Utc::now(),
         }],
     );

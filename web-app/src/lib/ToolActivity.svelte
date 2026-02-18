@@ -26,7 +26,7 @@
         return part.ToolCall.semantic_header || part.ToolCall.name?.toLowerCase() || '?'
       }
       if (part.ToolResult) {
-        return part.ToolResult.is_error ? '✗ error' : '✓ result'
+        return part.ToolResult.is_error ? '✗ error' : '✓ ok'
       }
     }
     return '?'

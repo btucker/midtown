@@ -235,14 +235,24 @@ pub fn extract_tool_events(
     items
 }
 
+/// Maximum bytes retained from a tool result's output string.
+///
+/// The TUI only uses `is_error` from ToolResult items — the raw output is never
+/// displayed but is serialized over RPC on every `kanban.data` poll. Capping at
+/// 256 bytes prevents large Read/Bash/Grep outputs from bloating daemon memory
+/// and RPC payloads.
+const MAX_TOOL_RESULT_OUTPUT_BYTES: usize = 256;
+
 /// Extract the output string from a `tool_result` content block.
 ///
 /// The `content` field can be:
 /// - A string: returned directly.
 /// - An array of text blocks: joined together.
 /// - Missing/null: returns an empty string.
+///
+/// Output is truncated to `MAX_TOOL_RESULT_OUTPUT_BYTES` to bound memory usage.
 fn extract_tool_result_content(block: &serde_json::Value) -> String {
-    match block.get("content") {
+    let full = match block.get("content") {
         Some(serde_json::Value::String(s)) => s.clone(),
         Some(serde_json::Value::Array(arr)) => arr
             .iter()
@@ -256,5 +266,10 @@ fn extract_tool_result_content(block: &serde_json::Value) -> String {
             .collect::<Vec<_>>()
             .join(""),
         _ => String::new(),
+    };
+    if full.len() > MAX_TOOL_RESULT_OUTPUT_BYTES {
+        full[..MAX_TOOL_RESULT_OUTPUT_BYTES].to_string()
+    } else {
+        full
     }
 }

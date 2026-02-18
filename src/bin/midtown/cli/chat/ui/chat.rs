@@ -78,7 +78,11 @@ fn draw_chat_messages(f: &mut Frame, app: &mut App, area: Rect) {
 
     let inner = block.inner(area);
 
-    app.visible_height = inner.height as usize;
+    // Reserve space for tool activity before setting visible_height so that
+    // max_scroll() and visible_messages() use the actual message display area.
+    let activity_lines = count_tool_activity_lines(&app.tool_activity);
+    let msg_height = (inner.height as usize).saturating_sub(activity_lines);
+    app.visible_height = msg_height;
     app.clamp_scroll_offset();
 
     // Check if we can reuse cached rendered lines
@@ -86,8 +90,6 @@ fn draw_chat_messages(f: &mut Frame, app: &mut App, area: Rect) {
     if let Some(ref cache) = app.message_render_cache
         && cache.cache_key == cache_key
     {
-        let activity_lines = count_tool_activity_lines(&app.tool_activity);
-        let msg_height = (inner.height as usize).saturating_sub(activity_lines);
         let mut lines = cache.lines.clone();
         lines.truncate(msg_height);
         append_tool_activity_lines(&app.tool_activity, &mut lines);
@@ -150,10 +152,6 @@ fn draw_chat_messages(f: &mut Frame, app: &mut App, area: Rect) {
         app.mermaid_cache.get_or_render(&source);
     }
 
-    // Reserve space for tool activity before truncating messages
-    let activity_lines = count_tool_activity_lines(&app.tool_activity);
-    let msg_height = (inner.height as usize).saturating_sub(activity_lines);
-
     // Handle line truncation based on scroll position
     let total_lines = lines.len();
     let visible_lines = if total_lines > msg_height {
@@ -188,16 +186,16 @@ fn draw_chat_messages(f: &mut Frame, app: &mut App, area: Rect) {
 fn count_tool_activity_lines(
     tool_activity: &std::collections::HashMap<String, Vec<String>>,
 ) -> usize {
-    if tool_activity.is_empty() {
-        return 0;
-    }
-    let mut count = 1; // blank separator
+    let mut count = 0;
     for headers in tool_activity.values() {
         if headers.is_empty() {
             continue;
         }
         count += 1; // agent name header
         count += headers.len().min(3); // up to 3 tool call lines
+    }
+    if count > 0 {
+        count += 1; // blank separator before activity strip
     }
     count
 }
@@ -212,7 +210,9 @@ fn append_tool_activity_lines(
 ) {
     use super::styles::get_sender_color;
 
-    if tool_activity.is_empty() {
+    // Only render if at least one agent has non-empty headers
+    let has_activity = tool_activity.values().any(|h| !h.is_empty());
+    if !has_activity {
         return;
     }
 

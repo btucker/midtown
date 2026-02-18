@@ -515,6 +515,11 @@ async fn shutdown_coworker_impl(name: &str, message: &str, state: &DaemonState) 
     state.clear_pending_nudge(name);
     // Clear task assignment tracking (coworker is no longer active)
     state.clear_coworker_assignments(name);
+    // Clear recent tool activity for this coworker (prevents stale activity on respawn)
+    {
+        let mut tool_map = state.recent_tool_items.write().unwrap();
+        tool_map.remove(name);
+    }
     // Unbind from worktree registry (worktree persists for build cache reuse)
     {
         let mut ps = state.persistent_state.lock().await;
