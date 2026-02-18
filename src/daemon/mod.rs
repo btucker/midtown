@@ -622,6 +622,27 @@ pub(crate) struct DaemonState {
     ///
     /// Short TTL (2 min) ensures we eventually detect the review after it's posted.
     pr_review_negative_cache: std::sync::Mutex<HashMap<u64, std::time::Instant>>,
+    /// LRU pool for coworker name allocation.
+    ///
+    /// Tracks available and allocated names. Names at the front of the queue are
+    /// least-recently-used and will be allocated first. Released names go to the
+    /// back. Restored from `persistent_state.sessions` on startup.
+    pub(crate) name_pool: std::sync::Mutex<crate::name_pool::NamePool>,
+    /// Reverse map: coworker name → session ID.
+    ///
+    /// Maintained in memory alongside `persistent_state.sessions`. Updated when
+    /// a session init event arrives with a session ID, and cleared when a session
+    /// stops. Enables O(1) lookup of the session ID for a given name.
+    pub(crate) name_to_session: std::sync::Mutex<HashMap<String, String>>,
+    /// Reverse map: session ID → coworker name.
+    ///
+    /// Inverse of `name_to_session`. Updated and cleared together with that map.
+    pub(crate) session_to_name: std::sync::Mutex<HashMap<String, String>>,
+    /// Reverse map: task ID → session ID.
+    ///
+    /// Enables O(1) lookup of the session working on a given task. Updated when
+    /// a session is initialised with a task and cleared when the session stops.
+    pub(crate) task_to_session: std::sync::Mutex<HashMap<String, String>>,
 }
 
 impl DaemonState {
@@ -888,6 +909,34 @@ impl DaemonState {
         // Clone repo_name for session_manager before moving it into Self
         let session_manager_repo_name = repo_name.clone();
 
+        // Build NamePool from all known coworker names and restore state from persisted sessions.
+        let all_names: Vec<&str> = crate::coworker::AVENUE_NAMES
+            .iter()
+            .chain(crate::coworker::OVERFLOW_NAMES.iter())
+            .copied()
+            .collect();
+        let mut name_pool = crate::name_pool::NamePool::new(&all_names);
+        let mut name_to_session: HashMap<String, String> = HashMap::new();
+        let mut session_to_name: HashMap<String, String> = HashMap::new();
+        let mut task_to_session: HashMap<String, String> = HashMap::new();
+        {
+            let allocated_names: Vec<String> = persistent_state
+                .sessions
+                .values()
+                .filter_map(|r| r.current_name.clone())
+                .collect();
+            name_pool.restore(&allocated_names);
+            for (session_id, record) in &persistent_state.sessions {
+                if let Some(ref name) = record.current_name {
+                    name_to_session.insert(name.clone(), session_id.clone());
+                    session_to_name.insert(session_id.clone(), name.clone());
+                }
+                if let Some(ref task_id) = record.task_id {
+                    task_to_session.insert(task_id.clone(), session_id.clone());
+                }
+            }
+        }
+
         Ok(Self {
             coworkers,
             channel_router,
@@ -932,6 +981,10 @@ impl DaemonState {
             shutdown_tx,
             headed_sessions: Mutex::new(HashMap::new()),
             recent_tool_items: std::sync::RwLock::new(HashMap::new()),
+            name_pool: std::sync::Mutex::new(name_pool),
+            name_to_session: std::sync::Mutex::new(name_to_session),
+            session_to_name: std::sync::Mutex::new(session_to_name),
+            task_to_session: std::sync::Mutex::new(task_to_session),
         })
     }
 
@@ -1586,6 +1639,37 @@ impl DaemonState {
                 _ => {}
             }
         }
+    }
+
+    /// Look up the session ID currently holding a given name.
+    ///
+    /// Infrastructure for the session-centric model — used by effect handlers
+    /// and RPC adapters once the session-centric migration is further along.
+    #[allow(dead_code)] // Scaffold-ahead-of-use for session-centric tasks (Task 9+)
+    pub(crate) fn session_for_name(&self, name: &str) -> Option<String> {
+        self.name_to_session.lock().unwrap().get(name).cloned()
+    }
+
+    /// Look up the name currently assigned to a given session ID.
+    ///
+    /// Infrastructure for the session-centric model — used by effect handlers
+    /// and RPC adapters once the session-centric migration is further along.
+    #[allow(dead_code)] // Scaffold-ahead-of-use for session-centric tasks (Task 9+)
+    pub(crate) fn name_for_session(&self, session_id: &str) -> Option<String> {
+        self.session_to_name
+            .lock()
+            .unwrap()
+            .get(session_id)
+            .cloned()
+    }
+
+    /// Look up the session ID currently working on a given task ID.
+    ///
+    /// Infrastructure for the session-centric model — used by effect handlers
+    /// and RPC adapters once the session-centric migration is further along.
+    #[allow(dead_code)] // Scaffold-ahead-of-use for session-centric tasks (Task 9+)
+    pub(crate) fn session_for_task(&self, task_id: &str) -> Option<String> {
+        self.task_to_session.lock().unwrap().get(task_id).cloned()
     }
 
     /// Send a WebUpdate to all connected WebSocket clients (no-op if web is disabled).
@@ -2951,6 +3035,28 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                                 *stored_id = sid.clone();
                                 needs_persist_save = true;
                             }
+                            // Update in-memory reverse maps when session gets its ID.
+                            if let Some(record) = ps.sessions.get(sid) {
+                                if let Some(ref sname) = record.current_name {
+                                    state
+                                        .name_to_session
+                                        .lock()
+                                        .unwrap()
+                                        .insert(sname.clone(), sid.clone());
+                                    state
+                                        .session_to_name
+                                        .lock()
+                                        .unwrap()
+                                        .insert(sid.clone(), sname.clone());
+                                }
+                                if let Some(ref task_id) = record.task_id {
+                                    state
+                                        .task_to_session
+                                        .lock()
+                                        .unwrap()
+                                        .insert(task_id.clone(), sid.clone());
+                                }
+                            }
                         }
                     }
                 }
@@ -3005,6 +3111,25 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                     state.session_manager.remove(&name).await;
                     // Clean up all transient coworker state (shared with shutdown path)
                     state.cleanup_coworker_state(&name).await;
+
+                    // Release name from NamePool and clean up reverse maps.
+                    // Each lock is acquired and released independently (no nesting)
+                    // to avoid implicit lock-ordering dependencies.
+                    {
+                        let mut name_pool = state.name_pool.lock().unwrap();
+                        name_pool.release(&name);
+                    }
+                    let removed_session_id =
+                        state.name_to_session.lock().unwrap().remove(&name);
+                    if let Some(session_id) = removed_session_id {
+                        state.session_to_name.lock().unwrap().remove(&session_id);
+                        // Clean up task_to_session entries pointing to this session.
+                        state
+                            .task_to_session
+                            .lock()
+                            .unwrap()
+                            .retain(|_, sid| sid != &session_id);
+                    }
 
                     // Only clear session_id when the resume itself failed
                     // (session died within 30s of a resume spawn). This means
