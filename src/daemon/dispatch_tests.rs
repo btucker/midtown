@@ -392,17 +392,17 @@ fn test_build_task_completion_effects_message_says_merged() {
 }
 
 #[test]
-fn test_description_based_completion_all_prs_merged() {
+fn test_subject_based_completion_all_prs_merged() {
     use crate::tasks::{Task, TaskStatus};
     use std::collections::HashSet;
 
-    // Task with description referencing multiple PRs
+    // Meta-task with PR numbers in the subject (the supported pattern)
     let task = Task {
         id: "1100".to_string(),
-        subject: "Meta task".to_string(),
+        subject: "Merge reviewed PRs: #901, #902, #903".to_string(),
         status: TaskStatus::InProgress,
         owner: Some("york".to_string()),
-        description: Some("Merge reviewed PRs: #901, #902, #903".to_string()),
+        description: Some("These PRs are reviewed and CI is green.".to_string()),
         blocked_by: vec![],
         channel: None,
         pr: None,
@@ -423,7 +423,7 @@ fn test_description_based_completion_all_prs_merged() {
         ..snapshot::minimal_snapshot_for_test()
     };
 
-    let effects = build_description_based_completion_effects(&snap);
+    let effects = build_subject_based_completion_effects(&snap);
 
     assert_eq!(effects.len(), 3, "Should return 3 effects");
 
@@ -448,16 +448,16 @@ fn test_description_based_completion_all_prs_merged() {
 }
 
 #[test]
-fn test_description_based_completion_some_prs_not_merged() {
+fn test_subject_based_completion_some_prs_not_merged() {
     use crate::tasks::{Task, TaskStatus};
     use std::collections::HashSet;
 
     let task = Task {
         id: "1101".to_string(),
-        subject: "Meta task".to_string(),
+        subject: "Merge PRs: #901, #902, #903".to_string(),
         status: TaskStatus::InProgress,
         owner: Some("york".to_string()),
-        description: Some("Merge PRs: #901, #902, #903".to_string()),
+        description: Some("These PRs are all ready to merge.".to_string()),
         blocked_by: vec![],
         channel: None,
         pr: None,
@@ -478,7 +478,7 @@ fn test_description_based_completion_some_prs_not_merged() {
         ..snapshot::minimal_snapshot_for_test()
     };
 
-    let effects = build_description_based_completion_effects(&snap);
+    let effects = build_subject_based_completion_effects(&snap);
 
     assert!(
         effects.is_empty(),
@@ -487,7 +487,7 @@ fn test_description_based_completion_some_prs_not_merged() {
 }
 
 #[test]
-fn test_description_based_completion_no_pr_references() {
+fn test_subject_based_completion_no_pr_references() {
     use crate::tasks::{Task, TaskStatus};
 
     let task = Task {
@@ -509,7 +509,7 @@ fn test_description_based_completion_no_pr_references() {
         ..snapshot::minimal_snapshot_for_test()
     };
 
-    let effects = build_description_based_completion_effects(&snap);
+    let effects = build_subject_based_completion_effects(&snap);
 
     assert!(
         effects.is_empty(),
@@ -518,7 +518,7 @@ fn test_description_based_completion_no_pr_references() {
 }
 
 #[test]
-fn test_description_based_completion_skips_pending_tasks() {
+fn test_subject_based_completion_skips_pending_tasks() {
     use crate::tasks::{Task, TaskStatus};
     use std::collections::HashSet;
 
@@ -545,7 +545,7 @@ fn test_description_based_completion_skips_pending_tasks() {
         ..snapshot::minimal_snapshot_for_test()
     };
 
-    let effects = build_description_based_completion_effects(&snap);
+    let effects = build_subject_based_completion_effects(&snap);
 
     assert!(
         effects.is_empty(),
@@ -554,7 +554,7 @@ fn test_description_based_completion_skips_pending_tasks() {
 }
 
 #[test]
-fn test_description_based_completion_no_description() {
+fn test_subject_based_completion_no_description() {
     use crate::tasks::{Task, TaskStatus};
 
     let task = Task {
@@ -576,16 +576,16 @@ fn test_description_based_completion_no_description() {
         ..snapshot::minimal_snapshot_for_test()
     };
 
-    let effects = build_description_based_completion_effects(&snap);
+    let effects = build_subject_based_completion_effects(&snap);
 
     assert!(
         effects.is_empty(),
-        "Should not complete task with no description"
+        "Should not complete task with no PR numbers in subject"
     );
 }
 
 #[test]
-fn test_description_based_completion_skips_already_completed_tasks() {
+fn test_subject_based_completion_skips_already_completed_tasks() {
     use crate::tasks::{Task, TaskStatus};
     use std::collections::HashSet;
 
@@ -603,13 +603,13 @@ fn test_description_based_completion_skips_already_completed_tasks() {
         created_at: None,
     };
 
-    // Also add an in_progress task with PR references
+    // Also add an in_progress task with PR references in the subject
     let in_progress_task = Task {
         id: "43".to_string(),
-        subject: "Meta task".to_string(),
+        subject: "Merge PRs: #904, #905".to_string(),
         status: TaskStatus::InProgress,
         owner: Some("york".to_string()),
-        description: Some("Merge PRs: #904, #905".to_string()),
+        description: Some("These PRs are reviewed and ready.".to_string()),
         blocked_by: vec![],
         channel: None,
         pr: None,
@@ -628,7 +628,7 @@ fn test_description_based_completion_skips_already_completed_tasks() {
         ..snapshot::minimal_snapshot_for_test()
     };
 
-    let effects = build_description_based_completion_effects(&snap);
+    let effects = build_subject_based_completion_effects(&snap);
 
     // Should only produce effects for task 43, not task 42
     let complete_task_ids: Vec<&String> = effects
@@ -643,6 +643,200 @@ fn test_description_based_completion_skips_already_completed_tasks() {
     assert!(
         !complete_task_ids.contains(&&"42".to_string()),
         "Should not double-complete already-completed task 42"
+    );
+}
+
+// ======================================================================
+// Regression: auto-complete false positive from description text
+// ======================================================================
+
+#[test]
+fn test_subject_based_completion_does_not_scan_description_for_prs() {
+    // Regression test for bug !1546: tasks that mention PR numbers in their
+    // description as examples/context (not as the task's own PRs) were being
+    // incorrectly auto-completed when those PRs merged.
+    //
+    // Root cause: build_subject_based_completion_effects scanned both
+    // task.subject AND task.description for PR numbers. A task like:
+    //   "Fix daemon not recovering coworkers with stalled in_progress tasks"
+    // with description:
+    //   "...currently PRs #1273, #1274, #1277 have CI passing..."
+    // would be auto-completed when all three merged, even though none of them
+    // are the task's OWN PR.
+    //
+    // Fix: Only scan task.subject for PR numbers, not task.description.
+    use crate::tasks::{Task, TaskStatus};
+    use std::collections::HashSet;
+
+    let task = Task {
+        id: "1543".to_string(),
+        subject: "Fix daemon not recovering coworkers with stalled in_progress tasks".to_string(),
+        status: TaskStatus::InProgress,
+        owner: Some("amsterdam".to_string()),
+        description: Some(
+            "Captured snapshot: snapshot-stalled-tasks-owners-on-break.json\n\n\
+             When coworkers go on break while their tasks are still in_progress \
+             and their PRs are open with CI green, the daemon should recover them.\n\n\
+             Currently the daemon leaves tasks in_progress with owners on break indefinitely. \
+             It recovered riverside once for !1539 but didn't recover amsterdam (!1515), \
+             vernon (!1523), or park (!1533) even though their PRs (#1274, #1273, #1277) \
+             all have CI passing.\n\n\
+             Write a failing E2E test using the captured snapshot, then fix the bug."
+                .to_string(),
+        ),
+        blocked_by: vec![],
+        channel: None,
+        pr: None, // No explicit PR field — task hasn't opened its own PR yet
+        created_at: None,
+    };
+
+    // Simulate the PRs mentioned in the description having been merged
+    let mut merged_pr_numbers = HashSet::new();
+    merged_pr_numbers.insert(1273u64);
+    merged_pr_numbers.insert(1274u64);
+    merged_pr_numbers.insert(1277u64);
+
+    let snap = snapshot::WorldSnapshot {
+        all_tasks: vec![task],
+        merged_pr_numbers,
+        repo_name: "test-repo".to_string(),
+        repo_owner: None,
+        ..snapshot::minimal_snapshot_for_test()
+    };
+
+    let effects = build_subject_based_completion_effects(&snap);
+
+    // Should NOT auto-complete — the PR numbers are contextual examples in the
+    // description, not the task's own PRs.
+    let complete_task_ids: Vec<&String> = effects
+        .iter()
+        .filter_map(|e| match e {
+            Effect::CompleteTask { task_id, .. } => Some(task_id),
+            _ => None,
+        })
+        .collect();
+
+    assert!(
+        complete_task_ids.is_empty(),
+        "Task !1543 should NOT be auto-completed — PR numbers in description are examples, \
+         not the task's own PRs. Got completions for: {:?}",
+        complete_task_ids
+    );
+}
+
+#[test]
+fn test_subject_based_completion_still_works_for_meta_tasks() {
+    // Meta-tasks like "Merge reviewed PRs: #901, #902, #903" reference PR numbers
+    // in the SUBJECT. These should still be auto-completed when all PRs merge.
+    use crate::tasks::{Task, TaskStatus};
+    use std::collections::HashSet;
+
+    let task = Task {
+        id: "meta-42".to_string(),
+        subject: "Merge reviewed PRs: #901, #902".to_string(),
+        status: TaskStatus::InProgress,
+        owner: Some("york".to_string()),
+        description: Some(
+            "All these PRs have been reviewed and CI is green. \
+             Merge them to unblock downstream work."
+                .to_string(),
+        ),
+        blocked_by: vec![],
+        channel: None,
+        pr: None,
+        created_at: None,
+    };
+
+    let mut merged_pr_numbers = HashSet::new();
+    merged_pr_numbers.insert(901u64);
+    merged_pr_numbers.insert(902u64);
+
+    let snap = snapshot::WorldSnapshot {
+        all_tasks: vec![task],
+        merged_pr_numbers,
+        repo_name: "test-repo".to_string(),
+        repo_owner: None,
+        ..snapshot::minimal_snapshot_for_test()
+    };
+
+    let effects = build_subject_based_completion_effects(&snap);
+
+    let complete_task_ids: Vec<&String> = effects
+        .iter()
+        .filter_map(|e| match e {
+            Effect::CompleteTask { task_id, .. } => Some(task_id),
+            _ => None,
+        })
+        .collect();
+
+    assert_eq!(
+        complete_task_ids,
+        vec!["meta-42"],
+        "Meta-task with PR numbers in subject SHOULD be auto-completed when all PRs merge"
+    );
+}
+
+#[test]
+fn test_subject_based_completion_snapshot_stalled_tasks_false_positive() {
+    // Snapshot-based regression test for bug !1546: injects a synthetic task that
+    // has merged PR numbers only in its description (not subject). The old code
+    // would scan the description and auto-complete it; the fix ignores descriptions.
+    //
+    // Also verifies the real snapshot tasks (!1515, !1523) are not auto-completed.
+    use crate::tasks::{Task, TaskStatus};
+
+    let fixture = include_str!(
+        "../../tests/fixtures/snapshot/snapshot-stalled-tasks-owners-on-break-20260218-154248.json"
+    );
+    let mut snap: snapshot::WorldSnapshot =
+        serde_json::from_str(fixture).expect("deserialize captured snapshot");
+
+    // Inject a synthetic task that mimics the original bug: PR numbers (#1272, #1275)
+    // appear only in the description as contextual background. Both are in the
+    // snapshot's merged_pr_numbers set. The old code would auto-complete this task;
+    // the fix should leave it alone.
+    snap.all_tasks.push(Task {
+        id: "synthetic-false-positive".to_string(),
+        subject: "Fix daemon not recovering stalled coworkers".to_string(),
+        status: TaskStatus::InProgress,
+        owner: Some("amsterdam".to_string()),
+        description: Some(
+            "PRs #1272 and #1275 are already merged but their owners' tasks \
+             are still in_progress. The daemon should detect this."
+                .to_string(),
+        ),
+        blocked_by: vec![],
+        channel: None,
+        pr: None,
+        created_at: None,
+    });
+
+    let effects = build_subject_based_completion_effects(&snap);
+
+    let completed: Vec<&String> = effects
+        .iter()
+        .filter_map(|e| match e {
+            Effect::CompleteTask { task_id, .. } => Some(task_id),
+            _ => None,
+        })
+        .collect();
+
+    // The synthetic task must NOT be auto-completed — PR numbers are in description only
+    assert!(
+        !completed.contains(&&"synthetic-false-positive".to_string()),
+        "Task with PR numbers only in description should NOT be auto-completed (bug !1546)"
+    );
+
+    // Original snapshot tasks should also not be auto-completed:
+    // - !1515 has no pr field and no PR numbers in its subject
+    // - !1523 has pr: 1264 which is NOT in the 10-PR merged cache
+    assert!(
+        !completed.contains(&&"1515".to_string()),
+        "Task !1515 should NOT be auto-completed — no pr field and no PR numbers in subject"
+    );
+    assert!(
+        !completed.contains(&&"1523".to_string()),
+        "Task !1523 should NOT be auto-completed — PR #1264 is not in the merged cache"
     );
 }
 

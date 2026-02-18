@@ -144,7 +144,7 @@ impl MultiTickHarness {
                     &self.snapshot,
                 ));
                 effects.extend(midtown::daemon::reconcile_orphaned_prs(&self.snapshot));
-                effects.extend(midtown::daemon::build_description_based_completion_effects(
+                effects.extend(midtown::daemon::build_subject_based_completion_effects(
                     &self.snapshot,
                 ));
                 // Skipped (needs DaemonState): poll_prs_for_issues
