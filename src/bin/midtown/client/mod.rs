@@ -196,7 +196,23 @@ impl DaemonClient {
         // If no explicit channel provided, check MIDTOWN_CHANNEL env var
         let default_channel = std::env::var("MIDTOWN_CHANNEL").ok();
         let channel = channel.or(default_channel.as_deref());
-        self.channel_post_as(message, &from, channel)
+        self.channel_post_as(message, &from, channel, None)
+    }
+
+    /// Post a message as a thread reply.
+    ///
+    /// Like `channel_post`, but attaches a `thread_parent_id` so the message
+    /// is stored as a reply in the specified thread.
+    pub fn channel_post_in_thread(
+        &self,
+        message: &str,
+        channel: Option<&str>,
+        thread_parent_id: &str,
+    ) -> Result<Response, String> {
+        let from = std::env::var("MIDTOWN_AGENT").unwrap_or_else(|_| "lead".to_string());
+        let default_channel = std::env::var("MIDTOWN_CHANNEL").ok();
+        let channel = channel.or(default_channel.as_deref());
+        self.channel_post_as(message, &from, channel, Some(thread_parent_id))
     }
 
     /// Post a message to the channel with an explicit sender.
@@ -207,10 +223,14 @@ impl DaemonClient {
         message: &str,
         from: &str,
         channel: Option<&str>,
+        thread_parent_id: Option<&str>,
     ) -> Result<Response, String> {
         let mut params = serde_json::json!({ "message": message, "from": from });
         if let Some(ch) = channel {
             params["channel"] = serde_json::Value::String(ch.to_string());
+        }
+        if let Some(tpi) = thread_parent_id {
+            params["thread_parent_id"] = serde_json::Value::String(tpi.to_string());
         }
         self.send("channel.post", Some(params))
     }

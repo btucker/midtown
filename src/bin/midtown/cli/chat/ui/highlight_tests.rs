@@ -82,6 +82,7 @@ fn test_code_block_segment_renders_with_borders() {
         channel: None,
         source_channel: None,
         session_id: None,
+        thread_parent_id: None,
     };
 
     let segments = vec![ContentSegment::CodeBlock {

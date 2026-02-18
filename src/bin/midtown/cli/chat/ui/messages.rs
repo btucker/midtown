@@ -352,6 +352,7 @@ mod tests {
             channel: None,
             source_channel: None,
             session_id: None,
+            thread_parent_id: None,
         };
         let long_name_msg = Message {
             id: "2".to_string(),
@@ -362,6 +363,7 @@ mod tests {
             channel: None,
             source_channel: None,
             session_id: None,
+            thread_parent_id: None,
         };
 
         let current_tasks = HashMap::new();
@@ -406,6 +408,7 @@ mod tests {
             channel: None,
             source_channel: None,
             session_id: None,
+            thread_parent_id: None,
         };
         let msg2 = Message {
             id: "2".to_string(),
@@ -416,6 +419,7 @@ mod tests {
             channel: None,
             source_channel: None,
             session_id: None,
+            thread_parent_id: None,
         };
 
         let current_tasks = HashMap::new();
@@ -457,6 +461,7 @@ mod tests {
             channel: None,
             source_channel: None,
             session_id: None,
+            thread_parent_id: None,
         };
 
         let current_tasks = HashMap::new();
@@ -523,6 +528,7 @@ mod tests {
             channel: None,
             source_channel: None,
             session_id: None,
+            thread_parent_id: None,
         };
 
         let current_tasks = HashMap::new();
@@ -555,6 +561,7 @@ mod tests {
                 channel: None,
                 source_channel: None,
                 session_id: None,
+                thread_parent_id: None,
             })
             .collect();
 
@@ -633,6 +640,7 @@ mod tests {
                 channel: None,
                 source_channel: None,
                 session_id: None,
+                thread_parent_id: None,
             })
             .collect();
 
@@ -756,6 +764,7 @@ mod tests {
             channel: None,
             source_channel: None,
             session_id: None,
+            thread_parent_id: None,
         };
 
         let daemon_lines =
@@ -775,6 +784,7 @@ mod tests {
             channel: None,
             source_channel: None,
             session_id: None,
+            thread_parent_id: None,
         };
         let daemon_lines2 =
             render_message(&daemon_msg2, 80, Some("daemon"), &current_tasks, None, &[]);
@@ -794,6 +804,7 @@ mod tests {
             channel: None,
             source_channel: None,
             session_id: None,
+            thread_parent_id: None,
         };
         let github_lines =
             render_message(&github_msg, 80, Some("daemon"), &current_tasks, None, &[]);
@@ -813,6 +824,7 @@ mod tests {
             channel: None,
             source_channel: None,
             session_id: None,
+            thread_parent_id: None,
         };
         let park_lines = render_message(&park_msg, 80, Some("daemon"), &current_tasks, None, &[]);
         assert_eq!(
@@ -853,6 +865,7 @@ mod tests {
             channel: None,
             source_channel: None,
             session_id: None,
+            thread_parent_id: None,
         };
         let github_lines =
             render_message(&github_msg, 80, Some("daemon"), &current_tasks, None, &[]);
@@ -871,6 +884,7 @@ mod tests {
             channel: None,
             source_channel: None,
             session_id: None,
+            thread_parent_id: None,
         };
         let daemon_lines =
             render_message(&daemon_msg, 80, Some("github"), &current_tasks, None, &[]);
@@ -897,6 +911,7 @@ mod tests {
             channel: None,
             source_channel: None,
             session_id: None,
+            thread_parent_id: None,
         };
         let park_lines = render_message(&park_msg, 80, Some("github"), &current_tasks, None, &[]);
         assert_eq!(
@@ -935,6 +950,7 @@ mod tests {
             channel: None,
             source_channel: None,
             session_id: None,
+            thread_parent_id: None,
         };
 
         let mut current_tasks = HashMap::new();
@@ -990,6 +1006,7 @@ mod tests {
             channel: None,
             source_channel: None,
             session_id: None,
+            thread_parent_id: None,
         };
 
         let mut current_tasks = HashMap::new();
@@ -1021,6 +1038,7 @@ mod tests {
             channel: None,
             source_channel: None,
             session_id: None,
+            thread_parent_id: None,
         };
 
         let mut current_tasks = HashMap::new();
@@ -1187,6 +1205,7 @@ mod tests {
             channel: None,
             source_channel: None,
             session_id: None,
+            thread_parent_id: None,
         }
     }
 }
