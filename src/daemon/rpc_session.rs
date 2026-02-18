@@ -872,6 +872,26 @@ pub(super) async fn handle_session_clear(
         }
     };
 
+    // Guard: refuse to clear a session that is currently interactively attached.
+    // When attached, the headless session is paused (is_alive() returns false), but
+    // spawning a fresh headless process would conflict with the interactive session.
+    {
+        let attached = state.attached_coworkers.lock().unwrap();
+        if attached.contains_key(&name.to_lowercase()) {
+            return Response::error(
+                id,
+                RpcError::new(
+                    -32602,
+                    format!(
+                        "Coworker '{}' is currently attached interactively. \
+                         Detach first with `midtown session detach {}`.",
+                        name, name
+                    ),
+                ),
+            );
+        }
+    }
+
     // Stop the running session if alive
     if state.session_manager.is_alive(&name).await {
         info!("Stopping headless session '{}' for clear", name);
@@ -918,6 +938,23 @@ pub(super) async fn handle_session_clear(
     match state.spawn_coworker(&config).await {
         Ok(()) => {
             info!("Relaunched fresh session for '{}' after clear", name);
+
+            // Restore the original initial_prompt in persistent state.
+            // spawn_coworker() persisted the decorated fresh_prompt as initial_prompt,
+            // but we want the canonical original prompt preserved so that subsequent
+            // `session clear` calls don't compound the "fresh session restart" prefix.
+            {
+                let mut ps = state.persistent_state.lock().await;
+                if let Some(entry) = ps.headless_sessions.get_mut(&name) {
+                    entry.initial_prompt = session_info.initial_prompt.clone();
+                }
+                if let Err(e) = ps.save_for_repo(&state.repo_name) {
+                    warn!(
+                        "Failed to save persistent state after restoring initial_prompt for '{}': {}",
+                        name, e
+                    );
+                }
+            }
 
             let _ = state
                 .send_and_broadcast_async(&crate::message::Message::system(format!(
