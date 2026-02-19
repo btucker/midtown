@@ -190,8 +190,13 @@ pub(super) async fn handle_coworker_break(
     if let Err(e) = state.session_manager.shutdown(name).await {
         warn!("Failed to shut down headless session for {}: {}", name, e);
     }
-    state.coworkers.deregister(name);
-    state.record_coworker_stop_time(name);
+    // Clean up all transient coworker state through the centralized path.
+    // This handles: deregistration, stop-time, coworker_records, cooldowns,
+    // pending nudges, task assignments, recent_tool_items, NamePool release,
+    // session reverse maps, SessionRecord update, and pending_questions.
+    // Note: we intentionally do NOT unbind the worktree here — break preserves
+    // the worktree for potential resumption.
+    state.cleanup_coworker_state(name).await;
 
     info!("Sent coworker on a break: {}", name);
     Response::success(

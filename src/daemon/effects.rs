@@ -400,6 +400,54 @@ pub enum Effect {
     /// time is NOT recorded here — we want an immediate respawn, not the usual
     /// 5-minute cooldown that follows a normal stop.
     AutoDetachCoworker { name: String },
+
+    // ── Session-centric effects (new model) ─────────────────────────────
+    /// Spawn a new session for a task. Allocates a name from the NamePool.
+    ///
+    /// This is the session-centric counterpart to `SpawnCoworker` / `AssignAndSpawn`.
+    /// The key difference: `SpawnSession` allocates the name from the NamePool at
+    /// execution time (not at decision time), keeping the decision functions pure.
+    SpawnSession {
+        session_id: String,
+        task_id: String,
+        working_dir: std::path::PathBuf,
+        initial_prompt: String,
+        preferred_name: Option<String>,
+        is_reviewer: bool,
+        resume: bool,
+        config: Box<crate::launch::LaunchConfig>,
+    },
+
+    /// Shut down a running session. Releases the name back to the NamePool.
+    ///
+    /// Session-centric counterpart to `ShutdownCoworker`. Looks up the session's
+    /// current name via `session_to_name` reverse map and performs shutdown +
+    /// cleanup through `cleanup_coworker_state`.
+    ShutdownSession { session_id: String, reason: String },
+
+    /// Nudge a session (deliver a message). If suspended, optionally resume first.
+    ///
+    /// Session-centric counterpart to `NudgeCoworker`. Uses `session_to_name` to
+    /// find the current name and delivers via `SessionManager::send_message`.
+    NudgeSession {
+        session_id: String,
+        message: String,
+        resume_if_suspended: bool,
+    },
+
+    /// Record a session record in persistent state.
+    ///
+    /// Upserts the `SessionRecord` into `DaemonPersistentState::sessions` and
+    /// updates in-memory reverse maps (name_to_session, session_to_name, task_to_session).
+    RecordSession {
+        record: Box<crate::daemon::state::SessionRecord>,
+    },
+
+    /// Release a name back to the NamePool (session stopped, name no longer needed).
+    ///
+    /// Standalone effect for releasing a name without full shutdown. Used when
+    /// a session is suspended (process stopped but session state preserved for later resume).
+    ReleaseName { name: String },
 }
 
 /// Deduplicate nudge effects targeting the same coworker within a single batch.
@@ -513,8 +561,12 @@ async fn shutdown_coworker_impl(name: &str, message: &str, state: &DaemonState) 
     }
     info!(coworker = %name, "SHUTDOWN_COWORKER: headless session stopped");
 
-    // Clean up all transient coworker state (shared with session death path)
+    // Clean up all transient coworker state (shared with session death path).
+    // This releases the name back to NamePool, cleans up session reverse maps
+    // (name_to_session, session_to_name, task_to_session), and marks the
+    // SessionRecord as stopped in persistent state.
     state.cleanup_coworker_state(name).await;
+
     // Unbind from worktree registry (worktree persists for build cache reuse)
     {
         let mut ps = state.persistent_state.lock().await;
@@ -1770,6 +1822,250 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     );
                 }
             }
+            // ── Session-centric effects ──────────────────────────────────
+            Effect::SpawnSession {
+                session_id,
+                task_id,
+                working_dir,
+                initial_prompt,
+                preferred_name,
+                is_reviewer,
+                resume,
+                mut config,
+            } => {
+                // 1. Allocate name from NamePool
+                let channel_lead_names: std::collections::HashSet<String> = {
+                    let ps = state.persistent_state.lock().await;
+                    ps.channel_lead_sessions.keys().cloned().collect()
+                };
+                let name = {
+                    let mut pool = state.name_pool.lock().unwrap();
+                    pool.allocate_excluding(preferred_name.as_deref(), &channel_lead_names)
+                };
+                let Some(name) = name else {
+                    warn!("No available names for SpawnSession {}", session_id);
+                    continue;
+                };
+
+                // 2. Update config with allocated name
+                config.name = name.clone();
+                if !resume {
+                    config.session_mode = crate::launch::SessionMode::Fresh;
+                } else {
+                    config.session_mode =
+                        crate::launch::SessionMode::ResumeSession(session_id.clone());
+                }
+                config.working_dir = Some(working_dir.clone());
+                config.initial_prompt = Some(initial_prompt.clone());
+
+                // 3. Spawn via state.spawn_coworker (handles worktree, register, session manager)
+                match state.spawn_coworker(&config).await {
+                    Ok(()) => {
+                        info!(
+                            "SpawnSession: spawned session {} as {} for task !{}",
+                            session_id, name, task_id
+                        );
+
+                        // 4. Update reverse maps
+                        {
+                            state
+                                .name_to_session
+                                .lock()
+                                .unwrap()
+                                .insert(name.clone(), session_id.clone());
+                        }
+                        {
+                            state
+                                .session_to_name
+                                .lock()
+                                .unwrap()
+                                .insert(session_id.clone(), name.clone());
+                        }
+                        {
+                            state
+                                .task_to_session
+                                .lock()
+                                .unwrap()
+                                .insert(task_id.clone(), session_id.clone());
+                        }
+
+                        // 5. Update SessionRecord in persistent state
+                        {
+                            let mut ps = state.persistent_state.lock().await;
+                            let record =
+                                ps.sessions.entry(session_id.clone()).or_insert_with(|| {
+                                    crate::daemon::state::SessionRecord {
+                                        session_id: session_id.clone(),
+                                        task_id: Some(task_id.clone()),
+                                        current_name: Some(name.clone()),
+                                        preferred_name: preferred_name
+                                            .clone()
+                                            .or_else(|| Some(name.clone())),
+                                        working_dir: working_dir.to_string_lossy().to_string(),
+                                        branch: None,
+                                        pr_number: None,
+                                        initial_prompt: Some(initial_prompt.clone()),
+                                        is_reviewer,
+                                        coworker_type: if is_reviewer {
+                                            "reviewer".to_string()
+                                        } else {
+                                            "dev".to_string()
+                                        },
+                                        is_running: true,
+                                        created_at: chrono::Utc::now(),
+                                        resume_on_startup: !is_reviewer,
+                                    }
+                                });
+                            record.current_name = Some(name.clone());
+                            record.is_running = true;
+                            if let Err(e) = ps.save_for_repo(&state.repo_name) {
+                                warn!("Failed to save persistent state after SpawnSession: {}", e);
+                            }
+                        }
+
+                        state.broadcast_coworker_update(&name, "running", None);
+                    }
+                    Err(e) => {
+                        warn!("SpawnSession failed for {}: {}", session_id, e);
+                        // Release name back since spawn failed
+                        {
+                            let mut pool = state.name_pool.lock().unwrap();
+                            pool.release(&name);
+                        }
+                    }
+                }
+            }
+
+            Effect::ShutdownSession { session_id, reason } => {
+                // Look up name from session_to_name
+                let name = state
+                    .session_to_name
+                    .lock()
+                    .unwrap()
+                    .get(&session_id)
+                    .cloned();
+                if let Some(name) = name {
+                    info!(
+                        "ShutdownSession: shutting down session {} (name: {}, reason: {})",
+                        session_id, name, reason
+                    );
+                    // shutdown_coworker_impl → cleanup_coworker_state handles all
+                    // cleanup: NamePool release, reverse maps, and SessionRecord
+                    // update in persistent state.
+                    let _ = shutdown_coworker_impl(&name, &reason, state).await;
+
+                    state.broadcast_coworker_update(&name, "stopped", None);
+                } else {
+                    // No name mapped — session may have been suspended via ReleaseName
+                    // or already partially cleaned up. Still mark SessionRecord as stopped
+                    // so persistent state doesn't show a stale is_running=true.
+                    warn!(
+                        "ShutdownSession: no name found for session {} — marking record as stopped",
+                        session_id
+                    );
+                    let mut ps = state.persistent_state.lock().await;
+                    if let Some(record) = ps.sessions.get_mut(&session_id) {
+                        record.is_running = false;
+                    }
+                    if let Err(e) = ps.save_for_repo(&state.repo_name) {
+                        warn!(
+                            "Failed to save persistent state after ShutdownSession for {}: {}",
+                            session_id, e
+                        );
+                    }
+                }
+            }
+
+            Effect::NudgeSession {
+                session_id,
+                message,
+                resume_if_suspended,
+            } => {
+                let name = state
+                    .session_to_name
+                    .lock()
+                    .unwrap()
+                    .get(&session_id)
+                    .cloned();
+                if let Some(name) = name {
+                    match state.session_manager.send_message(&name, &message).await {
+                        Ok(()) => {
+                            state.record_pending_nudge(&name, &message);
+                            info!(
+                                "NudgeSession: delivered to {} (session {})",
+                                name, session_id
+                            );
+                        }
+                        Err(e) => {
+                            if resume_if_suspended {
+                                warn!(
+                                    "NudgeSession: session {} not reachable, resume_if_suspended=true but resume not yet implemented — nudge dropped: {}",
+                                    session_id, e
+                                );
+                            } else {
+                                warn!(
+                                    "NudgeSession: failed to nudge session {}: {}",
+                                    session_id, e
+                                );
+                            }
+                        }
+                    }
+                } else {
+                    warn!(
+                        "NudgeSession: no name found for session {} — cannot deliver",
+                        session_id
+                    );
+                }
+            }
+
+            Effect::RecordSession { record } => {
+                let session_id = record.session_id.clone();
+
+                // Update in-memory reverse maps
+                if let Some(ref name) = record.current_name {
+                    state
+                        .name_to_session
+                        .lock()
+                        .unwrap()
+                        .insert(name.clone(), session_id.clone());
+                    state
+                        .session_to_name
+                        .lock()
+                        .unwrap()
+                        .insert(session_id.clone(), name.clone());
+                }
+                if let Some(ref task_id) = record.task_id {
+                    state
+                        .task_to_session
+                        .lock()
+                        .unwrap()
+                        .insert(task_id.clone(), session_id.clone());
+                }
+
+                // Persist session record
+                {
+                    let mut ps = state.persistent_state.lock().await;
+                    ps.sessions.insert(session_id.clone(), *record);
+                    if let Err(e) = ps.save_for_repo(&state.repo_name) {
+                        warn!("Failed to save persistent state after RecordSession: {}", e);
+                    }
+                }
+                info!("RecordSession: saved session {}", session_id);
+            }
+
+            Effect::ReleaseName { name } => {
+                {
+                    let mut pool = state.name_pool.lock().unwrap();
+                    pool.release(&name);
+                }
+                // Clean up reverse maps
+                let session_id = state.name_to_session.lock().unwrap().remove(&name);
+                if let Some(session_id) = session_id {
+                    state.session_to_name.lock().unwrap().remove(&session_id);
+                }
+                info!("ReleaseName: released '{}' back to NamePool", name);
+            }
+
             Effect::AutoDetachCoworker { name } => {
                 // Clear from attached set — must happen before next tick so
                 // ensure_lead_alive() sees the lead as detached and can respawn.

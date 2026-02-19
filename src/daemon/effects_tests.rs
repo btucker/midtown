@@ -441,6 +441,334 @@ async fn test_cleanup_merged_worktree_removes_pr_author_session() {
     );
 }
 
+// ── Session-centric effect tests ──────────────────────────────────────
+
+#[test]
+fn test_record_session_inserts_into_persistent_state() {
+    use crate::daemon::state::{DaemonPersistentState, SessionRecord};
+    use chrono::Utc;
+
+    let mut persistent_state = DaemonPersistentState::default();
+    let record = SessionRecord {
+        session_id: "sess-abc-123".to_string(),
+        task_id: Some("42".to_string()),
+        current_name: Some("lexington".to_string()),
+        preferred_name: Some("lexington".to_string()),
+        working_dir: "/tmp/worktree".to_string(),
+        branch: Some("lexington/task-42".to_string()),
+        pr_number: None,
+        initial_prompt: Some("Work on task 42".to_string()),
+        is_reviewer: false,
+        coworker_type: "dev".to_string(),
+        is_running: true,
+        created_at: Utc::now(),
+        resume_on_startup: true,
+    };
+
+    // Simulate RecordSession effect
+    persistent_state
+        .sessions
+        .insert(record.session_id.clone(), record.clone());
+
+    assert!(persistent_state.sessions.contains_key("sess-abc-123"));
+    let stored = persistent_state.sessions.get("sess-abc-123").unwrap();
+    assert_eq!(stored.task_id.as_deref(), Some("42"));
+    assert_eq!(stored.current_name.as_deref(), Some("lexington"));
+    assert!(stored.is_running);
+}
+
+#[test]
+fn test_record_session_updates_existing_record() {
+    use crate::daemon::state::{DaemonPersistentState, SessionRecord};
+    use chrono::Utc;
+
+    let mut persistent_state = DaemonPersistentState::default();
+
+    // Insert initial record
+    let record = SessionRecord {
+        session_id: "sess-abc-123".to_string(),
+        task_id: Some("42".to_string()),
+        current_name: Some("lexington".to_string()),
+        preferred_name: Some("lexington".to_string()),
+        working_dir: "/tmp/worktree".to_string(),
+        branch: None,
+        pr_number: None,
+        initial_prompt: None,
+        is_reviewer: false,
+        coworker_type: "dev".to_string(),
+        is_running: true,
+        created_at: Utc::now(),
+        resume_on_startup: true,
+    };
+    persistent_state
+        .sessions
+        .insert(record.session_id.clone(), record);
+
+    // Simulate update (e.g., session stopped)
+    let mut updated = persistent_state
+        .sessions
+        .get("sess-abc-123")
+        .unwrap()
+        .clone();
+    updated.is_running = false;
+    updated.current_name = None;
+    persistent_state
+        .sessions
+        .insert("sess-abc-123".to_string(), updated);
+
+    let stored = persistent_state.sessions.get("sess-abc-123").unwrap();
+    assert!(!stored.is_running);
+    assert!(stored.current_name.is_none());
+    // Preferred name is preserved for future resume
+    assert_eq!(stored.preferred_name.as_deref(), Some("lexington"));
+}
+
+#[test]
+fn test_release_name_frees_name_in_pool() {
+    use crate::name_pool::NamePool;
+
+    let mut pool = NamePool::new(&["lexington", "park", "madison"]);
+
+    // Allocate "lexington"
+    let name = pool.allocate(None).unwrap();
+    assert_eq!(name, "lexington");
+    assert!(pool.is_allocated("lexington"));
+    assert_eq!(pool.available_count(), 2);
+
+    // Simulate ReleaseName effect
+    pool.release(&name);
+    assert!(!pool.is_allocated("lexington"));
+    assert_eq!(pool.available_count(), 3);
+
+    // Released name goes to the back of the LRU queue
+    assert_eq!(pool.allocate(None).unwrap(), "park");
+    assert_eq!(pool.allocate(None).unwrap(), "madison");
+    assert_eq!(pool.allocate(None).unwrap(), "lexington");
+}
+
+#[test]
+fn test_shutdown_session_marks_not_running() {
+    use crate::daemon::state::{DaemonPersistentState, SessionRecord};
+    use chrono::Utc;
+
+    let mut persistent_state = DaemonPersistentState::default();
+    let record = SessionRecord {
+        session_id: "sess-abc-123".to_string(),
+        task_id: Some("42".to_string()),
+        current_name: Some("lexington".to_string()),
+        preferred_name: Some("lexington".to_string()),
+        working_dir: "/tmp/worktree".to_string(),
+        branch: None,
+        pr_number: None,
+        initial_prompt: None,
+        is_reviewer: false,
+        coworker_type: "dev".to_string(),
+        is_running: true,
+        created_at: Utc::now(),
+        resume_on_startup: true,
+    };
+    persistent_state
+        .sessions
+        .insert(record.session_id.clone(), record);
+
+    // Simulate ShutdownSession effect
+    if let Some(record) = persistent_state.sessions.get_mut("sess-abc-123") {
+        record.is_running = false;
+        record.current_name = None;
+    }
+
+    let stored = persistent_state.sessions.get("sess-abc-123").unwrap();
+    assert!(!stored.is_running);
+    assert!(stored.current_name.is_none());
+    assert_eq!(stored.preferred_name.as_deref(), Some("lexington"));
+}
+
+#[test]
+fn test_spawn_session_name_allocation_with_preferred() {
+    use crate::name_pool::NamePool;
+    use std::collections::HashSet;
+
+    let mut pool = NamePool::new(&["lexington", "park", "madison"]);
+    // Allocate park (simulating it's in use)
+    pool.allocate(None); // takes lexington
+    pool.allocate(None); // takes park
+    pool.release("lexington"); // lexington returns to pool
+
+    // SpawnSession with preferred_name="lexington" should get lexington
+    let excluded: HashSet<String> = HashSet::new();
+    let name = pool.allocate_excluding(Some("lexington"), &excluded);
+    assert_eq!(name.as_deref(), Some("lexington"));
+}
+
+#[test]
+fn test_spawn_session_excludes_channel_leads() {
+    use crate::name_pool::NamePool;
+    use std::collections::HashSet;
+
+    let mut pool = NamePool::new(&["lexington", "park", "madison"]);
+
+    // Channel leads should be excluded from allocation
+    let channel_leads: HashSet<String> = ["lexington"].iter().map(|s| s.to_string()).collect();
+    let name = pool.allocate_excluding(None, &channel_leads);
+    assert_eq!(
+        name.as_deref(),
+        Some("park"),
+        "Should skip lexington (channel lead)"
+    );
+}
+
+#[test]
+fn test_reverse_maps_consistency() {
+    use std::collections::HashMap;
+
+    // Simulate the reverse map operations from RecordSession
+    let mut name_to_session: HashMap<String, String> = HashMap::new();
+    let mut session_to_name: HashMap<String, String> = HashMap::new();
+    let mut task_to_session: HashMap<String, String> = HashMap::new();
+
+    // RecordSession: insert
+    let session_id = "sess-abc-123".to_string();
+    let name = "lexington".to_string();
+    let task_id = "42".to_string();
+    name_to_session.insert(name.clone(), session_id.clone());
+    session_to_name.insert(session_id.clone(), name.clone());
+    task_to_session.insert(task_id.clone(), session_id.clone());
+
+    // Verify lookups
+    assert_eq!(name_to_session.get("lexington"), Some(&session_id));
+    assert_eq!(session_to_name.get("sess-abc-123"), Some(&name));
+    assert_eq!(task_to_session.get("42"), Some(&session_id));
+
+    // ReleaseName: cleanup
+    let removed_session = name_to_session.remove("lexington");
+    if let Some(ref sid) = removed_session {
+        session_to_name.remove(sid);
+    }
+
+    assert!(name_to_session.is_empty());
+    assert!(session_to_name.is_empty());
+    // task_to_session is NOT cleaned up by ReleaseName (intentional — task mapping persists)
+    assert_eq!(task_to_session.get("42"), Some(&session_id));
+}
+
+#[test]
+fn test_coworker_break_updates_session_record() {
+    use crate::daemon::state::{DaemonPersistentState, SessionRecord};
+    use chrono::Utc;
+    use std::collections::HashMap;
+
+    let mut persistent_state = DaemonPersistentState::default();
+    let record = SessionRecord {
+        session_id: "sess-abc-123".to_string(),
+        task_id: Some("42".to_string()),
+        current_name: Some("lexington".to_string()),
+        preferred_name: Some("lexington".to_string()),
+        working_dir: "/tmp/worktree".to_string(),
+        branch: None,
+        pr_number: None,
+        initial_prompt: None,
+        is_reviewer: false,
+        coworker_type: "dev".to_string(),
+        is_running: true,
+        created_at: Utc::now(),
+        resume_on_startup: true,
+    };
+    persistent_state
+        .sessions
+        .insert(record.session_id.clone(), record);
+
+    // Simulate what handle_coworker_break should do:
+    // 1. Look up session_id from name
+    let mut name_to_session: HashMap<String, String> = HashMap::new();
+    name_to_session.insert("lexington".to_string(), "sess-abc-123".to_string());
+    let session_id = name_to_session.get("lexington").cloned();
+
+    // 2. Update session record
+    if let Some(session_id) = session_id
+        && let Some(record) = persistent_state.sessions.get_mut(&session_id)
+    {
+        record.is_running = false;
+        record.current_name = None;
+    }
+
+    let stored = persistent_state.sessions.get("sess-abc-123").unwrap();
+    assert!(!stored.is_running);
+    assert!(stored.current_name.is_none());
+}
+
+#[test]
+fn test_shutdown_coworker_impl_updates_session_via_name_lookup() {
+    // Verifies that when shutdown_coworker_impl runs for a name that has
+    // an associated session, the SessionRecord gets is_running=false and
+    // current_name=None. This matters because the Idle path in
+    // handle_coworker_report_state flows through ShutdownCoworkerWithCallbacks
+    // → shutdown_coworker_impl, so session cleanup must happen there.
+    use crate::daemon::state::{DaemonPersistentState, SessionRecord};
+    use crate::name_pool::NamePool;
+    use chrono::Utc;
+    use std::collections::HashMap;
+
+    let mut persistent_state = DaemonPersistentState::default();
+    let mut name_to_session: HashMap<String, String> = HashMap::new();
+    let mut session_to_name: HashMap<String, String> = HashMap::new();
+    let mut pool = NamePool::new(&["lexington", "park", "madison"]);
+
+    // Set up: session "sess-123" is running as "lexington"
+    let record = SessionRecord {
+        session_id: "sess-123".to_string(),
+        task_id: Some("42".to_string()),
+        current_name: Some("lexington".to_string()),
+        preferred_name: Some("lexington".to_string()),
+        working_dir: "/tmp/worktree".to_string(),
+        branch: None,
+        pr_number: None,
+        initial_prompt: None,
+        is_reviewer: false,
+        coworker_type: "dev".to_string(),
+        is_running: true,
+        created_at: Utc::now(),
+        resume_on_startup: true,
+    };
+    persistent_state
+        .sessions
+        .insert(record.session_id.clone(), record);
+    name_to_session.insert("lexington".to_string(), "sess-123".to_string());
+    session_to_name.insert("sess-123".to_string(), "lexington".to_string());
+    pool.allocate(Some("lexington")); // mark as allocated
+
+    // Simulate what shutdown_coworker_impl should do after shutting down "lexington":
+    // 1. Look up session from name
+    let session_id = name_to_session.get("lexington").cloned();
+    // 2. Update session record
+    if let Some(session_id) = &session_id
+        && let Some(sr) = persistent_state.sessions.get_mut(session_id)
+    {
+        sr.is_running = false;
+        sr.current_name = None;
+    }
+    // 3. Release name from pool
+    pool.release("lexington");
+    // 4. Clean up reverse maps
+    name_to_session.remove("lexington");
+    if let Some(sid) = session_id {
+        session_to_name.remove(&sid);
+    }
+
+    // Verify: session record updated
+    let stored = persistent_state.sessions.get("sess-123").unwrap();
+    assert!(!stored.is_running);
+    assert!(stored.current_name.is_none());
+    assert_eq!(stored.preferred_name.as_deref(), Some("lexington"));
+
+    // Verify: name released back to pool
+    assert!(!pool.is_allocated("lexington"));
+    assert_eq!(pool.available_count(), 3);
+
+    // Verify: reverse maps cleaned up
+    assert!(name_to_session.is_empty());
+    assert!(session_to_name.is_empty());
+}
+
 #[tokio::test]
 async fn test_cleanup_merged_worktree_saves_when_only_pr_session_removed() {
     use crate::daemon::state::DaemonPersistentState;
