@@ -54,10 +54,10 @@ pub struct PendingQuestion {
 #[derive(Debug, Clone)]
 pub struct PendingImageInfo {
     /// Image dimensions (width, height in pixels). (0, 0) if unknown.
-    #[allow(dead_code)]
+    #[allow(dead_code)] // Used in Task 4+ when Ctrl+V handler sets pending_image
     pub dimensions: (u32, u32),
     /// MIME type (e.g., "image/png")
-    #[allow(dead_code)]
+    #[allow(dead_code)] // Used in Task 4+ when Ctrl+V handler sets pending_image
     pub media_type: String,
 }
 
@@ -328,7 +328,7 @@ pub struct App {
     /// Cursor position in the input text
     pub input_cursor: usize,
     /// Clipboard image pending delivery to the lead on Enter
-    #[allow(dead_code)]
+    #[allow(dead_code)] // Used in Task 4+ Ctrl+V handler and Task 5 Enter handler
     pub pending_image: Option<PendingImageInfo>,
     /// Whether selection mode is active (mouse capture disabled for text selection)
     pub selection_mode: bool,
