@@ -17,7 +17,11 @@ fn test_draw_ops_mini_channel_renders_without_panic() {
             m.from = "github".to_string();
             m
         },
-        Message::new("york", "/me developing task 1583", MessageType::Action),
+        {
+            let mut m = Message::system("Task !1583 assigned to york");
+            m.from = "daemon".to_string();
+            m
+        },
     ];
     let refs: Vec<&midtown::Message> = msgs.iter().collect();
 
