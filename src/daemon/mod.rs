@@ -726,6 +726,118 @@ impl DaemonState {
         stop_times.insert(name.to_lowercase(), chrono::Utc::now());
     }
 
+    /// Clear the lead's stop time so `ensure_lead_alive()` respawns on the next tick.
+    /// Called when a user message arrives while the lead is dead.
+    pub(crate) fn clear_lead_respawn_cooldown(&self) {
+        let mut stop_times = self.coworker_stop_times.write().unwrap();
+        if stop_times.remove("lead").is_some() {
+            tracing::info!("Cleared lead respawn cooldown — user message while lead is dead");
+        }
+    }
+
+    /// Expedite lead respawn when a user posts while the lead is dead.
+    ///
+    /// 1. Clears the respawn cooldown so `ensure_lead_alive()` fires on the next tick.
+    /// 2. Posts a system message to the main channel so the user sees immediate feedback.
+    /// 3. Spawns or resumes the ops channel lead and nudges it to acknowledge the situation.
+    pub(crate) async fn expedite_lead_respawn_on_user_message(&self) {
+        // 1. Clear the cooldown so the lead respawns on the next tick (~5s).
+        self.clear_lead_respawn_cooldown();
+
+        // 2. Post a system message to the main channel so the user isn't left wondering.
+        let channel_name = self.channel_router.default_channel_name();
+        let sys_msg = crate::message::Message::for_channel(
+            channel_name,
+            "midtown",
+            "Lead session is restarting -- your message has been received and will be handled shortly.".to_string(),
+            crate::message::MessageType::System,
+        );
+        if let Err(e) = self.send_and_broadcast_async(&sys_msg).await {
+            tracing::error!("Failed to post system message for lead respawn: {}", e);
+        }
+
+        // 3. Spawn or resume the ops channel lead and nudge it to acknowledge.
+        let ops_channel = "ops";
+        let session_name = crate::launch::channel_lead_session_name(ops_channel);
+
+        let session_ready = if self.session_manager.is_alive(&session_name).await {
+            true
+        } else {
+            let (session_id, headless_session_id_cleared) = {
+                let ps = self.persistent_state.lock().await;
+                let sid = ps.channel_lead_sessions.get(ops_channel).cloned();
+                let cleared = ps
+                    .headless_sessions
+                    .get(ops_channel)
+                    .is_some_and(|info| info.session_id.is_empty());
+                (sid, cleared)
+            };
+
+            let session_mode = match session_id {
+                Some(ref id) if !id.is_empty() && !headless_session_id_cleared => {
+                    tracing::info!(
+                        "Resuming ops channel lead session (session {}) for lead-dead expedite",
+                        id
+                    );
+                    crate::launch::SessionMode::ResumeSession(id.clone())
+                }
+                _ => {
+                    if headless_session_id_cleared {
+                        tracing::info!(
+                            "Skipping stale ops channel lead session ID: headless_sessions entry was cleared"
+                        );
+                    } else {
+                        tracing::info!(
+                            "No saved session for ops channel lead, spawning fresh for lead-dead expedite"
+                        );
+                    }
+                    crate::launch::SessionMode::Fresh
+                }
+            };
+
+            let is_fresh = matches!(session_mode, crate::launch::SessionMode::Fresh);
+            if is_fresh {
+                let mut ps = self.persistent_state.lock().await;
+                ps.channel_lead_sessions
+                    .entry(ops_channel.to_string())
+                    .or_insert_with(String::new);
+                if let Err(e) = ps.save_for_repo(&self.repo_name) {
+                    tracing::error!(
+                        "Failed to save daemon state before spawning ops channel lead: {}",
+                        e
+                    );
+                }
+            }
+
+            let config = crate::launch::LaunchConfig::channel_lead(
+                ops_channel,
+                &self.repo_name,
+                session_mode,
+                "",
+            );
+
+            match self.spawn_coworker(&config).await {
+                Ok(()) => true,
+                Err(e) => {
+                    tracing::error!("Failed to spawn ops channel lead: {}", e);
+                    false
+                }
+            }
+        };
+
+        if session_ready {
+            let nudge_msg = "The main lead session is down. A user just posted a message. Post to #ops acknowledging the lead is down and being respawned.";
+            tracing::info!("Nudging ops channel lead about dead lead + user message");
+            if let Err(e) = self
+                .session_manager
+                .send_message(&session_name, nudge_msg)
+                .await
+            {
+                tracing::error!("Failed to nudge ops channel lead: {}", e);
+            }
+        }
+    }
+
     /// Clean up all transient state for a coworker after its session stops.
     ///
     /// Called from intentional shutdown (`shutdown_coworker_impl` in effects.rs),

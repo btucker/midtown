@@ -661,3 +661,140 @@ async fn test_crash_loop_guard_skips_resume_when_headless_cleared() {
         "Main lead should not be nudged for topic channel user messages"
     );
 }
+
+/// Verify that `clear_lead_respawn_cooldown` removes the lead entry from
+/// `coworker_stop_times`, allowing `ensure_lead_alive()` to respawn on the next tick.
+#[tokio::test]
+async fn test_clear_lead_respawn_cooldown_removes_stop_time() {
+    let (state, _tmp, _guard) = make_test_state("midtown-test-clear-lead-cooldown");
+
+    // Simulate lead having been stopped (which sets a stop time)
+    {
+        let mut stop_times = state.coworker_stop_times.write().unwrap();
+        stop_times.insert("lead".to_string(), chrono::Utc::now());
+    }
+
+    // Precondition: stop time is set
+    {
+        let stop_times = state.coworker_stop_times.read().unwrap();
+        assert!(
+            stop_times.contains_key("lead"),
+            "Precondition: lead stop time should be set"
+        );
+    }
+
+    // Clear the cooldown
+    state.clear_lead_respawn_cooldown();
+
+    // Postcondition: stop time is removed
+    {
+        let stop_times = state.coworker_stop_times.read().unwrap();
+        assert!(
+            !stop_times.contains_key("lead"),
+            "Lead stop time should be removed after clear_lead_respawn_cooldown"
+        );
+    }
+}
+
+/// Verify that `clear_lead_respawn_cooldown` is a no-op when no stop time exists.
+#[test]
+fn test_clear_lead_respawn_cooldown_noop_when_no_stop_time() {
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(async {
+        let (state, _tmp, _guard) = make_test_state("midtown-test-clear-lead-noop");
+
+        // No stop time set — clearing should not panic
+        state.clear_lead_respawn_cooldown();
+
+        let stop_times = state.coworker_stop_times.read().unwrap();
+        assert!(
+            !stop_times.contains_key("lead"),
+            "No stop time should exist after no-op clear"
+        );
+    });
+}
+
+/// Verify that a user message on the main channel while the lead is dead
+/// clears the respawn cooldown (lead stop time removed).
+#[tokio::test]
+async fn test_user_message_with_dead_lead_clears_cooldown() {
+    let (state, _tmp, _guard) = make_test_state("midtown-test-dead-lead-clears-cooldown");
+    let adapter_id = "test-adapter-dead-lead-cooldown";
+    state
+        .headed_register("lead", adapter_id, crate::auth::AuthProvider::Claude)
+        .await
+        .expect("register headed adapter");
+
+    // Simulate lead having been stopped 2 minutes ago (within 5-min cooldown)
+    {
+        let mut stop_times = state.coworker_stop_times.write().unwrap();
+        stop_times.insert(
+            "lead".to_string(),
+            chrono::Utc::now() - chrono::Duration::minutes(2),
+        );
+    }
+
+    // Lead is not alive (session_manager has no live session for "lead")
+    // and not attached — it is dead.
+    let response = handle_channel_post(
+        1_i64.into(),
+        "user",
+        "hello, anyone there?",
+        None,
+        None,
+        &state,
+    )
+    .await;
+    assert!(response.error.is_none(), "channel.post should succeed");
+
+    // The cooldown should have been cleared, allowing immediate respawn on next tick
+    let stop_times = state.coworker_stop_times.read().unwrap();
+    assert!(
+        !stop_times.contains_key("lead"),
+        "Lead stop time should be cleared after user message with dead lead"
+    );
+}
+
+/// Verify that a second rapid user message within 30s does NOT trigger expedite again
+/// (cooldown dedup prevents spam).
+#[tokio::test]
+async fn test_user_message_dead_lead_respects_expedite_cooldown() {
+    let (state, _tmp, _guard) = make_test_state("midtown-test-dead-lead-expedite-cooldown");
+    let adapter_id = "test-adapter-dead-lead-expedite";
+    state
+        .headed_register("lead", adapter_id, crate::auth::AuthProvider::Claude)
+        .await
+        .expect("register headed adapter");
+
+    // Simulate lead having been stopped recently
+    {
+        let mut stop_times = state.coworker_stop_times.write().unwrap();
+        stop_times.insert(
+            "lead".to_string(),
+            chrono::Utc::now() - chrono::Duration::minutes(2),
+        );
+    }
+
+    // First user message: expedite fires, cooldown cleared
+    let _r = handle_channel_post(1_i64.into(), "user", "message one", None, None, &state).await;
+
+    // Re-set stop time (simulate lead died again or cooldown was re-set)
+    {
+        let mut stop_times = state.coworker_stop_times.write().unwrap();
+        stop_times.insert(
+            "lead".to_string(),
+            chrono::Utc::now() - chrono::Duration::minutes(2),
+        );
+    }
+
+    // Second user message within 30s: expedite cooldown should block re-expedite
+    let _r = handle_channel_post(2_i64.into(), "user", "message two", None, None, &state).await;
+
+    // The expedite_cooldown (lead_dead_expedite) should be active (recorded),
+    // meaning the second message did not re-trigger expedite. Stop time was NOT cleared.
+    let stop_times = state.coworker_stop_times.read().unwrap();
+    assert!(
+        stop_times.contains_key("lead"),
+        "Lead stop time should remain on second message within 30s cooldown"
+    );
+}
