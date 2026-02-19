@@ -544,3 +544,153 @@ async fn test_collect_session_info_preserves_none_initial_prompt() {
         "collect_session_info() should return None when no initial_prompt was set"
     );
 }
+
+// --- Tests for extract_tool_state_from_assistant and has_tool_result ---
+
+#[test]
+fn extract_tool_state_task_subagent() {
+    let message = serde_json::json!({
+        "content": [
+            {"type": "text", "text": "Let me investigate..."},
+            {"type": "tool_use", "id": "1", "name": "Task", "input": {}}
+        ]
+    });
+    let (has_tool, subagent) = extract_tool_state_from_assistant(&message);
+    assert!(has_tool, "should detect tool_use");
+    assert_eq!(
+        subagent,
+        Some(true),
+        "Task tool should be flagged as subagent"
+    );
+}
+
+#[test]
+fn extract_tool_state_dispatch_agent_subagent() {
+    let message = serde_json::json!({
+        "content": [
+            {"type": "tool_use", "id": "1", "name": "dispatch_agent", "input": {}}
+        ]
+    });
+    let (has_tool, subagent) = extract_tool_state_from_assistant(&message);
+    assert!(has_tool);
+    assert_eq!(
+        subagent,
+        Some(true),
+        "dispatch_agent tool should be flagged as subagent"
+    );
+}
+
+#[test]
+fn extract_tool_state_regular_tool() {
+    let message = serde_json::json!({
+        "content": [
+            {"type": "tool_use", "id": "1", "name": "Read", "input": {}}
+        ]
+    });
+    let (has_tool, subagent) = extract_tool_state_from_assistant(&message);
+    assert!(has_tool, "should detect tool_use");
+    assert_eq!(
+        subagent,
+        Some(false),
+        "Read tool should not be flagged as subagent"
+    );
+}
+
+#[test]
+fn extract_tool_state_no_tools() {
+    let message = serde_json::json!({
+        "content": [
+            {"type": "text", "text": "No tools here."}
+        ]
+    });
+    let (has_tool, subagent) = extract_tool_state_from_assistant(&message);
+    assert!(!has_tool, "no tool_use blocks");
+    assert_eq!(subagent, None, "no subagent state change");
+}
+
+#[test]
+fn extract_tool_state_last_tool_wins() {
+    // When multiple tools are invoked, the last one determines subagent state.
+    // This matches the original behavior: cs.has_running_subagent = (last tool is Task).
+    let message = serde_json::json!({
+        "content": [
+            {"type": "tool_use", "id": "1", "name": "Task", "input": {}},
+            {"type": "tool_use", "id": "2", "name": "Read", "input": {}}
+        ]
+    });
+    let (has_tool, subagent) = extract_tool_state_from_assistant(&message);
+    assert!(has_tool);
+    assert_eq!(
+        subagent,
+        Some(false),
+        "last tool (Read) should clear subagent flag"
+    );
+}
+
+#[test]
+fn has_tool_result_detects_result() {
+    let message = serde_json::json!({
+        "content": [
+            {"type": "tool_result", "tool_use_id": "1", "content": "result"}
+        ]
+    });
+    assert!(has_tool_result(&message));
+}
+
+#[test]
+fn has_tool_result_no_result() {
+    let message = serde_json::json!({
+        "content": [
+            {"type": "text", "text": "user input"}
+        ]
+    });
+    assert!(!has_tool_result(&message));
+}
+
+#[test]
+fn has_tool_result_empty_content() {
+    let message = serde_json::json!({"content": []});
+    assert!(!has_tool_result(&message));
+}
+
+/// Simulate the full reviewer lifecycle: Task tool_use sets subagent flag,
+/// then tool_result clears it. This is the core bug fix — previously,
+/// tool_result only cleared has_pending_tool but not has_running_subagent,
+/// leaving reviewers permanently exempt from stuck detection.
+#[test]
+fn subagent_flag_cleared_on_tool_result() {
+    let mut has_running_subagent = false;
+    let mut has_pending_tool = false;
+
+    // Step 1: Assistant emits a Task tool_use
+    let assistant_msg = serde_json::json!({
+        "content": [
+            {"type": "tool_use", "id": "1", "name": "Task", "input": {}}
+        ]
+    });
+    let (pending, subagent) = extract_tool_state_from_assistant(&assistant_msg);
+    if pending {
+        has_pending_tool = true;
+    }
+    if let Some(is_subagent) = subagent {
+        has_running_subagent = is_subagent;
+    }
+    assert!(has_running_subagent, "Task tool should set subagent flag");
+    assert!(has_pending_tool, "tool_use should set pending flag");
+
+    // Step 2: User event with tool_result clears both flags
+    let user_msg = serde_json::json!({
+        "content": [
+            {"type": "tool_result", "tool_use_id": "1", "content": "review done"}
+        ]
+    });
+    if has_tool_result(&user_msg) {
+        has_pending_tool = false;
+        has_running_subagent = false;
+    }
+    assert!(
+        !has_running_subagent,
+        "tool_result must clear subagent flag — this was the bug"
+    );
+    assert!(!has_pending_tool, "tool_result must clear pending flag");
+}

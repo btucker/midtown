@@ -91,6 +91,50 @@ fn parse_usage_limit_reset_time(error_msg: &str) -> Option<DateTime<Utc>> {
     }
 }
 
+/// Extract tool state from an Assistant stream event message.
+///
+/// Scans the message content for `tool_use` blocks. Returns:
+/// - `(has_any_tool_use, Option<is_subagent>)` where:
+///   - `has_any_tool_use`: true if any tool_use block was found (sets has_pending_tool)
+///   - `is_subagent`: Some(true) if last tool is Task/dispatch_agent, Some(false) if last
+///     tool is something else, None if no tool_use blocks found
+fn extract_tool_state_from_assistant(message: &serde_json::Value) -> (bool, Option<bool>) {
+    let Some(content) = message.get("content") else {
+        return (false, None);
+    };
+    let Some(arr) = content.as_array() else {
+        return (false, None);
+    };
+
+    let mut has_tool_use = false;
+    let mut is_subagent = None;
+
+    for block in arr {
+        if block.get("type").and_then(|t| t.as_str()) == Some("tool_use") {
+            has_tool_use = true;
+            if let Some(tool_name) = block.get("name").and_then(|n| n.as_str()) {
+                is_subagent = Some(tool_name == "Task" || tool_name == "dispatch_agent");
+            }
+        }
+    }
+
+    (has_tool_use, is_subagent)
+}
+
+/// Check if a User stream event message contains a tool_result block.
+///
+/// When a tool_result arrives, the previously pending tool (and any subagent) has completed.
+fn has_tool_result(message: &serde_json::Value) -> bool {
+    let Some(content) = message.get("content") else {
+        return false;
+    };
+    let Some(arr) = content.as_array() else {
+        return false;
+    };
+    arr.iter()
+        .any(|block| block.get("type").and_then(|t| t.as_str()) == Some("tool_result"))
+}
+
 /// Status of a managed headless session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(dead_code)]
@@ -667,43 +711,19 @@ impl SessionManager {
                                 }
                             }
                             StreamEvent::Assistant { message, .. } => {
-                                // Check for subagent activity markers and pending tool state
-                                if let Some(content) = message.get("content")
-                                    && let Some(arr) = content.as_array()
-                                {
-                                    let mut has_tool_use = false;
-                                    for block in arr {
-                                        if block.get("type").and_then(|t| t.as_str())
-                                            == Some("tool_use")
-                                        {
-                                            has_tool_use = true;
-                                            if let Some(tool_name) =
-                                                block.get("name").and_then(|n| n.as_str())
-                                            {
-                                                cs.has_running_subagent = tool_name == "Task"
-                                                    || tool_name == "dispatch_agent";
-                                            }
-                                        }
-                                    }
-                                    // If we saw any tool_use, mark as pending (will be cleared by User event)
-                                    if has_tool_use {
-                                        cs.has_pending_tool = true;
-                                    }
+                                let (pending, subagent) =
+                                    extract_tool_state_from_assistant(message);
+                                if pending {
+                                    cs.has_pending_tool = true;
+                                }
+                                if let Some(is_subagent) = subagent {
+                                    cs.has_running_subagent = is_subagent;
                                 }
                             }
                             StreamEvent::User { message, .. } => {
-                                // User events may contain tool_result blocks — only clear pending tool flag if present
-                                if let Some(content) = message.get("content")
-                                    && let Some(arr) = content.as_array()
-                                {
-                                    for block in arr {
-                                        if block.get("type").and_then(|t| t.as_str())
-                                            == Some("tool_result")
-                                        {
-                                            cs.has_pending_tool = false;
-                                            break;
-                                        }
-                                    }
+                                if has_tool_result(message) {
+                                    cs.has_pending_tool = false;
+                                    cs.has_running_subagent = false;
                                 }
                             }
                             _ => {}
