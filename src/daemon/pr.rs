@@ -3641,7 +3641,7 @@ fn collect_stale_check_effects_with_time(
 /// 1. It has a coworker or task branch prefix (e.g., "lexington/feature" or "task-123-fix")
 /// 2. It has a Claude review comment (in `reviewed_prs`)
 /// 3. All CI checks are passing (`all_ci_checks_passed`)
-/// 4. There's no in_progress task linked to it (not in `tasks_with_open_prs`)
+/// 4. There's no in_progress task linked to it (not in `pr_task_associations`)
 /// 5. The lead has not already been nudged about this PR (`orphaned_pr_lead_nudges_sent`)
 ///
 /// For each orphaned PR, nudges the lead to decide the next action (tell the author
@@ -3674,8 +3674,13 @@ pub fn reconcile_orphaned_prs(snap: &WorldSnapshot) -> Vec<Effect> {
             continue;
         }
 
-        // Skip if there's already an in_progress task linked to this PR
+        // Skip if there's already an in_progress task linked to this PR.
+        // If we previously nudged the lead about this PR, clear the record so
+        // re-nudging is possible if the task later completes without merging.
         if snap.pr_task_associations.contains_key(&pr_number) {
+            if snap.orphaned_pr_lead_nudges_sent.contains(&pr_number) {
+                effects.push(Effect::ClearOrphanedPrLeadNudge { pr_number });
+            }
             continue;
         }
 

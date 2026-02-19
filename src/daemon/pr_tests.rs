@@ -1003,6 +1003,13 @@ fn test_reconcile_orphaned_prs_does_not_create_duplicates() {
         .all(|e| !matches!(e, Effect::CreateTask { .. }));
     assert!(no_task_created, "First tick should NOT create a task");
 
+    assert!(
+        effects1
+            .iter()
+            .any(|e| matches!(e, Effect::RecordOrphanedPrLeadNudge { pr_number: 42 })),
+        "First tick should emit RecordOrphanedPrLeadNudge for PR #42"
+    );
+
     // Simulate the nudge has been recorded (orphaned_pr_lead_nudges_sent contains PR #42)
     snap.orphaned_pr_lead_nudges_sent.insert(42);
 
@@ -1017,6 +1024,71 @@ fn test_reconcile_orphaned_prs_does_not_create_duplicates() {
     assert_eq!(
         nudge_count2, 0,
         "Second tick should NOT nudge the lead again (already nudged)"
+    );
+}
+
+/// reconcile_orphaned_prs re-nudges lead if PR becomes orphaned again after task completes.
+///
+/// When a task is created for an orphaned PR (pr_task_associations has the PR), the nudge
+/// record should be cleared. If the task later disappears without the PR being merged,
+/// the lead should be nudged again.
+///
+/// Expected: nudge recorded → task appears → ClearOrphanedPrLeadNudge emitted →
+///           task disappears → lead gets nudged again.
+#[test]
+fn test_reconcile_orphaned_prs_renudges_after_task_disappears() {
+    use super::super::snapshot::minimal_snapshot_for_test;
+
+    let pr_data = json!({
+        "number": 42,
+        "title": "Fix authentication bug",
+        "headRefName": "york/fix-auth",
+        "isDraft": false,
+        "statusCheckRollup": {
+            "state": "SUCCESS"
+        }
+    });
+
+    let mut snap = minimal_snapshot_for_test();
+    snap.open_prs_data = vec![pr_data];
+    snap.reviewed_prs.insert(42);
+
+    // Simulate: lead was already nudged about this PR
+    snap.orphaned_pr_lead_nudges_sent.insert(42);
+
+    // A task now exists for this PR (PR left orphaned state)
+    snap.pr_task_associations.insert(42, "task-abc".to_string());
+
+    // Tick: PR has a task, nudge record should be cleared
+    let effects_with_task = reconcile_orphaned_prs(&snap);
+
+    assert!(
+        effects_with_task
+            .iter()
+            .any(|e| matches!(e, Effect::ClearOrphanedPrLeadNudge { pr_number: 42 })),
+        "When PR has a task, should emit ClearOrphanedPrLeadNudge"
+    );
+    assert!(
+        !effects_with_task
+            .iter()
+            .any(|e| matches!(e, Effect::NudgeLead { .. })),
+        "Should not nudge lead while PR has an active task"
+    );
+
+    // Simulate effect applied: nudge record cleared, task gone (task completed without merge)
+    snap.orphaned_pr_lead_nudges_sent.remove(&42);
+    snap.pr_task_associations.remove(&42);
+
+    // Tick: PR is orphaned again — lead should be re-nudged
+    let effects_re_orphaned = reconcile_orphaned_prs(&snap);
+
+    let renudge_count = effects_re_orphaned
+        .iter()
+        .filter(|e| matches!(e, Effect::NudgeLead { .. }))
+        .count();
+    assert_eq!(
+        renudge_count, 1,
+        "After task disappears, lead should be nudged again"
     );
 }
 

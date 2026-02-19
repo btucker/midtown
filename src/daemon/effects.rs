@@ -199,6 +199,10 @@ pub enum Effect {
     /// Record that the lead has been nudged about an orphaned PR (reviewed + CI green,
     /// no active task). Prevents `reconcile_orphaned_prs` from nudging on every tick.
     RecordOrphanedPrLeadNudge { pr_number: u64 },
+    /// Clear the orphaned PR lead nudge record for a PR that now has an active task.
+    /// This allows the lead to be re-nudged if the task later completes without merging
+    /// and the PR becomes orphaned again.
+    ClearOrphanedPrLeadNudge { pr_number: u64 },
     /// Clear reviewer assignments for orphaned coworkers (sessions that ended unexpectedly).
     ClearOrphanedReviewerAssignments { orphaned_coworkers: Vec<String> },
     /// Re-run a GitHub Actions workflow that appears to be stuck.
@@ -926,6 +930,11 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 let mut sent = state.orphaned_pr_lead_nudges_sent.lock().unwrap();
                 sent.insert(pr_number);
                 debug!("Recorded orphaned PR lead nudge for PR #{}", pr_number);
+            }
+            Effect::ClearOrphanedPrLeadNudge { pr_number } => {
+                let mut sent = state.orphaned_pr_lead_nudges_sent.lock().unwrap();
+                sent.remove(&pr_number);
+                debug!("Cleared orphaned PR lead nudge for PR #{}", pr_number);
             }
             Effect::RecordTaskAssignment { coworker, task_id } => {
                 state.record_task_assignment(&coworker, &task_id);
