@@ -589,7 +589,7 @@
           >
           {#if !msg.thread_parent_id}
             <button
-              class="hidden md:flex absolute right-0 top-[1px] items-center gap-1 px-2 py-[1px] rounded border border-[#2a2a2a] bg-[rgba(15,15,15,0.95)] text-[0.68rem] text-[#808080] cursor-pointer opacity-0 pointer-events-none transition-opacity duration-150 group-hover:opacity-100 group-hover:pointer-events-auto focus:opacity-100 focus:pointer-events-auto hover:text-[#d0d0d0] hover:border-[#5fafaf]"
+              class="hidden lg:flex absolute right-0 top-[1px] items-center gap-1 px-2 py-[1px] rounded border border-[#2a2a2a] bg-[rgba(15,15,15,0.95)] text-[0.68rem] text-[#808080] cursor-pointer opacity-0 pointer-events-none transition-opacity duration-150 group-hover:opacity-100 group-hover:pointer-events-auto focus:opacity-100 focus:pointer-events-auto hover:text-[#d0d0d0] hover:border-[#5fafaf]"
               onclick={() => openThread(msg, $activeChannel)}
               aria-label="Reply in thread"
             >

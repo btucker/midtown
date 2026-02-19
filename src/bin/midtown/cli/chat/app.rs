@@ -1555,7 +1555,7 @@ impl App {
     /// scroll position, message count, terminal width, selection mode, last message ID
     /// as a proxy for content changes, task state, mermaid render state, and the
     /// indicator height (which affects the message area size via the layout constraint).
-    pub fn message_cache_key(&self, width: u16) -> u64 {
+    pub fn message_cache_key(&self, width: u16, height: u16) -> u64 {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
 
@@ -1563,6 +1563,7 @@ impl App {
         self.scroll_offset.hash(&mut hasher);
         self.messages.len().hash(&mut hasher);
         width.hash(&mut hasher);
+        height.hash(&mut hasher);
         self.selection_mode.hash(&mut hasher);
         // Hash last message ID as proxy for content changes
         if let Some(last) = self.messages.back() {
@@ -3375,6 +3376,17 @@ pub(super) mod tests {
         assert!(
             app.message_render_cache.is_none(),
             "resize_sidebar_to should invalidate the message render cache"
+        );
+    }
+
+    #[test]
+    fn test_message_cache_key_changes_with_height() {
+        let app = test_app();
+        let key_short = app.message_cache_key(80, 20);
+        let key_tall = app.message_cache_key(80, 30);
+        assert_ne!(
+            key_short, key_tall,
+            "message cache key should include chat height"
         );
     }
 

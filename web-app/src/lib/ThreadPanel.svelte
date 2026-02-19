@@ -182,6 +182,8 @@
   <!-- Mobile: slide-in pane (inside board content area) -->
   <div class="lg:hidden absolute inset-0 z-20 bg-[#0f0f0f] flex flex-col thread-mobile-pane">
     <!-- Mobile header with back button -->
+    <!-- No top safe-area padding here: this pane is inside board content, below
+         App.svelte's mobile header which already applies pt-safe-offset-* -->
     <div class="flex items-center gap-2 px-3 py-3 bg-[#1a1a1a] border-b-2 border-[#2a2a2a] shrink-0">
       <button
         class="w-8 h-8 flex items-center justify-center bg-transparent border border-[#2a2a2a] rounded-md text-[#808080] text-[1.1rem] cursor-pointer transition-all duration-150 leading-none hover:text-[#d0d0d0] shrink-0"

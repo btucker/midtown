@@ -229,7 +229,7 @@ fn draw_chat_messages(f: &mut Frame, app: &mut App, area: Rect) {
     app.clamp_scroll_offset();
 
     // Check if we can reuse cached rendered lines
-    let cache_key = app.message_cache_key(inner.width);
+    let cache_key = app.message_cache_key(inner.width, inner.height);
     if let Some(ref cache) = app.message_render_cache
         && cache.cache_key == cache_key
     {
