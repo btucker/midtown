@@ -173,7 +173,7 @@ fn test_orphan_recovery_skips_tasks_with_session_records() {
         ..snapshot::minimal_snapshot_for_test()
     };
 
-    let state = make_test_state();
+    let (state, _tmp, _guard) = make_test_state();
     let effects = check_and_recover_orphans_with_task_lookup(&snap, &state, |task_id| {
         if task_id == "42" {
             Some(in_progress_task_for_lookup(
@@ -223,7 +223,7 @@ fn test_orphan_recovery_falls_back_to_fresh_spawn_without_session() {
         ..snapshot::minimal_snapshot_for_test()
     };
 
-    let state = make_test_state();
+    let (state, _tmp, _guard) = make_test_state();
     let effects = check_and_recover_orphans_with_task_lookup(&snap, &state, |task_id| {
         if task_id == "42" {
             Some(in_progress_task_for_lookup(
@@ -293,7 +293,7 @@ fn test_no_dual_spawn_for_stopped_session_task() {
         ..snapshot::minimal_snapshot_for_test()
     };
 
-    let state = make_test_state();
+    let (state, _tmp, _guard) = make_test_state();
 
     // Run dispatch_via_sessions first (as events.rs does)
     let session_effects = dispatch_via_sessions(&snap);
@@ -339,9 +339,16 @@ fn test_no_dual_spawn_for_stopped_session_task() {
 
 /// Helper to create minimal DaemonState for testing (duplicated from dispatch_tests.rs
 /// because test module boundaries prevent sharing private helpers).
-fn make_test_state() -> DaemonState {
+fn make_test_state() -> (
+    DaemonState,
+    tempfile::TempDir,
+    crate::paths::TestMidtownBaseDirGuard,
+) {
     use std::process::Command;
     use tempfile::TempDir;
+
+    let midtown_dir = TempDir::new().expect("midtown temp dir");
+    let _guard = crate::paths::set_test_midtown_base_dir(midtown_dir.path().to_path_buf());
 
     let temp_dir = TempDir::new().expect("temp dir");
     Command::new("git")
@@ -369,14 +376,12 @@ fn make_test_state() -> DaemonState {
         .expect("worktree manager");
     let cm = crate::coworker::CoworkerManager::new(wm);
 
-    // Leak temp_dir so it survives the test
     let base_dir = temp_dir.path().to_path_buf();
-    std::mem::forget(temp_dir);
 
     let channel_router = crate::ChannelRouter::new(&base_dir, "midtown");
 
     let (shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(1);
-    DaemonState::new(
+    let state = DaemonState::new(
         "/tmp/test.sock".into(),
         cm,
         "test-repo".to_string(),
@@ -388,5 +393,6 @@ fn make_test_state() -> DaemonState {
         "main".to_string(),
         shutdown_tx,
     )
-    .expect("daemon state")
+    .expect("daemon state");
+    (state, temp_dir, _guard)
 }

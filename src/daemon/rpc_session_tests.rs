@@ -120,9 +120,16 @@ fn test_parse_attach_target_for_clear_name() {
 // resolve_attach_target verb parameter tests
 // ============================================================================
 
-fn make_test_state() -> DaemonState {
+fn make_test_state() -> (
+    DaemonState,
+    tempfile::TempDir,
+    crate::paths::TestMidtownBaseDirGuard,
+) {
     use std::process::Command;
     use tempfile::TempDir;
+
+    let midtown_dir = TempDir::new().expect("midtown temp dir");
+    let _guard = crate::paths::set_test_midtown_base_dir(midtown_dir.path().to_path_buf());
 
     let temp_dir = TempDir::new().expect("temp dir");
     Command::new("git")
@@ -151,11 +158,10 @@ fn make_test_state() -> DaemonState {
     let cm = crate::coworker::CoworkerManager::new(wm);
 
     let base_dir = temp_dir.path().to_path_buf();
-    std::mem::forget(temp_dir);
 
     let channel_router = crate::ChannelRouter::new(&base_dir, "midtown");
     let (shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(1);
-    DaemonState::new(
+    let state = DaemonState::new(
         "/tmp/test-rpc-session.sock".into(),
         cm,
         "test-repo".to_string(),
@@ -167,12 +173,13 @@ fn make_test_state() -> DaemonState {
         "main".to_string(),
         shutdown_tx,
     )
-    .expect("daemon state")
+    .expect("daemon state");
+    (state, temp_dir, _guard)
 }
 
 #[tokio::test]
 async fn test_resolve_attach_target_multi_match_error_uses_verb() {
-    let state = make_test_state();
+    let (state, _tmp, _guard) = make_test_state();
 
     // Create two coworkers assigned to the same task so task lookup returns multiple
     state.record_task_assignment("park", "42");
@@ -245,7 +252,7 @@ async fn insert_test_session_with_metadata(
 
 #[tokio::test]
 async fn test_session_clear_rejects_unknown_coworker() {
-    let state = make_test_state();
+    let (state, _tmp, _guard) = make_test_state();
 
     let resp = handle_session_clear(RequestId::Number(1), "name/nonexistent", &state).await;
 
@@ -258,7 +265,7 @@ async fn test_session_clear_rejects_unknown_coworker() {
 
 #[tokio::test]
 async fn test_session_clear_rejects_no_persisted_session() {
-    let state = make_test_state();
+    let (state, _tmp, _guard) = make_test_state();
 
     // Register a coworker in the manager but don't add a persisted session
     state
@@ -285,7 +292,7 @@ async fn test_session_clear_rejects_no_persisted_session() {
 
 #[tokio::test]
 async fn test_session_clear_rejects_attached_session() {
-    let state = make_test_state();
+    let (state, _tmp, _guard) = make_test_state();
 
     // Register coworker and add persisted session
     state
@@ -324,7 +331,7 @@ async fn test_session_clear_rejects_attached_session() {
 
 #[tokio::test]
 async fn test_session_clear_cleans_up_transient_state() {
-    let state = make_test_state();
+    let (state, _tmp, _guard) = make_test_state();
     let name = "broadway";
 
     // Register coworker and add persisted session
@@ -381,7 +388,7 @@ async fn test_session_clear_cleans_up_transient_state() {
 
 #[tokio::test]
 async fn test_session_clear_uses_lead_config_for_lead_target() {
-    let state = make_test_state();
+    let (state, _tmp, _guard) = make_test_state();
 
     // Register lead and add persisted session
     state
@@ -416,7 +423,7 @@ async fn test_session_clear_uses_lead_config_for_lead_target() {
 /// and should handle reviewer-specific metadata (coworker_type, pr_number, channel).
 #[tokio::test]
 async fn test_session_clear_handles_reviewer_metadata() {
-    let state = make_test_state();
+    let (state, _tmp, _guard) = make_test_state();
 
     state
         .coworkers
@@ -455,7 +462,7 @@ async fn test_session_clear_handles_reviewer_metadata() {
 /// Regression test: session clear for a channel-lead coworker should not panic.
 #[tokio::test]
 async fn test_session_clear_handles_channel_lead_metadata() {
-    let state = make_test_state();
+    let (state, _tmp, _guard) = make_test_state();
 
     state
         .coworkers

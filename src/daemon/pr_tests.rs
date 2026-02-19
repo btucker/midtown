@@ -8,8 +8,17 @@ use std::sync::Mutex;
 static PATH_LOCK: Mutex<()> = Mutex::new(());
 
 /// Helper to create minimal DaemonState for testing
-fn make_test_state(repo_name: &str) -> DaemonState {
+fn make_test_state(
+    repo_name: &str,
+) -> (
+    DaemonState,
+    tempfile::TempDir,
+    crate::paths::TestMidtownBaseDirGuard,
+) {
     use std::process::Command;
+
+    let midtown_dir = tempfile::tempdir().expect("midtown temp dir");
+    let _guard = crate::paths::set_test_midtown_base_dir(midtown_dir.path().to_path_buf());
 
     let temp_dir = tempfile::tempdir().expect("temp dir");
     Command::new("git")
@@ -37,14 +46,12 @@ fn make_test_state(repo_name: &str) -> DaemonState {
         .expect("worktree manager");
     let cm = crate::coworker::CoworkerManager::new(wm);
 
-    // Leak temp_dir so it survives the test
     let base_dir = temp_dir.path().to_path_buf();
-    std::mem::forget(temp_dir);
 
     let channel_router = crate::ChannelRouter::new(&base_dir, "midtown");
 
     let (shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(1);
-    DaemonState::new(
+    let state = DaemonState::new(
         "/tmp/test.sock".into(),
         cm,
         repo_name.to_string(),
@@ -56,13 +63,24 @@ fn make_test_state(repo_name: &str) -> DaemonState {
         "main".to_string(),
         shutdown_tx,
     )
-    .expect("daemon state")
+    .expect("daemon state");
+    (state, temp_dir, _guard)
 }
 
 /// Helper to create minimal DaemonState for testing with a specific repo owner.
 /// Adds a fake origin remote so DaemonState::new detects the owner from git URL.
-fn make_test_state_with_owner(repo_name: &str, owner: &str) -> DaemonState {
+fn make_test_state_with_owner(
+    repo_name: &str,
+    owner: &str,
+) -> (
+    DaemonState,
+    tempfile::TempDir,
+    crate::paths::TestMidtownBaseDirGuard,
+) {
     use std::process::Command;
+
+    let midtown_dir = tempfile::tempdir().expect("midtown temp dir");
+    let _guard = crate::paths::set_test_midtown_base_dir(midtown_dir.path().to_path_buf());
 
     let temp_dir = tempfile::tempdir().expect("temp dir");
     Command::new("git")
@@ -101,14 +119,12 @@ fn make_test_state_with_owner(repo_name: &str, owner: &str) -> DaemonState {
         .expect("worktree manager");
     let cm = crate::coworker::CoworkerManager::new(wm);
 
-    // Leak temp_dir so it survives the test
     let base_dir = temp_dir.path().to_path_buf();
-    std::mem::forget(temp_dir);
 
     let channel_router = crate::ChannelRouter::new(&base_dir, "midtown");
 
     let (shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(1);
-    DaemonState::new(
+    let state = DaemonState::new(
         "/tmp/test.sock".into(),
         cm,
         repo_name.to_string(),
@@ -120,7 +136,8 @@ fn make_test_state_with_owner(repo_name: &str, owner: &str) -> DaemonState {
         "main".to_string(),
         shutdown_tx,
     )
-    .expect("daemon state")
+    .expect("daemon state");
+    (state, temp_dir, _guard)
 }
 
 /// Bug: collect_green_with_feedback_effects was using head_ref.split('/').next()
@@ -294,7 +311,7 @@ async fn test_orphaned_pr_with_merge_conflict_is_ignored() {
     // snap.worktree_branch_owners is empty - this simulates york being on break
 
     // Create minimal daemon state
-    let state = make_test_state("test-repo");
+    let (state, _tmp, _guard) = make_test_state("test-repo");
 
     // Call poll_prs_for_issues (keep PATH_LOCK held to prevent test interference)
     let result = poll_prs_for_issues(&snap, &state).await;
@@ -373,7 +390,7 @@ async fn test_lead_pr_without_task_id_should_not_be_orphaned() {
         "createdAt": "2024-01-01T00:00:00Z",  // Old enough to pass review delay
     });
 
-    let state = make_test_state("midtown");
+    let (state, _tmp, _guard) = make_test_state("midtown");
     let registry = WorktreeRegistry::new();
 
     // Important: The lead's worktree exists, but NOT indexed by this branch name
@@ -464,7 +481,7 @@ async fn test_ci_wait_deduplication_uses_time_aware_hash() {
     snap.worktree_branch_owners
         .insert("york/test-branch".to_string(), "york".to_string());
 
-    let state = make_test_state("test-repo");
+    let (state, _tmp, _guard) = make_test_state("test-repo");
 
     // First poll should post "Waiting for CI" message (keep PATH_LOCK held to prevent test interference)
     let effects1 = poll_prs_for_issues(&snap, &state).await.unwrap();
@@ -631,7 +648,7 @@ async fn test_orphaned_pr_with_task_branch_and_merge_conflict_is_ignored() {
     // snap.worktree_branch_owners is empty - this ensures owner_opt = None
 
     // Create minimal daemon state
-    let state = make_test_state("test-repo");
+    let (state, _tmp, _guard) = make_test_state("test-repo");
 
     // Call poll_prs_for_issues (keep PATH_LOCK held to prevent test interference)
     let result = poll_prs_for_issues(&snap, &state).await;
@@ -712,7 +729,7 @@ async fn test_reviewer_spawns_when_worktree_exists_but_no_current_coworker() {
     // branch_owners_map is empty (mirrors snapshot after restart)
     let branch_owners: std::collections::HashMap<String, String> = std::collections::HashMap::new();
 
-    let state = make_test_state("test-repo");
+    let (state, _tmp, _guard) = make_test_state("test-repo");
     let active_names = std::collections::HashSet::new();
 
     let effects = collect_reviewer_effects_with_source(
@@ -773,7 +790,7 @@ async fn test_completed_worktree_with_open_pr_gets_reviewer() {
         .unwrap();
 
     let branch_owners: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-    let state = make_test_state("test-repo");
+    let (state, _tmp, _guard) = make_test_state("test-repo");
     let active_names = std::collections::HashSet::new();
 
     let effects = collect_reviewer_effects_with_source(
@@ -847,7 +864,7 @@ async fn test_completed_worktree_with_snapshot_data() {
     let branch_owners: std::collections::HashMap<String, String> = std::collections::HashMap::new();
 
     // Create minimal test state
-    let state = make_test_state("midtown");
+    let (state, _tmp, _guard) = make_test_state("midtown");
     let active_names = std::collections::HashSet::new();
 
     // Call the function under test with snapshot's worktree registry and synthetic PR
@@ -925,7 +942,7 @@ async fn test_lead_pr_with_non_standard_branch_gets_reviewer() {
     // Create test state with repo_owner set to match the PR author.
     // The repo_owner is extracted from git remote URL at daemon startup;
     // in tests we configure it via a fake origin remote.
-    let state = make_test_state_with_owner("midtown", "btucker");
+    let (state, _tmp, _guard) = make_test_state_with_owner("midtown", "btucker");
     let active_names = std::collections::HashSet::new();
 
     // Call the function under test
@@ -1137,7 +1154,7 @@ fn extract_record_task_assignments(effects: &[Effect]) -> Vec<(&str, &str)> {
 /// RecordTaskAssignment when pr_task_associations has an entry for the PR.
 #[test]
 fn pr_action_spawn_owner_includes_record_task_assignment() {
-    let state = make_test_state("test-repo");
+    let (state, _tmp, _guard) = make_test_state("test-repo");
     let ctx = make_pr_context_with_task(42, "100");
 
     let effects = pr_action_to_effects(
@@ -1165,7 +1182,7 @@ fn pr_action_spawn_owner_includes_record_task_assignment() {
 /// include RecordTaskAssignment when no task association exists.
 #[test]
 fn pr_action_spawn_owner_no_record_without_task_association() {
-    let state = make_test_state("test-repo");
+    let (state, _tmp, _guard) = make_test_state("test-repo");
     let ctx = make_pr_context_empty();
 
     let effects = pr_action_to_effects(
@@ -1191,7 +1208,7 @@ fn pr_action_spawn_owner_no_record_without_task_association() {
 /// RecordTaskAssignment when pr_task_associations has an entry for the PR.
 #[test]
 fn comment_action_spawn_owner_includes_record_task_assignment() {
-    let state = make_test_state("test-repo");
+    let (state, _tmp, _guard) = make_test_state("test-repo");
     let ctx = make_pr_context_with_task(55, "200");
 
     let effects = comment_action_to_effects(
@@ -1218,7 +1235,7 @@ fn comment_action_spawn_owner_includes_record_task_assignment() {
 /// include RecordTaskAssignment when no task association exists.
 #[test]
 fn comment_action_spawn_owner_no_record_without_task_association() {
-    let state = make_test_state("test-repo");
+    let (state, _tmp, _guard) = make_test_state("test-repo");
     let ctx = make_pr_context_empty();
 
     let effects = comment_action_to_effects(
@@ -1243,7 +1260,7 @@ fn comment_action_spawn_owner_no_record_without_task_association() {
 /// RecordTaskAssignment when pr_task_associations has an entry for the PR.
 #[test]
 fn handoff_effects_include_record_task_assignment() {
-    let state = make_test_state("test-repo");
+    let (state, _tmp, _guard) = make_test_state("test-repo");
     let ctx = make_pr_context_with_task(77, "300");
 
     let effects = handoff_to_coworker_effects(
@@ -1273,7 +1290,7 @@ fn handoff_effects_include_record_task_assignment() {
 /// RecordTaskAssignment when no task association exists.
 #[test]
 fn handoff_effects_no_record_without_task_association() {
-    let state = make_test_state("test-repo");
+    let (state, _tmp, _guard) = make_test_state("test-repo");
     let ctx = make_pr_context_empty();
 
     let effects = handoff_to_coworker_effects(
@@ -1301,7 +1318,7 @@ fn handoff_effects_no_record_without_task_association() {
 /// includes RecordTaskAssignment when pr_task_associations has an entry for the PR.
 #[test]
 fn review_complete_spawn_owner_includes_record_task_assignment() {
-    let state = make_test_state("test-repo");
+    let (state, _tmp, _guard) = make_test_state("test-repo");
     let ctx = make_pr_context_with_task(88, "400");
 
     let effects = review_complete_action_to_effects(
@@ -1328,7 +1345,7 @@ fn review_complete_spawn_owner_includes_record_task_assignment() {
 /// does NOT include RecordTaskAssignment when no task association exists.
 #[test]
 fn review_complete_spawn_owner_no_record_without_task_association() {
-    let state = make_test_state("test-repo");
+    let (state, _tmp, _guard) = make_test_state("test-repo");
     let ctx = make_pr_context_empty();
 
     let effects = review_complete_action_to_effects(
@@ -1393,7 +1410,7 @@ fn test_reconcile_orphaned_prs_ignores_prs_with_active_tasks() {
 /// allowing cross-tick duplicate spawns for the same task.
 #[test]
 fn pr_action_to_effects_includes_record_task_assignment() {
-    let state = make_test_state("test-repo");
+    let (state, _tmp, _guard) = make_test_state("test-repo");
 
     // Build PrContext with a PR→task association
     let mut pr_task_associations = HashMap::new();
@@ -1448,7 +1465,7 @@ fn pr_action_to_effects_includes_record_task_assignment() {
 /// Bug !1377: comment_action_to_effects was missing RecordTaskAssignment in on_success.
 #[test]
 fn comment_action_to_effects_includes_record_task_assignment() {
-    let state = make_test_state("test-repo");
+    let (state, _tmp, _guard) = make_test_state("test-repo");
 
     let mut pr_task_associations = HashMap::new();
     pr_task_associations.insert(456, "99".to_string());
@@ -1498,7 +1515,7 @@ fn comment_action_to_effects_includes_record_task_assignment() {
 /// Bug !1377: handoff_to_coworker_effects was missing RecordTaskAssignment in on_success.
 #[test]
 fn handoff_to_coworker_effects_includes_record_task_assignment() {
-    let state = make_test_state("test-repo");
+    let (state, _tmp, _guard) = make_test_state("test-repo");
 
     let mut pr_task_associations = HashMap::new();
     pr_task_associations.insert(789, "17".to_string());
@@ -1551,7 +1568,7 @@ fn handoff_to_coworker_effects_includes_record_task_assignment() {
 /// Bug !1377: review_complete_action_to_effects was missing RecordTaskAssignment in on_success.
 #[test]
 fn review_complete_action_to_effects_includes_record_task_assignment() {
-    let state = make_test_state("test-repo");
+    let (state, _tmp, _guard) = make_test_state("test-repo");
 
     let mut pr_task_associations = HashMap::new();
     pr_task_associations.insert(321, "55".to_string());
@@ -1662,7 +1679,7 @@ async fn test_active_coworker_pr_without_worktree_is_not_orphaned() {
         "reviewDecision": "",
     });
 
-    let state = make_test_state("midtown");
+    let (state, _tmp, _guard) = make_test_state("midtown");
 
     // Empty branch_owners_map — the bug manifests because coworker_from_branch_with_map
     // still identifies "park" as the owner via the branch prefix
@@ -1719,7 +1736,7 @@ async fn test_headless_only_coworker_pr_is_not_orphaned() {
         "reviewDecision": "",
     });
 
-    let state = make_test_state("midtown");
+    let (state, _tmp, _guard) = make_test_state("midtown");
 
     // active_names includes "york" (as it would from WorldSnapshot which includes
     // headless sessions), but we do NOT insert york into state.coworkers — simulating
@@ -1951,7 +1968,7 @@ async fn test_poll_prs_session_based_owner_resolution() {
     }];
     snap.running_coworkers = snap.active_coworkers.clone();
 
-    let state = make_test_state("test-repo");
+    let (state, _tmp, _guard) = make_test_state("test-repo");
 
     let result = poll_prs_for_issues(&snap, &state).await;
 
@@ -1998,7 +2015,7 @@ fn test_pr_context_name_session_map_provides_session_id_for_nudge() {
         message: "PR #42 has a merge conflict".to_string(),
     };
 
-    let state = make_test_state("test-repo");
+    let (state, _tmp, _guard) = make_test_state("test-repo");
     let effects = pr_action_to_effects(
         action,
         42,

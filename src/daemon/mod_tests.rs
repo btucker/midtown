@@ -1644,9 +1644,16 @@ fn test_limit_checks_exclude_stopped_coworkers() {
 // ============================================================================
 
 /// Construct a minimal DaemonState for cleanup tests.
-fn make_cleanup_test_state() -> DaemonState {
+fn make_cleanup_test_state() -> (
+    DaemonState,
+    tempfile::TempDir,
+    crate::paths::TestMidtownBaseDirGuard,
+) {
     use std::process::Command;
     use tempfile::TempDir;
+
+    let midtown_dir = TempDir::new().expect("midtown temp dir");
+    let _guard = crate::paths::set_test_midtown_base_dir(midtown_dir.path().to_path_buf());
 
     let temp_dir = TempDir::new().expect("temp dir");
     Command::new("git")
@@ -1675,24 +1682,13 @@ fn make_cleanup_test_state() -> DaemonState {
     let cm = crate::coworker::CoworkerManager::new(wm);
 
     let base_dir = temp_dir.path().to_path_buf();
-    std::mem::forget(temp_dir);
-
-    // Use a unique repo name per test invocation to prevent persistent state
-    // pollution between tests (DaemonState loads from ~/.midtown/projects/<repo>/).
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let unique_repo = format!(
-        "test-repo-{}-{}",
-        std::process::id(),
-        COUNTER.fetch_add(1, Ordering::Relaxed)
-    );
 
     let channel_router = crate::ChannelRouter::new(&base_dir, "midtown");
     let (shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(1);
-    DaemonState::new(
+    let state = DaemonState::new(
         "/tmp/test-cleanup.sock".into(),
         cm,
-        unique_repo,
+        "test-repo".to_string(),
         vec![base_dir.clone()],
         channel_router,
         None,
@@ -1701,7 +1697,8 @@ fn make_cleanup_test_state() -> DaemonState {
         "main".to_string(),
         shutdown_tx,
     )
-    .expect("daemon state")
+    .expect("daemon state");
+    (state, temp_dir, _guard)
 }
 
 fn make_tool_item(id: &str) -> crate::universal_events::UniversalItem {
@@ -1716,7 +1713,7 @@ fn make_tool_item(id: &str) -> crate::universal_events::UniversalItem {
 
 #[tokio::test]
 async fn test_cleanup_coworker_state_clears_all_transient_state() {
-    let state = make_cleanup_test_state();
+    let (state, _tmp, _guard) = make_cleanup_test_state();
     let name = "madison";
 
     // Populate all transient state for this coworker
@@ -1776,7 +1773,7 @@ async fn test_cleanup_coworker_state_clears_all_transient_state() {
 
 #[tokio::test]
 async fn test_cleanup_coworker_state_preserves_other_coworkers() {
-    let state = make_cleanup_test_state();
+    let (state, _tmp, _guard) = make_cleanup_test_state();
 
     // Populate state for two coworkers
     {
@@ -1831,7 +1828,7 @@ async fn test_cleanup_coworker_state_preserves_other_coworkers() {
 
 #[tokio::test]
 async fn test_cleanup_coworker_state_records_stop_time() {
-    let state = make_cleanup_test_state();
+    let (state, _tmp, _guard) = make_cleanup_test_state();
     let name = "madison";
 
     // No stop time initially
@@ -1854,7 +1851,7 @@ async fn test_cleanup_coworker_state_records_stop_time() {
 
 #[test]
 fn test_daemon_state_initializes_name_pool_with_all_coworker_names() {
-    let state = make_cleanup_test_state();
+    let (state, _tmp, _guard) = make_cleanup_test_state();
     let pool = state.name_pool.lock().unwrap();
     let total = crate::coworker::AVENUE_NAMES.len() + crate::coworker::OVERFLOW_NAMES.len();
     assert_eq!(
@@ -1867,25 +1864,25 @@ fn test_daemon_state_initializes_name_pool_with_all_coworker_names() {
 
 #[test]
 fn test_session_for_name_returns_none_when_empty() {
-    let state = make_cleanup_test_state();
+    let (state, _tmp, _guard) = make_cleanup_test_state();
     assert_eq!(state.session_for_name("park"), None);
 }
 
 #[test]
 fn test_name_for_session_returns_none_when_empty() {
-    let state = make_cleanup_test_state();
+    let (state, _tmp, _guard) = make_cleanup_test_state();
     assert_eq!(state.name_for_session("sid-123"), None);
 }
 
 #[test]
 fn test_session_for_task_returns_none_when_empty() {
-    let state = make_cleanup_test_state();
+    let (state, _tmp, _guard) = make_cleanup_test_state();
     assert_eq!(state.session_for_task("42"), None);
 }
 
 #[test]
 fn test_session_for_name_after_manual_population() {
-    let state = make_cleanup_test_state();
+    let (state, _tmp, _guard) = make_cleanup_test_state();
     state
         .name_to_session
         .lock()
@@ -1901,7 +1898,7 @@ fn test_session_for_name_after_manual_population() {
 
 #[test]
 fn test_name_for_session_after_manual_population() {
-    let state = make_cleanup_test_state();
+    let (state, _tmp, _guard) = make_cleanup_test_state();
     state
         .session_to_name
         .lock()
@@ -1917,7 +1914,7 @@ fn test_name_for_session_after_manual_population() {
 
 #[test]
 fn test_session_for_task_after_manual_population() {
-    let state = make_cleanup_test_state();
+    let (state, _tmp, _guard) = make_cleanup_test_state();
     state
         .task_to_session
         .lock()
@@ -1930,7 +1927,7 @@ fn test_session_for_task_after_manual_population() {
 
 #[test]
 fn test_reverse_maps_bidirectional_consistency() {
-    let state = make_cleanup_test_state();
+    let (state, _tmp, _guard) = make_cleanup_test_state();
 
     // Populate both directions
     {
@@ -1957,7 +1954,7 @@ fn test_reverse_maps_bidirectional_consistency() {
 
 #[tokio::test]
 async fn test_cleanup_releases_name_from_pool() {
-    let state = make_cleanup_test_state();
+    let (state, _tmp, _guard) = make_cleanup_test_state();
 
     // Allocate a name from the pool
     let name = {
@@ -2013,7 +2010,7 @@ async fn test_cleanup_releases_name_from_pool() {
 
 #[tokio::test]
 async fn test_cleanup_preserves_other_sessions_reverse_maps() {
-    let state = make_cleanup_test_state();
+    let (state, _tmp, _guard) = make_cleanup_test_state();
 
     // Allocate two names
     {
@@ -2073,7 +2070,7 @@ async fn test_cleanup_preserves_other_sessions_reverse_maps() {
 
 #[test]
 fn test_name_pool_allocate_and_release_round_trip() {
-    let state = make_cleanup_test_state();
+    let (state, _tmp, _guard) = make_cleanup_test_state();
 
     // Allocate a name
     let name = {
@@ -2098,7 +2095,7 @@ fn test_name_pool_allocate_and_release_round_trip() {
 
 #[tokio::test]
 async fn test_cleanup_with_no_session_id_is_noop_for_reverse_maps() {
-    let state = make_cleanup_test_state();
+    let (state, _tmp, _guard) = make_cleanup_test_state();
 
     // Allocate a name but don't populate reverse maps
     {
@@ -2121,7 +2118,7 @@ async fn test_cleanup_with_no_session_id_is_noop_for_reverse_maps() {
 
 #[tokio::test]
 async fn test_task_to_session_cleanup_removes_all_tasks_for_session() {
-    let state = make_cleanup_test_state();
+    let (state, _tmp, _guard) = make_cleanup_test_state();
 
     // Allocate madison and populate reverse maps
     {
@@ -2170,7 +2167,7 @@ async fn test_task_to_session_cleanup_removes_all_tasks_for_session() {
 /// available for reuse.
 #[tokio::test]
 async fn test_repeated_shutdown_spawn_cycles_do_not_exhaust_name_pool() {
-    let state = make_cleanup_test_state();
+    let (state, _tmp, _guard) = make_cleanup_test_state();
 
     for cycle in 0..3 {
         let session_id = format!("sid-madison-{cycle}");
@@ -2249,7 +2246,7 @@ async fn test_repeated_shutdown_spawn_cycles_do_not_exhaust_name_pool() {
 /// the preferred_name for future resume.
 #[tokio::test]
 async fn test_cleanup_marks_session_record_stopped_in_persistent_state() {
-    let state = make_cleanup_test_state();
+    let (state, _tmp, _guard) = make_cleanup_test_state();
     let session_id = "sid-madison-001";
 
     // 1. Set up a running session: allocate name, populate reverse maps,
@@ -2334,7 +2331,7 @@ async fn test_cleanup_marks_session_record_stopped_in_persistent_state() {
 /// SessionRecords in persistent state.
 #[tokio::test]
 async fn test_cleanup_preserves_other_session_records_in_persistent_state() {
-    let state = make_cleanup_test_state();
+    let (state, _tmp, _guard) = make_cleanup_test_state();
 
     // Set up two sessions
     {

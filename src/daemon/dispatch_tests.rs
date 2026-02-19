@@ -1228,7 +1228,7 @@ fn test_spawn_for_pending_tasks_generates_registry_effects_new_task() {
         spawn_failure_cooldown_names: std::collections::HashSet::new(),
     };
 
-    let state = make_test_state();
+    let (state, _tmp, _guard) = make_test_state();
 
     let effects = spawn_for_pending_tasks(&snap, &state);
 
@@ -1388,7 +1388,7 @@ fn test_spawn_for_pending_tasks_reuses_worktree_for_owned_task() {
         spawn_failure_cooldown_names: std::collections::HashSet::new(),
     };
 
-    let state = make_test_state();
+    let (state, _tmp, _guard) = make_test_state();
 
     let effects = spawn_for_pending_tasks(&snap, &state);
 
@@ -1523,7 +1523,7 @@ fn test_spawn_for_pending_tasks_skips_when_owner_has_pending_task() {
         spawn_failure_cooldown_names: std::collections::HashSet::new(),
     };
 
-    let state = make_test_state();
+    let (state, _tmp, _guard) = make_test_state();
     let effects = spawn_for_pending_tasks(&snap, &state);
 
     // Count how many SpawnCoworkerWithCallbacks effects are generated for broadway
@@ -1628,7 +1628,7 @@ fn test_spawn_owner_includes_record_task_assignment_for_cross_tick_dedup() {
         spawn_failure_cooldown_names: std::collections::HashSet::new(),
     };
 
-    let state = make_test_state();
+    let (state, _tmp, _guard) = make_test_state();
     let effects = spawn_for_pending_tasks(&snap, &state);
 
     // Find the SpawnCoworkerWithCallbacks effect
@@ -1737,7 +1737,7 @@ fn test_cross_tick_dedup_skips_in_flight_owned_task() {
         spawn_failure_cooldown_names: std::collections::HashSet::new(),
     };
 
-    let state = make_test_state();
+    let (state, _tmp, _guard) = make_test_state();
 
     // Simulate tick 1: generates spawn effects
     let effects_tick1 = spawn_for_pending_tasks(&snap, &state);
@@ -1875,7 +1875,7 @@ fn test_cross_case_dedup_prevents_same_coworker_from_case1_and_case2() {
         spawn_failure_cooldown_names: std::collections::HashSet::new(),
     };
 
-    let state = make_test_state();
+    let (state, _tmp, _guard) = make_test_state();
     let effects = spawn_for_pending_tasks(&snap, &state);
 
     // Count total effects targeting broadway
@@ -1988,7 +1988,7 @@ fn test_spawn_for_pending_tasks_skips_via_snapshot_assignment_check() {
         spawn_failure_cooldown_names: std::collections::HashSet::new(),
     };
 
-    let state = make_test_state();
+    let (state, _tmp, _guard) = make_test_state();
     let effects = spawn_for_pending_tasks(&snap, &state);
 
     // Should generate NO effects because broadway is already assigned to task !42
@@ -2086,7 +2086,7 @@ fn test_orphan_recovery_reuses_existing_task_worktree() {
         spawn_failure_cooldown_names: std::collections::HashSet::new(),
     };
 
-    let state = make_test_state();
+    let (state, _tmp, _guard) = make_test_state();
     let effects = check_and_recover_orphans_with_task_lookup(&snap, &state, |task_id| {
         if task_id == "42" {
             Some(in_progress_task_for_lookup(
@@ -2242,7 +2242,7 @@ fn test_orphan_recovery_creates_new_worktree_when_none_exists() {
         spawn_failure_cooldown_names: std::collections::HashSet::new(),
     };
 
-    let state = make_test_state();
+    let (state, _tmp, _guard) = make_test_state();
     let effects = check_and_recover_orphans_with_task_lookup(&snap, &state, |task_id| {
         if task_id == "42" {
             Some(in_progress_task_for_lookup(
@@ -2421,7 +2421,7 @@ fn test_spawn_for_pending_unowned_reuses_existing_worktree() {
         spawn_failure_cooldown_names: std::collections::HashSet::new(),
     };
 
-    let state = make_test_state();
+    let (state, _tmp, _guard) = make_test_state();
     let effects = spawn_for_pending_tasks(&snap, &state);
 
     // Pre-spawn EnsureWorktree is top-level, then AssignAndSpawn
@@ -2938,7 +2938,7 @@ fn test_grouped_task_skips_if_already_assigned() {
         "task !1107 should be pending without owner"
     );
 
-    let state = make_test_state();
+    let (state, _tmp, _guard) = make_test_state();
 
     // Tick 1: Task !1107 groups to york (PR #912), generates nudge
     let effects_tick1 = spawn_for_pending_tasks(&snap, &state);
@@ -3002,7 +3002,7 @@ fn test_spawn_coworker_with_callbacks_records_task_assignment() {
     snap.busy_coworkers.clear();
     snap.in_progress_tasks.clear();
 
-    let state = make_test_state();
+    let (state, _tmp, _guard) = make_test_state();
 
     // Tick 1: generates SpawnCoworkerWithCallbacks with RecordTaskAssignment
     let effects = spawn_for_pending_tasks(&snap, &state);
@@ -3058,7 +3058,7 @@ fn test_case1_nudge_records_assignment_and_prevents_loop() {
     snap.busy_coworkers.clear();
     snap.in_progress_tasks.clear();
 
-    let state = make_test_state();
+    let (state, _tmp, _guard) = make_test_state();
 
     // Tick 1: NudgeOwner fires with RecordTaskAssignment in on_success
     let effects_tick1 = spawn_for_pending_tasks(&snap, &state);
@@ -3214,7 +3214,7 @@ fn test_spawn_for_pending_tasks_when_all_coworkers_are_gone() {
         spawn_failure_cooldown_names: std::collections::HashSet::new(),
     };
 
-    let state = make_test_state();
+    let (state, _tmp, _guard) = make_test_state();
 
     // The bug: when state.coworkers.list() is empty, spawn_for_pending_tasks
     // should still work — it should spawn fresh coworkers for pending tasks.
@@ -3247,9 +3247,16 @@ fn test_spawn_for_pending_tasks_when_all_coworkers_are_gone() {
 }
 
 /// Helper to create minimal DaemonState for testing
-fn make_test_state() -> DaemonState {
+fn make_test_state() -> (
+    DaemonState,
+    tempfile::TempDir,
+    crate::paths::TestMidtownBaseDirGuard,
+) {
     use std::process::Command;
     use tempfile::TempDir;
+
+    let midtown_dir = TempDir::new().expect("midtown temp dir");
+    let _guard = crate::paths::set_test_midtown_base_dir(midtown_dir.path().to_path_buf());
 
     let temp_dir = TempDir::new().expect("temp dir");
     Command::new("git")
@@ -3277,14 +3284,12 @@ fn make_test_state() -> DaemonState {
         .expect("worktree manager");
     let cm = crate::coworker::CoworkerManager::new(wm);
 
-    // Leak temp_dir so it survives the test
     let base_dir = temp_dir.path().to_path_buf();
-    std::mem::forget(temp_dir);
 
     let channel_router = crate::ChannelRouter::new(&base_dir, "midtown");
 
     let (shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(1);
-    DaemonState::new(
+    let state = DaemonState::new(
         "/tmp/test.sock".into(),
         cm,
         "test-repo".to_string(),
@@ -3296,7 +3301,8 @@ fn make_test_state() -> DaemonState {
         "main".to_string(),
         shutdown_tx,
     )
-    .expect("daemon state")
+    .expect("daemon state");
+    (state, temp_dir, _guard)
 }
 
 // ======================================================================
@@ -3880,7 +3886,7 @@ fn test_spawn_extracts_model_alias_from_provider_model_format() {
         spawn_failure_cooldown_names: std::collections::HashSet::new(),
     };
 
-    let state = make_test_state();
+    let (state, _tmp, _guard) = make_test_state();
     let effects = spawn_for_pending_tasks(&snap, &state);
 
     // Find the AssignAndSpawn effect and check its LaunchConfig
@@ -3995,7 +4001,7 @@ fn test_orphan_recovery_marks_task_in_flight() {
         spawn_failure_cooldown_names: std::collections::HashSet::new(),
     };
 
-    let state = make_test_state();
+    let (state, _tmp, _guard) = make_test_state();
     let effects = check_and_recover_orphans_with_task_lookup(&snap, &state, |task_id| {
         if task_id == "1264" {
             Some(in_progress_task_for_lookup(
@@ -4099,7 +4105,7 @@ fn test_dual_dispatch_orphan_recovery_and_pending_same_tick() {
         ..snapshot::minimal_snapshot_for_test()
     };
 
-    let state = make_test_state();
+    let (state, _tmp, _guard) = make_test_state();
 
     // Simulate what events.rs does: collect orphan effects, then collect pending task effects
     let orphan_effects = check_and_recover_orphans_with_task_lookup(&snap, &state, |task_id| {
@@ -4283,7 +4289,7 @@ fn test_stale_task_cleanup_false_positive_task_about_merged_pr() {
         spawn_failure_cooldown_names: std::collections::HashSet::new(),
     };
 
-    let state = make_test_state();
+    let (state, _tmp, _guard) = make_test_state();
     let effects = spawn_for_pending_tasks(&snap, &state);
 
     // Should NOT auto-complete the task. The task is about a bug that occurred during
@@ -4392,7 +4398,7 @@ fn test_stale_task_cleanup_correct_behavior_with_explicit_pr_field() {
         spawn_failure_cooldown_names: std::collections::HashSet::new(),
     };
 
-    let state = make_test_state();
+    let (state, _tmp, _guard) = make_test_state();
     let effects = spawn_for_pending_tasks(&snap, &state);
 
     // SHOULD auto-complete the task because task.pr == 123 and PR #123 is merged
@@ -4964,7 +4970,7 @@ fn test_session_dispatch_excludes_task_from_pending_dispatch() {
         ..make_session_dispatch_snapshot(vec![], HashMap::new(), HashMap::new())
     };
 
-    let state = make_test_state();
+    let (state, _tmp, _guard) = make_test_state();
 
     // Step 1: Session dispatch recovers the task
     let session_effects = dispatch_via_sessions(&snap);

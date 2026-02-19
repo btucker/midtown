@@ -13,9 +13,16 @@ use super::*;
 // Test helper
 // ============================================================================
 
-fn make_test_state() -> DaemonState {
+fn make_test_state() -> (
+    DaemonState,
+    tempfile::TempDir,
+    crate::paths::TestMidtownBaseDirGuard,
+) {
     use std::process::Command;
     use tempfile::TempDir;
+
+    let midtown_dir = TempDir::new().expect("midtown temp dir");
+    let _guard = crate::paths::set_test_midtown_base_dir(midtown_dir.path().to_path_buf());
 
     let temp_dir = TempDir::new().expect("temp dir");
     Command::new("git")
@@ -44,11 +51,10 @@ fn make_test_state() -> DaemonState {
     let cm = crate::coworker::CoworkerManager::new(wm);
 
     let base_dir = temp_dir.path().to_path_buf();
-    std::mem::forget(temp_dir);
 
     let channel_router = crate::ChannelRouter::new(&base_dir, "midtown");
     let (shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(1);
-    DaemonState::new(
+    let state = DaemonState::new(
         "/tmp/test-rpc-coworker.sock".into(),
         cm,
         "test-repo".to_string(),
@@ -60,7 +66,8 @@ fn make_test_state() -> DaemonState {
         "main".to_string(),
         shutdown_tx,
     )
-    .expect("daemon state")
+    .expect("daemon state");
+    (state, temp_dir, _guard)
 }
 
 // ============================================================================
@@ -69,7 +76,7 @@ fn make_test_state() -> DaemonState {
 
 #[tokio::test]
 async fn test_coworker_asking_stores_pending_question() {
-    let state = make_test_state();
+    let (state, _tmp, _guard) = make_test_state();
 
     // Initially no pending questions
     {
@@ -103,7 +110,7 @@ async fn test_coworker_asking_stores_pending_question() {
 
 #[tokio::test]
 async fn test_coworker_asking_multiple_questions_accumulate() {
-    let state = make_test_state();
+    let (state, _tmp, _guard) = make_test_state();
 
     handle_coworker_asking(RequestId::Number(1), "park", "First question?", &state).await;
 
@@ -128,7 +135,7 @@ async fn test_coworker_asking_multiple_questions_accumulate() {
 
 #[tokio::test]
 async fn test_coworker_asking_twice_replaces_previous_question() {
-    let state = make_test_state();
+    let (state, _tmp, _guard) = make_test_state();
 
     handle_coworker_asking(RequestId::Number(1), "madison", "First question?", &state).await;
     handle_coworker_asking(RequestId::Number(2), "madison", "Updated question?", &state).await;
@@ -148,7 +155,7 @@ async fn test_coworker_asking_twice_replaces_previous_question() {
 
 #[tokio::test]
 async fn test_cleanup_coworker_state_clears_pending_questions() {
-    let state = make_test_state();
+    let (state, _tmp, _guard) = make_test_state();
 
     // Store pending questions for two coworkers
     handle_coworker_asking(
@@ -184,7 +191,7 @@ async fn test_cleanup_coworker_state_clears_pending_questions() {
 
 #[tokio::test]
 async fn test_coworker_nudge_clears_pending_question() {
-    let state = make_test_state();
+    let (state, _tmp, _guard) = make_test_state();
 
     // Store a pending question for "madison"
     handle_coworker_asking(
@@ -224,7 +231,7 @@ async fn test_coworker_nudge_clears_pending_question() {
 
 #[tokio::test]
 async fn test_coworker_nudge_only_clears_target_coworkers_questions() {
-    let state = make_test_state();
+    let (state, _tmp, _guard) = make_test_state();
 
     // Two coworkers each have a pending question
     handle_coworker_asking(
@@ -270,7 +277,7 @@ async fn test_coworker_nudge_only_clears_target_coworkers_questions() {
 
 #[tokio::test]
 async fn test_coworker_questions_returns_empty_when_no_questions() {
-    let state = make_test_state();
+    let (state, _tmp, _guard) = make_test_state();
 
     let response: crate::rpc::Response =
         handle_coworker_questions(RequestId::Number(1), &state).await;
@@ -286,7 +293,7 @@ async fn test_coworker_questions_returns_empty_when_no_questions() {
 
 #[tokio::test]
 async fn test_coworker_questions_returns_pending_questions() {
-    let state = make_test_state();
+    let (state, _tmp, _guard) = make_test_state();
 
     // Store a pending question
     handle_coworker_asking(RequestId::Number(1), "york", "Can you help me?", &state).await;
