@@ -422,6 +422,9 @@ pub(crate) struct StuckCoworkerRestart {
     pub name: String,
     pub task_id: String,
     pub task_subject: String,
+    /// Session ID from the name→session map, if the coworker has an active session.
+    /// Used for traceability in shutdown effects and logging.
+    pub session_id: Option<String>,
 }
 
 /// Coworker sets that are exempt from stuck detection.
@@ -475,6 +478,7 @@ pub(crate) fn decide_stuck_coworker_restarts(
     exemptions: &StuckExemptions<'_>,
     now_utc: DateTime<Utc>,
     stuck_duration: Duration,
+    name_session_map: &HashMap<String, String>,
 ) -> Vec<StuckCoworkerRestart> {
     let threshold = chrono::Duration::from_std(stuck_duration).unwrap_or_default();
     let mut restarts = Vec::new();
@@ -495,6 +499,7 @@ pub(crate) fn decide_stuck_coworker_restarts(
             name: name.clone(),
             task_id: task_id.clone(),
             task_subject: task_subject.clone(),
+            session_id: name_session_map.get(name).cloned(),
         });
     }
 
@@ -512,6 +517,9 @@ pub(crate) struct DeadProcessRespawn {
     pub task_id: String,
     pub task_subject: String,
     pub exit_code: i32,
+    /// Session ID from the name→session map, if the coworker had an active session.
+    /// Used for traceability in shutdown effects and logging.
+    pub session_id: Option<String>,
 }
 
 /// Detect coworkers whose headless process has exited unexpectedly.
@@ -525,6 +533,7 @@ pub(crate) struct DeadProcessRespawn {
 pub(crate) fn decide_dead_process_respawns(
     process_health: &HashMap<String, crate::daemon::snapshot::ProcessHealth>,
     in_progress_tasks: &[(String, String, String)],
+    name_session_map: &HashMap<String, String>,
 ) -> Vec<DeadProcessRespawn> {
     let mut respawns = Vec::new();
 
@@ -547,6 +556,7 @@ pub(crate) fn decide_dead_process_respawns(
             task_id: task_id.clone(),
             task_subject: task_subject.clone(),
             exit_code: health.exit_code.unwrap_or(-1),
+            session_id: name_session_map.get(name).cloned(),
         });
     }
 
@@ -593,6 +603,9 @@ pub(crate) struct StuckReviewerRestart {
     pub name: String,
     pub pr_number: u64,
     pub restart_count: u32,
+    /// Session ID from the name→session map, if the reviewer has an active session.
+    /// Used for traceability in shutdown effects and logging.
+    pub session_id: Option<String>,
 }
 
 /// Detect reviewers whose headless process has not emitted events for
@@ -603,6 +616,7 @@ pub(crate) struct StuckReviewerRestart {
 /// infinite restart loops for the same PR.
 ///
 /// Pure function: takes ProcessHealth data and returns restart decisions.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn decide_stuck_reviewer_restarts(
     process_health: &HashMap<String, crate::daemon::snapshot::ProcessHealth>,
     reviewer_pr_assignments: &HashMap<String, u64>,
@@ -611,6 +625,7 @@ pub(crate) fn decide_stuck_reviewer_restarts(
     now_utc: DateTime<Utc>,
     stuck_duration: Duration,
     max_restarts: u32,
+    name_session_map: &HashMap<String, String>,
 ) -> Vec<StuckReviewerRestart> {
     let threshold = chrono::Duration::from_std(stuck_duration).unwrap_or_default();
     let mut restarts = Vec::new();
@@ -637,6 +652,7 @@ pub(crate) fn decide_stuck_reviewer_restarts(
             name: name.clone(),
             pr_number,
             restart_count: current_count,
+            session_id: name_session_map.get(name).cloned(),
         });
     }
 
@@ -1107,6 +1123,10 @@ pub(crate) fn decide_mention_action(
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+#[path = "rules_session_tests.rs"]
+#[cfg(test)]
+mod rules_session_tests;
 
 #[cfg(test)]
 mod tests {
@@ -2614,7 +2634,14 @@ mod tests {
             auth_error: &HashSet::new(),
             attached,
         };
-        decide_stuck_coworker_restarts(&map, &tasks, &exemptions, now, Duration::from_secs(180))
+        decide_stuck_coworker_restarts(
+            &map,
+            &tasks,
+            &exemptions,
+            now,
+            Duration::from_secs(180),
+            &HashMap::new(),
+        )
     }
 
     #[test]
@@ -2854,7 +2881,7 @@ mod tests {
 
         let tasks = vec![("42".to_string(), "Fix bug".to_string(), "york".to_string())];
 
-        let respawns = decide_dead_process_respawns(&health, &tasks);
+        let respawns = decide_dead_process_respawns(&health, &tasks, &HashMap::new());
 
         assert_eq!(respawns.len(), 1);
         assert_eq!(respawns[0].name, "york");
@@ -2870,7 +2897,7 @@ mod tests {
 
         let tasks: Vec<(String, String, String)> = vec![];
 
-        let respawns = decide_dead_process_respawns(&health, &tasks);
+        let respawns = decide_dead_process_respawns(&health, &tasks, &HashMap::new());
 
         assert!(
             respawns.is_empty(),
@@ -2903,7 +2930,7 @@ mod tests {
             "broadway".to_string(),
         )];
 
-        let respawns = decide_dead_process_respawns(&health, &tasks);
+        let respawns = decide_dead_process_respawns(&health, &tasks, &HashMap::new());
 
         assert!(respawns.is_empty(), "alive process should not be respawned");
     }
@@ -2933,7 +2960,7 @@ mod tests {
             "amsterdam".to_string(),
         )];
 
-        let respawns = decide_dead_process_respawns(&health, &tasks);
+        let respawns = decide_dead_process_respawns(&health, &tasks, &HashMap::new());
 
         assert!(
             respawns.is_empty(),
@@ -2953,7 +2980,7 @@ mod tests {
             "lexington".to_string(),
         )];
 
-        let respawns = decide_dead_process_respawns(&health, &tasks);
+        let respawns = decide_dead_process_respawns(&health, &tasks, &HashMap::new());
 
         assert_eq!(
             respawns.len(),
@@ -3154,6 +3181,7 @@ mod tests {
             now,
             Duration::from_secs(300),
             2,
+            &HashMap::new(),
         )
     }
 
@@ -3242,6 +3270,7 @@ mod tests {
             now,
             Duration::from_secs(300),
             2,
+            &HashMap::new(),
         );
         assert!(
             restarts.is_empty(),

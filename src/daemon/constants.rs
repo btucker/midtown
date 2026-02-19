@@ -94,6 +94,11 @@ pub const DEFAULT_LEAD_SESSION_REFRESH_INTERVAL_SECS: u64 = 90 * 60;
 /// the system. Still enforces one-spawn-per-tick to prevent uncontrolled spawning.
 pub(super) const ORPHAN_SPAWN_COOLDOWN: Duration = Duration::from_secs(2);
 
+/// Cooldown between session-centric dispatch recovery spawns (2 seconds).
+/// Same cadence as orphan recovery -- session dispatch is a parallel recovery path
+/// that uses session records instead of orphan detection heuristics.
+pub(super) const SESSION_DISPATCH_COOLDOWN: Duration = Duration::from_secs(2);
+
 /// Grace period after a coworker stops before orphan recovery kicks in (40 seconds).
 /// Tradeoff: Faster recovery of abandoned tasks vs. risk of recovering tasks that are
 /// legitimately completing. Reduced from 60s to 40s (still conservative) to speed up

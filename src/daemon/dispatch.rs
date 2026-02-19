@@ -157,6 +157,20 @@ fn task_completed_effects(task_id: &str, repo_name: &str, channel_message: Strin
 }
 
 // ============================================================================
+// Session-centric helpers
+// ============================================================================
+
+/// Look up the session record for a task, if one exists.
+/// Returns None if no session is associated with this task.
+fn find_session_for_task<'a>(
+    task_id: &str,
+    snap: &'a snapshot::WorldSnapshot,
+) -> Option<&'a crate::daemon::state::SessionRecord> {
+    let session_id = snap.session_task_map.get(task_id)?;
+    snap.sessions.get(session_id)
+}
+
+// ============================================================================
 // Orphan task recovery
 // ============================================================================
 
@@ -349,13 +363,10 @@ fn check_and_recover_orphans_with_task_lookup<F>(
 where
     F: Fn(&str) -> Option<crate::tasks::Task>,
 {
-    // Check cooldown - skip if we spawned too recently
-    {
-        let cooldowns = state.cooldowns.lock().unwrap();
-        if !cooldowns.check("orphan_spawn", "global", ORPHAN_SPAWN_COOLDOWN) {
-            debug!("Orphan recovery cooldown active");
-            return vec![];
-        }
+    // Check cooldown - skip if we spawned too recently (pre-evaluated in snapshot)
+    if snap.orphan_spawn_cooldown_active {
+        debug!("Orphan recovery cooldown active");
+        return vec![];
     }
 
     if snap.in_progress_tasks.is_empty() {
@@ -363,6 +374,9 @@ where
     }
 
     // Get primary repo path for GitHub API calls
+    // NOTE: This is a pre-existing impurity (I/O for PR merge status checks).
+    // The cooldown checks have been moved to the snapshot; the repo_path usage
+    // remains here until should_recover_task() is fully migrated to snapshot data.
     let repo_path = state
         .all_repo_paths
         .first()
@@ -370,6 +384,8 @@ where
 
     // Filter out in_progress tasks whose PRs have already been merged, that
     // have open PRs (via pr_task_associations), or that are already completed.
+    // Also filter out tasks with session records — those are handled by
+    // dispatch_via_sessions which has full session context for recovery.
     // These tasks are stale and will be auto-completed by the PR merge cleanup
     // path (merged/completed) or already have active work (open PR). Attempting
     // orphan recovery creates a loop: spawn → coworker sees task done → goes
@@ -378,6 +394,14 @@ where
         .in_progress_tasks
         .iter()
         .filter(|(task_id, _task_subject, _owner)| {
+            // Skip tasks that have a session record — dispatch_via_sessions handles them.
+            if snap.session_task_map.contains_key(task_id.as_str()) {
+                debug!(
+                    "Orphan recovery skipping task !{} — has session record, handled by dispatch_via_sessions",
+                    task_id
+                );
+                return false;
+            }
             // Read full task from disk to check both subject and description for PR number
             let task = match task_lookup(task_id) {
                 Some(t) => t,
@@ -428,15 +452,16 @@ where
     };
 
     // Check per-coworker spawn failure cooldown to prevent infinite retry loops
+    // (pre-evaluated in snapshot)
+    if snap
+        .spawn_failure_cooldown_names
+        .contains(&recovery.owner.to_lowercase())
     {
-        let cooldowns = state.cooldowns.lock().unwrap();
-        if !cooldowns.check("spawn_failure", &recovery.owner, SPAWN_FAILURE_COOLDOWN) {
-            debug!(
-                "Spawn failure cooldown active for {} — skipping orphan recovery for task !{}",
-                recovery.owner, recovery.task_id
-            );
-            return vec![];
-        }
+        debug!(
+            "Spawn failure cooldown active for {} — skipping orphan recovery for task !{}",
+            recovery.owner, recovery.task_id
+        );
+        return vec![];
     }
 
     info!(
@@ -453,6 +478,102 @@ where
         ),
     );
 
+    // Set channel from task if available
+    let channel = snap
+        .all_tasks
+        .iter()
+        .find(|t| t.id == recovery.task_id)
+        .and_then(|t| t.channel.clone());
+
+    // ── Session-aware resume path ──────────────────────────────────────
+    // Check if there's a dead session record for this task that we can resume
+    // instead of spawning fresh. Reviewer tasks always get fresh sessions.
+    let session_record = find_session_for_task(&recovery.task_id, snap);
+    if let Some(record) = session_record
+        && !record.is_running
+        && !record.is_reviewer
+    {
+        info!(
+            "Resuming session {} for orphaned task !{} (owner: {})",
+            record.session_id, recovery.task_id, recovery.owner
+        );
+
+        // Prepare worktree (reuse existing or create new)
+        let wt = prepare_task_worktree(
+            &recovery.task_id,
+            &recovery.task_subject,
+            &state.repo_name,
+            snap,
+        );
+
+        let mut config = crate::launch::LaunchConfig::coworker(
+            recovery.owner.clone(),
+            state.repo_name.clone(),
+            crate::launch::SessionMode::ResumeSession(record.session_id.clone()),
+            Some(prompt),
+        );
+        config.working_dir = Some(wt.path);
+        config.channel = channel.clone();
+        config.apply_task_model(&snap.task_model_map, &recovery.task_id);
+
+        let on_success = vec![
+            Effect::RecordTaskAssignment {
+                coworker: recovery.owner.clone(),
+                task_id: recovery.task_id.clone(),
+            },
+            Effect::BindCoworkerToWorktree {
+                worktree_id: wt.worktree_id,
+                coworker: recovery.owner.clone(),
+            },
+            Effect::BroadcastCoworkerUpdate {
+                name: recovery.owner.clone(),
+                status: "running".to_string(),
+                current_task: None,
+            },
+            Effect::RecordCooldown {
+                category: "orphan_spawn".to_string(),
+                key: "global".to_string(),
+            },
+            Effect::PostToChannel {
+                sender: "midtown".to_string(),
+                message: format!(
+                    "♻️ Resumed session {} for orphaned task !{} (coworker {})",
+                    record.session_id, recovery.task_id, recovery.owner
+                ),
+                channel,
+            },
+        ];
+
+        let mut effects = wt.pre_spawn_effects;
+        effects.push(Effect::SpawnCoworkerWithCallbacks {
+            config,
+            on_success,
+            on_failure: vec![
+                Effect::RecordCooldown {
+                    category: "spawn_failure".to_string(),
+                    key: recovery.owner.clone(),
+                },
+                Effect::ResetTaskToPending {
+                    task_id: recovery.task_id.clone(),
+                    repo_name: snap.repo_name.clone(),
+                },
+                Effect::PostToChannel {
+                    sender: "midtown".to_string(),
+                    message: format!(
+                        "🔄 Task !{} reset to pending - session resume for {} failed (backing off for {}s)",
+                        recovery.task_id,
+                        recovery.owner,
+                        SPAWN_FAILURE_COOLDOWN.as_secs()
+                    ),
+                    channel: None,
+                },
+            ],
+        });
+
+        return effects;
+    }
+
+    // ── Fresh spawn path (legacy / no session record) ──────────────────
     // Prepare worktree (reuse existing or create new)
     let wt = prepare_task_worktree(
         &recovery.task_id,
@@ -468,13 +589,6 @@ where
         Some(prompt),
     );
     config.working_dir = Some(wt.path);
-
-    // Set channel from task if available
-    let channel = snap
-        .all_tasks
-        .iter()
-        .find(|t| t.id == recovery.task_id)
-        .and_then(|t| t.channel.clone());
     config.channel = channel.clone();
 
     // Apply task model if available (sets both provider and model)
@@ -542,22 +656,207 @@ where
 
 /// Extract task IDs claimed by orphan recovery effects.
 ///
-/// Scans `SpawnCoworkerWithCallbacks` on_success callbacks for `RecordTaskAssignment`
-/// effects and returns all found task IDs. Used by `events.rs` to build an exclusion
-/// set for `spawn_for_pending_tasks_excluding`, preventing dual-spawn when orphan
-/// recovery and pending dispatch both target the same task in one tick.
+/// Scans effects for `RecordTaskAssignment` — both as top-level effects
+/// (session-aware resume path) and nested inside `SpawnCoworkerWithCallbacks`
+/// on_success callbacks (legacy fresh spawn path). Used by `events.rs` to build
+/// an exclusion set for `spawn_for_pending_tasks_excluding`, preventing dual-spawn
+/// when orphan recovery and pending dispatch both target the same task in one tick.
 pub(super) fn extract_claimed_task_ids_from_effects(effects: &[Effect]) -> HashSet<String> {
     let mut ids = HashSet::new();
     for effect in effects {
-        if let Effect::SpawnCoworkerWithCallbacks { on_success, .. } = effect {
-            for sub in on_success {
-                if let Effect::RecordTaskAssignment { task_id, .. } = sub {
-                    ids.insert(task_id.clone());
+        match effect {
+            // Legacy fresh spawn path: RecordTaskAssignment is nested in on_success
+            Effect::SpawnCoworkerWithCallbacks { on_success, .. } => {
+                for sub in on_success {
+                    if let Effect::RecordTaskAssignment { task_id, .. } = sub {
+                        ids.insert(task_id.clone());
+                    }
                 }
             }
+            // Session-aware resume path: RecordTaskAssignment is top-level
+            Effect::RecordTaskAssignment { task_id, .. } => {
+                ids.insert(task_id.clone());
+            }
+            _ => {}
         }
     }
     ids
+}
+
+/// Session-aware dispatch: check if in_progress tasks have associated sessions
+/// and attempt recovery through session data when available.
+///
+/// This complements `check_and_recover_orphans` by providing a session-first
+/// lookup path. Tasks with session records get their preferred name and
+/// working directory preserved across restarts.
+///
+/// Pure function: reads only from `snap` (no `DaemonState` access). Cooldown
+/// state is pre-evaluated into the snapshot by `collect_world_snapshot()`.
+pub fn dispatch_via_sessions(snap: &snapshot::WorldSnapshot) -> Vec<effects::Effect> {
+    // Check cooldown - skip if we dispatched too recently
+    if snap.session_dispatch_cooldown_active {
+        debug!("Session dispatch cooldown active");
+        return vec![];
+    }
+
+    if snap.in_progress_tasks.is_empty() {
+        return vec![];
+    }
+
+    let mut effects = Vec::new();
+
+    for (task_id, task_subject, owner) in &snap.in_progress_tasks {
+        // Only handle tasks that have session records. Tasks without session
+        // records are left for the existing check_and_recover_orphans path.
+        let session_id = match snap.session_task_map.get(task_id) {
+            Some(id) => id,
+            None => continue,
+        };
+
+        let record = match snap.sessions.get(session_id) {
+            Some(r) => r,
+            None => {
+                warn!(
+                    "Session {} referenced by task !{} not found in sessions map",
+                    session_id, task_id
+                );
+                continue;
+            }
+        };
+
+        // If the session is running, the task is handled -- skip.
+        if record.is_running {
+            debug!(
+                "Task !{} has running session {} -- no recovery needed",
+                task_id, record.session_id
+            );
+            continue;
+        }
+
+        // Session is stopped -- attempt recovery using session data.
+        // Use preferred_name for name continuity.
+        let coworker_name = record
+            .preferred_name
+            .as_deref()
+            .or(record.current_name.as_deref())
+            .unwrap_or(owner);
+
+        // Check per-coworker spawn failure cooldown (pre-evaluated in snapshot)
+        if snap
+            .spawn_failure_cooldown_names
+            .contains(&coworker_name.to_lowercase())
+        {
+            debug!(
+                "Spawn failure cooldown active for {} -- skipping session dispatch for task !{}",
+                coworker_name, task_id
+            );
+            continue;
+        }
+
+        info!(
+            "Session dispatch: recovering task !{} via stopped session {} (preferred_name: {})",
+            task_id, record.session_id, coworker_name
+        );
+
+        let plan_section = build_plan_prompt_section(task_id, snap);
+        let prompt = format_task_prompt(
+            task_id,
+            &format!(
+                "You've been assigned task !{}: {}. Your previous session was interrupted but your worktree and branch are still intact. Check your git status and get started!{}",
+                task_id, task_subject, plan_section
+            ),
+        );
+
+        // Prepare worktree (reuse existing or create new) and build config.
+        // Uses prepare_task_worktree to keep the worktree registry current and
+        // emit EnsureWorktree / BindCoworkerToWorktree effects.
+        let wt = prepare_task_worktree(task_id, task_subject, &snap.repo_name, snap);
+
+        let mut config = crate::launch::LaunchConfig::coworker(
+            coworker_name.to_string(),
+            snap.repo_name.clone(),
+            crate::launch::SessionMode::ResumeSession(record.session_id.clone()),
+            Some(prompt),
+        );
+        // Prefer the session's recorded working_dir (actual location on disk).
+        // Fall back to the computed worktree path from the registry.
+        let working_dir = if !record.working_dir.is_empty() {
+            std::path::PathBuf::from(&record.working_dir)
+        } else {
+            wt.path.clone()
+        };
+        config.working_dir = Some(working_dir);
+
+        let channel = snap
+            .all_tasks
+            .iter()
+            .find(|t| t.id == *task_id)
+            .and_then(|t| t.channel.clone());
+        config.channel = channel.clone();
+
+        config.apply_task_model(&snap.task_model_map, task_id);
+
+        let on_success = vec![
+            Effect::RecordTaskAssignment {
+                coworker: coworker_name.to_string(),
+                task_id: task_id.clone(),
+            },
+            Effect::BindCoworkerToWorktree {
+                worktree_id: wt.worktree_id,
+                coworker: coworker_name.to_string(),
+            },
+            Effect::BroadcastCoworkerUpdate {
+                name: coworker_name.to_string(),
+                status: "running".to_string(),
+                current_task: None,
+            },
+            Effect::RecordCooldown {
+                category: "session_dispatch".to_string(),
+                key: "global".to_string(),
+            },
+            Effect::PostToChannel {
+                sender: "midtown".to_string(),
+                message: format!(
+                    "Session dispatch: recovered task !{} via session {} (coworker {})",
+                    task_id, record.session_id, coworker_name
+                ),
+                channel,
+            },
+        ];
+
+        // Prepend worktree setup effects (EnsureWorktree + optional registration)
+        let mut pre_spawn = wt.pre_spawn_effects;
+        pre_spawn.push(Effect::SpawnCoworkerWithCallbacks {
+            config,
+            on_success,
+            on_failure: vec![
+                Effect::RecordCooldown {
+                    category: "spawn_failure".to_string(),
+                    key: coworker_name.to_string(),
+                },
+                Effect::ResetTaskToPending {
+                    task_id: task_id.clone(),
+                    repo_name: snap.repo_name.clone(),
+                },
+                Effect::PostToChannel {
+                    sender: "midtown".to_string(),
+                    message: format!(
+                        "Task !{} reset to pending - session dispatch for {} failed (backing off for {}s)",
+                        task_id,
+                        coworker_name,
+                        SPAWN_FAILURE_COOLDOWN.as_secs()
+                    ),
+                    channel: None,
+                },
+            ],
+        });
+        effects.extend(pre_spawn);
+
+        // Only spawn one coworker per tick (same rate limiting as orphan recovery)
+        break;
+    }
+
+    effects
 }
 
 /// Gather data and build effects for nudging coworkers discovered on daemon startup.
@@ -2044,6 +2343,10 @@ pub fn reset_orphaned_tasks(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
 #[path = "dispatch_dev_limit_tests.rs"]
 #[cfg(test)]
 mod dispatch_dev_limit_tests;
+
+#[path = "dispatch_session_tests.rs"]
+#[cfg(test)]
+mod dispatch_session_tests;
 
 #[path = "dispatch_tests.rs"]
 #[cfg(test)]

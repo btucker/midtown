@@ -153,8 +153,11 @@ pub(super) async fn route_mentions(state: &DaemonState, msg: &Message) {
             &nudge_text,
         );
 
+        // Look up session_id for targeted delivery (session-centric routing).
+        let session_id = state.session_for_name(&name);
+
         // Convert MentionAction → Effects, execute via the standard pipeline.
-        let effects = mention_action_to_effects(action, &name, &state.repo_name);
+        let effects = mention_action_to_effects(action, &name, &state.repo_name, session_id);
         super::effects::execute_effects(effects, state).await;
     }
 }
@@ -203,6 +206,7 @@ fn mention_action_to_effects(
     action: crate::rules::MentionAction,
     coworker_name: &str,
     repo_name: &str,
+    session_id: Option<String>,
 ) -> Vec<super::effects::Effect> {
     use super::effects::Effect;
 
@@ -211,7 +215,7 @@ fn mention_action_to_effects(
             vec![Effect::NudgeCoworker {
                 name,
                 message,
-                session_id: None,
+                session_id,
             }]
         }
         crate::rules::MentionAction::Spawn { name, message } => {

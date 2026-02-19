@@ -1222,6 +1222,9 @@ fn test_spawn_for_pending_tasks_generates_registry_effects_new_task() {
         session_task_map: HashMap::new(),
         session_name_map: HashMap::new(),
         name_session_map: HashMap::new(),
+        orphan_spawn_cooldown_active: false,
+        session_dispatch_cooldown_active: false,
+        spawn_failure_cooldown_names: std::collections::HashSet::new(),
     };
 
     let state = make_test_state();
@@ -1378,6 +1381,9 @@ fn test_spawn_for_pending_tasks_reuses_worktree_for_owned_task() {
         session_task_map: HashMap::new(),
         session_name_map: HashMap::new(),
         name_session_map: HashMap::new(),
+        orphan_spawn_cooldown_active: false,
+        session_dispatch_cooldown_active: false,
+        spawn_failure_cooldown_names: std::collections::HashSet::new(),
     };
 
     let state = make_test_state();
@@ -1509,6 +1515,9 @@ fn test_spawn_for_pending_tasks_skips_when_owner_has_pending_task() {
         session_task_map: HashMap::new(),
         session_name_map: HashMap::new(),
         name_session_map: HashMap::new(),
+        orphan_spawn_cooldown_active: false,
+        session_dispatch_cooldown_active: false,
+        spawn_failure_cooldown_names: std::collections::HashSet::new(),
     };
 
     let state = make_test_state();
@@ -1610,6 +1619,9 @@ fn test_spawn_owner_includes_record_task_assignment_for_cross_tick_dedup() {
         session_task_map: HashMap::new(),
         session_name_map: HashMap::new(),
         name_session_map: HashMap::new(),
+        orphan_spawn_cooldown_active: false,
+        session_dispatch_cooldown_active: false,
+        spawn_failure_cooldown_names: std::collections::HashSet::new(),
     };
 
     let state = make_test_state();
@@ -1715,6 +1727,9 @@ fn test_cross_tick_dedup_skips_in_flight_owned_task() {
         session_task_map: HashMap::new(),
         session_name_map: HashMap::new(),
         name_session_map: HashMap::new(),
+        orphan_spawn_cooldown_active: false,
+        session_dispatch_cooldown_active: false,
+        spawn_failure_cooldown_names: std::collections::HashSet::new(),
     };
 
     let state = make_test_state();
@@ -1849,6 +1864,9 @@ fn test_cross_case_dedup_prevents_same_coworker_from_case1_and_case2() {
         session_task_map: HashMap::new(),
         session_name_map: HashMap::new(),
         name_session_map: HashMap::new(),
+        orphan_spawn_cooldown_active: false,
+        session_dispatch_cooldown_active: false,
+        spawn_failure_cooldown_names: std::collections::HashSet::new(),
     };
 
     let state = make_test_state();
@@ -1958,6 +1976,9 @@ fn test_spawn_for_pending_tasks_skips_via_snapshot_assignment_check() {
         session_task_map: HashMap::new(),
         session_name_map: HashMap::new(),
         name_session_map: HashMap::new(),
+        orphan_spawn_cooldown_active: false,
+        session_dispatch_cooldown_active: false,
+        spawn_failure_cooldown_names: std::collections::HashSet::new(),
     };
 
     let state = make_test_state();
@@ -2052,6 +2073,9 @@ fn test_orphan_recovery_reuses_existing_task_worktree() {
         session_task_map: HashMap::new(),
         session_name_map: HashMap::new(),
         name_session_map: HashMap::new(),
+        orphan_spawn_cooldown_active: false,
+        session_dispatch_cooldown_active: false,
+        spawn_failure_cooldown_names: std::collections::HashSet::new(),
     };
 
     let state = make_test_state();
@@ -2204,6 +2228,9 @@ fn test_orphan_recovery_creates_new_worktree_when_none_exists() {
         session_task_map: HashMap::new(),
         session_name_map: HashMap::new(),
         name_session_map: HashMap::new(),
+        orphan_spawn_cooldown_active: false,
+        session_dispatch_cooldown_active: false,
+        spawn_failure_cooldown_names: std::collections::HashSet::new(),
     };
 
     let state = make_test_state();
@@ -2379,6 +2406,9 @@ fn test_spawn_for_pending_unowned_reuses_existing_worktree() {
         session_task_map: HashMap::new(),
         session_name_map: HashMap::new(),
         name_session_map: HashMap::new(),
+        orphan_spawn_cooldown_active: false,
+        session_dispatch_cooldown_active: false,
+        spawn_failure_cooldown_names: std::collections::HashSet::new(),
     };
 
     let state = make_test_state();
@@ -2535,6 +2565,9 @@ fn make_reconcile_snapshot(
         session_task_map: HashMap::new(),
         session_name_map: HashMap::new(),
         name_session_map: HashMap::new(),
+        orphan_spawn_cooldown_active: false,
+        session_dispatch_cooldown_active: false,
+        spawn_failure_cooldown_names: HashSet::new(),
     }
 }
 
@@ -3164,6 +3197,9 @@ fn test_spawn_for_pending_tasks_when_all_coworkers_are_gone() {
         session_task_map: HashMap::new(),
         session_name_map: HashMap::new(),
         name_session_map: HashMap::new(),
+        orphan_spawn_cooldown_active: false,
+        session_dispatch_cooldown_active: false,
+        spawn_failure_cooldown_names: std::collections::HashSet::new(),
     };
 
     let state = make_test_state();
@@ -3826,6 +3862,9 @@ fn test_spawn_extracts_model_alias_from_provider_model_format() {
         session_task_map: HashMap::new(),
         session_name_map: HashMap::new(),
         name_session_map: HashMap::new(),
+        orphan_spawn_cooldown_active: false,
+        session_dispatch_cooldown_active: false,
+        spawn_failure_cooldown_names: std::collections::HashSet::new(),
     };
 
     let state = make_test_state();
@@ -3937,6 +3976,9 @@ fn test_orphan_recovery_marks_task_in_flight() {
         session_task_map: HashMap::new(),
         session_name_map: HashMap::new(),
         name_session_map: HashMap::new(),
+        orphan_spawn_cooldown_active: false,
+        session_dispatch_cooldown_active: false,
+        spawn_failure_cooldown_names: std::collections::HashSet::new(),
     };
 
     let state = make_test_state();
@@ -4221,6 +4263,9 @@ fn test_stale_task_cleanup_false_positive_task_about_merged_pr() {
         session_task_map: HashMap::new(),
         session_name_map: HashMap::new(),
         name_session_map: HashMap::new(),
+        orphan_spawn_cooldown_active: false,
+        session_dispatch_cooldown_active: false,
+        spawn_failure_cooldown_names: std::collections::HashSet::new(),
     };
 
     let state = make_test_state();
@@ -4326,6 +4371,9 @@ fn test_stale_task_cleanup_correct_behavior_with_explicit_pr_field() {
         session_task_map: HashMap::new(),
         session_name_map: HashMap::new(),
         name_session_map: HashMap::new(),
+        orphan_spawn_cooldown_active: false,
+        session_dispatch_cooldown_active: false,
+        spawn_failure_cooldown_names: std::collections::HashSet::new(),
     };
 
     let state = make_test_state();
@@ -4518,5 +4566,426 @@ fn test_reset_orphaned_tasks_ownerless_task_with_subject_pr_reference_is_skipped
     assert!(
         effects.is_empty(),
         "Ownerless task referencing open PR #42 in subject should not be reset"
+    );
+}
+
+// ======================================================================
+// dispatch_via_sessions tests
+// ======================================================================
+
+/// Helper to build a minimal WorldSnapshot with session-centric fields populated.
+fn make_session_dispatch_snapshot(
+    in_progress_tasks: Vec<(String, String, String)>,
+    sessions: HashMap<String, crate::daemon::state::SessionRecord>,
+    session_task_map: HashMap<String, String>,
+) -> snapshot::WorldSnapshot {
+    snapshot::WorldSnapshot {
+        in_progress_tasks,
+        active_names: HashSet::new(),
+        active_session_ids: HashSet::new(),
+        coworkers_with_open_prs: HashSet::new(),
+        review_feedback_pr_coworkers: HashSet::new(),
+        open_prs_data: vec![],
+        github_open_pr_task_ids: HashMap::new(),
+        coworker_stop_times: HashMap::new(),
+        attached_coworkers: HashMap::new(),
+        tasks_with_worktrees: HashSet::new(),
+        task_worktree_map: HashMap::new(),
+        worktree_registry: crate::worktree_registry::WorktreeRegistry::default(),
+        worktree_branch_owners: HashMap::new(),
+        merged_pr_branches: HashMap::new(),
+        running_coworkers: vec![],
+        active_coworkers: vec![],
+        coworker_snapshots: vec![],
+        session_name: "midtown-test".to_string(),
+        coworker_start_times: HashMap::new(),
+        headless_process_health: HashMap::new(),
+        busy_coworkers: HashSet::new(),
+        coworker_task_assignments: HashMap::new(),
+        all_tasks: vec![],
+        pending_tasks_with_owners: vec![],
+        pending_tasks_without_owners: vec![],
+        task_channel: HashMap::new(),
+        task_model_map: HashMap::new(),
+        task_plan_map: HashMap::new(),
+        task_execution_skill_map: HashMap::new(),
+        channel_lead_sessions: HashMap::new(),
+        coworkers_with_merged_prs: HashSet::new(),
+        merged_pr_numbers: HashSet::new(),
+        ci_passed_pr_coworkers: HashSet::new(),
+        pending_task_owners: HashSet::new(),
+        tasks_with_open_prs: HashMap::new(),
+        pr_task_associations: HashMap::new(),
+        active_reviewers: HashSet::new(),
+        reviewer_pr_assignments: HashMap::new(),
+        reviewed_prs: HashSet::new(),
+        prs_needing_review: 0,
+        reviewer_restart_counts: HashMap::new(),
+        reviewer_escalations_posted: HashSet::new(),
+        coworkers_with_unblocked_deps: HashSet::new(),
+        usage_limit_nudge_scheduled: false,
+        usage_limit_nudge_at: None,
+        usage_limited_coworkers: HashSet::new(),
+        api_error_coworkers: HashSet::new(),
+        auth_error_coworkers: HashSet::new(),
+        tool_name_conflict_coworkers: HashSet::new(),
+        channel_messages: vec![],
+        archived_channels: HashSet::new(),
+        daemon_logs: vec![],
+        lead_session_refresh_interval_secs: 5400,
+        is_at_coworker_limit: false,
+        is_at_dev_limit: false,
+        now_utc: chrono::Utc::now(),
+        repo_name: "test-repo".to_string(),
+        repo_owner: None,
+        github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
+        freshly_fetched_rate_limit: None,
+        sessions,
+        session_task_map,
+        session_name_map: HashMap::new(),
+        name_session_map: HashMap::new(),
+        orphan_spawn_cooldown_active: false,
+        session_dispatch_cooldown_active: false,
+        spawn_failure_cooldown_names: HashSet::new(),
+    }
+}
+
+fn make_test_session_record(
+    session_id: &str,
+    task_id: Option<&str>,
+    preferred_name: Option<&str>,
+    working_dir: &str,
+    is_running: bool,
+) -> crate::daemon::state::SessionRecord {
+    crate::daemon::state::SessionRecord {
+        session_id: session_id.to_string(),
+        task_id: task_id.map(|s| s.to_string()),
+        current_name: preferred_name.map(|s| s.to_string()),
+        preferred_name: preferred_name.map(|s| s.to_string()),
+        working_dir: working_dir.to_string(),
+        branch: None,
+        pr_number: None,
+        initial_prompt: None,
+        is_reviewer: false,
+        coworker_type: "dev".to_string(),
+        is_running,
+        created_at: chrono::Utc::now(),
+        resume_on_startup: true,
+    }
+}
+
+#[test]
+fn test_dispatch_via_sessions_skips_running_session() {
+    // Session is running for an in_progress task -- no recovery needed.
+    let session = make_test_session_record(
+        "sess-abc",
+        Some("42"),
+        Some("lexington"),
+        "/tmp/worktree",
+        true, // is_running
+    );
+    let sessions = [("sess-abc".to_string(), session)].into_iter().collect();
+    let session_task_map = [("42".to_string(), "sess-abc".to_string())]
+        .into_iter()
+        .collect();
+
+    let snap = make_session_dispatch_snapshot(
+        vec![(
+            "42".to_string(),
+            "Add auth endpoint".to_string(),
+            "lexington".to_string(),
+        )],
+        sessions,
+        session_task_map,
+    );
+
+    let effects = dispatch_via_sessions(&snap);
+
+    assert!(
+        effects.is_empty(),
+        "Running session should produce no effects, got: {:?}",
+        effects
+    );
+}
+
+#[test]
+fn test_dispatch_via_sessions_recovers_stopped_session() {
+    // Session stopped for an in_progress task -- should emit SpawnCoworkerWithCallbacks.
+    let session = make_test_session_record(
+        "sess-abc",
+        Some("42"),
+        Some("lexington"),
+        "/tmp/worktree/lexington",
+        false, // is_running = false -- needs recovery
+    );
+    let sessions = [("sess-abc".to_string(), session)].into_iter().collect();
+    let session_task_map = [("42".to_string(), "sess-abc".to_string())]
+        .into_iter()
+        .collect();
+
+    let snap = make_session_dispatch_snapshot(
+        vec![(
+            "42".to_string(),
+            "Add auth endpoint".to_string(),
+            "lexington".to_string(),
+        )],
+        sessions,
+        session_task_map,
+    );
+
+    let effects = dispatch_via_sessions(&snap);
+
+    // Should have at least a SpawnCoworkerWithCallbacks effect
+    let has_spawn = effects.iter().any(|e| {
+        matches!(
+            e,
+            Effect::SpawnCoworkerWithCallbacks { config, .. }
+            if config.name == "lexington"
+        )
+    });
+    assert!(
+        has_spawn,
+        "Should spawn coworker with preferred_name 'lexington', got: {:?}",
+        effects
+    );
+}
+
+#[test]
+fn test_dispatch_via_sessions_skips_tasks_without_sessions() {
+    // In_progress task with no session_task_map entry -- no effects (handled by orphan recovery).
+    let snap = make_session_dispatch_snapshot(
+        vec![(
+            "42".to_string(),
+            "Add auth endpoint".to_string(),
+            "lexington".to_string(),
+        )],
+        HashMap::new(), // no sessions
+        HashMap::new(), // no session_task_map
+    );
+
+    let effects = dispatch_via_sessions(&snap);
+
+    assert!(
+        effects.is_empty(),
+        "Tasks without session records should produce no effects, got: {:?}",
+        effects
+    );
+}
+
+#[test]
+fn test_dispatch_via_sessions_uses_preferred_name() {
+    // Session has preferred_name "park" -- spawn should use that name.
+    let session = make_test_session_record(
+        "sess-xyz",
+        Some("99"),
+        Some("park"),
+        "/tmp/worktree/park",
+        false,
+    );
+    let sessions = [("sess-xyz".to_string(), session)].into_iter().collect();
+    let session_task_map = [("99".to_string(), "sess-xyz".to_string())]
+        .into_iter()
+        .collect();
+
+    let snap = make_session_dispatch_snapshot(
+        vec![(
+            "99".to_string(),
+            "Implement feature X".to_string(),
+            "park".to_string(),
+        )],
+        sessions,
+        session_task_map,
+    );
+
+    let effects = dispatch_via_sessions(&snap);
+
+    // Verify the spawn uses the preferred name "park"
+    let spawn_config = effects.iter().find_map(|e| {
+        if let Effect::SpawnCoworkerWithCallbacks { config, .. } = e {
+            Some(config)
+        } else {
+            None
+        }
+    });
+    assert!(
+        spawn_config.is_some(),
+        "Should have SpawnCoworkerWithCallbacks effect"
+    );
+    let config = spawn_config.unwrap();
+    assert_eq!(
+        config.name, "park",
+        "Spawn should use the session's preferred_name"
+    );
+}
+
+#[test]
+fn test_dispatch_via_sessions_uses_session_working_dir() {
+    // Session has a working_dir -- spawn should use it.
+    let session = make_test_session_record(
+        "sess-xyz",
+        Some("99"),
+        Some("park"),
+        "/custom/worktree/path",
+        false,
+    );
+    let sessions = [("sess-xyz".to_string(), session)].into_iter().collect();
+    let session_task_map = [("99".to_string(), "sess-xyz".to_string())]
+        .into_iter()
+        .collect();
+
+    let snap = make_session_dispatch_snapshot(
+        vec![(
+            "99".to_string(),
+            "Implement feature X".to_string(),
+            "park".to_string(),
+        )],
+        sessions,
+        session_task_map,
+    );
+
+    let effects = dispatch_via_sessions(&snap);
+
+    let spawn_config = effects.iter().find_map(|e| {
+        if let Effect::SpawnCoworkerWithCallbacks { config, .. } = e {
+            Some(config)
+        } else {
+            None
+        }
+    });
+    assert!(spawn_config.is_some(), "Should have a spawn effect");
+    let config = spawn_config.unwrap();
+    assert_eq!(
+        config.working_dir,
+        Some(std::path::PathBuf::from("/custom/worktree/path")),
+        "Spawn should use the session's working_dir"
+    );
+}
+
+#[test]
+fn test_dispatch_via_sessions_respects_cooldown() {
+    // When cooldown is active, should produce no effects even for stopped sessions.
+    let session = make_test_session_record(
+        "sess-abc",
+        Some("42"),
+        Some("lexington"),
+        "/tmp/worktree",
+        false,
+    );
+    let sessions = [("sess-abc".to_string(), session)].into_iter().collect();
+    let session_task_map = [("42".to_string(), "sess-abc".to_string())]
+        .into_iter()
+        .collect();
+
+    let mut snap = make_session_dispatch_snapshot(
+        vec![(
+            "42".to_string(),
+            "Add auth endpoint".to_string(),
+            "lexington".to_string(),
+        )],
+        sessions,
+        session_task_map,
+    );
+    // Simulate cooldown active (pre-evaluated in snapshot)
+    snap.session_dispatch_cooldown_active = true;
+
+    let effects = dispatch_via_sessions(&snap);
+
+    assert!(
+        effects.is_empty(),
+        "Should not produce effects when cooldown is active, got: {:?}",
+        effects
+    );
+}
+
+#[test]
+fn test_session_dispatch_excludes_task_from_pending_dispatch() {
+    // Integration test: verifies that when dispatch_via_sessions recovers a task,
+    // that task ID flows through extract_claimed_task_ids_from_effects and is
+    // excluded from spawn_for_pending_tasks_excluding, preventing double-spawning.
+    //
+    // Scenario: Task !42 is in_progress (stopped session) AND also appears as
+    // pending (race condition in the same snapshot). Session dispatch should claim
+    // it, and pending dispatch should skip it.
+    use crate::tasks::{Task, TaskStatus};
+    use std::time::SystemTime;
+
+    let session = make_test_session_record(
+        "sess-abc",
+        Some("42"),
+        Some("lexington"),
+        "/tmp/worktree",
+        false, // stopped
+    );
+    let sessions = [("sess-abc".to_string(), session)].into_iter().collect();
+    let session_task_map = [("42".to_string(), "sess-abc".to_string())]
+        .into_iter()
+        .collect();
+
+    let snap = snapshot::WorldSnapshot {
+        // Task !42 is in_progress, owned by lexington (stopped session)
+        in_progress_tasks: vec![(
+            "42".to_string(),
+            "Add auth endpoint".to_string(),
+            "lexington".to_string(),
+        )],
+        // Same task also appears as pending without owner (snapshot race)
+        pending_tasks_without_owners: vec![Task {
+            id: "42".to_string(),
+            subject: "Add auth endpoint".to_string(),
+            status: TaskStatus::Pending,
+            owner: None,
+            blocked_by: vec![],
+            description: None,
+            channel: None,
+            pr: None,
+            created_at: Some(SystemTime::now()),
+        }],
+        sessions,
+        session_task_map,
+        is_at_dev_limit: false,
+        is_at_coworker_limit: false,
+        ..make_session_dispatch_snapshot(vec![], HashMap::new(), HashMap::new())
+    };
+
+    let state = make_test_state();
+
+    // Step 1: Session dispatch recovers the task
+    let session_effects = dispatch_via_sessions(&snap);
+    assert!(
+        !session_effects.is_empty(),
+        "Session dispatch should produce effects for stopped session"
+    );
+
+    // Step 2: Extract claimed IDs (as events.rs does)
+    let session_claimed_ids = extract_claimed_task_ids_from_effects(&session_effects);
+    assert!(
+        session_claimed_ids.contains("42"),
+        "Session dispatch should claim task !42"
+    );
+
+    // Step 3: Pending dispatch with exclusion set should skip task !42
+    let pending_effects = spawn_for_pending_tasks_excluding(&snap, &state, &session_claimed_ids);
+
+    // Verify no spawn targets task !42
+    let pending_spawns_for_42: Vec<_> = pending_effects
+        .iter()
+        .filter(|e| {
+            match e {
+                Effect::AssignAndSpawn { task_id, .. } => task_id == "42",
+                Effect::SpawnCoworkerWithCallbacks { on_success, .. } => {
+                    on_success.iter().any(|sub| {
+                        matches!(sub, Effect::RecordTaskAssignment { task_id, .. } if task_id == "42")
+                    })
+                }
+                _ => false,
+            }
+        })
+        .collect();
+
+    assert!(
+        pending_spawns_for_42.is_empty(),
+        "Pending dispatch should skip task !42 because session dispatch already claimed it. \
+         Got {} spawn effects for task !42.",
+        pending_spawns_for_42.len()
     );
 }
