@@ -389,6 +389,20 @@ fn test_process_lead_output_coworker_not_treated_as_channel_lead() {
     );
 }
 
+#[test]
+fn test_process_lead_output_channel_lead_no_events_in_drain() {
+    // A channel lead is registered but produced no events in this drain cycle.
+    let events = HashMap::new(); // No events for any session
+    let mut channel_leads = HashMap::new();
+    channel_leads.insert("web".to_string(), "some-session-id".to_string());
+
+    let effects = process_lead_output(&events, &channel_leads);
+    assert!(
+        effects.is_empty(),
+        "Should not post when channel lead has no events in current drain"
+    );
+}
+
 // ── process_universal_events tests ───────────────────────────────────
 
 #[test]
