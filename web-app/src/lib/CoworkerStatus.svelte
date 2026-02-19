@@ -1,6 +1,8 @@
 <script>
-  import { coworkers, maxCoworkers } from './store.js'
+  import { coworkers, maxCoworkers, repoStatus, kanbanData, isWideScreen } from './store.js'
   import { onMount, onDestroy } from 'svelte'
+  import { detailPanelData } from './store.js'
+  import { closeThread } from './api.js'
 
   // Filter to only active coworkers (matching TUI logic - skip idle/completed)
   let activeCoworkers = $derived(
@@ -46,6 +48,42 @@
   function getSpinner() {
     return SPINNER_FRAMES[spinnerFrame]
   }
+
+  function getPrUrl(prNumber) {
+    if (!prNumber || !$repoStatus.fullName) return null
+    return `https://github.com/${$repoStatus.fullName}/pull/${prNumber}`
+  }
+
+  function openTaskDetail(taskId) {
+    const allTasks = [...$kanbanData.inProgress, ...$kanbanData.backlog]
+    const task = allTasks.find((t) => String(t.id) === String(taskId))
+    if (task && $isWideScreen) {
+      closeThread()
+      detailPanelData.set({ type: 'task', data: task })
+    }
+  }
+
+  function openPrDetail(prNumber) {
+    const url = getPrUrl(prNumber)
+    if (!url) return
+    const pr = $kanbanData.review.find((p) => String(p.number) === String(prNumber))
+    if (pr && $isWideScreen) {
+      closeThread()
+      detailPanelData.set({
+        type: 'pr',
+        data: {
+          number: pr.number,
+          title: pr.title,
+          author: pr.author,
+          reviewer: pr.reviewer,
+          status: pr.status,
+          url,
+        },
+      })
+    } else {
+      window.open(url, '_blank', 'noopener')
+    }
+  }
 </script>
 
 {#if activeCoworkers.length > 0}
@@ -63,6 +101,23 @@
             <span class="shrink-0 font-medium lowercase" style="color: {getHealthColor(cw.health)}">{cw.name}</span>
             {#if cw.phase}
               <span class="hidden text-[0.75rem] text-[#808080] sm:inline">{cw.phase}</span>
+            {/if}
+            {#if cw.task_id}
+              <button
+                class="hidden text-[0.7rem] text-[#606060] hover:text-[#5fafaf] transition-colors duration-100 cursor-pointer bg-transparent border-none p-0 sm:inline"
+                onclick={() => openTaskDetail(cw.task_id)}
+                title="View task details"
+              >!{cw.task_id}</button>
+            {/if}
+            {#if cw.pr_number}
+              <a
+                class="hidden text-[0.7rem] text-[#606060] hover:text-[#5faf5f] transition-colors duration-100 sm:inline"
+                href={getPrUrl(cw.pr_number)}
+                target="_blank"
+                rel="noopener"
+                title="View PR on GitHub"
+                onclick={(e) => { e.preventDefault(); openPrDetail(cw.pr_number) }}
+              >#{cw.pr_number}</a>
             {/if}
             <span class="flex-1"></span>
             {#if cw.time_estimate}
