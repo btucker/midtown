@@ -779,48 +779,61 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                     {
                         app.focused_pane = FocusedPane::InputBar;
                         EventResult::Continue
-                    } else if !app.input_text.is_empty() {
-                        let message = app.input_text.clone();
+                    } else {
+                        // If a clipboard image is pending, deliver it to the lead first
+                        if app.pending_image.is_some() {
+                            app.send_image_to_lead();
+                            app.pending_image = None;
+                            // If there's no text to post, just return
+                            if app.input_text.trim().is_empty() {
+                                return EventResult::Continue;
+                            }
+                        }
 
-                        // Check for /channel create <name> command
-                        if message.starts_with("/channel create ") {
-                            let channel_name =
-                                message.trim_start_matches("/channel create ").trim();
-                            if !channel_name.is_empty() {
-                                // Create the channel and switch to it
-                                if app.create_channel(channel_name) {
+                        if !app.input_text.is_empty() {
+                            let message = app.input_text.clone();
+
+                            // Check for /channel create <name> command
+                            if message.starts_with("/channel create ") {
+                                let channel_name =
+                                    message.trim_start_matches("/channel create ").trim();
+                                if !channel_name.is_empty() {
+                                    // Create the channel and switch to it
+                                    if app.create_channel(channel_name) {
+                                        app.input_text.clear();
+                                        app.input_cursor = 0;
+                                    }
+                                    // TODO: Show error if creation failed
+                                }
+                                EventResult::Continue
+                            } else if message.starts_with("/thread ") {
+                                // Open thread view for the given parent message ID
+                                let arg = message.trim_start_matches("/thread ").trim();
+                                if !arg.is_empty() {
+                                    app.open_thread(arg);
                                     app.input_text.clear();
                                     app.input_cursor = 0;
                                 }
-                                // TODO: Show error if creation failed
+                                EventResult::Continue
+                            } else {
+                                // Post message to the selected channel
+                                let channel_name = app.selected_channel.clone();
+
+                                // Post via daemon RPC with fallback to direct channel write
+                                let posted =
+                                    app.post_message(&message, "user", Some(&channel_name));
+
+                                // Only clear input if message was successfully posted
+                                if posted {
+                                    app.input_text.clear();
+                                    app.input_cursor = 0;
+                                }
+                                // TODO: When error display is implemented, show error here if !posted
+                                EventResult::Continue
                             }
-                            EventResult::Continue
-                        } else if message.starts_with("/thread ") {
-                            // Open thread view for the given parent message ID
-                            let arg = message.trim_start_matches("/thread ").trim();
-                            if !arg.is_empty() {
-                                app.open_thread(arg);
-                                app.input_text.clear();
-                                app.input_cursor = 0;
-                            }
-                            EventResult::Continue
                         } else {
-                            // Post message to the selected channel
-                            let channel_name = app.selected_channel.clone();
-
-                            // Post via daemon RPC with fallback to direct channel write
-                            let posted = app.post_message(&message, "user", Some(&channel_name));
-
-                            // Only clear input if message was successfully posted
-                            if posted {
-                                app.input_text.clear();
-                                app.input_cursor = 0;
-                            }
-                            // TODO: When error display is implemented, show error here if !posted
                             EventResult::Continue
                         }
-                    } else {
-                        EventResult::Continue
                     }
                 }
                 // Tab: select autocomplete item if showing, or toggle thread focus

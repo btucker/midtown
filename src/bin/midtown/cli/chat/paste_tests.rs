@@ -179,6 +179,28 @@ fn test_alt_enter_with_autocomplete_shown() {
 }
 
 #[test]
+fn test_enter_with_pending_image_clears_pending_image() {
+    // When pending_image is set and user presses Enter,
+    // pending_image should be cleared (delivery attempted) even if daemon isn't running.
+    let mut app = test_app();
+    app.focused_pane = FocusedPane::InputBar;
+    app.pending_image = Some(app::PendingImageInfo {
+        dimensions: (100, 100),
+        media_type: "image/png".to_string(),
+    });
+
+    // Press Enter - send_image_to_lead() will fail (no daemon in test), but
+    // pending_image must still be cleared.
+    let event = Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    let _ = handle_event(&mut app, event);
+
+    assert!(
+        app.pending_image.is_none(),
+        "pending_image should be cleared after Enter"
+    );
+}
+
+#[test]
 fn test_ctrl_v_does_nothing_when_no_image_in_clipboard() {
     // In test/CI environments, no clipboard image is available.
     // Ctrl+V should be a no-op (no error, no pending_image set).
