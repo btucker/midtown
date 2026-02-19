@@ -1678,3 +1678,164 @@ fn test_idle_shutdown_falls_back_to_shutdown_coworker_without_mapping() {
         "Should NOT have ShutdownSession when no session mapping exists"
     );
 }
+
+// -----------------------------------------------------------------------
+// Stuck restart → ShutdownSession / ShutdownCoworker branching tests
+// -----------------------------------------------------------------------
+
+/// When a stuck reviewer has a session mapping in `name_session_map`,
+/// `check_and_restart_stuck_reviewers` should emit `ShutdownSession`
+/// instead of `ShutdownCoworker`.
+#[test]
+fn test_stuck_reviewer_restart_emits_shutdown_session_when_mapping_exists() {
+    use crate::coworker::{Coworker, CoworkerStatus};
+
+    let now = chrono::Utc::now();
+    let mut snap = empty_snap();
+    snap.now_utc = now;
+
+    // Active coworker (reviewer) so the function doesn't bail early
+    snap.active_coworkers.push(Coworker {
+        slot_id: uuid::Uuid::new_v4().to_string(),
+        name: "amsterdam".to_string(),
+        status: CoworkerStatus::Running,
+        working_dir: "/tmp/test".to_string(),
+        started_at: now - chrono::Duration::minutes(30),
+        current_task: None,
+        session_id: Some("sess-rev-777".to_string()),
+        model: "sonnet".to_string(),
+        provider: crate::auth::AuthProvider::Claude,
+        profile: crate::auth::DEFAULT_PROFILE.to_string(),
+    });
+
+    // Stuck health: no events for well past REVIEWER_STUCK_DURATION (300s)
+    snap.headless_process_health.insert(
+        "amsterdam".to_string(),
+        snapshot::ProcessHealth {
+            is_alive: true,
+            last_event_at: Some(now - chrono::Duration::minutes(10)),
+            has_usage_limit: false,
+            usage_limit_reset_at: None,
+            has_api_error: false,
+            has_auth_error: false,
+            has_running_subagent: false,
+            has_pending_tool: false,
+            has_tool_name_conflict: false,
+            has_pending_api_call: false,
+            exit_code: None,
+        },
+    );
+
+    // Reviewer PR assignment
+    snap.reviewer_pr_assignments
+        .insert("amsterdam".to_string(), 42);
+
+    // Session mapping exists
+    snap.name_session_map
+        .insert("amsterdam".to_string(), "sess-rev-777".to_string());
+
+    let effects = check_and_restart_stuck_reviewers(&snap);
+
+    // Should contain ShutdownSession (not ShutdownCoworker)
+    let has_shutdown_session = effects.iter().any(|e| {
+        matches!(
+            e,
+            Effect::ShutdownSession {
+                session_id,
+                reason,
+            } if session_id == "sess-rev-777" && reason.contains("stuck reviewer")
+                && reason.contains("PR #42")
+        )
+    });
+    assert!(
+        has_shutdown_session,
+        "Expected ShutdownSession with session_id 'sess-rev-777' and reason mentioning stuck reviewer PR #42, got: {:#?}",
+        effects
+    );
+
+    // Must NOT contain ShutdownCoworker for "amsterdam"
+    let has_shutdown_coworker = effects.iter().any(|e| {
+        matches!(
+            e,
+            Effect::ShutdownCoworker { name, .. } if name == "amsterdam"
+        )
+    });
+    assert!(
+        !has_shutdown_coworker,
+        "Should NOT have ShutdownCoworker when session mapping exists, got: {:#?}",
+        effects
+    );
+}
+
+/// When a stuck reviewer has NO session mapping, `check_and_restart_stuck_reviewers`
+/// should fall back to emitting `ShutdownCoworker`.
+#[test]
+fn test_stuck_reviewer_restart_falls_back_to_shutdown_coworker_without_mapping() {
+    use crate::coworker::{Coworker, CoworkerStatus};
+
+    let now = chrono::Utc::now();
+    let mut snap = empty_snap();
+    snap.now_utc = now;
+
+    snap.active_coworkers.push(Coworker {
+        slot_id: uuid::Uuid::new_v4().to_string(),
+        name: "broadway".to_string(),
+        status: CoworkerStatus::Running,
+        working_dir: "/tmp/test".to_string(),
+        started_at: now - chrono::Duration::minutes(30),
+        current_task: None,
+        session_id: None,
+        model: "sonnet".to_string(),
+        provider: crate::auth::AuthProvider::Claude,
+        profile: crate::auth::DEFAULT_PROFILE.to_string(),
+    });
+
+    // Stuck health
+    snap.headless_process_health.insert(
+        "broadway".to_string(),
+        snapshot::ProcessHealth {
+            is_alive: true,
+            last_event_at: Some(now - chrono::Duration::minutes(10)),
+            has_usage_limit: false,
+            usage_limit_reset_at: None,
+            has_api_error: false,
+            has_auth_error: false,
+            has_running_subagent: false,
+            has_pending_tool: false,
+            has_tool_name_conflict: false,
+            has_pending_api_call: false,
+            exit_code: None,
+        },
+    );
+
+    // Reviewer PR assignment
+    snap.reviewer_pr_assignments
+        .insert("broadway".to_string(), 99);
+
+    // No session mapping for "broadway"
+
+    let effects = check_and_restart_stuck_reviewers(&snap);
+
+    // Should contain ShutdownCoworker (not ShutdownSession)
+    let has_shutdown_coworker = effects.iter().any(|e| {
+        matches!(
+            e,
+            Effect::ShutdownCoworker { name, .. } if name == "broadway"
+        )
+    });
+    assert!(
+        has_shutdown_coworker,
+        "Expected ShutdownCoworker for 'broadway' when no session mapping exists, got: {:#?}",
+        effects
+    );
+
+    // Must NOT contain ShutdownSession
+    let has_shutdown_session = effects
+        .iter()
+        .any(|e| matches!(e, Effect::ShutdownSession { .. }));
+    assert!(
+        !has_shutdown_session,
+        "Should NOT have ShutdownSession when no session mapping exists, got: {:#?}",
+        effects
+    );
+}
