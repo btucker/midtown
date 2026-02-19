@@ -158,7 +158,11 @@ midtown state --progress 100
 **CRITICAL: You MUST complete the review before going idle.** The PR author is waiting for your final review comment before they can enable auto-merge. If you go idle with only the "review in progress" placeholder posted, the author may merge without a real review.
 
 - The review is only complete when you have updated the comment with final findings (the `<!-- midtown: {name} -->` frontmatter is in the comment)
-- If you are interrupted before completing the review, resume from the code review skill output and update the placeholder comment before doing anything else
+- If you are interrupted before completing the review, recover the placeholder comment ID and update it before doing anything else:
+  ```bash
+  # Recover the placeholder comment ID after session restart
+  COMMENT_ID=$(gh pr view {pr_number} --json comments --jq '[.comments[] | select(.body | test("Review Status")) | select(.body | test("midtown:") | not)] | last | .url' | grep -o '[0-9]*$')
+  ```
 - Never go idle while the placeholder comment is unresolved
 
 Then post your completion message to the channel and go idle.
