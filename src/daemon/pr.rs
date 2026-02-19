@@ -103,6 +103,47 @@ fn resolve_pr_owner_from_session(
         .or_else(|| session.preferred_name.clone())
 }
 
+/// Try to resolve PR owner via session-centric path using persistent state.
+///
+/// Builds a temporary task_id → session_id map from ps.sessions, then chains:
+/// PR# → pr_task_associations → task_id → session_id → session.name
+///
+/// Returns `Some(name)` if the full chain resolves, `None` otherwise.
+/// Callers should fall back to branch-name parsing when this returns `None`.
+async fn resolve_pr_owner_via_session(state: &DaemonState, pr_number: u64) -> Option<String> {
+    let ps = state.persistent_state.lock().await;
+    let pr_task_associations: HashMap<u64, String> = ps
+        .github
+        .pr_author_sessions
+        .iter()
+        .filter_map(|(pr_num, session)| {
+            session
+                .task_id
+                .as_ref()
+                .map(|task_id| (*pr_num, task_id.clone()))
+        })
+        .collect();
+
+    // Build task_id → session_id reverse index from sessions map
+    let session_task_map: HashMap<String, String> = ps
+        .sessions
+        .iter()
+        .filter_map(|(session_id, record)| {
+            record
+                .task_id
+                .as_ref()
+                .map(|task_id| (task_id.clone(), session_id.clone()))
+        })
+        .collect();
+
+    resolve_pr_owner_from_session(
+        pr_number,
+        &pr_task_associations,
+        &session_task_map,
+        &ps.sessions,
+    )
+}
+
 /// Data extracted from persistent state for PR decision-making.
 ///
 /// Bundles channel routing and session context extraction into a single
@@ -115,6 +156,9 @@ struct PrContext {
     task_channel: HashMap<String, String>,
     /// Session context for the target PR (if the PR has a stored author session)
     session_context: Option<crate::rules::PrSessionContext>,
+    /// Session-centric resume info: if the PR's task has a stopped session,
+    /// this holds the session_id for resume.
+    task_session_id: Option<String>,
 }
 
 impl PrContext {
@@ -146,10 +190,19 @@ impl PrContext {
                     pr_number,
                 });
 
+        // Session-centric resume: PR → task → session
+        let task_session_id = pr_task_associations.get(&pr_number).and_then(|task_id| {
+            ps.sessions
+                .values()
+                .find(|s| s.task_id.as_deref() == Some(task_id))
+                .map(|s| s.session_id.clone())
+        });
+
         Self {
             pr_task_associations,
             task_channel: ps.task_channel.clone(),
             session_context,
+            task_session_id,
         }
     }
 
@@ -171,6 +224,7 @@ impl PrContext {
             pr_task_associations,
             task_channel: ps.task_channel.clone(),
             session_context: None,
+            task_session_id: None,
         }
     }
 
@@ -1142,7 +1196,11 @@ fn pr_action_to_effects(
                     crate::launch::SessionMode::ResumeSession(sid)
                 }
                 crate::rules::PrOwnerResumeMode::WithoutSavedSession => {
-                    crate::launch::SessionMode::Resume
+                    // Try session-centric path: PR → task → session
+                    match &ctx.task_session_id {
+                        Some(sid) => crate::launch::SessionMode::ResumeSession(sid.clone()),
+                        None => crate::launch::SessionMode::Resume,
+                    }
                 }
             };
             let config = crate::launch::LaunchConfig::coworker(
@@ -2985,10 +3043,16 @@ pub(super) async fn handle_pr_comment_nudge(
         return;
     }
 
+    // Session-centric resolution first: PR → task → session → name
+    let session_owner = resolve_pr_owner_via_session(state, pr_number).await;
+
     // Only check coworker-owned PRs beyond this point
-    let owner = match activity.owner_coworker {
-        Some(ref o) => Some(o.clone()),
-        None => get_pr_owner_coworker_async(pr_number).await,
+    let owner = match session_owner {
+        Some(o) => Some(o),
+        None => match activity.owner_coworker {
+            Some(ref o) => Some(o.clone()),
+            None => get_pr_owner_coworker_async(pr_number).await,
+        },
     };
 
     let Some(mut owner) = owner else {
@@ -3202,10 +3266,16 @@ pub(super) async fn handle_webhook_review_state_change(
         }
     }
 
-    // Resolve owner: use webhook data if available, otherwise look up async
-    let owner = match change.owner_coworker {
-        Some(ref o) => Some(o.clone()),
-        None => get_pr_owner_coworker_async(pr_number).await,
+    // Session-centric resolution first: PR → task → session → name
+    let session_owner = resolve_pr_owner_via_session(state, pr_number).await;
+
+    // Resolve owner: session path first, then webhook data, then branch lookup
+    let owner = match session_owner {
+        Some(o) => Some(o),
+        None => match change.owner_coworker {
+            Some(ref o) => Some(o.clone()),
+            None => get_pr_owner_coworker_async(pr_number).await,
+        },
     };
 
     let Some(owner) = owner else {
@@ -3283,10 +3353,16 @@ pub(super) async fn handle_webhook_ci_failure(
         }
     }
 
-    // Resolve owner
-    let owner = match failure.owner_coworker {
-        Some(ref o) => Some(o.clone()),
-        None => get_pr_owner_coworker_async(pr_number).await,
+    // Session-centric resolution first: PR → task → session → name
+    let session_owner = resolve_pr_owner_via_session(state, pr_number).await;
+
+    // Resolve owner: session path first, then webhook data, then branch lookup
+    let owner = match session_owner {
+        Some(o) => Some(o),
+        None => match failure.owner_coworker {
+            Some(ref o) => Some(o.clone()),
+            None => get_pr_owner_coworker_async(pr_number).await,
+        },
     };
 
     let Some(owner) = owner else {
