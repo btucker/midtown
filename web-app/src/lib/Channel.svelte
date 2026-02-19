@@ -1,7 +1,7 @@
 <script>
   import { messages, messagesByChannel, activeChannel, channels, coworkers, kanbanData, repoStatus, repoStatuses, daemonStatus, detailPanelData, isWideScreen, agentToolItems, threadData } from './store.js'
   import { sendMessage, uploadFile, closeThread, openThread } from './api.js'
-  import { tick, onMount, untrack } from 'svelte'
+  import { tick, onMount } from 'svelte'
   import { fly } from 'svelte/transition'
   import MermaidDiagram from './MermaidDiagram.svelte'
   import { parseSegments, hasMermaid, renderContent } from './markdown.js'
@@ -36,12 +36,15 @@
   let initialMessageCounts = $state.raw({})
 
   $effect(() => {
-    // Reactive on $activeChannel. When the channel changes, snapshot the
-    // current message count using untrack() so the snapshot itself doesn't
-    // create a reactive dependency on channelMessages.
+    // Reactive on both $activeChannel and channelMessages.length.
+    // On first visit to a channel, channelMessages is empty (history not yet
+    // loaded from WebSocket). We wait until messages actually arrive before
+    // snapshotting the count. This prevents the race where we snapshot 0,
+    // then history loads and every message animates as "new".
     const ch = $activeChannel
-    if (!(ch in initialMessageCounts)) {
-      initialMessageCounts = { ...initialMessageCounts, [ch]: untrack(() => channelMessages.length) }
+    const len = channelMessages.length
+    if (!(ch in initialMessageCounts) && len > 0) {
+      initialMessageCounts = { ...initialMessageCounts, [ch]: len }
     }
   })
 
@@ -569,11 +572,10 @@
         </div>
       {:else}
         {#each channelMessages as msg, i}
+          <div in:fly={{ y: 16, duration: isNewMessage($activeChannel, i) ? 180 : 0, opacity: 0 }}>
           {#if needsBlankLine(channelMessages, i)}
             <div class="h-[0.8em]"></div>
           {/if}
-
-          <div in:fly={{ y: 16, duration: isNewMessage($activeChannel, i) ? 180 : 0, opacity: 0 }}>
           {#if senderChanged(channelMessages, i)}
             <!-- Author line: bold name + current task + cross-post indicator -->
             <div
