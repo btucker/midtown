@@ -303,7 +303,6 @@ pub(super) async fn handle_coworker_report_state(
         let shutdown_effects = vec![effects::Effect::ShutdownCoworkerWithCallbacks {
             name: name.to_string(),
             message: String::new(),
-            session_id: None,
             on_success: vec![
                 effects::Effect::PostSystemMessage {
                     message: format!("☕ {} reported idle, taking a break", name),
@@ -371,7 +370,6 @@ pub(super) async fn handle_coworker_report_state(
                             "Task !{} has no PR yet. Please open a PR for your changes and then go idle with `midtown state idle`. The daemon will complete the task when the PR merges.",
                             tid
                         ),
-                        session_id: None,
                     },
                     effects::Effect::PostToChannel {
                         sender: "midtown".to_string(),

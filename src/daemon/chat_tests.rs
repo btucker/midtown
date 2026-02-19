@@ -8,7 +8,7 @@ fn mention_nudge_produces_nudge_effect() {
         name: "lexington".to_string(),
         message: "lead said: @lexington check this".to_string(),
     };
-    let effects = mention_action_to_effects(action, "lexington", "test-repo", None);
+    let effects = mention_action_to_effects(action, "lexington", "test-repo");
 
     assert_eq!(effects.len(), 1);
     assert!(
@@ -23,7 +23,7 @@ fn mention_spawn_produces_spawn_with_callbacks() {
         name: "park".to_string(),
         message: "lead said: @park fix the bug".to_string(),
     };
-    let effects = mention_action_to_effects(action, "park", "test-repo", None);
+    let effects = mention_action_to_effects(action, "park", "test-repo");
 
     assert_eq!(effects.len(), 1);
     match &effects[0] {
@@ -51,7 +51,7 @@ fn mention_skip_produces_no_effects() {
     let action = MentionAction::Skip {
         reason: "lexington is already active, no need to spawn".to_string(),
     };
-    let effects = mention_action_to_effects(action, "lexington", "test-repo", None);
+    let effects = mention_action_to_effects(action, "lexington", "test-repo");
     assert!(
         effects.is_empty(),
         "Skip (non dev-limit) should produce no effects"
@@ -63,7 +63,7 @@ fn mention_skip_dev_limit_posts_to_channel() {
     let action = MentionAction::Skip {
         reason: "Cannot spawn amsterdam: dev limit reached".to_string(),
     };
-    let effects = mention_action_to_effects(action, "amsterdam", "test-repo", None);
+    let effects = mention_action_to_effects(action, "amsterdam", "test-repo");
 
     assert_eq!(effects.len(), 1);
     match &effects[0] {
@@ -75,58 +75,5 @@ fn mention_skip_dev_limit_posts_to_channel() {
             );
         }
         _ => panic!("Expected PostToChannel for dev limit, got {:?}", effects[0]),
-    }
-}
-
-#[test]
-fn mention_action_to_effects_includes_session_id() {
-    let action = MentionAction::Nudge {
-        name: "lexington".to_string(),
-        message: "lead said: @lexington check this".to_string(),
-    };
-    let effects = mention_action_to_effects(
-        action,
-        "lexington",
-        "test-repo",
-        Some("sess-abc-123".to_string()),
-    );
-
-    assert_eq!(effects.len(), 1);
-    match &effects[0] {
-        Effect::NudgeCoworker {
-            name, session_id, ..
-        } => {
-            assert_eq!(name, "lexington");
-            assert_eq!(
-                session_id.as_deref(),
-                Some("sess-abc-123"),
-                "NudgeCoworker should include the provided session_id"
-            );
-        }
-        _ => panic!("Expected NudgeCoworker, got {:?}", effects[0]),
-    }
-}
-
-#[test]
-fn mention_action_to_effects_no_session_id() {
-    let action = MentionAction::Nudge {
-        name: "lexington".to_string(),
-        message: "lead said: @lexington check this".to_string(),
-    };
-    let effects = mention_action_to_effects(action, "lexington", "test-repo", None);
-
-    assert_eq!(effects.len(), 1);
-    match &effects[0] {
-        Effect::NudgeCoworker {
-            name, session_id, ..
-        } => {
-            assert_eq!(name, "lexington");
-            assert_eq!(
-                session_id.as_deref(),
-                None,
-                "NudgeCoworker should have None session_id when not provided"
-            );
-        }
-        _ => panic!("Expected NudgeCoworker, got {:?}", effects[0]),
     }
 }

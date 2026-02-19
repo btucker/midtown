@@ -21,14 +21,7 @@ pub enum Effect {
     /// Spawn a coworker using a typed launch configuration.
     SpawnCoworker(crate::launch::LaunchConfig),
     /// Shut down a running coworker with a message.
-    ShutdownCoworker {
-        name: String,
-        message: String,
-        /// Session ID for targeting a specific session (multi-session support).
-        /// When `None`, targets by name (legacy behavior).
-        #[allow(dead_code)]
-        session_id: Option<String>,
-    },
+    ShutdownCoworker { name: String, message: String },
     /// Shut down a coworker with conditional follow-up effects on success.
     ///
     /// On success, `on_success` effects are executed. On failure, nothing extra
@@ -37,19 +30,10 @@ pub enum Effect {
     ShutdownCoworkerWithCallbacks {
         name: String,
         message: String,
-        /// Session ID for targeting a specific session (multi-session support).
-        #[allow(dead_code)]
-        session_id: Option<String>,
         on_success: Vec<Effect>,
     },
     /// Nudge a coworker by sending a message to their headless session.
-    NudgeCoworker {
-        name: String,
-        message: String,
-        /// Session ID for targeting a specific session (multi-session support).
-        #[allow(dead_code)]
-        session_id: Option<String>,
-    },
+    NudgeCoworker { name: String, message: String },
     /// Nudge the Lead by sending a message via headed intercom or session manager.
     NudgeLead { message: String },
     /// Nudge a channel lead by task ID.
@@ -141,9 +125,6 @@ pub enum Effect {
     NudgeCoworkerWithCallbacks {
         name: String,
         message: String,
-        /// Session ID for targeting a specific session (multi-session support).
-        #[allow(dead_code)]
-        session_id: Option<String>,
         on_success: Vec<Effect>,
     },
     /// Spawn a coworker for a pending task.
@@ -222,13 +203,6 @@ pub enum Effect {
         check_name: String,
         pr_number: u64,
     },
-    /// Rebase a PR on main to pick up workflow changes.
-    ///
-    /// Used when a PR is missing a required CI check because it predates
-    /// a workflow change. Rebasing pulls in the new workflow definition.
-    /// TODO: Implement missing check detection logic.
-    #[allow(dead_code)]
-    RebasePrOnMain { pr_number: u64, reason: String },
     /// Store a PR author's session ID for potential handoff.
     ///
     /// When a coworker opens a PR, we store their session ID so any other
@@ -320,24 +294,12 @@ pub enum Effect {
         worktree_id: String,
         coworker: String,
     },
-    /// Unbind a coworker from their worktree in the registry.
-    ///
-    /// Called when a coworker is shut down. The worktree persists for reuse
-    /// by the next coworker assigned to the same task.
-    #[allow(dead_code)]
-    UnbindCoworkerFromWorktree { coworker: String },
     /// Register a new task-based worktree assignment in the registry.
     ///
     /// Called during task dispatch when a new worktree is allocated for a task.
     RegisterWorktreeAssignment {
         assignment: crate::worktree_registry::WorktreeAssignment,
     },
-    /// Set the PR number for a worktree in the registry.
-    ///
-    /// Called when a coworker opens a PR, linking the worktree to the PR
-    /// for automatic cleanup on merge.
-    #[allow(dead_code)]
-    SetWorktreePrNumber { worktree_id: String, pr_number: u64 },
     /// Update the GitHub API rate limit state in persistent storage.
     ///
     /// Called periodically (every 2 minutes) to track GraphQL and REST API quota
@@ -489,7 +451,6 @@ fn dedup_nudge_effects(effects: Vec<Effect>) -> Vec<Effect> {
             Effect::NudgeCoworkerWithCallbacks {
                 ref name,
                 message,
-                session_id,
                 on_success,
             } => {
                 let key = name.to_lowercase();
@@ -516,7 +477,6 @@ fn dedup_nudge_effects(effects: Vec<Effect>) -> Vec<Effect> {
                 result.push(Effect::NudgeCoworkerWithCallbacks {
                     name: name.clone(),
                     message,
-                    session_id,
                     on_success,
                 });
             }
@@ -1077,9 +1037,6 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
             } => {
                 rerun_workflow(state, run_id, &check_name, pr_number).await;
             }
-            Effect::RebasePrOnMain { pr_number, reason } => {
-                rebase_pr_on_main(state, pr_number, &reason).await;
-            }
             Effect::StorePrAuthorSession {
                 pr_number,
                 session_id,
@@ -1451,17 +1408,6 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     }
                 }
             }
-            Effect::UnbindCoworkerFromWorktree { coworker } => {
-                let mut ps = state.persistent_state.lock().await;
-                ps.worktree_registry.unbind_coworker(&coworker);
-                debug!("Unbound {} from worktree", coworker);
-                if let Err(e) = ps.save_for_repo(&state.repo_name) {
-                    warn!(
-                        "Failed to save daemon state after unbinding coworker: {}",
-                        e
-                    );
-                }
-            }
             Effect::EnsureWorktree { worktree_id, path } => {
                 if path.exists() {
                     debug!(
@@ -1493,17 +1439,6 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                             e
                         );
                     }
-                }
-            }
-            Effect::SetWorktreePrNumber {
-                worktree_id,
-                pr_number,
-            } => {
-                let mut ps = state.persistent_state.lock().await;
-                ps.worktree_registry.set_pr_number(&worktree_id, pr_number);
-                debug!("Set PR #{} for worktree {}", pr_number, worktree_id);
-                if let Err(e) = ps.save_for_repo(&state.repo_name) {
-                    warn!("Failed to save daemon state after setting PR number: {}", e);
                 }
             }
             Effect::UpdateRateLimit(rate_limit) => {
@@ -2161,63 +2096,6 @@ async fn rerun_workflow(state: &DaemonState, run_id: u64, check_name: &str, pr_n
         warn!(
             "gh run rerun failed for workflow {}: {}",
             run_id,
-            stderr.trim()
-        );
-    }
-}
-
-/// Rebase a PR on main to pick up workflow changes using `gh pr rebase`.
-///
-/// Posts a channel message on success or failure.
-async fn rebase_pr_on_main(state: &DaemonState, pr_number: u64, reason: &str) {
-    // Note: There isn't a direct `gh pr rebase` command. We'll use the Git approach
-    // via the PR owner's branch. For now, we'll post a nudge to the PR owner instead
-    // since rebasing requires pushing to their branch.
-    //
-    // Alternative: Use GitHub's update branch API if the repo allows it:
-    // gh api repos/{owner}/{repo}/pulls/{pr}/update-branch -X PUT
-
-    // Try using GitHub's update branch API first (requires repo to allow it)
-    let output = match tokio::process::Command::new("gh")
-        .args([
-            "api",
-            &format!("repos/{{owner}}/{{repo}}/pulls/{}/update-branch", pr_number),
-            "-X",
-            "PUT",
-        ])
-        .output()
-        .await
-    {
-        Ok(output) => output,
-        Err(e) => {
-            warn!(
-                "Failed to run gh api update-branch for PR #{}: {}",
-                pr_number, e
-            );
-            return;
-        }
-    };
-
-    if output.status.success() {
-        info!("Updated PR #{} branch to include latest main", pr_number);
-        let msg = Message::for_channel(
-            state.channel_router.default_channel_name(),
-            "midtown",
-            format!(
-                "🔄 Updated PR #{} to include latest main ({})",
-                pr_number, reason
-            ),
-            crate::message::MessageType::Text,
-        );
-        if let Err(e) = state.send_and_broadcast_async(&msg).await {
-            warn!("Failed to post branch update message: {}", e);
-        }
-    } else {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        // If the API fails (e.g., branch protection), log it but don't spam
-        info!(
-            "Could not auto-update PR #{} branch (may need manual rebase): {}",
-            pr_number,
             stderr.trim()
         );
     }

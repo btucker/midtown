@@ -22,17 +22,14 @@ fn test_dedup_removes_duplicate_nudge_coworker() {
         Effect::NudgeCoworker {
             name: "riverside".into(),
             message: "first nudge".into(),
-            session_id: None,
         },
         Effect::NudgeCoworker {
             name: "riverside".into(),
             message: "second nudge".into(),
-            session_id: None,
         },
         Effect::NudgeCoworker {
             name: "riverside".into(),
             message: "third nudge".into(),
-            session_id: None,
         },
     ];
 
@@ -52,7 +49,6 @@ fn test_dedup_removes_duplicate_nudge_with_callbacks() {
         Effect::NudgeCoworkerWithCallbacks {
             name: "riverside".into(),
             message: "CI green".into(),
-            session_id: None,
             on_success: vec![Effect::RecordPrNudge {
                 pr_number: 42,
                 issue_type: PrIssueType::Approved,
@@ -61,7 +57,6 @@ fn test_dedup_removes_duplicate_nudge_with_callbacks() {
         Effect::NudgeCoworkerWithCallbacks {
             name: "riverside".into(),
             message: "review complete".into(),
-            session_id: None,
             on_success: vec![Effect::RecordPrNudge {
                 pr_number: 42,
                 issue_type: PrIssueType::ReviewComplete,
@@ -70,7 +65,6 @@ fn test_dedup_removes_duplicate_nudge_with_callbacks() {
         Effect::NudgeCoworkerWithCallbacks {
             name: "riverside".into(),
             message: "merge conflict".into(),
-            session_id: None,
             on_success: vec![Effect::RecordPrNudge {
                 pr_number: 42,
                 issue_type: PrIssueType::MergeConflict,
@@ -108,17 +102,14 @@ fn test_dedup_preserves_different_coworkers() {
         Effect::NudgeCoworker {
             name: "riverside".into(),
             message: "nudge riverside".into(),
-            session_id: None,
         },
         Effect::NudgeCoworker {
             name: "broadway".into(),
             message: "nudge broadway".into(),
-            session_id: None,
         },
         Effect::NudgeCoworker {
             name: "riverside".into(),
             message: "duplicate riverside".into(),
-            session_id: None,
         },
     ];
 
@@ -137,12 +128,10 @@ fn test_dedup_mixed_nudge_types_promotes_callbacks() {
         Effect::NudgeCoworker {
             name: "riverside".into(),
             message: "plain nudge".into(),
-            session_id: None,
         },
         Effect::NudgeCoworkerWithCallbacks {
             name: "riverside".into(),
             message: "callback nudge".into(),
-            session_id: None,
             on_success: vec![Effect::RecordPrNudge {
                 pr_number: 42,
                 issue_type: PrIssueType::Approved,
@@ -174,7 +163,6 @@ fn test_dedup_preserves_non_nudge_effects() {
         Effect::NudgeCoworker {
             name: "riverside".into(),
             message: "nudge 1".into(),
-            session_id: None,
         },
         Effect::RecordCooldown {
             category: "test".into(),
@@ -183,7 +171,6 @@ fn test_dedup_preserves_non_nudge_effects() {
         Effect::NudgeCoworker {
             name: "riverside".into(),
             message: "nudge 2".into(),
-            session_id: None,
         },
         Effect::PostToChannel {
             sender: "midtown".into(),
@@ -204,12 +191,10 @@ fn test_dedup_case_insensitive() {
         Effect::NudgeCoworker {
             name: "Riverside".into(),
             message: "nudge 1".into(),
-            session_id: None,
         },
         Effect::NudgeCoworker {
             name: "riverside".into(),
             message: "nudge 2".into(),
-            session_id: None,
         },
     ];
 
@@ -225,7 +210,6 @@ fn test_dedup_quadruple_nudge_scenario() {
         Effect::NudgeCoworkerWithCallbacks {
             name: "riverside".into(),
             message: "PR #181 - CI checks passed".into(),
-            session_id: None,
             on_success: vec![Effect::RecordPrNudge {
                 pr_number: 181,
                 issue_type: PrIssueType::Approved,
@@ -234,7 +218,6 @@ fn test_dedup_quadruple_nudge_scenario() {
         Effect::NudgeCoworkerWithCallbacks {
             name: "riverside".into(),
             message: "PR #181 - Review complete".into(),
-            session_id: None,
             on_success: vec![Effect::RecordPrNudge {
                 pr_number: 181,
                 issue_type: PrIssueType::ReviewComplete,
@@ -243,7 +226,6 @@ fn test_dedup_quadruple_nudge_scenario() {
         Effect::NudgeCoworkerWithCallbacks {
             name: "riverside".into(),
             message: "PR #181 - Merge conflict".into(),
-            session_id: None,
             on_success: vec![Effect::RecordPrNudge {
                 pr_number: 181,
                 issue_type: PrIssueType::MergeConflict,
@@ -252,7 +234,6 @@ fn test_dedup_quadruple_nudge_scenario() {
         Effect::NudgeCoworkerWithCallbacks {
             name: "riverside".into(),
             message: "PR #181 - Green with feedback".into(),
-            session_id: None,
             on_success: vec![Effect::RecordPrNudge {
                 pr_number: 181,
                 issue_type: PrIssueType::GreenWithFeedback,

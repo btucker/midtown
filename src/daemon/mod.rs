@@ -1726,6 +1726,7 @@ impl DaemonState {
     ///
     /// Used by chat @mention routing for session-targeted nudge delivery,
     /// and by effect handlers for session-centric dispatch.
+    #[allow(dead_code)] // Used in tests; production callers arrive in later migration tasks
     pub(crate) fn session_for_name(&self, name: &str) -> Option<String> {
         self.name_to_session.lock().unwrap().get(name).cloned()
     }
