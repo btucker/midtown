@@ -269,6 +269,87 @@ async fn test_user_message_to_main_channel_nudges_lead() {
     assert_eq!(messages[0].text, "user: hello main");
 }
 
+/// Verify that a user message to the main channel nudges the lead EVEN when the user
+/// @mentions a specific coworker. The lead should always be informed of user messages.
+#[tokio::test]
+async fn test_user_message_with_coworker_mention_still_nudges_lead() {
+    let state = make_test_state("midtown-test-lead-nudge-despite-mention");
+    let adapter_id = "test-adapter-lead-nudge-mention";
+    state
+        .headed_register("lead", adapter_id, crate::auth::AuthProvider::Claude)
+        .await
+        .expect("register headed adapter");
+
+    // Post a message that @mentions a coworker (not @lead)
+    let response = handle_channel_post(
+        3_i64.into(),
+        "user",
+        "@york can you check this?",
+        None,
+        None,
+        &state,
+    )
+    .await;
+    assert!(response.error.is_none(), "channel.post should succeed");
+
+    let (messages, _capture) = state
+        .headed_poll("lead", adapter_id, 0, 10)
+        .await
+        .expect("poll headed queue");
+    assert_eq!(
+        messages.len(),
+        1,
+        "Lead should be nudged even when user @mentions a coworker"
+    );
+    assert_eq!(messages[0].text, "user: @york can you check this?");
+}
+
+/// Verify that a user message to a topic channel with an inactive session
+/// attempts to resume the channel lead (succeeds without error, no main lead nudge).
+///
+/// In the test environment, spawn_coworker will fail (no real worktrees), but the
+/// error is handled gracefully and the main lead is not nudged.
+#[tokio::test]
+async fn test_user_message_to_topic_channel_inactive_lead_attempts_resume() {
+    let state = make_test_state("midtown-test-topic-resume-lead");
+    let adapter_id = "test-adapter-topic-resume";
+    state
+        .headed_register("lead", adapter_id, crate::auth::AuthProvider::Claude)
+        .await
+        .expect("register headed adapter");
+
+    // Persist a saved session ID for the channel lead so the resume path is taken
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.channel_lead_sessions.insert(
+            "auth-refactor".to_string(),
+            "saved-session-id-abc".to_string(),
+        );
+    }
+
+    // Post to the topic channel — channel lead is not running
+    let response = handle_channel_post(
+        4_i64.into(),
+        "user",
+        "need auth help",
+        Some("auth-refactor"),
+        None,
+        &state,
+    )
+    .await;
+    assert!(response.error.is_none(), "channel.post should succeed");
+
+    // Main lead should NOT be nudged (topic channel message)
+    let (messages, _capture) = state
+        .headed_poll("lead", adapter_id, 0, 10)
+        .await
+        .expect("poll headed queue");
+    assert!(
+        messages.is_empty(),
+        "Main lead should not be nudged when user posts to a topic channel"
+    );
+}
+
 /// Verify that channel.read with a channel parameter reads from the specified
 /// topic channel, not the main channel.
 ///
