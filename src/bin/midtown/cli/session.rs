@@ -303,6 +303,10 @@ fn handle_attach(target: &AttachArgs, client: &DaemonClient) -> Result<Response,
             .get("coworker_type")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
+        let channel = info
+            .get("channel")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
         if let Err(e) = midtown::platform_launch::run_platform_prelaunch_hook(provider) {
             eprintln!(
                 "Warning: Platform pre-launch hook failed (continuing): {}",
@@ -321,6 +325,7 @@ fn handle_attach(target: &AttachArgs, client: &DaemonClient) -> Result<Response,
             provider,
             session_id,
             coworker_type.as_deref(),
+            channel.as_deref(),
             true, // include_detach: standalone attach resumes headless when pane closes
         )?;
         let launcher = PaneLauncher::detect();
@@ -719,6 +724,7 @@ pub(crate) fn build_attach_shell_command(
     provider: midtown::auth::AuthProvider,
     session_id: &str,
     coworker_type: Option<&str>,
+    channel: Option<&str>,
     include_detach: bool,
 ) -> Result<String, String> {
     let repo_name = midtown::paths::detect_repo_name_from_dir(Path::new(cwd))
@@ -732,6 +738,11 @@ pub(crate) fn build_attach_shell_command(
         midtown::launch::CoworkerRole::Lead
     } else if coworker_type == Some("reviewer") {
         midtown::launch::CoworkerRole::Reviewer
+    } else if coworker_type == Some("channel-lead") {
+        midtown::launch::CoworkerRole::ChannelLead {
+            channel_name: channel.unwrap_or(name).to_string(),
+            domain_context: String::new(),
+        }
     } else {
         midtown::launch::CoworkerRole::Coworker
     };
