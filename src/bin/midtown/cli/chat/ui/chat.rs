@@ -25,12 +25,14 @@ pub fn draw_chat_panel(f: &mut Frame, app: &mut App, area: Rect) {
     // Each question takes 2 lines: the question itself and the answer hint.
     let questions_height = pending_questions_height(&app.pending_questions);
 
+    let indicator_height = lead_indicator_height(app);
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(questions_height),
             Constraint::Min(5),
-            Constraint::Length(1),
+            Constraint::Length(indicator_height),
             Constraint::Length(input_bar_height),
         ])
         .split(area);
@@ -48,71 +50,110 @@ pub fn draw_chat_panel(f: &mut Frame, app: &mut App, area: Rect) {
     draw_input_bar(f, app, chunks[3]);
 
     if app.autocomplete.show {
-        draw_autocomplete_dropdown(f, app, chunks[3]);
+        draw_autocomplete_dropdown(f, app, chunks[3], indicator_height);
     }
 }
 
-/// Draw the lead working indicator line between chat messages and input bar.
+/// Compute the number of lines the lead indicator area should occupy (0–3).
 ///
-/// Shows a braille spinner (when working), the channel-appropriate agent name,
-/// and the latest tool call truncated to fit the available width.
-/// For main channel: shows the lead's activity. For topic channels: shows the
-/// channel lead's activity (keyed by channel name).
+/// Returns 0 when no active/recent tool entries exist (area collapses entirely).
+fn lead_indicator_height(app: &App) -> u16 {
+    let agent_key = if app.selected_channel == "main" || app.selected_channel == "midtown" {
+        "lead"
+    } else {
+        app.selected_channel.as_str()
+    };
+    app.visible_tool_entries(agent_key).len() as u16
+}
+
+/// Draw the lead working indicator area between chat messages and the input bar.
+///
+/// Shows up to 3 tool entries (newest first) with color-coded status prefixes.
+/// The first line includes a yellow braille spinner and the agent name in yellow.
+/// Completed (✓/✗) entries age out after 30 seconds, collapsing the area to 0.
 fn draw_lead_indicator(f: &mut Frame, app: &mut App, area: Rect) {
-    // Determine which agent to display based on selected channel.
+    if area.height == 0 {
+        return;
+    }
+
     let agent_key = if app.selected_channel == "main" || app.selected_channel == "midtown" {
         "lead"
     } else {
         app.selected_channel.as_str()
     };
 
-    // Determine working state: lead_working covers the main lead; for channel leads,
-    // infer from non-empty tool activity.
-    let agent_working = if agent_key == "lead" {
-        app.lead_working
-    } else {
-        app.tool_activity
-            .get(agent_key)
-            .is_some_and(|h| !h.is_empty())
-    };
+    let entries = app.visible_tool_entries(agent_key);
+    if entries.is_empty() {
+        return;
+    }
 
-    let line = if agent_working {
-        let spinner = app.spinner_char();
-        // Build: " {spinner} {agent_key} {latest_tool_call...}"
-        // Available width: area.width minus spinner(1) + space(2) + agent_key + space(1).
-        let prefix = format!(" {} {} ", spinner, agent_key);
-        let prefix_len = prefix.chars().count();
-        let available = (area.width as usize).saturating_sub(prefix_len);
+    // Show spinner when any entry is still in-progress.
+    let has_in_progress = entries.iter().any(|e| e.header.starts_with('›'));
+    // Width of " ⠋ lead " prefix: 1 space + 1 spinner + 1 space + agent_name + 1 space
+    let prefix_width = 3 + agent_key.chars().count() + 1;
 
-        // Get the latest tool call header text (strip prefix char like ✓/✗/›).
-        let latest_call = app
-            .tool_activity
-            .get(agent_key)
-            .and_then(|h| h.last())
-            .map(|header| {
-                let mut chars = header.chars();
-                let _ = chars.next(); // skip prefix char
-                chars.as_str().trim_start().to_string()
-            })
-            .unwrap_or_default();
+    let mut lines: Vec<Line<'static>> = Vec::new();
 
-        // Truncate latest_call to fit available width.
-        let call_text = if latest_call.chars().count() > available && available > 3 {
-            let boundary = latest_call.floor_char_boundary(available.saturating_sub(3));
-            format!("{}...", &latest_call[..boundary])
+    for (i, entry) in entries.iter().enumerate() {
+        let mut chars = entry.header.chars();
+        let prefix_char = chars.next().unwrap_or('›');
+        let description = chars.as_str().trim_start().to_string();
+
+        let prefix_color = match prefix_char {
+            '\u{2713}' => Color::Green, // ✓
+            '\u{2717}' => Color::Red,   // ✗
+            _ => Color::DarkGray,       // ›
+        };
+        let text_color = if prefix_char == '\u{2717}' {
+            Color::Red
         } else {
-            latest_call
+            Color::DarkGray
         };
 
-        Line::from(vec![Span::styled(
-            format!("{prefix}{call_text}"),
-            Style::default().fg(Color::DarkGray),
-        )])
+        if i == 0 {
+            // First line: " ⠋ lead  › Read foo.rs" — spinner and agent name in yellow
+            let spinner = if has_in_progress {
+                app.spinner_char()
+            } else {
+                " "
+            };
+            let available = (area.width as usize).saturating_sub(prefix_width + 2);
+            let desc_text = truncate_for_width(&description, available);
+            lines.push(Line::from(vec![
+                Span::styled(format!(" {} ", spinner), Style::default().fg(Color::Yellow)),
+                Span::styled(
+                    format!("{agent_key} "),
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(prefix_char.to_string(), Style::default().fg(prefix_color)),
+                Span::styled(format!(" {desc_text}"), Style::default().fg(text_color)),
+            ]));
+        } else {
+            // Subsequent lines: indented to align with first line's description.
+            let indent = " ".repeat(prefix_width);
+            let available = (area.width as usize).saturating_sub(prefix_width + 2);
+            let desc_text = truncate_for_width(&description, available);
+            lines.push(Line::from(vec![
+                Span::raw(indent),
+                Span::styled(prefix_char.to_string(), Style::default().fg(prefix_color)),
+                Span::styled(format!(" {desc_text}"), Style::default().fg(text_color)),
+            ]));
+        }
+    }
+
+    f.render_widget(Paragraph::new(lines), area);
+}
+
+/// Truncate text to fit within `available` characters, appending "..." if needed.
+fn truncate_for_width(text: &str, available: usize) -> String {
+    if text.chars().count() > available && available > 3 {
+        let boundary = text.floor_char_boundary(available.saturating_sub(3));
+        format!("{}...", &text[..boundary])
     } else {
-        Line::from("")
-    };
-    let paragraph = Paragraph::new(line);
-    f.render_widget(paragraph, area);
+        text.to_string()
+    }
 }
 
 /// Compute the number of lines needed to display pending questions.
@@ -181,14 +222,7 @@ fn draw_chat_messages(f: &mut Frame, app: &mut App, area: Rect) {
 
     let inner = block.inner(area);
 
-    // Filter tool activity to only the relevant agent for the selected channel.
-    let filtered_activity =
-        filter_tool_activity_for_channel(&app.tool_activity, &app.selected_channel);
-
-    // Reserve space for tool activity before setting visible_height so that
-    // max_scroll() and visible_messages() use the actual message display area.
-    let activity_lines = count_tool_activity_lines(&filtered_activity);
-    let msg_height = (inner.height as usize).saturating_sub(activity_lines);
+    let msg_height = inner.height as usize;
     app.visible_height = msg_height;
     app.clamp_scroll_offset();
 
@@ -199,7 +233,6 @@ fn draw_chat_messages(f: &mut Frame, app: &mut App, area: Rect) {
     {
         let mut lines = cache.lines.clone();
         lines.truncate(msg_height);
-        append_tool_activity_lines(&filtered_activity, &mut lines, &app.channel_lead_names);
         let paragraph = Paragraph::new(lines);
         f.render_widget(block, area);
         f.render_widget(paragraph, inner);
@@ -300,126 +333,10 @@ fn draw_chat_messages(f: &mut Frame, app: &mut App, area: Rect) {
         cache_key,
     ));
 
-    // Append live tool activity (not cached — changes independently of messages).
-    let mut final_lines = visible_lines;
-    append_tool_activity_lines(
-        &filtered_activity,
-        &mut final_lines,
-        &app.channel_lead_names,
-    );
-
-    let paragraph = Paragraph::new(final_lines);
+    let paragraph = Paragraph::new(visible_lines);
 
     f.render_widget(block, area);
     f.render_widget(paragraph, inner);
-}
-
-/// Filter tool activity to show only the relevant agent for the selected channel.
-///
-/// - Main channel ("main" / "midtown"): show only the "lead" agent's activity
-/// - Topic channel (e.g., "web"): show only that channel lead's activity (keyed by channel name)
-fn filter_tool_activity_for_channel(
-    tool_activity: &std::collections::HashMap<String, Vec<String>>,
-    selected_channel: &str,
-) -> std::collections::HashMap<String, Vec<String>> {
-    let agent_key = if selected_channel == "main" || selected_channel == "midtown" {
-        "lead"
-    } else {
-        selected_channel
-    };
-    tool_activity
-        .iter()
-        .filter(|(k, _)| k.as_str() == agent_key)
-        .map(|(k, v)| (k.clone(), v.clone()))
-        .collect()
-}
-
-/// Count how many lines tool activity will occupy (for reserving space).
-fn count_tool_activity_lines(
-    tool_activity: &std::collections::HashMap<String, Vec<String>>,
-) -> usize {
-    let mut count = 0;
-    for headers in tool_activity.values() {
-        if headers.is_empty() {
-            continue;
-        }
-        count += 1; // agent name header
-        count += 1; // 1 most recent tool call line
-    }
-    if count > 0 {
-        count += 1; // blank separator before activity strip
-    }
-    count
-}
-
-/// Append per-agent tool call activity lines to the message display.
-///
-/// Renders a compact activity strip for each agent with recent tool calls,
-/// shown below the message history. Skips agents with no activity.
-fn append_tool_activity_lines(
-    tool_activity: &std::collections::HashMap<String, Vec<String>>,
-    lines: &mut Vec<Line<'static>>,
-    channel_lead_names: &[String],
-) {
-    use super::styles::get_sender_color_with_leads;
-
-    // Only render if at least one agent has non-empty headers
-    let has_activity = tool_activity.values().any(|h| !h.is_empty());
-    if !has_activity {
-        return;
-    }
-
-    // Blank separator before activity strips
-    lines.push(Line::from(""));
-
-    // Sort agents for deterministic ordering
-    let mut agents: Vec<&String> = tool_activity.keys().collect();
-    agents.sort();
-
-    for agent in agents {
-        let headers = &tool_activity[agent];
-        if headers.is_empty() {
-            continue;
-        }
-
-        let color = get_sender_color_with_leads(agent, channel_lead_names);
-
-        // Agent name header: "amsterdam working…"
-        lines.push(Line::from(vec![
-            Span::styled(
-                agent.clone(),
-                Style::default().fg(color).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" working\u{2026}", Style::default().fg(Color::DarkGray)),
-        ]));
-
-        // Show the most recent tool call (last item, most recent last).
-        // Each header starts with a prefix char (✓/✗/›) followed by a space and the description.
-        let start = headers.len().saturating_sub(1);
-        for header in &headers[start..] {
-            // Split prefix character from the rest of the description.
-            // Format is "<prefix_char> <description>" where prefix is a single Unicode char.
-            let mut chars = header.chars();
-            let prefix = chars.next().unwrap_or('›');
-            let description: String = chars.collect::<String>().trim_start().to_string();
-
-            let prefix_color = match prefix {
-                '\u{2713}' => Color::Green, // ✓
-                '\u{2717}' => Color::Red,   // ✗
-                _ => Color::DarkGray,       // › or anything else
-            };
-            let text_color = match prefix {
-                '\u{2717}' => Color::Red,
-                _ => Color::DarkGray,
-            };
-
-            lines.push(Line::from(vec![
-                Span::styled("  ", Style::default()),
-                Span::styled(prefix.to_string(), Style::default().fg(prefix_color)),
-                Span::styled(format!(" {description}"), Style::default().fg(text_color)),
-            ]));
-        }
-    }
 }
 
 /// Calculate the required height for the input bar based on wrapped text
@@ -510,7 +427,7 @@ fn draw_input_bar(f: &mut Frame, app: &App, area: Rect) {
 }
 
 /// Draw autocomplete dropdown above the input bar
-fn draw_autocomplete_dropdown(f: &mut Frame, app: &App, input_area: Rect) {
+fn draw_autocomplete_dropdown(f: &mut Frame, app: &App, input_area: Rect, indicator_height: u16) {
     let items = &app.autocomplete.items;
     if items.is_empty() {
         return;
@@ -522,11 +439,11 @@ fn draw_autocomplete_dropdown(f: &mut Frame, app: &App, input_area: Rect) {
     let max_width = if is_thread { 60u16 } else { 40u16 };
     let dropdown_width = max_width.min(input_area.width.saturating_sub(4));
 
-    // saturating_sub(2): skip past the 1-row lead indicator + 1-row original spacing
+    // Position above input bar, accounting for the dynamic indicator area height.
     let dropdown_y = input_area
         .y
         .saturating_sub(dropdown_height)
-        .saturating_sub(2);
+        .saturating_sub(indicator_height);
     let dropdown_x = input_area.x + 2;
 
     let dropdown_area = Rect {
@@ -731,208 +648,15 @@ pub fn draw_channel_switcher_overlay(f: &mut Frame, app: &App, area: Rect) {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
-
-    use ratatui::style::Color;
-
+    use super::super::super::app::tests::test_app;
     use super::*;
 
-    // --- append_tool_activity_lines tests ---
-
-    fn make_activity(agent: &str, headers: Vec<&str>) -> HashMap<String, Vec<String>> {
-        let mut map = HashMap::new();
-        map.insert(
-            agent.to_string(),
-            headers.iter().map(|s| s.to_string()).collect(),
-        );
-        map
-    }
+    // --- lead_indicator_height tests ---
 
     #[test]
-    fn test_append_tool_activity_lines_empty_map() {
-        let activity: HashMap<String, Vec<String>> = HashMap::new();
-        let mut lines: Vec<Line<'static>> = Vec::new();
-        append_tool_activity_lines(&activity, &mut lines, &[]);
-        assert!(
-            lines.is_empty(),
-            "No lines should be emitted for empty activity"
-        );
-    }
-
-    #[test]
-    fn test_append_tool_activity_lines_empty_headers() {
-        let activity = make_activity("amsterdam", vec![]);
-        let mut lines: Vec<Line<'static>> = Vec::new();
-        append_tool_activity_lines(&activity, &mut lines, &[]);
-        assert!(lines.is_empty(), "No lines for agent with empty headers");
-    }
-
-    #[test]
-    fn test_append_tool_activity_lines_in_progress_prefix_color() {
-        let activity = make_activity("amsterdam", vec!["› Read foo.rs"]);
-        let mut lines: Vec<Line<'static>> = Vec::new();
-        append_tool_activity_lines(&activity, &mut lines, &[]);
-
-        // Lines: blank separator, agent header, tool call line
-        assert_eq!(lines.len(), 3);
-        let call_line = &lines[2];
-        // Three spans: "  ", "›", " Read foo.rs"
-        assert_eq!(call_line.spans.len(), 3);
-        // Prefix span should be DarkGray for in-progress
-        assert_eq!(
-            call_line.spans[1].style.fg,
-            Some(Color::DarkGray),
-            "In-progress prefix should be DarkGray"
-        );
-        assert_eq!(
-            call_line.spans[2].style.fg,
-            Some(Color::DarkGray),
-            "In-progress text should be DarkGray"
-        );
-    }
-
-    #[test]
-    fn test_append_tool_activity_lines_success_prefix_color() {
-        let activity = make_activity("amsterdam", vec!["✓ Read foo.rs"]);
-        let mut lines: Vec<Line<'static>> = Vec::new();
-        append_tool_activity_lines(&activity, &mut lines, &[]);
-
-        let call_line = &lines[2];
-        assert_eq!(
-            call_line.spans[1].style.fg,
-            Some(Color::Green),
-            "Success prefix should be Green"
-        );
-        assert_eq!(
-            call_line.spans[2].style.fg,
-            Some(Color::DarkGray),
-            "Success text should be DarkGray"
-        );
-    }
-
-    #[test]
-    fn test_append_tool_activity_lines_error_prefix_color() {
-        let activity = make_activity("amsterdam", vec!["✗ Run tests"]);
-        let mut lines: Vec<Line<'static>> = Vec::new();
-        append_tool_activity_lines(&activity, &mut lines, &[]);
-
-        let call_line = &lines[2];
-        assert_eq!(
-            call_line.spans[1].style.fg,
-            Some(Color::Red),
-            "Error prefix should be Red"
-        );
-        assert_eq!(
-            call_line.spans[2].style.fg,
-            Some(Color::Red),
-            "Error text should be Red"
-        );
-    }
-
-    #[test]
-    fn test_append_tool_activity_lines_channel_lead_color() {
-        // A channel lead ("auth") posting tool activity must display with LightYellow,
-        // matching their message color in the chat — not the default Color::White for
-        // unknown senders.
-        let activity = make_activity("auth", vec!["› Read config.toml"]);
-        let channel_lead_names: Vec<String> = vec!["auth".to_string()];
-        let mut lines: Vec<Line<'static>> = Vec::new();
-        append_tool_activity_lines(&activity, &mut lines, &channel_lead_names);
-
-        // Lines: blank separator, agent header, tool call line
-        assert_eq!(lines.len(), 3);
-        let header_line = &lines[1];
-
-        // The agent name span (first span) should be LightYellow for channel leads
-        assert_eq!(
-            header_line.spans[0].style.fg,
-            Some(Color::LightYellow),
-            "Channel lead 'auth' in tool activity strip must be LightYellow, not White"
-        );
-    }
-
-    #[test]
-    fn test_append_tool_activity_lines_shows_only_most_recent() {
-        // 5 headers — should show only the last 1 (most recent)
-        let activity = make_activity(
-            "amsterdam",
-            vec!["✓ call1", "✓ call2", "✓ call3", "✓ call4", "› call5"],
-        );
-        let mut lines: Vec<Line<'static>> = Vec::new();
-        append_tool_activity_lines(&activity, &mut lines, &[]);
-
-        // blank sep + agent header + 1 call line
-        assert_eq!(lines.len(), 3, "Should emit blank + agent + 1 call line");
-
-        // The single call line should be for "call5" (most recent)
-        let last = &lines[2];
-        let text: String = last.spans.iter().map(|s| s.content.as_ref()).collect();
-        assert!(
-            text.contains("call5"),
-            "Only line should be call5 (most recent), got: {text}"
-        );
-    }
-
-    // --- filter_tool_activity_for_channel tests ---
-
-    fn make_multi_activity(agents: &[(&str, Vec<&str>)]) -> HashMap<String, Vec<String>> {
-        agents
-            .iter()
-            .map(|(agent, headers)| {
-                (
-                    agent.to_string(),
-                    headers.iter().map(|s| s.to_string()).collect(),
-                )
-            })
-            .collect()
-    }
-
-    #[test]
-    fn test_filter_main_channel_shows_only_lead() {
-        let activity = make_multi_activity(&[
-            ("lead", vec!["› Read foo.rs"]),
-            ("web", vec!["› Bash ls"]),
-            ("auth", vec!["✓ Read config.toml"]),
-        ]);
-        let filtered = filter_tool_activity_for_channel(&activity, "main");
-        assert_eq!(filtered.len(), 1, "Only lead should be in filtered map");
-        assert!(filtered.contains_key("lead"), "lead should be present");
-        assert!(!filtered.contains_key("web"), "web should be absent");
-    }
-
-    #[test]
-    fn test_filter_midtown_channel_shows_only_lead() {
-        // "midtown" is the default channel name, treated like "main"
-        let activity =
-            make_multi_activity(&[("lead", vec!["› Read foo.rs"]), ("web", vec!["› Bash ls"])]);
-        let filtered = filter_tool_activity_for_channel(&activity, "midtown");
-        assert_eq!(filtered.len(), 1);
-        assert!(filtered.contains_key("lead"));
-    }
-
-    #[test]
-    fn test_filter_topic_channel_shows_only_channel_lead() {
-        let activity = make_multi_activity(&[
-            ("lead", vec!["› Read foo.rs"]),
-            ("web", vec!["› Bash ls"]),
-            ("auth", vec!["✓ Read config.toml"]),
-        ]);
-        let filtered = filter_tool_activity_for_channel(&activity, "web");
-        assert_eq!(filtered.len(), 1, "Only web channel lead should be shown");
-        assert!(filtered.contains_key("web"), "web should be present");
-        assert!(!filtered.contains_key("lead"), "lead should be absent");
-        assert!(!filtered.contains_key("auth"), "auth should be absent");
-    }
-
-    #[test]
-    fn test_filter_missing_agent_returns_empty() {
-        let activity = make_multi_activity(&[("lead", vec!["› Read foo.rs"])]);
-        // "features" channel but no "features" agent in the map
-        let filtered = filter_tool_activity_for_channel(&activity, "features");
-        assert!(
-            filtered.is_empty(),
-            "Should return empty map when channel lead has no activity"
-        );
+    fn test_lead_indicator_height_empty() {
+        let app = test_app();
+        assert_eq!(lead_indicator_height(&app), 0);
     }
 
     #[test]

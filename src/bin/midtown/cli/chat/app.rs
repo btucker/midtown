@@ -50,6 +50,15 @@ pub struct PendingQuestion {
     pub timestamp: chrono::DateTime<chrono::Utc>,
 }
 
+/// A single tool activity entry displayed in the lead indicator area.
+pub struct ToolActivityEntry {
+    /// Full display string like "✓ Read foo.rs", "✗ Run tests", or "› Write bar.rs".
+    pub header: String,
+    /// The instant when this entry was first observed as completed (✓ or ✗).
+    /// None for in-progress entries (›).
+    pub completed_at: Option<std::time::Instant>,
+}
+
 /// Info about a clipboard image pending delivery to the lead session.
 #[derive(Debug, Clone)]
 pub struct PendingImageInfo {
@@ -267,7 +276,7 @@ pub struct App {
     /// Recent tool call activity per agent, keyed by lowercase agent name.
     /// Contains human-readable semantic headers (e.g., "$ git status", "read src/lib.rs").
     /// Updated from kanban.data RPC (live, not cached). Cleared when agent posts a message.
-    pub tool_activity: HashMap<String, Vec<String>>,
+    pub tool_activity: HashMap<String, Vec<ToolActivityEntry>>,
     /// Maximum number of coworkers allowed
     pub max_coworkers: usize,
     /// Pending questions from coworkers waiting for user input
@@ -627,7 +636,10 @@ impl App {
                     self.merged_prs = data.merged_prs;
                     self.coworkers = data.coworkers;
                     self.lead_working = data.lead_working;
-                    self.tool_activity = data.tool_activity;
+                    self.tool_activity = merge_tool_activity(
+                        std::mem::take(&mut self.tool_activity),
+                        data.tool_activity,
+                    );
                     self.max_coworkers = data.max_coworkers;
                     self.pending_questions = data.pending_questions;
                     self.channel_lead_names = data.channel_lead_names;
@@ -1533,8 +1545,8 @@ impl App {
     ///
     /// This captures all inputs that affect the rendered output of draw_chat_messages():
     /// scroll position, message count, terminal width, selection mode, last message ID
-    /// as a proxy for content changes, task state, mermaid render state, and tool
-    /// activity (which affects msg_height via count_tool_activity_lines).
+    /// as a proxy for content changes, task state, mermaid render state, and the
+    /// indicator height (which affects the message area size via the layout constraint).
     pub fn message_cache_key(&self, width: u16) -> u64 {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
@@ -1560,17 +1572,18 @@ impl App {
             thread_id.hash(&mut hasher);
         }
         self.thread_messages.len().hash(&mut hasher);
-        // Hash selected channel — changing channels changes which tool activity agent
-        // is shown, so the filtered activity count (and thus msg_height) may differ.
+        // Hash selected channel — changing channels changes which agent's indicator
+        // is shown, which may affect indicator_height and thus the message area size.
         self.selected_channel.hash(&mut hasher);
-        // Hash tool activity — changes msg_height via count_tool_activity_lines,
-        // so a cache hit with different tool activity would apply wrong truncation.
-        let mut agents: Vec<&String> = self.tool_activity.keys().collect();
-        agents.sort();
-        for agent in agents {
-            agent.hash(&mut hasher);
-            self.tool_activity[agent].len().hash(&mut hasher);
-        }
+        // Hash the indicator height — as completed entries age out, indicator_height changes,
+        // which changes the message area size via the layout constraint. Without this,
+        // the cache produces stale line counts when the indicator collapses.
+        let agent_key = if self.selected_channel == "main" || self.selected_channel == "midtown" {
+            "lead"
+        } else {
+            self.selected_channel.as_str()
+        };
+        self.visible_tool_entries(agent_key).len().hash(&mut hasher);
         hasher.finish()
     }
 
@@ -2161,6 +2174,36 @@ impl App {
     pub fn spinner_char(&self) -> &'static str {
         const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
         SPINNER_FRAMES[self.spinner_frame % SPINNER_FRAMES.len()]
+    }
+
+    /// Returns the visible tool activity entries for the given agent, newest first.
+    ///
+    /// Applies 30-second age-out for completed (✓/✗) entries. In-progress (›) entries
+    /// are always included. Returns at most 3 entries.
+    pub fn visible_tool_entries(&self, agent_key: &str) -> Vec<&ToolActivityEntry> {
+        const ACTIVITY_AGE_OUT: std::time::Duration = std::time::Duration::from_secs(30);
+        let now = std::time::Instant::now();
+
+        let entries = match self.tool_activity.get(agent_key) {
+            Some(e) if !e.is_empty() => e,
+            _ => return Vec::new(),
+        };
+
+        let mut visible: Vec<&ToolActivityEntry> = entries
+            .iter()
+            .filter(|entry| {
+                match entry.completed_at {
+                    None => true, // In-progress entries never age out
+                    Some(completed_at) => now.duration_since(completed_at) < ACTIVITY_AGE_OUT,
+                }
+            })
+            .collect();
+
+        // Newest first: reverse the slice (most recent entries are appended last in the Vec).
+        visible.reverse();
+        // Cap at 3.
+        visible.truncate(3);
+        visible
     }
 
     /// Returns true if any spinner is currently visible (lead working or active coworkers).
@@ -2923,6 +2966,65 @@ fn extract_tool_activity_headers(items: &[serde_json::Value]) -> Vec<String> {
         }
     }
     headers
+}
+
+/// Merge incoming tool activity headers with existing entries, preserving completed_at timestamps.
+///
+/// When an entry transitions from in-progress (›) to completed (✓/✗), records the current
+/// instant as `completed_at`. Completed entries that were already tracked preserve their
+/// original `completed_at` timestamp so age-out logic can measure elapsed time correctly.
+///
+/// Matching between old and new entries is done by comparing the body text (everything after
+/// the first character prefix and leading whitespace), allowing a "› Read foo.rs" to match
+/// a "✓ Read foo.rs" across ticks.
+fn merge_tool_activity(
+    old: HashMap<String, Vec<ToolActivityEntry>>,
+    new: HashMap<String, Vec<String>>,
+) -> HashMap<String, Vec<ToolActivityEntry>> {
+    new.into_iter()
+        .map(|(agent, headers)| {
+            let old_entries = old.get(&agent);
+            let entries = headers
+                .into_iter()
+                .map(|header| {
+                    let is_completed = header.starts_with('\u{2713}') // ✓
+                        || header.starts_with('\u{2717}'); // ✗
+                    let completed_at = if is_completed {
+                        // Extract body text: everything after the prefix char and leading space.
+                        let body: &str = header[header
+                            .char_indices()
+                            .nth(1)
+                            .map(|(i, _)| i)
+                            .unwrap_or(header.len())..]
+                            .trim_start();
+                        // Look for a matching old entry by body text to preserve its timestamp.
+                        old_entries
+                            .and_then(|entries| {
+                                entries.iter().find(|e| {
+                                    let old_body = e.header[e
+                                        .header
+                                        .char_indices()
+                                        .nth(1)
+                                        .map(|(i, _)| i)
+                                        .unwrap_or(e.header.len())..]
+                                        .trim_start();
+                                    old_body == body
+                                })
+                            })
+                            .and_then(|e| e.completed_at)
+                            .or_else(|| Some(std::time::Instant::now()))
+                    } else {
+                        None
+                    };
+                    ToolActivityEntry {
+                        header,
+                        completed_at,
+                    }
+                })
+                .collect();
+            (agent, entries)
+        })
+        .collect()
 }
 
 /// Cache for default branch names, keyed by repo full name (or empty string for current repo).
@@ -4526,5 +4628,174 @@ pub(super) mod tests {
             "Thread autocomplete should limit to 20 items, got {}",
             app.autocomplete.items.len()
         );
+    }
+
+    // --- merge_tool_activity tests ---
+
+    #[test]
+    fn test_merge_tool_activity_preserves_completed_at() {
+        // Old: in-progress entry
+        let old_entries = vec![ToolActivityEntry {
+            header: "\u{203a} Read foo.rs".to_string(),
+            completed_at: None,
+        }];
+        let old: HashMap<String, Vec<ToolActivityEntry>> =
+            [("lead".to_string(), old_entries)].into_iter().collect();
+
+        // New: same entry now completed
+        let new: HashMap<String, Vec<String>> =
+            [("lead".to_string(), vec!["\u{2713} Read foo.rs".to_string()])]
+                .into_iter()
+                .collect();
+
+        let merged = merge_tool_activity(old, new);
+        let entries = merged.get("lead").unwrap();
+        assert_eq!(entries.len(), 1);
+        assert!(
+            entries[0].completed_at.is_some(),
+            "Should have completed_at when transitioning from in-progress to completed"
+        );
+    }
+
+    #[test]
+    fn test_merge_tool_activity_preserves_existing_completed_at() {
+        use std::time::{Duration, Instant};
+        let old_time = Instant::now() - Duration::from_secs(10);
+        let old_entries = vec![ToolActivityEntry {
+            header: "\u{2713} Read foo.rs".to_string(),
+            completed_at: Some(old_time),
+        }];
+        let old: HashMap<String, Vec<ToolActivityEntry>> =
+            [("lead".to_string(), old_entries)].into_iter().collect();
+
+        // New: same completed entry arrives again
+        let new: HashMap<String, Vec<String>> =
+            [("lead".to_string(), vec!["\u{2713} Read foo.rs".to_string()])]
+                .into_iter()
+                .collect();
+
+        let merged = merge_tool_activity(old, new);
+        let entries = merged.get("lead").unwrap();
+        assert_eq!(entries.len(), 1);
+        // completed_at should be preserved (same instant as old)
+        assert!(
+            entries[0].completed_at.unwrap().duration_since(old_time) < Duration::from_millis(1),
+            "Should preserve old completed_at"
+        );
+    }
+
+    #[test]
+    fn test_merge_tool_activity_inprogress_has_no_timestamp() {
+        let old: HashMap<String, Vec<ToolActivityEntry>> = HashMap::new();
+        let new: HashMap<String, Vec<String>> = [(
+            "lead".to_string(),
+            vec!["\u{203a} Write bar.rs".to_string()],
+        )]
+        .into_iter()
+        .collect();
+
+        let merged = merge_tool_activity(old, new);
+        let entries = merged.get("lead").unwrap();
+        assert!(
+            entries[0].completed_at.is_none(),
+            "In-progress entries should have no completed_at"
+        );
+    }
+
+    // --- visible_tool_entries tests ---
+
+    #[test]
+    fn test_visible_tool_entries_empty() {
+        let app = test_app();
+        assert!(app.visible_tool_entries("lead").is_empty());
+    }
+
+    #[test]
+    fn test_visible_tool_entries_in_progress_always_visible() {
+        let mut app = test_app();
+        app.tool_activity = std::collections::HashMap::from([(
+            "lead".to_string(),
+            vec![ToolActivityEntry {
+                header: "\u{203a} Read foo.rs".to_string(),
+                completed_at: None,
+            }],
+        )]);
+        let result = app.visible_tool_entries("lead");
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].header, "\u{203a} Read foo.rs");
+    }
+
+    #[test]
+    fn test_visible_tool_entries_completed_recent_visible() {
+        let mut app = test_app();
+        app.tool_activity = std::collections::HashMap::from([(
+            "lead".to_string(),
+            vec![ToolActivityEntry {
+                header: "\u{2713} Read foo.rs".to_string(),
+                completed_at: Some(std::time::Instant::now()),
+            }],
+        )]);
+        let result = app.visible_tool_entries("lead");
+        assert_eq!(
+            result.len(),
+            1,
+            "Recently completed entry should be visible"
+        );
+    }
+
+    #[test]
+    fn test_visible_tool_entries_aged_out_hidden() {
+        let mut app = test_app();
+        app.tool_activity = std::collections::HashMap::from([(
+            "lead".to_string(),
+            vec![ToolActivityEntry {
+                header: "\u{2713} Read foo.rs".to_string(),
+                completed_at: Some(std::time::Instant::now() - std::time::Duration::from_secs(61)),
+            }],
+        )]);
+        let result = app.visible_tool_entries("lead");
+        assert!(
+            result.is_empty(),
+            "Entry completed >30s ago should be hidden"
+        );
+    }
+
+    #[test]
+    fn test_visible_tool_entries_max_3_newest_first() {
+        let mut app = test_app();
+        let now = std::time::Instant::now();
+        app.tool_activity = std::collections::HashMap::from([(
+            "lead".to_string(),
+            vec![
+                ToolActivityEntry {
+                    header: "\u{2713} call1".to_string(),
+                    completed_at: Some(now),
+                },
+                ToolActivityEntry {
+                    header: "\u{2713} call2".to_string(),
+                    completed_at: Some(now),
+                },
+                ToolActivityEntry {
+                    header: "\u{2713} call3".to_string(),
+                    completed_at: Some(now),
+                },
+                ToolActivityEntry {
+                    header: "\u{2713} call4".to_string(),
+                    completed_at: Some(now),
+                },
+                ToolActivityEntry {
+                    header: "\u{203a} call5".to_string(),
+                    completed_at: None,
+                },
+            ],
+        )]);
+        let result = app.visible_tool_entries("lead");
+        assert_eq!(result.len(), 3, "Max 3 entries");
+        assert_eq!(
+            result[0].header, "\u{203a} call5",
+            "Newest (call5) should be first"
+        );
+        assert_eq!(result[1].header, "\u{2713} call4");
+        assert_eq!(result[2].header, "\u{2713} call3");
     }
 }
