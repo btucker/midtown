@@ -684,11 +684,11 @@ fn test_coworker_break_updates_session_record() {
     let session_id = name_to_session.get("lexington").cloned();
 
     // 2. Update session record
-    if let Some(session_id) = session_id {
-        if let Some(record) = persistent_state.sessions.get_mut(&session_id) {
-            record.is_running = false;
-            record.current_name = None;
-        }
+    if let Some(session_id) = session_id
+        && let Some(record) = persistent_state.sessions.get_mut(&session_id)
+    {
+        record.is_running = false;
+        record.current_name = None;
     }
 
     let stored = persistent_state.sessions.get("sess-abc-123").unwrap();
@@ -740,11 +740,11 @@ fn test_shutdown_coworker_impl_updates_session_via_name_lookup() {
     // 1. Look up session from name
     let session_id = name_to_session.get("lexington").cloned();
     // 2. Update session record
-    if let Some(session_id) = &session_id {
-        if let Some(sr) = persistent_state.sessions.get_mut(session_id) {
-            sr.is_running = false;
-            sr.current_name = None;
-        }
+    if let Some(session_id) = &session_id
+        && let Some(sr) = persistent_state.sessions.get_mut(session_id)
+    {
+        sr.is_running = false;
+        sr.current_name = None;
     }
     // 3. Release name from pool
     pool.release("lexington");
