@@ -6,6 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Midtown is a multi-Claude Code workspace manager. It coordinates a Lead (human-facing Claude Code in a terminal session) and multiple autonomous Coworkers (headless Claude Code sessions), each running in isolated git worktrees. Communication happens through an IRC-style append-only channel log.
 
+See [docs/architecture.md](docs/architecture.md) for a full architecture reference.
+
 ## Build & Development Commands
 
 ```bash
@@ -45,8 +47,6 @@ cargo install sccache
 sccache --show-stats   # verify cache hits after a second build
 ```
 
-The cache lives at `~/.midtown/sccache` (writable in the midtown sandboxed environment). `CARGO_INCREMENTAL=0` is required — incremental compilation and sccache are competing strategies, and disabling incremental enables cross-worktree sharing. Note: this also disables incremental compilation for single-worktree `cargo test` iterations, but sccache's cross-worktree sharing more than compensates when running multiple worktrees.
-
 **Test file placement**: Put unit tests in separate files (`src/daemon/pr_tests.rs`) rather than inline `#[cfg(test)] mod tests` blocks. Use `#[path = "pr_tests.rs"] #[cfg(test)] mod tests;` in the source file to maintain private access. This keeps PR diffs focused — reviewers can see how much is test vs. implementation at a glance. Integration/E2E tests go in `tests/` as usual.
 
 **Pre-commit hooks** (cargo-husky): `cargo fmt` and `cargo clippy` run automatically on commit. If clippy fails, the commit is rejected — fix before retrying.
@@ -74,136 +74,19 @@ midtown e2e run coordination    # run while CI is in progress
 
 This catches failures faster than waiting for GitHub Actions and keeps you productive. The container environment matches CI, so local passes should match remote passes.
 
-## Architecture
+## Conventions
 
-### State Machine Daemon
+**Decision functions are pure**: Functions in `rules.rs` (and all functions called from `evaluate_tick()`) must not perform I/O, mutation, or async operations. Return `Vec<Effect>` instead. If data is needed for a decision, add it to `WorldSnapshot` during `collect_world_snapshot()`. See [docs/architecture.md](docs/architecture.md) for the full pipeline.
 
-The daemon (`src/daemon/`) is the central coordinator. It implements an **event-driven state machine** with strict separation between pure decision logic and side effects:
+**Effect-based side effects**: Never perform I/O in decision functions. Return `Effect` variants from `rules.rs`, execute them in `effects.rs`.
 
-```
-Event sources (timer ticks, webhooks, RPC, signals)
-    → DaemonEvent
-    → collect_world_snapshot() → WorldSnapshot (immutable)
-    → evaluate_tick(event, snapshot, state) → Vec<Effect>   // pure, in rules.rs
-    → execute_effects(effects)                               // imperative shell, in effects.rs
-```
+**Daemon module is a thin orchestrator**: `mod.rs` wires the event loop. Domain logic lives in `pr.rs`, `health.rs`, `dispatch.rs`, `chat.rs`, `rpc.rs`.
 
-- **`rules.rs`**: Pure decision functions. All daemon intelligence lives here — returns `Vec<Effect>` without performing any I/O. This is where coworker lifecycle, PR management, and task assignment decisions are made.
-- **`daemon/effects.rs`**: The only place side effects execute. Each `Effect` variant maps to a concrete action (spawn, shutdown, nudge, post message).
-- **`daemon/snapshot.rs`**: `WorldSnapshot` — immutable view of all state, collected once per tick.
-- **`daemon/events.rs`**: Event dispatch mapping RPC calls and timer ticks to `DaemonEvent`.
+**Temp-file pattern for shell arguments**: When passing long text to the `claude` CLI (system prompts, initial prompts), write to a temp file and use `$(cat file)` in the command string. This avoids shell quoting issues. See `launch.rs`.
 
-### Channel System
+**Webhooks are primary, polling adapts**: Webhooks handle real-time GitHub events. Polling is a backstop only — never duplicate a decision a webhook already triggered. See [docs/architecture.md](docs/architecture.md) for the ownership table.
 
-`src/channel.rs` — Append-only JSONL log at `~/.midtown/projects/<repo>/channel.jsonl`. File-locked (fs2) for concurrent access. `src/cursor.rs` tracks per-agent read positions for incremental reads.
-
-### Session Lifecycle
-
-The daemon uses a **session-centric model** where sessions (keyed by Claude Code session ID) are the primary entity. Names are ephemeral labels drawn from an LRU pool (`src/name_pool.rs`). Each session is tracked by a `SessionRecord` in `src/daemon/state.rs`.
-
-**Key components:**
-- `NamePool` (`src/name_pool.rs`) — LRU queue of coworker names (Manhattan avenues: lexington, park, madison, etc.). Names are allocated on spawn and released on shutdown, allowing reuse across sessions.
-- `SessionRecord` (`src/daemon/state.rs`) — Tracks session ID, task, current name, preferred name, worktree, branch, PR number, and running state. Keyed by session ID in persistent state.
-- `dispatch_via_sessions` (`src/daemon/dispatch.rs`) — Session-aware task dispatch. For tasks with session records, resumes stopped sessions using preferred names for continuity.
-- `DaemonState` maintains in-memory reverse maps: `name_to_session`, `session_to_name`, `task_to_session` for O(1) lookups.
-
-**Lifecycle flow:**
-1. Task assigned → `dispatch_via_sessions` creates `SpawnSession` effect with preferred name
-2. `NamePool` allocates a name (honoring preferred name if available)
-3. Session runs in an isolated git worktree with allocated name
-4. On shutdown → name released back to pool, `SessionRecord` updated
-5. On daemon restart → `NamePool` restored from persisted session records
-
-`src/launch.rs` builds Claude CLI commands and settings for both the Lead (launched via Zellij layout) and coworkers (headless). `src/session_manager.rs` manages headless coworker sessions using JSON streaming for communication.
-
-### Nudge System
-
-Nudge decisions are made in `src/rules.rs` (`decide_interrupt_nudges`, `decide_prompt_nudges`) using `CooldownTracker` for per-coworker cooldowns and `CoworkerPhase` for deduplication (Idle → Prompted → Interrupted). Delivery is via `Effect::NudgeCoworker` / `Effect::NudgeLead` in `src/daemon/effects.rs`:
-- **Lead nudges**: Delivered through headed intercom queues (`headed.register/poll/ack`) with tmux fallback
-- **Coworker nudges**: JSON streaming via `SessionManager` for headless sessions
-
-### GitHub Integration
-
-- `src/webhook.rs`: Receives GitHub webhook events (PR, review, check runs), verified with HMAC-SHA256
-- PR polling (30s interval) for CI status and merge conflicts
-- `src/github_state.rs`: Persistent reviewer assignment tracking
-
-### Web Layer
-
-- `src/web.rs`: WebSocket server for the Svelte frontend (real-time chat, coworker status)
-- `src/webserver.rs`: Multi-project HTTP server on port 47022
-- `web-app/`: Svelte 5 + Vite SPA with PWA support
-
-### Task Coordination
-
-`src/tasks.rs` reads Claude Code's native task storage (`~/.claude/tasks/`). Coworkers share a task list with the Lead — the daemon monitors task ownership and status to coordinate spawning and assignment.
-
-### Configuration
-
-- Global: `~/.midtown/config.toml`
-- Per-project: `~/.midtown/projects/<repo>/config.toml`
-- `src/config.rs` handles TOML parsing with environment variable overrides
-
-### Agent System Prompts
-
-`src/agents.rs` generates system prompts. The markdown templates live in `agents/` (lead.md, coworker.md, common.md, personalities.md).
-
-## Architecture Principles
-
-### Webhooks Are Primary, Polling Adapts
-
-Webhooks handle real-time GitHub events. Polling runs at a relaxed cadence (~2 min) as a backstop for missed deliveries and time-based stuck detection. When webhooks are degraded, polling increases cadence to compensate. Polling should never duplicate a decision that a webhook already triggered.
-
-| Concern | Primary owner | Notes |
-|---|---|---|
-| PR needs review → spawn reviewer | Webhook | Polling reconciles if missed |
-| CI failure → notify owner | Webhook | Polling detects time-based stuck conditions |
-| Review comment → nudge owner | Webhook | Polling reconciles if missed |
-| Merge conflict → nudge owner | Polling | GitHub doesn't webhook this reliably |
-| Approved PR → nudge author | Polling | Author-driven merge decisions |
-| Stuck detection | Polling | Inherently time-based |
-
-### Three Communication Paths, Distinct Purposes
-
-- **Initial prompt** — "Here's your mission." One-shot context at spawn time.
-- **Channel** — "Here's what's happening." Ambient team awareness, async.
-- **Nudge** (headed-intercom delivery for Lead, JSON streaming for coworkers) — "Pay attention now." Synchronous interrupt for session recovery, urgent PR feedback, task assignment to active coworkers.
-
-Don't nudge for information that can wait for the next channel read.
-
-### Decision Functions Are Pure
-
-Functions in `rules.rs` take immutable data and return decisions. No mutation, no I/O, no async. Phase transitions are returned as data, applied by the caller. If a decision depends on a side effect (spawn success, API call), split into two decisions with an effect in between. The `evaluate_tick()` → `Vec<Effect>` → `execute_effects()` pipeline is the canonical path.
-
-**This constraint should apply to ALL functions called from `evaluate_tick()`**, not just those in `rules.rs`. The target architecture has decision-phase functions in domain modules (`pr.rs`, `dispatch.rs`, `health.rs`) also being pure — returning `Vec<Effect>` without performing I/O. Currently, the codebase is migrating toward this pattern: some functions like `collect_merged_pr_cleanup_effects()` in `pr.rs` follow it, while others still use `.await` and `.lock()`. When adding or modifying decision logic, prefer the pure pattern: no `.await`, no `state.persistent_state.lock()`, no `session_manager.is_alive()`, no direct state queries. If data is needed for a decision, add it to `WorldSnapshot` during `collect_world_snapshot()` so it's available as immutable input.
-
-### Daemon Is the Single Authority for State
-
-The daemon owns all coordination state. Coworkers report workflow state via RPC (`midtown` CLI). Pane scraping is a safety net for health checks (stuck, zombie, crash) — not the primary source of workflow information. If RPC and pane scraping disagree, pane scraping wins for health decisions.
-
-### The Channel Is for Communication, Not State
-
-State flows through RPC to the daemon. The channel records events and conversations for awareness. No system should read the channel to determine current state.
-
-### Clear Ownership Between Webhooks and Polling
-
-Each concern has a primary owner. The non-owner path only acts as reconciliation when the primary failed. Enforce via explicit tracking ("webhook handled PR #42"), not passive deduplication (cooldowns).
-
-### Daemon Module Is a Thin Orchestrator
-
-`mod.rs` is the event loop wiring. Domain logic lives in domain modules (`pr.rs`, `health.rs`, `dispatch.rs`, `chat.rs`, `rpc.rs`).
-
-### Names Reflect Actual Responsibility
-
-`SessionMonitorTick` (coworker health), `TaskDispatchTick` (work assignment). Name components for what they do, not their historical origin.
-
-## Key Patterns
-
-**Effect-based side effects**: Never perform I/O in decision functions. Return `Effect` variants from `rules.rs`, execute them in `effects.rs`. This keeps the core logic pure and testable.
-
-**Temp-file pattern for shell arguments**: When passing long text to the `claude` CLI (system prompts, initial prompts), write to a temp file and use `$(cat file)` in the command string. This avoids shell quoting issues. See prompt writing in `launch.rs`.
-
-**Hybrid process model**: The Lead can run in a terminal pane/window managed by a launcher; Coworkers run as headless Claude Code sessions. Status is communicated via `/me` channel messages. Lead nudges flow through headed intercom queues; coworker nudges use JSON streaming via `SessionManager`.
+**Names reflect actual responsibility**: `SessionMonitorTick` (coworker health), `TaskDispatchTick` (work assignment).
 
 ## Lead Maintenance
 
@@ -212,8 +95,6 @@ If you are the Lead, whenever a PR is merged into main, pull, rebuild, and resta
 ```bash
 git pull && cargo install --path . && midtown restart
 ```
-
-This builds the release binary and installs it to `~/.cargo/bin/` (which is typically in your PATH).
 
 Post to the channel when done so the team knows the new code is live:
 
