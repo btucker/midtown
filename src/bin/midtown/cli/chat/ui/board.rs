@@ -51,10 +51,7 @@ pub fn draw_board_panel(f: &mut Frame, app: &mut App, area: Rect) -> (Vec<Hyperl
     // Show at most OPS_MAX_MESSAGES rows but cap at 8 visible lines to avoid
     // crowding the task list on short terminals.
     //
-    // Ops messages come from two sources:
-    // 1. The ops channel (ops.jsonl) — daemon system messages routed there
-    // 2. /me action messages from the current channel — coworker workflow status
-    //
+    // Ops messages come from the ops channel (ops.jsonl) — daemon/github/system messages.
     // Clone to avoid holding borrows on app while draw_coworker_status takes app mutably.
     let ops_messages: Vec<midtown::Message> = {
         let mut msgs: Vec<midtown::Message> = app.ops_messages.iter().cloned().collect();
@@ -440,7 +437,7 @@ fn render_task_item(
 
 /// Draw the Midtown Ops mini-channel (bottom of board sidebar).
 ///
-/// Displays system messages and coworker /me action messages in a compact scrollable view.
+/// Displays daemon, github, and system messages in a compact scrollable view.
 /// The most recent `ops_messages` entries are shown (already in chronological order).
 fn draw_ops_mini_channel(f: &mut Frame, ops_messages: &[&midtown::Message], area: Rect) {
     // Split: header line + content
