@@ -909,7 +909,6 @@ fn decide_discovered_coworker_nudges(
             effects.push(Effect::NudgeCoworker {
                 name: name.clone(),
                 message: prompt,
-                session_id: None,
             });
             effects.push(Effect::PostToChannel {
                 sender: "midtown".to_string(),
@@ -930,7 +929,6 @@ fn decide_discovered_coworker_nudges(
             effects.push(Effect::NudgeCoworker {
                 name: name.clone(),
                 message: prompt,
-                session_id: None,
             });
             effects.push(Effect::PostToChannel {
                 sender: "midtown".to_string(),
@@ -1044,7 +1042,6 @@ pub fn check_for_duplicate_task_workers(snap: &snapshot::WorldSnapshot) -> Vec<e
             effects.push(Effect::ShutdownCoworker {
                 name: duplicate.clone(),
                 message: String::new(),
-                session_id: None,
             });
             effects.push(Effect::PostToChannel {
                 sender: "midtown".to_string(),
@@ -1593,7 +1590,6 @@ pub(super) fn spawn_for_pending_tasks_excluding(
                 effects.push(Effect::NudgeCoworkerWithCallbacks {
                     name: o.clone(),
                     message: nudge_msg,
-                    session_id: None,
                     on_success: vec![
                         Effect::RecordCooldown {
                             category: "task_nudge".to_string(),
@@ -2008,7 +2004,6 @@ pub(super) fn spawn_for_pending_tasks_excluding(
             effects.push(Effect::NudgeCoworkerWithCallbacks {
                 name: coworker_name.clone(),
                 message: prompt,
-                session_id: None,
                 on_success: vec![
                     Effect::RecordTaskAssignment {
                         coworker: coworker_name.clone(),

@@ -189,7 +189,6 @@ pub fn check_and_shutdown_idle_coworkers(snap: &snapshot::WorldSnapshot) -> Vec<
         effects.push(Effect::ShutdownCoworker {
             name: name.clone(),
             message: String::new(),
-            session_id: None,
         });
         // Clean the coworker's target/ directory to reclaim disk space.
         // Resolve working_dir from the snapshot so we target the actual
@@ -282,7 +281,6 @@ pub(super) async fn check_and_restart_stuck_coworkers(
         effects.push(Effect::ShutdownCoworker {
             name: restart.name.clone(),
             message: String::new(),
-            session_id: restart.session_id.clone(),
         });
         effects.push(Effect::SpawnCoworker(config));
         effects.push(Effect::PostToChannel {
@@ -347,7 +345,6 @@ pub fn check_and_restart_stuck_reviewers(snap: &snapshot::WorldSnapshot) -> Vec<
         effects.push(Effect::ShutdownCoworker {
             name: restart.name.clone(),
             message: String::new(),
-            session_id: restart.session_id.clone(),
         });
 
         // Respawn with incremented restart count
@@ -593,7 +590,6 @@ pub fn maybe_nudge_usage_limit_expiry(snap: &snapshot::WorldSnapshot) -> Vec<Eff
         effects.push(Effect::NudgeCoworker {
             name: cw.name.clone(),
             message: "continue".to_string(),
-            session_id: None,
         });
     }
 
@@ -643,7 +639,6 @@ pub(super) fn check_and_handle_auth_errors(
         effects.push(Effect::ShutdownCoworker {
             name: name.clone(),
             message: String::new(),
-            session_id: None,
         });
 
         // Record the cooldown so we don't repeatedly shut down the same coworker
@@ -735,7 +730,6 @@ pub(super) fn check_and_nudge_api_errors(
         effects.push(Effect::NudgeCoworker {
             name: name.clone(),
             message: "The API error may have cleared. Try continuing your work.".to_string(),
-            session_id: None,
         });
         effects.push(Effect::RecordCooldown {
             category: "api_error_nudge".to_string(),
@@ -794,7 +788,6 @@ pub fn check_and_restart_tool_name_conflicts(snap: &snapshot::WorldSnapshot) -> 
         effects.push(Effect::ShutdownCoworker {
             name: name.clone(),
             message: String::new(),
-            session_id: None,
         });
         effects.push(Effect::PostToChannel {
             sender: "midtown".to_string(),
@@ -871,7 +864,6 @@ pub(super) async fn check_and_respawn_dead_processes(
         effects.push(Effect::ShutdownCoworker {
             name: respawn.name.clone(),
             message: String::new(),
-            session_id: respawn.session_id.clone(),
         });
         effects.push(Effect::SpawnCoworker(config));
         effects.push(Effect::RecordCooldown {
@@ -1003,7 +995,6 @@ pub fn maybe_refresh_lead_session(snap: &snapshot::WorldSnapshot) -> Vec<Effect>
         Effect::ShutdownCoworker {
             name: lead.name.clone(),
             message: "Time for a fresh session. Restarting now — will be back shortly.".to_string(),
-            session_id: lead.session_id.clone(),
         },
     ]
 }

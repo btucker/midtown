@@ -1117,7 +1117,6 @@ fn make_pr_context_with_task(pr_number: u64, task_id: &str) -> PrContext {
         pr_task_associations,
         task_channel: std::collections::HashMap::new(),
         session_context: None,
-        name_session_map: std::collections::HashMap::new(),
     }
 }
 
@@ -1127,7 +1126,6 @@ fn make_pr_context_empty() -> PrContext {
         pr_task_associations: std::collections::HashMap::new(),
         task_channel: std::collections::HashMap::new(),
         session_context: None,
-        name_session_map: std::collections::HashMap::new(),
     }
 }
 
@@ -1420,7 +1418,6 @@ fn pr_action_to_effects_includes_record_task_assignment() {
         pr_task_associations,
         task_channel: HashMap::new(),
         session_context: None,
-        name_session_map: HashMap::new(),
     };
 
     // Call pr_action_to_effects with SpawnOwner action
@@ -1474,7 +1471,6 @@ fn comment_action_to_effects_includes_record_task_assignment() {
         pr_task_associations,
         task_channel: HashMap::new(),
         session_context: None,
-        name_session_map: HashMap::new(),
     };
 
     let effects = comment_action_to_effects(
@@ -1524,7 +1520,6 @@ fn handoff_to_coworker_effects_includes_record_task_assignment() {
         pr_task_associations,
         task_channel: HashMap::new(),
         session_context: None,
-        name_session_map: HashMap::new(),
     };
 
     let effects = handoff_to_coworker_effects(
@@ -1577,7 +1572,6 @@ fn review_complete_action_to_effects_includes_record_task_assignment() {
         pr_task_associations,
         task_channel: HashMap::new(),
         session_context: None,
-        name_session_map: HashMap::new(),
     };
 
     let effects = review_complete_action_to_effects(
@@ -1994,51 +1988,4 @@ async fn test_poll_prs_session_based_owner_resolution() {
         "Expected nudge to 'madison' (session-based owner), not 'lexington' (branch-based). Effects: {:#?}",
         effects
     );
-}
-
-/// The name_session_map in PrContext should be used by action_to_effects functions
-/// to populate session_id on NudgeCoworker effects.
-#[test]
-fn test_pr_context_name_session_map_provides_session_id_for_nudge() {
-    let ctx = PrContext {
-        pr_task_associations: HashMap::new(),
-        task_channel: HashMap::new(),
-        session_context: None,
-        name_session_map: [("madison".to_string(), "sess-abc".to_string())]
-            .into_iter()
-            .collect(),
-    };
-
-    // Simulate NudgeOwner action → should populate session_id from name_session_map
-    let action = crate::rules::PrAction::NudgeOwner {
-        owner: "madison".to_string(),
-        message: "PR #42 has a merge conflict".to_string(),
-    };
-
-    let (state, _tmp, _guard) = make_test_state("test-repo");
-    let effects = pr_action_to_effects(
-        action,
-        42,
-        "Fix auth bug",
-        PrIssueType::MergeConflict,
-        &state,
-        &ctx,
-    );
-
-    // The NudgeCoworkerWithCallbacks effect should have session_id populated
-    let nudge_effect = effects
-        .iter()
-        .find(|e| matches!(e, Effect::NudgeCoworkerWithCallbacks { .. }));
-    assert!(
-        nudge_effect.is_some(),
-        "Expected NudgeCoworkerWithCallbacks effect"
-    );
-
-    if let Some(Effect::NudgeCoworkerWithCallbacks { session_id, .. }) = nudge_effect {
-        assert_eq!(
-            *session_id,
-            Some("sess-abc".to_string()),
-            "session_id should be populated from name_session_map"
-        );
-    }
 }

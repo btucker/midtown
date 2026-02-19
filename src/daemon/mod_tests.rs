@@ -1498,7 +1498,6 @@ fn test_mark_in_flight_spawns_covers_all_effect_variants() {
         effects::Effect::NudgeCoworkerWithCallbacks {
             name: "pleasant".to_string(),
             message: "task prompt".to_string(),
-            session_id: None,
             on_success: vec![effects::Effect::RecordTaskAssignment {
                 coworker: "pleasant".to_string(),
                 task_id: "873".to_string(),

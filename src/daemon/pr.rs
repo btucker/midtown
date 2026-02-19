@@ -115,9 +115,6 @@ struct PrContext {
     task_channel: HashMap<String, String>,
     /// Session context for the target PR (if the PR has a stored author session)
     session_context: Option<crate::rules::PrSessionContext>,
-    /// Name → session ID mapping for session-based nudge targeting.
-    /// Enables NudgeCoworker effects to carry session_id for direct delivery.
-    name_session_map: HashMap<String, String>,
 }
 
 impl PrContext {
@@ -149,23 +146,10 @@ impl PrContext {
                     pr_number,
                 });
 
-        // Build name → session_id mapping from session records for nudge targeting.
-        let name_session_map: HashMap<String, String> = ps
-            .sessions
-            .iter()
-            .filter_map(|(session_id, record)| {
-                record
-                    .current_name
-                    .as_ref()
-                    .map(|name| (name.clone(), session_id.clone()))
-            })
-            .collect();
-
         Self {
             pr_task_associations,
             task_channel: ps.task_channel.clone(),
             session_context,
-            name_session_map,
         }
     }
 
@@ -183,22 +167,10 @@ impl PrContext {
             })
             .collect();
 
-        let name_session_map: HashMap<String, String> = ps
-            .sessions
-            .iter()
-            .filter_map(|(session_id, record)| {
-                record
-                    .current_name
-                    .as_ref()
-                    .map(|name| (name.clone(), session_id.clone()))
-            })
-            .collect();
-
         Self {
             pr_task_associations,
             task_channel: ps.task_channel.clone(),
             session_context: None,
-            name_session_map,
         }
     }
 
@@ -1146,11 +1118,9 @@ fn pr_action_to_effects(
 
     match action {
         PrAction::NudgeOwner { owner, message } => {
-            let session_id = ctx.name_session_map.get(&owner).cloned();
             vec![Effect::NudgeCoworkerWithCallbacks {
                 name: owner,
                 message,
-                session_id,
                 on_success: vec![Effect::RecordPrNudge {
                     pr_number,
                     issue_type,
@@ -1503,7 +1473,6 @@ async fn collect_stuck_condition_effects(
                         effects.push(Effect::NudgeCoworker {
                             name: name.clone(),
                             message: nudge_msg,
-                            session_id: None,
                         });
                         // Post to channel so it's visible
                         effects.push(Effect::PostSystemMessage {
@@ -1825,11 +1794,9 @@ fn comment_action_to_effects(
 
     match action {
         PrAction::NudgeOwner { owner, message } => {
-            let session_id = ctx.name_session_map.get(&owner).cloned();
             vec![Effect::NudgeCoworkerWithCallbacks {
                 name: owner,
                 message,
-                session_id,
                 on_success: vec![Effect::RecordPrNudge {
                     pr_number,
                     issue_type,
@@ -2444,11 +2411,9 @@ fn review_complete_action_to_effects(
 
     match action {
         PrAction::NudgeOwner { owner, message } => {
-            let session_id = ctx.name_session_map.get(&owner).cloned();
             vec![Effect::NudgeCoworkerWithCallbacks {
                 name: owner,
                 message,
-                session_id,
                 on_success: vec![Effect::RecordPrNudge {
                     pr_number,
                     issue_type,
@@ -3106,7 +3071,6 @@ pub(super) async fn handle_pr_comment_nudge(
             vec![Effect::NudgeCoworker {
                 name: reviewer_name.clone(),
                 message: nudge_msg,
-                session_id: reviewer_session_id,
             }]
         } else if let Some(session_id) = reviewer_session_id {
             // Reviewer stopped — resume their session with the follow-up context

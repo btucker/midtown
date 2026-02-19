@@ -406,9 +406,7 @@ fn dedup_spawn_effects(effects: Vec<Effect>) -> Vec<Effect> {
 fn is_registry_effect(effect: &Effect) -> bool {
     matches!(
         effect,
-        Effect::RegisterWorktreeAssignment { .. }
-            | Effect::BindCoworkerToWorktree { .. }
-            | Effect::SetWorktreePrNumber { .. }
+        Effect::RegisterWorktreeAssignment { .. } | Effect::BindCoworkerToWorktree { .. }
     )
 }
 

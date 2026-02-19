@@ -68,7 +68,8 @@ pub use effects::Effect;
 // 3. Pure functions are the gold standard for testing
 #[doc(hidden)]
 pub use dispatch::{
-    build_subject_based_completion_effects, check_for_duplicate_task_workers, reset_orphaned_tasks,
+    build_subject_based_completion_effects, check_for_duplicate_task_workers,
+    dispatch_via_sessions, reset_orphaned_tasks,
 };
 #[doc(hidden)]
 pub use events::DaemonEvent;
@@ -80,6 +81,8 @@ pub use health::{
 };
 #[doc(hidden)]
 pub use pr::{collect_merged_pr_cleanup_effects, reconcile_orphaned_prs};
+#[doc(hidden)]
+pub use state::SessionRecord;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::File;
@@ -1721,8 +1724,9 @@ impl DaemonState {
 
     /// Look up the session ID currently holding a given name.
     ///
-    /// Used by chat @mention routing for session-targeted nudge delivery,
-    /// and by effect handlers for session-centric dispatch.
+    /// Infrastructure for the session-centric model — used by effect handlers
+    /// and RPC adapters once the session-centric migration is further along.
+    #[allow(dead_code)] // Used in tests; production callers arrive in later migration tasks
     pub(crate) fn session_for_name(&self, name: &str) -> Option<String> {
         self.name_to_session.lock().unwrap().get(name).cloned()
     }
