@@ -1,8 +1,8 @@
 //! Process headless session stream events and generate effects.
 //!
 //! This module contains pure decision functions that analyze stream events
-//! from headless sessions (Lead and coworkers) and produce channel posting
-//! and universal event broadcast effects.
+//! from headless sessions (Lead, channel leads, and coworkers) and produce
+//! channel posting and universal event broadcast effects.
 
 use super::effects::Effect;
 use crate::headless::StreamEvent;
@@ -40,6 +40,8 @@ pub fn extract_lead_text(events: &[StreamEvent]) -> String {
 /// - The main lead's text is posted to the main channel (`channel: None`).
 /// - Each channel lead's text is posted to its respective topic channel.
 /// - Coworker text is never posted.
+///
+/// `channel_lead_sessions` maps channel name → session ID for active channel leads.
 pub fn process_lead_output(
     events: &HashMap<String, Vec<StreamEvent>>,
     channel_lead_sessions: &HashMap<String, String>,

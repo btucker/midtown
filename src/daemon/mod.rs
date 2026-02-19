@@ -3151,6 +3151,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                 }
 
                 // Process lead and channel lead text output + tool call universal events.
+                // Routes through Effect pipeline to maintain architecture consistency.
                 // Both functions need channel_lead_sessions — acquire the lock once.
                 let (lead_effects, universal_effects) = {
                     let ps = state.persistent_state.lock().await;
