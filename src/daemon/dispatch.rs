@@ -437,6 +437,8 @@ where
         .collect();
 
     // Decide which orphan (if any) to recover using pure decision function
+    let channel_lead_names: std::collections::HashSet<String> =
+        snap.channel_lead_sessions.keys().cloned().collect();
     let orphan_ctx = crate::rules::OrphanRecoveryContext {
         in_progress: &in_progress_tasks_active,
         active_names: &snap.active_names,
@@ -445,6 +447,7 @@ where
         review_feedback_pr_coworkers: &snap.review_feedback_pr_coworkers,
         recently_stopped: &recently_stopped,
         attached_coworkers: &snap.attached_coworkers,
+        channel_lead_names: &channel_lead_names,
     };
     let recovery = crate::rules::decide_orphan_recovery(&orphan_ctx);
 
@@ -937,6 +940,8 @@ where
     // Use the same pure decision function from rules.rs that orphan recovery used.
     // This ensures identical filtering behavior (active check, attached check,
     // recently-stopped grace period, open PR without feedback check).
+    let channel_lead_names: std::collections::HashSet<String> =
+        snap.channel_lead_sessions.keys().cloned().collect();
     let orphan_ctx = crate::rules::OrphanRecoveryContext {
         in_progress: &tasks_without_sessions,
         active_names: &snap.active_names,
@@ -945,6 +950,7 @@ where
         review_feedback_pr_coworkers: &snap.review_feedback_pr_coworkers,
         recently_stopped: &recently_stopped,
         attached_coworkers: &snap.attached_coworkers,
+        channel_lead_names: &channel_lead_names,
     };
     let recovery = match crate::rules::decide_orphan_recovery(&orphan_ctx) {
         Some(r) => r,
@@ -1275,8 +1281,14 @@ pub fn check_for_duplicate_task_workers(snap: &snapshot::WorldSnapshot) -> Vec<e
     // Build a map of task_id -> list of owners
     let mut task_workers: HashMap<String, Vec<String>> = HashMap::new();
     for (task_id, _subject, owner) in &snap.in_progress_tasks {
-        // Skip empty owners or Lead
-        if owner.is_empty() || owner.eq_ignore_ascii_case("lead") {
+        // Skip empty owners, Lead, or channel leads — these are not managed by
+        // the coworker dispatch loop and should not trigger duplicate detection.
+        if owner.is_empty()
+            || owner.eq_ignore_ascii_case("lead")
+            || snap
+                .channel_lead_sessions
+                .contains_key(&owner.to_lowercase())
+        {
             continue;
         }
         task_workers
@@ -1865,6 +1877,11 @@ pub(super) fn spawn_for_pending_tasks_excluding(
         // in_progress_tasks (O(n)), following the snapshot pre-computation pattern.
         let has_in_progress_task = snap.busy_coworkers.contains(&owner.to_lowercase());
 
+        // Channel leads are not managed by the coworker dispatch loop — skip their tasks.
+        let is_channel_lead = snap
+            .channel_lead_sessions
+            .contains_key(&owner.to_lowercase());
+
         // Decide action using pure decision function
         let action = crate::rules::decide_pending_task_action(
             task_id,
@@ -1875,6 +1892,7 @@ pub(super) fn spawn_for_pending_tasks_excluding(
             on_nudge_cooldown,
             is_owner_reviewer,
             has_in_progress_task,
+            is_channel_lead,
         );
 
         match action {
