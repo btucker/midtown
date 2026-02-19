@@ -628,6 +628,30 @@ fn test_channel_lead_attach_gets_channel_lead_role() {
         "Channel lead attach should use sonnet model, got: {}",
         command
     );
+
+    // Extract the temp file path from the $(cat ...) pattern after --append-system-prompt
+    // and verify the channel name "ops" is present in the system prompt content.
+    let cat_start = command
+        .find("$(cat ")
+        .expect("Command should contain $(cat pattern");
+    let path_start = cat_start + "$(cat ".len();
+    let path_end = command[path_start..]
+        .find(')')
+        .expect("$(cat ...) should be closed");
+    let prompt_file_path = command[path_start..path_start + path_end].trim_matches('"');
+
+    let prompt_contents = std::fs::read_to_string(prompt_file_path).unwrap_or_else(|e| {
+        panic!(
+            "Should be able to read system prompt temp file at '{}': {}",
+            prompt_file_path, e
+        )
+    });
+
+    assert!(
+        prompt_contents.contains("ops"),
+        "Channel lead system prompt should contain the channel name 'ops', got: {}",
+        prompt_contents
+    );
 }
 
 // ── Shell quoting ──────────────────────────────────────────────────────

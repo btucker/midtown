@@ -2525,9 +2525,7 @@ mod tests {
     fn channel_lead_is_not_idle_shutdown() {
         // A channel lead that is old (past minimum lifetime) and idle
         // should NOT be shutdown.
-        let result = IdleShutdownCtx::one("ops")
-            .channel_leads(&["ops"])
-            .run();
+        let result = IdleShutdownCtx::one("ops").channel_leads(&["ops"]).run();
         assert!(
             result.is_empty(),
             "channel lead should not be idle-shutdown"

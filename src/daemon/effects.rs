@@ -2058,7 +2058,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 );
                 let is_channel_lead = {
                     let ps = state.persistent_state.lock().await;
-                    ps.channel_lead_sessions.contains_key(&name.to_lowercase())
+                    ps.channel_lead_sessions.contains_key(name.as_str())
                 };
                 let suffix = if name == "lead" {
                     " Headless session will respawn on the next tick."
