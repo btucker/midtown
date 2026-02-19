@@ -610,11 +610,28 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                         return EventResult::Continue;
                     }
                     KeyCode::Char('l') => return EventResult::AttachLead,
+                    KeyCode::Char('v') => {
+                        // Ctrl+V: check clipboard for image and store as pending_image.
+                        // Only active when focused on InputBar or Chat (not channel switcher).
+                        if !app.channel_switcher.show
+                            && (app.focused_pane == FocusedPane::InputBar
+                                || app.focused_pane == FocusedPane::Chat)
+                            && let Ok(Some(info)) = try_read_clipboard_image()
+                        {
+                            app.pending_image = Some(info);
+                        }
+                        return EventResult::Continue;
+                    }
                     _ => {}
                 }
             }
             match key.code {
                 KeyCode::Esc => {
+                    // Clear pending clipboard image first (Esc cancels pending image)
+                    if app.pending_image.is_some() {
+                        app.pending_image = None;
+                        return EventResult::Continue;
+                    }
                     // Esc dismisses channel switcher if showing
                     if app.channel_switcher.show {
                         app.dismiss_channel_switcher();
@@ -762,48 +779,61 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                     {
                         app.focused_pane = FocusedPane::InputBar;
                         EventResult::Continue
-                    } else if !app.input_text.is_empty() {
-                        let message = app.input_text.clone();
+                    } else {
+                        // If a clipboard image is pending, deliver it to the lead first
+                        if app.pending_image.is_some() {
+                            app.send_image_to_lead();
+                            app.pending_image = None;
+                            // If there's no text to post, just return
+                            if app.input_text.trim().is_empty() {
+                                return EventResult::Continue;
+                            }
+                        }
 
-                        // Check for /channel create <name> command
-                        if message.starts_with("/channel create ") {
-                            let channel_name =
-                                message.trim_start_matches("/channel create ").trim();
-                            if !channel_name.is_empty() {
-                                // Create the channel and switch to it
-                                if app.create_channel(channel_name) {
+                        if !app.input_text.is_empty() {
+                            let message = app.input_text.clone();
+
+                            // Check for /channel create <name> command
+                            if message.starts_with("/channel create ") {
+                                let channel_name =
+                                    message.trim_start_matches("/channel create ").trim();
+                                if !channel_name.is_empty() {
+                                    // Create the channel and switch to it
+                                    if app.create_channel(channel_name) {
+                                        app.input_text.clear();
+                                        app.input_cursor = 0;
+                                    }
+                                    // TODO: Show error if creation failed
+                                }
+                                EventResult::Continue
+                            } else if message.starts_with("/thread ") {
+                                // Open thread view for the given parent message ID
+                                let arg = message.trim_start_matches("/thread ").trim();
+                                if !arg.is_empty() {
+                                    app.open_thread(arg);
                                     app.input_text.clear();
                                     app.input_cursor = 0;
                                 }
-                                // TODO: Show error if creation failed
+                                EventResult::Continue
+                            } else {
+                                // Post message to the selected channel
+                                let channel_name = app.selected_channel.clone();
+
+                                // Post via daemon RPC with fallback to direct channel write
+                                let posted =
+                                    app.post_message(&message, "user", Some(&channel_name));
+
+                                // Only clear input if message was successfully posted
+                                if posted {
+                                    app.input_text.clear();
+                                    app.input_cursor = 0;
+                                }
+                                // TODO: When error display is implemented, show error here if !posted
+                                EventResult::Continue
                             }
-                            EventResult::Continue
-                        } else if message.starts_with("/thread ") {
-                            // Open thread view for the given parent message ID
-                            let arg = message.trim_start_matches("/thread ").trim();
-                            if !arg.is_empty() {
-                                app.open_thread(arg);
-                                app.input_text.clear();
-                                app.input_cursor = 0;
-                            }
-                            EventResult::Continue
                         } else {
-                            // Post message to the selected channel
-                            let channel_name = app.selected_channel.clone();
-
-                            // Post via daemon RPC with fallback to direct channel write
-                            let posted = app.post_message(&message, "user", Some(&channel_name));
-
-                            // Only clear input if message was successfully posted
-                            if posted {
-                                app.input_text.clear();
-                                app.input_cursor = 0;
-                            }
-                            // TODO: When error display is implemented, show error here if !posted
                             EventResult::Continue
                         }
-                    } else {
-                        EventResult::Continue
                     }
                 }
                 // Tab: select autocomplete item if showing, or toggle thread focus
@@ -1167,6 +1197,91 @@ fn attach_coworker_split(coworker_name: &str) {
 /// Attach to the lead session in a split pane (Ctrl+L handler).
 fn attach_lead_split() {
     attach_session_split("lead");
+}
+
+/// Check if the OS clipboard contains an image, and if so, save it to the temp
+/// file path that Claude Code expects (`/tmp/claude_cli_latest_screenshot.png`).
+///
+/// Uses the same platform-specific shell commands as the Claude binary.
+/// Returns `Ok(Some(info))` if an image was found and saved, `Ok(None)` if
+/// no image is available, or `Ok(None)` if the required tools aren't available.
+fn try_read_clipboard_image() -> Result<Option<app::PendingImageInfo>, String> {
+    let tmp_path = std::env::temp_dir().join("claude_cli_latest_screenshot.png");
+
+    if !save_clipboard_image_to_file(&tmp_path) {
+        return Ok(None);
+    }
+
+    Ok(Some(app::PendingImageInfo {
+        dimensions: (0, 0),
+        media_type: "image/png".to_string(),
+    }))
+}
+
+#[cfg(target_os = "macos")]
+fn save_clipboard_image_to_file(path: &std::path::Path) -> bool {
+    use std::process::Command;
+    let path_str = path.to_string_lossy();
+
+    // Check if clipboard contains a PNG image (same command as Claude binary)
+    let check = Command::new("osascript")
+        .args(["-e", "the clipboard as \u{00AB}class PNGf\u{00BB}"])
+        .output();
+    if !matches!(check, Ok(ref o) if o.status.success()) {
+        return false;
+    }
+
+    // Save the clipboard image to the temp file (multi-statement osascript)
+    let save = Command::new("osascript")
+        .args([
+            "-e",
+            "set png_data to (the clipboard as \u{00AB}class PNGf\u{00BB})",
+            "-e",
+            &format!(
+                "set fp to open for access POSIX file \"{}\" with write permission",
+                path_str
+            ),
+            "-e",
+            "write png_data to fp",
+            "-e",
+            "close access fp",
+        ])
+        .output();
+    matches!(save, Ok(ref o) if o.status.success()) && path.exists()
+}
+
+#[cfg(target_os = "linux")]
+fn save_clipboard_image_to_file(path: &std::path::Path) -> bool {
+    use std::process::Command;
+    let path_str = path.to_string_lossy();
+
+    // Check if clipboard contains an image
+    let check = Command::new("sh")
+        .args([
+            "-c",
+            "xclip -selection clipboard -t TARGETS -o 2>/dev/null | grep -qE 'image/(png|jpeg|jpg|gif|webp)' || wl-paste -l 2>/dev/null | grep -qE 'image/(png|jpeg|jpg|gif|webp)'",
+        ])
+        .output();
+    if !matches!(check, Ok(ref o) if o.status.success()) {
+        return false;
+    }
+
+    // Save clipboard image
+    let save = Command::new("sh")
+        .args([
+            "-c",
+            &format!(
+                "xclip -selection clipboard -t image/png -o > \"{0}\" 2>/dev/null || wl-paste --type image/png > \"{0}\"",
+                path_str
+            ),
+        ])
+        .output();
+    matches!(save, Ok(ref o) if o.status.success()) && path.exists()
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn save_clipboard_image_to_file(_path: &std::path::Path) -> bool {
+    false
 }
 
 #[cfg(test)]

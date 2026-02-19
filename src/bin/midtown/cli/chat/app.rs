@@ -50,6 +50,17 @@ pub struct PendingQuestion {
     pub timestamp: chrono::DateTime<chrono::Utc>,
 }
 
+/// Info about a clipboard image pending delivery to the lead session.
+#[derive(Debug, Clone)]
+pub struct PendingImageInfo {
+    /// Image dimensions (width, height in pixels). (0, 0) if unknown.
+    #[allow(dead_code)] // Used in Task 4+ when Ctrl+V handler sets pending_image
+    pub dimensions: (u32, u32),
+    /// MIME type (e.g., "image/png")
+    #[allow(dead_code)] // Used in Task 4+ when Ctrl+V handler sets pending_image
+    pub media_type: String,
+}
+
 /// Data fetched from background thread for kanban refresh
 struct KanbanData {
     prs: Vec<KanbanPr>,
@@ -316,6 +327,9 @@ pub struct App {
     pub input_text: String,
     /// Cursor position in the input text
     pub input_cursor: usize,
+    /// Clipboard image pending delivery to the lead on Enter
+    #[allow(dead_code)] // Used in Task 4+ Ctrl+V handler and Task 5 Enter handler
+    pub pending_image: Option<PendingImageInfo>,
     /// Whether selection mode is active (mouse capture disabled for text selection)
     pub selection_mode: bool,
     /// Cached rendered message lines and hyperlinks to skip recomputation on input-only redraws
@@ -511,6 +525,7 @@ impl App {
             selected_channel_archived: false,
             input_text: String::new(),
             input_cursor: 0,
+            pending_image: None,
             selection_mode: false,
             message_render_cache: None,
             channel_unread_counts: HashMap::new(),
@@ -1397,6 +1412,41 @@ impl App {
         } else {
             false
         }
+    }
+
+    /// Deliver a pending clipboard image to the appropriate lead session.
+    ///
+    /// Sends a raw Ctrl+V byte (\x16) to the lead or channel-lead PTY via the
+    /// headed intercom. Claude's own Ctrl+V handler reads /tmp/claude_cli_latest_screenshot.png
+    /// (which must already be saved) and attaches the image to the conversation.
+    ///
+    /// Returns `true` if the nudge was enqueued, `false` on error.
+    #[allow(dead_code)] // Called in Task 3+ when Ctrl+V paste handler invokes image delivery
+    pub fn send_image_to_lead(&mut self) -> bool {
+        use crate::client::DaemonClient;
+
+        let target_session = self.image_target_session();
+
+        let result = DaemonClient::connect()
+            .and_then(|client| client.headed_enqueue_ctrl_v(&target_session));
+
+        result.is_ok()
+    }
+
+    /// Determine which session to send the image to based on the current channel.
+    ///
+    /// If viewing a topic channel that has an active channel lead, send to that session.
+    /// Otherwise send to the main "lead" session.
+    #[allow(dead_code)] // Called by send_image_to_lead() in Task 3+
+    fn image_target_session(&self) -> String {
+        let channel = &self.selected_channel;
+        if channel != "main"
+            && !channel.is_empty()
+            && self.channel_lead_names.iter().any(|n| n == channel)
+        {
+            return channel.clone();
+        }
+        "lead".to_string()
     }
 
     /// Validate that a channel name is safe for use as a filesystem path component.
@@ -3133,6 +3183,7 @@ pub(super) mod tests {
             selected_channel_archived: false,
             input_text: String::new(),
             input_cursor: 0,
+            pending_image: None,
             selection_mode: false,
             message_render_cache: None,
             channel_unread_counts: HashMap::new(),

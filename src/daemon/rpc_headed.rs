@@ -133,3 +133,34 @@ pub(super) async fn handle_ack(
         Err(e) => Response::error(id, RpcError::new(-32602, e)),
     }
 }
+
+/// Enqueue a raw text payload to a headed session's intercom queue.
+///
+/// Used by the TUI to inject control characters (e.g., \x16 for Ctrl+V)
+/// into an interactive lead or channel lead PTY session.
+pub(super) async fn handle_enqueue(
+    id: RequestId,
+    session: &str,
+    text: &str,
+    state: &DaemonState,
+) -> Response {
+    // Validate session name: non-empty, alphanumeric plus hyphens/underscores only.
+    if session.is_empty()
+        || !session
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+    {
+        return Response::error(id, RpcError::invalid_params());
+    }
+
+    // Enqueue with submit=false so no Enter keystroke follows the payload.
+    state.enqueue_headed_text(session, text, false).await;
+
+    Response::success(
+        id,
+        serde_json::json!({
+            "session": session,
+            "ok": true,
+        }),
+    )
+}

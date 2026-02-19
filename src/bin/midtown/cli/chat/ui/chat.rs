@@ -401,7 +401,7 @@ fn draw_input_bar(f: &mut Frame, app: &App, area: Rect) {
     let prompt = "› ";
     let char_count = app.input_text.chars().count();
     let text_with_cursor = if is_focused && app.input_cursor == char_count {
-        format!("{}{}█", prompt, app.input_text)
+        format!("{}█", app.input_text)
     } else if is_focused {
         let byte_idx = app
             .input_text
@@ -410,12 +410,31 @@ fn draw_input_bar(f: &mut Frame, app: &App, area: Rect) {
             .map(|(idx, _)| idx)
             .unwrap_or(app.input_text.len());
         let (before, after) = app.input_text.split_at(byte_idx);
-        format!("{}{}█{}", prompt, before, after)
+        format!("{}█{}", before, after)
     } else {
-        format!("{}{}", prompt, app.input_text)
+        app.input_text.clone()
     };
 
-    let paragraph = Paragraph::new(text_with_cursor).wrap(Wrap { trim: false });
+    // Build the line with optional pending image indicator
+    let mut spans: Vec<Span> = vec![Span::raw(prompt)];
+    if let Some(ref img) = app.pending_image {
+        let format_name = img
+            .media_type
+            .split('/')
+            .nth(1)
+            .unwrap_or(&img.media_type)
+            .to_uppercase();
+        let label = format!("[📎 image: {}] ", format_name);
+        spans.push(Span::styled(
+            label,
+            Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::DIM),
+        ));
+    }
+    spans.push(Span::raw(text_with_cursor));
+
+    let paragraph = Paragraph::new(Line::from(spans)).wrap(Wrap { trim: false });
 
     f.render_widget(block, area);
     f.render_widget(paragraph, inner);
