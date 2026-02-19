@@ -403,6 +403,15 @@
     return msg.content.replace(/^\/me\s*/, '')
   }
 
+  function handleMessageTap(event, msg) {
+    // Mobile-only affordance: tap a top-level message to open its thread view.
+    if ($isWideScreen || msg.thread_parent_id) return
+    const target = event.target instanceof Element ? event.target : null
+    const interactiveTarget = target?.closest('a, button, input, textarea, select, label')
+    if (interactiveTarget) return
+    openThread(msg, $activeChannel)
+  }
+
   // Build a map of coworker name -> current task
   function getCurrentTasks(coworkerList) {
     const map = {}
@@ -572,7 +581,21 @@
         </div>
       {:else}
         {#each channelMessages as msg, i}
-          <div in:fly={{ y: 16, duration: isNewMessage($activeChannel, i) ? 180 : 0, opacity: 0 }}>
+          <div
+            in:fly={{ y: 16, duration: isNewMessage($activeChannel, i) ? 180 : 0, opacity: 0 }}
+            class="group relative"
+            class:mobile-thread-tappable={!$isWideScreen && !msg.thread_parent_id}
+            onclick={(event) => handleMessageTap(event, msg)}
+          >
+          {#if !msg.thread_parent_id}
+            <button
+              class="hidden md:flex absolute right-0 top-[1px] items-center gap-1 px-2 py-[1px] rounded border border-[#2a2a2a] bg-[rgba(15,15,15,0.95)] text-[0.68rem] text-[#808080] cursor-pointer opacity-0 pointer-events-none transition-opacity duration-150 group-hover:opacity-100 group-hover:pointer-events-auto focus:opacity-100 focus:pointer-events-auto hover:text-[#d0d0d0] hover:border-[#5fafaf]"
+              onclick={() => openThread(msg, $activeChannel)}
+              aria-label="Reply in thread"
+            >
+              Reply
+            </button>
+          {/if}
           {#if needsBlankLine(channelMessages, i)}
             <div class="h-[0.8em]"></div>
           {/if}
@@ -658,6 +681,8 @@
                 {#if msg.last_reply}
                   <span class="text-[#4a4a4a]">&middot;</span>
                   <span class="text-[#808080]">{msg.last_reply.from}</span>
+                  <span class="text-[#4a4a4a]">&middot;</span>
+                  <span class="text-[#606060]">{formatTime(msg.last_reply.timestamp)}</span>
                 {/if}
               </button>
             </div>
@@ -945,5 +970,11 @@
 
   :global(.typing-dots .dot:nth-child(3)) {
     animation-delay: 0.4s;
+  }
+
+  @media (max-width: 1023px) {
+    .mobile-thread-tappable {
+      cursor: pointer;
+    }
   }
 </style>

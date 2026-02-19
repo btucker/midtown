@@ -79,6 +79,8 @@ fn test_web_update_serialization() {
         channel: "midtown".to_string(),
         source_channel: None,
         thread_parent_id: None,
+        reply_count: None,
+        last_reply: None,
     });
 
     let json = serde_json::to_string(&update).unwrap();
@@ -418,6 +420,8 @@ fn test_source_channel_omitted_in_serialization_when_none() {
         channel: "midtown".to_string(),
         source_channel: None,
         thread_parent_id: None,
+        reply_count: None,
+        last_reply: None,
     };
     let json = serde_json::to_string(&data).unwrap();
     // skip_serializing_if = "Option::is_none" should omit source_channel
@@ -446,6 +450,8 @@ fn test_task_1191_channel_switching_requirements() {
         channel: "auth-refactor".to_string(),
         source_channel: None,
         thread_parent_id: None,
+        reply_count: None,
+        last_reply: None,
     };
     assert_eq!(msg_with_channel.channel, "auth-refactor");
 
@@ -463,6 +469,8 @@ fn test_task_1191_channel_switching_requirements() {
         channel: default_channel(),
         source_channel: None,
         thread_parent_id: None,
+        reply_count: None,
+        last_reply: None,
     };
     assert_eq!(msg_default.channel, "midtown");
 
@@ -747,6 +755,8 @@ fn test_channel_message_data_with_thread_parent_id() {
         channel: "midtown".to_string(),
         source_channel: None,
         thread_parent_id: Some("parent-uuid-123".to_string()),
+        reply_count: None,
+        last_reply: None,
     };
     let json = serde_json::to_string(&data).unwrap();
     assert!(json.contains("thread_parent_id"));
@@ -765,9 +775,53 @@ fn test_channel_message_data_thread_parent_id_omitted_when_none() {
         channel: "midtown".to_string(),
         source_channel: None,
         thread_parent_id: None,
+        reply_count: None,
+        last_reply: None,
     };
     let json = serde_json::to_string(&data).unwrap();
     assert!(!json.contains("thread_parent_id"));
+}
+
+#[test]
+fn test_channel_message_data_includes_reply_metadata_when_present() {
+    let data = ChannelMessageData {
+        id: "msg-3".to_string(),
+        from: "park".to_string(),
+        content: "top-level with replies".to_string(),
+        timestamp: "2024-01-01T00:00:00Z".to_string(),
+        msg_type: "text".to_string(),
+        channel: "midtown".to_string(),
+        source_channel: None,
+        thread_parent_id: None,
+        reply_count: Some(3),
+        last_reply: Some(ThreadReplySummary {
+            from: "york".to_string(),
+            timestamp: "2024-01-01T00:02:00Z".to_string(),
+        }),
+    };
+    let json = serde_json::to_string(&data).unwrap();
+    assert!(json.contains("\"reply_count\":3"));
+    assert!(json.contains("\"last_reply\""));
+    assert!(json.contains("\"from\":\"york\""));
+}
+
+#[test]
+fn test_channel_message_data_reply_metadata_omitted_when_none() {
+    let data = ChannelMessageData {
+        id: "msg-4".to_string(),
+        from: "park".to_string(),
+        content: "no replies".to_string(),
+        timestamp: "2024-01-01T00:00:00Z".to_string(),
+        msg_type: "text".to_string(),
+        channel: "midtown".to_string(),
+        source_channel: None,
+        thread_parent_id: None,
+        reply_count: None,
+        last_reply: None,
+    };
+    let json = serde_json::to_string(&data).unwrap();
+    assert!(!json.contains("reply_count"));
+    assert!(!json.contains("last_reply"));
 }
 
 #[test]

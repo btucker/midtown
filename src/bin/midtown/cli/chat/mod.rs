@@ -995,6 +995,31 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                     return EventResult::Continue;
                 }
 
+                // Check if click is in the chat messages area
+                if let Some(chat_rect) = app.chat_messages_area
+                    && x >= chat_rect.x
+                    && x < chat_rect.x + chat_rect.width
+                    && y >= chat_rect.y
+                    && y < chat_rect.y + chat_rect.height
+                {
+                    // Check if click is on a reply indicator line (inside chat content area)
+                    if x > chat_rect.x
+                        && x < chat_rect.x + chat_rect.width.saturating_sub(1)
+                        && y > chat_rect.y
+                        && y < chat_rect.y + chat_rect.height.saturating_sub(1)
+                    {
+                        let content_y = y.saturating_sub(chat_rect.y + 1);
+                        if let Some(parent_id) = app.thread_reply_line_map.get(&content_y).cloned()
+                        {
+                            app.open_thread(&parent_id);
+                            return EventResult::Continue;
+                        }
+                    }
+
+                    app.focused_pane = FocusedPane::Chat;
+                    return EventResult::Continue;
+                }
+
                 // Check if click is in the board area
                 if let Some(board_rect) = app.board_area
                     && x >= board_rect.x
@@ -2251,6 +2276,57 @@ mod tests {
             app.selected_channel, "feature-x",
             "Clicking channel header should update selected_channel"
         );
+    }
+
+    #[test]
+    fn test_click_reply_indicator_opens_thread() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        use std::collections::VecDeque;
+
+        let backend = TestBackend::new(120, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let mut app = test_app();
+
+        let parent = midtown::Message::text("park", "Top-level message");
+        let parent_id = parent.id.clone();
+        let mut reply = midtown::Message::text("lexington", "Reply in thread");
+        reply.thread_parent_id = Some(parent_id.clone());
+
+        app.messages = VecDeque::from(vec![parent, reply]);
+        app.selected_channel = "midtown".to_string();
+
+        // Render first so chat click maps are populated.
+        terminal
+            .draw(|f| {
+                ui::draw(f, &mut app);
+            })
+            .unwrap();
+
+        assert!(
+            !app.thread_reply_line_map.is_empty(),
+            "thread_reply_line_map should be populated after render"
+        );
+
+        let (line, mapped_parent_id) = app
+            .thread_reply_line_map
+            .iter()
+            .next()
+            .map(|(line, id)| (*line, id.clone()))
+            .expect("expected at least one clickable reply indicator line");
+        let chat_area = app
+            .chat_messages_area
+            .expect("chat_messages_area should be populated after render");
+
+        let click_x = chat_area.x + 8;
+        let click_y = chat_area.y + 1 + line;
+        let result = handle_event(&mut app, mouse_click(click_x, click_y));
+        assert!(matches!(result, EventResult::Continue));
+
+        assert_eq!(app.thread_parent_id, Some(mapped_parent_id));
+        assert_eq!(app.focused_pane, app::FocusedPane::Thread);
+        assert_eq!(app.thread_messages.len(), 1);
     }
 
     /// Test that clicking on a channel header when already selected keeps it selected

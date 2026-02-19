@@ -179,10 +179,10 @@
     </form>
   </div>
 
-  <!-- Mobile: full-screen overlay -->
-  <div class="lg:hidden fixed inset-0 z-50 bg-[#0f0f0f] flex flex-col thread-mobile-overlay">
+  <!-- Mobile: slide-in pane (inside board content area) -->
+  <div class="lg:hidden absolute inset-0 z-20 bg-[#0f0f0f] flex flex-col thread-mobile-pane">
     <!-- Mobile header with back button -->
-    <div class="flex items-center gap-2 px-3 py-3 pt-safe-offset-3 bg-[#1a1a1a] border-b-2 border-[#2a2a2a] shrink-0">
+    <div class="flex items-center gap-2 px-3 py-3 bg-[#1a1a1a] border-b-2 border-[#2a2a2a] shrink-0">
       <button
         class="w-8 h-8 flex items-center justify-center bg-transparent border border-[#2a2a2a] rounded-md text-[#808080] text-[1.1rem] cursor-pointer transition-all duration-150 leading-none hover:text-[#d0d0d0] shrink-0"
         onclick={handleClose}
@@ -249,8 +249,8 @@
 {/if}
 
 <style>
-  .thread-mobile-overlay {
-    animation: thread-slide-in 0.2s ease-out;
+  .thread-mobile-pane {
+    animation: thread-slide-in 0.24s ease-out;
   }
 
   @keyframes thread-slide-in {

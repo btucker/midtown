@@ -217,7 +217,7 @@
         </header>
 
         {#if activeView === 'board'}
-          <div class="flex flex-1 min-h-0 overflow-hidden">
+          <div class="board-content flex flex-1 min-h-0 overflow-hidden" class:thread-open-mobile={!!$threadData}>
             <div class="channel-main">
               <ChannelHeader />
               <PendingQuestions />
@@ -450,6 +450,10 @@
   }
 
   /* Channel main area */
+  .board-content {
+    position: relative;
+  }
+
   .channel-main {
     flex: 1;
     min-height: 0;
@@ -469,6 +473,20 @@
 
   .channel-hash {
     color: hsl(var(--muted-foreground));
+  }
+
+  @media (max-width: 1023px) {
+    .board-content .channel-main {
+      width: 100%;
+      flex: 0 0 100%;
+      transition: transform 0.24s ease;
+      will-change: transform;
+      transform: translateX(0);
+    }
+
+    .board-content.thread-open-mobile .channel-main {
+      transform: translateX(-100%);
+    }
   }
 
   /* No project message */
