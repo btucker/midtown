@@ -894,6 +894,27 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                         state.clear_task_spawn_in_flight(&task_id);
                         // Record task assignment in-memory for busy tracking
                         state.record_task_assignment(&owner, &task_id);
+                        // Update SessionRecord with task_id if the session is known.
+                        let maybe_session_id =
+                            state.name_to_session.lock().unwrap().get(&name).cloned();
+                        if let Some(session_id) = maybe_session_id {
+                            let mut ps = state.persistent_state.lock().await;
+                            if let Some(record) = ps.sessions.get_mut(&session_id) {
+                                record.task_id = Some(task_id.clone());
+                            }
+                            // Also update task_to_session reverse map.
+                            state
+                                .task_to_session
+                                .lock()
+                                .unwrap()
+                                .insert(task_id.clone(), session_id);
+                            if let Err(e) = ps.save_for_repo(&state.repo_name) {
+                                warn!(
+                                    "Failed to save persistent state after AssignAndSpawn task_id update: {}",
+                                    e
+                                );
+                            }
+                        }
                         // Set task owner on disk so status and owner are consistent
                         if let Err(e) = crate::tasks::update_task_owner(&task_id, &owner) {
                             warn!(

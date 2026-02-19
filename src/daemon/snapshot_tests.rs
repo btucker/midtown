@@ -624,3 +624,23 @@ fn test_snapshot_includes_session_fields() {
     assert!(deserialized.session_name_map.is_empty());
     assert!(deserialized.name_session_map.is_empty());
 }
+
+/// Precondition test: the captured bug snapshot has coworkers running but the
+/// sessions map is empty. This demonstrates the bug where spawn_coworker() writes
+/// to headless_sessions (name-keyed) but not to sessions (session-ID-keyed).
+#[test]
+fn test_captured_snapshot_has_empty_sessions_despite_running_coworkers() {
+    let fixture = include_str!(
+        "../../tests/fixtures/snapshot/snapshot-no-one-working-on-1625-20260219-193645.json"
+    );
+    let snapshot: WorldSnapshot = serde_json::from_str(fixture).unwrap();
+    // The bug: coworkers are active but sessions map is empty
+    assert!(
+        !snapshot.active_coworkers.is_empty(),
+        "Bug snapshot should have active coworkers"
+    );
+    assert!(
+        snapshot.sessions.is_empty(),
+        "Bug snapshot should have empty sessions map (demonstrating the bug)"
+    );
+}
