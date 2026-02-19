@@ -2050,6 +2050,29 @@ mod tests {
     }
 
     #[test]
+    fn test_midtown_channel_not_duplicated_with_legacy_and_channels_dir() {
+        let temp_dir = TempDir::new().unwrap();
+
+        // Create the legacy channel.jsonl at the base directory
+        // (this is the old-style midtown channel location)
+        File::create(temp_dir.path().join("channel.jsonl")).unwrap();
+
+        // Also create a midtown.jsonl in the channels/ subdirectory
+        let channels_dir = temp_dir.path().join("channels");
+        fs::create_dir_all(&channels_dir).unwrap();
+        File::create(channels_dir.join("midtown.jsonl")).unwrap();
+
+        // Channel::list should return exactly one "midtown" entry, not two
+        let channels = Channel::list(temp_dir.path(), false, None).unwrap();
+        let midtown_entries: Vec<_> = channels.iter().filter(|c| c.name == "midtown").collect();
+        assert_eq!(
+            midtown_entries.len(),
+            1,
+            "Should have exactly one 'midtown' entry even with both legacy and channels-dir files"
+        );
+    }
+
+    #[test]
     fn test_channel_router_basic_routing() {
         let temp_dir = TempDir::new().unwrap();
         let router = ChannelRouter::new(temp_dir.path(), "midtown");
