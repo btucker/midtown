@@ -3,7 +3,6 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use chrono::{DateTime, Utc};
-use midtown::MessageType;
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
@@ -20,9 +19,6 @@ use super::text::wrap_content;
 
 /// Maximum number of recent ops messages to display in the mini-channel.
 const OPS_MAX_MESSAGES: usize = 20;
-
-/// Senders whose /me actions stay in the main chat (not the ops mini-channel).
-const NON_COWORKER_SENDERS: &[&str] = &["lead", "user"];
 
 /// Format a timestamp for the ops mini-channel (HH:MM).
 fn format_ops_time(ts: &DateTime<Utc>) -> String {
@@ -61,25 +57,10 @@ pub fn draw_board_panel(f: &mut Frame, app: &mut App, area: Rect) -> (Vec<Hyperl
     //
     // Clone to avoid holding borrows on app while draw_coworker_status takes app mutably.
     let ops_messages: Vec<midtown::Message> = {
-        // Daemon ops messages from the ops channel file
-        let ops_from_channel = app.ops_messages.iter().cloned();
-        // /me action messages from the currently selected channel buffer
-        let actions_from_main = app
-            .messages
-            .iter()
-            .filter(|m| {
-                let sender = m.from.to_lowercase();
-                !NON_COWORKER_SENDERS.iter().any(|&s| s == sender)
-                    && (m.message_type == MessageType::Action || m.content.starts_with("/me "))
-            })
-            .cloned();
-        // Merge and sort by timestamp, take most recent OPS_MAX_MESSAGES
-        let mut merged: Vec<midtown::Message> = ops_from_channel.chain(actions_from_main).collect();
-        merged.sort_by_key(|m| m.timestamp);
-        // Keep only recent messages
-        let len = merged.len();
-        merged
-            .into_iter()
+        let mut msgs: Vec<midtown::Message> = app.ops_messages.iter().cloned().collect();
+        msgs.sort_by_key(|m| m.timestamp);
+        let len = msgs.len();
+        msgs.into_iter()
             .skip(len.saturating_sub(OPS_MAX_MESSAGES))
             .collect()
     };
@@ -509,74 +490,51 @@ fn draw_ops_mini_channel(f: &mut Frame, ops_messages: &[&midtown::Message], area
 
     for msg in ops_messages {
         let time_str = format_ops_time(&msg.timestamp);
-        let is_action = msg.message_type == MessageType::Action || msg.content.starts_with("/me ");
-
         let sender_color = ops_sender_color(&msg.from);
 
-        if is_action {
-            // Format: "HH:MM * name content"
-            let content = msg.content.trim_start_matches("/me").trim().to_string();
-            let prefix = format!("{time_str} * ");
-            let name = msg.from.clone();
-            let remaining = content_width.saturating_sub(prefix.len() + name.len() + 1);
-            let body = if remaining > 0 && content.len() > remaining {
-                format!("{}..", &content[..remaining.saturating_sub(2)])
-            } else {
-                content.clone()
-            };
+        // Format: "HH:MM content" for system senders (midtown/system/daemon/github)
+        // — the ops channel context makes the sender obvious.
+        // For coworker messages: "HH:MM name: content"
+        let is_system_sender = matches!(
+            msg.from.to_lowercase().as_str(),
+            "midtown" | "system" | "daemon" | "github"
+        );
+        let remaining = if is_system_sender {
+            content_width.saturating_sub(time_str.len() + 1)
+        } else {
+            let sender = &msg.from;
+            content_width.saturating_sub(time_str.len() + 1 + sender.len() + 2)
+        };
+        let body = if remaining > 0 && msg.content.len() > remaining {
+            let mut end = remaining.saturating_sub(2);
+            while end > 0 && !msg.content.is_char_boundary(end) {
+                end -= 1;
+            }
+            format!("{}..", &msg.content[..end])
+        } else {
+            msg.content.clone()
+        };
+        if is_system_sender {
             lines.push(Line::from(vec![
                 Span::styled(
                     format!("{time_str} "),
-                    Style::default().fg(Color::Rgb(50, 50, 50)),
+                    Style::default().fg(Color::Rgb(90, 90, 90)),
                 ),
-                Span::styled("* ", Style::default().fg(sender_color)),
-                Span::styled(name, Style::default().fg(sender_color)),
+                Span::styled(body, Style::default().fg(Color::Rgb(90, 90, 90))),
+            ]));
+        } else {
+            let sender = msg.from.clone();
+            lines.push(Line::from(vec![
                 Span::styled(
-                    format!(" {body}"),
+                    format!("{time_str} "),
+                    Style::default().fg(Color::Rgb(90, 90, 90)),
+                ),
+                Span::styled(sender, Style::default().fg(sender_color)),
+                Span::styled(
+                    format!(": {body}"),
                     Style::default().fg(Color::Rgb(90, 90, 90)),
                 ),
             ]));
-        } else {
-            // Format: "HH:MM content" for system senders (midtown/system/daemon/github)
-            // — the ops channel context makes the sender obvious.
-            // For coworker messages: "HH:MM name: content"
-            let is_system_sender = matches!(
-                msg.from.to_lowercase().as_str(),
-                "midtown" | "system" | "daemon" | "github"
-            );
-            let remaining = if is_system_sender {
-                content_width.saturating_sub(time_str.len() + 1)
-            } else {
-                let sender = &msg.from;
-                content_width.saturating_sub(time_str.len() + 1 + sender.len() + 2)
-            };
-            let body = if remaining > 0 && msg.content.len() > remaining {
-                format!("{}..", &msg.content[..remaining.saturating_sub(2)])
-            } else {
-                msg.content.clone()
-            };
-            if is_system_sender {
-                lines.push(Line::from(vec![
-                    Span::styled(
-                        format!("{time_str} "),
-                        Style::default().fg(Color::Rgb(50, 50, 50)),
-                    ),
-                    Span::styled(body, Style::default().fg(Color::Rgb(90, 90, 90))),
-                ]));
-            } else {
-                let sender = msg.from.clone();
-                lines.push(Line::from(vec![
-                    Span::styled(
-                        format!("{time_str} "),
-                        Style::default().fg(Color::Rgb(50, 50, 50)),
-                    ),
-                    Span::styled(sender, Style::default().fg(sender_color)),
-                    Span::styled(
-                        format!(": {body}"),
-                        Style::default().fg(Color::Rgb(90, 90, 90)),
-                    ),
-                ]));
-            }
         }
     }
 
