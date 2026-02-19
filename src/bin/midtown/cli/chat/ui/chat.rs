@@ -10,8 +10,10 @@ use ratatui::{
 
 use crate::cli::chat::mermaid;
 
+use std::collections::HashMap;
+
 use super::super::app::{App, FocusedPane, MessageRenderCache, PendingQuestion};
-use super::messages::render_message;
+use super::messages::{build_reply_indicator_line, render_message};
 use super::messages_mermaid::render_message_with_mermaid;
 use super::text::wrap_content;
 
@@ -161,6 +163,20 @@ fn draw_chat_messages(f: &mut Frame, app: &mut App, area: Rect) {
     let user_display_name = app.user_display_name.clone();
     let visible: Vec<midtown::Message> = app.visible_messages().to_vec();
 
+    // Compute reply counts for thread indicators
+    // Maps parent message ID -> (reply count, last replier name)
+    let thread_reply_counts: HashMap<String, (usize, Option<String>)> = {
+        let mut counts: HashMap<String, (usize, Option<String>)> = HashMap::new();
+        for msg in app.messages.iter() {
+            if let Some(ref parent_id) = msg.thread_parent_id {
+                let entry = counts.entry(parent_id.clone()).or_insert((0, None));
+                entry.0 += 1;
+                entry.1 = Some(msg.from.clone());
+            }
+        }
+        counts
+    };
+
     let mut lines: Vec<Line> = Vec::new();
     let prev_sender: Option<&str> = None;
 
@@ -203,6 +219,11 @@ fn draw_chat_messages(f: &mut Frame, app: &mut App, area: Rect) {
                 &mut app.diagram_sources,
                 &mut mermaid_to_render,
             );
+        }
+
+        // Add reply indicator if this message has thread replies
+        if let Some((count, last_from)) = thread_reply_counts.get(&msg.id) {
+            lines.push(build_reply_indicator_line(*count, last_from.as_deref()));
         }
     }
 

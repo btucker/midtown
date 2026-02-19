@@ -830,6 +830,17 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                     if app.channel_switcher.show {
                         app.channel_switcher_backspace();
                         EventResult::Continue
+                    } else if app.focused_pane == FocusedPane::Thread {
+                        // Delete character in thread input
+                        if app.thread_input_cursor > 0 {
+                            app.thread_input_cursor -= 1;
+                            let byte_idx = char_index_to_byte_index(
+                                &app.thread_input_text,
+                                app.thread_input_cursor,
+                            );
+                            app.thread_input_text.remove(byte_idx);
+                        }
+                        EventResult::Continue
                     } else if !app.input_text.is_empty() && app.input_cursor == 0 {
                         // Input has text but cursor is at start - auto-focus but don't delete
                         app.focused_pane = FocusedPane::InputBar;
@@ -866,15 +877,21 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                     }
                     EventResult::Continue
                 }
-                // Left/Right for cursor movement - only when in InputBar
+                // Left/Right for cursor movement - when in InputBar or Thread
                 KeyCode::Left => {
-                    if app.focused_pane == FocusedPane::InputBar && app.input_cursor > 0 {
+                    if app.focused_pane == FocusedPane::Thread && app.thread_input_cursor > 0 {
+                        app.thread_input_cursor -= 1;
+                    } else if app.focused_pane == FocusedPane::InputBar && app.input_cursor > 0 {
                         app.input_cursor -= 1;
                     }
                     EventResult::Continue
                 }
                 KeyCode::Right => {
-                    if app.focused_pane == FocusedPane::InputBar
+                    if app.focused_pane == FocusedPane::Thread
+                        && app.thread_input_cursor < app.thread_input_text.chars().count()
+                    {
+                        app.thread_input_cursor += 1;
+                    } else if app.focused_pane == FocusedPane::InputBar
                         && app.input_cursor < app.input_text.chars().count()
                     {
                         app.input_cursor += 1;
@@ -894,6 +911,15 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                     };
                     if app.channel_switcher.show {
                         app.channel_switcher_input(c);
+                        EventResult::Continue
+                    } else if app.focused_pane == FocusedPane::Thread {
+                        // Insert character into thread input
+                        let byte_idx = char_index_to_byte_index(
+                            &app.thread_input_text,
+                            app.thread_input_cursor,
+                        );
+                        app.thread_input_text.insert(byte_idx, c);
+                        app.thread_input_cursor += 1;
                         EventResult::Continue
                     } else {
                         auto_focus_and_insert_char(app, c);

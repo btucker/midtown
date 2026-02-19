@@ -17,6 +17,7 @@ pub mod messages;
 pub mod messages_mermaid;
 pub mod styles;
 pub mod text;
+mod thread;
 mod usage;
 
 use chrono::{DateTime, Utc};
@@ -120,7 +121,18 @@ pub fn draw(f: &mut Frame, app: &mut App) -> Vec<Hyperlink> {
     let (hyperlinks, tasks_area) = board::draw_board_panel(f, app, horizontal_chunks[0]);
     // Store tasks area for click detection (task_line_map line numbers are relative to this area)
     app.board_area = Some(tasks_area);
-    chat::draw_chat_panel(f, app, horizontal_chunks[1]);
+
+    // When thread is open, split chat area horizontally: 60% channel, 40% thread
+    if app.thread_parent_id.is_some() {
+        let chat_chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
+            .split(horizontal_chunks[1]);
+        chat::draw_chat_panel(f, app, chat_chunks[0]);
+        thread::draw_thread_panel(f, app, chat_chunks[1]);
+    } else {
+        chat::draw_chat_panel(f, app, horizontal_chunks[1]);
+    }
 
     if !app.usage_data.is_empty() {
         usage::draw_usage_bars(f, app, vertical_chunks[2]);

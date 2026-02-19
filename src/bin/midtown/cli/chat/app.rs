@@ -1452,6 +1452,12 @@ impl App {
         // the completed count changes and we need to re-render to show the diagram
         // instead of the "rendering..." placeholder.
         self.mermaid_cache.completed_count().hash(&mut hasher);
+        // Hash thread state — opening/closing thread changes the chat area width,
+        // and thread reply counts affect reply indicators displayed after messages.
+        if let Some(ref thread_id) = self.thread_parent_id {
+            thread_id.hash(&mut hasher);
+        }
+        self.thread_messages.len().hash(&mut hasher);
         // Hash tool activity — changes msg_height via count_tool_activity_lines,
         // so a cache hit with different tool activity would apply wrong truncation.
         let mut agents: Vec<&String> = self.tool_activity.keys().collect();
