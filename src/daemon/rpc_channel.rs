@@ -283,6 +283,31 @@ pub(super) async fn handle_channel_post(
             // Route @mentions in user messages directly to coworkers
             super::chat::route_mentions(state, &msg).await;
 
+            // When the lead is dead, expedite its respawn and wake the ops channel lead
+            // so the user isn't left in silence. We check both headless (session_manager)
+            // and interactive (attached_coworkers) paths — if either is live, the lead
+            // is reachable and we skip the expedite.
+            let lead_is_dead = !state.session_manager.is_alive("lead").await
+                && !state
+                    .attached_coworkers
+                    .lock()
+                    .unwrap()
+                    .contains_key("lead");
+            if lead_is_dead {
+                let should_expedite = {
+                    let cooldowns = state.cooldowns.lock().unwrap();
+                    cooldowns.check("lead_dead_expedite", "lead", Duration::from_secs(30))
+                };
+                if should_expedite {
+                    {
+                        let mut cooldowns = state.cooldowns.lock().unwrap();
+                        cooldowns.record("lead_dead_expedite", "lead");
+                    }
+                    info!("Lead is dead — expediting respawn on user message");
+                    state.expedite_lead_respawn_on_user_message().await;
+                }
+            }
+
             let nudge_msg = format!("user: {}", content);
             info!("Nudging Lead about user message");
             state.nudge_lead(&nudge_msg).await;
