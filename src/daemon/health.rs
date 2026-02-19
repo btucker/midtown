@@ -189,10 +189,18 @@ pub fn check_and_shutdown_idle_coworkers(snap: &snapshot::WorldSnapshot) -> Vec<
             status: "stopped".to_string(),
             current_task: None,
         });
-        effects.push(Effect::ShutdownCoworker {
-            name: name.clone(),
-            message: String::new(),
-        });
+        // Prefer session-centric shutdown when session mapping exists.
+        if let Some(session_id) = snap.name_session_map.get(name) {
+            effects.push(Effect::ShutdownSession {
+                session_id: session_id.clone(),
+                reason: format!("idle shutdown: {}", name),
+            });
+        } else {
+            effects.push(Effect::ShutdownCoworker {
+                name: name.clone(),
+                message: String::new(),
+            });
+        }
         // Clean the coworker's target/ directory to reclaim disk space.
         // Resolve working_dir from the snapshot so we target the actual
         // directory (task-based worktree), not the legacy coworker-named path.
