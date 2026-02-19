@@ -328,6 +328,7 @@ pub(crate) struct IdleShutdownContext<'a> {
 /// without performing any side effects or mutations.
 ///
 /// A coworker is protected from break if:
+/// - They are a channel lead (long-lived domain expert session, like "lead")
 /// - They have in-progress tasks (busy)
 /// - They have a pending task assigned to them
 /// - They have open unmerged PRs with CI not yet passed (waiting for CI)
@@ -1150,6 +1151,10 @@ pub(crate) fn decide_mention_action(
 #[path = "rules_session_tests.rs"]
 #[cfg(test)]
 mod rules_session_tests;
+
+#[path = "rules_channel_lead_tests.rs"]
+#[cfg(test)]
+mod rules_channel_lead_tests;
 
 #[cfg(test)]
 mod tests {
@@ -2284,10 +2289,6 @@ mod tests {
             self.attached = attached_map(names);
             self
         }
-        fn channel_lead_names(mut self, names: &[&str]) -> Self {
-            self.channel_leads = set(names);
-            self
-        }
         fn run(&self) -> Option<OrphanRecovery> {
             let ctx = OrphanRecoveryContext {
                 in_progress: &self.tasks,
@@ -2514,53 +2515,6 @@ mod tests {
         assert!(
             result.is_none(),
             "Should NOT recover coworkers shut down by auth switch (recently stopped)"
-        );
-    }
-
-    // -----------------------------------------------------------------------
-    // channel lead exemption tests
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn channel_lead_is_not_idle_shutdown() {
-        // A channel lead that is old (past minimum lifetime) and idle
-        // should NOT be shutdown.
-        let result = IdleShutdownCtx::one("ops").channel_leads(&["ops"]).run();
-        assert!(
-            result.is_empty(),
-            "channel lead should not be idle-shutdown"
-        );
-    }
-
-    #[test]
-    fn channel_lead_owned_task_is_skipped() {
-        let result = decide_pending_task_action(
-            "42",
-            "some task",
-            "ops",
-            &HashSet::new(), // active_names
-            false,           // at_dev_limit
-            false,           // on_nudge_cooldown
-            false,           // is_owner_reviewer
-            false,           // has_in_progress_task
-            true,            // is_channel_lead
-        );
-        assert!(
-            matches!(result, PendingTaskAction::Skip { .. }),
-            "channel lead owned task should be skipped"
-        );
-    }
-
-    #[test]
-    fn channel_lead_owned_task_not_orphan_recovered() {
-        // A task owned by a channel lead (e.g. "ops") should NOT trigger orphan recovery,
-        // even if the channel lead is not in the active_names set.
-        let result = OrphanCtx::task("99", "ops task", "ops")
-            .channel_lead_names(&["ops"])
-            .run();
-        assert!(
-            result.is_none(),
-            "channel lead owned task should not be orphan recovered"
         );
     }
 
