@@ -690,8 +690,10 @@ pub(super) fn extract_claimed_task_ids_from_effects(effects: &[Effect]) -> HashS
 /// lookup path. Tasks with session records get their preferred name and
 /// working directory preserved across restarts.
 ///
-/// Pure function: reads only from `snap` (no `DaemonState` access). Cooldown
-/// state is pre-evaluated into the snapshot by `collect_world_snapshot()`.
+/// Note: not fully pure — `build_plan_prompt_section` reads plan files from disk.
+/// This is consistent with `check_and_recover_orphans_with_task_lookup`; plan I/O
+/// is intentionally kept here rather than pre-loading all plan files into the snapshot.
+/// Cooldown state is pre-evaluated into the snapshot by `collect_world_snapshot()`.
 pub fn dispatch_via_sessions(snap: &snapshot::WorldSnapshot) -> Vec<effects::Effect> {
     // Check cooldown - skip if we dispatched too recently
     if snap.session_dispatch_cooldown_active {

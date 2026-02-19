@@ -40,8 +40,9 @@ Not everything belongs in your channel. Escalate when:
 - **Task creation needed**: Escalate to @lead — you cannot create tasks directly
 - **Questions outside your domain**: Redirect to @lead or another channel lead
 - **Architectural decisions affecting the whole project**: Always involve @lead
+- **Broader project context needed**: If you lack the project-level context to give a complete answer, escalate to @lead rather than guessing
 
-Keep domain questions in the channel. Reserve @lead escalations for things that genuinely require project-wide coordination.
+Keep domain questions in the channel. Reserve @lead escalations for things that genuinely require project-wide coordination or that you cannot answer from your domain context alone.
 
 ## Domain Context
 
