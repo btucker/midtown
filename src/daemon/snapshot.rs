@@ -405,6 +405,20 @@ impl WorldSnapshot {
             .collect()
     }
 
+    /// Build a session-ID-keyed health map from name-keyed health data.
+    ///
+    /// During migration, health is still collected per-name. This method
+    /// translates to session-ID keys using `name_session_map`.
+    pub fn session_health_map(&self) -> HashMap<String, &ProcessHealth> {
+        let mut map = HashMap::new();
+        for (name, health) in &self.headless_process_health {
+            if let Some(session_id) = self.name_session_map.get(name) {
+                map.insert(session_id.clone(), health);
+            }
+        }
+        map
+    }
+
     /// Populate debug context fields (channel messages and daemon logs).
     ///
     /// This is only called when capturing a snapshot for debugging, NOT during

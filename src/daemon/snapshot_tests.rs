@@ -644,3 +644,27 @@ fn test_captured_snapshot_has_empty_sessions_despite_running_coworkers() {
         "Bug snapshot should have empty sessions map (demonstrating the bug)"
     );
 }
+
+/// Verify that session_health_map translates name-keyed health to session-ID-keyed.
+#[test]
+fn test_snapshot_session_health_map_populated() {
+    let fixture = include_str!(
+        "../../tests/fixtures/snapshot/snapshot-no-one-working-on-1625-20260219-193645.json"
+    );
+    let mut snapshot: WorldSnapshot = serde_json::from_str(fixture).unwrap();
+    // Manually wire up session mapping (Task 1 ensures this happens at runtime).
+    snapshot
+        .name_session_map
+        .insert("vernon".to_string(), "sess-123".to_string());
+    snapshot
+        .headless_process_health
+        .insert("vernon".to_string(), ProcessHealth::default());
+    // Also add a name without a session mapping — should be excluded.
+    snapshot
+        .headless_process_health
+        .insert("orphan".to_string(), ProcessHealth::default());
+
+    let health = snapshot.session_health_map();
+    assert!(health.contains_key("sess-123"));
+    assert!(!health.contains_key("orphan"));
+}
