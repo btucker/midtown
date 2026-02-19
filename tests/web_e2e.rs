@@ -536,7 +536,8 @@ fn test_web_api_channel_history() {
     }
 }
 
-/// Test that /api/channels/history filters by thread_parent_id when the query param is provided.
+/// Test that /api/channels/history defaults to top-level messages with reply metadata,
+/// and filters by thread_parent_id when the query param is provided.
 #[test]
 #[ignore] // Requires built binary
 fn test_web_api_channel_history_thread_parent_id_filter() {
@@ -549,8 +550,6 @@ fn test_web_api_channel_history_thread_parent_id_filter() {
         return;
     }
 
-    let parent_id = "test-parent-uuid-abc123";
-
     // Post a top-level message
     let top_level_params = serde_json::json!({
         "message": "Top-level message",
@@ -558,15 +557,80 @@ fn test_web_api_channel_history_thread_parent_id_filter() {
     });
     fixture.rpc_call("channel.post", Some(top_level_params));
 
+    // Resolve the real parent ID from history so thread reply metadata can be validated.
+    thread::sleep(Duration::from_millis(100));
+    let history_response =
+        reqwest::blocking::get(format!("{}/channels/history", fixture.api_base()))
+            .expect("history endpoint should be reachable");
+    assert!(
+        history_response.status().is_success(),
+        "history endpoint should return success"
+    );
+    let history_messages: Vec<serde_json::Value> = history_response
+        .json()
+        .expect("history should be valid JSON");
+    let parent_id = history_messages
+        .iter()
+        .find(|m| {
+            m.get("content")
+                .and_then(|v| v.as_str())
+                .map(|s| s == "Top-level message")
+                .unwrap_or(false)
+        })
+        .and_then(|m| m.get("id"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .expect("should find top-level message ID in history");
+
     // Post a thread reply with thread_parent_id
     let thread_params = serde_json::json!({
         "message": "Thread reply",
         "from": "york",
-        "thread_parent_id": parent_id
+        "thread_parent_id": parent_id.clone()
     });
     fixture.rpc_call("channel.post", Some(thread_params));
 
     thread::sleep(Duration::from_millis(100));
+
+    // Default history should include only top-level messages and reply metadata.
+    let top_level_response =
+        reqwest::blocking::get(format!("{}/channels/history", fixture.api_base()));
+    assert!(
+        top_level_response.is_ok(),
+        "Top-level history should be accessible"
+    );
+    let top_level_response = top_level_response.unwrap();
+    assert!(
+        top_level_response.status().is_success(),
+        "Top-level history should return 200"
+    );
+    let top_level_messages: Vec<serde_json::Value> = top_level_response.json().unwrap();
+    let parent = top_level_messages
+        .iter()
+        .find(|m| m.get("id").and_then(|v| v.as_str()) == Some(parent_id.as_str()))
+        .expect("parent message should be present in top-level history");
+    assert_eq!(
+        parent.get("reply_count").and_then(|v| v.as_u64()),
+        Some(1),
+        "Top-level history should include reply_count for parent"
+    );
+    assert_eq!(
+        parent
+            .get("last_reply")
+            .and_then(|v| v.get("from"))
+            .and_then(|v| v.as_str()),
+        Some("york"),
+        "Top-level history should include last_reply.from"
+    );
+    assert!(
+        !top_level_messages.iter().any(|m| {
+            m.get("content")
+                .and_then(|v| v.as_str())
+                .map(|s| s == "Thread reply")
+                .unwrap_or(false)
+        }),
+        "Top-level history should exclude thread replies"
+    );
 
     // Filter history by thread_parent_id — should only return the thread reply
     let url = format!(

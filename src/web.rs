@@ -224,6 +224,12 @@ pub enum WebUpdate {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct ThreadReplySummary {
+    pub from: String,
+    pub timestamp: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct ChannelMessageData {
     /// Unique message identifier
     pub id: String,
@@ -242,6 +248,12 @@ pub struct ChannelMessageData {
     /// in a thread started by the message with this ID.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thread_parent_id: Option<String>,
+    /// Number of replies in this message's thread (top-level history only).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reply_count: Option<usize>,
+    /// Last reply metadata for this message's thread (top-level history only).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_reply: Option<ThreadReplySummary>,
 }
 
 #[allow(dead_code)] // Used by serde default attribute
@@ -483,7 +495,8 @@ struct ChannelHistoryQuery {
 /// Get channel message history
 ///
 /// Accepts an optional `?channel=name` query parameter to load a specific channel.
-/// If not provided, returns messages from the main "midtown" channel.
+/// If `thread_parent_id` is omitted, returns top-level messages only (with thread
+/// reply metadata). If `thread_parent_id` is provided, returns replies in that thread.
 async fn api_channel_history(
     State(state): State<Arc<WebState>>,
     Query(params): Query<ChannelHistoryQuery>,
@@ -510,29 +523,73 @@ async fn api_channel_history(
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
-    let response: Vec<ChannelMessageData> = messages
-        .into_iter()
-        .filter(|m| {
-            // If thread_parent_id filter is specified, only return messages in that thread
-            match &params.thread_parent_id {
-                Some(parent_id) => m.thread_parent_id.as_deref() == Some(parent_id.as_str()),
-                None => true, // No filter: return all messages (backward compatible)
+    let response: Vec<ChannelMessageData> = match params.thread_parent_id {
+        // Thread history query: return replies for one parent only.
+        Some(parent_id) => messages
+            .into_iter()
+            .filter(|m| m.thread_parent_id.as_deref() == Some(parent_id.as_str()))
+            .map(|m| {
+                let channel = m.channel_name().to_string();
+                ChannelMessageData {
+                    id: m.id.clone(),
+                    from: m.from,
+                    content: m.content,
+                    timestamp: m.timestamp.to_rfc3339(),
+                    msg_type: format!("{:?}", m.message_type).to_lowercase(),
+                    channel,
+                    source_channel: m.source_channel,
+                    thread_parent_id: m.thread_parent_id,
+                    reply_count: None,
+                    last_reply: None,
+                }
+            })
+            .collect(),
+        // Default history query: top-level only, annotated with thread reply metadata.
+        None => {
+            let mut reply_meta: std::collections::HashMap<String, (usize, ThreadReplySummary)> =
+                std::collections::HashMap::new();
+            for msg in &messages {
+                if let Some(parent_id) = msg.thread_parent_id.as_ref() {
+                    let entry = reply_meta.entry(parent_id.clone()).or_insert((
+                        0,
+                        ThreadReplySummary {
+                            from: msg.from.clone(),
+                            timestamp: msg.timestamp.to_rfc3339(),
+                        },
+                    ));
+                    entry.0 += 1;
+                    entry.1 = ThreadReplySummary {
+                        from: msg.from.clone(),
+                        timestamp: msg.timestamp.to_rfc3339(),
+                    };
+                }
             }
-        })
-        .map(|m| {
-            let channel = m.channel_name().to_string();
-            ChannelMessageData {
-                id: m.id.clone(),
-                from: m.from,
-                content: m.content,
-                timestamp: m.timestamp.to_rfc3339(),
-                msg_type: format!("{:?}", m.message_type).to_lowercase(),
-                channel,
-                source_channel: m.source_channel,
-                thread_parent_id: m.thread_parent_id,
-            }
-        })
-        .collect();
+
+            messages
+                .into_iter()
+                .filter(|m| m.thread_parent_id.is_none())
+                .map(|m| {
+                    let channel = m.channel_name().to_string();
+                    let (reply_count, last_reply) = match reply_meta.get(&m.id) {
+                        Some((count, last)) => (Some(*count), Some(last.clone())),
+                        None => (None, None),
+                    };
+                    ChannelMessageData {
+                        id: m.id.clone(),
+                        from: m.from,
+                        content: m.content,
+                        timestamp: m.timestamp.to_rfc3339(),
+                        msg_type: format!("{:?}", m.message_type).to_lowercase(),
+                        channel,
+                        source_channel: m.source_channel,
+                        thread_parent_id: m.thread_parent_id,
+                        reply_count,
+                        last_reply,
+                    }
+                })
+                .collect()
+        }
+    };
 
     Ok(axum::Json(response))
 }
@@ -1845,6 +1902,8 @@ pub fn channel_message_update(message: &Message) -> WebUpdate {
         channel: message.channel_name().to_string(),
         source_channel: message.source_channel.clone(),
         thread_parent_id: message.thread_parent_id.clone(),
+        reply_count: None,
+        last_reply: None,
     })
 }
 

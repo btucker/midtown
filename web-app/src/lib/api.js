@@ -156,8 +156,9 @@ export function getApiBase() {
   return projectApiBase ? `${projectApiBase}/api` : '/api'
 }
 
-// Compute reply_count and last_reply on parent messages, then filter out
-// thread replies so only top-level messages appear in the main timeline.
+// Backward-compat fallback for older history payloads:
+// if thread replies are included inline, compute reply_count/last_reply on
+// parents and filter replies from the main timeline.
 function annotateThreadReplyCounts(msgs) {
   const replyCountMap = {}
   const lastReplyMap = {}

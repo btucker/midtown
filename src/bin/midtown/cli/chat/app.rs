@@ -366,6 +366,8 @@ pub struct App {
     project_name: String,
     /// Last rendered board panel area (for click detection)
     pub board_area: Option<ratatui::layout::Rect>,
+    /// Last rendered chat messages area (for click detection)
+    pub chat_messages_area: Option<ratatui::layout::Rect>,
     /// Last rendered input bar area (for click detection)
     pub input_area: Option<ratatui::layout::Rect>,
     /// Mapping of board panel line numbers to tasks (for click-to-attach)
@@ -374,6 +376,10 @@ pub struct App {
     /// Mapping of board panel line numbers to channel headers (for click-to-select)
     /// Maps line_number -> channel_name where line_number is relative to board content area
     pub channel_line_map: HashMap<u16, String>,
+    /// Mapping of chat message area line numbers to thread parent IDs.
+    /// Used for click-to-open on "↳ N replies" indicator lines.
+    /// Line numbers are relative to the chat content area (inside borders).
+    pub thread_reply_line_map: HashMap<u16, String>,
     /// Sidebar width as a percentage of the total horizontal area (20–60).
     /// The rendered width is further capped at `MAX_SIDEBAR_WIDTH` columns.
     pub sidebar_width_pct: u16,
@@ -548,9 +554,11 @@ impl App {
             channels_last_refresh: Instant::now() - CHANNELS_REFRESH_INTERVAL, // Force initial refresh
             project_name: channel_repo.clone(),
             board_area: None,
+            chat_messages_area: None,
             input_area: None,
             task_line_map: HashMap::new(),
             channel_line_map: HashMap::new(),
+            thread_reply_line_map: HashMap::new(),
             sidebar_width_pct: 40,
             divider_x: None,
             dragging_divider: false,
@@ -1547,7 +1555,7 @@ impl App {
     /// scroll position, message count, terminal width, selection mode, last message ID
     /// as a proxy for content changes, task state, mermaid render state, and the
     /// indicator height (which affects the message area size via the layout constraint).
-    pub fn message_cache_key(&self, width: u16) -> u64 {
+    pub fn message_cache_key(&self, width: u16, height: u16) -> u64 {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
 
@@ -1555,6 +1563,7 @@ impl App {
         self.scroll_offset.hash(&mut hasher);
         self.messages.len().hash(&mut hasher);
         width.hash(&mut hasher);
+        height.hash(&mut hasher);
         self.selection_mode.hash(&mut hasher);
         // Hash last message ID as proxy for content changes
         if let Some(last) = self.messages.back() {
@@ -3302,9 +3311,11 @@ pub(super) mod tests {
             channels_last_refresh: Instant::now(),
             project_name: "test".to_string(),
             board_area: None,
+            chat_messages_area: None,
             input_area: None,
             task_line_map: HashMap::new(),
             channel_line_map: HashMap::new(),
+            thread_reply_line_map: HashMap::new(),
             sidebar_width_pct: 40,
             divider_x: None,
             dragging_divider: false,
@@ -3365,6 +3376,17 @@ pub(super) mod tests {
         assert!(
             app.message_render_cache.is_none(),
             "resize_sidebar_to should invalidate the message render cache"
+        );
+    }
+
+    #[test]
+    fn test_message_cache_key_changes_with_height() {
+        let app = test_app();
+        let key_short = app.message_cache_key(80, 20);
+        let key_tall = app.message_cache_key(80, 30);
+        assert_ne!(
+            key_short, key_tall,
+            "message cache key should include chat height"
         );
     }
 

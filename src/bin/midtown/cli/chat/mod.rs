@@ -995,6 +995,31 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                     return EventResult::Continue;
                 }
 
+                // Check if click is in the chat messages area
+                if let Some(chat_rect) = app.chat_messages_area
+                    && x >= chat_rect.x
+                    && x < chat_rect.x + chat_rect.width
+                    && y >= chat_rect.y
+                    && y < chat_rect.y + chat_rect.height
+                {
+                    // Check if click is on a reply indicator line (inside chat content area)
+                    if x > chat_rect.x
+                        && x < chat_rect.x + chat_rect.width.saturating_sub(1)
+                        && y > chat_rect.y
+                        && y < chat_rect.y + chat_rect.height.saturating_sub(1)
+                    {
+                        let content_y = y.saturating_sub(chat_rect.y + 1);
+                        if let Some(parent_id) = app.thread_reply_line_map.get(&content_y).cloned()
+                        {
+                            app.open_thread(&parent_id);
+                            return EventResult::Continue;
+                        }
+                    }
+
+                    app.focused_pane = FocusedPane::Chat;
+                    return EventResult::Continue;
+                }
+
                 // Check if click is in the board area
                 if let Some(board_rect) = app.board_area
                     && x >= board_rect.x
@@ -2713,3 +2738,7 @@ mod keyboard_protocol_tests;
 #[path = "paste_tests.rs"]
 #[cfg(test)]
 mod paste_tests;
+
+#[path = "thread_click_tests.rs"]
+#[cfg(test)]
+mod thread_click_tests;

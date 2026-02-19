@@ -220,6 +220,8 @@ fn draw_chat_messages(f: &mut Frame, app: &mut App, area: Rect) {
         .borders(Borders::ALL)
         .border_style(Style::default().fg(border_color));
 
+    // Store chat messages area for click detection.
+    app.chat_messages_area = Some(area);
     let inner = block.inner(area);
 
     let msg_height = inner.height as usize;
@@ -227,7 +229,7 @@ fn draw_chat_messages(f: &mut Frame, app: &mut App, area: Rect) {
     app.clamp_scroll_offset();
 
     // Check if we can reuse cached rendered lines
-    let cache_key = app.message_cache_key(inner.width);
+    let cache_key = app.message_cache_key(inner.width, inner.height);
     if let Some(ref cache) = app.message_render_cache
         && cache.cache_key == cache_key
     {
@@ -260,6 +262,7 @@ fn draw_chat_messages(f: &mut Frame, app: &mut App, area: Rect) {
     };
 
     let mut lines: Vec<Line> = Vec::new();
+    let mut reply_line_map: HashMap<usize, String> = HashMap::new();
     let prev_sender: Option<&str> = None;
 
     let mut mermaid_to_render: Vec<String> = Vec::new();
@@ -305,6 +308,7 @@ fn draw_chat_messages(f: &mut Frame, app: &mut App, area: Rect) {
 
         // Add reply indicator if this message has thread replies
         if let Some((count, last_from)) = thread_reply_counts.get(&msg.id) {
+            reply_line_map.insert(lines.len(), msg.id.clone());
             lines.push(build_reply_indicator_line(*count, last_from.as_deref()));
         }
     }
@@ -315,6 +319,11 @@ fn draw_chat_messages(f: &mut Frame, app: &mut App, area: Rect) {
 
     // Handle line truncation based on scroll position
     let total_lines = lines.len();
+    let visible_start = if total_lines > msg_height && !app.is_at_max_scroll() {
+        total_lines - msg_height
+    } else {
+        0
+    };
     let visible_lines = if total_lines > msg_height {
         if app.is_at_max_scroll() {
             lines.truncate(msg_height);
@@ -326,6 +335,19 @@ fn draw_chat_messages(f: &mut Frame, app: &mut App, area: Rect) {
     } else {
         lines
     };
+    let visible_len = visible_lines.len();
+
+    // Rebuild click map for visible reply-indicator lines.
+    app.thread_reply_line_map = reply_line_map
+        .into_iter()
+        .filter_map(|(line_idx, parent_id)| {
+            if line_idx >= visible_start && line_idx < visible_start + visible_len {
+                Some(((line_idx - visible_start) as u16, parent_id))
+            } else {
+                None
+            }
+        })
+        .collect();
 
     app.message_render_cache = Some(MessageRenderCache::new(
         visible_lines.clone(),

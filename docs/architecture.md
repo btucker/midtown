@@ -167,7 +167,7 @@ Each project daemon runs its own webhook server for GitHub integration. Port 470
 Thread replies are stored in the same JSONL channel file as top-level messages, tagged with a `thread_parent_id` field referencing the parent message's ID. There is no separate index — threads are filtered in memory at read time by comparing `thread_parent_id` against the queried parent ID. Top-level messages have `thread_parent_id` omitted (serialized with `skip_serializing_if = "Option::is_none"` for backward compatibility with existing channel logs).
 
 The `/api/channels/history` endpoint accepts an optional `thread_parent_id` query parameter:
-- Absent: returns only top-level messages (where `thread_parent_id` is `None`)
+- Absent: returns only top-level messages (where `thread_parent_id` is `None`), with `reply_count` and `last_reply` metadata when replies exist
 - Present: returns only thread replies matching the given parent ID
 
 When a thread reply is posted via `midtown channel post --thread <id>`, the daemon automatically nudges all thread participants (the original message author and all authors of existing replies in that thread), ensuring no reply goes unnoticed.
