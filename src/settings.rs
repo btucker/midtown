@@ -250,16 +250,11 @@ mod tests {
                 .ends_with("hook lead-stop")
         );
 
-        let post_tool_hooks = &settings["hooks"]["PostToolUse"];
-        assert!(post_tool_hooks.is_array());
-        // Lead has only the catch-all insight hook (task hooks removed —
-        // Lead now uses `midtown task` CLI instead of TaskCreate/TaskUpdate tools)
+        // Lead has no PostToolUse hooks — insight capture is disabled for the lead
+        // since lead text is auto-posted to the channel (no duplicate messages needed)
         assert!(
-            post_tool_hooks[0]["hooks"][0]["command"]
-                .as_str()
-                .unwrap()
-                .ends_with("hook insight"),
-            "PostToolUse hook should be the catch-all insight hook"
+            settings["hooks"]["PostToolUse"].is_null(),
+            "Lead should have no PostToolUse hooks (insight capture disabled)"
         );
 
         // Verify {bin} placeholders were replaced
