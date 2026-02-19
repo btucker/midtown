@@ -178,11 +178,6 @@ pub struct CoworkerSession {
     pub has_running_subagent: bool,
     /// Whether the session has a pending tool execution (tool_use seen, no tool_result yet).
     pub has_pending_tool: bool,
-    /// Whether the session is waiting for the next API response after a tool_result.
-    ///
-    /// Set when a tool_result arrives (has_pending_tool cleared), cleared when the next
-    /// assistant event arrives. Exempts the session from stuck detection during extended thinking.
-    pub has_pending_api_call: bool,
     /// Whether the session hit "Tool names must be unique" (unrecoverable, needs fresh restart).
     pub has_tool_name_conflict: bool,
     /// Whether this session was spawned as a `--resume` (vs fresh).
@@ -242,7 +237,6 @@ impl CoworkerSession {
             has_auth_error: false,
             has_running_subagent: false,
             has_pending_tool: false,
-            has_pending_api_call: false,
             has_tool_name_conflict: false,
             is_resume: false,
             initial_prompt: None,
@@ -717,8 +711,6 @@ impl SessionManager {
                                 }
                             }
                             StreamEvent::Assistant { message, .. } => {
-                                // API response arrived — no longer waiting for thinking
-                                cs.has_pending_api_call = false;
                                 let (pending, subagent) =
                                     extract_tool_state_from_assistant(message);
                                 if pending {
@@ -732,10 +724,6 @@ impl SessionManager {
                                 if has_tool_result(message) {
                                     cs.has_pending_tool = false;
                                     cs.has_running_subagent = false;
-                                    // Tool result processed — model is now making an API call
-                                    // (possibly with extended thinking). No events will arrive
-                                    // until the assistant response begins; exempt from stuck detection.
-                                    cs.has_pending_api_call = true;
                                 }
                             }
                             _ => {}
@@ -892,7 +880,6 @@ impl SessionManager {
                     has_auth_error: cs.has_auth_error,
                     has_running_subagent: cs.has_running_subagent,
                     has_pending_tool: cs.has_pending_tool,
-                    has_pending_api_call: cs.has_pending_api_call,
                     has_tool_name_conflict: cs.has_tool_name_conflict,
                     exit_code: None,
                 },
