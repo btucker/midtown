@@ -554,6 +554,12 @@ pub(crate) struct DaemonState {
     /// is not repeated. Resets on daemon restart, which is acceptable because
     /// reviewer assignments also reset.
     reviewer_escalations_posted: std::sync::Mutex<HashSet<u64>>,
+    /// PR numbers for which the lead has already been nudged about an orphaned PR
+    /// (reviewed + CI green, no active task). Prevents repeated nudges on every tick.
+    ///
+    /// Resets on daemon restart, which is acceptable — at worst the lead gets one
+    /// extra nudge after a restart if the PR is still orphaned.
+    orphaned_pr_lead_nudges_sent: std::sync::Mutex<HashSet<u64>>,
     /// In-memory deduplication for reviewer `[Review Note]` channel messages.
     ///
     /// Tracks (reviewer, PR number) → timestamp of first note. When a reviewer
@@ -1019,6 +1025,7 @@ impl DaemonState {
             comment_tracker: Mutex::new(trackers::CommentTracker::new()),
             insight_hashes: std::sync::Mutex::new(HashSet::new()),
             reviewer_escalations_posted: std::sync::Mutex::new(HashSet::new()),
+            orphaned_pr_lead_nudges_sent: std::sync::Mutex::new(HashSet::new()),
             review_note_tracker: std::sync::Mutex::new(HashMap::new()),
             headless_health: std::sync::RwLock::new(HashMap::new()),
             attached_coworkers: std::sync::Mutex::new(HashMap::new()),

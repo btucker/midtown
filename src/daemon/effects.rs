@@ -196,6 +196,9 @@ pub enum Effect {
     /// `reviewer_escalations_posted` set is checked via WorldSnapshot before
     /// emitting escalation effects.
     RecordReviewerEscalation { pr_number: u64 },
+    /// Record that the lead has been nudged about an orphaned PR (reviewed + CI green,
+    /// no active task). Prevents `reconcile_orphaned_prs` from nudging on every tick.
+    RecordOrphanedPrLeadNudge { pr_number: u64 },
     /// Clear reviewer assignments for orphaned coworkers (sessions that ended unexpectedly).
     ClearOrphanedReviewerAssignments { orphaned_coworkers: Vec<String> },
     /// Re-run a GitHub Actions workflow that appears to be stuck.
@@ -918,6 +921,11 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 let mut posted = state.reviewer_escalations_posted.lock().unwrap();
                 posted.insert(pr_number);
                 debug!("Recorded reviewer escalation for PR #{}", pr_number);
+            }
+            Effect::RecordOrphanedPrLeadNudge { pr_number } => {
+                let mut sent = state.orphaned_pr_lead_nudges_sent.lock().unwrap();
+                sent.insert(pr_number);
+                debug!("Recorded orphaned PR lead nudge for PR #{}", pr_number);
             }
             Effect::RecordTaskAssignment { coworker, task_id } => {
                 state.record_task_assignment(&coworker, &task_id);

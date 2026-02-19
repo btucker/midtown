@@ -168,6 +168,7 @@ fn make_dev_limit_snapshot(
         prs_needing_review: 0,
         reviewer_restart_counts: std::collections::HashMap::new(),
         reviewer_escalations_posted: std::collections::HashSet::new(),
+        orphaned_pr_lead_nudges_sent: std::collections::HashSet::new(),
         coworkers_with_unblocked_deps: std::collections::HashSet::new(),
         usage_limit_nudge_scheduled: false,
         usage_limit_nudge_at: None,

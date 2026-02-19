@@ -958,18 +958,16 @@ async fn test_lead_pr_with_non_standard_branch_gets_reviewer() {
     );
 }
 
-/// Bug: reconcile_orphaned_prs creates duplicate "Merge PR #X" tasks every 30 seconds.
+/// reconcile_orphaned_prs nudges the lead once (not on every tick) for orphaned PRs.
 ///
-/// Root cause: The function only checks pr_task_associations (which tracks the *original*
-/// task that created the PR via pr_author_sessions). When a merge task is created, it's
-/// a new task not linked in pr_author_sessions, so pr_task_associations doesn't contain
-/// the PR. On the next tick, the function creates another duplicate merge task.
+/// The function uses `orphaned_pr_lead_nudges_sent` in WorldSnapshot to avoid
+/// nudging the lead on every polling tick (every 30 seconds). Once the lead has
+/// been nudged, the PR number is recorded and subsequent ticks skip it.
 ///
-/// Expected: Only one "Merge PR #X" task should exist for each PR, even across multiple ticks.
+/// Expected: First tick nudges the lead + records it; second tick (with record present) is silent.
 #[test]
 fn test_reconcile_orphaned_prs_does_not_create_duplicates() {
     use super::super::snapshot::minimal_snapshot_for_test;
-    use crate::tasks::{Task, TaskStatus};
 
     // Simulate PR #42 that meets all orphan criteria:
     // - Has coworker branch prefix
@@ -990,48 +988,35 @@ fn test_reconcile_orphaned_prs_does_not_create_duplicates() {
     snap.open_prs_data = vec![pr_data];
     snap.reviewed_prs.insert(42);
 
-    // First tick: No existing merge task yet
+    // First tick: Lead has not been nudged yet
     let effects1 = reconcile_orphaned_prs(&snap);
 
-    // Should create one merge task
-    let create_task_count1 = effects1
+    // Should nudge the lead (not create a task)
+    let nudge_count1 = effects1
         .iter()
-        .filter(|e| matches!(e, Effect::CreateTask { .. }))
+        .filter(|e| matches!(e, Effect::NudgeLead { .. }))
         .count();
-    assert_eq!(
-        create_task_count1, 1,
-        "First tick should create exactly one merge task"
-    );
+    assert_eq!(nudge_count1, 1, "First tick should nudge the lead once");
 
-    // Simulate the created task now exists in all_tasks as pending
-    let merge_task = Task {
-        id: "1001".to_string(),
-        subject: "Merge PR #42 — reviewed, CI green".to_string(),
-        status: TaskStatus::Pending,
-        owner: None,
-        description: Some("PR #42 (Fix authentication bug) has been reviewed...".to_string()),
-        blocked_by: vec![],
-        channel: None,
-        pr: Some(42), // This will be set after the fix
-        created_at: None,
-    };
+    let no_task_created = effects1
+        .iter()
+        .all(|e| !matches!(e, Effect::CreateTask { .. }));
+    assert!(no_task_created, "First tick should NOT create a task");
 
-    snap.all_tasks = vec![merge_task];
+    // Simulate the nudge has been recorded (orphaned_pr_lead_nudges_sent contains PR #42)
+    snap.orphaned_pr_lead_nudges_sent.insert(42);
 
-    // Second tick: Merge task now exists
+    // Second tick: Lead has already been nudged
     let effects2 = reconcile_orphaned_prs(&snap);
 
-    // Should NOT create another merge task (bug: currently creates duplicate)
-    let create_task_count2 = effects2
+    // Should NOT nudge the lead again
+    let nudge_count2 = effects2
         .iter()
-        .filter(|e| matches!(e, Effect::CreateTask { .. }))
+        .filter(|e| matches!(e, Effect::NudgeLead { .. }))
         .count();
     assert_eq!(
-        create_task_count2, 0,
-        "Second tick should NOT create duplicate merge task. BUG: reconcile_orphaned_prs \
-         only checks pr_task_associations (which tracks original PR author tasks), not \
-         existing merge tasks in all_tasks. This causes duplicate 'Merge PR #42' tasks \
-         to be created every 30 seconds."
+        nudge_count2, 0,
+        "Second tick should NOT nudge the lead again (already nudged)"
     );
 }
 
@@ -1292,20 +1277,15 @@ fn review_complete_spawn_owner_no_record_without_task_association() {
     );
 }
 
-/// Bug: reconcile_orphaned_prs checks all_tasks including completed tasks.
+/// reconcile_orphaned_prs skips PRs that already have an active task (pr_task_associations).
 ///
-/// Scenario: A merge task was created, marked completed (mistakenly or due to some edge case),
-/// but the PR never actually merged and is still open. The dedup check prevents creating
-/// a new merge task because it finds the completed task.
-///
-/// Expected: Only active (pending/in_progress) merge tasks should block creating new ones.
-/// Completed tasks should not prevent reconciliation.
+/// When a PR has an associated in_progress task (tracked in pr_task_associations),
+/// it's not considered orphaned — someone is actively working on it. The function
+/// should skip these PRs entirely.
 #[test]
-fn test_reconcile_orphaned_prs_ignores_completed_merge_tasks() {
+fn test_reconcile_orphaned_prs_ignores_prs_with_active_tasks() {
     use super::super::snapshot::minimal_snapshot_for_test;
-    use crate::tasks::{Task, TaskStatus};
 
-    // Simulate PR #42 that meets all orphan criteria
     let pr_data = json!({
         "number": 43,
         "title": "Add logging feature",
@@ -1320,35 +1300,20 @@ fn test_reconcile_orphaned_prs_ignores_completed_merge_tasks() {
     snap.open_prs_data = vec![pr_data];
     snap.reviewed_prs.insert(43);
 
-    // Simulate a completed merge task exists for this PR
-    // (perhaps it was mistakenly completed, or there was a race condition)
-    let completed_merge_task = Task {
-        id: "1002".to_string(),
-        subject: "Merge PR #43 — reviewed, CI green".to_string(),
-        status: TaskStatus::Completed, // Task is completed
-        owner: None,
-        description: Some("PR #43 (Add logging feature) has been reviewed...".to_string()),
-        blocked_by: vec![],
-        channel: None,
-        pr: Some(43), // Associated with PR #43
-        created_at: None,
-    };
-
-    snap.all_tasks = vec![completed_merge_task];
+    // PR #43 has an active task association — it is NOT orphaned
+    snap.pr_task_associations.insert(43, "999".to_string());
 
     // Call reconcile_orphaned_prs
     let effects = reconcile_orphaned_prs(&snap);
 
-    // Should create a new merge task because the existing one is completed
-    let create_task_count = effects
+    // Should NOT nudge the lead because the PR has an active task
+    let nudge_count = effects
         .iter()
-        .filter(|e| matches!(e, Effect::CreateTask { .. }))
+        .filter(|e| matches!(e, Effect::NudgeLead { .. }))
         .count();
     assert_eq!(
-        create_task_count, 1,
-        "Should create a new merge task when the existing merge task is completed. \
-         BUG: Currently skips creation because all_tasks check includes completed tasks, \
-         leaving the PR stuck without an active merge task."
+        nudge_count, 0,
+        "Should NOT nudge the lead when the PR already has an active task"
     );
 }
 

@@ -74,6 +74,7 @@ fn test_usage_limit_nudge_only_targets_running_coworkers() {
         prs_needing_review: 0,
         reviewer_restart_counts: HashMap::new(),
         reviewer_escalations_posted: HashSet::new(),
+        orphaned_pr_lead_nudges_sent: HashSet::new(),
         coworkers_with_unblocked_deps: HashSet::new(),
         usage_limit_nudge_scheduled: true,
         // Set nudge time in the past so it fires
@@ -246,6 +247,7 @@ fn test_check_for_usage_limits_with_reset_time() {
         prs_needing_review: 0,
         reviewer_restart_counts: HashMap::new(),
         reviewer_escalations_posted: HashSet::new(),
+        orphaned_pr_lead_nudges_sent: HashSet::new(),
         coworkers_with_unblocked_deps: HashSet::new(),
         usage_limit_nudge_scheduled: false,
         usage_limit_nudge_at: None,
@@ -339,6 +341,7 @@ fn test_check_for_usage_limits_already_scheduled() {
         prs_needing_review: 0,
         reviewer_restart_counts: HashMap::new(),
         reviewer_escalations_posted: HashSet::new(),
+        orphaned_pr_lead_nudges_sent: HashSet::new(),
         coworkers_with_unblocked_deps: HashSet::new(),
         usage_limit_nudge_scheduled: true, // Already scheduled
         usage_limit_nudge_at: Some(tokio::time::Instant::now()),
@@ -467,6 +470,7 @@ fn empty_snap() -> snapshot::WorldSnapshot {
         prs_needing_review: 0,
         reviewer_restart_counts: HashMap::new(),
         reviewer_escalations_posted: HashSet::new(),
+        orphaned_pr_lead_nudges_sent: HashSet::new(),
         coworkers_with_unblocked_deps: HashSet::new(),
         usage_limit_nudge_scheduled: false,
         usage_limit_nudge_at: None,

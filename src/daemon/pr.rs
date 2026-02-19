@@ -3629,11 +3629,10 @@ fn collect_stale_check_effects_with_time(
     effects
 }
 
-/// Generate cleanup effects for recently merged PRs.
+/// Reconciles orphaned PRs by nudging the lead when a PR is reviewed + CI green
+/// but has no associated in_progress task.
 ///
-/// Uses the pre-computed `merged_pr_branches` map from WorldSnapshot to avoid I/O.
-/// Reconciles orphaned PRs: creates tasks for PRs that are reviewed + CI green
-/// but have no associated in_progress task.
+/// Uses the pre-computed `open_prs_data` from WorldSnapshot to avoid I/O.
 ///
 /// This handles the case where a PR was opened under the old lifecycle (task completed
 /// on PR open), leaving the PR orphaned with no one to merge it even after review + CI green.
@@ -3643,9 +3642,10 @@ fn collect_stale_check_effects_with_time(
 /// 2. It has a Claude review comment (in `reviewed_prs`)
 /// 3. All CI checks are passing (`all_ci_checks_passed`)
 /// 4. There's no in_progress task linked to it (not in `tasks_with_open_prs`)
+/// 5. The lead has not already been nudged about this PR (`orphaned_pr_lead_nudges_sent`)
 ///
-/// For each orphaned PR, creates a task: "Merge PR #X — reviewed, CI green"
-/// Normal task dispatch picks it up from there.
+/// For each orphaned PR, nudges the lead to decide the next action (tell the author
+/// to merge, or handle it manually). Does NOT create a task — the lead decides.
 ///
 /// This is the PR equivalent of orphan task recovery. Pure decision function that
 /// returns effects, following the same pattern as `reconcile_tasks_in_review()`.
@@ -3679,13 +3679,8 @@ pub fn reconcile_orphaned_prs(snap: &WorldSnapshot) -> Vec<Effect> {
             continue;
         }
 
-        // Skip if an active merge task already exists for this PR (prevents duplicates)
-        // Only check pending/in_progress tasks — completed tasks shouldn't block reconciliation
-        // (in case a task was mistakenly completed before the PR actually merged)
-        if snap.all_tasks.iter().any(|task| {
-            task.pr == Some(pr_number)
-                && !matches!(task.status, crate::tasks::TaskStatus::Completed)
-        }) {
+        // Skip if the lead has already been nudged about this PR (prevents repeated nudges)
+        if snap.orphaned_pr_lead_nudges_sent.contains(&pr_number) {
             continue;
         }
 
@@ -3711,22 +3706,20 @@ pub fn reconcile_orphaned_prs(snap: &WorldSnapshot) -> Vec<Effect> {
             .unwrap_or("(no title)");
 
         debug!(
-            "Found orphaned PR #{} ({}) - reviewed, CI green, no active task",
+            "Found orphaned PR #{} ({}) - reviewed, CI green, no active task — nudging lead",
             pr_number, title
         );
 
-        // Create a task to handle merging this PR
-        effects.push(Effect::CreateTask {
-            repo_name: snap.repo_name.clone(),
-            subject: format!("Merge PR #{} — reviewed, CI green", pr_number),
-            description: format!(
-                "PR #{} ({}) has been reviewed and has passing CI, but the original task was \
-                 completed before the new lifecycle. Review the PR and merge if appropriate.\n\n\
-                 Branch: {}",
-                pr_number, title, branch
+        // Nudge the lead to decide what to do with this PR
+        effects.push(Effect::NudgeLead {
+            message: format!(
+                "PR #{} ({}) is reviewed and CI is green, but has no active task. \
+                 Please check the PR and either tell the author to merge it or handle it manually.",
+                pr_number, title
             ),
-            pr: Some(pr_number),
         });
+        // Record that we've nudged the lead so we don't repeat on every tick
+        effects.push(Effect::RecordOrphanedPrLeadNudge { pr_number });
     }
 
     effects
