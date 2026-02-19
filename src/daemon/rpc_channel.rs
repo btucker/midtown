@@ -250,18 +250,11 @@ pub(super) async fn handle_channel_post(
                 match state.spawn_coworker(&config).await {
                     Ok(()) => true,
                     Err(e) => {
-                        error!("Failed to resume channel lead '{}': {}", channel_name, e);
-                        // Clean up placeholder if spawn failed
-                        if is_fresh {
-                            let mut ps = state.persistent_state.lock().await;
-                            ps.channel_lead_sessions.remove(channel_name);
-                            if let Err(save_err) = ps.save_for_repo(&state.repo_name) {
-                                error!(
-                                    "Failed to save daemon state after failed channel lead spawn: {}",
-                                    save_err
-                                );
-                            }
-                        }
+                        error!("Failed to spawn channel lead '{}': {}", channel_name, e);
+                        // Keep the placeholder in channel_lead_sessions even on spawn failure.
+                        // An empty-string placeholder is harmless (startup recovery handles it
+                        // with SessionMode::Fresh), and preserving it means the channel is
+                        // registered for restart recovery even if this spawn attempt failed.
                         false
                     }
                 }

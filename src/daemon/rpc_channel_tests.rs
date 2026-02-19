@@ -584,14 +584,10 @@ async fn test_fresh_spawn_registers_channel_lead_sessions() {
     .await;
     assert!(response.error.is_none(), "channel.post should succeed");
 
-    // The placeholder should have been registered in channel_lead_sessions.
-    // If spawn succeeded, it stays; if spawn failed, it gets cleaned up.
-    // Either way, the registration happened before spawn — which is the key invariant.
-    // We verify the placeholder was inserted by checking that a save occurred
-    // (the state file should exist or be updated).
-    //
-    // In the test environment, spawn_coworker succeeds (process starts then dies),
-    // so the placeholder should remain.
+    // The placeholder is registered before spawn and kept regardless of whether
+    // spawn succeeds or fails. An empty-string placeholder is harmless — startup
+    // recovery handles it with SessionMode::Fresh. Keeping it ensures the channel
+    // is registered for restart recovery even if this spawn attempt failed.
     {
         let ps = state.persistent_state.lock().await;
         assert!(
