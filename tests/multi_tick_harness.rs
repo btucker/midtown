@@ -229,6 +229,14 @@ impl MultiTickHarness {
                 Effect::AutoDetachCoworker { name } => {
                     self.snapshot.attached_coworkers.remove(name);
                 }
+                Effect::RecordOrphanedPrLeadNudge { pr_number } => {
+                    self.snapshot
+                        .orphaned_pr_lead_nudges_sent
+                        .insert(*pr_number);
+                }
+                Effect::ClearOrphanedPrLeadNudge { pr_number } => {
+                    self.snapshot.orphaned_pr_lead_nudges_sent.remove(pr_number);
+                }
                 Effect::RecordCooldown { .. } => {
                     // Cooldowns are tracked in DaemonState, not WorldSnapshot.
                     // Cannot simulate without DaemonState.

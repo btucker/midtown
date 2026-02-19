@@ -230,6 +230,10 @@ pub struct WorldSnapshot {
     /// PR numbers for which a reviewer escalation warning has already been posted.
     /// Prevents the escalation warning from firing every tick after max restarts.
     pub reviewer_escalations_posted: HashSet<u64>,
+    /// PR numbers for which the lead has already been nudged about an orphaned PR.
+    /// Prevents `reconcile_orphaned_prs` from nudging on every polling tick.
+    #[serde(default)]
+    pub orphaned_pr_lead_nudges_sent: HashSet<u64>,
     /// GitHub API rate limit state (GraphQL and REST quotas).
     /// Used by adaptive throttling to reduce polling frequency when quotas run low.
     pub github_rate_limit: crate::github_rate_limit::GitHubRateLimit,
@@ -624,6 +628,12 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
         posted.clone()
     };
 
+    // ── Orphaned PR lead nudge deduplication ──────────────────────────
+    let orphaned_pr_lead_nudges_sent: HashSet<u64> = {
+        let sent = state.orphaned_pr_lead_nudges_sent.lock().unwrap();
+        sent.clone()
+    };
+
     // Get all reviewed PRs from persistent state (not just assigned ones)
     // This ensures orphaned PRs (those without active reviewers/tasks) are included
     let reviewed_prs = {
@@ -865,6 +875,7 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
         prs_needing_review,
         reviewer_restart_counts,
         reviewer_escalations_posted,
+        orphaned_pr_lead_nudges_sent,
         github_rate_limit,
         freshly_fetched_rate_limit: None,
         coworkers_with_unblocked_deps,
@@ -949,6 +960,7 @@ pub(super) fn minimal_snapshot_for_test() -> WorldSnapshot {
         prs_needing_review: 0,
         reviewer_restart_counts: HashMap::new(),
         reviewer_escalations_posted: HashSet::new(),
+        orphaned_pr_lead_nudges_sent: HashSet::new(),
         coworkers_with_unblocked_deps: HashSet::new(),
         usage_limit_nudge_scheduled: false,
         usage_limit_nudge_at: None,

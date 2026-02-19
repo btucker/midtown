@@ -164,7 +164,7 @@ pub async fn evaluate_tick(
                 }
             }
 
-            // Reconcile orphaned PRs: create tasks for reviewed + CI green PRs with no active task
+            // Reconcile orphaned PRs: nudge lead for reviewed + CI green PRs with no active task
             effects.extend(super::pr::reconcile_orphaned_prs(snap));
 
             // Auto-complete tasks whose subjects reference only merged PRs
