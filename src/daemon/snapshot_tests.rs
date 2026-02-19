@@ -254,6 +254,7 @@ fn test_active_names_includes_headless_coworkers() {
             has_running_subagent: false,
             has_pending_tool: false,
             has_tool_name_conflict: false,
+            has_pending_api_call: false,
             exit_code: None,
         },
     );
@@ -269,6 +270,7 @@ fn test_active_names_includes_headless_coworkers() {
             has_running_subagent: false,
             has_pending_tool: false,
             has_tool_name_conflict: false,
+            has_pending_api_call: false,
             exit_code: None,
         },
     );
@@ -284,6 +286,7 @@ fn test_active_names_includes_headless_coworkers() {
             has_running_subagent: false,
             has_pending_tool: false,
             has_tool_name_conflict: false,
+            has_pending_api_call: false,
             exit_code: Some(0),
         },
     );
@@ -620,4 +623,48 @@ fn test_snapshot_includes_session_fields() {
     assert!(deserialized.session_task_map.is_empty());
     assert!(deserialized.session_name_map.is_empty());
     assert!(deserialized.name_session_map.is_empty());
+}
+
+/// Precondition test: the captured bug snapshot has coworkers running but the
+/// sessions map is empty. This demonstrates the bug where spawn_coworker() writes
+/// to headless_sessions (name-keyed) but not to sessions (session-ID-keyed).
+#[test]
+fn test_captured_snapshot_has_empty_sessions_despite_running_coworkers() {
+    let fixture = include_str!(
+        "../../tests/fixtures/snapshot/snapshot-no-one-working-on-1625-20260219-193645.json"
+    );
+    let snapshot: WorldSnapshot = serde_json::from_str(fixture).unwrap();
+    // The bug: coworkers are active but sessions map is empty
+    assert!(
+        !snapshot.active_coworkers.is_empty(),
+        "Bug snapshot should have active coworkers"
+    );
+    assert!(
+        snapshot.sessions.is_empty(),
+        "Bug snapshot should have empty sessions map (demonstrating the bug)"
+    );
+}
+
+/// Verify that session_health_map translates name-keyed health to session-ID-keyed.
+#[test]
+fn test_snapshot_session_health_map_populated() {
+    let fixture = include_str!(
+        "../../tests/fixtures/snapshot/snapshot-no-one-working-on-1625-20260219-193645.json"
+    );
+    let mut snapshot: WorldSnapshot = serde_json::from_str(fixture).unwrap();
+    // Manually wire up session mapping (Task 1 ensures this happens at runtime).
+    snapshot
+        .name_session_map
+        .insert("vernon".to_string(), "sess-123".to_string());
+    snapshot
+        .headless_process_health
+        .insert("vernon".to_string(), ProcessHealth::default());
+    // Also add a name without a session mapping — should be excluded.
+    snapshot
+        .headless_process_health
+        .insert("orphan".to_string(), ProcessHealth::default());
+
+    let health = snapshot.session_health_map();
+    assert!(health.contains_key("sess-123"));
+    assert!(!health.contains_key("orphan"));
 }

@@ -189,10 +189,18 @@ pub fn check_and_shutdown_idle_coworkers(snap: &snapshot::WorldSnapshot) -> Vec<
             status: "stopped".to_string(),
             current_task: None,
         });
-        effects.push(Effect::ShutdownCoworker {
-            name: name.clone(),
-            message: String::new(),
-        });
+        // Prefer session-centric shutdown when session mapping exists.
+        if let Some(session_id) = snap.name_session_map.get(name) {
+            effects.push(Effect::ShutdownSession {
+                session_id: session_id.clone(),
+                reason: format!("idle shutdown: {}", name),
+            });
+        } else {
+            effects.push(Effect::ShutdownCoworker {
+                name: name.clone(),
+                message: String::new(),
+            });
+        }
         // Clean the coworker's target/ directory to reclaim disk space.
         // Resolve working_dir from the snapshot so we target the actual
         // directory (task-based worktree), not the legacy coworker-named path.
@@ -281,10 +289,20 @@ pub(super) async fn check_and_restart_stuck_coworkers(
         // Apply task model if available (sets both provider and model)
         config.apply_task_model(&snap.task_model_map, &restart.task_id);
 
-        effects.push(Effect::ShutdownCoworker {
-            name: restart.name.clone(),
-            message: String::new(),
-        });
+        if let Some(session_id) = snap.name_session_map.get(&restart.name) {
+            effects.push(Effect::ShutdownSession {
+                session_id: session_id.clone(),
+                reason: format!(
+                    "stuck coworker: {} (task !{})",
+                    restart.name, restart.task_id
+                ),
+            });
+        } else {
+            effects.push(Effect::ShutdownCoworker {
+                name: restart.name.clone(),
+                message: String::new(),
+            });
+        }
         effects.push(Effect::SpawnCoworker(config));
         effects.push(Effect::PostToChannel {
             sender: "midtown".to_string(),
@@ -345,10 +363,20 @@ pub fn check_and_restart_stuck_reviewers(snap: &snapshot::WorldSnapshot) -> Vec<
         );
 
         // Shut down the stuck reviewer
-        effects.push(Effect::ShutdownCoworker {
-            name: restart.name.clone(),
-            message: String::new(),
-        });
+        if let Some(session_id) = snap.name_session_map.get(&restart.name) {
+            effects.push(Effect::ShutdownSession {
+                session_id: session_id.clone(),
+                reason: format!(
+                    "stuck reviewer: {} (PR #{})",
+                    restart.name, restart.pr_number
+                ),
+            });
+        } else {
+            effects.push(Effect::ShutdownCoworker {
+                name: restart.name.clone(),
+                message: String::new(),
+            });
+        }
 
         // Respawn with incremented restart count
         let worktree_id = crate::worktree_registry::review_slug_for_pr(restart.pr_number);

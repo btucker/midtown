@@ -510,6 +510,7 @@ fn verify_claude_process(pid: u32) -> bool {
 pub async fn recover_headless_sessions(
     persistent_state: &tokio::sync::Mutex<DaemonPersistentState>,
     repo_name: &str,
+    skip_session_ids: &HashSet<String>,
 ) -> Vec<Effect> {
     let mut effects = Vec::new();
 
@@ -522,7 +523,7 @@ pub async fn recover_headless_sessions(
             .headless_sessions
             .iter()
             .filter_map(|(name, info)| {
-                if info.resume_on_startup {
+                if info.resume_on_startup && !skip_session_ids.contains(&info.session_id) {
                     Some((name.clone(), info.clone()))
                 } else {
                     None
@@ -666,7 +667,8 @@ pub async fn recover_headless_sessions(
     effects
 }
 
-/// Extract the names of coworkers being recovered from persisted headless sessions.
+/// Extract the names of coworkers being recovered from persisted headless sessions
+/// and session records.
 ///
 /// Called during startup to pre-register recovering coworkers in the daemon's
 /// tracking maps BEFORE executing recovery effects. This prevents the task
@@ -676,7 +678,9 @@ pub async fn recovering_coworker_names(
     persistent_state: &tokio::sync::Mutex<DaemonPersistentState>,
 ) -> Vec<String> {
     let state = persistent_state.lock().await;
-    state
+
+    // Collect from headless_sessions (legacy)
+    let mut names: Vec<String> = state
         .headless_sessions
         .iter()
         .filter_map(|(name, info)| {
@@ -686,7 +690,22 @@ pub async fn recovering_coworker_names(
                 None
             }
         })
-        .collect()
+        .collect();
+
+    // Also collect from session records (new)
+    for record in state.sessions.values() {
+        if record.resume_on_startup
+            && let Some(name) = record
+                .preferred_name
+                .as_ref()
+                .or(record.current_name.as_ref())
+            && !names.contains(name)
+        {
+            names.push(name.clone());
+        }
+    }
+
+    names
 }
 
 /// Collect PIDs of headless sessions that should be recovered on startup.
@@ -704,6 +723,100 @@ pub async fn recoverable_session_pids(
         .filter(|info| info.resume_on_startup)
         .filter_map(|info| info.pid)
         .collect()
+}
+
+/// Recover sessions from the session-centric `sessions` map.
+///
+/// Iterates `persistent_state.sessions` (SessionRecord), filters for
+/// `resume_on_startup: true`, and emits `ResumeCoworker` effects.
+/// Returns the set of session_ids that were recovered, so the caller
+/// can deduplicate with `recover_headless_sessions`.
+pub async fn recover_from_session_records(
+    persistent_state: &tokio::sync::Mutex<DaemonPersistentState>,
+    repo_name: &str,
+) -> (Vec<Effect>, HashSet<String>) {
+    let mut effects = Vec::new();
+    let mut recovered_session_ids = HashSet::new();
+
+    let sessions = {
+        let ps = persistent_state.lock().await;
+        ps.sessions
+            .iter()
+            .filter(|(_, record)| record.resume_on_startup)
+            .map(|(session_id, record)| (session_id.clone(), record.clone()))
+            .collect::<Vec<_>>()
+    };
+
+    if sessions.is_empty() {
+        return (effects, recovered_session_ids);
+    }
+
+    info!(
+        "Recovering {} session(s) from session records",
+        sessions.len()
+    );
+
+    for (session_id, record) in sessions {
+        // Skip channel leads — recovered separately
+        if record.coworker_type == "channel-lead" {
+            info!(
+                "Skipping channel lead session '{}' — recovered by channel lead recovery",
+                session_id
+            );
+            continue;
+        }
+
+        let name = record
+            .preferred_name
+            .as_deref()
+            .or(record.current_name.as_deref())
+            .unwrap_or("unknown");
+
+        info!(
+            "Recovering session {} for {} (type={}, task={:?})",
+            session_id, name, record.coworker_type, record.task_id
+        );
+
+        // Build launch config from SessionRecord
+        let mut config = if record.is_reviewer {
+            if let Some(pr_number) = record.pr_number {
+                LaunchConfig::reviewer(name, pr_number)
+            } else {
+                warn!("Reviewer session {} has no PR number, skipping", session_id);
+                continue;
+            }
+        } else if let Some(ref task_id) = record.task_id {
+            let initial_prompt = format!(
+                "You've been assigned task !{}. Run `midtown task view {}` for full details.",
+                task_id, task_id
+            );
+            LaunchConfig::coworker(
+                name,
+                repo_name,
+                crate::launch::SessionMode::Fresh, // Will be overridden by ResumeCoworker effect
+                Some(initial_prompt),
+            )
+        } else {
+            LaunchConfig::coworker(name, repo_name, crate::launch::SessionMode::Fresh, None)
+        };
+
+        // Restore working directory from session record
+        if !record.working_dir.is_empty() {
+            config.working_dir = Some(std::path::PathBuf::from(&record.working_dir));
+        }
+
+        // Clear auth_profile_dir to re-resolve from project config
+        config.auth_profile_dir = None;
+
+        recovered_session_ids.insert(session_id.clone());
+        effects.push(Effect::ResumeCoworker {
+            name: name.to_string(),
+            session_id,
+            config,
+        });
+    }
+
+    (effects, recovered_session_ids)
 }
 
 /// Recover channel lead sessions from persisted state after daemon restart.

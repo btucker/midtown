@@ -1,4 +1,4 @@
-//! Task dispatch — orphan recovery, duplicate detection, pending task spawning.
+//! Task dispatch — session-aware in_progress recovery, duplicate detection, pending task spawning.
 //!
 //! These functions run on the `TaskDispatchTick` event and coordinate coworker
 //! lifecycle around the shared task list. They read from `WorldSnapshot` and
@@ -162,6 +162,7 @@ fn task_completed_effects(task_id: &str, repo_name: &str, channel_message: Strin
 
 /// Look up the session record for a task, if one exists.
 /// Returns None if no session is associated with this task.
+#[cfg(test)]
 fn find_session_for_task<'a>(
     task_id: &str,
     snap: &'a snapshot::WorldSnapshot,
@@ -228,15 +229,10 @@ fn is_pr_merged(pr_number: u64, repo_path: &std::path::Path) -> Option<bool> {
 
 /// Determine whether an orphaned task should be recovered.
 ///
-/// Pure decision function: returns `true` if the task should be recovered,
-/// `false` if it should be skipped. A task should NOT be recovered if:
-/// - It is already completed (race condition: RPC marked it done after snapshot)
-/// - It has an explicit `pr` field pointing to a merged PR
-/// - It has an open PR tracked via pr_task_associations (tasks_with_open_prs)
-/// - It has an open PR detected from GitHub PR titles (github_open_pr_task_ids)
-///
-/// All data except the `is_pr_merged` fallback is pre-collected during snapshot collection.
-/// The `is_pr_merged` call is a pre-existing safety net for stale merged PR caches.
+/// Production dispatch uses `should_recover_task_optional_repo` (which handles
+/// optional repo_path). This version is kept for the integration test helper
+/// `should_recover_task_test_helper` and the legacy `check_and_recover_orphans`
+/// test path.
 fn should_recover_task(
     task: &crate::tasks::Task,
     merged_pr_numbers: &HashSet<u64>,
@@ -348,6 +344,9 @@ fn should_recover_task(
 ///
 /// Rate limiting: Only spawns ONE coworker per tick with a cooldown between
 /// spawns to prevent window flashing from spawn storms.
+// Legacy: kept for existing tests. Will be removed in cleanup task.
+#[cfg(test)]
+#[allow(dead_code)]
 pub fn check_and_recover_orphans(
     snap: &snapshot::WorldSnapshot,
     state: &DaemonState,
@@ -355,6 +354,8 @@ pub fn check_and_recover_orphans(
     check_and_recover_orphans_with_task_lookup(snap, state, crate::tasks::read_task)
 }
 
+// Legacy: kept for existing tests. Will be removed in cleanup task.
+#[cfg(test)]
 fn check_and_recover_orphans_with_task_lookup<F>(
     snap: &snapshot::WorldSnapshot,
     state: &DaemonState,
@@ -654,13 +655,13 @@ where
     pre_spawn
 }
 
-/// Extract task IDs claimed by orphan recovery effects.
+/// Extract task IDs claimed by dispatch_via_sessions effects.
 ///
 /// Scans effects for `RecordTaskAssignment` — both as top-level effects
-/// (session-aware resume path) and nested inside `SpawnCoworkerWithCallbacks`
-/// on_success callbacks (legacy fresh spawn path). Used by `events.rs` to build
-/// an exclusion set for `spawn_for_pending_tasks_excluding`, preventing dual-spawn
-/// when orphan recovery and pending dispatch both target the same task in one tick.
+/// and nested inside `SpawnCoworkerWithCallbacks` on_success callbacks.
+/// Used by `events.rs` to build an exclusion set for
+/// `spawn_for_pending_tasks_excluding`, preventing dual-spawn when
+/// in_progress recovery and pending dispatch both target the same task in one tick.
 pub(super) fn extract_claimed_task_ids_from_effects(effects: &[Effect]) -> HashSet<String> {
     let mut ids = HashSet::new();
     for effect in effects {
@@ -683,18 +684,57 @@ pub(super) fn extract_claimed_task_ids_from_effects(effects: &[Effect]) -> HashS
     ids
 }
 
-/// Session-aware dispatch: check if in_progress tasks have associated sessions
-/// and attempt recovery through session data when available.
+/// Session-aware dispatch for all in_progress tasks.
 ///
-/// This complements `check_and_recover_orphans` by providing a session-first
-/// lookup path. Tasks with session records get their preferred name and
-/// working directory preserved across restarts.
+/// Handles three cases:
+/// 1. Task has running session -> skip (being worked on)
+/// 2. Task has stopped session -> resume via SpawnCoworkerWithCallbacks
+/// 3. Task has no session record -> apply recovery filtering (PR merge checks,
+///    dev limit, grace period) and fresh spawn if eligible
+///
+/// Replaces the former `check_and_recover_orphans` which handled case 3 separately.
+/// Rate-limited to one spawn per tick across all paths.
 ///
 /// Note: not fully pure — `build_plan_prompt_section` reads plan files from disk.
-/// This is consistent with `check_and_recover_orphans_with_task_lookup`; plan I/O
-/// is intentionally kept here rather than pre-loading all plan files into the snapshot.
 /// Cooldown state is pre-evaluated into the snapshot by `collect_world_snapshot()`.
-pub fn dispatch_via_sessions(snap: &snapshot::WorldSnapshot) -> Vec<effects::Effect> {
+pub(super) fn dispatch_via_sessions(
+    snap: &snapshot::WorldSnapshot,
+    state: &DaemonState,
+) -> Vec<effects::Effect> {
+    let repo_path = state.all_repo_paths.first().map(|p| p.as_path());
+    dispatch_via_sessions_with_task_lookup(snap, repo_path, crate::tasks::read_task)
+}
+
+/// Internal implementation of dispatch_via_sessions, testable without DaemonState.
+#[cfg(test)]
+pub(super) fn dispatch_via_sessions_for_test<F>(
+    snap: &snapshot::WorldSnapshot,
+    repo_path: Option<&std::path::Path>,
+    task_lookup: F,
+) -> Vec<effects::Effect>
+where
+    F: Fn(&str) -> Option<crate::tasks::Task>,
+{
+    dispatch_via_sessions_with_task_lookup(snap, repo_path, task_lookup)
+}
+
+/// Snapshot-only dispatch_via_sessions for integration tests (no DaemonState needed).
+///
+/// Uses `crate::tasks::read_task` for task lookup and no repo_path (skips
+/// direct GitHub PR merge checks).
+#[doc(hidden)]
+pub fn dispatch_via_sessions_snapshot_only(snap: &snapshot::WorldSnapshot) -> Vec<effects::Effect> {
+    dispatch_via_sessions_with_task_lookup(snap, None, crate::tasks::read_task)
+}
+
+fn dispatch_via_sessions_with_task_lookup<F>(
+    snap: &snapshot::WorldSnapshot,
+    repo_path: Option<&std::path::Path>,
+    task_lookup: F,
+) -> Vec<effects::Effect>
+where
+    F: Fn(&str) -> Option<crate::tasks::Task>,
+{
     // Check cooldown - skip if we dispatched too recently
     if snap.session_dispatch_cooldown_active {
         debug!("Session dispatch cooldown active");
@@ -706,13 +746,17 @@ pub fn dispatch_via_sessions(snap: &snapshot::WorldSnapshot) -> Vec<effects::Eff
     }
 
     let mut effects = Vec::new();
+    let mut tasks_without_sessions: Vec<(String, String, String)> = Vec::new();
 
     for (task_id, task_subject, owner) in &snap.in_progress_tasks {
-        // Only handle tasks that have session records. Tasks without session
-        // records are left for the existing check_and_recover_orphans path.
+        // Check if this task has a session record.
         let session_id = match snap.session_task_map.get(task_id) {
             Some(id) => id,
-            None => continue,
+            None => {
+                // No session record — collect for legacy fallback path below.
+                tasks_without_sessions.push((task_id.clone(), task_subject.clone(), owner.clone()));
+                continue;
+            }
         };
 
         let record = match snap.sessions.get(session_id) {
@@ -858,7 +902,268 @@ pub fn dispatch_via_sessions(snap: &snapshot::WorldSnapshot) -> Vec<effects::Eff
         break;
     }
 
+    // If the session-aware loop already spawned a coworker, return immediately.
+    // Rate-limited to one spawn per tick.
+    if !effects.is_empty() {
+        return effects;
+    }
+
+    // ── Fallback: handle tasks WITHOUT session records ──────────────────
+    // This replaces the former check_and_recover_orphans path. Tasks here
+    // are in_progress but have no session data — either legacy tasks or
+    // tasks whose session was lost.
+    if tasks_without_sessions.is_empty() {
+        return effects;
+    }
+
+    // At dev limit — cannot spawn any more coworkers.
+    if snap.is_at_dev_limit {
+        debug!("At dev limit — skipping no-session fallback dispatch");
+        return effects;
+    }
+
+    // Compute recently-stopped coworkers (within grace period).
+    // When a coworker completes work and goes idle -> shutdown, the task may
+    // not yet be marked done. This grace period prevents false orphan recovery
+    // by giving the system time to process the task completion.
+    let grace_period = chrono::Duration::seconds(ORPHAN_RECOVERY_GRACE_PERIOD.as_secs() as i64);
+    let recently_stopped: HashSet<String> = snap
+        .coworker_stop_times
+        .iter()
+        .filter(|(_, stop_time)| snap.now_utc.signed_duration_since(**stop_time) < grace_period)
+        .map(|(name, _)| name.clone())
+        .collect();
+
+    // Use the same pure decision function from rules.rs that orphan recovery used.
+    // This ensures identical filtering behavior (active check, attached check,
+    // recently-stopped grace period, open PR without feedback check).
+    let orphan_ctx = crate::rules::OrphanRecoveryContext {
+        in_progress: &tasks_without_sessions,
+        active_names: &snap.active_names,
+        at_dev_limit: snap.is_at_dev_limit,
+        coworkers_with_open_prs: &snap.coworkers_with_open_prs,
+        review_feedback_pr_coworkers: &snap.review_feedback_pr_coworkers,
+        recently_stopped: &recently_stopped,
+        attached_coworkers: &snap.attached_coworkers,
+    };
+    let recovery = match crate::rules::decide_orphan_recovery(&orphan_ctx) {
+        Some(r) => r,
+        None => return effects,
+    };
+
+    // Read full task from disk to apply should_recover_task filtering
+    // (PR merge checks, completed check, open PR checks).
+    if let Some(task) = task_lookup(&recovery.task_id)
+        && !should_recover_task_optional_repo(
+            &task,
+            &snap.merged_pr_numbers,
+            repo_path,
+            &snap.tasks_with_open_prs,
+            &snap.github_open_pr_task_ids,
+        )
+    {
+        debug!(
+            "Task !{} failed should_recover_task filtering — skipping fresh spawn",
+            recovery.task_id
+        );
+        return effects;
+    }
+
+    // Check per-coworker spawn failure cooldown (pre-evaluated in snapshot)
+    if snap
+        .spawn_failure_cooldown_names
+        .contains(&recovery.owner.to_lowercase())
+    {
+        debug!(
+            "Spawn failure cooldown active for {} — skipping fresh spawn for task !{}",
+            recovery.owner, recovery.task_id
+        );
+        return effects;
+    }
+
+    info!(
+        "Session dispatch (no-session fallback): fresh spawn for task !{} (owner: {})",
+        recovery.task_id, recovery.owner
+    );
+
+    let plan_section = build_plan_prompt_section(&recovery.task_id, snap);
+    let prompt = format_task_prompt(
+        &recovery.task_id,
+        &format!(
+            "You've been assigned task !{}: {}. Your previous session was interrupted but your worktree and branch are still intact. Check your git status and get started!{}",
+            recovery.task_id, recovery.task_subject, plan_section
+        ),
+    );
+
+    // Set channel from task if available
+    let channel = snap
+        .all_tasks
+        .iter()
+        .find(|t| t.id == recovery.task_id)
+        .and_then(|t| t.channel.clone());
+
+    // Prepare worktree (reuse existing or create new)
+    let wt = prepare_task_worktree(
+        &recovery.task_id,
+        &recovery.task_subject,
+        &snap.repo_name,
+        snap,
+    );
+
+    let mut config = crate::launch::LaunchConfig::coworker(
+        recovery.owner.clone(),
+        snap.repo_name.clone(),
+        crate::launch::SessionMode::Fresh,
+        Some(prompt),
+    );
+    config.working_dir = Some(wt.path);
+    config.channel = channel;
+
+    // Apply task model if available (sets both provider and model)
+    config.apply_task_model(&snap.task_model_map, &recovery.task_id);
+
+    // Pre-spawn effects: create worktree and register assignment BEFORE spawning.
+    let mut pre_spawn = wt.pre_spawn_effects;
+
+    // Post-spawn success effects
+    let on_success = vec![
+        Effect::RecordTaskAssignment {
+            coworker: recovery.owner.clone(),
+            task_id: recovery.task_id.clone(),
+        },
+        Effect::BindCoworkerToWorktree {
+            worktree_id: wt.worktree_id,
+            coworker: recovery.owner.clone(),
+        },
+        Effect::BroadcastCoworkerUpdate {
+            name: recovery.owner.clone(),
+            status: "running".to_string(),
+            current_task: None,
+        },
+        Effect::RecordCooldown {
+            category: "session_dispatch".to_string(),
+            key: "global".to_string(),
+        },
+        Effect::PostToChannel {
+            sender: "midtown".to_string(),
+            message: format!(
+                "Session dispatch: fresh spawn for orphaned task !{} (coworker {})",
+                recovery.task_id, recovery.owner
+            ),
+            channel: Some(OPS_CHANNEL.to_string()),
+        },
+    ];
+
+    // EnsureWorktree + RegisterWorktreeAssignment run first, then spawn
+    pre_spawn.push(Effect::SpawnCoworkerWithCallbacks {
+        config,
+        on_success,
+        on_failure: vec![
+            Effect::RecordCooldown {
+                category: "spawn_failure".to_string(),
+                key: recovery.owner.clone(),
+            },
+            Effect::ResetTaskToPending {
+                task_id: recovery.task_id.clone(),
+                repo_name: snap.repo_name.clone(),
+            },
+            Effect::PostToChannel {
+                sender: "midtown".to_string(),
+                message: format!(
+                    "Task !{} reset to pending - {} could not be spawned (backing off for {}s)",
+                    recovery.task_id,
+                    recovery.owner,
+                    SPAWN_FAILURE_COOLDOWN.as_secs()
+                ),
+                channel: Some(OPS_CHANNEL.to_string()),
+            },
+        ],
+    });
+    effects.extend(pre_spawn);
+
     effects
+}
+
+/// Variant of `should_recover_task` that accepts an optional repo_path.
+/// When repo_path is None, skips the `is_pr_merged` direct GitHub check
+/// (used in tests where GitHub API is unavailable).
+fn should_recover_task_optional_repo(
+    task: &crate::tasks::Task,
+    merged_pr_numbers: &HashSet<u64>,
+    repo_path: Option<&std::path::Path>,
+    tasks_with_open_prs: &HashMap<String, u64>,
+    github_open_pr_task_ids: &HashMap<String, u64>,
+) -> bool {
+    // Check if task is already completed
+    if task.status == crate::tasks::TaskStatus::Completed {
+        debug!("Skipping recovery for task !{}: already completed", task.id);
+        return false;
+    }
+
+    // Check if this task has an open PR tracked via pr_task_associations.
+    if let Some(&pr_number) = tasks_with_open_prs.get(&task.id) {
+        if !merged_pr_numbers.contains(&pr_number) {
+            debug!(
+                "Skipping recovery for task !{}: has open PR via pr_task_associations (PR #{})",
+                task.id, pr_number
+            );
+            return false;
+        } else {
+            debug!(
+                "Task !{} is in pr_task_associations but PR #{} is merged, allowing recovery for auto-completion",
+                task.id, pr_number
+            );
+        }
+    }
+
+    // Check if this task has an explicit PR association that's already merged.
+    if let Some(pr_number) = task.pr {
+        // Check cache first (fast path)
+        if merged_pr_numbers.contains(&pr_number) {
+            debug!(
+                "Skipping recovery for task !{}: explicit PR #{} is in merged cache",
+                task.id, pr_number
+            );
+            return false;
+        }
+
+        // Cache miss — check GitHub directly (safety net against stale cache).
+        // Only attempt when repo_path is available (skipped in tests).
+        if let Some(path) = repo_path {
+            match is_pr_merged(pr_number, path) {
+                Some(true) => {
+                    info!(
+                        "Skipping recovery for task !{}: explicit PR #{} is merged (direct check)",
+                        task.id, pr_number
+                    );
+                    return false;
+                }
+                Some(false) => {
+                    debug!(
+                        "PR #{} is open/closed (not merged), allowing recovery for task !{}",
+                        pr_number, task.id
+                    );
+                }
+                None => {
+                    warn!(
+                        "Failed to check PR #{} merge status for task !{}, allowing recovery",
+                        pr_number, task.id
+                    );
+                }
+            }
+        }
+    }
+
+    // Defense-in-depth: Check if GitHub has an open PR with [Midtown !{task_id}] in the title.
+    if let Some(&open_pr) = github_open_pr_task_ids.get(&task.id) {
+        info!(
+            "Skipping recovery for task !{}: found open PR #{} via GitHub PR title pattern",
+            task.id, open_pr
+        );
+        return false;
+    }
+
+    true
 }
 
 /// Gather data and build effects for nudging coworkers discovered on daemon startup.
@@ -1809,6 +2114,65 @@ pub(super) fn spawn_for_pending_tasks_excluding(
                 repo_name: snap.repo_name.clone(),
             });
             continue;
+        }
+
+        // Session-aware dispatch: if this pending task has a stopped session
+        // from a previous attempt, resume it instead of spawning fresh.
+        // This preserves context and worktree state from the previous run.
+        if let Some(session_id) = snap.session_task_map.get(&task.id)
+            && let Some(record) = snap.sessions.get(session_id)
+        {
+            if !record.is_running {
+                info!(
+                    "Pending task !{} has stopped session {} — resuming instead of spawning fresh",
+                    task.id, record.session_id
+                );
+                let plan_section = build_plan_prompt_section(&task.id, snap);
+                let prompt = format_task_prompt(
+                    &task.id,
+                    &format!(
+                        "You've been assigned task !{}: {}. Your previous session was interrupted but your worktree and branch are still intact. Check your git status and get started!{}",
+                        task.id, task.subject, plan_section
+                    ),
+                );
+                let wt = prepare_task_worktree(&task.id, &task.subject, &snap.repo_name, snap);
+                let working_dir = if !record.working_dir.is_empty() {
+                    std::path::PathBuf::from(&record.working_dir)
+                } else {
+                    wt.path.clone()
+                };
+                let mut config = crate::launch::LaunchConfig::coworker(
+                    record.preferred_name.clone().unwrap_or_default(),
+                    snap.repo_name.clone(),
+                    crate::launch::SessionMode::ResumeSession(record.session_id.clone()),
+                    Some(prompt),
+                );
+                config.working_dir = Some(working_dir.clone());
+                config.channel = task.channel.clone();
+                config.apply_task_model(&snap.task_model_map, &task.id);
+
+                effects.extend(wt.pre_spawn_effects);
+                effects.push(effects::Effect::SpawnSession {
+                    session_id: record.session_id.clone(),
+                    task_id: task.id.clone(),
+                    working_dir,
+                    initial_prompt: config.initial_prompt.clone().unwrap_or_default(),
+                    preferred_name: record.preferred_name.clone(),
+                    is_reviewer: false,
+                    resume: true,
+                    config: Box::new(config),
+                });
+                spawns_queued_this_tick += 1;
+                continue;
+            }
+            // Session is running — task is already being worked on. Skip.
+            if record.is_running {
+                debug!(
+                    "Pending task !{} has running session {} — skipping dispatch",
+                    task.id, record.session_id
+                );
+                continue;
+            }
         }
 
         // Step 1: Determine the coworker name by checking multiple grouping strategies.

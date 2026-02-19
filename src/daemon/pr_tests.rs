@@ -1117,6 +1117,7 @@ fn make_pr_context_with_task(pr_number: u64, task_id: &str) -> PrContext {
         pr_task_associations,
         task_channel: std::collections::HashMap::new(),
         session_context: None,
+        task_session_id: None,
     }
 }
 
@@ -1126,6 +1127,7 @@ fn make_pr_context_empty() -> PrContext {
         pr_task_associations: std::collections::HashMap::new(),
         task_channel: std::collections::HashMap::new(),
         session_context: None,
+        task_session_id: None,
     }
 }
 
@@ -1418,6 +1420,7 @@ fn pr_action_to_effects_includes_record_task_assignment() {
         pr_task_associations,
         task_channel: HashMap::new(),
         session_context: None,
+        task_session_id: None,
     };
 
     // Call pr_action_to_effects with SpawnOwner action
@@ -1471,6 +1474,7 @@ fn comment_action_to_effects_includes_record_task_assignment() {
         pr_task_associations,
         task_channel: HashMap::new(),
         session_context: None,
+        task_session_id: None,
     };
 
     let effects = comment_action_to_effects(
@@ -1520,6 +1524,7 @@ fn handoff_to_coworker_effects_includes_record_task_assignment() {
         pr_task_associations,
         task_channel: HashMap::new(),
         session_context: None,
+        task_session_id: None,
     };
 
     let effects = handoff_to_coworker_effects(
@@ -1572,6 +1577,7 @@ fn review_complete_action_to_effects_includes_record_task_assignment() {
         pr_task_associations,
         task_channel: HashMap::new(),
         session_context: None,
+        task_session_id: None,
     };
 
     let effects = review_complete_action_to_effects(
@@ -1987,5 +1993,208 @@ async fn test_poll_prs_session_based_owner_resolution() {
         nudges_madison,
         "Expected nudge to 'madison' (session-based owner), not 'lexington' (branch-based). Effects: {:#?}",
         effects
+    );
+}
+
+/// PrContext::from_persistent_state should populate task_session_id when a PR's
+/// task has a corresponding session in persistent_state.sessions.
+#[test]
+fn test_pr_context_task_session_id_populated() {
+    use crate::github_state::PrAuthorSession;
+
+    let mut ps = super::super::state::DaemonPersistentState::default();
+
+    // PR #42 has a pr_author_session with task_id "100"
+    ps.github.pr_author_sessions.insert(
+        42,
+        PrAuthorSession {
+            session_id: "old-session".to_string(),
+            branch: "lexington/fix-auth".to_string(),
+            original_author: "lexington".to_string(),
+            stored_at: chrono::Utc::now(),
+            task_id: Some("100".to_string()),
+        },
+    );
+
+    // Session "sess-xyz" is working on task "100"
+    ps.sessions.insert(
+        "sess-xyz".to_string(),
+        crate::daemon::state::SessionRecord {
+            session_id: "sess-xyz".to_string(),
+            task_id: Some("100".to_string()),
+            current_name: Some("madison".to_string()),
+            preferred_name: Some("madison".to_string()),
+            working_dir: "/tmp/test".to_string(),
+            branch: Some("lexington/fix-auth".to_string()),
+            pr_number: Some(42),
+            initial_prompt: None,
+            is_reviewer: false,
+            coworker_type: "dev".to_string(),
+            is_running: true,
+            created_at: chrono::Utc::now(),
+            resume_on_startup: false,
+        },
+    );
+
+    let ctx = PrContext::from_persistent_state(&ps, 42);
+
+    assert_eq!(
+        ctx.task_session_id,
+        Some("sess-xyz".to_string()),
+        "task_session_id should be populated from sessions when PR's task has a session"
+    );
+}
+
+/// PrContext::from_persistent_state should leave task_session_id as None when
+/// no session exists for the PR's task.
+#[test]
+fn test_pr_context_task_session_id_none_when_no_session() {
+    use crate::github_state::PrAuthorSession;
+
+    let mut ps = super::super::state::DaemonPersistentState::default();
+
+    // PR #42 has a pr_author_session with task_id "100", but no session record
+    ps.github.pr_author_sessions.insert(
+        42,
+        PrAuthorSession {
+            session_id: "old-session".to_string(),
+            branch: "lexington/fix-auth".to_string(),
+            original_author: "lexington".to_string(),
+            stored_at: chrono::Utc::now(),
+            task_id: Some("100".to_string()),
+        },
+    );
+
+    let ctx = PrContext::from_persistent_state(&ps, 42);
+
+    assert_eq!(
+        ctx.task_session_id, None,
+        "task_session_id should be None when no session exists for the task"
+    );
+}
+
+/// PrContext::routing_only should always have task_session_id as None.
+#[test]
+fn test_pr_context_routing_only_no_task_session_id() {
+    let ps = super::super::state::DaemonPersistentState::default();
+    let ctx = PrContext::routing_only(&ps);
+    assert_eq!(
+        ctx.task_session_id, None,
+        "routing_only should not populate task_session_id"
+    );
+}
+
+/// resolve_pr_owner_via_session should resolve through the full chain:
+/// PR# → pr_author_sessions → task_id → sessions → name
+#[tokio::test]
+async fn test_resolve_pr_owner_via_session_full_chain() {
+    use crate::github_state::PrAuthorSession;
+
+    let (state, _tmp, _guard) = make_test_state("test-repo");
+
+    // Populate persistent state
+    {
+        let mut ps = state.persistent_state.lock().await;
+
+        // PR #42 → task "100"
+        ps.github.pr_author_sessions.insert(
+            42,
+            PrAuthorSession {
+                session_id: "old-session".to_string(),
+                branch: "lexington/fix-auth".to_string(),
+                original_author: "lexington".to_string(),
+                stored_at: chrono::Utc::now(),
+                task_id: Some("100".to_string()),
+            },
+        );
+
+        // Session "sess-abc" → task "100" → name "madison"
+        ps.sessions.insert(
+            "sess-abc".to_string(),
+            crate::daemon::state::SessionRecord {
+                session_id: "sess-abc".to_string(),
+                task_id: Some("100".to_string()),
+                current_name: Some("madison".to_string()),
+                preferred_name: Some("madison".to_string()),
+                working_dir: "/tmp/test".to_string(),
+                branch: Some("lexington/fix-auth".to_string()),
+                pr_number: Some(42),
+                initial_prompt: None,
+                is_reviewer: false,
+                coworker_type: "dev".to_string(),
+                is_running: true,
+                created_at: chrono::Utc::now(),
+                resume_on_startup: false,
+            },
+        );
+    }
+
+    let result = resolve_pr_owner_via_session(&state, 42).await;
+    assert_eq!(
+        result,
+        Some("madison".to_string()),
+        "Should resolve PR owner through session chain"
+    );
+}
+
+/// resolve_pr_owner_via_session should return None when no pr_author_session exists.
+#[tokio::test]
+async fn test_resolve_pr_owner_via_session_returns_none_no_pr_session() {
+    let (state, _tmp, _guard) = make_test_state("test-repo");
+
+    let result = resolve_pr_owner_via_session(&state, 42).await;
+    assert_eq!(
+        result, None,
+        "Should return None when no pr_author_session exists"
+    );
+}
+
+/// resolve_pr_owner_via_session falls back to preferred_name when current_name is None.
+#[tokio::test]
+async fn test_resolve_pr_owner_via_session_preferred_name_fallback() {
+    use crate::github_state::PrAuthorSession;
+
+    let (state, _tmp, _guard) = make_test_state("test-repo");
+
+    {
+        let mut ps = state.persistent_state.lock().await;
+
+        ps.github.pr_author_sessions.insert(
+            42,
+            PrAuthorSession {
+                session_id: "old-session".to_string(),
+                branch: "lexington/fix-auth".to_string(),
+                original_author: "lexington".to_string(),
+                stored_at: chrono::Utc::now(),
+                task_id: Some("100".to_string()),
+            },
+        );
+
+        // Session with no current_name but has preferred_name (suspended)
+        ps.sessions.insert(
+            "sess-abc".to_string(),
+            crate::daemon::state::SessionRecord {
+                session_id: "sess-abc".to_string(),
+                task_id: Some("100".to_string()),
+                current_name: None,
+                preferred_name: Some("park".to_string()),
+                working_dir: "/tmp/test".to_string(),
+                branch: Some("lexington/fix-auth".to_string()),
+                pr_number: Some(42),
+                initial_prompt: None,
+                is_reviewer: false,
+                coworker_type: "dev".to_string(),
+                is_running: false,
+                created_at: chrono::Utc::now(),
+                resume_on_startup: false,
+            },
+        );
+    }
+
+    let result = resolve_pr_owner_via_session(&state, 42).await;
+    assert_eq!(
+        result,
+        Some("park".to_string()),
+        "Should fall back to preferred_name when current_name is None"
     );
 }

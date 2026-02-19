@@ -192,6 +192,7 @@ fn test_check_for_usage_limits_with_reset_time() {
             has_running_subagent: false,
             has_pending_tool: false,
             has_tool_name_conflict: false,
+            has_pending_api_call: false,
             exit_code: None,
         },
     );
@@ -871,6 +872,7 @@ fn stuck_coworker_restart_propagates_session_id_to_shutdown_effect() {
             has_running_subagent: false,
             has_pending_tool: false,
             has_tool_name_conflict: false,
+            has_pending_api_call: false,
             exit_code: None,
         },
     );
@@ -931,6 +933,7 @@ fn dead_process_respawn_propagates_session_id() {
             has_running_subagent: false,
             has_pending_tool: false,
             has_tool_name_conflict: false,
+            has_pending_api_call: false,
         },
     );
 
@@ -978,6 +981,7 @@ fn stuck_reviewer_restart_propagates_session_id() {
             has_running_subagent: false,
             has_pending_tool: false,
             has_tool_name_conflict: false,
+            has_pending_api_call: false,
             exit_code: None,
         },
     );
@@ -1034,6 +1038,7 @@ fn session_id_is_none_when_no_session_mapping_exists() {
             has_running_subagent: false,
             has_pending_tool: false,
             has_tool_name_conflict: false,
+            has_pending_api_call: false,
             exit_code: None,
         },
     );
@@ -1294,5 +1299,543 @@ fn ensure_channel_leads_alive_normal_recovery_within_cooldown_no_effects() {
     assert!(
         effects.is_empty(),
         "Normal recovery within cooldown should produce no effects"
+    );
+}
+
+// -----------------------------------------------------------------------
+// has_pending_api_call exemption tests
+// -----------------------------------------------------------------------
+
+/// Regression test: coworkers waiting for an API response after a tool_result
+/// (extended thinking phase) must NOT be killed by stuck detection.
+///
+/// The bug: after tool_result arrives, has_pending_tool is cleared but the model
+/// then enters extended thinking before emitting the next assistant event. During
+/// this silent window, stuck detection incorrectly fired and killed the session.
+#[test]
+fn pending_api_call_exempts_coworker_from_stuck_detection() {
+    let now = chrono::Utc::now();
+    let mut snap = empty_snap();
+    snap.now_utc = now;
+
+    snap.headless_process_health.insert(
+        "lexington".to_string(),
+        snapshot::ProcessHealth {
+            is_alive: true,
+            last_event_at: Some(now - chrono::Duration::minutes(10)),
+            has_usage_limit: false,
+            usage_limit_reset_at: None,
+            has_api_error: false,
+            has_auth_error: false,
+            has_running_subagent: false,
+            has_pending_tool: false,
+            has_pending_api_call: true,
+            has_tool_name_conflict: false,
+            exit_code: None,
+        },
+    );
+
+    snap.in_progress_tasks.push((
+        "77".to_string(),
+        "Review PR".to_string(),
+        "lexington".to_string(),
+    ));
+
+    let exemptions = crate::rules::StuckExemptions {
+        usage_limited: &snap.usage_limited_coworkers,
+        api_error: &snap.api_error_coworkers,
+        auth_error: &snap.auth_error_coworkers,
+        attached: &snap.attached_coworkers,
+    };
+
+    let restarts = crate::rules::decide_stuck_coworker_restarts(
+        &snap.headless_process_health,
+        &snap.in_progress_tasks,
+        &exemptions,
+        snap.now_utc,
+        Duration::from_secs(180),
+        &snap.name_session_map,
+    );
+
+    assert_eq!(
+        restarts.len(),
+        0,
+        "coworker waiting for API response (extended thinking) must NOT be restarted"
+    );
+}
+
+/// Corollary: same scenario for reviewers.
+#[test]
+fn pending_api_call_exempts_reviewer_from_stuck_detection() {
+    let now = chrono::Utc::now();
+    let mut snap = empty_snap();
+    snap.now_utc = now;
+
+    snap.headless_process_health.insert(
+        "amsterdam".to_string(),
+        snapshot::ProcessHealth {
+            is_alive: true,
+            last_event_at: Some(now - chrono::Duration::minutes(10)),
+            has_usage_limit: false,
+            usage_limit_reset_at: None,
+            has_api_error: false,
+            has_auth_error: false,
+            has_running_subagent: false,
+            has_pending_tool: false,
+            has_pending_api_call: true,
+            has_tool_name_conflict: false,
+            exit_code: None,
+        },
+    );
+
+    snap.reviewer_pr_assignments
+        .insert("amsterdam".to_string(), 1329);
+
+    let exemptions = crate::rules::StuckExemptions {
+        usage_limited: &snap.usage_limited_coworkers,
+        api_error: &snap.api_error_coworkers,
+        auth_error: &snap.auth_error_coworkers,
+        attached: &snap.attached_coworkers,
+    };
+
+    let restarts = crate::rules::decide_stuck_reviewer_restarts(
+        &snap.headless_process_health,
+        &snap.reviewer_pr_assignments,
+        &snap.reviewer_restart_counts,
+        &exemptions,
+        snap.now_utc,
+        Duration::from_secs(300),
+        2,
+        &snap.name_session_map,
+    );
+
+    assert_eq!(
+        restarts.len(),
+        0,
+        "reviewer waiting for API response (extended thinking) must NOT be restarted"
+    );
+}
+
+/// When a session mapping exists for an idle coworker, the idle-shutdown
+/// path should emit `ShutdownSession` instead of `ShutdownCoworker`.
+#[test]
+fn test_idle_shutdown_emits_shutdown_session_when_mapping_exists() {
+    use crate::coworker::{Coworker, CoworkerStatus};
+    use crate::rules::CoworkerSnapshot;
+    use std::collections::{HashMap, HashSet};
+
+    let now = chrono::Utc::now();
+    // started_at well before now so MINIMUM_COWORKER_LIFETIME (60s) is satisfied
+    let started_at = now - chrono::Duration::minutes(10);
+
+    let coworker = Coworker {
+        slot_id: uuid::Uuid::new_v4().to_string(),
+        name: "amsterdam".to_string(),
+        status: CoworkerStatus::Running,
+        working_dir: "/tmp/test".to_string(),
+        started_at,
+        current_task: None,
+        session_id: Some("sess-abc-123".to_string()),
+        model: "sonnet".to_string(),
+        provider: crate::auth::AuthProvider::Claude,
+        profile: crate::auth::DEFAULT_PROFILE.to_string(),
+    };
+
+    let cw_snap = CoworkerSnapshot {
+        name: "amsterdam".to_string(),
+        started_at,
+        session_id: Some("sess-abc-123".to_string()),
+    };
+
+    let mut name_session_map = HashMap::new();
+    name_session_map.insert("amsterdam".to_string(), "sess-abc-123".to_string());
+
+    let snap = snapshot::WorldSnapshot {
+        active_coworkers: vec![coworker.clone()],
+        running_coworkers: vec![coworker.clone()],
+        coworker_snapshots: vec![cw_snap],
+        active_names: HashSet::new(),
+        active_session_ids: HashSet::new(),
+        session_name: "midtown-test".to_string(),
+        coworker_start_times: HashMap::new(),
+        coworker_stop_times: HashMap::new(),
+        headless_process_health: HashMap::new(),
+        attached_coworkers: HashMap::new(),
+        in_progress_tasks: vec![],
+        busy_coworkers: HashSet::new(),
+        coworker_task_assignments: HashMap::new(),
+        all_tasks: vec![],
+        pending_tasks_with_owners: vec![],
+        pending_tasks_without_owners: vec![],
+        task_channel: HashMap::new(),
+        task_model_map: HashMap::new(),
+        task_plan_map: HashMap::new(),
+        task_execution_skill_map: HashMap::new(),
+        channel_lead_sessions: HashMap::new(),
+        coworkers_with_open_prs: HashSet::new(),
+        coworkers_with_merged_prs: HashSet::new(),
+        merged_pr_numbers: HashSet::new(),
+        ci_passed_pr_coworkers: HashSet::new(),
+        review_feedback_pr_coworkers: HashSet::new(),
+        open_prs_data: vec![],
+        github_open_pr_task_ids: HashMap::new(),
+        pending_task_owners: HashSet::new(),
+        tasks_with_open_prs: HashMap::new(),
+        pr_task_associations: HashMap::new(),
+        active_reviewers: HashSet::new(),
+        reviewer_pr_assignments: HashMap::new(),
+        reviewed_prs: HashSet::new(),
+        prs_needing_review: 0,
+        reviewer_restart_counts: HashMap::new(),
+        reviewer_escalations_posted: HashSet::new(),
+        orphaned_pr_lead_nudges_sent: HashSet::new(),
+        coworkers_with_unblocked_deps: HashSet::new(),
+        usage_limit_nudge_scheduled: false,
+        usage_limit_nudge_at: None,
+        usage_limited_coworkers: HashSet::new(),
+        api_error_coworkers: HashSet::new(),
+        auth_error_coworkers: HashSet::new(),
+        tool_name_conflict_coworkers: HashSet::new(),
+        channel_messages: vec![],
+        archived_channels: HashSet::new(),
+        daemon_logs: vec![],
+        tasks_with_worktrees: HashSet::new(),
+        task_worktree_map: HashMap::new(),
+        worktree_branch_owners: HashMap::new(),
+        worktree_registry: crate::worktree_registry::WorktreeRegistry::default(),
+        merged_pr_branches: HashMap::new(),
+        lead_session_refresh_interval_secs: 5400,
+        is_at_coworker_limit: false,
+        is_at_dev_limit: false,
+        now_utc: now,
+        repo_name: "test-repo".to_string(),
+        repo_owner: None,
+        github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
+        freshly_fetched_rate_limit: None,
+        sessions: HashMap::new(),
+        session_task_map: HashMap::new(),
+        session_name_map: HashMap::new(),
+        name_session_map,
+        orphan_spawn_cooldown_active: false,
+        session_dispatch_cooldown_active: false,
+        spawn_failure_cooldown_names: std::collections::HashSet::new(),
+    };
+
+    let effects = check_and_shutdown_idle_coworkers(&snap);
+
+    // Should contain ShutdownSession (not ShutdownCoworker)
+    let has_shutdown_session = effects.iter().any(|e| {
+        matches!(
+            e,
+            Effect::ShutdownSession {
+                session_id,
+                reason,
+            } if session_id == "sess-abc-123" && reason.contains("idle shutdown")
+        )
+    });
+    assert!(
+        has_shutdown_session,
+        "Expected ShutdownSession effect with session_id 'sess-abc-123', got: {:?}",
+        effects
+    );
+
+    // Must NOT contain ShutdownCoworker for "amsterdam"
+    let has_shutdown_coworker = effects.iter().any(|e| {
+        matches!(
+            e,
+            Effect::ShutdownCoworker { name, .. } if name == "amsterdam"
+        )
+    });
+    assert!(
+        !has_shutdown_coworker,
+        "Should NOT have ShutdownCoworker when session mapping exists"
+    );
+}
+
+/// When NO session mapping exists for an idle coworker, the idle-shutdown
+/// path should fall back to the legacy `ShutdownCoworker` effect.
+#[test]
+fn test_idle_shutdown_falls_back_to_shutdown_coworker_without_mapping() {
+    use crate::coworker::{Coworker, CoworkerStatus};
+    use crate::rules::CoworkerSnapshot;
+    use std::collections::{HashMap, HashSet};
+
+    let now = chrono::Utc::now();
+    let started_at = now - chrono::Duration::minutes(10);
+
+    let coworker = Coworker {
+        slot_id: uuid::Uuid::new_v4().to_string(),
+        name: "broadway".to_string(),
+        status: CoworkerStatus::Running,
+        working_dir: "/tmp/test".to_string(),
+        started_at,
+        current_task: None,
+        session_id: None,
+        model: "sonnet".to_string(),
+        provider: crate::auth::AuthProvider::Claude,
+        profile: crate::auth::DEFAULT_PROFILE.to_string(),
+    };
+
+    let cw_snap = CoworkerSnapshot {
+        name: "broadway".to_string(),
+        started_at,
+        session_id: None,
+    };
+
+    // No session mapping for "broadway"
+    let snap = snapshot::WorldSnapshot {
+        active_coworkers: vec![coworker.clone()],
+        running_coworkers: vec![coworker.clone()],
+        coworker_snapshots: vec![cw_snap],
+        active_names: HashSet::new(),
+        active_session_ids: HashSet::new(),
+        session_name: "midtown-test".to_string(),
+        coworker_start_times: HashMap::new(),
+        coworker_stop_times: HashMap::new(),
+        headless_process_health: HashMap::new(),
+        attached_coworkers: HashMap::new(),
+        in_progress_tasks: vec![],
+        busy_coworkers: HashSet::new(),
+        coworker_task_assignments: HashMap::new(),
+        all_tasks: vec![],
+        pending_tasks_with_owners: vec![],
+        pending_tasks_without_owners: vec![],
+        task_channel: HashMap::new(),
+        task_model_map: HashMap::new(),
+        task_plan_map: HashMap::new(),
+        task_execution_skill_map: HashMap::new(),
+        channel_lead_sessions: HashMap::new(),
+        coworkers_with_open_prs: HashSet::new(),
+        coworkers_with_merged_prs: HashSet::new(),
+        merged_pr_numbers: HashSet::new(),
+        ci_passed_pr_coworkers: HashSet::new(),
+        review_feedback_pr_coworkers: HashSet::new(),
+        open_prs_data: vec![],
+        github_open_pr_task_ids: HashMap::new(),
+        pending_task_owners: HashSet::new(),
+        tasks_with_open_prs: HashMap::new(),
+        pr_task_associations: HashMap::new(),
+        active_reviewers: HashSet::new(),
+        reviewer_pr_assignments: HashMap::new(),
+        reviewed_prs: HashSet::new(),
+        prs_needing_review: 0,
+        reviewer_restart_counts: HashMap::new(),
+        reviewer_escalations_posted: HashSet::new(),
+        orphaned_pr_lead_nudges_sent: HashSet::new(),
+        coworkers_with_unblocked_deps: HashSet::new(),
+        usage_limit_nudge_scheduled: false,
+        usage_limit_nudge_at: None,
+        usage_limited_coworkers: HashSet::new(),
+        api_error_coworkers: HashSet::new(),
+        auth_error_coworkers: HashSet::new(),
+        tool_name_conflict_coworkers: HashSet::new(),
+        channel_messages: vec![],
+        archived_channels: HashSet::new(),
+        daemon_logs: vec![],
+        tasks_with_worktrees: HashSet::new(),
+        task_worktree_map: HashMap::new(),
+        worktree_branch_owners: HashMap::new(),
+        worktree_registry: crate::worktree_registry::WorktreeRegistry::default(),
+        merged_pr_branches: HashMap::new(),
+        lead_session_refresh_interval_secs: 5400,
+        is_at_coworker_limit: false,
+        is_at_dev_limit: false,
+        now_utc: now,
+        repo_name: "test-repo".to_string(),
+        repo_owner: None,
+        github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
+        freshly_fetched_rate_limit: None,
+        sessions: HashMap::new(),
+        session_task_map: HashMap::new(),
+        session_name_map: HashMap::new(),
+        name_session_map: HashMap::new(),
+        orphan_spawn_cooldown_active: false,
+        session_dispatch_cooldown_active: false,
+        spawn_failure_cooldown_names: std::collections::HashSet::new(),
+    };
+
+    let effects = check_and_shutdown_idle_coworkers(&snap);
+
+    // Should contain ShutdownCoworker (legacy path)
+    let has_shutdown_coworker = effects.iter().any(|e| {
+        matches!(
+            e,
+            Effect::ShutdownCoworker { name, .. } if name == "broadway"
+        )
+    });
+    assert!(
+        has_shutdown_coworker,
+        "Expected ShutdownCoworker effect for 'broadway', got: {:?}",
+        effects
+    );
+
+    // Must NOT contain ShutdownSession
+    let has_shutdown_session = effects
+        .iter()
+        .any(|e| matches!(e, Effect::ShutdownSession { .. }));
+    assert!(
+        !has_shutdown_session,
+        "Should NOT have ShutdownSession when no session mapping exists"
+    );
+}
+
+// -----------------------------------------------------------------------
+// Stuck restart → ShutdownSession / ShutdownCoworker branching tests
+// -----------------------------------------------------------------------
+
+/// When a stuck reviewer has a session mapping in `name_session_map`,
+/// `check_and_restart_stuck_reviewers` should emit `ShutdownSession`
+/// instead of `ShutdownCoworker`.
+#[test]
+fn test_stuck_reviewer_restart_emits_shutdown_session_when_mapping_exists() {
+    use crate::coworker::{Coworker, CoworkerStatus};
+
+    let now = chrono::Utc::now();
+    let mut snap = empty_snap();
+    snap.now_utc = now;
+
+    // Active coworker (reviewer) so the function doesn't bail early
+    snap.active_coworkers.push(Coworker {
+        slot_id: uuid::Uuid::new_v4().to_string(),
+        name: "amsterdam".to_string(),
+        status: CoworkerStatus::Running,
+        working_dir: "/tmp/test".to_string(),
+        started_at: now - chrono::Duration::minutes(30),
+        current_task: None,
+        session_id: Some("sess-rev-777".to_string()),
+        model: "sonnet".to_string(),
+        provider: crate::auth::AuthProvider::Claude,
+        profile: crate::auth::DEFAULT_PROFILE.to_string(),
+    });
+
+    // Stuck health: no events for well past REVIEWER_STUCK_DURATION (300s)
+    snap.headless_process_health.insert(
+        "amsterdam".to_string(),
+        snapshot::ProcessHealth {
+            is_alive: true,
+            last_event_at: Some(now - chrono::Duration::minutes(10)),
+            has_usage_limit: false,
+            usage_limit_reset_at: None,
+            has_api_error: false,
+            has_auth_error: false,
+            has_running_subagent: false,
+            has_pending_tool: false,
+            has_tool_name_conflict: false,
+            has_pending_api_call: false,
+            exit_code: None,
+        },
+    );
+
+    // Reviewer PR assignment
+    snap.reviewer_pr_assignments
+        .insert("amsterdam".to_string(), 42);
+
+    // Session mapping exists
+    snap.name_session_map
+        .insert("amsterdam".to_string(), "sess-rev-777".to_string());
+
+    let effects = check_and_restart_stuck_reviewers(&snap);
+
+    // Should contain ShutdownSession (not ShutdownCoworker)
+    let has_shutdown_session = effects.iter().any(|e| {
+        matches!(
+            e,
+            Effect::ShutdownSession {
+                session_id,
+                reason,
+            } if session_id == "sess-rev-777" && reason.contains("stuck reviewer")
+                && reason.contains("PR #42")
+        )
+    });
+    assert!(
+        has_shutdown_session,
+        "Expected ShutdownSession with session_id 'sess-rev-777' and reason mentioning stuck reviewer PR #42, got: {:#?}",
+        effects
+    );
+
+    // Must NOT contain ShutdownCoworker for "amsterdam"
+    let has_shutdown_coworker = effects.iter().any(|e| {
+        matches!(
+            e,
+            Effect::ShutdownCoworker { name, .. } if name == "amsterdam"
+        )
+    });
+    assert!(
+        !has_shutdown_coworker,
+        "Should NOT have ShutdownCoworker when session mapping exists, got: {:#?}",
+        effects
+    );
+}
+
+/// When a stuck reviewer has NO session mapping, `check_and_restart_stuck_reviewers`
+/// should fall back to emitting `ShutdownCoworker`.
+#[test]
+fn test_stuck_reviewer_restart_falls_back_to_shutdown_coworker_without_mapping() {
+    use crate::coworker::{Coworker, CoworkerStatus};
+
+    let now = chrono::Utc::now();
+    let mut snap = empty_snap();
+    snap.now_utc = now;
+
+    snap.active_coworkers.push(Coworker {
+        slot_id: uuid::Uuid::new_v4().to_string(),
+        name: "broadway".to_string(),
+        status: CoworkerStatus::Running,
+        working_dir: "/tmp/test".to_string(),
+        started_at: now - chrono::Duration::minutes(30),
+        current_task: None,
+        session_id: None,
+        model: "sonnet".to_string(),
+        provider: crate::auth::AuthProvider::Claude,
+        profile: crate::auth::DEFAULT_PROFILE.to_string(),
+    });
+
+    // Stuck health
+    snap.headless_process_health.insert(
+        "broadway".to_string(),
+        snapshot::ProcessHealth {
+            is_alive: true,
+            last_event_at: Some(now - chrono::Duration::minutes(10)),
+            has_usage_limit: false,
+            usage_limit_reset_at: None,
+            has_api_error: false,
+            has_auth_error: false,
+            has_running_subagent: false,
+            has_pending_tool: false,
+            has_tool_name_conflict: false,
+            has_pending_api_call: false,
+            exit_code: None,
+        },
+    );
+
+    // Reviewer PR assignment
+    snap.reviewer_pr_assignments
+        .insert("broadway".to_string(), 99);
+
+    // No session mapping for "broadway"
+
+    let effects = check_and_restart_stuck_reviewers(&snap);
+
+    // Should contain ShutdownCoworker (not ShutdownSession)
+    let has_shutdown_coworker = effects.iter().any(|e| {
+        matches!(
+            e,
+            Effect::ShutdownCoworker { name, .. } if name == "broadway"
+        )
+    });
+    assert!(
+        has_shutdown_coworker,
+        "Expected ShutdownCoworker for 'broadway' when no session mapping exists, got: {:#?}",
+        effects
+    );
+
+    // Must NOT contain ShutdownSession
+    let has_shutdown_session = effects
+        .iter()
+        .any(|e| matches!(e, Effect::ShutdownSession { .. }));
+    assert!(
+        !has_shutdown_session,
+        "Should NOT have ShutdownSession when no session mapping exists, got: {:#?}",
+        effects
     );
 }

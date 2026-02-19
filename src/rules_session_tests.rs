@@ -26,6 +26,7 @@ fn stuck_health(now: chrono::DateTime<Utc>) -> ProcessHealth {
         has_running_subagent: false,
         has_pending_tool: false,
         has_tool_name_conflict: false,
+        has_pending_api_call: false,
         exit_code: None,
     }
 }
@@ -42,6 +43,7 @@ fn dead_health(exit_code: i32) -> ProcessHealth {
         has_running_subagent: false,
         has_pending_tool: false,
         has_tool_name_conflict: false,
+        has_pending_api_call: false,
     }
 }
 

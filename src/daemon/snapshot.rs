@@ -54,6 +54,13 @@ pub struct ProcessHealth {
     /// When true, the session may fail tool calls and needs a restart.
     #[serde(default)]
     pub has_tool_name_conflict: bool,
+    /// Whether the coworker is waiting for the next API response after a tool result.
+    ///
+    /// Set when a `tool_result` arrives (clearing `has_pending_tool`), cleared when the
+    /// next `assistant` event arrives. During this window the model may be doing extended
+    /// thinking — no stream events are emitted — so stuck detection must not fire.
+    #[serde(default)]
+    pub has_pending_api_call: bool,
     /// Process exit code, if the process has terminated.
     pub exit_code: Option<i32>,
 }
@@ -70,6 +77,7 @@ impl Default for ProcessHealth {
             has_running_subagent: false,
             has_pending_tool: false,
             has_tool_name_conflict: false,
+            has_pending_api_call: false,
             exit_code: None,
         }
     }
@@ -395,6 +403,20 @@ impl WorldSnapshot {
             .filter(|cw| cw.name.eq_ignore_ascii_case(name))
             .filter_map(|cw| cw.session_id.clone())
             .collect()
+    }
+
+    /// Build a session-ID-keyed health map from name-keyed health data.
+    ///
+    /// During migration, health is still collected per-name. This method
+    /// translates to session-ID keys using `name_session_map`.
+    pub fn session_health_map(&self) -> HashMap<String, &ProcessHealth> {
+        let mut map = HashMap::new();
+        for (name, health) in &self.headless_process_health {
+            if let Some(session_id) = self.name_session_map.get(name) {
+                map.insert(session_id.clone(), health);
+            }
+        }
+        map
     }
 
     /// Populate debug context fields (channel messages and daemon logs).
