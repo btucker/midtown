@@ -3,7 +3,16 @@
 use super::*;
 use std::process::Command;
 
-fn make_test_state(repo_name: &str) -> DaemonState {
+fn make_test_state(
+    repo_name: &str,
+) -> (
+    DaemonState,
+    tempfile::TempDir,
+    crate::paths::TestMidtownBaseDirGuard,
+) {
+    let midtown_dir = tempfile::tempdir().expect("midtown temp dir");
+    let _guard = crate::paths::set_test_midtown_base_dir(midtown_dir.path().to_path_buf());
+
     let temp_dir = tempfile::tempdir().expect("temp dir");
     Command::new("git")
         .args(["init"])
@@ -30,13 +39,11 @@ fn make_test_state(repo_name: &str) -> DaemonState {
         .expect("worktree manager");
     let cm = crate::coworker::CoworkerManager::new(wm);
 
-    // Leak temp_dir so it survives the test
     let base_dir = temp_dir.path().to_path_buf();
-    std::mem::forget(temp_dir);
 
     let channel_router = crate::ChannelRouter::new(&base_dir, "midtown");
     let (shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(1);
-    DaemonState::new(
+    let state = DaemonState::new(
         "/tmp/test.sock".into(),
         cm,
         repo_name.to_string(),
@@ -48,7 +55,8 @@ fn make_test_state(repo_name: &str) -> DaemonState {
         "main".to_string(),
         shutdown_tx,
     )
-    .expect("daemon state")
+    .expect("daemon state");
+    (state, temp_dir, _guard)
 }
 
 #[test]
@@ -110,7 +118,7 @@ fn test_extract_review_note_pr_various_numbers() {
 
 #[tokio::test]
 async fn test_user_message_queues_headed_lead_nudge() {
-    let state = make_test_state("midtown-test-rpc-channel-queue-user");
+    let (state, _tmp, _guard) = make_test_state("midtown-test-rpc-channel-queue-user");
     let adapter_id = "test-adapter-user";
     state
         .headed_register("lead", adapter_id, crate::auth::AuthProvider::Claude)
@@ -140,7 +148,7 @@ async fn test_user_message_queues_headed_lead_nudge() {
 
 #[tokio::test]
 async fn test_coworker_at_lead_queues_headed_lead_nudge() {
-    let state = make_test_state("midtown-test-rpc-channel-queue-coworker");
+    let (state, _tmp, _guard) = make_test_state("midtown-test-rpc-channel-queue-coworker");
     let adapter_id = "test-adapter-coworker";
     state
         .headed_register("lead", adapter_id, crate::auth::AuthProvider::Claude)
@@ -212,7 +220,7 @@ fn test_parse_duration_invalid() {
 /// succeeds without error and does NOT nudge the main lead.
 #[tokio::test]
 async fn test_user_message_to_topic_channel_no_lead_no_main_nudge() {
-    let state = make_test_state("midtown-test-topic-no-lead");
+    let (state, _tmp, _guard) = make_test_state("midtown-test-topic-no-lead");
     let adapter_id = "test-adapter-topic-no-lead";
     state
         .headed_register("lead", adapter_id, crate::auth::AuthProvider::Claude)
@@ -245,7 +253,7 @@ async fn test_user_message_to_topic_channel_no_lead_no_main_nudge() {
 /// Verify that a user message to the main channel still nudges the main lead.
 #[tokio::test]
 async fn test_user_message_to_main_channel_nudges_lead() {
-    let state = make_test_state("midtown-test-main-channel-nudge");
+    let (state, _tmp, _guard) = make_test_state("midtown-test-main-channel-nudge");
     let adapter_id = "test-adapter-main-nudge";
     state
         .headed_register("lead", adapter_id, crate::auth::AuthProvider::Claude)
@@ -276,7 +284,7 @@ async fn test_user_message_to_main_channel_nudges_lead() {
 /// got main channel messages instead of their topic channel messages.
 #[tokio::test]
 async fn test_channel_read_with_channel_parameter() {
-    let state = make_test_state("midtown-test-channel-read-channel");
+    let (state, _tmp, _guard) = make_test_state("midtown-test-channel-read-channel");
 
     // Post a message to the topic channel
     let _r = handle_channel_post(
@@ -313,7 +321,7 @@ async fn test_channel_read_with_channel_parameter() {
 /// message being stored with thread_parent_id set in the channel log.
 #[tokio::test]
 async fn test_channel_post_with_thread_parent_id() {
-    let state = make_test_state("midtown-test-thread-parent-id");
+    let (state, _tmp, _guard) = make_test_state("midtown-test-thread-parent-id");
     let parent_id = "parent-msg-uuid-123";
 
     // Post a thread reply
@@ -342,7 +350,7 @@ async fn test_channel_post_with_thread_parent_id() {
 /// Verify that posting without thread_parent_id still works (None case).
 #[tokio::test]
 async fn test_channel_post_without_thread_parent_id() {
-    let state = make_test_state("midtown-test-no-thread-parent-id");
+    let (state, _tmp, _guard) = make_test_state("midtown-test-no-thread-parent-id");
 
     let response = handle_channel_post(
         1_i64.into(),
@@ -368,7 +376,7 @@ async fn test_channel_post_without_thread_parent_id() {
 /// when a message has one set.
 #[tokio::test]
 async fn test_channel_read_includes_thread_parent_id() {
-    let state = make_test_state("midtown-test-channel-read-thread-parent-id");
+    let (state, _tmp, _guard) = make_test_state("midtown-test-channel-read-thread-parent-id");
     let parent_id = "parent-uuid-abc";
 
     // Post a top-level message
@@ -416,7 +424,7 @@ async fn test_channel_read_includes_thread_parent_id() {
 
 #[tokio::test]
 async fn test_channel_read_with_last_parameter() {
-    let state = make_test_state("midtown-test-channel-read-last");
+    let (state, _tmp, _guard) = make_test_state("midtown-test-channel-read-last");
 
     // Post 10 messages to the channel
     for i in 1..=10 {

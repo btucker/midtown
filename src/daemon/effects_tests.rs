@@ -777,8 +777,9 @@ async fn test_cleanup_merged_worktree_saves_when_only_pr_session_removed() {
     use std::collections::HashMap;
     use tempfile::tempdir;
 
-    // Create temp dir for persistent state
-    let temp_dir = tempdir().unwrap();
+    // Create temp dir for persistent state, redirect ~/.midtown to it
+    let midtown_dir = tempdir().unwrap();
+    let _midtown_guard = crate::paths::set_test_midtown_base_dir(midtown_dir.path().to_path_buf());
     let repo_name = "test-repo";
 
     // Initial state: pr_author_sessions has a stale entry for PR #2001,
@@ -797,10 +798,7 @@ async fn test_cleanup_merged_worktree_saves_when_only_pr_session_removed() {
     );
     persistent_state.github.pr_author_sessions = pr_sessions;
 
-    // Save initial state to disk
-    unsafe {
-        std::env::set_var("MIDTOWN_PROJECTS_ROOT", temp_dir.path());
-    }
+    // Save initial state to disk (writes to midtown_dir, not ~/.midtown)
     persistent_state.save_for_repo(repo_name).unwrap();
 
     // Verify stale entry exists on disk
