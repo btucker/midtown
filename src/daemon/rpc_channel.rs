@@ -175,16 +175,92 @@ pub(super) async fn handle_channel_post(
         let is_topic_channel = channel_name != default_channel;
 
         if is_topic_channel {
-            // Topic channel: nudge the channel lead for this channel (if one is active).
-            // Channel leads are registered in the session manager under the channel name
-            // (see task !1465 for channel lead session lifecycle management).
-            // If no channel lead is active, the message is already in the channel log
-            // and will be read when the lead next starts up.
+            // Topic channel: nudge the channel lead for this channel.
+            // If the session isn't running, resume it first.
             //
             // Note: @mentions are intentionally NOT routed here. In topic channels,
             // the channel lead is the single point of entry and owns all routing
             // decisions within its domain. This avoids competing routing paths.
-            if state.session_manager.is_alive(channel_name).await {
+            let session_name = crate::launch::channel_lead_session_name(channel_name);
+            let session_ready = if state.session_manager.is_alive(&session_name).await {
+                true
+            } else {
+                // Session isn't running — resume it so the user message is handled.
+                let (session_id, headless_session_id_cleared) = {
+                    let ps = state.persistent_state.lock().await;
+                    let sid = ps.channel_lead_sessions.get(channel_name).cloned();
+                    // Cross-check headless_sessions: if the death handler cleared the
+                    // session_id after a failed resume, don't attempt to resume with a
+                    // stale ID (same guard as startup.rs recovery).
+                    let cleared = ps
+                        .headless_sessions
+                        .get(channel_name)
+                        .is_some_and(|info| info.session_id.is_empty());
+                    (sid, cleared)
+                };
+
+                let session_mode = match session_id {
+                    Some(ref id) if !id.is_empty() && !headless_session_id_cleared => {
+                        info!(
+                            "Resuming channel lead session for '{}' (session {}) after user message",
+                            channel_name, id
+                        );
+                        crate::launch::SessionMode::ResumeSession(id.clone())
+                    }
+                    _ => {
+                        if headless_session_id_cleared {
+                            info!(
+                                "Skipping stale session ID for channel lead '{}': headless_sessions entry was cleared after failed resume",
+                                channel_name
+                            );
+                        } else {
+                            info!(
+                                "No saved session for channel lead '{}', spawning fresh after user message",
+                                channel_name
+                            );
+                        }
+                        crate::launch::SessionMode::Fresh
+                    }
+                };
+
+                // Register placeholder in channel_lead_sessions before spawning
+                // so NudgeChannelLead effects aren't silently dropped and daemon
+                // restart recovery can find this channel's session.
+                let is_fresh = matches!(session_mode, crate::launch::SessionMode::Fresh);
+                if is_fresh {
+                    let mut ps = state.persistent_state.lock().await;
+                    ps.channel_lead_sessions
+                        .entry(channel_name.to_string())
+                        .or_insert_with(String::new);
+                    if let Err(e) = ps.save_for_repo(&state.repo_name) {
+                        error!(
+                            "Failed to save daemon state before spawning channel lead: {}",
+                            e
+                        );
+                    }
+                }
+
+                let config = crate::launch::LaunchConfig::channel_lead(
+                    channel_name,
+                    &state.repo_name,
+                    session_mode,
+                    "", // domain_context: accumulates via session persistence
+                );
+
+                match state.spawn_coworker(&config).await {
+                    Ok(()) => true,
+                    Err(e) => {
+                        error!("Failed to spawn channel lead '{}': {}", channel_name, e);
+                        // Keep the placeholder in channel_lead_sessions even on spawn failure.
+                        // An empty-string placeholder is harmless (startup recovery handles it
+                        // with SessionMode::Fresh), and preserving it means the channel is
+                        // registered for restart recovery even if this spawn attempt failed.
+                        false
+                    }
+                }
+            };
+
+            if session_ready {
                 let nudge_msg = format!("user: {}", content);
                 info!(
                     "Nudging channel lead '{}' about user message in #{}",
@@ -192,39 +268,24 @@ pub(super) async fn handle_channel_post(
                 );
                 if let Err(e) = state
                     .session_manager
-                    .send_message(channel_name, &nudge_msg)
+                    .send_message(&session_name, &nudge_msg)
                     .await
                 {
                     error!("Failed to nudge channel lead '{}': {}", channel_name, e);
                 }
-            } else {
-                info!(
-                    "No active channel lead for #{} — user message not forwarded",
-                    channel_name
-                );
             }
         } else {
-            // Main channel: check if user is @mentioning specific coworkers or @all
-            let has_coworker_mentions =
-                !extract_mentions(&content).is_empty() || contains_at_all(&content);
-            let has_lead_mention = content.to_lowercase().contains("@lead");
+            // Main channel: always nudge the lead on user messages.
+            // Also route any @mentions directly to the mentioned coworkers.
+            // The lead stays informed of all user messages regardless of @mentions,
+            // so it can provide context, coordinate, or respond if needed.
 
             // Route @mentions in user messages directly to coworkers
             super::chat::route_mentions(state, &msg).await;
 
-            // Only nudge lead if there are no coworker @mentions (regular
-            // message for the lead) or if the user also @mentioned the lead.
-            // This lets users talk directly to coworkers without the lead
-            // acting as a middleman.
-            if !has_coworker_mentions || has_lead_mention {
-                let nudge_msg = format!("user: {}", content);
-                info!("Nudging Lead about user message");
-                state.nudge_lead(&nudge_msg).await;
-            } else {
-                info!(
-                    "Skipping Lead nudge — user message routed directly to mentioned coworker(s)"
-                );
-            }
+            let nudge_msg = format!("user: {}", content);
+            info!("Nudging Lead about user message");
+            state.nudge_lead(&nudge_msg).await;
         }
     }
 
