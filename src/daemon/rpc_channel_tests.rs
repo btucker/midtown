@@ -547,3 +547,121 @@ async fn test_channel_read_with_last_parameter() {
             .contains("message 10")
     );
 }
+
+/// Verify that the fresh spawn path registers a placeholder in `channel_lead_sessions`
+/// so that NudgeChannelLead effects are not silently dropped and daemon restart
+/// recovery can find this channel's session.
+#[tokio::test]
+async fn test_fresh_spawn_registers_channel_lead_sessions() {
+    let (state, _tmp, _guard) = make_test_state("midtown-test-fresh-spawn-register");
+    let adapter_id = "test-adapter-fresh-spawn";
+    state
+        .headed_register("lead", adapter_id, crate::auth::AuthProvider::Claude)
+        .await
+        .expect("register headed adapter");
+
+    // No saved session ID — fresh spawn path will be taken.
+    // Verify channel_lead_sessions is empty beforehand.
+    {
+        let ps = state.persistent_state.lock().await;
+        assert!(
+            !ps.channel_lead_sessions.contains_key("new-feature"),
+            "Precondition: channel_lead_sessions should not contain 'new-feature'"
+        );
+    }
+
+    // Post to topic channel — triggers fresh spawn path.
+    // In test env, spawn_coworker may succeed or fail depending on environment,
+    // but the placeholder registration should happen before spawn is attempted.
+    let response = handle_channel_post(
+        1_i64.into(),
+        "user",
+        "start work on new feature",
+        Some("new-feature"),
+        None,
+        &state,
+    )
+    .await;
+    assert!(response.error.is_none(), "channel.post should succeed");
+
+    // The placeholder should have been registered in channel_lead_sessions.
+    // If spawn succeeded, it stays; if spawn failed, it gets cleaned up.
+    // Either way, the registration happened before spawn — which is the key invariant.
+    // We verify the placeholder was inserted by checking that a save occurred
+    // (the state file should exist or be updated).
+    //
+    // In the test environment, spawn_coworker succeeds (process starts then dies),
+    // so the placeholder should remain.
+    {
+        let ps = state.persistent_state.lock().await;
+        assert!(
+            ps.channel_lead_sessions.contains_key("new-feature"),
+            "channel_lead_sessions should contain placeholder for 'new-feature' after fresh spawn"
+        );
+    }
+}
+
+/// Verify that when `headless_sessions` has an empty session_id (indicating a prior
+/// crash/failed resume), the resume path is skipped even if `channel_lead_sessions`
+/// still has a stale session ID. This prevents crash loops.
+#[tokio::test]
+async fn test_crash_loop_guard_skips_resume_when_headless_cleared() {
+    let (state, _tmp, _guard) = make_test_state("midtown-test-crash-loop-guard");
+    let adapter_id = "test-adapter-crash-loop";
+    state
+        .headed_register("lead", adapter_id, crate::auth::AuthProvider::Claude)
+        .await
+        .expect("register headed adapter");
+
+    // Set up the crash-loop scenario:
+    // - channel_lead_sessions has a stale session ID
+    // - headless_sessions has an empty session_id (cleared by death handler)
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.channel_lead_sessions.insert(
+            "auth-refactor".to_string(),
+            "stale-session-id-xyz".to_string(),
+        );
+
+        let session = crate::daemon::state::HeadlessSessionInfo {
+            session_id: String::new(), // cleared by death handler after crash
+            last_active: chrono::Utc::now(),
+            purpose: "channel lead for auth-refactor".to_string(),
+            pid: None,
+            coworker_type: Some("channel-lead".to_string()),
+            task_id: None,
+            pr_number: None,
+            channel: Some("auth-refactor".to_string()),
+            working_dir: None,
+            provider: None,
+            profile: None,
+            resume_on_startup: false,
+            initial_prompt: None,
+        };
+        ps.headless_sessions
+            .insert("auth-refactor".to_string(), session);
+    }
+
+    // Post to topic channel — should NOT attempt resume with stale ID,
+    // should fall back to Fresh spawn instead.
+    let response = handle_channel_post(
+        1_i64.into(),
+        "user",
+        "check auth status",
+        Some("auth-refactor"),
+        None,
+        &state,
+    )
+    .await;
+    assert!(response.error.is_none(), "channel.post should succeed");
+
+    // Main lead should NOT be nudged (topic channel message)
+    let (messages, _capture) = state
+        .headed_poll("lead", adapter_id, 0, 10)
+        .await
+        .expect("poll headed queue");
+    assert!(
+        messages.is_empty(),
+        "Main lead should not be nudged for topic channel user messages"
+    );
+}

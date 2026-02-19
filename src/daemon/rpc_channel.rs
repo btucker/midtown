@@ -186,13 +186,21 @@ pub(super) async fn handle_channel_post(
                 true
             } else {
                 // Session isn't running — resume it so the user message is handled.
-                let session_id = {
+                let (session_id, headless_session_id_cleared) = {
                     let ps = state.persistent_state.lock().await;
-                    ps.channel_lead_sessions.get(channel_name).cloned()
+                    let sid = ps.channel_lead_sessions.get(channel_name).cloned();
+                    // Cross-check headless_sessions: if the death handler cleared the
+                    // session_id after a failed resume, don't attempt to resume with a
+                    // stale ID (same guard as startup.rs recovery).
+                    let cleared = ps
+                        .headless_sessions
+                        .get(channel_name)
+                        .is_some_and(|info| info.session_id.is_empty());
+                    (sid, cleared)
                 };
 
                 let session_mode = match session_id {
-                    Some(ref id) if !id.is_empty() => {
+                    Some(ref id) if !id.is_empty() && !headless_session_id_cleared => {
                         info!(
                             "Resuming channel lead session for '{}' (session {}) after user message",
                             channel_name, id
@@ -200,13 +208,37 @@ pub(super) async fn handle_channel_post(
                         crate::launch::SessionMode::ResumeSession(id.clone())
                     }
                     _ => {
-                        info!(
-                            "No saved session for channel lead '{}', spawning fresh after user message",
-                            channel_name
-                        );
+                        if headless_session_id_cleared {
+                            info!(
+                                "Skipping stale session ID for channel lead '{}': headless_sessions entry was cleared after failed resume",
+                                channel_name
+                            );
+                        } else {
+                            info!(
+                                "No saved session for channel lead '{}', spawning fresh after user message",
+                                channel_name
+                            );
+                        }
                         crate::launch::SessionMode::Fresh
                     }
                 };
+
+                // Register placeholder in channel_lead_sessions before spawning
+                // so NudgeChannelLead effects aren't silently dropped and daemon
+                // restart recovery can find this channel's session.
+                let is_fresh = matches!(session_mode, crate::launch::SessionMode::Fresh);
+                if is_fresh {
+                    let mut ps = state.persistent_state.lock().await;
+                    ps.channel_lead_sessions
+                        .entry(channel_name.to_string())
+                        .or_insert_with(String::new);
+                    if let Err(e) = ps.save_for_repo(&state.repo_name) {
+                        error!(
+                            "Failed to save daemon state before spawning channel lead: {}",
+                            e
+                        );
+                    }
+                }
 
                 let config = crate::launch::LaunchConfig::channel_lead(
                     channel_name,
@@ -219,6 +251,17 @@ pub(super) async fn handle_channel_post(
                     Ok(()) => true,
                     Err(e) => {
                         error!("Failed to resume channel lead '{}': {}", channel_name, e);
+                        // Clean up placeholder if spawn failed
+                        if is_fresh {
+                            let mut ps = state.persistent_state.lock().await;
+                            ps.channel_lead_sessions.remove(channel_name);
+                            if let Err(save_err) = ps.save_for_repo(&state.repo_name) {
+                                error!(
+                                    "Failed to save daemon state after failed channel lead spawn: {}",
+                                    save_err
+                                );
+                            }
+                        }
                         false
                     }
                 }
