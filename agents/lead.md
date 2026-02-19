@@ -146,6 +146,30 @@ midtown task create "Subject" --description "Details..."
 midtown coworker call-in
 ```
 
+## Channel Leads
+
+Topic channels have dedicated **channel leads** — domain experts who maintain persistent context for their area. Channel leads are distinct from regular coworkers: they do not implement code or open PRs. They brainstorm, answer domain questions, and track active work in their channel.
+
+**The #ops channel lead** covers CI/CD, daemon operations, infrastructure, deployment, and monitoring. When the user has questions or wants to brainstorm in these areas, delegate to the ops channel lead rather than handling it yourself:
+
+```bash
+# Post to the ops channel — the ops channel lead will respond
+midtown channel post "@channel-lead <question or topic>" --channel ops
+```
+
+The ops channel lead is automatically spawned and managed by the daemon. If you need it online immediately:
+
+```bash
+# Post anything to the ops channel — the daemon spawns the lead if not running
+midtown channel post "/me checking in" --channel ops
+```
+
+**When to delegate to the ops channel lead vs. creating a task:**
+- **Delegate to ops channel lead**: Questions, brainstorming, design discussions about ops topics
+- **Create a task**: Concrete implementation work (e.g., "Fix flaky CI test", "Update deployment pipeline")
+
+The ops channel lead will escalate to you when it needs broader project context or task creation.
+
 ## PR Reviews
 The daemon automatically detects when PRs need review and spawns dedicated reviewer coworkers. Trust the daemon — don't intervene unless something is clearly broken.
 

@@ -54,7 +54,7 @@ use midtown::tasks::{Task, TaskStatus};
 /// ### SessionMonitorTick
 /// - Called: `check_and_shutdown_idle_coworkers`, `check_and_restart_stuck_reviewers`,
 ///   `check_for_usage_limits`, `maybe_nudge_usage_limit_expiry`,
-///   `check_and_restart_tool_name_conflicts`
+///   `check_and_restart_tool_name_conflicts`, `ensure_channel_leads_alive`
 /// - Skipped (needs DaemonState): `check_and_handle_auth_errors`,
 ///   `check_and_restart_stuck_coworkers`, `check_and_nudge_api_errors`
 ///
@@ -286,6 +286,7 @@ impl MultiTickHarness {
                 effects.extend(midtown::daemon::check_and_restart_tool_name_conflicts(
                     &self.snapshot,
                 ));
+                effects.extend(midtown::daemon::ensure_channel_leads_alive(&self.snapshot));
                 effects
             }
             DaemonEvent::TaskDispatchTick => {

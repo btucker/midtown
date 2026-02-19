@@ -77,7 +77,7 @@ pub use events::DaemonEvent;
 pub use health::{
     check_and_restart_stuck_reviewers, check_and_restart_tool_name_conflicts,
     check_and_shutdown_idle_coworkers, check_for_usage_limits, detect_stale_attached_sessions,
-    ensure_lead_alive, maybe_nudge_usage_limit_expiry,
+    ensure_channel_leads_alive, ensure_lead_alive, maybe_nudge_usage_limit_expiry,
 };
 #[doc(hidden)]
 pub use pr::{collect_merged_pr_cleanup_effects, reconcile_orphaned_prs};

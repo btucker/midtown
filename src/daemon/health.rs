@@ -66,6 +66,8 @@ pub fn check_and_shutdown_idle_coworkers(snap: &snapshot::WorldSnapshot) -> Vec<
 
     // Pure decision: who should be shut down?
     let to_shutdown = {
+        let channel_lead_names: std::collections::HashSet<String> =
+            snap.channel_lead_sessions.keys().cloned().collect();
         let idle_ctx = crate::rules::IdleShutdownContext {
             coworkers: &snap.coworker_snapshots,
             busy_coworkers: &snap.busy_coworkers,
@@ -78,6 +80,7 @@ pub fn check_and_shutdown_idle_coworkers(snap: &snapshot::WorldSnapshot) -> Vec<
             auth_error_coworkers: &snap.auth_error_coworkers,
             pending_task_owners: &snap.pending_task_owners,
             review_feedback_pr_coworkers: &snap.review_feedback_pr_coworkers,
+            channel_lead_names: &channel_lead_names,
             now_utc: snap.now_utc,
             minimum_lifetime: MINIMUM_COWORKER_LIFETIME,
         };
@@ -1032,6 +1035,94 @@ pub fn detect_stale_attached_sessions(snap: &snapshot::WorldSnapshot) -> Vec<Eff
             }
         })
         .collect()
+}
+
+/// Ensure all registered channel lead sessions are running.
+///
+/// Channel leads are spawned at startup and on first user message to a channel.
+/// This function closes the gap: if a channel lead crashes mid-session, it won't be
+/// respawned until someone posts to its channel. By running this on every
+/// `SessionMonitorTick`, crashed channel leads are automatically recovered.
+///
+/// Only channels already registered in `channel_lead_sessions` are checked —
+/// new channels are added at startup or on first message (rpc_channel.rs).
+///
+/// Uses `coworker_stop_times` as a cooldown to prevent rapid respawn loops.
+///
+/// Pure function — no I/O, no `.await`, no mutex locks.
+pub fn ensure_channel_leads_alive(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
+    let mut effects = Vec::new();
+
+    for (channel_name, session_id) in &snap.channel_lead_sessions {
+        let session_name = crate::launch::channel_lead_session_name(channel_name);
+
+        // Skip if this channel lead is already registered as an active coworker.
+        let is_registered = snap
+            .active_coworkers
+            .iter()
+            .any(|c| c.name.eq_ignore_ascii_case(&session_name));
+
+        if is_registered {
+            continue;
+        }
+
+        // If session_id is empty, distinguish in-flight spawns from crash recovery:
+        // - In-flight (first spawn, no previous stop): skip to avoid double-spawning.
+        // - Crash recovery (death handler cleared session_id, stop_time exists): fall through.
+        if session_id.is_empty() {
+            let had_previous_stop = snap
+                .coworker_stop_times
+                .contains_key(session_name.to_lowercase().as_str());
+            if !had_previous_stop {
+                debug!(
+                    "Channel lead '{}': in-flight spawn (no previous stop), skipping",
+                    channel_name
+                );
+                continue;
+            }
+        }
+
+        // Apply cooldown to prevent crash loops.
+        if let Some(stop_time) = snap
+            .coworker_stop_times
+            .get(session_name.to_lowercase().as_str())
+        {
+            let since_stop = snap.now_utc.signed_duration_since(*stop_time);
+            if since_stop < chrono::Duration::from_std(LEAD_RESPAWN_COOLDOWN).unwrap_or_default() {
+                debug!(
+                    "Channel lead '{}' respawn cooldown: stopped {}s ago (need {}s)",
+                    channel_name,
+                    since_stop.num_seconds(),
+                    LEAD_RESPAWN_COOLDOWN.as_secs()
+                );
+                continue;
+            }
+        }
+
+        warn!(
+            "Channel lead '{}' is not running — respawning",
+            channel_name
+        );
+
+        // Use the stored session_id if available (resume); fall back to Fresh.
+        // The death handler clears channel_lead_sessions[channel] on crash, so
+        // an empty session_id here typically means a fresh spawn is needed.
+        let session_mode = if !session_id.is_empty() {
+            crate::launch::SessionMode::ResumeSession(session_id.clone())
+        } else {
+            crate::launch::SessionMode::Fresh
+        };
+
+        let config = crate::launch::LaunchConfig::channel_lead(
+            channel_name.clone(),
+            &snap.repo_name,
+            session_mode,
+            "", // domain_context: accumulates via session persistence
+        );
+        effects.push(Effect::SpawnCoworker(config));
+    }
+
+    effects
 }
 
 pub(super) async fn check_and_fire_reminders(
