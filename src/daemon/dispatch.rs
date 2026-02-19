@@ -1811,6 +1811,65 @@ pub(super) fn spawn_for_pending_tasks_excluding(
             continue;
         }
 
+        // Session-aware dispatch: if this pending task has a stopped session
+        // from a previous attempt, resume it instead of spawning fresh.
+        // This preserves context and worktree state from the previous run.
+        if let Some(session_id) = snap.session_task_map.get(&task.id)
+            && let Some(record) = snap.sessions.get(session_id)
+        {
+            if !record.is_running {
+                info!(
+                    "Pending task !{} has stopped session {} — resuming instead of spawning fresh",
+                    task.id, record.session_id
+                );
+                let plan_section = build_plan_prompt_section(&task.id, snap);
+                let prompt = format_task_prompt(
+                    &task.id,
+                    &format!(
+                        "You've been assigned task !{}: {}. Your previous session was interrupted but your worktree and branch are still intact. Check your git status and get started!{}",
+                        task.id, task.subject, plan_section
+                    ),
+                );
+                let wt = prepare_task_worktree(&task.id, &task.subject, &snap.repo_name, snap);
+                let working_dir = if !record.working_dir.is_empty() {
+                    std::path::PathBuf::from(&record.working_dir)
+                } else {
+                    wt.path.clone()
+                };
+                let mut config = crate::launch::LaunchConfig::coworker(
+                    record.preferred_name.clone().unwrap_or_default(),
+                    snap.repo_name.clone(),
+                    crate::launch::SessionMode::ResumeSession(record.session_id.clone()),
+                    Some(prompt),
+                );
+                config.working_dir = Some(working_dir.clone());
+                config.channel = task.channel.clone();
+                config.apply_task_model(&snap.task_model_map, &task.id);
+
+                effects.extend(wt.pre_spawn_effects);
+                effects.push(effects::Effect::SpawnSession {
+                    session_id: record.session_id.clone(),
+                    task_id: task.id.clone(),
+                    working_dir,
+                    initial_prompt: config.initial_prompt.clone().unwrap_or_default(),
+                    preferred_name: record.preferred_name.clone(),
+                    is_reviewer: false,
+                    resume: true,
+                    config: Box::new(config),
+                });
+                spawns_queued_this_tick += 1;
+                continue;
+            }
+            // Session is running — task is already being worked on. Skip.
+            if record.is_running {
+                debug!(
+                    "Pending task !{} has running session {} — skipping dispatch",
+                    task.id, record.session_id
+                );
+                continue;
+            }
+        }
+
         // Step 1: Determine the coworker name by checking multiple grouping strategies.
         // Priority: in-memory PR map → in-memory blockedBy map → disk PR owner →
         //           blockedBy relationship → new coworker name

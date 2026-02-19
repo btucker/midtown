@@ -5012,3 +5012,145 @@ fn test_session_dispatch_excludes_task_from_pending_dispatch() {
         pending_spawns_for_42.len()
     );
 }
+
+#[test]
+fn test_pending_task_with_stopped_session_emits_spawn_session_resume() {
+    // When a pending task has a stopped session from a previous attempt,
+    // spawn_for_pending_tasks should emit SpawnSession with resume: true
+    // instead of the normal AssignAndSpawn path.
+    use crate::tasks::{Task, TaskStatus};
+    use std::time::SystemTime;
+
+    let session = make_test_session_record(
+        "sess-resume-1",
+        Some("99"),
+        Some("lexington"),
+        "/tmp/worktree-99",
+        false, // stopped
+    );
+    let sessions = [("sess-resume-1".to_string(), session)]
+        .into_iter()
+        .collect();
+    let session_task_map = [("99".to_string(), "sess-resume-1".to_string())]
+        .into_iter()
+        .collect();
+
+    let snap = snapshot::WorldSnapshot {
+        pending_tasks_without_owners: vec![Task {
+            id: "99".to_string(),
+            subject: "Implement caching layer".to_string(),
+            status: TaskStatus::Pending,
+            owner: None,
+            blocked_by: vec![],
+            description: None,
+            channel: None,
+            pr: None,
+            created_at: Some(SystemTime::now()),
+        }],
+        sessions,
+        session_task_map,
+        is_at_dev_limit: false,
+        is_at_coworker_limit: false,
+        ..make_session_dispatch_snapshot(vec![], HashMap::new(), HashMap::new())
+    };
+
+    let (state, _tmp, _guard) = make_test_state();
+
+    let effects = spawn_for_pending_tasks(&snap, &state);
+
+    // Should contain SpawnSession with resume: true (not AssignAndSpawn)
+    let spawn_session = effects
+        .iter()
+        .find_map(|e| {
+            if let Effect::SpawnSession {
+                session_id,
+                task_id,
+                resume,
+                ..
+            } = e
+            {
+                Some((session_id.clone(), task_id.clone(), *resume))
+            } else {
+                None
+            }
+        })
+        .expect("Should emit SpawnSession effect for pending task with stopped session");
+
+    assert_eq!(spawn_session.0, "sess-resume-1", "session_id should match");
+    assert_eq!(spawn_session.1, "99", "task_id should match");
+    assert!(spawn_session.2, "resume should be true");
+
+    // Should NOT contain AssignAndSpawn (we bypassed normal dispatch)
+    let assign_and_spawn_count = effects
+        .iter()
+        .filter(|e| matches!(e, Effect::AssignAndSpawn { .. }))
+        .count();
+    assert_eq!(
+        assign_and_spawn_count, 0,
+        "Should not produce AssignAndSpawn when session-aware dispatch handles the task"
+    );
+}
+
+#[test]
+fn test_pending_task_with_running_session_skips_dispatch() {
+    // When a pending task has a RUNNING session, dispatch should skip it entirely
+    // (no SpawnSession, no AssignAndSpawn).
+    use crate::tasks::{Task, TaskStatus};
+    use std::time::SystemTime;
+
+    let session = make_test_session_record(
+        "sess-running-1",
+        Some("88"),
+        Some("broadway"),
+        "/tmp/worktree-88",
+        true, // running
+    );
+    let sessions = [("sess-running-1".to_string(), session)]
+        .into_iter()
+        .collect();
+    let session_task_map = [("88".to_string(), "sess-running-1".to_string())]
+        .into_iter()
+        .collect();
+
+    let snap = snapshot::WorldSnapshot {
+        pending_tasks_without_owners: vec![Task {
+            id: "88".to_string(),
+            subject: "Fix login bug".to_string(),
+            status: TaskStatus::Pending,
+            owner: None,
+            blocked_by: vec![],
+            description: None,
+            channel: None,
+            pr: None,
+            created_at: Some(SystemTime::now()),
+        }],
+        sessions,
+        session_task_map,
+        is_at_dev_limit: false,
+        is_at_coworker_limit: false,
+        ..make_session_dispatch_snapshot(vec![], HashMap::new(), HashMap::new())
+    };
+
+    let (state, _tmp, _guard) = make_test_state();
+
+    let effects = spawn_for_pending_tasks(&snap, &state);
+
+    // Should produce no spawn effects at all
+    let spawn_effects: Vec<_> = effects
+        .iter()
+        .filter(|e| {
+            matches!(
+                e,
+                Effect::SpawnSession { .. }
+                    | Effect::AssignAndSpawn { .. }
+                    | Effect::SpawnCoworkerWithCallbacks { .. }
+            )
+        })
+        .collect();
+
+    assert!(
+        spawn_effects.is_empty(),
+        "Should not spawn anything for a pending task with a running session, got: {:?}",
+        spawn_effects
+    );
+}
