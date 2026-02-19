@@ -719,6 +719,8 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 message,
                 channel,
             } => {
+                let has_explicit_channel = channel.is_some();
+
                 // Resolve the target channel:
                 // 1. Use explicit channel if provided
                 // 2. Otherwise, try to extract task ID from message and look up its channel
@@ -740,8 +742,10 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
 
                 // Clear tool activity for this agent when they post a channel message.
                 // A channel post signals the end of a work phase — the activity strip should reset.
-                // Skip system senders (midtown, lead) since they don't have tool activity.
-                let skip = matches!(sender.to_lowercase().as_str(), "midtown" | "lead" | "user");
+                // Skip system senders (midtown, lead) and channel leads since they don't have
+                // coworker-style tool activity that should be cleared on text posts.
+                let skip = matches!(sender.to_lowercase().as_str(), "midtown" | "lead" | "user")
+                    || has_explicit_channel;
                 if !skip {
                     let mut tool_map = state.recent_tool_items.write().unwrap();
                     tool_map.remove(&sender.to_lowercase());

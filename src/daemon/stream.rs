@@ -1,8 +1,8 @@
 //! Process headless session stream events and generate effects.
 //!
 //! This module contains pure decision functions that analyze stream events
-//! from headless sessions (Lead and coworkers) and produce channel posting
-//! and universal event broadcast effects.
+//! from headless sessions (Lead, channel leads, and coworkers) and produce
+//! channel posting and universal event broadcast effects.
 
 use super::effects::Effect;
 use crate::headless::StreamEvent;
@@ -32,25 +32,45 @@ pub fn extract_lead_text(events: &[StreamEvent]) -> String {
     aggregated
 }
 
-/// Process headless Lead output and generate channel posting effects.
+/// Process headless Lead and channel lead output and generate channel posting effects.
 ///
 /// Aggregates all text content from Assistant events in the current drain cycle
 /// into a single message to avoid channel flooding.
 ///
-/// Returns an effect to post the aggregated text to the main channel if any
-/// Assistant text was found.
-pub fn process_lead_output(events: &HashMap<String, Vec<StreamEvent>>) -> Vec<Effect> {
+/// - The main lead's text is posted to the main channel (`channel: None`).
+/// - Each channel lead's text is posted to its respective topic channel.
+/// - Coworker text is never posted.
+///
+/// `channel_lead_sessions` maps channel name → session ID for active channel leads.
+pub fn process_lead_output(
+    events: &HashMap<String, Vec<StreamEvent>>,
+    channel_lead_sessions: &HashMap<String, String>,
+) -> Vec<Effect> {
     let mut effects = Vec::new();
 
+    // Main lead → posts to main channel.
     if let Some(lead_events) = events.get("lead") {
-        let aggregated = extract_lead_text(lead_events);
-        let trimmed = aggregated.trim().to_string();
+        let trimmed = extract_lead_text(lead_events).trim().to_string();
         if !trimmed.is_empty() {
             effects.push(Effect::PostToChannel {
                 sender: "lead".to_string(),
                 message: trimmed,
-                channel: None, // Posts to main channel
+                channel: None,
             });
+        }
+    }
+
+    // Channel leads → each posts to its respective topic channel.
+    for channel_name in channel_lead_sessions.keys() {
+        if let Some(cl_events) = events.get(channel_name.as_str()) {
+            let trimmed = extract_lead_text(cl_events).trim().to_string();
+            if !trimmed.is_empty() {
+                effects.push(Effect::PostToChannel {
+                    sender: channel_name.clone(),
+                    message: trimmed,
+                    channel: Some(channel_name.clone()),
+                });
+            }
         }
     }
 
