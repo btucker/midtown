@@ -122,7 +122,7 @@ fn test_session_dispatch_uses_resume_session_for_stopped_session() {
         ..snapshot::minimal_snapshot_for_test()
     };
 
-    let effects = dispatch_via_sessions(&snap);
+    let effects = dispatch_via_sessions_for_test(&snap, None, |_| None);
 
     // Then: emits SpawnCoworkerWithCallbacks with SessionMode::ResumeSession
     // (SpawnCoworkerWithCallbacks enables on_failure cooldown and task reset)
@@ -296,7 +296,7 @@ fn test_no_dual_spawn_for_stopped_session_task() {
     let (state, _tmp, _guard) = make_test_state();
 
     // Run dispatch_via_sessions first (as events.rs does)
-    let session_effects = dispatch_via_sessions(&snap);
+    let session_effects = dispatch_via_sessions_for_test(&snap, None, |_| None);
     let session_claimed_ids = extract_claimed_task_ids_from_effects(&session_effects);
 
     // Run check_and_recover_orphans with the same task

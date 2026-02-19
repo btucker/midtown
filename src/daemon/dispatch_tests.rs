@@ -4722,7 +4722,7 @@ fn test_dispatch_via_sessions_skips_running_session() {
         session_task_map,
     );
 
-    let effects = dispatch_via_sessions(&snap);
+    let effects = dispatch_via_sessions_for_test(&snap, None, |_| None);
 
     assert!(
         effects.is_empty(),
@@ -4756,7 +4756,7 @@ fn test_dispatch_via_sessions_recovers_stopped_session() {
         session_task_map,
     );
 
-    let effects = dispatch_via_sessions(&snap);
+    let effects = dispatch_via_sessions_for_test(&snap, None, |_| None);
 
     // Should have at least a SpawnCoworkerWithCallbacks effect
     let has_spawn = effects.iter().any(|e| {
@@ -4774,8 +4774,9 @@ fn test_dispatch_via_sessions_recovers_stopped_session() {
 }
 
 #[test]
-fn test_dispatch_via_sessions_skips_tasks_without_sessions() {
-    // In_progress task with no session_task_map entry -- no effects (handled by orphan recovery).
+fn test_dispatch_via_sessions_handles_tasks_without_sessions() {
+    // In_progress task with no session_task_map entry -- should attempt fresh spawn
+    // (replacing orphan recovery behavior).
     let snap = make_session_dispatch_snapshot(
         vec![(
             "42".to_string(),
@@ -4786,11 +4787,190 @@ fn test_dispatch_via_sessions_skips_tasks_without_sessions() {
         HashMap::new(), // no session_task_map
     );
 
-    let effects = dispatch_via_sessions(&snap);
+    let effects = dispatch_via_sessions_for_test(&snap, None, |task_id| {
+        if task_id == "42" {
+            Some(crate::tasks::Task {
+                id: "42".to_string(),
+                subject: "Add auth endpoint".to_string(),
+                status: crate::tasks::TaskStatus::InProgress,
+                owner: Some("lexington".to_string()),
+                description: None,
+                blocked_by: vec![],
+                channel: None,
+                pr: None,
+                created_at: None,
+            })
+        } else {
+            None
+        }
+    });
+
+    // Should have a SpawnCoworkerWithCallbacks with Fresh session mode
+    let has_fresh_spawn = effects.iter().any(|e| {
+        matches!(e, Effect::SpawnCoworkerWithCallbacks { config, .. }
+            if matches!(&config.session_mode, crate::launch::SessionMode::Fresh))
+    });
+    assert!(
+        has_fresh_spawn,
+        "Should fresh-spawn for task without session record, got: {:?}",
+        effects
+    );
+}
+
+#[test]
+fn test_dispatch_via_sessions_no_session_respects_dev_limit() {
+    // Tasks without sessions should NOT spawn when at dev limit.
+    let mut snap = make_session_dispatch_snapshot(
+        vec![(
+            "42".to_string(),
+            "Add auth".to_string(),
+            "lexington".to_string(),
+        )],
+        HashMap::new(),
+        HashMap::new(),
+    );
+    snap.is_at_dev_limit = true;
+
+    let effects = dispatch_via_sessions_for_test(&snap, None, |task_id| {
+        if task_id == "42" {
+            Some(crate::tasks::Task {
+                id: task_id.to_string(),
+                subject: "Add auth".to_string(),
+                status: crate::tasks::TaskStatus::InProgress,
+                owner: Some("lexington".to_string()),
+                description: None,
+                blocked_by: vec![],
+                channel: None,
+                pr: None,
+                created_at: None,
+            })
+        } else {
+            None
+        }
+    });
 
     assert!(
         effects.is_empty(),
-        "Tasks without session records should produce no effects, got: {:?}",
+        "Should not spawn at dev limit, got: {:?}",
+        effects
+    );
+}
+
+#[test]
+fn test_dispatch_via_sessions_no_session_skips_merged_pr() {
+    // Task with merged PR should not be recovered via fresh spawn.
+    let mut snap = make_session_dispatch_snapshot(
+        vec![(
+            "42".to_string(),
+            "Add auth".to_string(),
+            "lexington".to_string(),
+        )],
+        HashMap::new(),
+        HashMap::new(),
+    );
+    // Mark PR #100 as merged
+    snap.merged_pr_numbers.insert(100);
+
+    let effects = dispatch_via_sessions_for_test(&snap, None, |task_id| {
+        if task_id == "42" {
+            Some(crate::tasks::Task {
+                id: task_id.to_string(),
+                subject: "Add auth".to_string(),
+                status: crate::tasks::TaskStatus::InProgress,
+                owner: Some("lexington".to_string()),
+                description: None,
+                blocked_by: vec![],
+                channel: None,
+                pr: Some(100), // explicit PR that is merged
+                created_at: None,
+            })
+        } else {
+            None
+        }
+    });
+
+    assert!(
+        effects.is_empty(),
+        "Should not spawn for task with merged PR, got: {:?}",
+        effects
+    );
+}
+
+#[test]
+fn test_dispatch_via_sessions_no_session_skips_recently_stopped() {
+    // Task owned by recently-stopped coworker should not be recovered.
+    let mut snap = make_session_dispatch_snapshot(
+        vec![(
+            "42".to_string(),
+            "Add auth".to_string(),
+            "lexington".to_string(),
+        )],
+        HashMap::new(),
+        HashMap::new(),
+    );
+    // lexington stopped very recently (within grace period)
+    snap.coworker_stop_times
+        .insert("lexington".to_string(), snap.now_utc);
+
+    let effects = dispatch_via_sessions_for_test(&snap, None, |task_id| {
+        if task_id == "42" {
+            Some(crate::tasks::Task {
+                id: task_id.to_string(),
+                subject: "Add auth".to_string(),
+                status: crate::tasks::TaskStatus::InProgress,
+                owner: Some("lexington".to_string()),
+                description: None,
+                blocked_by: vec![],
+                channel: None,
+                pr: None,
+                created_at: None,
+            })
+        } else {
+            None
+        }
+    });
+
+    assert!(
+        effects.is_empty(),
+        "Should not spawn for recently stopped coworker, got: {:?}",
+        effects
+    );
+}
+
+#[test]
+fn test_dispatch_via_sessions_no_session_skips_completed_task() {
+    // Task that is already completed should not be recovered.
+    let snap = make_session_dispatch_snapshot(
+        vec![(
+            "42".to_string(),
+            "Add auth".to_string(),
+            "lexington".to_string(),
+        )],
+        HashMap::new(),
+        HashMap::new(),
+    );
+
+    let effects = dispatch_via_sessions_for_test(&snap, None, |task_id| {
+        if task_id == "42" {
+            Some(crate::tasks::Task {
+                id: task_id.to_string(),
+                subject: "Add auth".to_string(),
+                status: crate::tasks::TaskStatus::Completed, // already completed
+                owner: Some("lexington".to_string()),
+                description: None,
+                blocked_by: vec![],
+                channel: None,
+                pr: None,
+                created_at: None,
+            })
+        } else {
+            None
+        }
+    });
+
+    assert!(
+        effects.is_empty(),
+        "Should not spawn for completed task, got: {:?}",
         effects
     );
 }
@@ -4820,7 +5000,7 @@ fn test_dispatch_via_sessions_uses_preferred_name() {
         session_task_map,
     );
 
-    let effects = dispatch_via_sessions(&snap);
+    let effects = dispatch_via_sessions_for_test(&snap, None, |_| None);
 
     // Verify the spawn uses the preferred name "park"
     let spawn_config = effects.iter().find_map(|e| {
@@ -4866,7 +5046,7 @@ fn test_dispatch_via_sessions_uses_session_working_dir() {
         session_task_map,
     );
 
-    let effects = dispatch_via_sessions(&snap);
+    let effects = dispatch_via_sessions_for_test(&snap, None, |_| None);
 
     let spawn_config = effects.iter().find_map(|e| {
         if let Effect::SpawnCoworkerWithCallbacks { config, .. } = e {
@@ -4911,7 +5091,7 @@ fn test_dispatch_via_sessions_respects_cooldown() {
     // Simulate cooldown active (pre-evaluated in snapshot)
     snap.session_dispatch_cooldown_active = true;
 
-    let effects = dispatch_via_sessions(&snap);
+    let effects = dispatch_via_sessions_for_test(&snap, None, |_| None);
 
     assert!(
         effects.is_empty(),
@@ -4973,7 +5153,7 @@ fn test_session_dispatch_excludes_task_from_pending_dispatch() {
     let (state, _tmp, _guard) = make_test_state();
 
     // Step 1: Session dispatch recovers the task
-    let session_effects = dispatch_via_sessions(&snap);
+    let session_effects = dispatch_via_sessions_for_test(&snap, None, |_| None);
     assert!(
         !session_effects.is_empty(),
         "Session dispatch should produce effects for stopped session"

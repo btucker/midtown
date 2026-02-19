@@ -69,7 +69,7 @@ pub use effects::Effect;
 #[doc(hidden)]
 pub use dispatch::{
     build_subject_based_completion_effects, check_for_duplicate_task_workers,
-    dispatch_via_sessions, reset_orphaned_tasks,
+    dispatch_via_sessions_snapshot_only, reset_orphaned_tasks,
 };
 #[doc(hidden)]
 pub use events::DaemonEvent;
