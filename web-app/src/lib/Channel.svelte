@@ -1,7 +1,8 @@
 <script>
   import { messages, messagesByChannel, activeChannel, channels, coworkers, kanbanData, repoStatus, repoStatuses, daemonStatus, detailPanelData, isWideScreen, agentToolItems, threadData } from './store.js'
   import { sendMessage, uploadFile, closeThread, openThread } from './api.js'
-  import { tick, onMount } from 'svelte'
+  import { tick, onMount, untrack } from 'svelte'
+  import { fly } from 'svelte/transition'
   import MermaidDiagram from './MermaidDiagram.svelte'
   import { parseSegments, hasMermaid, renderContent } from './markdown.js'
   import Autocomplete from './Autocomplete.svelte'
@@ -28,6 +29,28 @@
 
   // Filter messages by active channel
   let channelMessages = $derived($messagesByChannel[$activeChannel] || [])
+
+  // Track how many messages were present when each channel was first viewed.
+  // Messages at or above this index are "new" and get the slide-up animation.
+  // We use $state.raw so mutations don't trigger full reactive updates.
+  let initialMessageCounts = $state.raw({})
+
+  $effect(() => {
+    // Reactive on $activeChannel. When the channel changes, snapshot the
+    // current message count using untrack() so the snapshot itself doesn't
+    // create a reactive dependency on channelMessages.
+    const ch = $activeChannel
+    if (!(ch in initialMessageCounts)) {
+      initialMessageCounts = { ...initialMessageCounts, [ch]: untrack(() => channelMessages.length) }
+    }
+  })
+
+  function isNewMessage(channelName, index) {
+    // If we haven't recorded the initial count yet (effect hasn't fired),
+    // treat all messages as old so they don't animate on first render.
+    const threshold = initialMessageCounts[channelName] ?? Infinity
+    return index >= threshold
+  }
 
   // Tool call items for the active channel.
   // Main channel ('midtown') shows the lead's tool calls; topic channels show their channel lead's.
@@ -550,6 +573,7 @@
             <div class="h-[0.8em]"></div>
           {/if}
 
+          <div in:fly={{ y: 16, duration: isNewMessage($activeChannel, i) ? 180 : 0, opacity: 0 }}>
           {#if senderChanged(channelMessages, i)}
             <!-- Author line: bold name + current task + cross-post indicator -->
             <div
@@ -636,6 +660,7 @@
               </button>
             </div>
           {/if}
+          </div>
         {/each}
       {/if}
 
