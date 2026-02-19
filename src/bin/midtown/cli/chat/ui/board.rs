@@ -186,7 +186,9 @@ pub fn draw_board_panel(f: &mut Frame, app: &mut App, area: Rect) -> (Vec<Hyperl
             let wrapped_lines = wrap_content(&task_line, wrap_width);
             current_line += wrapped_lines.len() as u16;
 
-            // Phase label line is only emitted when there is a label
+            // Phase label line: only emitted as a separate extra line when the title does NOT wrap.
+            // When the title wraps, the label is merged into the first continuation line (no extra line).
+            let title_wraps = wrapped_lines.len() > 1;
             let task_pr = prs_clone.iter().find(|pr| {
                 pr.task_id
                     .map(|id| id.to_string() == task.id)
@@ -199,7 +201,7 @@ pub fn draw_board_panel(f: &mut Frame, app: &mut App, area: Rect) -> (Vec<Hyperl
                     None
                 }
             });
-            if task_phase_label(task, task_pr, coworker_phase).is_some() {
+            if !title_wraps && task_phase_label(task, task_pr, coworker_phase).is_some() {
                 // Register the label line for click-to-attach as well
                 task_line_map.insert(current_line, (task.id.clone(), task.owner.clone()));
                 current_line += 1;
@@ -302,9 +304,18 @@ pub fn task_phase_label(
 ) -> Option<&'static str> {
     match task_pr {
         None => {
-            // No PR yet
+            // No PR yet — use the coworker's reported phase if available, otherwise "dev"
             if task.status == TaskStatus::InProgress {
-                Some("dev")
+                let label = match coworker_phase {
+                    Some("claim") => "claim",
+                    Some("test") => "test",
+                    Some("PR") => "PR",
+                    Some("review") => "review",
+                    Some("debug") => "debug",
+                    Some("done") => "done",
+                    _ => "dev",
+                };
+                Some(label)
             } else {
                 None
             }
@@ -415,7 +426,10 @@ fn render_task_item(
         _ => false,
     });
 
+    let phase_label = task_phase_label(task, task_pr, coworker_phase);
     let wrapped_lines = wrap_content(&task_line, wrap_width);
+    let title_wraps = wrapped_lines.len() > 1;
+
     for (i, wrapped) in wrapped_lines.iter().enumerate() {
         if i == 0 {
             // First line: 1-space indent + bullet + text as separate spans
@@ -429,6 +443,20 @@ fn render_task_item(
             }
             let text_span = Span::styled(wrapped.to_string(), text_style);
             lines.push(Line::from(vec![bullet_span, text_span]));
+        } else if i == 1 && phase_label.is_some() {
+            // First continuation line with a phase label: label in the left gutter,
+            // continuation text aligned at bullet_prefix_width
+            let label_text = phase_label.unwrap();
+            let label_span = Span::styled(
+                format!("{:<width$}", label_text, width = bullet_prefix_width),
+                Style::default().fg(Color::DarkGray),
+            );
+            let mut text_style = Style::default().fg(text_color);
+            if is_task_selected {
+                text_style = text_style.bg(Color::DarkGray);
+            }
+            let continuation_span = Span::styled(wrapped.trim_start().to_string(), text_style);
+            lines.push(Line::from(vec![label_span, continuation_span]));
         } else {
             // Continuation lines: align with first letter of subject text
             let text = format!(
@@ -445,10 +473,9 @@ fn render_task_item(
         }
     }
 
-    // Second line: phase status label in gray, indented to align with task text
-    // Only emitted when there is a label (pending tasks with no PR get no extra line)
-    if let Some(label_text) = task_phase_label(task, task_pr, coworker_phase) {
-        // Indent to align with the task ID (same as bullet_prefix_width)
+    // If the title doesn't wrap, emit the phase label as a separate line below.
+    // When the title wraps, the label is merged into the first continuation line (no extra line).
+    if !title_wraps && let Some(label_text) = phase_label {
         let label_line = format!("{:width$}{}", "", label_text, width = bullet_prefix_width);
         lines.push(Line::from(vec![Span::styled(
             label_line,
@@ -1731,6 +1758,134 @@ mod tests {
         assert!(
             tasks_area.height < 40,
             "tasks_area should be smaller than total height when ops section is present"
+        );
+    }
+
+    // --- Bug !1615: phase label position and stale "dev" label ---
+
+    // Bug 2: task_phase_label should use coworker_phase when no PR exists
+    #[test]
+    fn test_phase_label_no_pr_coworker_testing() {
+        let mut task = make_task("1", vec![]);
+        task.status = TaskStatus::InProgress;
+        // Coworker reported "test" phase — should reflect that, not always "dev"
+        assert_eq!(task_phase_label(&task, None, Some("test")), Some("test"));
+    }
+
+    #[test]
+    fn test_phase_label_no_pr_coworker_claiming() {
+        let mut task = make_task("1", vec![]);
+        task.status = TaskStatus::InProgress;
+        assert_eq!(task_phase_label(&task, None, Some("claim")), Some("claim"));
+    }
+
+    #[test]
+    fn test_phase_label_no_pr_coworker_pull_request() {
+        let mut task = make_task("1", vec![]);
+        task.status = TaskStatus::InProgress;
+        assert_eq!(task_phase_label(&task, None, Some("PR")), Some("PR"));
+    }
+
+    #[test]
+    fn test_phase_label_no_pr_coworker_debugging() {
+        let mut task = make_task("1", vec![]);
+        task.status = TaskStatus::InProgress;
+        assert_eq!(task_phase_label(&task, None, Some("debug")), Some("debug"));
+    }
+
+    #[test]
+    fn test_phase_label_no_pr_coworker_dev_stays_dev() {
+        // When coworker is "dev", should still show "dev"
+        let mut task = make_task("1", vec![]);
+        task.status = TaskStatus::InProgress;
+        assert_eq!(task_phase_label(&task, None, Some("dev")), Some("dev"));
+    }
+
+    #[test]
+    fn test_phase_label_no_pr_no_coworker_phase_stays_dev() {
+        // When there's no coworker phase reported, fall back to "dev"
+        let mut task = make_task("1", vec![]);
+        task.status = TaskStatus::InProgress;
+        assert_eq!(task_phase_label(&task, None, None), Some("dev"));
+    }
+
+    // Bug 1: phase label should appear on the continuation line (second row), not as a separate
+    // extra line after all title lines.
+
+    #[test]
+    fn test_phase_label_position_no_wrap() {
+        // Single-line title: phase label goes on a new separate line (2 total lines)
+        let app = test_app();
+        let mut task = make_task("5", vec![]);
+        task.status = TaskStatus::InProgress;
+        let indentation = HashMap::from([("5".to_string(), 0)]);
+        let mut lines = Vec::new();
+
+        render_task_item(&app, &task, "midtown", &indentation, 80, &mut lines);
+
+        // 2 lines: title + label (unchanged from current behavior for single-line title)
+        assert_eq!(lines.len(), 2, "single-line title: title + label line");
+    }
+
+    #[test]
+    fn test_phase_label_position_with_wrap_no_extra_line() {
+        // Wrapped title: phase label appears on the first continuation line (NOT as extra line)
+        // Total lines = number of wrapped title lines (the label is merged into line[1])
+        let app = test_app();
+        let mut task = make_task("5", vec![]);
+        task.subject = "A very long title that definitely wraps across multiple lines in the sidebar board panel display area test".to_string();
+        task.status = TaskStatus::InProgress;
+        let indentation = HashMap::from([("5".to_string(), 0)]);
+        let mut lines = Vec::new();
+
+        // Use a narrow wrap_width to force wrapping
+        render_task_item(&app, &task, "midtown", &indentation, 30, &mut lines);
+
+        // With wrapping, the number of lines should equal the wrapped title lines count
+        // (the label is merged INTO line[1], not appended as an extra line)
+        let task_text = format!("!5 {}", task.subject);
+        let wrapped = super::super::text::wrap_content(&task_text, 30);
+        let wrapped_count = wrapped.len();
+        assert!(
+            wrapped_count >= 2,
+            "title should wrap with width=30, got {} lines",
+            wrapped_count
+        );
+        assert_eq!(
+            lines.len(),
+            wrapped_count,
+            "wrapped title: label merged into continuation line, total lines = wrapped line count"
+        );
+    }
+
+    #[test]
+    fn test_phase_label_on_continuation_line_content() {
+        // When title wraps, line[1] should start with the label, then the continuation text
+        let app = test_app();
+        let mut task = make_task("5", vec![]);
+        task.subject = "A very long title that definitely wraps across multiple lines in the sidebar board panel display area test".to_string();
+        task.status = TaskStatus::InProgress;
+        let indentation = HashMap::from([("5".to_string(), 0)]);
+        let mut lines = Vec::new();
+
+        render_task_item(&app, &task, "midtown", &indentation, 30, &mut lines);
+
+        // line[1] should contain the "dev" label
+        assert!(
+            lines.len() >= 2,
+            "expected at least 2 lines, got {}",
+            lines.len()
+        );
+        let continuation_content: String = lines[1]
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect::<Vec<_>>()
+            .join("");
+        assert!(
+            continuation_content.contains("dev"),
+            "continuation line should contain 'dev' label, got: {:?}",
+            continuation_content
         );
     }
 }
