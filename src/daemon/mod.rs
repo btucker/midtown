@@ -3150,18 +3150,17 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                     }
                 }
 
-                // Process headless lead output and post aggregated text to channel.
-                // Routes through Effect pipeline to maintain architecture consistency.
-                let lead_effects = stream::process_lead_output(&events);
-                effects::execute_effects(lead_effects, &state).await;
-
-                // Broadcast universal events (tool calls) to WebSocket clients.
-                // Main lead's tool calls go to the main channel; each channel lead's
-                // tool calls are tagged with the channel name so the web UI filters them.
-                let universal_effects = {
+                // Process lead and channel lead text output + tool call universal events.
+                // Both functions need channel_lead_sessions — acquire the lock once.
+                let (lead_effects, universal_effects) = {
                     let ps = state.persistent_state.lock().await;
-                    stream::process_universal_events(&events, &ps.channel_lead_sessions)
+                    let lead_effects =
+                        stream::process_lead_output(&events, &ps.channel_lead_sessions);
+                    let universal_effects =
+                        stream::process_universal_events(&events, &ps.channel_lead_sessions);
+                    (lead_effects, universal_effects)
                 };
+                effects::execute_effects(lead_effects, &state).await;
                 effects::execute_effects(universal_effects, &state).await;
 
                 // Defense-in-depth: check process liveness via try_wait() to catch

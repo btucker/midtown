@@ -95,7 +95,7 @@ fn test_extract_lead_text_non_assistant_events() {
 #[test]
 fn test_process_lead_output_no_events() {
     let events = HashMap::new();
-    let effects = process_lead_output(&events);
+    let effects = process_lead_output(&events, &HashMap::new());
     assert!(effects.is_empty());
 }
 
@@ -103,7 +103,7 @@ fn test_process_lead_output_no_events() {
 fn test_process_lead_output_no_lead_events() {
     let mut events = HashMap::new();
     events.insert("coworker".to_string(), vec![]);
-    let effects = process_lead_output(&events);
+    let effects = process_lead_output(&events, &HashMap::new());
     assert!(effects.is_empty());
 }
 
@@ -121,7 +121,7 @@ fn test_process_lead_output_returns_post_effect() {
         }],
     );
 
-    let effects = process_lead_output(&events);
+    let effects = process_lead_output(&events, &HashMap::new());
     assert_eq!(effects.len(), 1);
 
     match &effects[0] {
@@ -161,7 +161,7 @@ fn test_process_lead_output_aggregates_multiple_events() {
         ],
     );
 
-    let effects = process_lead_output(&events);
+    let effects = process_lead_output(&events, &HashMap::new());
     assert_eq!(effects.len(), 1);
 
     match &effects[0] {
@@ -186,7 +186,7 @@ fn test_process_lead_output_empty_text_not_posted() {
         }],
     );
 
-    let effects = process_lead_output(&events);
+    let effects = process_lead_output(&events, &HashMap::new());
     assert!(
         effects.is_empty(),
         "Should not post if no text content found"
@@ -209,7 +209,7 @@ fn test_process_lead_output_trims_leading_newlines() {
         }],
     );
 
-    let effects = process_lead_output(&events);
+    let effects = process_lead_output(&events, &HashMap::new());
     assert_eq!(effects.len(), 1);
     match &effects[0] {
         Effect::PostToChannel { message, .. } => {
@@ -233,7 +233,7 @@ fn test_process_lead_output_trims_trailing_newlines() {
         }],
     );
 
-    let effects = process_lead_output(&events);
+    let effects = process_lead_output(&events, &HashMap::new());
     assert_eq!(effects.len(), 1);
     match &effects[0] {
         Effect::PostToChannel { message, .. } => {
@@ -257,10 +257,135 @@ fn test_process_lead_output_whitespace_only_not_posted() {
         }],
     );
 
-    let effects = process_lead_output(&events);
+    let effects = process_lead_output(&events, &HashMap::new());
     assert!(
         effects.is_empty(),
         "Should not post a message that is only whitespace after trimming"
+    );
+}
+
+// ── channel lead text output tests ──────────────────────────────────
+
+#[test]
+fn test_process_lead_output_channel_lead_text_posted_to_channel() {
+    let mut events = HashMap::new();
+    events.insert(
+        "web".to_string(),
+        vec![StreamEvent::Assistant {
+            message: json!({
+                "content": [{"type": "text", "text": "Hello from web channel lead"}]
+            }),
+            session_id: None,
+            extra: json!(null),
+        }],
+    );
+    let mut channel_leads = HashMap::new();
+    channel_leads.insert("web".to_string(), "some-session-id".to_string());
+
+    let effects = process_lead_output(&events, &channel_leads);
+    assert_eq!(effects.len(), 1);
+    match &effects[0] {
+        Effect::PostToChannel {
+            sender,
+            message,
+            channel,
+        } => {
+            assert_eq!(sender, "web");
+            assert_eq!(message, "Hello from web channel lead");
+            assert_eq!(channel.as_deref(), Some("web"));
+        }
+        _ => panic!("Expected PostToChannel effect"),
+    }
+}
+
+#[test]
+fn test_process_lead_output_channel_lead_empty_text_not_posted() {
+    let mut events = HashMap::new();
+    events.insert(
+        "web".to_string(),
+        vec![StreamEvent::Assistant {
+            message: json!({
+                "content": [{"type": "tool_use", "id": "tc_1", "name": "Read", "input": {}}]
+            }),
+            session_id: None,
+            extra: json!(null),
+        }],
+    );
+    let mut channel_leads = HashMap::new();
+    channel_leads.insert("web".to_string(), "some-session-id".to_string());
+
+    let effects = process_lead_output(&events, &channel_leads);
+    assert!(
+        effects.is_empty(),
+        "Should not post empty text for channel lead"
+    );
+}
+
+#[test]
+fn test_process_lead_output_main_and_channel_lead_both_post() {
+    let mut events = HashMap::new();
+    events.insert(
+        "lead".to_string(),
+        vec![StreamEvent::Assistant {
+            message: json!({
+                "content": [{"type": "text", "text": "Main lead message"}]
+            }),
+            session_id: None,
+            extra: json!(null),
+        }],
+    );
+    events.insert(
+        "features".to_string(),
+        vec![StreamEvent::Assistant {
+            message: json!({
+                "content": [{"type": "text", "text": "Features lead message"}]
+            }),
+            session_id: None,
+            extra: json!(null),
+        }],
+    );
+    let mut channel_leads = HashMap::new();
+    channel_leads.insert("features".to_string(), "cl-session-id".to_string());
+
+    let effects = process_lead_output(&events, &channel_leads);
+    assert_eq!(effects.len(), 2);
+
+    let main_effect = effects
+        .iter()
+        .find(|e| matches!(e, Effect::PostToChannel { sender, .. } if sender == "lead"));
+    assert!(main_effect.is_some());
+    if let Some(Effect::PostToChannel { channel, .. }) = main_effect {
+        assert!(channel.is_none(), "Main lead posts to main channel");
+    }
+
+    let cl_effect = effects
+        .iter()
+        .find(|e| matches!(e, Effect::PostToChannel { sender, .. } if sender == "features"));
+    assert!(cl_effect.is_some());
+    if let Some(Effect::PostToChannel { channel, .. }) = cl_effect {
+        assert_eq!(channel.as_deref(), Some("features"));
+    }
+}
+
+#[test]
+fn test_process_lead_output_coworker_not_treated_as_channel_lead() {
+    // A session named "park" is a coworker, not a channel lead — its text should NOT be posted.
+    let mut events = HashMap::new();
+    events.insert(
+        "park".to_string(),
+        vec![StreamEvent::Assistant {
+            message: json!({
+                "content": [{"type": "text", "text": "Coworker message"}]
+            }),
+            session_id: None,
+            extra: json!(null),
+        }],
+    );
+    // No channel leads registered
+    let effects = process_lead_output(&events, &HashMap::new());
+    assert!(
+        effects.is_empty(),
+        "Coworker text should not be posted to channel"
     );
 }
 
