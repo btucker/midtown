@@ -50,6 +50,17 @@ pub struct PendingQuestion {
     pub timestamp: chrono::DateTime<chrono::Utc>,
 }
 
+/// Info about a clipboard image pending delivery to the lead session.
+#[derive(Debug, Clone)]
+pub struct PendingImageInfo {
+    /// Image dimensions (width, height in pixels). (0, 0) if unknown.
+    #[allow(dead_code)]
+    pub dimensions: (u32, u32),
+    /// MIME type (e.g., "image/png")
+    #[allow(dead_code)]
+    pub media_type: String,
+}
+
 /// Data fetched from background thread for kanban refresh
 struct KanbanData {
     prs: Vec<KanbanPr>,
@@ -316,6 +327,9 @@ pub struct App {
     pub input_text: String,
     /// Cursor position in the input text
     pub input_cursor: usize,
+    /// Clipboard image pending delivery to the lead on Enter
+    #[allow(dead_code)]
+    pub pending_image: Option<PendingImageInfo>,
     /// Whether selection mode is active (mouse capture disabled for text selection)
     pub selection_mode: bool,
     /// Cached rendered message lines and hyperlinks to skip recomputation on input-only redraws
@@ -511,6 +525,7 @@ impl App {
             selected_channel_archived: false,
             input_text: String::new(),
             input_cursor: 0,
+            pending_image: None,
             selection_mode: false,
             message_render_cache: None,
             channel_unread_counts: HashMap::new(),
@@ -3133,6 +3148,7 @@ pub(super) mod tests {
             selected_channel_archived: false,
             input_text: String::new(),
             input_cursor: 0,
+            pending_image: None,
             selection_mode: false,
             message_render_cache: None,
             channel_unread_counts: HashMap::new(),
