@@ -1560,6 +1560,9 @@ impl App {
             thread_id.hash(&mut hasher);
         }
         self.thread_messages.len().hash(&mut hasher);
+        // Hash selected channel — changing channels changes which tool activity agent
+        // is shown, so the filtered activity count (and thus msg_height) may differ.
+        self.selected_channel.hash(&mut hasher);
         // Hash tool activity — changes msg_height via count_tool_activity_lines,
         // so a cache hit with different tool activity would apply wrong truncation.
         let mut agents: Vec<&String> = self.tool_activity.keys().collect();
