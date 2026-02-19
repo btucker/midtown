@@ -615,6 +615,12 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
             super::rpc_headed::handle_output(request.id, session, output, state).await
         }
 
+        "headed.enqueue" => {
+            let session = require_str!(params, "session", request.id);
+            let text = require_str!(params, "text", request.id);
+            super::rpc_headed::handle_enqueue(request.id, session, text, state).await
+        }
+
         _ => {
             warn!("Unknown method: {}", request.method);
             Response::error(request.id, RpcError::method_not_found())

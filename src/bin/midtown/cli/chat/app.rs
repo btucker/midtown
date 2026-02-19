@@ -1414,6 +1414,41 @@ impl App {
         }
     }
 
+    /// Deliver a pending clipboard image to the appropriate lead session.
+    ///
+    /// Sends a raw Ctrl+V byte (\x16) to the lead or channel-lead PTY via the
+    /// headed intercom. Claude's own Ctrl+V handler reads /tmp/claude_cli_latest_screenshot.png
+    /// (which must already be saved) and attaches the image to the conversation.
+    ///
+    /// Returns `true` if the nudge was enqueued, `false` on error.
+    #[allow(dead_code)] // Called in Task 3+ when Ctrl+V paste handler invokes image delivery
+    pub fn send_image_to_lead(&mut self) -> bool {
+        use crate::client::DaemonClient;
+
+        let target_session = self.image_target_session();
+
+        let result = DaemonClient::connect()
+            .and_then(|client| client.headed_enqueue_ctrl_v(&target_session));
+
+        result.is_ok()
+    }
+
+    /// Determine which session to send the image to based on the current channel.
+    ///
+    /// If viewing a topic channel that has an active channel lead, send to that session.
+    /// Otherwise send to the main "lead" session.
+    #[allow(dead_code)] // Called by send_image_to_lead() in Task 3+
+    fn image_target_session(&self) -> String {
+        let channel = &self.selected_channel;
+        if channel != "main"
+            && !channel.is_empty()
+            && self.channel_lead_names.iter().any(|n| n == channel)
+        {
+            return channel.clone();
+        }
+        "lead".to_string()
+    }
+
     /// Validate that a channel name is safe for use as a filesystem path component.
     ///
     /// Rejects names containing path separators, traversal sequences, or other

@@ -1604,6 +1604,15 @@ impl DaemonState {
     }
 
     pub(crate) async fn enqueue_headed_nudge(&self, session: &str, text: &str) {
+        self.enqueue_headed_text(session, text, true).await;
+    }
+
+    /// Enqueue a raw text payload to a headed session's intercom queue.
+    ///
+    /// `submit` controls whether the headed wrapper appends an Enter keystroke
+    /// after writing `text` to the PTY. Pass `false` for raw control characters
+    /// (e.g., Ctrl+V) that should not be followed by Enter.
+    pub(crate) async fn enqueue_headed_text(&self, session: &str, text: &str, submit: bool) {
         let key = Self::session_key(session);
         let mut sessions = self.headed_sessions.lock().await;
         let session_state = sessions.entry(key).or_default();
@@ -1614,7 +1623,7 @@ impl DaemonState {
             id: next_id,
             kind: "nudge_text".to_string(),
             text: text.to_string(),
-            submit: true,
+            submit,
         });
 
         while session_state.messages.len() > HEADED_SESSION_QUEUE_MAX {

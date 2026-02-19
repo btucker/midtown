@@ -701,6 +701,18 @@ impl DaemonClient {
         )
     }
 
+    /// Enqueue a raw Ctrl+V keystroke (\x16) to a headed session's intercom queue.
+    ///
+    /// Causes the headed wrapper to write \x16 to the Claude PTY,
+    /// triggering Claude's built-in clipboard image paste handler.
+    #[allow(dead_code)] // Called by App::send_image_to_lead() in Task 3+
+    pub fn headed_enqueue_ctrl_v(&self, session: &str) -> Result<Response, String> {
+        self.send(
+            "headed.enqueue",
+            Some(serde_json::json!({ "session": session, "text": "\x16" })),
+        )
+    }
+
     /// Send a JSON-RPC request with a custom timeout in seconds.
     fn send_raw_with_timeout(
         &self,
