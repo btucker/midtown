@@ -95,10 +95,8 @@ The lead is just a claude code session, but it's been booted with some a [specia
 | `midtown start` | Start the daemon and Zellij session |
 | `midtown stop` | Stop everything |
 | `midtown restart` | Restart the daemon |
-| `midtown attach` | Attach to the Zellij session |
 | `midtown status` | Show system status |
-| `midtown chat` | Open the IRC-style chat TUI |
-| `midtown log [-f]` | View daemon logs |
+| `midtown view` | Launch chat UI (use `--attach` to open Lead in a split) |
 | `midtown channel post <msg>` | Post to the team channel |
 | `midtown channel read` | Read recent messages |
 | `midtown coworker call-in` | Spawn a new coworker |
@@ -112,10 +110,12 @@ The lead is just a claude code session, but it's been booted with some a [specia
 | `midtown task list` | List tasks |
 | `midtown task view <id>` | View task details |
 | `midtown pr list` | List pull requests |
+| `midtown config get/set/list` | Manage [configuration](docs/configuration.md) |
 | `midtown auth` | Manage [auth profiles](docs/authentication.md) (multiple accounts supported) |
-| `midtown headless "<prompt>"` | Run a headless Claude session |
 
 See the [full CLI reference](docs/cli.md) for all flags and options.
+
+> **Note:** `midtown view` also accepts `midtown chat` and `midtown attach` as aliases.
 
 ## Documentation
 
@@ -127,7 +127,11 @@ See the [full CLI reference](docs/cli.md) for all flags and options.
 | [Architecture](docs/architecture.md) | Daemon, coworkers, channel sync, GitHub integration, web UI |
 | [Docker](docs/docker.md) | Docker images, running in containers |
 
-### Headless Execution
+### Hidden/Advanced Commands
+
+These commands are not shown in `midtown --help` but remain fully functional. They are used internally by the daemon, coworker hooks, and agent prompts.
+
+#### Headless Execution
 
 Run Claude Code sessions non-interactively with JSON streaming output:
 
@@ -145,16 +149,15 @@ midtown headless "Fix the bug" --allow-tools --max-budget-usd 0.50
 | `--max-budget-usd <float>` | Maximum budget in USD |
 | `--allow-tools` | Allow tool use (default: no tools) |
 
-### Lead Commands
+#### Lead Commands
 
 | Command | Description |
 |---------|-------------|
-| `midtown lead register-session` | Register Lead's Claude session for task sharing |
 | `midtown lead remind all-work-merged <message>` | Set a reminder for when all work is merged |
 | `midtown lead remind list` | List active reminders |
 | `midtown lead remind cancel <id>` | Cancel a reminder |
 
-### Webserver
+#### Webserver
 
 The multi-project webserver serves the web UI and proxies to per-project daemons.
 
@@ -164,7 +167,15 @@ The multi-project webserver serves the web UI and proxies to per-project daemons
 | `midtown webserver stop` | Stop the webserver |
 | `midtown webserver restart` | Restart the webserver |
 
-### E2E Testing
+#### Logs
+
+| Command | Description |
+|---------|-------------|
+| `midtown log` | View daemon logs (follows by default) |
+| `midtown log --hooks` | View hooks log |
+| `midtown log --path` | Print log file path |
+
+#### E2E Testing
 
 | Command | Description |
 |---------|-------------|

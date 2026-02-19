@@ -120,6 +120,7 @@ enum Commands {
         command: ConfigCommand,
     },
     /// Project management commands
+    #[command(hide = true)]
     Project {
         #[command(subcommand)]
         command: ProjectCommand,
@@ -148,6 +149,7 @@ enum Commands {
     /// Show system status
     Status,
     /// Headed wrapper intercom (register/poll/ack + PTY-backed run-agent)
+    #[command(hide = true)]
     HeadedWrapper {
         #[command(subcommand)]
         command: HeadedWrapperCommand,
@@ -158,13 +160,16 @@ enum Commands {
         command: PrCommand,
     },
     /// Lead-specific commands
+    #[command(hide = true)]
     Lead {
         #[command(subcommand)]
         command: LeadCommand,
     },
     /// Open IRC-style chat TUI
+    #[command(hide = true)]
     Chat,
     /// E2E testing commands (auth setup, run containerized tests)
+    #[command(hide = true)]
     E2e {
         #[command(subcommand)]
         command: E2eCommand,
@@ -179,6 +184,7 @@ enum Commands {
         command: Option<AuthCommand>,
     },
     /// Report coworker workflow state (called by coworkers to update status)
+    #[command(hide = true)]
     State {
         /// Workflow phase
         #[arg(value_enum)]
@@ -193,16 +199,19 @@ enum Commands {
         progress: Option<u8>,
     },
     /// Hook handlers (insight, idle, task, ask) - called by Claude Code hooks
+    #[command(hide = true)]
     Hook {
         #[command(subcommand)]
         command: HookCommand,
     },
     /// Diagram utilities (validation, rendering)
+    #[command(hide = true)]
     Diagram {
         #[command(subcommand)]
         command: DiagramCommand,
     },
     /// View daemon or hook logs
+    #[command(hide = true)]
     Log {
         /// Show hooks log instead of daemon log
         #[arg(long)]
@@ -221,17 +230,20 @@ enum Commands {
         lines: u32,
     },
     /// Standalone multi-project webserver
+    #[command(hide = true)]
     Webserver {
         #[command(subcommand)]
         command: WebserverCommand,
     },
     /// Run Claude Code using the current midtown auth profile
+    #[command(hide = true)]
     Claude {
         /// Additional arguments to pass to the claude CLI
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
     /// Run a headless Claude Code session via the daemon (JSON streaming)
+    #[command(hide = true)]
     Headless {
         /// Prompt to send to Claude
         prompt: String,
@@ -283,6 +295,7 @@ enum WebserverCommand {
 #[derive(Subcommand, Clone)]
 enum LeadCommand {
     /// Register this session for task sharing with coworkers
+    #[command(hide = true)]
     RegisterSession,
     /// Manage reminders (condition-based notifications)
     Remind {
