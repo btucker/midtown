@@ -4401,7 +4401,7 @@ pub(super) mod tests {
         // Add 25 messages
         for i in 0..25 {
             app.messages
-                .push_back(Message::text("park", &format!("Message {}", i)));
+                .push_back(Message::text("park", format!("Message {}", i)));
         }
 
         app.input_text = "/thread ".to_string();
