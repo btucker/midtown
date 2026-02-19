@@ -13,6 +13,7 @@ use crate::message::Message;
 use crate::rpc::{RequestId, Response, RpcError};
 
 use super::DaemonState;
+use super::constants::OPS_CHANNEL;
 
 // ============================================================================
 // Target parsing
@@ -557,12 +558,9 @@ pub(super) async fn handle_session_attach(
     } else {
         "resuming historical session interactively"
     };
-    let _ = state
-        .send_and_broadcast_async(&Message::system(format!(
-            "Attached to {} — {}",
-            name, status_text
-        )))
-        .await;
+    let mut attach_msg = Message::system(format!("Attached to {} — {}", name, status_text));
+    attach_msg.channel = Some(OPS_CHANNEL.to_string());
+    let _ = state.send_and_broadcast_async(&attach_msg).await;
 
     Response::success(
         id,
@@ -678,12 +676,10 @@ pub(super) async fn handle_session_detach(
                 name, session_id
             );
 
-            let _ = state
-                .send_and_broadcast_async(&Message::system(format!(
-                    "Detached from {} — headless session resumed",
-                    name
-                )))
-                .await;
+            let mut detach_msg =
+                Message::system(format!("Detached from {} — headless session resumed", name));
+            detach_msg.channel = Some(OPS_CHANNEL.to_string());
+            let _ = state.send_and_broadcast_async(&detach_msg).await;
 
             state.broadcast_coworker_update(&name, "running", None);
 
@@ -984,12 +980,12 @@ pub(super) async fn handle_session_clear(
         Ok(()) => {
             info!("Relaunched fresh session for '{}' after clear", name);
 
-            let _ = state
-                .send_and_broadcast_async(&crate::message::Message::system(format!(
-                    "Cleared session for {} — fresh session started",
-                    name
-                )))
-                .await;
+            let mut clear_msg = crate::message::Message::system(format!(
+                "Cleared session for {} — fresh session started",
+                name
+            ));
+            clear_msg.channel = Some(OPS_CHANNEL.to_string());
+            let _ = state.send_and_broadcast_async(&clear_msg).await;
 
             state.broadcast_coworker_update(&name, "running", None);
 

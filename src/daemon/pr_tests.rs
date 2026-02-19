@@ -205,7 +205,7 @@ fn stuck_nudge_effects_returns_only_system_message() {
 
     // That effect should be PostSystemMessage with the warning emoji prefix
     match &effects[0] {
-        Effect::PostSystemMessage { message: msg } => {
+        Effect::PostSystemMessage { message: msg, .. } => {
             assert!(
                 msg.starts_with("⚠️"),
                 "System message should have warning prefix"
@@ -325,7 +325,7 @@ async fn test_orphaned_pr_with_merge_conflict_is_ignored() {
 
     // Verify we got a system message warning about the orphaned PR
     let has_orphan_warning = effects.iter().any(
-        |e| matches!(e, Effect::PostSystemMessage { message } if message.contains("Orphaned PR")),
+        |e| matches!(e, Effect::PostSystemMessage { message, .. } if message.contains("Orphaned PR")),
     );
     assert!(
         has_orphan_warning,
@@ -663,7 +663,7 @@ async fn test_orphaned_pr_with_task_branch_and_merge_conflict_is_ignored() {
 
     // Verify we got a system message warning about the orphaned PR
     let has_orphan_warning = effects.iter().any(
-        |e| matches!(e, Effect::PostSystemMessage { message } if message.contains("Orphaned PR") || message.contains("orphaned")),
+        |e| matches!(e, Effect::PostSystemMessage { message, .. } if message.contains("Orphaned PR") || message.contains("orphaned")),
     );
     assert!(
         has_orphan_warning,

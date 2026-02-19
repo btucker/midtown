@@ -3310,9 +3310,11 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                     match default_channel.rotate(CHANNEL_ROTATION_RETAIN_MINUTES) {
                         Ok(archived) => {
                             info!("Channel rotated: {} messages archived", archived);
-                            let msg = Message::system(
-                                format!("Channel log rotated: {} old messages archived", archived)
-                            );
+                            let mut msg = Message::system(format!(
+                                "Channel log rotated: {} old messages archived",
+                                archived
+                            ));
+                            msg.channel = Some(OPS_CHANNEL.to_string());
                             if let Err(e) = state.send_and_broadcast_async(&msg).await {
                                 warn!("Failed to send rotation notification: {}", e);
                             }

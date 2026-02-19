@@ -1128,10 +1128,10 @@ fn test_discovered_nudges_routes_to_task_channel() {
 
     let effects = decide_discovered_coworker_nudges(&discovered, &owner_tasks, &reviewer_prs);
     assert_eq!(effects.len(), 2);
-    // Check that PostToChannel uses the task's channel
+    // Discovered coworker nudges are operational — they route to the ops channel
     match &effects[1] {
         Effect::PostToChannel { channel, .. } => {
-            assert_eq!(channel, &Some("feature-auth".to_string()));
+            assert_eq!(channel, &Some("ops".to_string()));
         }
         _ => panic!("Expected PostToChannel"),
     }

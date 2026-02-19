@@ -307,6 +307,7 @@ pub(super) async fn handle_coworker_report_state(
             on_success: vec![
                 effects::Effect::PostSystemMessage {
                     message: format!("☕ {} reported idle, taking a break", name),
+                    channel: Some(OPS_CHANNEL.to_string()),
                 },
                 effects::Effect::BroadcastCoworkerUpdate {
                     name: name.to_string(),
@@ -378,7 +379,7 @@ pub(super) async fn handle_coworker_report_state(
                             "⚠️ {} reported task !{} completed without a PR — nudged to open PR first",
                             name, tid
                         ),
-                        channel: None,
+                        channel: Some(OPS_CHANNEL.to_string()),
                     },
                 ];
                 effects::execute_effects(nudge_effects, state).await;

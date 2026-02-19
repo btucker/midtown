@@ -18,34 +18,11 @@ use super::super::app::{
 use super::Hyperlink;
 use super::text::wrap_content;
 
-/// Senders whose messages always belong in the Ops channel.
-const OPS_SENDERS: &[&str] = &["midtown", "github", "system", "daemon"];
-
 /// Maximum number of recent ops messages to display in the mini-channel.
 const OPS_MAX_MESSAGES: usize = 20;
 
-/// Senders whose /me actions stay in the main chat (not ops).
+/// Senders whose /me actions stay in the main chat (not the ops mini-channel).
 const NON_COWORKER_SENDERS: &[&str] = &["lead", "user"];
-
-/// Returns true if the message belongs in the Ops mini-channel.
-///
-/// Ops messages are:
-/// - Messages from system/daemon senders (midtown, github, system, daemon)
-/// - Action messages (/me) from coworkers only (not lead or user)
-pub fn is_ops_message(from: &str, msg_type: &MessageType, content: &str) -> bool {
-    let sender = from.to_lowercase();
-    if OPS_SENDERS.iter().any(|&s| s == sender) {
-        return true;
-    }
-    // /me action messages = coworker workflow status updates; exclude lead/user
-    if NON_COWORKER_SENDERS.iter().any(|&s| s == sender) {
-        return false;
-    }
-    if *msg_type == MessageType::Action || content.starts_with("/me ") {
-        return true;
-    }
-    false
-}
 
 /// Format a timestamp for the ops mini-channel (HH:MM).
 fn format_ops_time(ts: &DateTime<Utc>) -> String {
@@ -78,17 +55,33 @@ pub fn draw_board_panel(f: &mut Frame, app: &mut App, area: Rect) -> (Vec<Hyperl
     // Show at most OPS_MAX_MESSAGES rows but cap at 8 visible lines to avoid
     // crowding the task list on short terminals.
     //
-    // Clone the filtered ops messages to avoid holding an immutable borrow on
-    // app.messages while draw_coworker_status takes app mutably below.
+    // Ops messages come from two sources:
+    // 1. The ops channel (ops.jsonl) — daemon system messages routed there
+    // 2. /me action messages from the current channel — coworker workflow status
+    //
+    // Clone to avoid holding borrows on app while draw_coworker_status takes app mutably.
     let ops_messages: Vec<midtown::Message> = {
-        let recent: Vec<_> = app
+        // Daemon ops messages from the ops channel file
+        let ops_from_channel = app.ops_messages.iter().cloned();
+        // /me action messages from the currently selected channel buffer
+        let actions_from_main = app
             .messages
             .iter()
-            .filter(|m| is_ops_message(&m.from, &m.message_type, &m.content))
-            .rev()
-            .take(OPS_MAX_MESSAGES)
-            .collect();
-        recent.into_iter().rev().cloned().collect()
+            .filter(|m| {
+                let sender = m.from.to_lowercase();
+                !NON_COWORKER_SENDERS.iter().any(|&s| s == sender)
+                    && (m.message_type == MessageType::Action || m.content.starts_with("/me "))
+            })
+            .cloned();
+        // Merge and sort by timestamp, take most recent OPS_MAX_MESSAGES
+        let mut merged: Vec<midtown::Message> = ops_from_channel.chain(actions_from_main).collect();
+        merged.sort_by_key(|m| m.timestamp);
+        // Keep only recent messages
+        let len = merged.len();
+        merged
+            .into_iter()
+            .skip(len.saturating_sub(OPS_MAX_MESSAGES))
+            .collect()
     };
     let ops_visible_rows = ops_messages.len().min(8) as u16;
     // Header line + visible rows + 2 borders = ops_section_height
@@ -544,26 +537,46 @@ fn draw_ops_mini_channel(f: &mut Frame, ops_messages: &[&midtown::Message], area
                 ),
             ]));
         } else {
-            // Format: "HH:MM sender: message"
-            let sender = msg.from.clone();
-            let prefix_len = time_str.len() + 1 + sender.len() + 2; // " HH:MM sender: "
-            let remaining = content_width.saturating_sub(prefix_len);
+            // Format: "HH:MM content" for system senders (midtown/system/daemon/github)
+            // — the ops channel context makes the sender obvious.
+            // For coworker messages: "HH:MM name: content"
+            let is_system_sender = matches!(
+                msg.from.to_lowercase().as_str(),
+                "midtown" | "system" | "daemon" | "github"
+            );
+            let remaining = if is_system_sender {
+                content_width.saturating_sub(time_str.len() + 1)
+            } else {
+                let sender = &msg.from;
+                content_width.saturating_sub(time_str.len() + 1 + sender.len() + 2)
+            };
             let body = if remaining > 0 && msg.content.len() > remaining {
                 format!("{}..", &msg.content[..remaining.saturating_sub(2)])
             } else {
                 msg.content.clone()
             };
-            lines.push(Line::from(vec![
-                Span::styled(
-                    format!("{time_str} "),
-                    Style::default().fg(Color::Rgb(50, 50, 50)),
-                ),
-                Span::styled(sender, Style::default().fg(sender_color)),
-                Span::styled(
-                    format!(": {body}"),
-                    Style::default().fg(Color::Rgb(90, 90, 90)),
-                ),
-            ]));
+            if is_system_sender {
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        format!("{time_str} "),
+                        Style::default().fg(Color::Rgb(50, 50, 50)),
+                    ),
+                    Span::styled(body, Style::default().fg(Color::Rgb(90, 90, 90))),
+                ]));
+            } else {
+                let sender = msg.from.clone();
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        format!("{time_str} "),
+                        Style::default().fg(Color::Rgb(50, 50, 50)),
+                    ),
+                    Span::styled(sender, Style::default().fg(sender_color)),
+                    Span::styled(
+                        format!(": {body}"),
+                        Style::default().fg(Color::Rgb(90, 90, 90)),
+                    ),
+                ]));
+            }
         }
     }
 
@@ -1694,8 +1707,8 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
 
         let mut app = test_app();
-        // Add an ops message so the section is non-trivial
-        app.messages
+        // Add an ops message to ops_messages (now read from ops channel, not filtered from main)
+        app.ops_messages
             .push_back(midtown::Message::system("test ops msg"));
 
         let mut returned_tasks_area = None;

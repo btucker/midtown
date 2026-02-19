@@ -540,7 +540,7 @@ where
                     "♻️ Resumed session {} for orphaned task !{} (coworker {})",
                     record.session_id, recovery.task_id, recovery.owner
                 ),
-                channel,
+                channel: Some(OPS_CHANNEL.to_string()),
             },
         ];
 
@@ -565,7 +565,7 @@ where
                         recovery.owner,
                         SPAWN_FAILURE_COOLDOWN.as_secs()
                     ),
-                    channel: None,
+                    channel: Some(OPS_CHANNEL.to_string()),
                 },
             ],
         });
@@ -622,7 +622,7 @@ where
                 "♻️ Recovered coworker {} for orphaned task !{}",
                 recovery.owner, recovery.task_id
             ),
-            channel: channel.clone(),
+            channel: Some(OPS_CHANNEL.to_string()),
         },
     ];
 
@@ -647,7 +647,7 @@ where
                     recovery.owner,
                     SPAWN_FAILURE_COOLDOWN.as_secs()
                 ),
-                channel,
+                channel: Some(OPS_CHANNEL.to_string()),
             },
         ],
     });
@@ -820,7 +820,7 @@ pub fn dispatch_via_sessions(snap: &snapshot::WorldSnapshot) -> Vec<effects::Eff
                     "Session dispatch: recovered task !{} via session {} (coworker {})",
                     task_id, record.session_id, coworker_name
                 ),
-                channel,
+                channel: Some(OPS_CHANNEL.to_string()),
             },
         ];
 
@@ -846,7 +846,7 @@ pub fn dispatch_via_sessions(snap: &snapshot::WorldSnapshot) -> Vec<effects::Eff
                         coworker_name,
                         SPAWN_FAILURE_COOLDOWN.as_secs()
                     ),
-                    channel: None,
+                    channel: Some(OPS_CHANNEL.to_string()),
                 },
             ],
         });
@@ -892,7 +892,7 @@ fn decide_discovered_coworker_nudges(
         let name_lower = name.to_lowercase();
 
         // Check for an in_progress task owned by this coworker
-        if let Some((task_id, task_subject, channel)) = owner_tasks.get(&name_lower) {
+        if let Some((task_id, task_subject, _channel)) = owner_tasks.get(&name_lower) {
             let prompt = format_task_prompt(
                 task_id,
                 &format!(
@@ -917,7 +917,7 @@ fn decide_discovered_coworker_nudges(
                     "♻️ Nudged discovered coworker {} to resume task !{}",
                     name, task_id
                 ),
-                channel: channel.clone(),
+                channel: Some(OPS_CHANNEL.to_string()),
             });
         } else if let Some(pr_number) = reviewer_prs.get(&name_lower) {
             let prompt = crate::agents::reviewer_resume_prompt(*pr_number);
@@ -938,7 +938,7 @@ fn decide_discovered_coworker_nudges(
                     "♻️ Nudged discovered reviewer {} to resume PR #{} review",
                     name, pr_number
                 ),
-                channel: None,
+                channel: Some(OPS_CHANNEL.to_string()),
             });
         } else {
             debug!(
@@ -1052,7 +1052,7 @@ pub fn check_for_duplicate_task_workers(snap: &snapshot::WorldSnapshot) -> Vec<e
                     "🔪 Killed duplicate worker {} on task !{} ({}) - {} started earlier",
                     duplicate, task_id, task_subject, keeper
                 ),
-                channel: None,
+                channel: Some(OPS_CHANNEL.to_string()),
             });
         }
     }
@@ -1402,7 +1402,7 @@ pub fn decide_orphan_cleanup(data: &OrphanCleanupData) -> Vec<Effect> {
                 "🧹 Auto-cleaned orphaned worktree for {} (PR was merged)",
                 name
             ),
-            channel: None,
+            channel: Some(OPS_CHANNEL.to_string()),
         });
     }
 
@@ -1417,6 +1417,7 @@ pub fn decide_orphan_cleanup(data: &OrphanCleanupData) -> Vec<Effect> {
 
         effects.push(Effect::PostSystemMessage {
             message: nudge_text.clone(),
+            channel: Some(OPS_CHANNEL.to_string()),
         });
         effects.push(Effect::NudgeLead {
             message: nudge_text.clone(),
@@ -1674,7 +1675,7 @@ pub(super) fn spawn_for_pending_tasks_excluding(
                             &tid.to_string(),
                             config::get_personality(),
                         ),
-                        channel: None,
+                        channel: Some(OPS_CHANNEL.to_string()),
                     },
                 ];
 
@@ -2016,7 +2017,7 @@ pub(super) fn spawn_for_pending_tasks_excluding(
                     Effect::PostToChannel {
                         sender: "midtown".to_string(),
                         message: channel_msg,
-                        channel: task.channel.clone(),
+                        channel: Some(OPS_CHANNEL.to_string()),
                     },
                 ],
             });
@@ -2060,7 +2061,7 @@ pub(super) fn spawn_for_pending_tasks_excluding(
                 Effect::PostToChannel {
                     sender: "midtown".to_string(),
                     message: channel_msg,
-                    channel: task.channel.clone(),
+                    channel: Some(OPS_CHANNEL.to_string()),
                 },
             ];
 
