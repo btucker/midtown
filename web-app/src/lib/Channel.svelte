@@ -15,6 +15,7 @@
   let pendingFile = $state(null)
   let uploading = $state(false)
   let textareaElement = $state(null)
+  let formWrapperElement = $state(null)
 
   // Autocomplete state
   let showAutocomplete = $state(false)
@@ -111,25 +112,22 @@
   }
 
   function calculateAutocompletePosition() {
-    if (!textareaElement) return { top: 0, left: 0 }
+    if (!textareaElement || !formWrapperElement) return { top: 0, left: 0 }
 
-    const rect = textareaElement.getBoundingClientRect()
+    const textareaRect = textareaElement.getBoundingClientRect()
+    const wrapperRect = formWrapperElement.getBoundingClientRect()
 
-    // Position the dropdown at the bottom edge of the textarea.
-    // The dropdown's CSS uses transform: translateY(calc(-100% - 8px)) to:
-    // 1. Shift up by its own height (-100%)
-    // 2. Add an 8px gap (-8px)
-    // This places the dropdown just above the textarea with proper spacing.
+    // Position relative to the form wrapper (which has position: relative and
+    // no overflow: hidden). Using position: absolute on the dropdown instead of
+    // position: fixed avoids iOS visual/layout viewport split issues when the
+    // virtual keyboard is open.
     //
-    // Using rect.bottom avoids viewport coordinate system issues on mobile.
-    // getBoundingClientRect() returns layout viewport coordinates, but
-    // position: fixed renders relative to the visual viewport. When the
-    // mobile keyboard opens, these viewports differ. By positioning at
-    // rect.bottom (the textarea's bottom edge) and using transform to shift
-    // up, we avoid needing visualViewport offset calculations.
+    // top = textarea's top edge relative to the wrapper.
+    // The dropdown uses translateY(-100% - 8px) to shift above the textarea.
     return {
-      top: rect.bottom,
-      left: rect.left
+      top: textareaRect.top - wrapperRect.top,
+      left: textareaRect.left - wrapperRect.left,
+      width: textareaRect.width
     }
   }
 
@@ -678,59 +676,64 @@
     </button>
   {/if}
 
-  <form class="flex flex-col gap-2 px-3 pt-2 pb-1 bg-card border-t border-border shrink-0" onsubmit={handleSubmit}>
-    {#if pendingFile}
-      <div class="relative inline-block max-w-[200px] border border-[#3a3a3a] rounded-lg p-2 bg-[#1c1c1c]">
-        {#if pendingFile.type.startsWith('image/')}
-          <img src={URL.createObjectURL(pendingFile)} alt="Preview" class="max-w-full max-h-[120px] rounded block" />
-        {:else}
-          <div class="flex items-center gap-2 text-[#d0d0d0]">
-            <span class="text-[1.5rem]">&#128196;</span>
-            <span class="text-[0.85rem] overflow-hidden text-ellipsis whitespace-nowrap">{pendingFile.name}</span>
-          </div>
-        {/if}
+  <!-- Input area wrapper: position: relative so the autocomplete can be
+       absolutely positioned above the textarea without being clipped by the
+       Channel root's overflow: hidden. The autocomplete uses translateY(-100% - 8px)
+       to shift above the textarea's top edge. -->
+  <div class="relative shrink-0" bind:this={formWrapperElement}>
+    <!-- Autocomplete dropdown — positioned absolute within this wrapper -->
+    <Autocomplete
+      bind:show={showAutocomplete}
+      bind:selectedIndex={autocompleteSelectedIndex}
+      items={autocompleteItems}
+      position={autocompletePosition}
+      getLabel={getAutocompleteLabel}
+      getValue={getAutocompleteValue}
+      getDescription={getAutocompleteDescription}
+      onSelect={insertAutocompleteItem}
+    />
+    <form class="flex flex-col gap-2 px-3 pt-2 pb-1 bg-card border-t border-border" onsubmit={handleSubmit}>
+      {#if pendingFile}
+        <div class="relative inline-block max-w-[200px] border border-[#3a3a3a] rounded-lg p-2 bg-[#1c1c1c]">
+          {#if pendingFile.type.startsWith('image/')}
+            <img src={URL.createObjectURL(pendingFile)} alt="Preview" class="max-w-full max-h-[120px] rounded block" />
+          {:else}
+            <div class="flex items-center gap-2 text-[#d0d0d0]">
+              <span class="text-[1.5rem]">&#128196;</span>
+              <span class="text-[0.85rem] overflow-hidden text-ellipsis whitespace-nowrap">{pendingFile.name}</span>
+            </div>
+          {/if}
+          <button
+            type="button"
+            class="absolute top-1 right-1 w-6 h-6 p-0 rounded-full bg-[rgba(0,0,0,0.7)] text-white text-[1.2rem] leading-none flex items-center justify-center cursor-pointer border border-[#3a3a3a] hover:bg-[rgba(255,87,87,0.8)] hover:border-[#ff5f5f]"
+            onclick={clearPendingFile}
+            aria-label="Remove file"
+          >
+            &times;
+          </button>
+        </div>
+      {/if}
+      <div class="flex gap-2 w-full">
+        <textarea
+          bind:this={textareaElement}
+          bind:value={inputText}
+          placeholder="Message to #{$activeChannel}..."
+          rows="1"
+          class="flex-1 py-[13px] px-[17px] border-2 border-[#2a2a2a] rounded-[18px] bg-[#0f0f0f] text-[#d0d0d0] text-[1.02rem] font-inherit outline-none resize-none min-h-[1.6em] max-h-[9em] overflow-y-auto focus:border-[#5faf5f] placeholder:text-[#606060]"
+          onkeydown={handleKeyDown}
+          onpaste={handlePaste}
+          oninput={handleInput}
+        ></textarea>
         <button
-          type="button"
-          class="absolute top-1 right-1 w-6 h-6 p-0 rounded-full bg-[rgba(0,0,0,0.7)] text-white text-[1.2rem] leading-none flex items-center justify-center cursor-pointer border border-[#3a3a3a] hover:bg-[rgba(255,87,87,0.8)] hover:border-[#ff5f5f]"
-          onclick={clearPendingFile}
-          aria-label="Remove file"
+          type="submit"
+          disabled={!inputText.trim() && !pendingFile || uploading}
+          class="py-[13px] px-[22px] border-none rounded-[26px] bg-[#5faf5f] text-[#0a0a0a] font-bold cursor-pointer transition-all duration-200 text-[0.95rem] tracking-[0.01em] disabled:opacity-40 disabled:cursor-not-allowed hover:bg-[#6fc57f] hover:-translate-y-[1px] active:translate-y-0 not-disabled:hover:bg-[#6fc57f]"
         >
-          &times;
+          {uploading ? 'Uploading...' : 'Send'}
         </button>
       </div>
-    {/if}
-    <div class="flex gap-2 w-full">
-      <textarea
-        bind:this={textareaElement}
-        bind:value={inputText}
-        placeholder="Message to #{$activeChannel}..."
-        rows="1"
-        class="flex-1 py-[13px] px-[17px] border-2 border-[#2a2a2a] rounded-[18px] bg-[#0f0f0f] text-[#d0d0d0] text-[1.02rem] font-inherit outline-none resize-none min-h-[1.6em] max-h-[9em] overflow-y-auto focus:border-[#5faf5f] placeholder:text-[#606060]"
-        onkeydown={handleKeyDown}
-        onpaste={handlePaste}
-        oninput={handleInput}
-      ></textarea>
-      <button
-        type="submit"
-        disabled={!inputText.trim() && !pendingFile || uploading}
-        class="py-[13px] px-[22px] border-none rounded-[26px] bg-[#5faf5f] text-[#0a0a0a] font-bold cursor-pointer transition-all duration-200 text-[0.95rem] tracking-[0.01em] disabled:opacity-40 disabled:cursor-not-allowed hover:bg-[#6fc57f] hover:-translate-y-[1px] active:translate-y-0 not-disabled:hover:bg-[#6fc57f]"
-      >
-        {uploading ? 'Uploading...' : 'Send'}
-      </button>
-    </div>
-  </form>
-
-  <!-- Autocomplete dropdown -->
-  <Autocomplete
-    bind:show={showAutocomplete}
-    bind:selectedIndex={autocompleteSelectedIndex}
-    items={autocompleteItems}
-    position={autocompletePosition}
-    getLabel={getAutocompleteLabel}
-    getValue={getAutocompleteValue}
-    getDescription={getAutocompleteDescription}
-    onSelect={insertAutocompleteItem}
-  />
+    </form>
+  </div>
 </div>
 
 <!-- Task detail modal (opened by clicking !N task links in chat) -->
