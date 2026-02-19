@@ -12,7 +12,7 @@ use crate::cli::chat::mermaid;
 
 use std::collections::HashMap;
 
-use super::super::app::{App, FocusedPane, MessageRenderCache, PendingQuestion};
+use super::super::app::{App, FocusedPane, MessageRenderCache, PendingQuestion, ToolActivityEntry};
 use super::messages::{build_reply_indicator_line, render_message};
 use super::messages_mermaid::render_message_with_mermaid;
 use super::text::wrap_content;
@@ -89,8 +89,8 @@ fn draw_lead_indicator(f: &mut Frame, app: &mut App, area: Rect) {
             .tool_activity
             .get(agent_key)
             .and_then(|h| h.last())
-            .map(|header| {
-                let mut chars = header.chars();
+            .map(|entry| {
+                let mut chars = entry.header.chars();
                 let _ = chars.next(); // skip prefix char
                 chars.as_str().trim_start().to_string()
             })
@@ -319,7 +319,7 @@ fn draw_chat_messages(f: &mut Frame, app: &mut App, area: Rect) {
 /// - Main channel ("main" / "midtown"): show only the "lead" agent's activity
 /// - Topic channel (e.g., "web"): show only that channel lead's activity (keyed by channel name)
 fn filter_tool_activity_for_channel(
-    tool_activity: &std::collections::HashMap<String, Vec<String>>,
+    tool_activity: &std::collections::HashMap<String, Vec<ToolActivityEntry>>,
     selected_channel: &str,
 ) -> std::collections::HashMap<String, Vec<String>> {
     let agent_key = if selected_channel == "main" || selected_channel == "midtown" {
@@ -330,7 +330,7 @@ fn filter_tool_activity_for_channel(
     tool_activity
         .iter()
         .filter(|(k, _)| k.as_str() == agent_key)
-        .map(|(k, v)| (k.clone(), v.clone()))
+        .map(|(k, v)| (k.clone(), v.iter().map(|e| e.header.clone()).collect()))
         .collect()
 }
 
@@ -875,13 +875,21 @@ mod tests {
 
     // --- filter_tool_activity_for_channel tests ---
 
-    fn make_multi_activity(agents: &[(&str, Vec<&str>)]) -> HashMap<String, Vec<String>> {
+    fn make_multi_activity(
+        agents: &[(&str, Vec<&str>)],
+    ) -> HashMap<String, Vec<ToolActivityEntry>> {
         agents
             .iter()
             .map(|(agent, headers)| {
                 (
                     agent.to_string(),
-                    headers.iter().map(|s| s.to_string()).collect(),
+                    headers
+                        .iter()
+                        .map(|s| ToolActivityEntry {
+                            header: s.to_string(),
+                            completed_at: None,
+                        })
+                        .collect(),
                 )
             })
             .collect()
