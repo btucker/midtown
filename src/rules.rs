@@ -457,8 +457,8 @@ pub(crate) struct StuckExemptions<'a> {
 /// Check if a process should be considered stuck.
 ///
 /// Returns `true` if the process is alive, not exempt (usage-limited, API error,
-/// auth error, attached, subagent running, pending tool, pending API call), and has not
-/// emitted events for longer than `stuck_threshold`.
+/// auth error, attached, subagent running, pending tool), and has not emitted events for
+/// longer than `stuck_threshold`.
 fn is_process_stuck(
     name: &str,
     health: &crate::daemon::snapshot::ProcessHealth,
@@ -469,7 +469,6 @@ fn is_process_stuck(
     let is_exempt = !health.is_alive
         || health.has_running_subagent
         || health.has_pending_tool
-        || health.has_pending_api_call
         || hashset_contains_icase(exemptions.usage_limited, name)
         || hashset_contains_icase(exemptions.api_error, name)
         || hashset_contains_icase(exemptions.auth_error, name)
@@ -1426,7 +1425,6 @@ mod tests {
             has_auth_error: false,
             has_running_subagent: false,
             has_pending_tool: false,
-            has_pending_api_call: false,
             has_tool_name_conflict: false,
             exit_code: None,
         }
@@ -2918,7 +2916,6 @@ mod tests {
             has_auth_error: false,
             has_running_subagent: false,
             has_pending_tool: false,
-            has_pending_api_call: false,
             has_tool_name_conflict: false,
         }
     }
@@ -2969,7 +2966,6 @@ mod tests {
                 has_auth_error: false,
                 has_running_subagent: false,
                 has_pending_tool: false,
-                has_pending_api_call: false,
                 has_tool_name_conflict: false,
             },
         );
@@ -3000,7 +2996,6 @@ mod tests {
                 has_auth_error: false,
                 has_running_subagent: false,
                 has_pending_tool: false,
-                has_pending_api_call: false,
                 has_tool_name_conflict: false,
             },
         );
