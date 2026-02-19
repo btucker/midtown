@@ -1627,6 +1627,18 @@ impl App {
         let cursor_pos = self.input_cursor;
         let text = &self.input_text;
 
+        // Check for "/thread " prefix — slash command autocomplete
+        if text.starts_with("/thread ") && cursor_pos >= 8 {
+            let query = text[8..].to_string();
+            self.autocomplete.trigger_type = Some('/');
+            self.autocomplete.query = query.clone();
+            self.autocomplete.trigger_start_pos = 0;
+            self.autocomplete.items = self.get_thread_items(&query.to_lowercase());
+            self.autocomplete.selected_index = 0;
+            self.autocomplete.show = !self.autocomplete.items.is_empty();
+            return;
+        }
+
         // Look backward from cursor to find trigger character
         let mut trigger_pos: Option<usize> = None;
         let mut trigger_char: Option<char> = None;
@@ -1805,7 +1817,38 @@ impl App {
         }
     }
 
-    /// Insert the selected autocomplete item into the input text
+    /// Get /thread autocomplete items — recent top-level messages from the current channel.
+    /// Shows most recent messages first, limited to 20 items.
+    fn get_thread_items(&self, query: &str) -> Vec<AutocompleteItem> {
+        self.messages
+            .iter()
+            .rev()
+            .filter(|m| m.thread_parent_id.is_none())
+            .filter(|m| {
+                if query.is_empty() {
+                    true
+                } else {
+                    m.content.to_lowercase().contains(query)
+                        || m.from.to_lowercase().contains(query)
+                }
+            })
+            .take(20)
+            .map(|m| {
+                let truncated = if m.content.len() > 50 {
+                    format!("{}...", &m.content[..m.content.floor_char_boundary(50)])
+                } else {
+                    m.content.clone()
+                };
+                AutocompleteItem {
+                    value: m.id.clone(),
+                    description: Some(format!("{}: {}", m.from, truncated)),
+                }
+            })
+            .collect()
+    }
+
+    /// Insert the selected autocomplete item into the input text.
+    /// For `/thread` autocomplete (trigger '/'), opens the thread instead of inserting text.
     pub fn insert_autocomplete_item(&mut self) {
         if !self.autocomplete.show
             || self.autocomplete.selected_index >= self.autocomplete.items.len()
@@ -1815,6 +1858,15 @@ impl App {
 
         let item = &self.autocomplete.items[self.autocomplete.selected_index];
         let value = item.value.clone(); // Clone to avoid borrow issues
+
+        // For /thread autocomplete, open the thread and clear input
+        if self.autocomplete.trigger_type == Some('/') {
+            self.autocomplete.show = false;
+            self.input_text.clear();
+            self.input_cursor = 0;
+            self.open_thread(&value);
+            return;
+        }
 
         // Convert cursor position (character index) to byte position
         let chars: Vec<(usize, char)> = self.input_text.char_indices().collect();
@@ -4181,5 +4233,185 @@ pub(super) mod tests {
         app.close_thread();
         assert_eq!(app.thread_input_cursor, 0);
         assert!(app.thread_input_text.is_empty());
+    }
+
+    #[test]
+    fn test_thread_autocomplete_trigger_detection() {
+        let mut app = test_app();
+        // Add some messages so autocomplete has items
+        let msg1 = Message::text("park", "Hello world this is a test message");
+        let msg2 = Message::text("madison", "Another top-level message here");
+        app.messages.push_back(msg1);
+        app.messages.push_back(msg2);
+
+        // Type "/thread " — should trigger autocomplete with '/' trigger
+        app.input_text = "/thread ".to_string();
+        app.input_cursor = 8;
+        app.detect_autocomplete_trigger();
+
+        assert!(
+            app.autocomplete.show,
+            "Autocomplete should show after typing '/thread '"
+        );
+        assert_eq!(
+            app.autocomplete.trigger_type,
+            Some('/'),
+            "Trigger type should be '/' for thread autocomplete"
+        );
+        assert!(
+            !app.autocomplete.items.is_empty(),
+            "Should have autocomplete items from messages"
+        );
+    }
+
+    #[test]
+    fn test_thread_autocomplete_filters_thread_replies() {
+        let mut app = test_app();
+        let msg1 = Message::text("park", "Top-level message");
+        let parent_id = msg1.id.clone();
+        let mut reply = Message::text("madison", "Thread reply");
+        reply.thread_parent_id = Some(parent_id);
+        app.messages.push_back(msg1);
+        app.messages.push_back(reply);
+
+        app.input_text = "/thread ".to_string();
+        app.input_cursor = 8;
+        app.detect_autocomplete_trigger();
+
+        assert_eq!(
+            app.autocomplete.items.len(),
+            1,
+            "Should only show top-level messages, not thread replies"
+        );
+        assert!(
+            app.autocomplete.items[0]
+                .description
+                .as_ref()
+                .unwrap()
+                .contains("Top-level"),
+            "Item should be the top-level message"
+        );
+    }
+
+    #[test]
+    fn test_thread_autocomplete_query_filters_messages() {
+        let mut app = test_app();
+        app.messages
+            .push_back(Message::text("park", "Auth bug investigation"));
+        app.messages
+            .push_back(Message::text("madison", "Deploy pipeline fix"));
+
+        // Type "/thread auth" — should filter to messages containing "auth"
+        app.input_text = "/thread auth".to_string();
+        app.input_cursor = 12;
+        app.detect_autocomplete_trigger();
+
+        assert!(
+            app.autocomplete.show,
+            "Autocomplete should show with query filter"
+        );
+        assert_eq!(
+            app.autocomplete.items.len(),
+            1,
+            "Should only show messages matching 'auth'"
+        );
+    }
+
+    #[test]
+    fn test_thread_autocomplete_no_trigger_without_space() {
+        let mut app = test_app();
+        app.messages
+            .push_back(Message::text("park", "Test message"));
+
+        // "/thread" without trailing space should NOT trigger autocomplete
+        app.input_text = "/thread".to_string();
+        app.input_cursor = 7;
+        app.detect_autocomplete_trigger();
+
+        assert!(
+            !app.autocomplete.show,
+            "Autocomplete should not show for '/thread' without trailing space"
+        );
+    }
+
+    #[test]
+    fn test_thread_autocomplete_insert_opens_thread() {
+        let mut app = test_app();
+        let msg = Message::text("park", "Test parent message");
+        let msg_id = msg.id.clone();
+        app.messages.push_back(msg);
+
+        // Set up autocomplete state as if user typed "/thread " and selected an item
+        app.input_text = "/thread ".to_string();
+        app.input_cursor = 8;
+        app.autocomplete.show = true;
+        app.autocomplete.trigger_type = Some('/');
+        app.autocomplete.trigger_start_pos = 0;
+        app.autocomplete.selected_index = 0;
+        app.autocomplete.items = vec![AutocompleteItem {
+            value: msg_id.clone(),
+            description: Some("park: Test parent message".to_string()),
+        }];
+
+        app.insert_autocomplete_item();
+
+        assert_eq!(
+            app.thread_parent_id,
+            Some(msg_id),
+            "Selecting thread autocomplete item should open the thread"
+        );
+        assert!(
+            app.input_text.is_empty(),
+            "Input should be cleared after opening thread"
+        );
+        assert_eq!(app.input_cursor, 0, "Cursor should be reset");
+        assert!(!app.autocomplete.show, "Autocomplete should be dismissed");
+    }
+
+    #[test]
+    fn test_thread_autocomplete_shows_recent_first() {
+        let mut app = test_app();
+        // Add messages — most recent should appear first in autocomplete
+        app.messages
+            .push_back(Message::text("park", "First message"));
+        app.messages
+            .push_back(Message::text("madison", "Second message"));
+        app.messages
+            .push_back(Message::text("broadway", "Third message"));
+
+        app.input_text = "/thread ".to_string();
+        app.input_cursor = 8;
+        app.detect_autocomplete_trigger();
+
+        assert!(app.autocomplete.items.len() >= 3);
+        // Most recent messages should appear first
+        assert!(
+            app.autocomplete.items[0]
+                .description
+                .as_ref()
+                .unwrap()
+                .contains("Third"),
+            "Most recent message should be first"
+        );
+    }
+
+    #[test]
+    fn test_thread_autocomplete_limits_to_20() {
+        let mut app = test_app();
+        // Add 25 messages
+        for i in 0..25 {
+            app.messages
+                .push_back(Message::text("park", &format!("Message {}", i)));
+        }
+
+        app.input_text = "/thread ".to_string();
+        app.input_cursor = 8;
+        app.detect_autocomplete_trigger();
+
+        assert!(
+            app.autocomplete.items.len() <= 20,
+            "Thread autocomplete should limit to 20 items, got {}",
+            app.autocomplete.items.len()
+        );
     }
 }

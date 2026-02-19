@@ -428,9 +428,11 @@ fn draw_autocomplete_dropdown(f: &mut Frame, app: &App, input_area: Rect) {
         return;
     }
 
+    let is_thread = app.autocomplete.trigger_type == Some('/');
     let item_count = items.len().min(8);
     let dropdown_height = (item_count * 2) as u16;
-    let dropdown_width = 40u16.min(input_area.width.saturating_sub(4));
+    let max_width = if is_thread { 60u16 } else { 40u16 };
+    let dropdown_width = max_width.min(input_area.width.saturating_sub(4));
 
     // saturating_sub(2): skip past the 1-row lead indicator + 1-row original spacing
     let dropdown_y = input_area
@@ -446,6 +448,8 @@ fn draw_autocomplete_dropdown(f: &mut Frame, app: &App, input_area: Rect) {
         height: dropdown_height,
     };
 
+    let is_thread_autocomplete = app.autocomplete.trigger_type == Some('/');
+
     let mut lines = Vec::new();
     for (i, item) in items.iter().enumerate().take(item_count) {
         let is_selected = i == app.autocomplete.selected_index;
@@ -459,28 +463,51 @@ fn draw_autocomplete_dropdown(f: &mut Frame, app: &App, input_area: Rect) {
             Style::default().fg(Color::White).bg(Color::Black)
         };
 
-        lines.push(Line::from(vec![Span::styled(
-            format!(" {} ", item.value),
-            value_style,
-        )]));
-
-        if let Some(ref desc) = item.description {
-            let desc_text = if desc.len() > dropdown_width as usize - 4 {
-                format!(" {}...", &desc[..dropdown_width as usize - 7])
+        if is_thread_autocomplete {
+            // For /thread autocomplete, show the description (sender: content) as main line
+            let display = item.description.as_deref().unwrap_or(&item.value);
+            let display_text = if display.len() > dropdown_width as usize - 4 {
+                format!(
+                    " {}...",
+                    &display[..display.floor_char_boundary(dropdown_width as usize - 7)]
+                )
             } else {
-                format!(" {}", desc)
+                format!(" {}", display)
             };
-            let desc_style = if is_selected {
-                Style::default().fg(Color::Black).bg(Color::Yellow)
-            } else {
-                Style::default().fg(Color::DarkGray).bg(Color::Black)
-            };
-            lines.push(Line::from(vec![Span::styled(desc_text, desc_style)]));
-        } else {
+            lines.push(Line::from(vec![Span::styled(display_text, value_style)]));
+            // Second line: empty (keeps 2-row-per-item layout consistent)
             lines.push(Line::from(Span::styled(
                 "",
-                Style::default().bg(Color::Black),
+                Style::default().bg(if is_selected {
+                    Color::Yellow
+                } else {
+                    Color::Black
+                }),
             )));
+        } else {
+            lines.push(Line::from(vec![Span::styled(
+                format!(" {} ", item.value),
+                value_style,
+            )]));
+
+            if let Some(ref desc) = item.description {
+                let desc_text = if desc.len() > dropdown_width as usize - 4 {
+                    format!(" {}...", &desc[..dropdown_width as usize - 7])
+                } else {
+                    format!(" {}", desc)
+                };
+                let desc_style = if is_selected {
+                    Style::default().fg(Color::Black).bg(Color::Yellow)
+                } else {
+                    Style::default().fg(Color::DarkGray).bg(Color::Black)
+                };
+                lines.push(Line::from(vec![Span::styled(desc_text, desc_style)]));
+            } else {
+                lines.push(Line::from(Span::styled(
+                    "",
+                    Style::default().bg(Color::Black),
+                )));
+            }
         }
     }
 
