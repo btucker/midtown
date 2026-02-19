@@ -327,8 +327,9 @@ fn test_table_rule_width_matches_table_width() {
         .iter()
         .find(|l| line_content(l).contains("Feature"));
     let rule_line = text.lines.iter().find(|l| {
-        let c = line_content(l);
-        c.contains('\u{2500}') && !c.contains("Feature") && !c.contains("Universal")
+        // ├ is the left connector for the rule line, distinguishing it from the
+        // top border (┌) and bottom border (└) which also contain ─ characters.
+        line_content(l).starts_with('\u{251C}')
     });
 
     assert!(header_line.is_some(), "Should have a header line");

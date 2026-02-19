@@ -123,6 +123,7 @@ fn composite_char_width(composite: &minimad::Composite<'_>) -> usize {
 
 /// Build a ratatui `Line` for a single table row, padding each cell to `col_widths` and
 /// applying `alignments`. If `header_style` is provided, cell content uses that style.
+/// The returned line includes leading and trailing `│` outer border characters.
 fn render_table_row(
     table_row: &minimad::TableRow<'_>,
     col_widths: &[usize],
@@ -207,9 +208,12 @@ fn compute_table_layout(table_lines: &[&MadLine<'_>]) -> (Vec<usize>, Vec<Alignm
     (col_widths, alignments)
 }
 
-/// Total rendered width for a table row given column widths: sum of widths + separators.
+/// Inner content width for a table given column widths: sum of widths + separators.
 ///
 /// Each separator is " │ " (3 chars). With N columns: N widths + (N-1) * 3.
+/// This is the width of the content area between the outer box borders. The total
+/// rendered line width (including border characters and spacing) is `inner_width + 4`
+/// (for `│ ` on the left and ` │` on the right).
 fn table_total_width(col_widths: &[usize]) -> usize {
     if col_widths.is_empty() {
         return 0;
@@ -339,9 +343,10 @@ fn render_normal_section(section: &str, base_style: Style, output: &mut Vec<Line
 /// - Code spans use cyan foreground
 /// - Code fence blocks use a dark background; fenced blocks with a language tag get
 ///   syntect-based RGB syntax highlighting (theme: base16-ocean.dark)
-/// - Table rows are rendered with `│` separators between cells, with cells padded
-///   to align columns. The header row (first TableRow) is rendered bold. The
-///   separator row (TableRule) determines per-column alignment (left/center/right).
+/// - Tables are rendered as a box with outer borders (`┌─┐` top, `└─┘` bottom,
+///   `├─┤` rule, `│` row sides). Cells are padded to align columns. The header row
+///   (first TableRow) is rendered bold. The separator row (TableRule) determines
+///   per-column alignment (left/center/right).
 /// - Horizontal rules render as 40 `─` characters
 ///
 /// The `base_style` is applied to all unstyled text.
@@ -400,6 +405,10 @@ pub fn from_str(markdown: &str, base_style: Style) -> Text<'static> {
 /// messages or other content expected to be a single line.
 ///
 /// The `base_style` is applied to all unstyled text.
+///
+/// **Table rendering limitation**: Table markdown (e.g. `| a | b |`) is rendered
+/// without column alignment, padding, or outer box borders. For full table rendering
+/// (bordered box, aligned columns, bold header), use [`from_str`] instead.
 pub fn inline(markdown: &str, base_style: Style) -> Line<'static> {
     let mad_text = MadText::from(markdown);
     mad_text
