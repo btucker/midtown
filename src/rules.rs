@@ -328,6 +328,7 @@ pub(crate) struct IdleShutdownContext<'a> {
 /// without performing any side effects or mutations.
 ///
 /// A coworker is protected from break if:
+/// - They are a channel lead (long-lived domain expert session, like "lead")
 /// - They have in-progress tasks (busy)
 /// - They have a pending task assigned to them
 /// - They have open unmerged PRs with CI not yet passed (waiting for CI)
@@ -935,11 +936,13 @@ pub(crate) fn decide_pending_task_action(
     on_nudge_cooldown: bool,
     is_owner_reviewer: bool,
     has_in_progress_task: bool,
+    is_channel_lead: bool,
 ) -> PendingTaskAction {
-    // Skip empty or lead-owned tasks
-    if owner.is_empty() || owner.eq_ignore_ascii_case("lead") {
+    // Skip empty, lead-owned, or channel-lead-owned tasks — these sessions
+    // are not managed by the coworker dispatch loop.
+    if owner.is_empty() || owner.eq_ignore_ascii_case("lead") || is_channel_lead {
         return PendingTaskAction::Skip {
-            reason: format!("task !{} owner is lead or empty", task_id),
+            reason: format!("task !{} owner is lead, channel lead, or empty", task_id),
         };
     }
 
@@ -1026,6 +1029,7 @@ pub(crate) struct OrphanRecoveryContext<'a> {
     pub review_feedback_pr_coworkers: &'a HashSet<String>,
     pub recently_stopped: &'a HashSet<String>,
     pub attached_coworkers: &'a HashMap<String, chrono::DateTime<chrono::Utc>>,
+    pub channel_lead_names: &'a HashSet<String>,
 }
 
 impl OrphanRecoveryContext<'_> {
@@ -1072,8 +1076,11 @@ pub(crate) fn decide_orphan_recovery(ctx: &OrphanRecoveryContext<'_>) -> Option<
         let owner_lower = owner_clean.to_lowercase();
 
         // Skip non-coworker owners and owners that shouldn't be recovered.
+        // Channel leads are domain-expert leads for topic channels — they must
+        // not be orphan-recovered (they manage themselves, like the lead).
         let is_valid_coworker = !owner_clean.is_empty()
             && !owner_clean.eq_ignore_ascii_case("lead")
+            && !ctx.channel_lead_names.contains(&owner_lower)
             && crate::coworker::is_coworker_name(&owner_lower);
 
         if !is_valid_coworker || ctx.should_skip_owner(&owner_lower) {
@@ -1144,6 +1151,10 @@ pub(crate) fn decide_mention_action(
 #[path = "rules_session_tests.rs"]
 #[cfg(test)]
 mod rules_session_tests;
+
+#[path = "rules_channel_lead_tests.rs"]
+#[cfg(test)]
+mod rules_channel_lead_tests;
 
 #[cfg(test)]
 mod tests {
@@ -2108,24 +2119,27 @@ mod tests {
     #[test]
     fn pending_task_nudges_active_owner() {
         let names = set(&["york"]);
-        let action =
-            decide_pending_task_action("42", "Fix bug", "york", &names, false, false, false, false);
+        let action = decide_pending_task_action(
+            "42", "Fix bug", "york", &names, false, false, false, false, false,
+        );
         assert!(matches!(action, PendingTaskAction::NudgeOwner { .. }));
     }
 
     #[test]
     fn pending_task_skips_nudge_on_cooldown() {
         let names = set(&["york"]);
-        let action =
-            decide_pending_task_action("42", "Fix bug", "york", &names, false, true, false, false);
+        let action = decide_pending_task_action(
+            "42", "Fix bug", "york", &names, false, true, false, false, false,
+        );
         assert!(matches!(action, PendingTaskAction::Skip { .. }));
     }
 
     #[test]
     fn pending_task_spawns_inactive_owner() {
         let names = set(&["amsterdam"]);
-        let action =
-            decide_pending_task_action("42", "Fix bug", "york", &names, false, false, false, false);
+        let action = decide_pending_task_action(
+            "42", "Fix bug", "york", &names, false, false, false, false, false,
+        );
         assert_eq!(
             action,
             PendingTaskAction::SpawnOwner {
@@ -2139,24 +2153,27 @@ mod tests {
     #[test]
     fn pending_task_skips_at_dev_limit() {
         let names = set(&["amsterdam"]);
-        let action =
-            decide_pending_task_action("42", "Fix bug", "york", &names, true, false, false, false);
+        let action = decide_pending_task_action(
+            "42", "Fix bug", "york", &names, true, false, false, false, false,
+        );
         assert!(matches!(action, PendingTaskAction::Skip { .. }));
     }
 
     #[test]
     fn pending_task_skips_lead_owner() {
         let names = set(&["york"]);
-        let action =
-            decide_pending_task_action("42", "Fix bug", "lead", &names, false, false, false, false);
+        let action = decide_pending_task_action(
+            "42", "Fix bug", "lead", &names, false, false, false, false, false,
+        );
         assert!(matches!(action, PendingTaskAction::Skip { .. }));
     }
 
     #[test]
     fn pending_task_skips_empty_owner() {
         let names = set(&["york"]);
-        let action =
-            decide_pending_task_action("42", "Fix bug", "", &names, false, false, false, false);
+        let action = decide_pending_task_action(
+            "42", "Fix bug", "", &names, false, false, false, false, false,
+        );
         assert!(matches!(action, PendingTaskAction::Skip { .. }));
     }
 
@@ -2164,8 +2181,9 @@ mod tests {
     fn pending_task_skips_invalid_coworker_name() {
         // "fix" is not a valid coworker name (not an avenue name)
         let names = set(&["york"]);
-        let action =
-            decide_pending_task_action("42", "Fix bug", "fix", &names, false, false, false, false);
+        let action = decide_pending_task_action(
+            "42", "Fix bug", "fix", &names, false, false, false, false, false,
+        );
         assert!(matches!(action, PendingTaskAction::Skip { .. }));
     }
 
@@ -2185,7 +2203,8 @@ mod tests {
             false,
             false,
             false,
-            true, // has_in_progress_task = true
+            true,  // has_in_progress_task = true
+            false, // is_channel_lead
         );
         assert!(
             matches!(action, PendingTaskAction::Skip { .. }),
@@ -2206,6 +2225,7 @@ mod tests {
             false,
             false,
             false, // has_in_progress_task = false
+            false, // is_channel_lead
         );
         assert!(
             matches!(action, PendingTaskAction::SpawnOwner { .. }),
@@ -2229,6 +2249,7 @@ mod tests {
         review_feedback: HashSet<String>,
         recently_stopped: HashSet<String>,
         attached: HashMap<String, chrono::DateTime<chrono::Utc>>,
+        channel_leads: HashSet<String>,
     }
 
     impl OrphanCtx {
@@ -2277,6 +2298,7 @@ mod tests {
                 review_feedback_pr_coworkers: &self.review_feedback,
                 recently_stopped: &self.recently_stopped,
                 attached_coworkers: &self.attached,
+                channel_lead_names: &self.channel_leads,
             };
             decide_orphan_recovery(&ctx)
         }
@@ -3104,6 +3126,7 @@ mod tests {
             false, // not on cooldown
             true,  // IS active reviewer
             false, // no in_progress task
+            false, // not a channel lead
         );
 
         assert!(
@@ -3136,6 +3159,7 @@ mod tests {
             false, // not on cooldown
             false, // NOT a reviewer
             false, // no in_progress task
+            false, // not a channel lead
         );
 
         assert!(
@@ -3159,6 +3183,7 @@ mod tests {
             false, // not on cooldown
             false, // NOT a reviewer
             false, // no in_progress task
+            false, // not a channel lead
         );
 
         assert!(
@@ -3183,6 +3208,7 @@ mod tests {
             false, // not on cooldown
             true,  // IS reviewer (even though inactive)
             false, // no in_progress task
+            false, // not a channel lead
         );
 
         assert!(

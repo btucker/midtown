@@ -24,6 +24,7 @@ use super::{DaemonState, snapshot};
 /// automatically sent on a break.
 ///
 /// IMPORTANT: Coworkers are NEVER sent on a break if any of these apply:
+/// - They are a channel lead (long-lived domain expert session, like "lead")
 /// - They have open unmerged PRs (must stay available for review feedback)
 /// - They have active review assignments
 /// - They have unblocked dependent tasks

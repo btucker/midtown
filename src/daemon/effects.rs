@@ -2056,8 +2056,14 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     "Auto-detached stale attached session for '{}' (no detach received within timeout)",
                     name
                 );
+                let is_channel_lead = {
+                    let ps = state.persistent_state.lock().await;
+                    ps.channel_lead_sessions.contains_key(name.as_str())
+                };
                 let suffix = if name == "lead" {
                     " Headless session will respawn on the next tick."
+                } else if is_channel_lead {
+                    " Channel lead session will be respawned for its channel."
                 } else {
                     " Session will be reassigned via normal task dispatch."
                 };
