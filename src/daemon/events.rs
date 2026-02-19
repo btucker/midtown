@@ -91,7 +91,7 @@ pub async fn evaluate_tick(
             // Session-aware dispatch runs first: tasks with session records get
             // recovered via their stored preferred_name and working_dir. Tasks
             // claimed here are excluded from legacy orphan recovery below.
-            let session_effects = super::dispatch::dispatch_via_sessions(snap, state);
+            let session_effects = super::dispatch::dispatch_via_sessions(snap);
             let session_claimed_ids =
                 super::dispatch::extract_claimed_task_ids_from_effects(&session_effects);
             effects.extend(session_effects);

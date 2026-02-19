@@ -1124,6 +1124,10 @@ pub(crate) fn decide_mention_action(
 // Tests
 // ---------------------------------------------------------------------------
 
+#[path = "rules_session_tests.rs"]
+#[cfg(test)]
+mod rules_session_tests;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2800,60 +2804,6 @@ mod tests {
     }
 
     #[test]
-    fn stuck_coworker_restart_includes_session_id_from_map() {
-        let now = Utc::now();
-        let mut health_map = HashMap::new();
-        health_map.insert("riverside".to_string(), stuck_health(now));
-        let tasks = vec![(
-            "42".to_string(),
-            "Fix bug".to_string(),
-            "riverside".to_string(),
-        )];
-        let exemptions = StuckExemptions {
-            usage_limited: &HashSet::new(),
-            api_error: &HashSet::new(),
-            auth_error: &HashSet::new(),
-            attached: &HashMap::new(),
-        };
-        let mut name_session_map = HashMap::new();
-        name_session_map.insert("riverside".to_string(), "session-abc-123".to_string());
-
-        let restarts = decide_stuck_coworker_restarts(
-            &health_map,
-            &tasks,
-            &exemptions,
-            now,
-            Duration::from_secs(180),
-            &name_session_map,
-        );
-
-        assert_eq!(restarts.len(), 1);
-        assert_eq!(
-            restarts[0].session_id,
-            Some("session-abc-123".to_string()),
-            "session_id should be populated from name_session_map"
-        );
-    }
-
-    #[test]
-    fn stuck_coworker_restart_session_id_none_when_no_mapping() {
-        let now = Utc::now();
-        let restarts = run_stuck_check(
-            "riverside",
-            stuck_health(now),
-            now,
-            &HashSet::new(),
-            &HashSet::new(),
-            &HashMap::new(),
-        );
-        assert_eq!(restarts.len(), 1);
-        assert_eq!(
-            restarts[0].session_id, None,
-            "session_id should be None when no name_session_map entry exists"
-        );
-    }
-
-    #[test]
     fn orphan_recovery_skips_attached_coworkers() {
         let result = OrphanCtx::task("1", "Fix bug", "york")
             .active(&["amsterdam"])
@@ -3038,42 +2988,6 @@ mod tests {
             "should match task owner case-insensitively"
         );
         assert_eq!(respawns[0].name, "Lexington");
-    }
-
-    #[test]
-    fn dead_process_respawn_includes_session_id_from_map() {
-        let mut health = HashMap::new();
-        health.insert("york".to_string(), dead_health(1));
-
-        let tasks = vec![("42".to_string(), "Fix bug".to_string(), "york".to_string())];
-
-        let mut name_session_map = HashMap::new();
-        name_session_map.insert("york".to_string(), "session-dead-456".to_string());
-
-        let respawns = decide_dead_process_respawns(&health, &tasks, &name_session_map);
-
-        assert_eq!(respawns.len(), 1);
-        assert_eq!(
-            respawns[0].session_id,
-            Some("session-dead-456".to_string()),
-            "session_id should be populated from name_session_map"
-        );
-    }
-
-    #[test]
-    fn dead_process_respawn_session_id_none_when_no_mapping() {
-        let mut health = HashMap::new();
-        health.insert("york".to_string(), dead_health(1));
-
-        let tasks = vec![("42".to_string(), "Fix bug".to_string(), "york".to_string())];
-
-        let respawns = decide_dead_process_respawns(&health, &tasks, &HashMap::new());
-
-        assert_eq!(respawns.len(), 1);
-        assert_eq!(
-            respawns[0].session_id, None,
-            "session_id should be None when no name_session_map entry exists"
-        );
     }
 
     // -----------------------------------------------------------------------
@@ -3361,59 +3275,6 @@ mod tests {
         assert!(
             restarts.is_empty(),
             "coworker without PR assignment should not be flagged"
-        );
-    }
-
-    #[test]
-    fn stuck_reviewer_restart_includes_session_id_from_map() {
-        let now = Utc::now();
-        let mut health_map = HashMap::new();
-        health_map.insert("riverside".to_string(), stuck_health(now));
-        let mut assignments = HashMap::new();
-        assignments.insert("riverside".to_string(), 42u64);
-        let exemptions = StuckExemptions {
-            usage_limited: &HashSet::new(),
-            api_error: &HashSet::new(),
-            auth_error: &HashSet::new(),
-            attached: &HashMap::new(),
-        };
-        let mut name_session_map = HashMap::new();
-        name_session_map.insert("riverside".to_string(), "session-rev-789".to_string());
-
-        let restarts = decide_stuck_reviewer_restarts(
-            &health_map,
-            &assignments,
-            &HashMap::new(),
-            &exemptions,
-            now,
-            Duration::from_secs(300),
-            2,
-            &name_session_map,
-        );
-
-        assert_eq!(restarts.len(), 1);
-        assert_eq!(
-            restarts[0].session_id,
-            Some("session-rev-789".to_string()),
-            "session_id should be populated from name_session_map"
-        );
-    }
-
-    #[test]
-    fn stuck_reviewer_restart_session_id_none_when_no_mapping() {
-        let now = Utc::now();
-        let restarts = run_stuck_reviewer_check(
-            "riverside",
-            stuck_health(now),
-            42,
-            now,
-            &HashMap::new(),
-            &HashSet::new(),
-        );
-        assert_eq!(restarts.len(), 1);
-        assert_eq!(
-            restarts[0].session_id, None,
-            "session_id should be None when no name_session_map entry exists"
         );
     }
 

@@ -363,13 +363,10 @@ fn check_and_recover_orphans_with_task_lookup<F>(
 where
     F: Fn(&str) -> Option<crate::tasks::Task>,
 {
-    // Check cooldown - skip if we spawned too recently
-    {
-        let cooldowns = state.cooldowns.lock().unwrap();
-        if !cooldowns.check("orphan_spawn", "global", ORPHAN_SPAWN_COOLDOWN) {
-            debug!("Orphan recovery cooldown active");
-            return vec![];
-        }
+    // Check cooldown - skip if we spawned too recently (pre-evaluated in snapshot)
+    if snap.orphan_spawn_cooldown_active {
+        debug!("Orphan recovery cooldown active");
+        return vec![];
     }
 
     if snap.in_progress_tasks.is_empty() {
@@ -377,6 +374,9 @@ where
     }
 
     // Get primary repo path for GitHub API calls
+    // NOTE: This is a pre-existing impurity (I/O for PR merge status checks).
+    // The cooldown checks have been moved to the snapshot; the repo_path usage
+    // remains here until should_recover_task() is fully migrated to snapshot data.
     let repo_path = state
         .all_repo_paths
         .first()
@@ -384,6 +384,8 @@ where
 
     // Filter out in_progress tasks whose PRs have already been merged, that
     // have open PRs (via pr_task_associations), or that are already completed.
+    // Also filter out tasks with session records — those are handled by
+    // dispatch_via_sessions which has full session context for recovery.
     // These tasks are stale and will be auto-completed by the PR merge cleanup
     // path (merged/completed) or already have active work (open PR). Attempting
     // orphan recovery creates a loop: spawn → coworker sees task done → goes
@@ -392,6 +394,14 @@ where
         .in_progress_tasks
         .iter()
         .filter(|(task_id, _task_subject, _owner)| {
+            // Skip tasks that have a session record — dispatch_via_sessions handles them.
+            if snap.session_task_map.contains_key(task_id.as_str()) {
+                debug!(
+                    "Orphan recovery skipping task !{} — has session record, handled by dispatch_via_sessions",
+                    task_id
+                );
+                return false;
+            }
             // Read full task from disk to check both subject and description for PR number
             let task = match task_lookup(task_id) {
                 Some(t) => t,
@@ -442,15 +452,16 @@ where
     };
 
     // Check per-coworker spawn failure cooldown to prevent infinite retry loops
+    // (pre-evaluated in snapshot)
+    if snap
+        .spawn_failure_cooldown_names
+        .contains(&recovery.owner.to_lowercase())
     {
-        let cooldowns = state.cooldowns.lock().unwrap();
-        if !cooldowns.check("spawn_failure", &recovery.owner, SPAWN_FAILURE_COOLDOWN) {
-            debug!(
-                "Spawn failure cooldown active for {} — skipping orphan recovery for task !{}",
-                recovery.owner, recovery.task_id
-            );
-            return vec![];
-        }
+        debug!(
+            "Spawn failure cooldown active for {} — skipping orphan recovery for task !{}",
+            recovery.owner, recovery.task_id
+        );
+        return vec![];
     }
 
     info!(
@@ -505,37 +516,58 @@ where
         config.channel = channel.clone();
         config.apply_task_model(&snap.task_model_map, &recovery.task_id);
 
-        let mut effects = wt.pre_spawn_effects;
+        let on_success = vec![
+            Effect::RecordTaskAssignment {
+                coworker: recovery.owner.clone(),
+                task_id: recovery.task_id.clone(),
+            },
+            Effect::BindCoworkerToWorktree {
+                worktree_id: wt.worktree_id,
+                coworker: recovery.owner.clone(),
+            },
+            Effect::BroadcastCoworkerUpdate {
+                name: recovery.owner.clone(),
+                status: "running".to_string(),
+                current_task: None,
+            },
+            Effect::RecordCooldown {
+                category: "orphan_spawn".to_string(),
+                key: "global".to_string(),
+            },
+            Effect::PostToChannel {
+                sender: "midtown".to_string(),
+                message: format!(
+                    "♻️ Resumed session {} for orphaned task !{} (coworker {})",
+                    record.session_id, recovery.task_id, recovery.owner
+                ),
+                channel,
+            },
+        ];
 
-        effects.push(Effect::ResumeCoworker {
-            name: recovery.owner.clone(),
-            session_id: record.session_id.clone(),
+        let mut effects = wt.pre_spawn_effects;
+        effects.push(Effect::SpawnCoworkerWithCallbacks {
             config,
-        });
-        effects.push(Effect::RecordTaskAssignment {
-            coworker: recovery.owner.clone(),
-            task_id: recovery.task_id.clone(),
-        });
-        effects.push(Effect::BindCoworkerToWorktree {
-            worktree_id: wt.worktree_id,
-            coworker: recovery.owner.clone(),
-        });
-        effects.push(Effect::BroadcastCoworkerUpdate {
-            name: recovery.owner.clone(),
-            status: "running".to_string(),
-            current_task: None,
-        });
-        effects.push(Effect::RecordCooldown {
-            category: "orphan_spawn".to_string(),
-            key: "global".to_string(),
-        });
-        effects.push(Effect::PostToChannel {
-            sender: "midtown".to_string(),
-            message: format!(
-                "♻️ Resumed session {} for orphaned task !{} (coworker {})",
-                record.session_id, recovery.task_id, recovery.owner
-            ),
-            channel,
+            on_success,
+            on_failure: vec![
+                Effect::RecordCooldown {
+                    category: "spawn_failure".to_string(),
+                    key: recovery.owner.clone(),
+                },
+                Effect::ResetTaskToPending {
+                    task_id: recovery.task_id.clone(),
+                    repo_name: snap.repo_name.clone(),
+                },
+                Effect::PostToChannel {
+                    sender: "midtown".to_string(),
+                    message: format!(
+                        "🔄 Task !{} reset to pending - session resume for {} failed (backing off for {}s)",
+                        recovery.task_id,
+                        recovery.owner,
+                        SPAWN_FAILURE_COOLDOWN.as_secs()
+                    ),
+                    channel: None,
+                },
+            ],
         });
 
         return effects;
@@ -658,19 +690,13 @@ pub(super) fn extract_claimed_task_ids_from_effects(effects: &[Effect]) -> HashS
 /// lookup path. Tasks with session records get their preferred name and
 /// working directory preserved across restarts.
 ///
-/// Returns effects using existing Effect variants (SpawnCoworkerWithCallbacks, etc.)
-/// since session-centric Effect variants are not yet implemented.
-pub fn dispatch_via_sessions(
-    snap: &snapshot::WorldSnapshot,
-    state: &DaemonState,
-) -> Vec<effects::Effect> {
+/// Pure function: reads only from `snap` (no `DaemonState` access). Cooldown
+/// state is pre-evaluated into the snapshot by `collect_world_snapshot()`.
+pub fn dispatch_via_sessions(snap: &snapshot::WorldSnapshot) -> Vec<effects::Effect> {
     // Check cooldown - skip if we dispatched too recently
-    {
-        let cooldowns = state.cooldowns.lock().unwrap();
-        if !cooldowns.check("session_dispatch", "global", SESSION_DISPATCH_COOLDOWN) {
-            debug!("Session dispatch cooldown active");
-            return vec![];
-        }
+    if snap.session_dispatch_cooldown_active {
+        debug!("Session dispatch cooldown active");
+        return vec![];
     }
 
     if snap.in_progress_tasks.is_empty() {
@@ -715,16 +741,16 @@ pub fn dispatch_via_sessions(
             .or(record.current_name.as_deref())
             .unwrap_or(owner);
 
-        // Check per-coworker spawn failure cooldown
+        // Check per-coworker spawn failure cooldown (pre-evaluated in snapshot)
+        if snap
+            .spawn_failure_cooldown_names
+            .contains(&coworker_name.to_lowercase())
         {
-            let cooldowns = state.cooldowns.lock().unwrap();
-            if !cooldowns.check("spawn_failure", coworker_name, SPAWN_FAILURE_COOLDOWN) {
-                debug!(
-                    "Spawn failure cooldown active for {} -- skipping session dispatch for task !{}",
-                    coworker_name, task_id
-                );
-                continue;
-            }
+            debug!(
+                "Spawn failure cooldown active for {} -- skipping session dispatch for task !{}",
+                coworker_name, task_id
+            );
+            continue;
         }
 
         info!(
@@ -741,14 +767,24 @@ pub fn dispatch_via_sessions(
             ),
         );
 
-        let working_dir = std::path::PathBuf::from(&record.working_dir);
+        // Prepare worktree (reuse existing or create new) and build config.
+        // Uses prepare_task_worktree to keep the worktree registry current and
+        // emit EnsureWorktree / BindCoworkerToWorktree effects.
+        let wt = prepare_task_worktree(task_id, task_subject, &snap.repo_name, snap);
 
         let mut config = crate::launch::LaunchConfig::coworker(
             coworker_name.to_string(),
-            state.repo_name.clone(),
-            crate::launch::SessionMode::Fresh,
+            snap.repo_name.clone(),
+            crate::launch::SessionMode::ResumeSession(record.session_id.clone()),
             Some(prompt),
         );
+        // Prefer the session's recorded working_dir (actual location on disk).
+        // Fall back to the computed worktree path from the registry.
+        let working_dir = if !record.working_dir.is_empty() {
+            std::path::PathBuf::from(&record.working_dir)
+        } else {
+            wt.path.clone()
+        };
         config.working_dir = Some(working_dir);
 
         let channel = snap
@@ -764,6 +800,10 @@ pub fn dispatch_via_sessions(
             Effect::RecordTaskAssignment {
                 coworker: coworker_name.to_string(),
                 task_id: task_id.clone(),
+            },
+            Effect::BindCoworkerToWorktree {
+                worktree_id: wt.worktree_id,
+                coworker: coworker_name.to_string(),
             },
             Effect::BroadcastCoworkerUpdate {
                 name: coworker_name.to_string(),
@@ -784,7 +824,9 @@ pub fn dispatch_via_sessions(
             },
         ];
 
-        effects.push(Effect::SpawnCoworkerWithCallbacks {
+        // Prepend worktree setup effects (EnsureWorktree + optional registration)
+        let mut pre_spawn = wt.pre_spawn_effects;
+        pre_spawn.push(Effect::SpawnCoworkerWithCallbacks {
             config,
             on_success,
             on_failure: vec![
@@ -808,6 +850,7 @@ pub fn dispatch_via_sessions(
                 },
             ],
         });
+        effects.extend(pre_spawn);
 
         // Only spawn one coworker per tick (same rate limiting as orphan recovery)
         break;

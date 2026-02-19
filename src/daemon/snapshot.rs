@@ -321,6 +321,20 @@ pub struct WorldSnapshot {
     #[serde(default)]
     pub repo_owner: Option<String>,
 
+    // ── Dispatch cooldown state ──────────────────────────────────────────
+    /// Whether the orphan spawn global cooldown is currently active.
+    /// Pre-evaluated from `state.cooldowns` so decision functions stay pure.
+    #[serde(default)]
+    pub orphan_spawn_cooldown_active: bool,
+    /// Whether the session dispatch global cooldown is currently active.
+    /// Pre-evaluated from `state.cooldowns` so decision functions stay pure.
+    #[serde(default)]
+    pub session_dispatch_cooldown_active: bool,
+    /// Names of coworkers currently on the spawn failure cooldown.
+    /// Pre-evaluated from `state.cooldowns` over all known coworker names.
+    #[serde(default)]
+    pub spawn_failure_cooldown_names: HashSet<String>,
+
     // ── Session-centric fields (new model) ──────────────────────────────
     /// All session records, keyed by session_id.
     ///
@@ -750,6 +764,45 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
     let repo_name = state.repo_name.clone();
     let repo_owner = state.repo_owner.clone();
 
+    // ── Dispatch cooldown state ──────────────────────────────────────────
+    // Pre-evaluate cooldown checks so decision functions (dispatch_via_sessions,
+    // check_and_recover_orphans) stay pure — no locking during evaluation phase.
+    let (
+        orphan_spawn_cooldown_active,
+        session_dispatch_cooldown_active,
+        spawn_failure_cooldown_names,
+    ) = {
+        let cooldowns = state.cooldowns.lock().unwrap();
+        let orphan_active = !cooldowns.check(
+            "orphan_spawn",
+            "global",
+            crate::daemon::constants::ORPHAN_SPAWN_COOLDOWN,
+        );
+        let session_active = !cooldowns.check(
+            "session_dispatch",
+            "global",
+            crate::daemon::constants::SESSION_DISPATCH_COOLDOWN,
+        );
+        // Collect all coworker names that are on the spawn failure cooldown.
+        // We check against every known coworker name (active + sessions).
+        let all_names: HashSet<String> = active_coworkers
+            .iter()
+            .map(|cw| cw.name.to_lowercase())
+            .collect();
+        let on_cooldown: HashSet<String> = all_names
+            .iter()
+            .filter(|name| {
+                !cooldowns.check(
+                    "spawn_failure",
+                    name,
+                    crate::daemon::constants::SPAWN_FAILURE_COOLDOWN,
+                )
+            })
+            .cloned()
+            .collect();
+        (orphan_active, session_active, on_cooldown)
+    };
+
     // ── Session-centric fields ───────────────────────────────────────────
     let (sessions, session_task_map, session_name_map, name_session_map) = {
         let persistent = state.persistent_state.lock().await;
@@ -839,6 +892,9 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
         session_task_map,
         session_name_map,
         name_session_map,
+        orphan_spawn_cooldown_active,
+        session_dispatch_cooldown_active,
+        spawn_failure_cooldown_names,
     };
 
     // Log full snapshot at trace level for debugging and test case generation
@@ -920,6 +976,9 @@ pub(super) fn minimal_snapshot_for_test() -> WorldSnapshot {
         session_task_map: HashMap::new(),
         session_name_map: HashMap::new(),
         name_session_map: HashMap::new(),
+        orphan_spawn_cooldown_active: false,
+        session_dispatch_cooldown_active: false,
+        spawn_failure_cooldown_names: HashSet::new(),
     }
 }
 

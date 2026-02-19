@@ -1775,9 +1775,9 @@ fn test_resolve_pr_owner_from_session_returns_none_without_session() {
 }
 
 /// When the session record exists but has no current_name (suspended session),
-/// the lookup should return None so the caller falls back to branch-based resolution.
+/// the lookup should fall back to preferred_name so PR feedback routes to the right coworker.
 #[test]
-fn test_resolve_pr_owner_from_session_returns_none_for_suspended_session() {
+fn test_resolve_pr_owner_from_session_uses_preferred_name_for_suspended_session() {
     let pr_task_associations: HashMap<u64, String> =
         [(42, "123".to_string())].into_iter().collect();
     let session_task_map: HashMap<String, String> = [("123".to_string(), "sess-abc".to_string())]
@@ -1807,8 +1807,9 @@ fn test_resolve_pr_owner_from_session_returns_none_for_suspended_session() {
     let result =
         resolve_pr_owner_from_session(42, &pr_task_associations, &session_task_map, &sessions);
     assert_eq!(
-        result, None,
-        "Should return None when session has no current_name (suspended)"
+        result,
+        Some("lexington".to_string()),
+        "Should return preferred_name when session has no current_name but preferred_name is set"
     );
 }
 

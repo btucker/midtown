@@ -102,6 +102,9 @@ fn test_usage_limit_nudge_only_targets_running_coworkers() {
         session_task_map: HashMap::new(),
         session_name_map: HashMap::new(),
         name_session_map: HashMap::new(),
+        orphan_spawn_cooldown_active: false,
+        session_dispatch_cooldown_active: false,
+        spawn_failure_cooldown_names: std::collections::HashSet::new(),
     };
 
     let effects = maybe_nudge_usage_limit_expiry(&snap);
@@ -271,6 +274,9 @@ fn test_check_for_usage_limits_with_reset_time() {
         session_task_map: HashMap::new(),
         session_name_map: HashMap::new(),
         name_session_map: HashMap::new(),
+        orphan_spawn_cooldown_active: false,
+        session_dispatch_cooldown_active: false,
+        spawn_failure_cooldown_names: std::collections::HashSet::new(),
     };
 
     let effects = check_for_usage_limits(&snap);
@@ -361,6 +367,9 @@ fn test_check_for_usage_limits_already_scheduled() {
         session_task_map: HashMap::new(),
         session_name_map: HashMap::new(),
         name_session_map: HashMap::new(),
+        orphan_spawn_cooldown_active: false,
+        session_dispatch_cooldown_active: false,
+        spawn_failure_cooldown_names: std::collections::HashSet::new(),
     };
 
     let effects = check_for_usage_limits(&snap);
@@ -486,6 +495,9 @@ fn empty_snap() -> snapshot::WorldSnapshot {
         session_task_map: HashMap::new(),
         session_name_map: HashMap::new(),
         name_session_map: HashMap::new(),
+        orphan_spawn_cooldown_active: false,
+        session_dispatch_cooldown_active: false,
+        spawn_failure_cooldown_names: std::collections::HashSet::new(),
     }
 }
 

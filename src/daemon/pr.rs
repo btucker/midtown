@@ -75,15 +75,19 @@ pub(super) fn get_coworkers_with_open_prs(state: &DaemonState) -> Vec<String> {
 }
 
 /// Resolve a PR's owner via the session-centric path:
-/// PR number → task_id → session_id → session.current_name.
+/// PR number → task_id → session_id → session.current_name (or preferred_name).
 ///
-/// Returns `Some(name)` if a session record exists with a current name allocation,
+/// Returns `Some(name)` if a session record exists with a name allocation,
 /// or `None` if any link in the chain is missing (no task association, no session,
-/// or session is suspended with no name).
+/// or session has neither current_name nor preferred_name).
 ///
 /// This gives session-based routing priority over branch-name parsing. When a
 /// coworker is reassigned to a different name on restart, the session record
 /// tracks the current name, so PRs route to the correct coworker.
+///
+/// Falls back to `preferred_name` when the session is suspended and has released
+/// `current_name`. This handles the case where a coworker finishes and releases its
+/// name but `preferred_name` still identifies who authored the PR.
 fn resolve_pr_owner_from_session(
     pr_number: u64,
     pr_task_associations: &HashMap<u64, String>,
@@ -93,7 +97,10 @@ fn resolve_pr_owner_from_session(
     let task_id = pr_task_associations.get(&pr_number)?;
     let session_id = session_task_map.get(task_id)?;
     let session = sessions.get(session_id)?;
-    session.current_name.clone()
+    session
+        .current_name
+        .clone()
+        .or_else(|| session.preferred_name.clone())
 }
 
 /// Data extracted from persistent state for PR decision-making.
@@ -753,8 +760,13 @@ pub(super) async fn poll_prs_for_issues(
         // coworker_from_branch_with_map returns Some("york") for "york/fix-auth" even if
         // york has no worktree, so we need to check if the owner is actually active.
         if let Some(ref owner) = owner_opt {
-            // Check if this owner has an active worktree (i.e., is actually working)
-            let has_active_worktree = snap.worktree_branch_owners.values().any(|o| o == owner);
+            // Check if this owner has an active worktree (i.e., is actually working).
+            // When session-based resolution returns a different name than the branch prefix
+            // (e.g., session says "madison" but branch is "lexington/fix-auth"), check the
+            // branch registration directly in addition to the resolved name. This prevents
+            // false orphan detection when a coworker was reassigned mid-workflow.
+            let has_active_worktree = snap.worktree_branch_owners.values().any(|o| o == owner)
+                || snap.worktree_branch_owners.contains_key(head_ref);
 
             // If the owner has no active worktree, treat this as an orphaned PR
             if !has_active_worktree && !issues.is_empty() {

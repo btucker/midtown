@@ -194,6 +194,9 @@ fn make_dev_limit_snapshot(
         session_task_map: HashMap::new(),
         session_name_map: HashMap::new(),
         name_session_map: HashMap::new(),
+        orphan_spawn_cooldown_active: false,
+        session_dispatch_cooldown_active: false,
+        spawn_failure_cooldown_names: std::collections::HashSet::new(),
     }
 }
 
