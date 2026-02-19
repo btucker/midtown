@@ -78,10 +78,6 @@ Channel leads are headless Claude Code sessions attached to individual topic cha
 
 Coworkers stay synchronized via a Claude Code Stop hook. When Claude pauses, the hook reads new channel messages and checks for unclaimed tasks. This means coworkers automatically receive updates at natural pause points.
 
-## Channel Leads
-
-Topic channels can have a dedicated channel lead — a headless Claude Code session with persistent context for a specific area of the codebase. Channel leads are spawned from the `agents/channel-lead.md` system prompt template and provide domain expertise to coworkers working in their channel. Coworkers are instructed to ask `@channel-lead` for domain questions before escalating to `@lead`, forming a three-tier question hierarchy: channel lead → lead → peer coworker.
-
 ## Mailbox Messaging
 
 In addition to the shared channel, the daemon can deliver targeted messages to individual coworkers via the Claude Code agent teams mailbox protocol. Messages are written as JSON to `~/.claude/teams/{team-name}/inboxes/{agent-name}.json` using atomic file operations with mkdir-based locking for safe concurrent access.
