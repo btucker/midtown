@@ -1,4 +1,4 @@
-//! Task dispatch — orphan recovery, duplicate detection, pending task spawning.
+//! Task dispatch — session-aware in_progress recovery, duplicate detection, pending task spawning.
 //!
 //! These functions run on the `TaskDispatchTick` event and coordinate coworker
 //! lifecycle around the shared task list. They read from `WorldSnapshot` and
@@ -229,15 +229,10 @@ fn is_pr_merged(pr_number: u64, repo_path: &std::path::Path) -> Option<bool> {
 
 /// Determine whether an orphaned task should be recovered.
 ///
-/// Pure decision function: returns `true` if the task should be recovered,
-/// `false` if it should be skipped. A task should NOT be recovered if:
-/// - It is already completed (race condition: RPC marked it done after snapshot)
-/// - It has an explicit `pr` field pointing to a merged PR
-/// - It has an open PR tracked via pr_task_associations (tasks_with_open_prs)
-/// - It has an open PR detected from GitHub PR titles (github_open_pr_task_ids)
-///
-/// All data except the `is_pr_merged` fallback is pre-collected during snapshot collection.
-/// The `is_pr_merged` call is a pre-existing safety net for stale merged PR caches.
+/// Production dispatch uses `should_recover_task_optional_repo` (which handles
+/// optional repo_path). This version is kept for the integration test helper
+/// `should_recover_task_test_helper` and the legacy `check_and_recover_orphans`
+/// test path.
 fn should_recover_task(
     task: &crate::tasks::Task,
     merged_pr_numbers: &HashSet<u64>,
@@ -660,13 +655,13 @@ where
     pre_spawn
 }
 
-/// Extract task IDs claimed by orphan recovery effects.
+/// Extract task IDs claimed by dispatch_via_sessions effects.
 ///
 /// Scans effects for `RecordTaskAssignment` — both as top-level effects
-/// (session-aware resume path) and nested inside `SpawnCoworkerWithCallbacks`
-/// on_success callbacks (legacy fresh spawn path). Used by `events.rs` to build
-/// an exclusion set for `spawn_for_pending_tasks_excluding`, preventing dual-spawn
-/// when orphan recovery and pending dispatch both target the same task in one tick.
+/// and nested inside `SpawnCoworkerWithCallbacks` on_success callbacks.
+/// Used by `events.rs` to build an exclusion set for
+/// `spawn_for_pending_tasks_excluding`, preventing dual-spawn when
+/// in_progress recovery and pending dispatch both target the same task in one tick.
 pub(super) fn extract_claimed_task_ids_from_effects(effects: &[Effect]) -> HashSet<String> {
     let mut ids = HashSet::new();
     for effect in effects {
