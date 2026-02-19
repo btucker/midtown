@@ -1545,8 +1545,8 @@ impl App {
     ///
     /// This captures all inputs that affect the rendered output of draw_chat_messages():
     /// scroll position, message count, terminal width, selection mode, last message ID
-    /// as a proxy for content changes, task state, mermaid render state, and tool
-    /// activity (which affects msg_height via count_tool_activity_lines).
+    /// as a proxy for content changes, task state, mermaid render state, and the
+    /// indicator height (which affects the message area size via the layout constraint).
     pub fn message_cache_key(&self, width: u16) -> u64 {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
@@ -1572,17 +1572,18 @@ impl App {
             thread_id.hash(&mut hasher);
         }
         self.thread_messages.len().hash(&mut hasher);
-        // Hash selected channel — changing channels changes which tool activity agent
-        // is shown, so the filtered activity count (and thus msg_height) may differ.
+        // Hash selected channel — changing channels changes which agent's indicator
+        // is shown, which may affect indicator_height and thus the message area size.
         self.selected_channel.hash(&mut hasher);
-        // Hash tool activity — changes msg_height via count_tool_activity_lines,
-        // so a cache hit with different tool activity would apply wrong truncation.
-        let mut agents: Vec<&String> = self.tool_activity.keys().collect();
-        agents.sort();
-        for agent in agents {
-            agent.hash(&mut hasher);
-            self.tool_activity[agent].len().hash(&mut hasher);
-        }
+        // Hash the indicator height — as completed entries age out, indicator_height changes,
+        // which changes the message area size via the layout constraint. Without this,
+        // the cache produces stale line counts when the indicator collapses.
+        let agent_key = if self.selected_channel == "main" || self.selected_channel == "midtown" {
+            "lead"
+        } else {
+            self.selected_channel.as_str()
+        };
+        self.visible_tool_entries(agent_key).len().hash(&mut hasher);
         hasher.finish()
     }
 
@@ -2173,6 +2174,36 @@ impl App {
     pub fn spinner_char(&self) -> &'static str {
         const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
         SPINNER_FRAMES[self.spinner_frame % SPINNER_FRAMES.len()]
+    }
+
+    /// Returns the visible tool activity entries for the given agent, newest first.
+    ///
+    /// Applies 30-second age-out for completed (✓/✗) entries. In-progress (›) entries
+    /// are always included. Returns at most 3 entries.
+    pub fn visible_tool_entries(&self, agent_key: &str) -> Vec<&ToolActivityEntry> {
+        const ACTIVITY_AGE_OUT: std::time::Duration = std::time::Duration::from_secs(30);
+        let now = std::time::Instant::now();
+
+        let entries = match self.tool_activity.get(agent_key) {
+            Some(e) if !e.is_empty() => e,
+            _ => return Vec::new(),
+        };
+
+        let mut visible: Vec<&ToolActivityEntry> = entries
+            .iter()
+            .filter(|entry| {
+                match entry.completed_at {
+                    None => true, // In-progress entries never age out
+                    Some(completed_at) => now.duration_since(completed_at) < ACTIVITY_AGE_OUT,
+                }
+            })
+            .collect();
+
+        // Newest first: reverse the slice (most recent entries are appended last in the Vec).
+        visible.reverse();
+        // Cap at 3.
+        visible.truncate(3);
+        visible
     }
 
     /// Returns true if any spinner is currently visible (lead working or active coworkers).
@@ -4669,5 +4700,102 @@ pub(super) mod tests {
             entries[0].completed_at.is_none(),
             "In-progress entries should have no completed_at"
         );
+    }
+
+    // --- visible_tool_entries tests ---
+
+    #[test]
+    fn test_visible_tool_entries_empty() {
+        let app = test_app();
+        assert!(app.visible_tool_entries("lead").is_empty());
+    }
+
+    #[test]
+    fn test_visible_tool_entries_in_progress_always_visible() {
+        let mut app = test_app();
+        app.tool_activity = std::collections::HashMap::from([(
+            "lead".to_string(),
+            vec![ToolActivityEntry {
+                header: "\u{203a} Read foo.rs".to_string(),
+                completed_at: None,
+            }],
+        )]);
+        let result = app.visible_tool_entries("lead");
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].header, "\u{203a} Read foo.rs");
+    }
+
+    #[test]
+    fn test_visible_tool_entries_completed_recent_visible() {
+        let mut app = test_app();
+        app.tool_activity = std::collections::HashMap::from([(
+            "lead".to_string(),
+            vec![ToolActivityEntry {
+                header: "\u{2713} Read foo.rs".to_string(),
+                completed_at: Some(std::time::Instant::now()),
+            }],
+        )]);
+        let result = app.visible_tool_entries("lead");
+        assert_eq!(
+            result.len(),
+            1,
+            "Recently completed entry should be visible"
+        );
+    }
+
+    #[test]
+    fn test_visible_tool_entries_aged_out_hidden() {
+        let mut app = test_app();
+        app.tool_activity = std::collections::HashMap::from([(
+            "lead".to_string(),
+            vec![ToolActivityEntry {
+                header: "\u{2713} Read foo.rs".to_string(),
+                completed_at: Some(std::time::Instant::now() - std::time::Duration::from_secs(61)),
+            }],
+        )]);
+        let result = app.visible_tool_entries("lead");
+        assert!(
+            result.is_empty(),
+            "Entry completed >30s ago should be hidden"
+        );
+    }
+
+    #[test]
+    fn test_visible_tool_entries_max_3_newest_first() {
+        let mut app = test_app();
+        let now = std::time::Instant::now();
+        app.tool_activity = std::collections::HashMap::from([(
+            "lead".to_string(),
+            vec![
+                ToolActivityEntry {
+                    header: "\u{2713} call1".to_string(),
+                    completed_at: Some(now),
+                },
+                ToolActivityEntry {
+                    header: "\u{2713} call2".to_string(),
+                    completed_at: Some(now),
+                },
+                ToolActivityEntry {
+                    header: "\u{2713} call3".to_string(),
+                    completed_at: Some(now),
+                },
+                ToolActivityEntry {
+                    header: "\u{2713} call4".to_string(),
+                    completed_at: Some(now),
+                },
+                ToolActivityEntry {
+                    header: "\u{203a} call5".to_string(),
+                    completed_at: None,
+                },
+            ],
+        )]);
+        let result = app.visible_tool_entries("lead");
+        assert_eq!(result.len(), 3, "Max 3 entries");
+        assert_eq!(
+            result[0].header, "\u{203a} call5",
+            "Newest (call5) should be first"
+        );
+        assert_eq!(result[1].header, "\u{2713} call4");
+        assert_eq!(result[2].header, "\u{2713} call3");
     }
 }
