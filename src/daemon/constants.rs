@@ -190,6 +190,14 @@ pub const STUCK_NUDGE_COOLDOWN_SECS: u64 = 30 * 60;
 /// an escalation suggesting the lead investigate as a potential daemon bug.
 pub(super) const STUCK_ESCALATION_NUDGE_COUNT: u32 = 2;
 
+/// Channel name for daemon operational messages.
+///
+/// Operational messages (spawns, shutdowns, health checks, stuck detection,
+/// worktree cleanups, PR routing decisions) are routed here instead of the
+/// main project channel. This keeps team communication clean and ops noise
+/// in a dedicated view.
+pub(super) const OPS_CHANNEL: &str = "ops";
+
 // ---------------------------------------------------------------------------
 // Name / sender lists
 // ---------------------------------------------------------------------------

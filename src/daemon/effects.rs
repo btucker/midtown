@@ -6,6 +6,7 @@ use tracing::{debug, info, warn};
 const MAX_TOOL_ITEMS_PER_AGENT: usize = 20;
 
 use super::DaemonState;
+use super::constants::OPS_CHANNEL;
 use super::trackers::PrIssueType;
 use crate::message::Message;
 
@@ -89,7 +90,13 @@ pub enum Effect {
         channel: Option<String>,
     },
     /// Post a system message to the channel (and broadcast to WebSocket clients).
-    PostSystemMessage { message: String },
+    ///
+    /// If `channel` is `Some`, the message is routed to that channel (e.g. "ops").
+    /// If `None`, it goes to the default project channel.
+    PostSystemMessage {
+        message: String,
+        channel: Option<String>,
+    },
     /// Broadcast a coworker status update to WebSocket clients.
     BroadcastCoworkerUpdate {
         name: String,
@@ -989,8 +996,15 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     debug!("No reviewer assignment to remove for PR #{}", pr_number);
                 }
             }
-            Effect::PostSystemMessage { message } => {
-                let msg = Message::system(message);
+            Effect::PostSystemMessage { message, channel } => {
+                // If the message contains @lead, nudge the lead directly so they
+                // are interrupted even when the message is routed to a non-main
+                // channel (e.g. "ops") that the chat monitor does not watch.
+                if message.to_lowercase().contains("@lead") {
+                    state.nudge_lead(&message).await;
+                }
+                let mut msg = Message::system(message);
+                msg.channel = channel;
                 if let Err(e) = state.send_and_broadcast_async(&msg).await {
                     warn!("Failed to post system message: {}", e);
                 }
@@ -1254,14 +1268,15 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     })
                     .await
                     .ok();
-                    // Post to channel so the team sees what was cleaned up
+                    // Post to ops channel so the team sees what was cleaned up
                     let task_ref = task_id
                         .map(|id| format!(" (task !{})", id))
                         .unwrap_or_default();
-                    let msg = Message::system(format!(
+                    let mut msg = Message::system(format!(
                         "🧹 Cleaned up worktree {} after PR #{} merged{}",
                         assignment.worktree_id, pr_number, task_ref
                     ));
+                    msg.channel = Some(OPS_CHANNEL.to_string());
                     if let Err(e) = state.send_and_broadcast_async(&msg).await {
                         warn!("Failed to post worktree cleanup message: {}", e);
                     }
@@ -1304,14 +1319,15 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     })
                     .await
                     .ok();
-                    // Post to channel so the team sees what was cleaned up
+                    // Post to ops channel so the team sees what was cleaned up
                     let task_ref = task_id
                         .map(|id| format!(" (task !{})", id))
                         .unwrap_or_default();
-                    let msg = Message::system(format!(
+                    let mut msg = Message::system(format!(
                         "🧹 Cleaned up stale worktree {} (retention period expired){}",
                         assignment.worktree_id, task_ref
                     ));
+                    msg.channel = Some(OPS_CHANNEL.to_string());
                     if let Err(e) = state.send_and_broadcast_async(&msg).await {
                         warn!("Failed to post worktree cleanup message: {}", e);
                     }
@@ -1705,11 +1721,12 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                         task_id, pr_number
                     );
                     state.clear_task_assignment_by_task(&task_id);
-                    // Post channel notification
-                    let msg = crate::message::Message::system(format!(
+                    // Post to ops channel — PR closure is daemon operational info
+                    let mut msg = crate::message::Message::system(format!(
                         "PR #{} closed without merge. Task !{} reset to pending.",
                         pr_number, task_id
                     ));
+                    msg.channel = Some(OPS_CHANNEL.to_string());
                     if let Err(e) = state.send_and_broadcast_async(&msg).await {
                         warn!("Failed to post abandoned task message: {}", e);
                     }
@@ -1788,10 +1805,11 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 } else {
                     " Session will be reassigned via normal task dispatch."
                 };
-                let msg = crate::message::Message::system(format!(
+                let mut msg = crate::message::Message::system(format!(
                     "⚠️ Auto-detached stale attached session for {} — interactive session ended without detach.{}",
                     name, suffix
                 ));
+                msg.channel = Some(OPS_CHANNEL.to_string());
                 if let Err(e) = state.send_and_broadcast_async(&msg).await {
                     warn!("Failed to post auto-detach message: {}", e);
                 }

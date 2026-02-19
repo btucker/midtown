@@ -13,7 +13,7 @@ use tracing::{debug, error, info, warn};
 use crate::message::Message;
 
 use super::DaemonState;
-use super::constants::SKIP_SENDERS;
+use super::constants::{OPS_CHANNEL, SKIP_SENDERS};
 use super::helpers::{contains_at_all, extract_mentions};
 
 // Chat Monitor - @mention routing
@@ -230,12 +230,12 @@ fn mention_action_to_effects(
                 on_success: vec![Effect::PostToChannel {
                     sender: "midtown".to_string(),
                     message: format!("Called in {} in response to @mention", name),
-                    channel: None,
+                    channel: Some(OPS_CHANNEL.to_string()),
                 }],
                 on_failure: vec![Effect::PostToChannel {
                     sender: "midtown".to_string(),
                     message: format!("Failed to call in {} for @mention", name),
-                    channel: None,
+                    channel: Some(OPS_CHANNEL.to_string()),
                 }],
             }]
         }
@@ -248,7 +248,7 @@ fn mention_action_to_effects(
                         "Cannot call in {} for @mention: dev coworkers limit reached",
                         coworker_name
                     ),
-                    channel: None,
+                    channel: Some(OPS_CHANNEL.to_string()),
                 }]
             } else {
                 vec![]

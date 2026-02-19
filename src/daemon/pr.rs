@@ -794,6 +794,7 @@ pub(super) async fn poll_prs_for_issues(
                                 );
                                 effects.push(Effect::PostSystemMessage {
                                     message: format!("⚠️ {}", warning),
+                                    channel: Some(OPS_CHANNEL.to_string()),
                                 });
                                 // Record the nudge to prevent repeated warnings on subsequent ticks
                                 effects.push(Effect::RecordPrNudge {
@@ -839,6 +840,7 @@ pub(super) async fn poll_prs_for_issues(
                             );
                             effects.push(Effect::PostSystemMessage {
                                 message: format!("⚠️ {}", warning),
+                                channel: Some(OPS_CHANNEL.to_string()),
                             });
                             effects.push(Effect::RecordPrNudge {
                                 pr_number,
@@ -1194,7 +1196,7 @@ fn pr_action_to_effects(
                         pr_number,
                         config::get_personality(),
                     ),
-                    channel: channel.clone(),
+                    channel: Some(OPS_CHANNEL.to_string()),
                 },
                 Effect::RecordPrNudge {
                     pr_number,
@@ -1221,7 +1223,7 @@ fn pr_action_to_effects(
                         issue_type,
                         get_issue_action(issue_type)
                     ),
-                    channel: channel.clone(),
+                    channel: Some(OPS_CHANNEL.to_string()),
                 },
                 Effect::RecordPrNudge {
                     pr_number,
@@ -1511,6 +1513,7 @@ async fn collect_stuck_condition_effects(
                                 task_info,
                                 STUCK_SILENT_COWORKER_DURATION.as_secs() / 60,
                             ),
+                            channel: Some(OPS_CHANNEL.to_string()),
                         });
                     } else {
                         // Escalation: coworker didn't respond, notify lead
@@ -1565,6 +1568,7 @@ fn should_escalate(prior_nudges: u32) -> bool {
 fn stuck_nudge_effects(message: &str) -> Vec<Effect> {
     vec![Effect::PostSystemMessage {
         message: format!("⚠️ {}", message),
+        channel: Some(OPS_CHANNEL.to_string()),
     }]
 }
 
@@ -1872,7 +1876,7 @@ fn comment_action_to_effects(
                         pr_number,
                         crate::config::get_personality(),
                     ),
-                    channel: channel.clone(),
+                    channel: Some(OPS_CHANNEL.to_string()),
                 },
                 Effect::RecordPrNudge {
                     pr_number,
@@ -1898,7 +1902,7 @@ fn comment_action_to_effects(
                         owner,
                         get_issue_action(PrIssueType::ReviewComment)
                     ),
-                    channel,
+                    channel: Some(OPS_CHANNEL.to_string()),
                 },
                 Effect::RecordPrNudge {
                     pr_number,
@@ -1974,8 +1978,6 @@ fn handoff_to_coworker_effects(
     ctx: &PrContext,
 ) -> Vec<Effect> {
     // Look up topic channel for this PR's task (falls back to main if not found)
-    let channel = ctx.get_channel(pr_number);
-
     let config = crate::launch::LaunchConfig::pr_handoff(
         assignee.to_string(),
         state.repo_name.clone(),
@@ -1997,7 +1999,7 @@ fn handoff_to_coworker_effects(
                 "{} is taking over PR #{} from {} ({})",
                 assignee, pr_number, original_author, context_suffix
             ),
-            channel: channel.clone(),
+            channel: Some(OPS_CHANNEL.to_string()),
         },
         Effect::RecordPrNudge {
             pr_number,
@@ -2017,7 +2019,7 @@ fn handoff_to_coworker_effects(
                 assignee,
                 message
             ),
-            channel,
+            channel: Some(OPS_CHANNEL.to_string()),
         },
         Effect::RecordPrNudge {
             pr_number,
@@ -2313,12 +2315,10 @@ pub(crate) async fn collect_reviewer_effects_with_source(
             truncate_str(title, 40)
         );
 
-        // Extract channel routing data and channel lead names in one lock
-        let (pr_ctx, channel_lead_names) = {
+        // Extract channel lead names for coworker limit check
+        let channel_lead_names: std::collections::HashSet<String> = {
             let ps = state.persistent_state.lock().await;
-            let cl_names: std::collections::HashSet<String> =
-                ps.channel_lead_sessions.keys().cloned().collect();
-            (PrContext::routing_only(&ps), cl_names)
+            ps.channel_lead_sessions.keys().cloned().collect()
         };
 
         // Check max coworkers limit before spawning
@@ -2349,9 +2349,6 @@ pub(crate) async fn collect_reviewer_effects_with_source(
         // (with merged reviewer.md instructions) and the launch prompt internally
         let mut config = crate::launch::LaunchConfig::reviewer(reviewer_name.clone(), pr_number);
         config.working_dir = Some(wt_path.clone());
-
-        // Look up topic channel for this PR's task (falls back to main if not found)
-        let channel = pr_ctx.get_channel(pr_number);
 
         effects.push(Effect::EnsureWorktree {
             worktree_id: worktree_id.clone(),
@@ -2400,7 +2397,7 @@ pub(crate) async fn collect_reviewer_effects_with_source(
                     pr_number,
                     config::get_personality(),
                 ),
-                channel: channel.clone(),
+                channel: Some(OPS_CHANNEL.to_string()),
             },
         ];
 
@@ -2414,7 +2411,7 @@ pub(crate) async fn collect_reviewer_effects_with_source(
                     pr_number,
                     truncate_str(title, 40),
                 ),
-                channel,
+                channel: Some(OPS_CHANNEL.to_string()),
             },
         ];
 
@@ -2498,7 +2495,7 @@ fn review_complete_action_to_effects(
                         pr_number,
                         config::get_personality(),
                     ),
-                    channel: channel.clone(),
+                    channel: Some(OPS_CHANNEL.to_string()),
                 },
                 Effect::RecordPrNudge {
                     pr_number,
@@ -2524,7 +2521,7 @@ fn review_complete_action_to_effects(
                         owner,
                         get_issue_action(PrIssueType::ReviewComplete)
                     ),
-                    channel,
+                    channel: Some(OPS_CHANNEL.to_string()),
                 },
                 Effect::RecordPrNudge {
                     pr_number,
@@ -3761,7 +3758,10 @@ pub fn collect_merged_pr_cleanup_effects(snap: &WorldSnapshot) -> Vec<Effect> {
                 pr_number: pr_num,
                 branch: branch.clone(),
             });
-            effects.push(Effect::PostSystemMessage { message });
+            effects.push(Effect::PostSystemMessage {
+                message,
+                channel: Some(OPS_CHANNEL.to_string()),
+            });
         }
     }
 

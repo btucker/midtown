@@ -13,6 +13,7 @@ use crate::message::Message;
 use crate::rpc::{RequestId, Response, RpcError};
 
 use super::DaemonState;
+use super::constants::OPS_CHANNEL;
 
 // ============================================================================
 // Auth helper types
@@ -287,8 +288,8 @@ pub(super) async fn handle_auth_switch(
         }
     }
 
-    // Post to channel
-    let msg = Message::system(format!(
+    // Post to ops channel — auth switch is daemon operational info
+    let mut msg = Message::system(format!(
         "Switched to {} auth profile '{}' - restarted {}/{} coworker(s), {}",
         provider,
         profile,
@@ -296,6 +297,7 @@ pub(super) async fn handle_auth_switch(
         shutdown_count,
         lead_relaunch_status.summary()
     ));
+    msg.channel = Some(OPS_CHANNEL.to_string());
     if let Err(e) = state.send_and_broadcast_async(&msg).await {
         warn!("Failed to post auth switch message: {}", e);
     }

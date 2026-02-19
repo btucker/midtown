@@ -143,14 +143,14 @@ pub fn check_and_shutdown_idle_coworkers(snap: &snapshot::WorldSnapshot) -> Vec<
                     "Reviewer {} is idle but no review found for PR #{} - keeping alive",
                     name, pr
                 );
-                // Don't shutdown - post a warning to the channel so the team knows
+                // Don't shutdown - post a warning to the ops channel so the team knows
                 effects.push(Effect::PostToChannel {
                     sender: "midtown".to_string(),
                     message: format!(
                         "⚠️ Reviewer {} is idle but hasn't posted review for PR #{} yet",
                         name, pr
                     ),
-                    channel: None,
+                    channel: Some(OPS_CHANNEL.to_string()),
                 });
                 (false, String::new())
             }
@@ -175,11 +175,11 @@ pub fn check_and_shutdown_idle_coworkers(snap: &snapshot::WorldSnapshot) -> Vec<
             continue;
         }
 
-        // Post system message, broadcast status, and shut down
+        // Post to ops channel, broadcast status, and shut down
         effects.push(Effect::PostToChannel {
             sender: "midtown".to_string(),
             message: shutdown_msg,
-            channel: None,
+            channel: Some(OPS_CHANNEL.to_string()),
         });
         effects.push(Effect::BroadcastCoworkerUpdate {
             name: name.clone(),
@@ -293,7 +293,7 @@ pub(super) async fn check_and_restart_stuck_coworkers(
                 COWORKER_STUCK_DURATION.as_secs(),
                 restart.task_id
             ),
-            channel,
+            channel: Some(OPS_CHANNEL.to_string()),
         });
     }
 
@@ -388,7 +388,7 @@ pub fn check_and_restart_stuck_reviewers(snap: &snapshot::WorldSnapshot) -> Vec<
                 "⚠️ Failed to respawn reviewer {} for PR #{} (attempt {}/{})",
                 restart.name, restart.pr_number, new_restart_count, MAX_REVIEWER_RESTARTS,
             ),
-            channel: None,
+            channel: Some(OPS_CHANNEL.to_string()),
         }];
 
         effects.push(Effect::SpawnCoworkerWithCallbacks {
@@ -407,7 +407,7 @@ pub fn check_and_restart_stuck_reviewers(snap: &snapshot::WorldSnapshot) -> Vec<
                 new_restart_count,
                 MAX_REVIEWER_RESTARTS,
             ),
-            channel: None,
+            channel: Some(OPS_CHANNEL.to_string()),
         });
     }
 
@@ -469,7 +469,7 @@ pub fn check_and_restart_stuck_reviewers(snap: &snapshot::WorldSnapshot) -> Vec<
                  Manual intervention needed — the reviewer keeps getting stuck on this PR.",
                 name, pr_number, restart_count
             ),
-            channel: None,
+            channel: Some(OPS_CHANNEL.to_string()),
         });
         effects.push(Effect::NudgeLead {
             message: format!(
@@ -550,7 +550,7 @@ pub fn check_for_usage_limits(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
         Effect::PostToChannel {
             sender: "midtown".to_string(),
             message,
-            channel: None,
+            channel: Some(OPS_CHANNEL.to_string()),
         },
     ]
 }
@@ -584,7 +584,7 @@ pub fn maybe_nudge_usage_limit_expiry(snap: &snapshot::WorldSnapshot) -> Vec<Eff
                 "🔔 Usage limit expired — nudging {} coworkers to resume work",
                 snap.running_coworkers.len()
             ),
-            channel: None,
+            channel: Some(OPS_CHANNEL.to_string()),
         },
     ];
 
@@ -668,7 +668,7 @@ pub(super) fn check_and_handle_auth_errors(
             Effect::PostToChannel {
                 sender: "midtown".to_string(),
                 message: message.clone(),
-                channel: None,
+                channel: Some(OPS_CHANNEL.to_string()),
             },
         );
 
@@ -761,7 +761,7 @@ pub(super) fn check_and_nudge_api_errors(
                     affected_count,
                     names.join(", ")
                 ),
-                channel: None,
+                channel: Some(OPS_CHANNEL.to_string()),
             },
         );
     }
@@ -802,7 +802,7 @@ pub fn check_and_restart_tool_name_conflicts(snap: &snapshot::WorldSnapshot) -> 
                 "🔧 Coworker {} hit 'Tool names must be unique' error — restarting with fresh session",
                 name
             ),
-            channel: None,
+            channel: Some(OPS_CHANNEL.to_string()),
         });
     }
 
@@ -884,7 +884,7 @@ pub(super) async fn check_and_respawn_dead_processes(
                 "💀 Coworker {} process died (exit {}) — restarting for task !{}",
                 respawn.name, respawn.exit_code, respawn.task_id
             ),
-            channel,
+            channel: Some(OPS_CHANNEL.to_string()),
         });
     }
 
@@ -998,7 +998,7 @@ pub fn maybe_refresh_lead_session(snap: &snapshot::WorldSnapshot) -> Vec<Effect>
         Effect::PostToChannel {
             sender: "midtown".to_string(),
             message: "Restarting lead session for a fresh context.".to_string(),
-            channel: None,
+            channel: Some(OPS_CHANNEL.to_string()),
         },
         Effect::ShutdownCoworker {
             name: lead.name.clone(),

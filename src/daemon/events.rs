@@ -14,6 +14,7 @@
 use std::collections::HashSet;
 
 use super::DaemonState;
+use super::constants::OPS_CHANNEL;
 use super::effects::Effect;
 use super::snapshot::WorldSnapshot;
 
@@ -195,6 +196,7 @@ pub async fn evaluate_tick(
                             rate_limit.summary(),
                             rate_limit.graphql.reset_time().format("%H:%M UTC")
                         ),
+                        channel: Some(OPS_CHANNEL.to_string()),
                     });
                     effects.push(Effect::RecordCooldown {
                         category: "rate_limit_critical".to_string(),
@@ -208,6 +210,7 @@ pub async fn evaluate_tick(
                             "⚠️ GitHub API quota low ({}). Consider reducing manual gh commands.",
                             rate_limit.summary()
                         ),
+                        channel: Some(OPS_CHANNEL.to_string()),
                     });
                     effects.push(Effect::RecordCooldown {
                         category: "rate_limit_low".to_string(),
@@ -223,6 +226,7 @@ pub async fn evaluate_tick(
                                 "⬆️ GitHub API quota improved ({}) — PR polling resumed, but quota still low.",
                                 rate_limit.summary()
                             ),
+                            channel: Some(OPS_CHANNEL.to_string()),
                         });
                     } else {
                         // Critical → normal (fully recovered)
@@ -231,6 +235,7 @@ pub async fn evaluate_tick(
                                 "✅ GitHub API quota recovered ({}). PR polling resumed.",
                                 rate_limit.summary()
                             ),
+                            channel: Some(OPS_CHANNEL.to_string()),
                         });
                     }
                 } else if was_low && !was_critical && !now_low && !now_critical {
@@ -240,6 +245,7 @@ pub async fn evaluate_tick(
                             "✅ GitHub API quota recovered ({}).",
                             rate_limit.summary()
                         ),
+                        channel: Some(OPS_CHANNEL.to_string()),
                     });
                 }
 
