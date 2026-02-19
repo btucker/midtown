@@ -151,10 +151,10 @@ fn test_no_duplicate_pr_cleanup() {
     );
 }
 
-/// Test that reconcile_orphaned_prs doesn't create duplicate tasks.
+/// Test that reconcile_orphaned_prs doesn't send duplicate lead nudges.
 ///
-/// Bug scenario: Orphaned PR found → task created on tick 1.
-/// On tick 2, the same PR shouldn't get another task.
+/// Bug scenario: Orphaned PR found → lead nudged on tick 1.
+/// On tick 2, the same PR should not nudge the lead again.
 ///
 /// Uses snapshot mutation to create an orphaned PR (reviewed, CI green,
 /// no task association) that `reconcile_orphaned_prs` will act on.
@@ -178,33 +178,39 @@ fn test_no_duplicate_orphaned_pr_tasks() {
     harness.snapshot_mut().open_prs_data.push(orphan_pr);
     harness.snapshot_mut().reviewed_prs.insert(8888);
 
-    // Tick 1: Reconcile should create a task for the orphaned PR
+    // Tick 1: Reconcile should nudge the lead for the orphaned PR (not create a task)
     let effects1 = harness.tick(&DaemonEvent::PrPollTick);
 
-    let create_count_1 = effects1
+    let nudge_count_1 = effects1
         .iter()
-        .filter(|e| matches!(e, Effect::CreateTask { .. }))
+        .filter(|e| matches!(e, Effect::NudgeLead { .. }))
         .count();
 
-    println!("Tick 1: {} CreateTask effects", create_count_1);
+    println!("Tick 1: {} NudgeLead effects", nudge_count_1);
     assert!(
-        create_count_1 > 0,
-        "Tick 1 should create a task for the orphaned PR"
+        nudge_count_1 > 0,
+        "Tick 1 should nudge the lead for the orphaned PR"
     );
 
-    // Tick 2: Should not create a duplicate task for the same PR
+    let no_task_created_1 = effects1
+        .iter()
+        .all(|e| !matches!(e, Effect::CreateTask { .. }));
+    assert!(no_task_created_1, "Tick 1 should NOT create a task");
+
+    // Tick 2: Should not nudge the lead again for the same PR
+    // (harness applies RecordOrphanedPrLeadNudge to update orphaned_pr_lead_nudges_sent)
     let effects2 = harness.tick(&DaemonEvent::PrPollTick);
 
-    let create_count_2 = effects2
+    let nudge_count_2 = effects2
         .iter()
-        .filter(|e| matches!(e, Effect::CreateTask { .. }))
+        .filter(|e| matches!(e, Effect::NudgeLead { .. }))
         .count();
 
-    println!("Tick 2: {} CreateTask effects", create_count_2);
+    println!("Tick 2: {} NudgeLead effects", nudge_count_2);
 
     assert_eq!(
-        create_count_2, 0,
-        "Tick 2 should not create duplicate tasks for PRs that already have tasks from tick 1"
+        nudge_count_2, 0,
+        "Tick 2 should not nudge the lead again for the same orphaned PR"
     );
 }
 
