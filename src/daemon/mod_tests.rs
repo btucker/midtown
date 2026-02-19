@@ -1677,12 +1677,22 @@ fn make_cleanup_test_state() -> DaemonState {
     let base_dir = temp_dir.path().to_path_buf();
     std::mem::forget(temp_dir);
 
+    // Use a unique repo name per test invocation to prevent persistent state
+    // pollution between tests (DaemonState loads from ~/.midtown/projects/<repo>/).
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let unique_repo = format!(
+        "test-repo-{}-{}",
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    );
+
     let channel_router = crate::ChannelRouter::new(&base_dir, "midtown");
     let (shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(1);
     DaemonState::new(
         "/tmp/test-cleanup.sock".into(),
         cm,
-        "test-repo".to_string(),
+        unique_repo,
         vec![base_dir.clone()],
         channel_router,
         None,
@@ -2232,4 +2242,161 @@ async fn test_repeated_shutdown_spawn_cycles_do_not_exhaust_name_pool() {
         total,
         "all names should be available after repeated cleanup cycles"
     );
+}
+
+/// Verify that cleanup_coworker_state marks the SessionRecord as stopped
+/// in persistent state (is_running=false, current_name=None) and preserves
+/// the preferred_name for future resume.
+#[tokio::test]
+async fn test_cleanup_marks_session_record_stopped_in_persistent_state() {
+    let state = make_cleanup_test_state();
+    let session_id = "sid-madison-001";
+
+    // 1. Set up a running session: allocate name, populate reverse maps,
+    //    and insert a SessionRecord into persistent state.
+    {
+        state
+            .name_pool
+            .lock()
+            .unwrap()
+            .allocate(Some("madison"))
+            .unwrap();
+    }
+    {
+        state
+            .name_to_session
+            .lock()
+            .unwrap()
+            .insert("madison".to_string(), session_id.to_string());
+        state
+            .session_to_name
+            .lock()
+            .unwrap()
+            .insert(session_id.to_string(), "madison".to_string());
+        state
+            .task_to_session
+            .lock()
+            .unwrap()
+            .insert("42".to_string(), session_id.to_string());
+    }
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.sessions.insert(
+            session_id.to_string(),
+            crate::daemon::state::SessionRecord {
+                session_id: session_id.to_string(),
+                task_id: Some("42".to_string()),
+                current_name: Some("madison".to_string()),
+                preferred_name: Some("madison".to_string()),
+                working_dir: "/tmp/worktree".to_string(),
+                branch: None,
+                pr_number: None,
+                initial_prompt: None,
+                is_reviewer: false,
+                coworker_type: "dev".to_string(),
+                is_running: true,
+                created_at: chrono::Utc::now(),
+                resume_on_startup: true,
+            },
+        );
+    }
+
+    // 2. Run cleanup (simulates session death or intentional shutdown).
+    state.cleanup_coworker_state("madison").await;
+
+    // 3. Verify SessionRecord was updated in persistent state.
+    let ps = state.persistent_state.lock().await;
+    let record = ps
+        .sessions
+        .get(session_id)
+        .expect("SessionRecord should still exist");
+    assert!(
+        !record.is_running,
+        "SessionRecord.is_running should be false after cleanup"
+    );
+    assert!(
+        record.current_name.is_none(),
+        "SessionRecord.current_name should be None after cleanup"
+    );
+    assert_eq!(
+        record.preferred_name.as_deref(),
+        Some("madison"),
+        "SessionRecord.preferred_name should be preserved for future resume"
+    );
+    assert_eq!(
+        record.task_id.as_deref(),
+        Some("42"),
+        "SessionRecord.task_id should be preserved"
+    );
+}
+
+/// Verify that cleanup_coworker_state does NOT modify other sessions'
+/// SessionRecords in persistent state.
+#[tokio::test]
+async fn test_cleanup_preserves_other_session_records_in_persistent_state() {
+    let state = make_cleanup_test_state();
+
+    // Set up two sessions
+    {
+        let mut pool = state.name_pool.lock().unwrap();
+        pool.allocate(Some("madison")).unwrap();
+        pool.allocate(Some("park")).unwrap();
+    }
+    {
+        let mut n2s = state.name_to_session.lock().unwrap();
+        n2s.insert("madison".to_string(), "sid-madison".to_string());
+        n2s.insert("park".to_string(), "sid-park".to_string());
+    }
+    {
+        let mut s2n = state.session_to_name.lock().unwrap();
+        s2n.insert("sid-madison".to_string(), "madison".to_string());
+        s2n.insert("sid-park".to_string(), "park".to_string());
+    }
+    {
+        let mut ps = state.persistent_state.lock().await;
+        for (sid, name, task) in [("sid-madison", "madison", "42"), ("sid-park", "park", "43")] {
+            ps.sessions.insert(
+                sid.to_string(),
+                crate::daemon::state::SessionRecord {
+                    session_id: sid.to_string(),
+                    task_id: Some(task.to_string()),
+                    current_name: Some(name.to_string()),
+                    preferred_name: Some(name.to_string()),
+                    working_dir: "/tmp/worktree".to_string(),
+                    branch: None,
+                    pr_number: None,
+                    initial_prompt: None,
+                    is_reviewer: false,
+                    coworker_type: "dev".to_string(),
+                    is_running: true,
+                    created_at: chrono::Utc::now(),
+                    resume_on_startup: true,
+                },
+            );
+        }
+    }
+
+    // Clean up only madison
+    state.cleanup_coworker_state("madison").await;
+
+    // Park's SessionRecord should be untouched
+    let ps = state.persistent_state.lock().await;
+    let park_record = ps
+        .sessions
+        .get("sid-park")
+        .expect("park's SessionRecord should exist");
+    assert!(park_record.is_running, "park should still be running");
+    assert_eq!(
+        park_record.current_name.as_deref(),
+        Some("park"),
+        "park's current_name should be preserved"
+    );
+
+    // Madison's SessionRecord should be marked stopped
+    let madison_record = ps
+        .sessions
+        .get("sid-madison")
+        .expect("madison's SessionRecord should still exist");
+    assert!(!madison_record.is_running);
+    assert!(madison_record.current_name.is_none());
 }

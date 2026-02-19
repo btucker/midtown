@@ -777,6 +777,23 @@ impl DaemonState {
                 .lock()
                 .unwrap()
                 .retain(|_, sid| sid != &session_id);
+            // Mark the SessionRecord as stopped in persistent state.
+            // This is the centralized path — all shutdown/cleanup flows converge here,
+            // so the SessionRecord is always kept in sync with the actual process state.
+            {
+                let mut ps = self.persistent_state.lock().await;
+                if let Some(record) = ps.sessions.get_mut(&session_id) {
+                    record.is_running = false;
+                    record.current_name = None;
+                }
+                if let Err(e) = ps.save_for_repo(&self.repo_name) {
+                    tracing::warn!(
+                        "Failed to save persistent state after cleanup for session {}: {}",
+                        session_id,
+                        e
+                    );
+                }
+            }
         }
         // Clear pending questions (prevents stale questions after crash/shutdown)
         {
