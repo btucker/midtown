@@ -4638,6 +4638,7 @@ fn make_session_dispatch_snapshot(
         prs_needing_review: 0,
         reviewer_restart_counts: HashMap::new(),
         reviewer_escalations_posted: HashSet::new(),
+        orphaned_pr_lead_nudges_sent: HashSet::new(),
         coworkers_with_unblocked_deps: HashSet::new(),
         usage_limit_nudge_scheduled: false,
         usage_limit_nudge_at: None,
