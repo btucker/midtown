@@ -115,6 +115,9 @@ export const usageData = writable([])
 // Format: { type: 'task'|'pr'|'coworker', data: {...} } or null when closed
 export const detailPanelData = writable(null)
 
+// Active thread state: { parentMessage: {...}, channelName: string, messages: [...] } or null
+export const threadData = writable(null)
+
 // Viewport width tracking for responsive breakpoints
 // true when viewport > 1024px (wide desktop layout)
 export const isWideScreen = writable(false)

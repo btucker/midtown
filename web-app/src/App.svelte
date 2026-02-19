@@ -5,13 +5,14 @@
   import ChannelList from '$lib/ChannelList.svelte'
   import ChannelHeader from '$lib/ChannelHeader.svelte'
   import DetailPanel from '$lib/DetailPanel.svelte'
+  import ThreadPanel from '$lib/ThreadPanel.svelte'
   import PendingQuestions from '$lib/PendingQuestions.svelte'
   import Status from '$lib/Status.svelte'
   import Tmux from '$lib/Tmux.svelte'
   import CoworkerStatus from '$lib/CoworkerStatus.svelte'
   import UsageBars from '$lib/UsageBars.svelte'
   import AuthSwitcher from '$lib/AuthSwitcher.svelte'
-  import { messages, connected, coworkers, projects, activeProject, activeChannel, detailPanelData, isWideScreen } from '$lib/store.js'
+  import { messages, connected, coworkers, projects, activeProject, activeChannel, detailPanelData, threadData, isWideScreen } from '$lib/store.js'
   import { connectWebSocket, fetchHistory, fetchStatus, fetchProjects, switchProject } from '$lib/api.js'
   import {
     pushSupported,
@@ -216,16 +217,20 @@
         </header>
 
         {#if activeView === 'board'}
-          <div class="channel-main">
-            <ChannelHeader />
-            <PendingQuestions />
-            <Channel />
-          </div>
+          <div class="flex flex-1 min-h-0 overflow-hidden">
+            <div class="channel-main">
+              <ChannelHeader />
+              <PendingQuestions />
+              <Channel />
+            </div>
 
-          <!-- Detail panel (desktop only, shown on wide screens) -->
-          {#if $detailPanelData}
-            <DetailPanel panelData={$detailPanelData} onClose={closeDetailPanel} />
-          {/if}
+            <!-- Right panel: thread OR detail panel (mutually exclusive) -->
+            {#if $threadData}
+              <ThreadPanel />
+            {:else if $detailPanelData}
+              <DetailPanel panelData={$detailPanelData} onClose={closeDetailPanel} />
+            {/if}
+          </div>
         {:else if activeView === 'status'}
           <!-- Status view shown in sidebar -->
         {:else if activeView === 'tmux'}

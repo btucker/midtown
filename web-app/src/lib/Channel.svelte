@@ -1,6 +1,6 @@
 <script>
-  import { messages, messagesByChannel, activeChannel, channels, coworkers, kanbanData, repoStatus, repoStatuses, daemonStatus, detailPanelData, isWideScreen, agentToolItems } from './store.js'
-  import { sendMessage, uploadFile } from './api.js'
+  import { messages, messagesByChannel, activeChannel, channels, coworkers, kanbanData, repoStatus, repoStatuses, daemonStatus, detailPanelData, isWideScreen, agentToolItems, threadData } from './store.js'
+  import { sendMessage, uploadFile, closeThread, openThread } from './api.js'
   import { tick, onMount } from 'svelte'
   import MermaidDiagram from './MermaidDiagram.svelte'
   import { parseSegments, hasMermaid, renderContent } from './markdown.js'
@@ -257,6 +257,7 @@
         if (task) {
           // Desktop (>= 1025px): use DetailPanel; Mobile/tablet: use modal
           if ($isWideScreen) {
+            closeThread()
             detailPanelData.set({ type: 'task', data: task })
           } else {
             selectedTask = task
@@ -271,6 +272,7 @@
           if ($isWideScreen) {
             const pr = findPr(prNum)
             if (pr) {
+              closeThread()
               detailPanelData.set({
                 type: 'pr',
                 data: {
@@ -296,6 +298,7 @@
         // Find the coworker in the store
         const coworker = $coworkers.find((cw) => cw.name.toLowerCase() === coworkerName.toLowerCase())
         if (coworker && $isWideScreen) {
+          closeThread()
           detailPanelData.set({
             type: 'coworker',
             data: {
@@ -618,6 +621,23 @@
               <span class="flex-1 min-w-0 {isDimSender(msg.from) ? 'text-[#606060]' : 'text-[#d0d0d0]'}">{@html renderContent(msg.content)}</span>
             </div>
           {/if}
+
+          <!-- Reply indicator for messages with thread replies -->
+          {#if !msg.thread_parent_id && msg.reply_count}
+            <div class="flex gap-0">
+              <span class="flex-shrink-0 w-[3.7em] mr-[0.5em]"></span>
+              <button
+                class="flex items-center gap-1.5 text-[0.75rem] text-[#5fafaf] hover:text-[#87d7d7] cursor-pointer bg-transparent border-none p-0 mt-0.5"
+                onclick={() => openThread(msg, $activeChannel)}
+              >
+                <span>{msg.reply_count} {msg.reply_count === 1 ? 'reply' : 'replies'}</span>
+                {#if msg.last_reply}
+                  <span class="text-[#4a4a4a]">&middot;</span>
+                  <span class="text-[#808080]">{msg.last_reply.from}</span>
+                {/if}
+              </button>
+            </div>
+          {/if}
         {/each}
       {/if}
 
@@ -625,11 +645,11 @@
            and tool call activity. In the main channel, uses lead_working (same signal as
            the TUI braille spinner) to drive the dots. In topic channels, InProgress tool
            items drive the dots (channel leads don't have a separate lead_working signal). -->
-      {@const agentName = $activeChannel === 'midtown' ? 'lead' : $activeChannel}
-      {@const isLeadWorking = $activeChannel === 'midtown' ? !!$daemonStatus?.lead_working : false}
-      {@const hasInProgressItems = activeChannelToolItems.some((item) => item.status === 'InProgress')}
-      {@const showDots = isLeadWorking || hasInProgressItems}
-      {#if activeChannelToolItems.length > 0 || isLeadWorking}
+      {#if activeChannelToolItems.length > 0 || ($activeChannel === 'midtown' && !!$daemonStatus?.lead_working)}
+        {@const agentName = $activeChannel === 'midtown' ? 'lead' : $activeChannel}
+        {@const isLeadWorking = $activeChannel === 'midtown' ? !!$daemonStatus?.lead_working : false}
+        {@const hasInProgressItems = activeChannelToolItems.some((item) => item.status === 'InProgress')}
+        {@const showDots = isLeadWorking || hasInProgressItems}
         <div class="mt-[3px]">
           <div class="flex items-center gap-[7px] whitespace-nowrap overflow-hidden text-ellipsis">
             <span class="font-bold text-[0.85rem]" style="color: {getSenderColor(agentName)}">{agentName}</span>
