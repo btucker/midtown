@@ -54,13 +54,58 @@ pub fn draw_chat_panel(f: &mut Frame, app: &mut App, area: Rect) {
 
 /// Draw the lead working indicator line between chat messages and input bar.
 ///
-/// Shows a braille spinner with "lead..." when the headless lead session is
-/// actively working. Always reserves the space to prevent layout jitter.
+/// Shows a braille spinner (when working), the channel-appropriate agent name,
+/// and the latest tool call truncated to fit the available width.
+/// For main channel: shows the lead's activity. For topic channels: shows the
+/// channel lead's activity (keyed by channel name).
 fn draw_lead_indicator(f: &mut Frame, app: &mut App, area: Rect) {
-    let line = if app.lead_working {
+    // Determine which agent to display based on selected channel.
+    let agent_key = if app.selected_channel == "main" || app.selected_channel == "midtown" {
+        "lead"
+    } else {
+        app.selected_channel.as_str()
+    };
+
+    // Determine working state: lead_working covers the main lead; for channel leads,
+    // infer from non-empty tool activity.
+    let agent_working = if agent_key == "lead" {
+        app.lead_working
+    } else {
+        app.tool_activity
+            .get(agent_key)
+            .is_some_and(|h| !h.is_empty())
+    };
+
+    let line = if agent_working {
         let spinner = app.spinner_char();
+        // Build: " {spinner} {agent_key} {latest_tool_call...}"
+        // Available width: area.width minus spinner(1) + space(2) + agent_key + space(1).
+        let prefix = format!(" {} {} ", spinner, agent_key);
+        let prefix_len = prefix.chars().count();
+        let available = (area.width as usize).saturating_sub(prefix_len);
+
+        // Get the latest tool call header text (strip prefix char like ✓/✗/›).
+        let latest_call = app
+            .tool_activity
+            .get(agent_key)
+            .and_then(|h| h.last())
+            .map(|header| {
+                let mut chars = header.chars();
+                let _ = chars.next(); // skip prefix char
+                chars.as_str().trim_start().to_string()
+            })
+            .unwrap_or_default();
+
+        // Truncate latest_call to fit available width.
+        let call_text = if latest_call.chars().count() > available && available > 3 {
+            let boundary = latest_call.floor_char_boundary(available.saturating_sub(3));
+            format!("{}...", &latest_call[..boundary])
+        } else {
+            latest_call
+        };
+
         Line::from(vec![Span::styled(
-            format!(" {} lead...", spinner),
+            format!("{prefix}{call_text}"),
             Style::default().fg(Color::DarkGray),
         )])
     } else {
@@ -136,9 +181,13 @@ fn draw_chat_messages(f: &mut Frame, app: &mut App, area: Rect) {
 
     let inner = block.inner(area);
 
+    // Filter tool activity to only the relevant agent for the selected channel.
+    let filtered_activity =
+        filter_tool_activity_for_channel(&app.tool_activity, &app.selected_channel);
+
     // Reserve space for tool activity before setting visible_height so that
     // max_scroll() and visible_messages() use the actual message display area.
-    let activity_lines = count_tool_activity_lines(&app.tool_activity);
+    let activity_lines = count_tool_activity_lines(&filtered_activity);
     let msg_height = (inner.height as usize).saturating_sub(activity_lines);
     app.visible_height = msg_height;
     app.clamp_scroll_offset();
@@ -150,7 +199,7 @@ fn draw_chat_messages(f: &mut Frame, app: &mut App, area: Rect) {
     {
         let mut lines = cache.lines.clone();
         lines.truncate(msg_height);
-        append_tool_activity_lines(&app.tool_activity, &mut lines, &app.channel_lead_names);
+        append_tool_activity_lines(&filtered_activity, &mut lines, &app.channel_lead_names);
         let paragraph = Paragraph::new(lines);
         f.render_widget(block, area);
         f.render_widget(paragraph, inner);
@@ -254,7 +303,7 @@ fn draw_chat_messages(f: &mut Frame, app: &mut App, area: Rect) {
     // Append live tool activity (not cached — changes independently of messages).
     let mut final_lines = visible_lines;
     append_tool_activity_lines(
-        &app.tool_activity,
+        &filtered_activity,
         &mut final_lines,
         &app.channel_lead_names,
     );
@@ -263,6 +312,26 @@ fn draw_chat_messages(f: &mut Frame, app: &mut App, area: Rect) {
 
     f.render_widget(block, area);
     f.render_widget(paragraph, inner);
+}
+
+/// Filter tool activity to show only the relevant agent for the selected channel.
+///
+/// - Main channel ("main" / "midtown"): show only the "lead" agent's activity
+/// - Topic channel (e.g., "web"): show only that channel lead's activity (keyed by channel name)
+fn filter_tool_activity_for_channel(
+    tool_activity: &std::collections::HashMap<String, Vec<String>>,
+    selected_channel: &str,
+) -> std::collections::HashMap<String, Vec<String>> {
+    let agent_key = if selected_channel == "main" || selected_channel == "midtown" {
+        "lead"
+    } else {
+        selected_channel
+    };
+    tool_activity
+        .iter()
+        .filter(|(k, _)| k.as_str() == agent_key)
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect()
 }
 
 /// Count how many lines tool activity will occupy (for reserving space).
@@ -801,6 +870,68 @@ mod tests {
         assert!(
             text.contains("call5"),
             "Only line should be call5 (most recent), got: {text}"
+        );
+    }
+
+    // --- filter_tool_activity_for_channel tests ---
+
+    fn make_multi_activity(agents: &[(&str, Vec<&str>)]) -> HashMap<String, Vec<String>> {
+        agents
+            .iter()
+            .map(|(agent, headers)| {
+                (
+                    agent.to_string(),
+                    headers.iter().map(|s| s.to_string()).collect(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_filter_main_channel_shows_only_lead() {
+        let activity = make_multi_activity(&[
+            ("lead", vec!["› Read foo.rs"]),
+            ("web", vec!["› Bash ls"]),
+            ("auth", vec!["✓ Read config.toml"]),
+        ]);
+        let filtered = filter_tool_activity_for_channel(&activity, "main");
+        assert_eq!(filtered.len(), 1, "Only lead should be in filtered map");
+        assert!(filtered.contains_key("lead"), "lead should be present");
+        assert!(!filtered.contains_key("web"), "web should be absent");
+    }
+
+    #[test]
+    fn test_filter_midtown_channel_shows_only_lead() {
+        // "midtown" is the default channel name, treated like "main"
+        let activity =
+            make_multi_activity(&[("lead", vec!["› Read foo.rs"]), ("web", vec!["› Bash ls"])]);
+        let filtered = filter_tool_activity_for_channel(&activity, "midtown");
+        assert_eq!(filtered.len(), 1);
+        assert!(filtered.contains_key("lead"));
+    }
+
+    #[test]
+    fn test_filter_topic_channel_shows_only_channel_lead() {
+        let activity = make_multi_activity(&[
+            ("lead", vec!["› Read foo.rs"]),
+            ("web", vec!["› Bash ls"]),
+            ("auth", vec!["✓ Read config.toml"]),
+        ]);
+        let filtered = filter_tool_activity_for_channel(&activity, "web");
+        assert_eq!(filtered.len(), 1, "Only web channel lead should be shown");
+        assert!(filtered.contains_key("web"), "web should be present");
+        assert!(!filtered.contains_key("lead"), "lead should be absent");
+        assert!(!filtered.contains_key("auth"), "auth should be absent");
+    }
+
+    #[test]
+    fn test_filter_missing_agent_returns_empty() {
+        let activity = make_multi_activity(&[("lead", vec!["› Read foo.rs"])]);
+        // "features" channel but no "features" agent in the map
+        let filtered = filter_tool_activity_for_channel(&activity, "features");
+        assert!(
+            filtered.is_empty(),
+            "Should return empty map when channel lead has no activity"
         );
     }
 
