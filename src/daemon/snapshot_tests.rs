@@ -254,6 +254,7 @@ fn test_active_names_includes_headless_coworkers() {
             has_running_subagent: false,
             has_pending_tool: false,
             has_tool_name_conflict: false,
+            has_pending_api_call: false,
             exit_code: None,
         },
     );
@@ -269,6 +270,7 @@ fn test_active_names_includes_headless_coworkers() {
             has_running_subagent: false,
             has_pending_tool: false,
             has_tool_name_conflict: false,
+            has_pending_api_call: false,
             exit_code: None,
         },
     );
@@ -284,6 +286,7 @@ fn test_active_names_includes_headless_coworkers() {
             has_running_subagent: false,
             has_pending_tool: false,
             has_tool_name_conflict: false,
+            has_pending_api_call: false,
             exit_code: Some(0),
         },
     );
