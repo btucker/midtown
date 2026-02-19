@@ -388,7 +388,9 @@ gh pr view <number> --comments --json comments --jq '.comments[-2:][] | "\(.auth
 ```
 The user (repo owner) may leave additional requests after the reviewer posts. Merging without addressing these is a process failure.
 
-**After addressing all feedback**, enable auto-merge immediately:
+**Verify a completed review exists** before enabling auto-merge. When the daemon nudges you that a review is ready, confirm the review comment contains the midtown frontmatter (`<!-- midtown: <name> -->`). A reviewer posts a "review in progress" placeholder first, then edits it with their final findings and frontmatter. Do not enable auto-merge based on the placeholder — wait for the final review comment. If the daemon nudges you but the review comment still shows "review in progress," the reviewer may have been interrupted — post to the channel with `@lead` to get a new reviewer assigned.
+
+**After a completed review exists and all feedback is addressed**, enable auto-merge immediately:
 ```bash
 gh pr merge --auto --squash
 ```
@@ -416,7 +418,8 @@ We share a GitHub API rate limit across the daemon, lead, and all coworkers. **D
 - Don't run `gh pr list` to check PR status — read the channel instead
 - **NEVER merge before addressing review feedback.** Every review comment must be either addressed in the PR or deferred via `midtown task request` before merging.
 - Do NOT enable auto-merge when creating the PR — wait for review first
-- After all feedback is addressed/deferred, enable auto-merge: `gh pr merge --auto --squash`
+- **NEVER enable auto-merge based on a "review in progress" placeholder** — see the verification steps above for how to confirm a review is complete.
+- After a completed review exists and all feedback is addressed/deferred, enable auto-merge: `gh pr merge --auto --squash`
 
 **Using `gh` to investigate (after notification) is fine:**
 - `gh pr create` — creating your PR
