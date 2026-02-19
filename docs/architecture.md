@@ -1,5 +1,66 @@
 > Back to [README](../README.md)
 
+# Architecture
+
+## Principles
+
+### Webhooks Are Primary, Polling Adapts
+
+Webhooks handle real-time GitHub events. Polling runs at a relaxed cadence (~2 min) as a backstop for missed deliveries and time-based stuck detection. When webhooks are degraded, polling increases cadence to compensate. Polling should never duplicate a decision that a webhook already triggered.
+
+| Concern | Primary owner | Notes |
+|---|---|---|
+| PR needs review → spawn reviewer | Webhook | Polling reconciles if missed |
+| CI failure → notify owner | Webhook | Polling detects time-based stuck conditions |
+| Review comment → nudge owner | Webhook | Polling reconciles if missed |
+| Merge conflict → nudge owner | Polling | GitHub doesn't webhook this reliably |
+| Approved PR → nudge author | Polling | Author-driven merge decisions |
+| Stuck detection | Polling | Inherently time-based |
+
+### Three Communication Paths, Distinct Purposes
+
+- **Initial prompt** — "Here's your mission." One-shot context at spawn time.
+- **Channel** — "Here's what's happening." Ambient team awareness, async.
+- **Nudge** (headed-intercom delivery for Lead, JSON streaming for coworkers) — "Pay attention now." Synchronous interrupt for session recovery, urgent PR feedback, task assignment to active coworkers.
+
+Don't nudge for information that can wait for the next channel read.
+
+### Decision Functions Are Pure
+
+Functions in `rules.rs` take immutable data and return decisions. No mutation, no I/O, no async. Phase transitions are returned as data, applied by the caller. If a decision depends on a side effect (spawn success, API call), split into two decisions with an effect in between. The `evaluate_tick()` → `Vec<Effect>` → `execute_effects()` pipeline is the canonical path.
+
+This constraint applies to **all functions called from `evaluate_tick()`**, not just those in `rules.rs`. The target architecture has decision-phase functions in domain modules (`pr.rs`, `dispatch.rs`, `health.rs`) also being pure — returning `Vec<Effect>` without performing I/O. Currently, the codebase is migrating toward this pattern: some functions like `collect_merged_pr_cleanup_effects()` in `pr.rs` follow it, while others still use `.await` and `.lock()`. When adding or modifying decision logic, prefer the pure pattern: no `.await`, no `state.persistent_state.lock()`, no `session_manager.is_alive()`, no direct state queries. If data is needed for a decision, add it to `WorldSnapshot` during `collect_world_snapshot()` so it's available as immutable input.
+
+### Daemon Is the Single Authority for State
+
+The daemon owns all coordination state. Coworkers report workflow state via RPC (`midtown` CLI). Pane scraping is a safety net for health checks (stuck, zombie, crash) — not the primary source of workflow information. If RPC and pane scraping disagree, pane scraping wins for health decisions.
+
+### The Channel Is for Communication, Not State
+
+State flows through RPC to the daemon. The channel records events and conversations for awareness. No system should read the channel to determine current state.
+
+### Clear Ownership Between Webhooks and Polling
+
+Each concern has a primary owner. The non-owner path only acts as reconciliation when the primary failed. Enforce via explicit tracking ("webhook handled PR #42"), not passive deduplication (cooldowns).
+
+### Daemon Module Is a Thin Orchestrator
+
+`mod.rs` is the event loop wiring. Domain logic lives in domain modules (`pr.rs`, `health.rs`, `dispatch.rs`, `chat.rs`, `rpc.rs`).
+
+### Names Reflect Actual Responsibility
+
+`SessionMonitorTick` (coworker health), `TaskDispatchTick` (work assignment). Name components for what they do, not their historical origin.
+
+## Key Patterns
+
+**Effect-based side effects**: Never perform I/O in decision functions. Return `Effect` variants from `rules.rs`, execute them in `effects.rs`. This keeps the core logic pure and testable.
+
+**Temp-file pattern for shell arguments**: When passing long text to the `claude` CLI (system prompts, initial prompts), write to a temp file and use `$(cat file)` in the command string. This avoids shell quoting issues. See prompt writing in `launch.rs`.
+
+**Hybrid process model**: The Lead runs in a terminal pane managed by a launcher; coworkers run as headless Claude Code sessions. Lead nudges flow through headed intercom queues; coworker nudges use JSON streaming via `SessionManager`.
+
+---
+
 # How It Works
 
 ## Daemon
@@ -77,6 +138,13 @@ Channel leads are headless Claude Code sessions attached to individual topic cha
 ## Channel Sync
 
 Coworkers stay synchronized via a Claude Code Stop hook. When Claude pauses, the hook reads new channel messages and checks for unclaimed tasks. This means coworkers automatically receive updates at natural pause points.
+
+## Nudge System
+
+Nudge decisions are made in `src/rules.rs` (`decide_interrupt_nudges`, `decide_prompt_nudges`) using `CooldownTracker` for per-coworker cooldowns and `CoworkerPhase` for deduplication (Idle → Prompted → Interrupted). Delivery is via `Effect::NudgeCoworker` / `Effect::NudgeLead` in `src/daemon/effects.rs`:
+
+- **Lead nudges**: Delivered through headed intercom queues (`headed.register/poll/ack`) with tmux fallback
+- **Coworker nudges**: JSON streaming via `SessionManager` for headless sessions
 
 ## Mailbox Messaging
 
