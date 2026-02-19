@@ -1898,7 +1898,9 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                                         session_id: session_id.clone(),
                                         task_id: Some(task_id.clone()),
                                         current_name: Some(name.clone()),
-                                        preferred_name: Some(name.clone()),
+                                        preferred_name: preferred_name
+                                            .clone()
+                                            .or_else(|| Some(name.clone())),
                                         working_dir: working_dir.to_string_lossy().to_string(),
                                         branch: None,
                                         pr_number: None,
@@ -1954,10 +1956,23 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
 
                     state.broadcast_coworker_update(&name, "stopped", None);
                 } else {
+                    // No name mapped — session may have been suspended via ReleaseName
+                    // or already partially cleaned up. Still mark SessionRecord as stopped
+                    // so persistent state doesn't show a stale is_running=true.
                     warn!(
-                        "ShutdownSession: no name found for session {} — already cleaned up?",
+                        "ShutdownSession: no name found for session {} — marking record as stopped",
                         session_id
                     );
+                    let mut ps = state.persistent_state.lock().await;
+                    if let Some(record) = ps.sessions.get_mut(&session_id) {
+                        record.is_running = false;
+                    }
+                    if let Err(e) = ps.save_for_repo(&state.repo_name) {
+                        warn!(
+                            "Failed to save persistent state after ShutdownSession for {}: {}",
+                            session_id, e
+                        );
+                    }
                 }
             }
 
@@ -1983,8 +1998,8 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                         }
                         Err(e) => {
                             if resume_if_suspended {
-                                info!(
-                                    "NudgeSession: session {} not reachable, resume_if_suspended=true but resume not yet implemented: {}",
+                                warn!(
+                                    "NudgeSession: session {} not reachable, resume_if_suspended=true but resume not yet implemented — nudge dropped: {}",
                                     session_id, e
                                 );
                             } else {

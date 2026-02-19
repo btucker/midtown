@@ -190,36 +190,13 @@ pub(super) async fn handle_coworker_break(
     if let Err(e) = state.session_manager.shutdown(name).await {
         warn!("Failed to shut down headless session for {}: {}", name, e);
     }
-    state.coworkers.deregister(name);
-    state.record_coworker_stop_time(name);
-
-    // Update SessionRecord if this coworker has an associated session.
-    // Also clean up reverse maps and release name back to NamePool.
-    let session_id = state.name_to_session.lock().unwrap().get(name).cloned();
-    if let Some(ref session_id) = session_id {
-        // Clean up reverse maps
-        state.name_to_session.lock().unwrap().remove(name);
-        state.session_to_name.lock().unwrap().remove(session_id);
-        state
-            .task_to_session
-            .lock()
-            .unwrap()
-            .retain(|_, sid| sid != session_id);
-        // Release name back to pool
-        state.name_pool.lock().unwrap().release(name);
-        // Update persistent state
-        let mut ps = state.persistent_state.lock().await;
-        if let Some(record) = ps.sessions.get_mut(session_id) {
-            record.is_running = false;
-            record.current_name = None;
-        }
-        if let Err(e) = ps.save_for_repo(&state.repo_name) {
-            warn!(
-                "Failed to save persistent state after coworker break: {}",
-                e
-            );
-        }
-    }
+    // Clean up all transient coworker state through the centralized path.
+    // This handles: deregistration, stop-time, coworker_records, cooldowns,
+    // pending nudges, task assignments, recent_tool_items, NamePool release,
+    // session reverse maps, SessionRecord update, and pending_questions.
+    // Note: we intentionally do NOT unbind the worktree here — break preserves
+    // the worktree for potential resumption.
+    state.cleanup_coworker_state(name).await;
 
     info!("Sent coworker on a break: {}", name);
     Response::success(

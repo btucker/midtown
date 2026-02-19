@@ -725,19 +725,21 @@ impl DaemonState {
 
     /// Clean up all transient state for a coworker after its session stops.
     ///
-    /// Called from both intentional shutdown (`shutdown_coworker_impl` in effects.rs)
-    /// and unexpected session death (session monitor in the event loop). Without this
-    /// shared function, the two paths can drift out of sync — e.g., session death
-    /// missing cooldown/nudge/assignment cleanup that shutdown handles. See PR #1268.
+    /// Called from intentional shutdown (`shutdown_coworker_impl` in effects.rs),
+    /// coworker break (`handle_coworker_break` in rpc_coworker.rs), and unexpected
+    /// session death (session monitor in the event loop). Without this shared
+    /// function, the paths can drift out of sync — e.g., session death missing
+    /// cooldown/nudge/assignment cleanup that shutdown handles. See PR #1268.
     ///
     /// Handles: coworker deregistration, stop-time recording, coworker records,
     /// cooldowns, pending nudges, task assignments, recent tool activity,
-    /// NamePool release, and session reverse-map cleanup (name_to_session,
-    /// session_to_name, task_to_session).
+    /// NamePool release, session reverse-map cleanup (name_to_session,
+    /// session_to_name, task_to_session), SessionRecord persistent state update
+    /// (marks `is_running=false` and `current_name=None`), and pending questions.
     ///
     /// Does NOT handle session-specific operations (session_manager.shutdown vs
     /// session_manager.remove) or worktree unbinding — those differ between the
-    /// intentional shutdown and session death paths.
+    /// intentional shutdown, break, and session death paths.
     pub(crate) async fn cleanup_coworker_state(&self, name: &str) {
         // Deregister from coworker manager
         self.coworkers.deregister(name);
