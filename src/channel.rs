@@ -2258,4 +2258,184 @@ mod tests {
         // The cross-posting behavior (where insights are also sent to main channel) is handled
         // by the daemon's send_and_broadcast_async() method, which is tested in daemon/mod.rs.
     }
+
+    // --- Thread integration tests ---
+
+    #[test]
+    fn test_thread_reply_round_trip() {
+        // Full cycle: create a top-level message, create a thread reply referencing it,
+        // serialize both to JSONL, read back and verify thread_parent_id is preserved.
+        let temp_dir = TempDir::new().unwrap();
+        let channel = Channel::new(temp_dir.path(), "midtown").unwrap();
+
+        // Post the parent message
+        let parent = Message::text("agent1", "Starting a topic");
+        let parent_id = parent.id.clone();
+        channel.send(&parent).unwrap();
+
+        // Post a thread reply
+        let reply = Message::thread_reply(
+            "midtown",
+            "agent2",
+            "Reply in thread",
+            &parent_id,
+            MessageType::Text,
+        );
+        channel.send(&reply).unwrap();
+
+        // Read back all messages and verify thread_parent_id is preserved
+        let messages = read_all_with_retry(&channel, 5).unwrap();
+        assert_eq!(messages.len(), 2);
+
+        let read_parent = &messages[0];
+        assert_eq!(read_parent.id, parent_id);
+        assert_eq!(read_parent.thread_parent_id, None);
+
+        let read_reply = &messages[1];
+        assert_eq!(read_reply.thread_parent_id, Some(parent_id.clone()));
+        assert_eq!(read_reply.from, "agent2");
+        assert_eq!(read_reply.content, "Reply in thread");
+    }
+
+    #[test]
+    fn test_thread_filter_top_level_only() {
+        // Verify that filtering out messages with thread_parent_id leaves only top-level messages.
+        let temp_dir = TempDir::new().unwrap();
+        let channel = Channel::new(temp_dir.path(), "midtown").unwrap();
+
+        let parent = Message::text("agent1", "Top-level message");
+        let parent_id = parent.id.clone();
+        channel.send(&parent).unwrap();
+
+        let reply = Message::thread_reply(
+            "midtown",
+            "agent2",
+            "Thread reply",
+            &parent_id,
+            MessageType::Text,
+        );
+        channel.send(&reply).unwrap();
+
+        let another_top = Message::text("agent3", "Another top-level");
+        channel.send(&another_top).unwrap();
+
+        let all = read_all_with_retry(&channel, 5).unwrap();
+        assert_eq!(all.len(), 3);
+
+        // Filter: top-level only (no thread_parent_id)
+        let top_level: Vec<_> = all
+            .iter()
+            .filter(|m| m.thread_parent_id.is_none())
+            .collect();
+        assert_eq!(top_level.len(), 2);
+        assert_eq!(top_level[0].content, "Top-level message");
+        assert_eq!(top_level[1].content, "Another top-level");
+    }
+
+    #[test]
+    fn test_thread_filter_replies_for_parent() {
+        // Verify that filtering by thread_parent_id returns only replies for that thread.
+        let temp_dir = TempDir::new().unwrap();
+        let channel = Channel::new(temp_dir.path(), "midtown").unwrap();
+
+        let parent = Message::text("agent1", "Parent message");
+        let parent_id = parent.id.clone();
+        channel.send(&parent).unwrap();
+
+        let other_parent = Message::text("agent2", "Another parent");
+        let other_id = other_parent.id.clone();
+        channel.send(&other_parent).unwrap();
+
+        let reply1 = Message::thread_reply(
+            "midtown",
+            "agent3",
+            "Reply to parent",
+            &parent_id,
+            MessageType::Text,
+        );
+        channel.send(&reply1).unwrap();
+
+        let reply2 = Message::thread_reply(
+            "midtown",
+            "agent4",
+            "Another reply to parent",
+            &parent_id,
+            MessageType::Text,
+        );
+        channel.send(&reply2).unwrap();
+
+        let other_reply = Message::thread_reply(
+            "midtown",
+            "agent5",
+            "Reply to other parent",
+            &other_id,
+            MessageType::Text,
+        );
+        channel.send(&other_reply).unwrap();
+
+        let all = read_all_with_retry(&channel, 5).unwrap();
+        assert_eq!(all.len(), 5);
+
+        // Filter: replies for parent_id only
+        let thread_replies: Vec<_> = all
+            .iter()
+            .filter(|m| m.thread_parent_id.as_deref() == Some(&parent_id))
+            .collect();
+        assert_eq!(thread_replies.len(), 2);
+        assert_eq!(thread_replies[0].content, "Reply to parent");
+        assert_eq!(thread_replies[1].content, "Another reply to parent");
+    }
+
+    #[test]
+    fn test_thread_backward_compat_old_jsonl() {
+        // Verify that existing channel JSONL without thread_parent_id still parses correctly.
+        let temp_dir = TempDir::new().unwrap();
+        // Channel::new("midtown") uses channels/midtown.jsonl (not the legacy channel.jsonl path)
+        let channels_dir = temp_dir.path().join("channels");
+        std::fs::create_dir_all(&channels_dir).unwrap();
+        let channel_path = channels_dir.join("midtown.jsonl");
+
+        // Write an old-format JSONL line without thread_parent_id
+        let old_line = r#"{"id":"old-msg-id","timestamp":"2026-01-01T00:00:00Z","from":"agent1","content":"Hello","type":"text"}"#;
+        std::fs::write(&channel_path, format!("{}\n", old_line)).unwrap();
+
+        let channel = Channel::new(temp_dir.path(), "midtown").unwrap();
+        let messages = read_all_with_retry(&channel, 5).unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].id, "old-msg-id");
+        assert_eq!(messages[0].from, "agent1");
+        assert_eq!(messages[0].content, "Hello");
+        assert_eq!(messages[0].thread_parent_id, None); // defaults to None
+    }
+
+    #[test]
+    fn test_thread_reply_serialized_to_jsonl() {
+        // Verify that thread_parent_id is present in the JSONL output for replies
+        // and absent for top-level messages (skip_serializing_if = None).
+        let temp_dir = TempDir::new().unwrap();
+        let channel = Channel::new(temp_dir.path(), "midtown").unwrap();
+
+        let parent = Message::text("agent1", "Parent");
+        let parent_id = parent.id.clone();
+        channel.send(&parent).unwrap();
+
+        let reply =
+            Message::thread_reply("midtown", "agent2", "Reply", &parent_id, MessageType::Text);
+        channel.send(&reply).unwrap();
+
+        // Read raw JSONL file and verify field presence
+        // Channel::new("midtown") uses channels/midtown.jsonl
+        let content =
+            std::fs::read_to_string(temp_dir.path().join("channels").join("midtown.jsonl"))
+                .unwrap();
+        let lines: Vec<&str> = content.lines().collect();
+        assert_eq!(lines.len(), 2);
+
+        // Top-level message should NOT have thread_parent_id in JSONL
+        assert!(!lines[0].contains("thread_parent_id"));
+
+        // Reply should have thread_parent_id in JSONL
+        assert!(lines[1].contains("thread_parent_id"));
+        assert!(lines[1].contains(&parent_id));
+    }
 }

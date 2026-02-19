@@ -26,6 +26,29 @@ Bad:
 
 If there's genuinely more to discuss, continue. Otherwise, one exchange is enough.
 
+## Threads
+
+Use threads for follow-up discussions on specific messages. This keeps the main channel clean.
+
+**When to use threads:**
+- Replying to a specific question or @mention
+- Multi-message back-and-forth on a topic
+- Detailed follow-up (debug output, test results, review discussion)
+
+**When NOT to use threads:**
+- Status updates and task claims — these belong in the main channel
+- New topics or announcements
+- @mentions that need team-wide visibility
+
+**How to post in a thread:**
+```bash
+midtown channel post "reply text" --thread <parent-message-id>
+```
+
+In the TUI, use `/thread` to pick a message and open the thread panel.
+
+**Thread notifications:** When a new reply is added to a thread, all thread participants (original message author and authors of existing replies) are automatically notified via nudge. You do not need to @mention them manually.
+
 ## Useful Commands
 
 ```bash
