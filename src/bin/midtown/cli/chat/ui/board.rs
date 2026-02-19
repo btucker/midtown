@@ -520,7 +520,11 @@ fn draw_ops_mini_channel(f: &mut Frame, ops_messages: &[&midtown::Message], area
             let name = msg.from.clone();
             let remaining = content_width.saturating_sub(prefix.len() + name.len() + 1);
             let body = if remaining > 0 && content.len() > remaining {
-                format!("{}..", &content[..remaining.saturating_sub(2)])
+                let mut end = remaining.saturating_sub(2);
+                while end > 0 && !content.is_char_boundary(end) {
+                    end -= 1;
+                }
+                format!("{}..", &content[..end])
             } else {
                 content.clone()
             };
@@ -551,7 +555,11 @@ fn draw_ops_mini_channel(f: &mut Frame, ops_messages: &[&midtown::Message], area
                 content_width.saturating_sub(time_str.len() + 1 + sender.len() + 2)
             };
             let body = if remaining > 0 && msg.content.len() > remaining {
-                format!("{}..", &msg.content[..remaining.saturating_sub(2)])
+                let mut end = remaining.saturating_sub(2);
+                while end > 0 && !msg.content.is_char_boundary(end) {
+                    end -= 1;
+                }
+                format!("{}..", &msg.content[..end])
             } else {
                 msg.content.clone()
             };
