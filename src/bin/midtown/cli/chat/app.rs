@@ -1145,14 +1145,20 @@ impl App {
 
             // Only reload messages if the channel actually changed
             if new_channel != self.selected_channel {
-                // Determine if the new channel is archived by checking for the archived file
+                // Determine if the new channel is archived by checking for the archived file.
+                // A channel is only archived if the .archived.jsonl file exists AND the
+                // active .jsonl file does NOT exist. If both exist, the active file wins.
                 let channel_repo =
                     midtown::paths::detect_repo_name().unwrap_or_else(|| "default".to_string());
                 let base_dir = midtown::paths::projects_dir_for_repo(&channel_repo);
-                self.selected_channel_archived = base_dir
-                    .join("channels")
+                let channels_dir = base_dir.join("channels");
+                let has_active = channels_dir
+                    .join(format!("{}.jsonl", &new_channel))
+                    .exists();
+                let has_archived = channels_dir
                     .join(format!("{}.archived.jsonl", &new_channel))
                     .exists();
+                self.selected_channel_archived = has_archived && !has_active;
 
                 self.selected_channel = new_channel;
                 self.load_channel_messages();
@@ -2019,10 +2025,14 @@ impl App {
         let channel_repo =
             midtown::paths::detect_repo_name().unwrap_or_else(|| "default".to_string());
         let base_dir = midtown::paths::projects_dir_for_repo(&channel_repo);
-        self.selected_channel_archived = base_dir
-            .join("channels")
+        let channels_dir = base_dir.join("channels");
+        let has_active = channels_dir
+            .join(format!("{}.jsonl", &selected_channel))
+            .exists();
+        let has_archived = channels_dir
             .join(format!("{}.archived.jsonl", &selected_channel))
             .exists();
+        self.selected_channel_archived = has_archived && !has_active;
         self.selected_channel = selected_channel.clone();
 
         // Update board selection to the selected channel
