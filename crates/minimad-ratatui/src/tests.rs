@@ -629,3 +629,99 @@ fn test_from_str_table_header_bold_after_code_fence() {
         "Table header should be bold even after a code fence"
     );
 }
+
+// ── table outer border tests ───────────────────────────────────────────────────
+
+#[test]
+fn test_table_has_outer_border() {
+    let md = "| Name | Status |\n|---|---|\n| alice | done |";
+    let text = from_str(md, base());
+
+    let contents: Vec<String> = text.lines.iter().map(|l| line_content(l)).collect();
+
+    // Should have 5 lines: top border, header, rule, data row, bottom border
+    assert_eq!(
+        contents.len(),
+        5,
+        "Table should have 5 lines (top border, header, rule, data, bottom border). Got: {:?}",
+        contents
+    );
+
+    // Top border starts with ┌ and ends with ┐
+    assert!(
+        contents[0].starts_with('┌'),
+        "Top border should start with ┌, got: {:?}",
+        contents[0]
+    );
+    assert!(
+        contents[0].ends_with('┐'),
+        "Top border should end with ┐, got: {:?}",
+        contents[0]
+    );
+
+    // Header row starts and ends with │
+    assert!(
+        contents[1].starts_with('│'),
+        "Header should start with │, got: {:?}",
+        contents[1]
+    );
+    assert!(
+        contents[1].ends_with('│'),
+        "Header should end with │, got: {:?}",
+        contents[1]
+    );
+
+    // Rule row starts with ├ and ends with ┤
+    assert!(
+        contents[2].starts_with('├'),
+        "Rule should start with ├, got: {:?}",
+        contents[2]
+    );
+    assert!(
+        contents[2].ends_with('┤'),
+        "Rule should end with ┤, got: {:?}",
+        contents[2]
+    );
+
+    // Data row starts and ends with │
+    assert!(
+        contents[3].starts_with('│'),
+        "Data row should start with │, got: {:?}",
+        contents[3]
+    );
+    assert!(
+        contents[3].ends_with('│'),
+        "Data row should end with │, got: {:?}",
+        contents[3]
+    );
+
+    // Bottom border starts with └ and ends with ┘
+    assert!(
+        contents[4].starts_with('└'),
+        "Bottom border should start with └, got: {:?}",
+        contents[4]
+    );
+    assert!(
+        contents[4].ends_with('┘'),
+        "Bottom border should end with ┘, got: {:?}",
+        contents[4]
+    );
+}
+
+#[test]
+fn test_table_border_width_consistent() {
+    let md = "| Name | Status |\n|---|---|\n| alice | done |";
+    let text = from_str(md, base());
+
+    let contents: Vec<String> = text.lines.iter().map(|l| line_content(l)).collect();
+    assert_eq!(contents.len(), 5, "Should have 5 lines");
+
+    // All lines should have the same char width
+    let widths: Vec<usize> = contents.iter().map(|l| l.chars().count()).collect();
+    assert!(
+        widths.iter().all(|&w| w == widths[0]),
+        "All table lines should have the same width. Got widths: {:?}, contents: {:?}",
+        widths,
+        contents
+    );
+}

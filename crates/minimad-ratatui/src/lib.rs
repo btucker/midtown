@@ -132,6 +132,9 @@ fn render_table_row(
 ) -> Line<'static> {
     let mut spans: Vec<Span<'static>> = Vec::new();
 
+    // Left outer border
+    spans.push(Span::styled("\u{2502} ", base_style)); // │
+
     for (i, cell) in table_row.cells.iter().enumerate() {
         if i > 0 {
             spans.push(Span::styled(" \u{2502} ", base_style)); // │
@@ -162,6 +165,9 @@ fn render_table_row(
             spans.push(Span::styled(" ".repeat(pad_right), base_style));
         }
     }
+
+    // Right outer border
+    spans.push(Span::styled(" \u{2502}", base_style)); // │
 
     Line::from(spans)
 }
@@ -272,6 +278,15 @@ fn render_normal_section(section: &str, base_style: Style, output: &mut Vec<Line
 
             let (col_widths, alignments) = compute_table_layout(block);
             let total_width = table_total_width(&col_widths);
+            // Inner width: total_width + 2 spaces (one on each side of the content)
+            // Border lines: corner + ─ × (total_width + 2) + corner
+            let inner_width = total_width + 2;
+
+            // Top border: ┌ + ─ × inner_width + ┐
+            output.push(Line::from(Span::styled(
+                format!("\u{250C}{}\u{2510}", "\u{2500}".repeat(inner_width)),
+                base_style,
+            )));
 
             let mut header_rendered = false;
 
@@ -293,8 +308,9 @@ fn render_normal_section(section: &str, base_style: Style, output: &mut Vec<Line
                         ));
                     }
                     MadLine::TableRule(_) => {
+                        // ├ + ─ × inner_width + ┤
                         output.push(Line::from(Span::styled(
-                            "\u{2500}".repeat(total_width),
+                            format!("\u{251C}{}\u{2524}", "\u{2500}".repeat(inner_width)),
                             base_style,
                         )));
                     }
@@ -303,6 +319,12 @@ fn render_normal_section(section: &str, base_style: Style, output: &mut Vec<Line
                     }
                 }
             }
+
+            // Bottom border: └ + ─ × inner_width + ┘
+            output.push(Line::from(Span::styled(
+                format!("\u{2514}{}\u{2518}", "\u{2500}".repeat(inner_width)),
+                base_style,
+            )));
         } else {
             output.push(mad_line_to_line(mad_lines[i], base_style));
             i += 1;
