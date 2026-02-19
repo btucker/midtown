@@ -47,8 +47,8 @@
   let textareaEl = $state(null)
 
   function handleClose() { closeThread() }
-  function handleKeydown(event) {
-    if (event.key === 'Escape') handleClose()
+  function handleWindowKeydown(event) {
+    if (event.key === 'Escape' && !event.defaultPrevented) handleClose()
   }
 
   function handleSubmit(e) {
@@ -58,7 +58,7 @@
     replyText = ''
   }
 
-  function handleKeyDown(e) {
+  function handleTextareaKeyDown(e) {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
       handleSubmit(e)
@@ -74,6 +74,13 @@
     }
   })
 
+  // Focus textarea when thread opens
+  $effect(() => {
+    if ($threadData && textareaEl) {
+      tick().then(() => textareaEl.focus())
+    }
+  })
+
   function resizeTextarea() {
     if (!textareaEl) return
     textareaEl.style.height = 'auto'
@@ -86,7 +93,7 @@
   })
 </script>
 
-<svelte:window onkeydown={handleKeydown} />
+<svelte:window onkeydown={handleWindowKeydown} />
 
 {#if $threadData}
   <div class="hidden lg:flex flex-col h-full bg-[#0f0f0f] border-l-2 border-[#2a2a2a] w-[380px] shrink-0">
@@ -145,7 +152,7 @@
         placeholder="Reply in thread..."
         rows="1"
         class="flex-1 py-[10px] px-[14px] border-2 border-[#2a2a2a] rounded-[14px] bg-[#0f0f0f] text-[#d0d0d0] text-[0.9rem] font-inherit outline-none resize-none min-h-[1.6em] max-h-[6em] overflow-y-auto focus:border-[#5faf5f] placeholder:text-[#606060]"
-        onkeydown={handleKeyDown}
+        onkeydown={handleTextareaKeyDown}
         oninput={resizeTextarea}
       ></textarea>
       <button

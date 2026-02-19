@@ -13,7 +13,7 @@
   import UsageBars from '$lib/UsageBars.svelte'
   import AuthSwitcher from '$lib/AuthSwitcher.svelte'
   import { messages, connected, coworkers, projects, activeProject, activeChannel, detailPanelData, threadData, isWideScreen } from '$lib/store.js'
-  import { connectWebSocket, fetchHistory, fetchStatus, fetchProjects, switchProject, closeThread } from '$lib/api.js'
+  import { connectWebSocket, fetchHistory, fetchStatus, fetchProjects, switchProject } from '$lib/api.js'
   import {
     pushSupported,
     pushPermission,
