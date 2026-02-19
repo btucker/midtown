@@ -35,7 +35,7 @@
 
 {#if show && items.length > 0}
   <div
-    class="fixed z-[1000] bg-[#1a1a1a] border-2 border-[#2a2a2a] rounded-lg max-h-[280px] overflow-y-auto shadow-[0_4px_12px_rgba(0,0,0,0.5)] min-w-[200px] max-w-[400px] -translate-y-[calc(100%+8px)]"
+    class="absolute z-[1000] bg-[#1a1a1a] border-2 border-[#2a2a2a] rounded-lg max-h-[280px] overflow-y-auto shadow-[0_4px_12px_rgba(0,0,0,0.5)] min-w-[200px] max-w-[400px] -translate-y-[calc(100%+8px)]"
     bind:this={dropdownElement}
     style:top="{position.top}px"
     style:left="{position.left}px"
