@@ -97,12 +97,22 @@ Event sources (timer ticks, webhooks, RPC, signals)
 
 `src/channel.rs` — Append-only JSONL log at `~/.midtown/projects/<repo>/channel.jsonl`. File-locked (fs2) for concurrent access. `src/cursor.rs` tracks per-agent read positions for incremental reads.
 
-### Coworker Lifecycle
+### Session Lifecycle
 
-`src/coworker.rs` manages coworker state (spawn, nudge, shutdown). Each coworker:
-- Runs in an isolated git worktree (`~/.midtown/coworkers/<repo>/<name>/`)
-- Runs as a headless Claude Code session using `SessionManager` with JSON streaming
-- Is named after Manhattan avenues (lexington, park, madison, broadway, amsterdam, columbus, riverside, york, pleasant, vernon)
+The daemon uses a **session-centric model** where sessions (keyed by Claude Code session ID) are the primary entity. Names are ephemeral labels drawn from an LRU pool (`src/name_pool.rs`). Each session is tracked by a `SessionRecord` in `src/daemon/state.rs`.
+
+**Key components:**
+- `NamePool` (`src/name_pool.rs`) — LRU queue of coworker names (Manhattan avenues: lexington, park, madison, etc.). Names are allocated on spawn and released on shutdown, allowing reuse across sessions.
+- `SessionRecord` (`src/daemon/state.rs`) — Tracks session ID, task, current name, preferred name, worktree, branch, PR number, and running state. Keyed by session ID in persistent state.
+- `dispatch_via_sessions` (`src/daemon/dispatch.rs`) — Session-aware task dispatch. For tasks with session records, resumes stopped sessions using preferred names for continuity.
+- `DaemonState` maintains in-memory reverse maps: `name_to_session`, `session_to_name`, `task_to_session` for O(1) lookups.
+
+**Lifecycle flow:**
+1. Task assigned → `dispatch_via_sessions` creates `SpawnSession` effect with preferred name
+2. `NamePool` allocates a name (honoring preferred name if available)
+3. Session runs in an isolated git worktree with allocated name
+4. On shutdown → name released back to pool, `SessionRecord` updated
+5. On daemon restart → `NamePool` restored from persisted session records
 
 `src/launch.rs` builds Claude CLI commands and settings for both the Lead (launched via Zellij layout) and coworkers (headless). `src/session_manager.rs` manages headless coworker sessions using JSON streaming for communication.
 

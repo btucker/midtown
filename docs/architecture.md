@@ -7,7 +7,7 @@
 The daemon is the central coordinator. It runs an event-driven state machine that collects an immutable snapshot of the world each tick, makes pure decisions about what should happen, and then executes the resulting effects. This strict separation between decision logic and side effects keeps the core testable.
 
 The daemon handles:
-- Coworker lifecycle (spawning, health checks, stuck detection, shutdown)
+- Session lifecycle (spawning, health checks, stuck detection, shutdown via session-centric model)
 - Task assignment and dispatch
 - GitHub webhook processing (PR events, CI status, reviews)
 - PR polling for merge conflicts and stuck conditions
@@ -46,7 +46,21 @@ Each coworker runs as:
 - With `--add-dir` worktrees for additional repos in multi-repo projects
 - Nudges are delivered via stdin JSON, and health is monitored via stdout stream events
 
-Coworkers are named after Manhattan avenues: lexington, park, madison, broadway, amsterdam, columbus, riverside, york, pleasant, vernon.
+### Session-Centric Model
+
+The daemon uses a **session-centric model** where Claude Code sessions (keyed by session ID) are the primary coordination entity. Names are ephemeral labels drawn from an LRU pool.
+
+**NamePool** (`src/name_pool.rs`): Manhattan avenue names (lexington, park, madison, broadway, amsterdam, columbus, riverside, york, pleasant, vernon) are managed in an LRU queue. When a session spawns, it allocates a name from the front of the queue. When it shuts down, the name returns to the back. Preferred name hints allow a resumed session to get its previous name when available, preserving branch and worktree continuity.
+
+**SessionRecord** (`src/daemon/state.rs`): Each session is tracked by a `SessionRecord` containing session ID, task ID, current and preferred names, worktree path, branch, PR number, and running state. Records persist across daemon restarts in `persistent_state.json`.
+
+**Dispatch** (`src/daemon/dispatch.rs`): `dispatch_via_sessions()` is a pure function that examines in-progress tasks with session records. For stopped sessions, it emits `SpawnSession` effects with `resume=true` and the session's preferred name. This replaces the legacy orphan-recovery pattern with a unified session-aware dispatch path.
+
+**In-memory reverse maps** on `DaemonState`:
+- `name_to_session` / `session_to_name` — bidirectional name↔session lookup
+- `task_to_session` — task→session mapping for dispatch decisions
+
+On daemon startup, the `NamePool` is restored from persisted session records: names with active sessions are marked allocated, the rest are available in LRU order.
 
 ## Channel Leads
 
