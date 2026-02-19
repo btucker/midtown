@@ -233,3 +233,45 @@ fn test_ctrl_v_sets_pending_image_and_esc_clears_it() {
         "Esc should clear pending_image"
     );
 }
+
+#[test]
+fn test_pending_image_not_affected_by_regular_paste() {
+    // Regular text paste should not affect pending_image state.
+    let mut app = test_app();
+    app.pending_image = Some(app::PendingImageInfo {
+        dimensions: (200, 100),
+        media_type: "image/png".to_string(),
+    });
+
+    let event = Event::Paste("some text".to_string());
+    let _ = handle_event(&mut app, event);
+
+    // Text paste should not clear pending_image
+    assert!(
+        app.pending_image.is_some(),
+        "Text paste should not clear pending_image"
+    );
+    assert_eq!(app.input_text, "some text");
+}
+
+#[test]
+fn test_pending_image_cleared_by_esc_before_input_clear() {
+    // When both pending_image and input_text are set, first Esc should clear
+    // pending_image (not input_text), acting as a first-step cancel.
+    let mut app = test_app();
+    app.focused_pane = FocusedPane::InputBar;
+    app.input_text = "some text".to_string();
+    app.pending_image = Some(app::PendingImageInfo {
+        dimensions: (100, 100),
+        media_type: "image/png".to_string(),
+    });
+
+    let event = Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    let _ = handle_event(&mut app, event);
+
+    // First Esc should clear pending_image but leave input_text
+    assert!(
+        app.pending_image.is_none(),
+        "First Esc should clear pending_image"
+    );
+}
