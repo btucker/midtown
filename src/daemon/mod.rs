@@ -2849,15 +2849,32 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
     // Gives immediate feedback in the log if auth is expired/missing.
     startup::check_claude_auth_status(&repo_name);
 
-    // Recover headless coworker sessions from persisted state (session survival).
+    // First recover from session records (new session-centric map).
+    // These take priority over legacy headless_sessions entries.
+    let (session_recovery_effects, recovered_session_ids) =
+        startup::recover_from_session_records(&state.persistent_state, &repo_name).await;
+    if !session_recovery_effects.is_empty() {
+        info!(
+            "Executing {} session record recovery effect(s)",
+            session_recovery_effects.len()
+        );
+        effects::execute_effects(session_recovery_effects, &state).await;
+    }
+
+    // Recover headless coworker sessions from persisted state (legacy, session survival).
+    // Skips sessions already recovered from session records above.
     // Spawns new processes with --resume <session_id> to continue previous work.
     // Old processes are NOT killed — they die naturally from broken pipes after
     // the previous daemon detached its stdin/stdout handles during shutdown.
-    let recovery_effects =
-        startup::recover_headless_sessions(&state.persistent_state, &repo_name).await;
+    let recovery_effects = startup::recover_headless_sessions(
+        &state.persistent_state,
+        &repo_name,
+        &recovered_session_ids,
+    )
+    .await;
     if !recovery_effects.is_empty() {
         info!(
-            "Executing {} session recovery effect(s)",
+            "Executing {} legacy session recovery effect(s)",
             recovery_effects.len()
         );
         effects::execute_effects(recovery_effects, &state).await;
