@@ -1,7 +1,7 @@
 <script>
   import { SvelteSet } from 'svelte/reactivity'
   import { channels, activeChannel, kanbanData, activeProject, messagesByChannel, showArchivedChannels } from './store.js'
-  import { fetchHistory, fetchChannels, getApiBase } from './api.js'
+  import { fetchHistory, fetchChannels, getApiBase, closeThread } from './api.js'
   import { getChannelTaskCount, getChannelCiStatus } from './channelUtils.js'
   import TaskList from './TaskList.svelte'
   import ArchiveIcon from '@lucide/svelte/icons/archive'
@@ -26,6 +26,11 @@
     // until the network request completed (~100-500ms), making channel switching
     // feel sluggish on desktop. Now the channel switches instantly and messages
     // appear when the fetch completes.
+
+    // Close thread panel when switching channels — thread context is
+    // channel-scoped and should not carry over to a different channel.
+    closeThread()
+
     activeChannel.set(channelName)
 
     // Clear unread count for this channel

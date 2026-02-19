@@ -197,8 +197,6 @@ export async function fetchHistory(channelName = null) {
         }))
       } else {
         // Fetching all messages (initial load) - group by channel
-        messages.set(data)
-
         const byChannel = {}
         for (const msg of data) {
           const name = msg.channel || 'midtown'
@@ -208,10 +206,17 @@ export async function fetchHistory(channelName = null) {
           byChannel[name].push(msg)
         }
 
-        // Compute reply counts and filter thread replies from main timeline
+        // Compute reply counts and filter thread replies from main timeline.
+        // annotateThreadReplyCounts returns only top-level messages (thread
+        // replies filtered out), keeping both stores consistent with the
+        // real-time WS handler which never adds thread replies to messages[].
         for (const [ch, channelMsgs] of Object.entries(byChannel)) {
           byChannel[ch] = annotateThreadReplyCounts(channelMsgs)
         }
+
+        // Set legacy store with filtered (top-level only) messages so it
+        // stays consistent with messagesByChannel and the WS handler.
+        messages.set(Object.values(byChannel).flat())
 
         messagesByChannel.set(byChannel)
 
@@ -453,38 +458,42 @@ function handleUpdate(update) {
             [channelName]: [...channelMsgs, msg],
           }
         })
-      }
 
-      // Update channel list - increment unread if not viewing this channel
-      const currentActiveChannel = get(activeChannel)
+        // Update channel list - increment unread if not viewing this channel.
+        // Only for top-level messages — thread replies don't appear in the
+        // main timeline, so they should not increment the unread badge.
+        const currentActiveChannel = get(activeChannel)
 
-      // Only update unread counts for channels that already exist in the list.
-      // We no longer auto-add channels from message content to prevent ghost
-      // channels. New channels will appear after the next fetchChannels() call
-      // (triggered by status polling or manual refresh).
-      channels.update((channelList) => {
-        const existingChannel = channelList.find((ch) => ch.name === channelName)
-        if (existingChannel && channelName !== currentActiveChannel) {
-          // Channel exists - increment unread if it's not the active channel
-          return channelList.map((ch) =>
-            ch.name === channelName ? { ...ch, unread: ch.unread + 1 } : ch
-          )
-        }
-        return channelList
-      })
-
-      // Clear tool activity for the sender when they post a message —
-      // their work phase is done and the activity strip should reset.
-      if (msg.from && msg.from.toLowerCase() !== 'lead' && msg.from.toLowerCase() !== 'midtown') {
-        agentToolItems.update((byAgent) => {
-          const updated = { ...byAgent }
-          delete updated[msg.from.toLowerCase()]
-          return updated
+        // Only update unread counts for channels that already exist in the list.
+        // We no longer auto-add channels from message content to prevent ghost
+        // channels. New channels will appear after the next fetchChannels() call
+        // (triggered by status polling or manual refresh).
+        channels.update((channelList) => {
+          const existingChannel = channelList.find((ch) => ch.name === channelName)
+          if (existingChannel && channelName !== currentActiveChannel) {
+            // Channel exists - increment unread if it's not the active channel
+            return channelList.map((ch) =>
+              ch.name === channelName ? { ...ch, unread: ch.unread + 1 } : ch
+            )
+          }
+          return channelList
         })
-        // Note: pending questions are NOT cleared on channel messages. A coworker
-        // posting a /me status update does not mean their question was answered.
-        // Questions are cleared by: (1) the daemon via nudge delivery, (2) optimistic
-        // removal in sendAnswer(), or (3) a new coworker_question event replacing it.
+
+        // Clear tool activity for the sender when they post a message —
+        // their work phase is done and the activity strip should reset.
+        // Only for top-level messages; a thread reply mid-task should not
+        // clear the coworker's tool activity.
+        if (msg.from && msg.from.toLowerCase() !== 'lead' && msg.from.toLowerCase() !== 'midtown') {
+          agentToolItems.update((byAgent) => {
+            const updated = { ...byAgent }
+            delete updated[msg.from.toLowerCase()]
+            return updated
+          })
+          // Note: pending questions are NOT cleared on channel messages. A coworker
+          // posting a /me status update does not mean their question was answered.
+          // Questions are cleared by: (1) the daemon via nudge delivery, (2) optimistic
+          // removal in sendAnswer(), or (3) a new coworker_question event replacing it.
+        }
       }
       break
     }
@@ -714,7 +723,18 @@ export function openThread(parentMessage, channelName) {
   // Show panel immediately with loading state, then populate with replies
   threadData.set({ parentMessage, channelName, messages: [] })
   fetchThread(channelName, parentMessage.id).then((replies) => {
-    threadData.set({ parentMessage, channelName, messages: replies })
+    // Guard against stale fetch: the user may have opened a different thread
+    // (or closed the panel) while this fetch was in flight. Only apply results
+    // if the panel still refers to the same parent message. Also merge rather
+    // than overwrite so any WS-delivered replies that arrived during the fetch
+    // are preserved (append them after the fetched history).
+    threadData.update((td) => {
+      if (!td || td.parentMessage.id !== parentMessage.id) return td
+      // Deduplicate: WS may have already appended some replies
+      const fetchedIds = new Set(replies.map((r) => r.id))
+      const wsOnly = td.messages.filter((r) => !fetchedIds.has(r.id))
+      return { ...td, messages: [...replies, ...wsOnly] }
+    })
   })
 }
 
