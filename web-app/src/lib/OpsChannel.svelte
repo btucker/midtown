@@ -1,27 +1,11 @@
 <script>
   import { messagesByChannel } from './store.js'
   import { tick } from 'svelte'
+  import { fetchHistory } from './api.js'
 
-  // Senders whose messages belong in the Ops channel
-  const OPS_SENDERS = new Set(['daemon', 'midtown', 'github', 'system'])
-
-  // Senders whose /me actions stay in the main chat (not ops)
-  const NON_COWORKER_SENDERS = new Set(['lead', 'user'])
-
-  // Classify a message as an ops message if it's from a system sender
-  // or if it's a /me action message from a coworker (not lead or user)
-  function isOpsMessage(msg) {
-    const sender = msg.from?.toLowerCase()
-    if (OPS_SENDERS.has(sender)) return true
-    // /me action messages = coworker workflow status updates; exclude lead/user
-    if (NON_COWORKER_SENDERS.has(sender)) return false
-    if (msg.msg_type === 'action' || msg.content?.startsWith('/me ')) return true
-    return false
-  }
-
-  // Derive ops messages from the midtown channel (system messages are always in the main channel)
+  // Read directly from the ops channel (daemon system messages are routed there)
   let opsMessages = $derived(
-    ($messagesByChannel['midtown'] || []).filter(isOpsMessage).slice(-100)
+    ($messagesByChannel['ops'] || []).slice(-100)
   )
 
   let scrollEl = $state(null)
@@ -38,9 +22,6 @@
   }
 
   function getSenderLabel(msg) {
-    const sender = msg.from?.toLowerCase()
-    if (OPS_SENDERS.has(sender)) return sender
-    // For /me messages, show the coworker name
     return msg.from || '?'
   }
 
@@ -79,6 +60,11 @@
   function getSenderColor(name) {
     return AVENUE_COLORS[name?.toLowerCase()] || '#808080'
   }
+
+  // Pre-populate ops history on mount so the sidebar shows existing messages
+  $effect(() => {
+    fetchHistory('ops')
+  })
 
   $effect(() => {
     if (opsMessages.length > 0 && autoScroll && scrollEl) {
