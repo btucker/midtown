@@ -191,6 +191,7 @@ fn test_check_for_usage_limits_with_reset_time() {
             has_auth_error: false,
             has_running_subagent: false,
             has_pending_tool: false,
+            has_pending_api_call: false,
             has_tool_name_conflict: false,
             exit_code: None,
         },
@@ -870,6 +871,7 @@ fn stuck_coworker_restart_propagates_session_id_to_shutdown_effect() {
             has_auth_error: false,
             has_running_subagent: false,
             has_pending_tool: false,
+            has_pending_api_call: false,
             has_tool_name_conflict: false,
             exit_code: None,
         },
@@ -930,6 +932,7 @@ fn dead_process_respawn_propagates_session_id() {
             has_auth_error: false,
             has_running_subagent: false,
             has_pending_tool: false,
+            has_pending_api_call: false,
             has_tool_name_conflict: false,
         },
     );
@@ -977,6 +980,7 @@ fn stuck_reviewer_restart_propagates_session_id() {
             has_auth_error: false,
             has_running_subagent: false,
             has_pending_tool: false,
+            has_pending_api_call: false,
             has_tool_name_conflict: false,
             exit_code: None,
         },
@@ -1033,6 +1037,7 @@ fn session_id_is_none_when_no_session_mapping_exists() {
             has_auth_error: false,
             has_running_subagent: false,
             has_pending_tool: false,
+            has_pending_api_call: false,
             has_tool_name_conflict: false,
             exit_code: None,
         },
@@ -1294,5 +1299,122 @@ fn ensure_channel_leads_alive_normal_recovery_within_cooldown_no_effects() {
     assert!(
         effects.is_empty(),
         "Normal recovery within cooldown should produce no effects"
+    );
+}
+
+// -----------------------------------------------------------------------
+// has_pending_api_call exemption tests
+// -----------------------------------------------------------------------
+
+/// Regression test: coworkers waiting for an API response after a tool_result
+/// (extended thinking phase) must NOT be killed by stuck detection.
+///
+/// The bug: after tool_result arrives, has_pending_tool is cleared but the model
+/// then enters extended thinking before emitting the next assistant event. During
+/// this silent window, stuck detection incorrectly fired and killed the session.
+#[test]
+fn pending_api_call_exempts_coworker_from_stuck_detection() {
+    let now = chrono::Utc::now();
+    let mut snap = empty_snap();
+    snap.now_utc = now;
+
+    // Coworker: last event was 10 minutes ago (well past COWORKER_STUCK_DURATION of 3 min)
+    // has_pending_tool = false (tool_result already cleared it)
+    // has_pending_api_call = true  (tool_result arrived, model is now doing extended thinking)
+    snap.headless_process_health.insert(
+        "lexington".to_string(),
+        snapshot::ProcessHealth {
+            is_alive: true,
+            last_event_at: Some(now - chrono::Duration::minutes(10)),
+            has_usage_limit: false,
+            usage_limit_reset_at: None,
+            has_api_error: false,
+            has_auth_error: false,
+            has_running_subagent: false,
+            has_pending_tool: false,
+            has_pending_api_call: true,
+            has_tool_name_conflict: false,
+            exit_code: None,
+        },
+    );
+
+    snap.in_progress_tasks.push((
+        "77".to_string(),
+        "Review PR".to_string(),
+        "lexington".to_string(),
+    ));
+
+    let exemptions = crate::rules::StuckExemptions {
+        usage_limited: &snap.usage_limited_coworkers,
+        api_error: &snap.api_error_coworkers,
+        auth_error: &snap.auth_error_coworkers,
+        attached: &snap.attached_coworkers,
+    };
+
+    let restarts = crate::rules::decide_stuck_coworker_restarts(
+        &snap.headless_process_health,
+        &snap.in_progress_tasks,
+        &exemptions,
+        snap.now_utc,
+        Duration::from_secs(180),
+        &snap.name_session_map,
+    );
+
+    assert_eq!(
+        restarts.len(),
+        0,
+        "coworker waiting for API response (extended thinking) must NOT be restarted"
+    );
+}
+
+/// Corollary: same scenario for reviewers.
+#[test]
+fn pending_api_call_exempts_reviewer_from_stuck_detection() {
+    let now = chrono::Utc::now();
+    let mut snap = empty_snap();
+    snap.now_utc = now;
+
+    snap.headless_process_health.insert(
+        "amsterdam".to_string(),
+        snapshot::ProcessHealth {
+            is_alive: true,
+            last_event_at: Some(now - chrono::Duration::minutes(10)),
+            has_usage_limit: false,
+            usage_limit_reset_at: None,
+            has_api_error: false,
+            has_auth_error: false,
+            has_running_subagent: false,
+            has_pending_tool: false,
+            has_pending_api_call: true,
+            has_tool_name_conflict: false,
+            exit_code: None,
+        },
+    );
+
+    snap.reviewer_pr_assignments
+        .insert("amsterdam".to_string(), 1329);
+
+    let exemptions = crate::rules::StuckExemptions {
+        usage_limited: &snap.usage_limited_coworkers,
+        api_error: &snap.api_error_coworkers,
+        auth_error: &snap.auth_error_coworkers,
+        attached: &snap.attached_coworkers,
+    };
+
+    let restarts = crate::rules::decide_stuck_reviewer_restarts(
+        &snap.headless_process_health,
+        &snap.reviewer_pr_assignments,
+        &snap.reviewer_restart_counts,
+        &exemptions,
+        snap.now_utc,
+        Duration::from_secs(300),
+        2,
+        &snap.name_session_map,
+    );
+
+    assert_eq!(
+        restarts.len(),
+        0,
+        "reviewer waiting for API response (extended thinking) must NOT be restarted"
     );
 }
