@@ -201,10 +201,18 @@ pub fn draw_board_panel(f: &mut Frame, app: &mut App, area: Rect) -> (Vec<Hyperl
                     None
                 }
             });
-            if !title_wraps && task_phase_label(task, task_pr, coworker_phase).is_some() {
-                // Register the label line for click-to-attach as well
-                task_line_map.insert(current_line, (task.id.clone(), task.owner.clone()));
-                current_line += 1;
+            if task_phase_label(task, task_pr, coworker_phase).is_some() {
+                if title_wraps {
+                    // The phase label is merged into the first continuation line (wrapped_lines[1]).
+                    // That line's position is current_line - wrapped_lines.len() + 1.
+                    // Register it so click-to-attach works on the continuation line too.
+                    let continuation_line = current_line - wrapped_lines.len() as u16 + 1;
+                    task_line_map.insert(continuation_line, (task.id.clone(), task.owner.clone()));
+                } else {
+                    // Label is a separate line below the title; register it.
+                    task_line_map.insert(current_line, (task.id.clone(), task.owner.clone()));
+                    current_line += 1;
+                }
             }
         }
     }
