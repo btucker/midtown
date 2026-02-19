@@ -13,6 +13,7 @@
 mod multi_tick_harness;
 
 use midtown::daemon::{DaemonEvent, Effect};
+use midtown::launch::SessionMode;
 use multi_tick_harness::MultiTickHarness;
 use serde_json::json;
 
@@ -433,5 +434,171 @@ fn test_multi_tick_stabilization() {
         *last_count, 0,
         "After 5 ticks, the system should stabilize with 0 effects (actual: {})",
         last_count
+    );
+}
+
+// ── Session-centric dispatch tests ──────────────────────────────────────────
+
+/// Test that dispatch_via_sessions skips tasks whose sessions are already running.
+///
+/// Bug scenario: Task is in_progress and has a running SessionRecord.
+/// dispatch_via_sessions should see `record.is_running == true` and skip the task —
+/// no `SpawnCoworkerWithCallbacks` should be emitted.
+#[test]
+fn test_session_dispatch_skips_running_session() {
+    let mut harness = MultiTickHarness::new_minimal();
+    let task_id = "task-session-running".to_string();
+
+    // Add an in_progress task with owner "lexington"
+    harness.snapshot_mut().in_progress_tasks.push((
+        task_id.clone(),
+        "Build feature X".to_string(),
+        "lexington".to_string(),
+    ));
+
+    // Create a running session for that task
+    harness.create_session("session-abc", &task_id, Some("lexington"));
+
+    let effects = harness.tick(&DaemonEvent::TaskDispatchTick);
+
+    // dispatch_via_sessions should NOT emit SpawnCoworkerWithCallbacks because
+    // the session is already running (is_running == true).
+    let resume_spawns: Vec<_> = effects
+        .iter()
+        .filter(|e| {
+            matches!(
+                e,
+                Effect::SpawnCoworkerWithCallbacks { config, .. }
+                    if matches!(config.session_mode, SessionMode::ResumeSession(_))
+            )
+        })
+        .collect();
+
+    assert!(
+        resume_spawns.is_empty(),
+        "Should not spawn a session-resume when the session is already running (got {} effects)",
+        resume_spawns.len()
+    );
+
+    let any_lexington_spawn = effects.iter().any(|e| match e {
+        Effect::SpawnCoworkerWithCallbacks { config, .. } => config.name == "lexington",
+        Effect::SpawnCoworker(config) => config.name == "lexington",
+        _ => false,
+    });
+    assert!(
+        !any_lexington_spawn,
+        "Should emit no spawn at all for a running session"
+    );
+}
+
+/// Test that dispatch_via_sessions resumes stopped sessions.
+///
+/// Bug scenario: Task is in_progress, SessionRecord exists but `is_running == false`.
+/// dispatch_via_sessions should emit `SpawnCoworkerWithCallbacks` with
+/// `session_mode == SessionMode::ResumeSession(...)`.
+#[test]
+fn test_session_dispatch_resumes_stopped_session() {
+    let mut harness = MultiTickHarness::new_minimal();
+    let task_id = "task-session-stopped".to_string();
+
+    // Add an in_progress task with owner "park"
+    harness.snapshot_mut().in_progress_tasks.push((
+        task_id.clone(),
+        "Fix bug Y".to_string(),
+        "park".to_string(),
+    ));
+
+    // Create a session then stop it
+    harness.create_session("session-xyz", &task_id, Some("park"));
+    harness.stop_session("session-xyz");
+
+    let effects = harness.tick(&DaemonEvent::TaskDispatchTick);
+
+    // dispatch_via_sessions should emit SpawnCoworkerWithCallbacks with ResumeSession
+    // because the session exists but is stopped.
+    let resume_spawns: Vec<_> = effects
+        .iter()
+        .filter(|e| {
+            matches!(
+                e,
+                Effect::SpawnCoworkerWithCallbacks { config, .. }
+                    if matches!(config.session_mode, SessionMode::ResumeSession(_))
+            )
+        })
+        .collect();
+
+    assert!(
+        !resume_spawns.is_empty(),
+        "Should emit SpawnCoworkerWithCallbacks(ResumeSession) for a stopped session"
+    );
+}
+
+/// Test that dispatch_via_sessions doesn't produce duplicate resumes across ticks.
+///
+/// Bug scenario: A stopped session is resumed on tick 1. After applying the effect,
+/// the session is running. On tick 2, dispatch_via_sessions should see
+/// `record.is_running == true` and not re-spawn.
+///
+/// The harness's `tick()` automatically applies effects via `apply_effects()`. The
+/// `SpawnCoworkerWithCallbacks` handler in `apply_effects` now updates
+/// `sessions[id].is_running = true` when `session_mode == ResumeSession`, so no
+/// manual `resume_session` call is needed between ticks.
+#[test]
+fn test_session_dispatch_no_duplicate_resumes_across_ticks() {
+    let mut harness = MultiTickHarness::new_minimal();
+    let task_id = "task-dedup".to_string();
+
+    // Add an in_progress task with owner "madison"
+    harness.snapshot_mut().in_progress_tasks.push((
+        task_id.clone(),
+        "Dedup test".to_string(),
+        "madison".to_string(),
+    ));
+
+    // Create a session then stop it — this is the state before tick 1
+    harness.create_session("session-dedup", &task_id, Some("madison"));
+    harness.stop_session("session-dedup");
+
+    // Tick 1: should produce a SpawnCoworkerWithCallbacks(ResumeSession) effect.
+    // tick() automatically calls apply_effects(), which updates sessions[id].is_running
+    // to true so dispatch_via_sessions sees the session as running on tick 2.
+    let effects1 = harness.tick(&DaemonEvent::TaskDispatchTick);
+
+    let spawn_count_1 = effects1
+        .iter()
+        .filter(|e| {
+            matches!(
+                e,
+                Effect::SpawnCoworkerWithCallbacks { config, .. }
+                    if matches!(config.session_mode, SessionMode::ResumeSession(_))
+            )
+        })
+        .count();
+
+    println!("Tick 1: {} session-resume spawn effects", spawn_count_1);
+    assert!(
+        spawn_count_1 > 0,
+        "Tick 1 should produce a session-resume spawn for the stopped session"
+    );
+
+    // Tick 2: apply_effects already marked the session as running via the
+    // SpawnCoworkerWithCallbacks handler — no manual resume_session call needed.
+    let effects2 = harness.tick(&DaemonEvent::TaskDispatchTick);
+
+    let spawn_count_2 = effects2
+        .iter()
+        .filter(|e| {
+            matches!(
+                e,
+                Effect::SpawnCoworkerWithCallbacks { config, .. }
+                    if matches!(config.session_mode, SessionMode::ResumeSession(_))
+            )
+        })
+        .count();
+
+    println!("Tick 2: {} session-resume spawn effects", spawn_count_2);
+    assert_eq!(
+        spawn_count_2, 0,
+        "Tick 2 should not re-spawn an already-running session (is_running == true)"
     );
 }

@@ -68,7 +68,8 @@ pub use effects::Effect;
 // 3. Pure functions are the gold standard for testing
 #[doc(hidden)]
 pub use dispatch::{
-    build_subject_based_completion_effects, check_for_duplicate_task_workers, reset_orphaned_tasks,
+    build_subject_based_completion_effects, check_for_duplicate_task_workers,
+    dispatch_via_sessions, reset_orphaned_tasks,
 };
 #[doc(hidden)]
 pub use events::DaemonEvent;
@@ -80,6 +81,8 @@ pub use health::{
 };
 #[doc(hidden)]
 pub use pr::{collect_merged_pr_cleanup_effects, reconcile_orphaned_prs};
+#[doc(hidden)]
+pub use state::SessionRecord;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::File;
