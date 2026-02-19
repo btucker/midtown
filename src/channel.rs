@@ -260,14 +260,26 @@ impl Channel {
                     }
 
                     // Don't duplicate "midtown" if we already found channel.jsonl
-                    let channel_info = ChannelInfo {
+                    if channel_name == "midtown" && channels.iter().any(|c| c.name == "midtown") {
+                        continue;
+                    }
+
+                    // If both active and archived files exist for the same channel,
+                    // the active one wins — the channel is not considered archived.
+                    if let Some(existing) = channels.iter_mut().find(|c| c.name == channel_name) {
+                        if !is_archived {
+                            // Active file found, override any previous archived entry
+                            existing.is_archived = false;
+                        }
+                        // Skip duplicate (archived entry when active already exists,
+                        // or second active entry)
+                        continue;
+                    }
+
+                    channels.push(ChannelInfo {
                         name: channel_name.to_string(),
                         is_archived,
-                    };
-
-                    if channel_name != "midtown" || !channels.iter().any(|c| c.name == "midtown") {
-                        channels.push(channel_info);
-                    }
+                    });
                 }
             }
         }
@@ -1991,6 +2003,49 @@ mod tests {
         assert!(
             !channel_names.contains(&".hidden"),
             "Channel with leading dot should be filtered out"
+        );
+    }
+
+    #[test]
+    fn test_both_active_and_archived_files_treats_channel_as_active() {
+        let temp_dir = TempDir::new().unwrap();
+
+        // Create a channel, then archive it
+        let channel = Channel::new(temp_dir.path(), "tui").unwrap();
+        channel.archive().unwrap();
+
+        // Verify it's archived
+        let channels = Channel::list(temp_dir.path(), true, None).unwrap();
+        let tui = channels.iter().find(|c| c.name == "tui").unwrap();
+        assert!(tui.is_archived, "Should be archived after archive()");
+
+        // Now also create an active file (simulating a channel that was
+        // re-created while the archived file still exists)
+        Channel::new(temp_dir.path(), "tui").unwrap();
+
+        // Both files should exist
+        let channels_dir = temp_dir.path().join("channels");
+        assert!(channels_dir.join("tui.jsonl").exists());
+        assert!(channels_dir.join("tui.archived.jsonl").exists());
+
+        // Channel::list should treat it as active (not archived)
+        let channels = Channel::list(temp_dir.path(), true, None).unwrap();
+        let tui_entries: Vec<_> = channels.iter().filter(|c| c.name == "tui").collect();
+        assert_eq!(
+            tui_entries.len(),
+            1,
+            "Should have exactly one entry for 'tui'"
+        );
+        assert!(
+            !tui_entries[0].is_archived,
+            "Channel with both active and archived files should be treated as active"
+        );
+
+        // Also verify without include_archived — the channel should still appear
+        let channels = Channel::list(temp_dir.path(), false, None).unwrap();
+        assert!(
+            channels.iter().any(|c| c.name == "tui"),
+            "Active channel with stale archived file should appear in non-archived list"
         );
     }
 
