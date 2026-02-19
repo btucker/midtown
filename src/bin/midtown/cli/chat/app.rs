@@ -206,6 +206,8 @@ pub enum FocusedPane {
     Chat,
     /// Input bar (bottom of chat panel) - text input for posting messages
     InputBar,
+    /// Thread panel (right side) - thread input and message view
+    Thread,
 }
 
 /// Identifies a selectable item in the board panel
@@ -366,6 +368,14 @@ pub struct App {
     pub kill_ring: Option<String>,
     /// Whether the previous command was a kill — consecutive kills append to the kill ring
     pub last_was_kill: bool,
+    /// Currently open thread parent message ID
+    pub thread_parent_id: Option<String>,
+    /// Thread reply messages (messages with thread_parent_id matching the open thread)
+    pub thread_messages: Vec<midtown::Message>,
+    /// Thread input text (separate from main input)
+    pub thread_input_text: String,
+    /// Thread input cursor position
+    pub thread_input_cursor: usize,
 }
 
 /// Autocomplete state for @mentions, #channels, and !task-ids
@@ -514,6 +524,10 @@ impl App {
             main_area_bottom: u16::MAX,
             kill_ring: None,
             last_was_kill: false,
+            thread_parent_id: None,
+            thread_messages: Vec::new(),
+            thread_input_text: String::new(),
+            thread_input_cursor: 0,
         };
 
         // Initial load
@@ -553,6 +567,15 @@ impl App {
             {
                 let added = new_messages.len();
                 let was_at_bottom = self.scroll_offset == 0;
+
+                // Route thread replies to thread_messages if a thread is open
+                if let Some(ref open_thread_id) = self.thread_parent_id {
+                    for msg in &new_messages {
+                        if msg.thread_parent_id.as_deref() == Some(open_thread_id) {
+                            self.thread_messages.push(msg.clone());
+                        }
+                    }
+                }
 
                 // Append new messages (they're already in chronological order)
                 self.messages.extend(new_messages);
@@ -922,13 +945,108 @@ impl App {
         self.intentionally_at_top = false;
     }
 
-    /// Cycle focus between panes: Board → Chat → InputBar → Board
+    /// Cycle focus between panes: Board → Chat → InputBar → (Thread if open) → Board
     pub fn cycle_focus(&mut self) {
         self.focused_pane = match self.focused_pane {
             FocusedPane::Board => FocusedPane::Chat,
             FocusedPane::Chat => FocusedPane::InputBar,
-            FocusedPane::InputBar => FocusedPane::Board,
+            FocusedPane::InputBar => {
+                if self.thread_parent_id.is_some() {
+                    FocusedPane::Thread
+                } else {
+                    FocusedPane::Board
+                }
+            }
+            FocusedPane::Thread => FocusedPane::Board,
         };
+    }
+
+    /// Open a thread view for the given parent message ID.
+    ///
+    /// Finds the parent message in the current messages, collects all existing
+    /// thread replies, and switches focus to the Thread pane.
+    /// Does nothing if the parent message ID is not found in loaded messages.
+    pub fn open_thread(&mut self, parent_id: &str) {
+        // Verify parent message exists in loaded messages
+        let parent_exists = self.messages.iter().any(|m| m.id == parent_id);
+        if !parent_exists {
+            return;
+        }
+
+        self.thread_parent_id = Some(parent_id.to_string());
+
+        // Collect existing thread replies from loaded messages
+        self.thread_messages = self
+            .messages
+            .iter()
+            .filter(|m| m.thread_parent_id.as_deref() == Some(parent_id))
+            .cloned()
+            .collect();
+
+        self.thread_input_text.clear();
+        self.thread_input_cursor = 0;
+        self.focused_pane = FocusedPane::Thread;
+    }
+
+    /// Close the thread view and return focus to the main input bar.
+    pub fn close_thread(&mut self) {
+        self.thread_parent_id = None;
+        self.thread_messages.clear();
+        self.thread_input_text.clear();
+        self.thread_input_cursor = 0;
+        self.focused_pane = FocusedPane::InputBar;
+    }
+
+    /// Post a thread reply message to the channel via daemon RPC with fallback.
+    ///
+    /// Similar to `post_message` but includes `thread_parent_id` so the message
+    /// is recorded as a thread reply.
+    ///
+    /// Returns `true` if the message was successfully posted.
+    pub fn post_thread_reply(
+        &mut self,
+        message: &str,
+        sender: &str,
+        channel_name: Option<&str>,
+        thread_parent_id: &str,
+    ) -> bool {
+        use crate::client::DaemonClient;
+        use midtown::{Message, MessageType};
+
+        // In test mode, skip daemon communication to avoid side effects
+        if self.test_mode {
+            #[cfg(test)]
+            {
+                self.last_posted_channel = channel_name.map(|s| s.to_string());
+            }
+
+            if let Some(ref channel) = self.channel {
+                let mut msg = Message::new(sender, message, MessageType::Text);
+                msg.channel = channel_name.map(|s| s.to_string());
+                msg.thread_parent_id = Some(thread_parent_id.to_string());
+                return channel.send(&msg).is_ok();
+            }
+            return false;
+        }
+
+        // Try daemon RPC first with thread_parent_id
+        let daemon_result = DaemonClient::connect().and_then(|client| {
+            client.channel_post_as(message, sender, channel_name, Some(thread_parent_id))
+        });
+
+        if daemon_result.is_ok() {
+            return true;
+        }
+
+        // Fall back to direct channel write
+        if let Some(ref channel) = self.channel {
+            let mut msg = Message::new(sender, message, MessageType::Text);
+            msg.channel = channel_name.map(|s| s.to_string());
+            msg.thread_parent_id = Some(thread_parent_id.to_string());
+            channel.send(&msg).is_ok()
+        } else {
+            false
+        }
     }
 
     /// Build the ordered list of selectable items in the board
@@ -1334,6 +1452,12 @@ impl App {
         // the completed count changes and we need to re-render to show the diagram
         // instead of the "rendering..." placeholder.
         self.mermaid_cache.completed_count().hash(&mut hasher);
+        // Hash thread state — opening/closing thread changes the chat area width,
+        // and thread reply counts affect reply indicators displayed after messages.
+        if let Some(ref thread_id) = self.thread_parent_id {
+            thread_id.hash(&mut hasher);
+        }
+        self.thread_messages.len().hash(&mut hasher);
         // Hash tool activity — changes msg_height via count_tool_activity_lines,
         // so a cache hit with different tool activity would apply wrong truncation.
         let mut agents: Vec<&String> = self.tool_activity.keys().collect();
@@ -1502,6 +1626,18 @@ impl App {
     pub fn detect_autocomplete_trigger(&mut self) {
         let cursor_pos = self.input_cursor;
         let text = &self.input_text;
+
+        // Check for "/thread " prefix — slash command autocomplete
+        if text.starts_with("/thread ") && cursor_pos >= 8 {
+            let query = text[8..].to_string();
+            self.autocomplete.trigger_type = Some('/');
+            self.autocomplete.query = query.clone();
+            self.autocomplete.trigger_start_pos = 0;
+            self.autocomplete.items = self.get_thread_items(&query.to_lowercase());
+            self.autocomplete.selected_index = 0;
+            self.autocomplete.show = !self.autocomplete.items.is_empty();
+            return;
+        }
 
         // Look backward from cursor to find trigger character
         let mut trigger_pos: Option<usize> = None;
@@ -1681,7 +1817,38 @@ impl App {
         }
     }
 
-    /// Insert the selected autocomplete item into the input text
+    /// Get /thread autocomplete items — recent top-level messages from the current channel.
+    /// Shows most recent messages first, limited to 20 items.
+    fn get_thread_items(&self, query: &str) -> Vec<AutocompleteItem> {
+        self.messages
+            .iter()
+            .rev()
+            .filter(|m| m.thread_parent_id.is_none())
+            .filter(|m| {
+                if query.is_empty() {
+                    true
+                } else {
+                    m.content.to_lowercase().contains(query)
+                        || m.from.to_lowercase().contains(query)
+                }
+            })
+            .take(20)
+            .map(|m| {
+                let truncated = if m.content.len() > 50 {
+                    format!("{}...", &m.content[..m.content.floor_char_boundary(50)])
+                } else {
+                    m.content.clone()
+                };
+                AutocompleteItem {
+                    value: m.id.clone(),
+                    description: Some(format!("{}: {}", m.from, truncated)),
+                }
+            })
+            .collect()
+    }
+
+    /// Insert the selected autocomplete item into the input text.
+    /// For `/thread` autocomplete (trigger '/'), opens the thread instead of inserting text.
     pub fn insert_autocomplete_item(&mut self) {
         if !self.autocomplete.show
             || self.autocomplete.selected_index >= self.autocomplete.items.len()
@@ -1691,6 +1858,15 @@ impl App {
 
         let item = &self.autocomplete.items[self.autocomplete.selected_index];
         let value = item.value.clone(); // Clone to avoid borrow issues
+
+        // For /thread autocomplete, open the thread and clear input
+        if self.autocomplete.trigger_type == Some('/') {
+            self.autocomplete.show = false;
+            self.input_text.clear();
+            self.input_cursor = 0;
+            self.open_thread(&value);
+            return;
+        }
 
         // Convert cursor position (character index) to byte position
         let chars: Vec<(usize, char)> = self.input_text.char_indices().collect();
@@ -2925,6 +3101,10 @@ pub(super) mod tests {
             main_area_bottom: u16::MAX,
             kill_ring: None,
             last_was_kill: false,
+            thread_parent_id: None,
+            thread_messages: Vec::new(),
+            thread_input_text: String::new(),
+            thread_input_cursor: 0,
         }
     }
 
@@ -3913,5 +4093,325 @@ pub(super) mod tests {
         let result = extract_tool_activity_headers(&items);
         assert_eq!(result.len(), 1, "Only one entry (the ToolCall)");
         assert_eq!(result[0], "✓ Read foo.rs");
+    }
+
+    // --- Thread state tests ---
+
+    #[test]
+    fn test_open_thread() {
+        let mut app = test_app();
+        // Add a parent message
+        let parent = Message::text("agent1", "Hello");
+        let parent_id = parent.id.clone();
+        app.messages.push_back(parent);
+        // Add a thread reply
+        let mut reply = Message::text("agent2", "Reply");
+        reply.thread_parent_id = Some(parent_id.clone());
+        app.messages.push_back(reply);
+
+        app.open_thread(&parent_id);
+        assert_eq!(app.thread_parent_id, Some(parent_id.clone()));
+        assert_eq!(app.thread_messages.len(), 1);
+        assert_eq!(app.focused_pane, FocusedPane::Thread);
+    }
+
+    #[test]
+    fn test_close_thread() {
+        let mut app = test_app();
+        app.thread_parent_id = Some("test-id".to_string());
+        app.thread_messages = vec![Message::text("a", "b")];
+        app.thread_input_text = "draft".to_string();
+        app.focused_pane = FocusedPane::Thread;
+
+        app.close_thread();
+        assert!(app.thread_parent_id.is_none());
+        assert!(app.thread_messages.is_empty());
+        assert!(app.thread_input_text.is_empty());
+        assert_eq!(app.focused_pane, FocusedPane::InputBar);
+    }
+
+    #[test]
+    fn test_open_thread_nonexistent_id() {
+        let mut app = test_app();
+        app.open_thread("nonexistent");
+        assert!(
+            app.thread_parent_id.is_none(),
+            "Should not open thread for nonexistent message ID"
+        );
+    }
+
+    #[test]
+    fn test_open_thread_collects_only_matching_replies() {
+        let mut app = test_app();
+        let parent = Message::text("agent1", "Parent");
+        let parent_id = parent.id.clone();
+        app.messages.push_back(parent);
+
+        // Add a reply to this thread
+        let mut reply1 = Message::text("agent2", "Thread reply");
+        reply1.thread_parent_id = Some(parent_id.clone());
+        app.messages.push_back(reply1);
+
+        // Add a reply to a different thread
+        let mut reply2 = Message::text("agent3", "Other thread reply");
+        reply2.thread_parent_id = Some("other-parent-id".to_string());
+        app.messages.push_back(reply2);
+
+        // Add a top-level message
+        app.messages.push_back(Message::text("agent4", "Top level"));
+
+        app.open_thread(&parent_id);
+        assert_eq!(
+            app.thread_messages.len(),
+            1,
+            "Should only collect replies matching the open thread"
+        );
+        assert_eq!(app.thread_messages[0].content, "Thread reply");
+    }
+
+    #[test]
+    fn test_open_thread_clears_previous_thread_input() {
+        let mut app = test_app();
+        let parent = Message::text("agent1", "Parent");
+        let parent_id = parent.id.clone();
+        app.messages.push_back(parent);
+
+        // Simulate having an old draft
+        app.thread_input_text = "old draft".to_string();
+        app.thread_input_cursor = 5;
+
+        app.open_thread(&parent_id);
+        assert!(
+            app.thread_input_text.is_empty(),
+            "Opening a thread should clear input text"
+        );
+        assert_eq!(
+            app.thread_input_cursor, 0,
+            "Opening a thread should reset cursor"
+        );
+    }
+
+    #[test]
+    fn test_cycle_focus_with_thread() {
+        let mut app = test_app();
+        app.thread_parent_id = Some("test".to_string());
+        app.focused_pane = FocusedPane::InputBar;
+        app.cycle_focus();
+        assert_eq!(
+            app.focused_pane,
+            FocusedPane::Thread,
+            "Should cycle to Thread after InputBar when thread is open"
+        );
+        app.cycle_focus();
+        assert_eq!(
+            app.focused_pane,
+            FocusedPane::Board,
+            "Should cycle from Thread to Board"
+        );
+    }
+
+    #[test]
+    fn test_cycle_focus_without_thread() {
+        let mut app = test_app();
+        app.focused_pane = FocusedPane::InputBar;
+        app.cycle_focus();
+        assert_eq!(
+            app.focused_pane,
+            FocusedPane::Board,
+            "Should skip Thread and go to Board when no thread is open"
+        );
+    }
+
+    #[test]
+    fn test_close_thread_resets_cursor() {
+        let mut app = test_app();
+        app.thread_parent_id = Some("test-id".to_string());
+        app.thread_input_text = "some text".to_string();
+        app.thread_input_cursor = 9;
+        app.focused_pane = FocusedPane::Thread;
+
+        app.close_thread();
+        assert_eq!(app.thread_input_cursor, 0);
+        assert!(app.thread_input_text.is_empty());
+    }
+
+    #[test]
+    fn test_thread_autocomplete_trigger_detection() {
+        let mut app = test_app();
+        // Add some messages so autocomplete has items
+        let msg1 = Message::text("park", "Hello world this is a test message");
+        let msg2 = Message::text("madison", "Another top-level message here");
+        app.messages.push_back(msg1);
+        app.messages.push_back(msg2);
+
+        // Type "/thread " — should trigger autocomplete with '/' trigger
+        app.input_text = "/thread ".to_string();
+        app.input_cursor = 8;
+        app.detect_autocomplete_trigger();
+
+        assert!(
+            app.autocomplete.show,
+            "Autocomplete should show after typing '/thread '"
+        );
+        assert_eq!(
+            app.autocomplete.trigger_type,
+            Some('/'),
+            "Trigger type should be '/' for thread autocomplete"
+        );
+        assert!(
+            !app.autocomplete.items.is_empty(),
+            "Should have autocomplete items from messages"
+        );
+    }
+
+    #[test]
+    fn test_thread_autocomplete_filters_thread_replies() {
+        let mut app = test_app();
+        let msg1 = Message::text("park", "Top-level message");
+        let parent_id = msg1.id.clone();
+        let mut reply = Message::text("madison", "Thread reply");
+        reply.thread_parent_id = Some(parent_id);
+        app.messages.push_back(msg1);
+        app.messages.push_back(reply);
+
+        app.input_text = "/thread ".to_string();
+        app.input_cursor = 8;
+        app.detect_autocomplete_trigger();
+
+        assert_eq!(
+            app.autocomplete.items.len(),
+            1,
+            "Should only show top-level messages, not thread replies"
+        );
+        assert!(
+            app.autocomplete.items[0]
+                .description
+                .as_ref()
+                .unwrap()
+                .contains("Top-level"),
+            "Item should be the top-level message"
+        );
+    }
+
+    #[test]
+    fn test_thread_autocomplete_query_filters_messages() {
+        let mut app = test_app();
+        app.messages
+            .push_back(Message::text("park", "Auth bug investigation"));
+        app.messages
+            .push_back(Message::text("madison", "Deploy pipeline fix"));
+
+        // Type "/thread auth" — should filter to messages containing "auth"
+        app.input_text = "/thread auth".to_string();
+        app.input_cursor = 12;
+        app.detect_autocomplete_trigger();
+
+        assert!(
+            app.autocomplete.show,
+            "Autocomplete should show with query filter"
+        );
+        assert_eq!(
+            app.autocomplete.items.len(),
+            1,
+            "Should only show messages matching 'auth'"
+        );
+    }
+
+    #[test]
+    fn test_thread_autocomplete_no_trigger_without_space() {
+        let mut app = test_app();
+        app.messages
+            .push_back(Message::text("park", "Test message"));
+
+        // "/thread" without trailing space should NOT trigger autocomplete
+        app.input_text = "/thread".to_string();
+        app.input_cursor = 7;
+        app.detect_autocomplete_trigger();
+
+        assert!(
+            !app.autocomplete.show,
+            "Autocomplete should not show for '/thread' without trailing space"
+        );
+    }
+
+    #[test]
+    fn test_thread_autocomplete_insert_opens_thread() {
+        let mut app = test_app();
+        let msg = Message::text("park", "Test parent message");
+        let msg_id = msg.id.clone();
+        app.messages.push_back(msg);
+
+        // Set up autocomplete state as if user typed "/thread " and selected an item
+        app.input_text = "/thread ".to_string();
+        app.input_cursor = 8;
+        app.autocomplete.show = true;
+        app.autocomplete.trigger_type = Some('/');
+        app.autocomplete.trigger_start_pos = 0;
+        app.autocomplete.selected_index = 0;
+        app.autocomplete.items = vec![AutocompleteItem {
+            value: msg_id.clone(),
+            description: Some("park: Test parent message".to_string()),
+        }];
+
+        app.insert_autocomplete_item();
+
+        assert_eq!(
+            app.thread_parent_id,
+            Some(msg_id),
+            "Selecting thread autocomplete item should open the thread"
+        );
+        assert!(
+            app.input_text.is_empty(),
+            "Input should be cleared after opening thread"
+        );
+        assert_eq!(app.input_cursor, 0, "Cursor should be reset");
+        assert!(!app.autocomplete.show, "Autocomplete should be dismissed");
+    }
+
+    #[test]
+    fn test_thread_autocomplete_shows_recent_first() {
+        let mut app = test_app();
+        // Add messages — most recent should appear first in autocomplete
+        app.messages
+            .push_back(Message::text("park", "First message"));
+        app.messages
+            .push_back(Message::text("madison", "Second message"));
+        app.messages
+            .push_back(Message::text("broadway", "Third message"));
+
+        app.input_text = "/thread ".to_string();
+        app.input_cursor = 8;
+        app.detect_autocomplete_trigger();
+
+        assert!(app.autocomplete.items.len() >= 3);
+        // Most recent messages should appear first
+        assert!(
+            app.autocomplete.items[0]
+                .description
+                .as_ref()
+                .unwrap()
+                .contains("Third"),
+            "Most recent message should be first"
+        );
+    }
+
+    #[test]
+    fn test_thread_autocomplete_limits_to_20() {
+        let mut app = test_app();
+        // Add 25 messages
+        for i in 0..25 {
+            app.messages
+                .push_back(Message::text("park", format!("Message {}", i)));
+        }
+
+        app.input_text = "/thread ".to_string();
+        app.input_cursor = 8;
+        app.detect_autocomplete_trigger();
+
+        assert!(
+            app.autocomplete.items.len() <= 20,
+            "Thread autocomplete should limit to 20 items, got {}",
+            app.autocomplete.items.len()
+        );
     }
 }

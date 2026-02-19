@@ -331,6 +331,35 @@ fn build_sender_line(
     Line::from(spans)
 }
 
+/// Build a reply indicator line ("↳ N replies") for a message with thread replies.
+pub fn build_reply_indicator_line(
+    reply_count: usize,
+    last_reply_from: Option<&str>,
+) -> Line<'static> {
+    let mut spans = vec![
+        Span::styled("       \u{21b3} ", Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            format!(
+                "{} {}",
+                reply_count,
+                if reply_count == 1 { "reply" } else { "replies" }
+            ),
+            Style::default().fg(Color::Cyan),
+        ),
+    ];
+    if let Some(from) = last_reply_from {
+        spans.push(Span::styled(
+            " \u{00b7} ".to_string(),
+            Style::default().fg(Color::DarkGray),
+        ));
+        spans.push(Span::styled(
+            from.to_string(),
+            Style::default().fg(Color::DarkGray),
+        ));
+    }
+    Line::from(spans)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1207,5 +1236,88 @@ mod tests {
             session_id: None,
             thread_parent_id: None,
         }
+    }
+
+    #[test]
+    fn test_build_reply_indicator_single_reply() {
+        let line = build_reply_indicator_line(1, Some("madison"));
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(
+            text.contains("\u{21b3}"),
+            "Should contain arrow symbol, got: {}",
+            text
+        );
+        assert!(
+            text.contains("1 reply"),
+            "Should say '1 reply' (singular), got: {}",
+            text
+        );
+        assert!(
+            text.contains("madison"),
+            "Should contain last replier name, got: {}",
+            text
+        );
+    }
+
+    #[test]
+    fn test_build_reply_indicator_multiple_replies() {
+        let line = build_reply_indicator_line(5, Some("lexington"));
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(
+            text.contains("5 replies"),
+            "Should say '5 replies' (plural), got: {}",
+            text
+        );
+        assert!(
+            text.contains("lexington"),
+            "Should contain last replier name, got: {}",
+            text
+        );
+    }
+
+    #[test]
+    fn test_build_reply_indicator_no_last_replier() {
+        let line = build_reply_indicator_line(3, None);
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(
+            text.contains("3 replies"),
+            "Should say '3 replies', got: {}",
+            text
+        );
+        // Should not contain the middle dot separator when no replier
+        assert_eq!(
+            line.spans.len(),
+            2,
+            "Should have only 2 spans (arrow + count) when no last replier"
+        );
+    }
+
+    #[test]
+    fn test_build_reply_indicator_styles() {
+        let line = build_reply_indicator_line(2, Some("park"));
+        // First span: arrow prefix should be DarkGray
+        assert_eq!(
+            line.spans[0].style.fg,
+            Some(Color::DarkGray),
+            "Arrow prefix should be DarkGray"
+        );
+        // Second span: reply count should be Cyan
+        assert_eq!(
+            line.spans[1].style.fg,
+            Some(Color::Cyan),
+            "Reply count should be Cyan"
+        );
+        // Third span: separator should be DarkGray
+        assert_eq!(
+            line.spans[2].style.fg,
+            Some(Color::DarkGray),
+            "Separator should be DarkGray"
+        );
+        // Fourth span: replier name should be DarkGray
+        assert_eq!(
+            line.spans[3].style.fg,
+            Some(Color::DarkGray),
+            "Replier name should be DarkGray"
+        );
     }
 }
