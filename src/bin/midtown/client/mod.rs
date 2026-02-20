@@ -555,6 +555,14 @@ impl DaemonClient {
         self.send("daemon.check-pending", None)
     }
 
+    /// Signal the daemon to stop assigning new tasks (draining mode).
+    ///
+    /// Called at the start of `midtown restart` so the daemon does not hand out
+    /// new reviewer assignments while we wait for active reviewers to finish.
+    pub fn set_draining(&self) -> Result<Response, String> {
+        self.send("daemon.set-draining", None)
+    }
+
     /// Request the daemon to re-exec itself after graceful shutdown.
     ///
     /// This preserves the daemon's original process context (including sandbox

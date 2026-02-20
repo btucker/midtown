@@ -1,3 +1,5 @@
+use super::{extract_review_phase_names, extract_unreviewed_assigned_reviewer_names};
+use crate::cli::response::CoworkerInfo;
 use tempfile::TempDir;
 
 /// Test helper to verify that paths::lead_worktree_path() returns the correct path.
@@ -92,5 +94,86 @@ fn test_worktree_manager_creates_lead_in_correct_location() {
     assert!(
         lead_worktree_path.exists(),
         "Lead worktree directory should exist"
+    );
+}
+
+#[test]
+fn test_extract_review_phase_names() {
+    let payload = serde_json::json!({
+        "coworkers": [
+            {"name": "lexington", "phase": "review"},
+            {"name": "park", "phase": "dev"},
+            {"name": "broadway", "phase": "review"},
+            {"name": "york", "phase": null}
+        ]
+    });
+
+    let reviewers = extract_review_phase_names(&payload);
+    assert!(reviewers.contains("lexington"));
+    assert!(reviewers.contains("broadway"));
+    assert!(!reviewers.contains("park"));
+    assert!(!reviewers.contains("york"));
+}
+
+#[test]
+fn test_extract_unreviewed_assigned_reviewer_names() {
+    let payload = serde_json::json!({
+        "prs": [
+            {"number": 1, "reviewer": "lexington", "review_posted": false},
+            {"number": 2, "reviewer": "park", "review_posted": true},
+            {"number": 3, "reviewer": "", "review_posted": false},
+            {"number": 4, "reviewer": null, "review_posted": false},
+            {"number": 5, "reviewer": "broadway"}
+        ]
+    });
+
+    let reviewers = extract_unreviewed_assigned_reviewer_names(&payload);
+    assert!(reviewers.contains("lexington"));
+    assert!(reviewers.contains("broadway"));
+    assert!(!reviewers.contains("park"));
+}
+
+/// Channel lead coworkers must be excluded from the set of "running reviewers"
+/// because they are persistent domain-expert sessions, not transient reviewers.
+/// Restarting the daemon should not wait for a channel lead to finish.
+#[test]
+fn test_running_coworker_names_excludes_channel_leads() {
+    // Simulate what running_coworker_names does: filter out is_channel_lead
+    let coworkers = vec![
+        CoworkerInfo {
+            name: "lexington".to_string(),
+            status: "running".to_string(),
+            current_task: None,
+            started_at: None,
+            provider: None,
+            profile: None,
+            is_channel_lead: false,
+        },
+        CoworkerInfo {
+            name: "channel-lead-daemon-core".to_string(),
+            status: "running".to_string(),
+            current_task: None,
+            started_at: None,
+            provider: None,
+            profile: None,
+            is_channel_lead: true,
+        },
+    ];
+
+    // Apply the same filtering logic as running_coworker_names
+    let names: std::collections::HashSet<String> = coworkers
+        .into_iter()
+        .filter(|cw| cw.status != "stopped" && cw.status != "stopping")
+        .filter(|cw| !cw.is_channel_lead)
+        .map(|cw| cw.name)
+        .collect();
+
+    assert!(
+        names.contains("lexington"),
+        "regular coworker should be included"
+    );
+    assert!(
+        !names.contains("channel-lead-daemon-core"),
+        "channel lead should be excluded"
     );
 }

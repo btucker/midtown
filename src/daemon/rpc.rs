@@ -271,6 +271,14 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
             Response::success(request.id, serde_json::json!({"message": "restarting"}))
         }
 
+        "daemon.set-draining" => {
+            info!("set-draining requested via RPC — blocking new task assignments");
+            state
+                .draining
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            Response::success(request.id, serde_json::json!({"message": "draining"}))
+        }
+
         "coworker.stop_all" => {
             info!("stop_all requested via RPC — sending SIGTERM to all headless sessions");
             // Set draining flag before shutdown to prevent new task assignments

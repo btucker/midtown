@@ -1144,6 +1144,7 @@ fn running_coworker_names(
         Response::Coworkers { coworkers } => Ok(coworkers
             .into_iter()
             .filter(|cw| cw.status != "stopped" && cw.status != "stopping")
+            .filter(|cw| !cw.is_channel_lead)
             .map(|cw| cw.name)
             .collect()),
         _ => Err("Unexpected response from coworker.list".to_string()),
@@ -1196,33 +1197,58 @@ fn active_review_coworkers(client: &DaemonClient) -> Result<Vec<String>, String>
 }
 
 /// Wait until no active review coworkers remain (they have gone on break).
+/// How many consecutive RPC errors abort the wait loop.
+///
+/// Transient failures (socket hiccup, brief daemon busy) are logged and
+/// retried. Only sustained failures — where every poll fails — abort the loop
+/// to avoid masking a permanently unreachable daemon.
+const REVIEWER_BREAK_MAX_CONSECUTIVE_ERRORS: u32 = 3;
+
 fn wait_for_review_coworkers_to_break(client: &DaemonClient) -> Result<(), String> {
     let start = std::time::Instant::now();
     let mut last_reported: Vec<String> = Vec::new();
+    let mut consecutive_errors: u32 = 0;
 
     loop {
-        let active = active_review_coworkers(client)?;
-        if active.is_empty() {
-            if !last_reported.is_empty() {
-                eprintln!("All review coworkers are on break.");
+        match active_review_coworkers(client) {
+            Ok(active) => {
+                consecutive_errors = 0;
+                if active.is_empty() {
+                    if !last_reported.is_empty() {
+                        eprintln!("All review coworkers are on break.");
+                    }
+                    return Ok(());
+                }
+
+                if active != last_reported {
+                    eprintln!(
+                        "Waiting for review coworker(s) to go on break before restart: {}",
+                        active.join(", ")
+                    );
+                    last_reported = active.clone();
+                }
+
+                if start.elapsed() >= REVIEWER_BREAK_WAIT_TIMEOUT {
+                    return Err(format!(
+                        "Timed out after {}s waiting for review coworker(s): {}",
+                        REVIEWER_BREAK_WAIT_TIMEOUT.as_secs(),
+                        active.join(", ")
+                    ));
+                }
             }
-            return Ok(());
-        }
-
-        if active != last_reported {
-            eprintln!(
-                "Waiting for review coworker(s) to go on break before restart: {}",
-                active.join(", ")
-            );
-            last_reported = active.clone();
-        }
-
-        if start.elapsed() >= REVIEWER_BREAK_WAIT_TIMEOUT {
-            return Err(format!(
-                "Timed out after {}s waiting for review coworker(s): {}",
-                REVIEWER_BREAK_WAIT_TIMEOUT.as_secs(),
-                active.join(", ")
-            ));
+            Err(e) => {
+                consecutive_errors += 1;
+                eprintln!(
+                    "Warning: failed to query active reviewers (attempt {}): {}",
+                    consecutive_errors, e
+                );
+                if consecutive_errors >= REVIEWER_BREAK_MAX_CONSECUTIVE_ERRORS {
+                    return Err(format!(
+                        "Aborting reviewer wait after {} consecutive RPC failures: {}",
+                        consecutive_errors, e
+                    ));
+                }
+            }
         }
 
         std::thread::sleep(REVIEWER_BREAK_POLL_INTERVAL);
@@ -1254,6 +1280,16 @@ pub fn handle_restart(force: bool) -> Result<Response, String> {
             });
         }
     };
+
+    // Signal the daemon to stop assigning new review tasks immediately.
+    // This prevents a race where TaskDispatchTick hands out a new reviewer
+    // assignment during the REVIEWER_BREAK_WAIT_TIMEOUT window.
+    if let Err(e) = client.set_draining() {
+        eprintln!(
+            "Warning: failed to set daemon draining flag: {}. Continuing.",
+            e
+        );
+    }
 
     if force {
         eprintln!("--force set: skipping wait for review coworkers to go on break.");
@@ -2379,42 +2415,6 @@ mod tests {
             is_working,
             "Status 'idle' doesn't exist in CoworkerStatus — if it appeared, it would be conservatively treated as 'working' (safe default for unknown statuses)"
         );
-    }
-
-    #[test]
-    fn test_extract_review_phase_names() {
-        let payload = serde_json::json!({
-            "coworkers": [
-                {"name": "lexington", "phase": "review"},
-                {"name": "park", "phase": "dev"},
-                {"name": "broadway", "phase": "review"},
-                {"name": "york", "phase": null}
-            ]
-        });
-
-        let reviewers = extract_review_phase_names(&payload);
-        assert!(reviewers.contains("lexington"));
-        assert!(reviewers.contains("broadway"));
-        assert!(!reviewers.contains("park"));
-        assert!(!reviewers.contains("york"));
-    }
-
-    #[test]
-    fn test_extract_unreviewed_assigned_reviewer_names() {
-        let payload = serde_json::json!({
-            "prs": [
-                {"number": 1, "reviewer": "lexington", "review_posted": false},
-                {"number": 2, "reviewer": "park", "review_posted": true},
-                {"number": 3, "reviewer": "", "review_posted": false},
-                {"number": 4, "reviewer": null, "review_posted": false},
-                {"number": 5, "reviewer": "broadway"}
-            ]
-        });
-
-        let reviewers = extract_unreviewed_assigned_reviewer_names(&payload);
-        assert!(reviewers.contains("lexington"));
-        assert!(reviewers.contains("broadway"));
-        assert!(!reviewers.contains("park"));
     }
 }
 
