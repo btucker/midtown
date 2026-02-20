@@ -300,7 +300,7 @@ fn render_channel_header(
 
 /// Derive the phase status label for a task based on its PR and coworker state.
 ///
-/// Returns a short label (e.g. "dev", "pr", "rvw", "rvd", "fix", "ci", "done")
+/// Returns a short label (e.g. "dev", "pr", "rvw", "rvd", "addr", "ci", "done", "cnfl")
 /// or `None` if the task is pending with no PR.
 pub fn task_phase_label(
     task: &KanbanTask,
@@ -319,7 +319,7 @@ pub fn task_phase_label(
         Some(pr) => {
             // Merge conflicts take priority over everything else
             if pr.has_conflicts {
-                return Some("conflict");
+                return Some("cnfl");
             }
 
             // CI takes priority when running or failed
@@ -335,7 +335,7 @@ pub fn task_phase_label(
                 // coworker_phase holds abbreviations from WorkflowPhase::abbreviation()
                 let addressing_feedback = matches!(coworker_phase, Some("dev" | "debug" | "test"));
                 if addressing_feedback {
-                    return Some("fix");
+                    return Some("addr");
                 }
                 // CI passed and review done = waiting for merge
                 if matches!(pr.ci_status, CiStatus::Passed) {
@@ -452,11 +452,10 @@ fn render_task_item(
         }
     }
 
-    // Second line: phase status label in gray, indented to align with task text
+    // Second line: phase status label in gray, 3-space indent
     // Only emitted when there is a label (pending tasks with no PR get no extra line)
     if let Some(label_text) = task_phase_label(task, task_pr, coworker_phase) {
-        // Indent to align with the task ID (same as bullet_prefix_width)
-        let label_line = format!("{:width$}{}", "", label_text, width = bullet_prefix_width);
+        let label_line = format!("   {}", label_text);
         lines.push(Line::from(vec![Span::styled(
             label_line,
             Style::default().fg(Color::DarkGray),
@@ -1578,7 +1577,10 @@ mod tests {
         pr.review_posted = true;
         pr.reviewer = Some("york".to_string());
         // coworker_phase holds abbreviations: "dev" not "developing"
-        assert_eq!(task_phase_label(&task, Some(&pr), Some("dev")), Some("fix"));
+        assert_eq!(
+            task_phase_label(&task, Some(&pr), Some("dev")),
+            Some("addr")
+        );
     }
 
     #[test]
@@ -1590,7 +1592,7 @@ mod tests {
         // coworker_phase holds abbreviations: "debug" not "debugging"
         assert_eq!(
             task_phase_label(&task, Some(&pr), Some("debug")),
-            Some("fix")
+            Some("addr")
         );
     }
 
@@ -1603,7 +1605,7 @@ mod tests {
         // coworker_phase holds abbreviations: "test" not "testing"
         assert_eq!(
             task_phase_label(&task, Some(&pr), Some("test")),
-            Some("fix")
+            Some("addr")
         );
     }
 
@@ -1673,14 +1675,14 @@ mod tests {
 
     #[test]
     fn test_phase_label_conflicts_takes_priority_over_ci() {
-        // PR with merge conflicts should show "conflict", not "ci"
+        // PR with merge conflicts should show "cnfl", not "ci"
         let task = make_task("1", vec![]);
         let mut pr = make_pr(1);
         pr.has_conflicts = true;
         pr.ci_status = CiStatus::Failed;
         assert_eq!(
             task_phase_label(&task, Some(&pr), None),
-            Some("conflict"),
+            Some("cnfl"),
             "has_conflicts should take priority over CI status"
         );
     }
