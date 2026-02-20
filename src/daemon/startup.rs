@@ -494,181 +494,7 @@ fn verify_claude_process(pid: u32) -> bool {
     cmdline.contains("claude")
 }
 
-/// Recover headless coworker sessions from persisted state after daemon restart.
-///
-/// For each saved session:
-/// 1. Let the old process die naturally (broken pipe from detached daemon)
-/// 2. Generate a `ResumeCoworker` effect to spawn with --resume <session_id>
-///
-/// **Important**: We do NOT kill the old processes here. The previous daemon
-/// detached its pipe handles during shutdown (`detach_on_drop`), so the child
-/// processes will receive SIGPIPE or a write error on their stdout and exit
-/// naturally. Killing them with SIGKILL is counterproductive — it defeats the
-/// purpose of session detachment and can cause data loss.
-///
-/// Returns a Vec of effects to execute during startup.
-pub async fn recover_headless_sessions(
-    persistent_state: &tokio::sync::Mutex<DaemonPersistentState>,
-    repo_name: &str,
-    skip_session_ids: &HashSet<String>,
-) -> Vec<Effect> {
-    let mut effects = Vec::new();
-
-    // Clone only sessions that should be resumed on startup.
-    // Historical sessions remain persisted for manual `session attach`.
-    let (sessions, total_persisted) = {
-        let state = persistent_state.lock().await;
-        let total = state.headless_sessions.len();
-        let resumable = state
-            .headless_sessions
-            .iter()
-            .filter_map(|(name, info)| {
-                if info.resume_on_startup && !skip_session_ids.contains(&info.session_id) {
-                    Some((name.clone(), info.clone()))
-                } else {
-                    None
-                }
-            })
-            .collect::<std::collections::HashMap<_, _>>();
-        (resumable, total)
-    };
-
-    if sessions.is_empty() {
-        return effects;
-    }
-
-    info!(
-        "Recovering {} headless session(s) from previous daemon run ({} persisted total)",
-        sessions.len(),
-        total_persisted
-    );
-
-    for (name, session_info) in sessions {
-        info!(
-            "Recovering session for {}: session_id={}, purpose={}",
-            name, session_info.session_id, session_info.purpose
-        );
-
-        // Don't kill the old process — let it die naturally from the broken pipe.
-        // When the previous daemon detached, it closed its end of stdin/stdout.
-        // The child process will get SIGPIPE or a write error and exit on its own.
-        // We'll spawn a fresh process with --resume to continue the session.
-        if let Some(pid) = session_info.pid {
-            if verify_claude_process(pid) {
-                info!(
-                    "Previous process {} for {} still running — will die naturally from broken pipe",
-                    pid, name
-                );
-            } else {
-                info!(
-                    "Previous process {} for {} already exited (PID reused or dead)",
-                    pid, name
-                );
-            }
-        }
-
-        // Build launch config based on coworker type and saved context
-        let mut config = if name == "lead" {
-            // Lead session — uses lead system prompt, unrestricted settings
-            LaunchConfig::lead(repo_name)
-        } else {
-            match (
-                session_info.coworker_type.as_deref(),
-                session_info.task_id,
-                session_info.pr_number,
-            ) {
-                (Some("dev"), Some(task_id), _) => {
-                    // Dev coworker with task assignment
-                    let initial_prompt = format!(
-                        "You've been assigned task !{}. Run `midtown task view {}` for full details.",
-                        task_id, task_id
-                    );
-                    LaunchConfig::coworker(
-                        &name,
-                        repo_name,
-                        crate::launch::SessionMode::Fresh, // Will be overridden by ResumeCoworker effect
-                        Some(initial_prompt),
-                    )
-                }
-                (Some("reviewer"), _, Some(pr_num)) => {
-                    // Reviewer coworker
-                    LaunchConfig::reviewer(&name, pr_num)
-                }
-                (Some("channel-lead"), _, _) => {
-                    // Channel leads are recovered separately by recover_channel_lead_sessions().
-                    // Skip here to avoid launching with the wrong (dev coworker) system prompt.
-                    info!(
-                        "Skipping channel lead session '{}' — will be recovered by channel lead recovery",
-                        name
-                    );
-                    continue;
-                }
-                _ => {
-                    // Fallback: generic dev coworker
-                    warn!(
-                        "Session {} has incomplete metadata (type={:?}, task={:?}, pr={:?}), using generic config",
-                        name,
-                        session_info.coworker_type,
-                        session_info.task_id,
-                        session_info.pr_number
-                    );
-                    LaunchConfig::coworker(
-                        &name,
-                        repo_name,
-                        crate::launch::SessionMode::Fresh,
-                        None,
-                    )
-                }
-            }
-        };
-
-        // Restore working directory. For the lead, always use the canonical
-        // lead worktree path (~/.midtown/worktrees/<repo>/lead) rather than
-        // the persisted path, which may be stale (e.g., legacy coworker path).
-        if name == "lead" {
-            let lead_wt = crate::paths::lead_worktree_path(repo_name);
-            if lead_wt.exists() {
-                config.working_dir = Some(lead_wt);
-            }
-        } else if let Some(ref working_dir) = session_info.working_dir {
-            config.working_dir = Some(std::path::PathBuf::from(working_dir));
-        }
-
-        // Restore provider if persisted (defaults to Claude for old state files)
-        if let Some(provider) = session_info.provider {
-            config.auth_provider = provider;
-        }
-
-        // Re-resolve auth profile from project config rather than relying on
-        // the persisted profile name, which may be stale or incorrectly extracted
-        // (e.g., "claude" instead of "info@user.com" due to a prior path-extraction bug).
-        // The project config is the authoritative source for auth profiles.
-        config.auth_profile_dir = None; // Let spawn_coworker() re-resolve from project config
-
-        // Create resume effect
-        effects.push(Effect::ResumeCoworker {
-            name: name.clone(),
-            session_id: session_info.session_id.clone(),
-            config,
-        });
-    }
-
-    // NOTE: We preserve headless_sessions in persistent state so retain_alive()
-    // can restore session_ids for recovered coworkers. The map will be overwritten
-    // at the next shutdown with fresh data.
-    //
-    // This approach trades a theoretical double-recovery risk (if daemon restarts
-    // rapidly before sessions init) for correct session_id restoration during normal
-    // operation. The trade-off is acceptable because:
-    // 1. Rapid daemon restarts are rare in practice
-    // 2. Double-recovery is detected by SessionManager (session_id already alive)
-    // 3. Correct session_id tracking is critical for reviewer spawning
-
-    effects
-}
-
-/// Extract the names of coworkers being recovered from persisted headless sessions
-/// and session records.
+/// Extract the names of coworkers being recovered from session records.
 ///
 /// Called during startup to pre-register recovering coworkers in the daemon's
 /// tracking maps BEFORE executing recovery effects. This prevents the task
@@ -678,23 +504,11 @@ pub async fn recovering_coworker_names(
     persistent_state: &tokio::sync::Mutex<DaemonPersistentState>,
 ) -> Vec<String> {
     let state = persistent_state.lock().await;
+    let mut names = Vec::new();
 
-    // Collect from headless_sessions (legacy)
-    let mut names: Vec<String> = state
-        .headless_sessions
-        .iter()
-        .filter_map(|(name, info)| {
-            if info.resume_on_startup {
-                Some(name.clone())
-            } else {
-                None
-            }
-        })
-        .collect();
-
-    // Also collect from session records (new)
     for record in state.sessions.values() {
         if record.resume_on_startup
+            && record.is_running
             && let Some(name) = record
                 .preferred_name
                 .as_ref()
@@ -712,7 +526,7 @@ pub async fn recovering_coworker_names(
 ///
 /// These PIDs must be excluded from the zombie scanner — the sessions are
 /// intentionally detached and will die naturally from broken pipes. Killing
-/// them before `recover_headless_sessions` runs defeats session survival.
+/// them before session recovery runs defeats session survival.
 pub async fn recoverable_session_pids(
     persistent_state: &tokio::sync::Mutex<DaemonPersistentState>,
 ) -> HashSet<u32> {
@@ -725,15 +539,15 @@ pub async fn recoverable_session_pids(
         .collect()
 }
 
-/// Recover sessions from the session-centric `sessions` map.
+/// Recover coworker sessions from the session-centric `sessions` map.
 ///
 /// Iterates `persistent_state.sessions` (SessionRecord), filters for
 /// sessions that were actually running at shutdown (`is_running: true`),
 /// deduplicates by name (keeping the most recently created session for
 /// each coworker name), and emits `ResumeCoworker` effects.
 ///
-/// Returns the set of session_ids that were recovered, so the caller
-/// can deduplicate with `recover_headless_sessions`.
+/// Returns the set of recovered session_ids for deduplication with other
+/// recovery paths (e.g., channel lead recovery).
 pub async fn recover_from_session_records(
     persistent_state: &tokio::sync::Mutex<DaemonPersistentState>,
     repo_name: &str,

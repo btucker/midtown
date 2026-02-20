@@ -27,120 +27,15 @@ fn test_session_info(
 }
 
 #[tokio::test]
-async fn test_recover_headless_sessions_generates_resume_effects() {
-    let persistent_state = tokio::sync::Mutex::new(DaemonPersistentState::default());
-
-    // Insert test sessions
-    {
-        let mut state = persistent_state.lock().await;
-        state.headless_sessions.insert(
-            "amsterdam".to_string(),
-            test_session_info("amsterdam", Some(42)),
-        );
-        state.headless_sessions.insert(
-            "columbus".to_string(),
-            test_session_info("columbus", Some(43)),
-        );
-    }
-
-    let effects = recover_headless_sessions(
-        &persistent_state,
-        "test-repo",
-        &std::collections::HashSet::new(),
-    )
-    .await;
-
-    // Should generate exactly 2 ResumeCoworker effects (one per session)
-    assert_eq!(
-        effects.len(),
-        2,
-        "Should generate one ResumeCoworker per session"
-    );
-
-    for effect in &effects {
-        match effect {
-            Effect::ResumeCoworker {
-                name, session_id, ..
-            } => {
-                assert!(
-                    name == "amsterdam" || name == "columbus",
-                    "Unexpected coworker name: {}",
-                    name
-                );
-                assert!(
-                    session_id.starts_with("session-"),
-                    "Session ID should match what was persisted"
-                );
-            }
-            _ => panic!("Expected only ResumeCoworker effects, got {:?}", effect),
-        }
-    }
-}
-
-#[tokio::test]
-async fn test_recover_headless_sessions_does_not_kill_processes() {
-    // This test verifies that recover_headless_sessions does NOT generate
-    // any kill effects. The old behavior was to kill -9 the processes,
-    // which defeated the purpose of session detachment.
-    //
-    // We verify this by checking that only ResumeCoworker effects are returned.
-    // If kill behavior were added back, it would need to be an Effect variant,
-    // and this test would catch the regression.
-    let persistent_state = tokio::sync::Mutex::new(DaemonPersistentState::default());
-
-    {
-        let mut state = persistent_state.lock().await;
-        state
-            .headless_sessions
-            .insert("park".to_string(), test_session_info("park", Some(100)));
-    }
-
-    let effects = recover_headless_sessions(
-        &persistent_state,
-        "test-repo",
-        &std::collections::HashSet::new(),
-    )
-    .await;
-
-    // All effects should be ResumeCoworker — no kill effects
-    for effect in &effects {
-        assert!(
-            matches!(effect, Effect::ResumeCoworker { .. }),
-            "Recovery should only produce ResumeCoworker effects (no kills), got: {:?}",
-            effect
-        );
-    }
-}
-
-#[tokio::test]
-async fn test_recover_headless_sessions_empty() {
-    let persistent_state = tokio::sync::Mutex::new(DaemonPersistentState::default());
-    let effects = recover_headless_sessions(
-        &persistent_state,
-        "test-repo",
-        &std::collections::HashSet::new(),
-    )
-    .await;
-    assert!(
-        effects.is_empty(),
-        "No sessions to recover should produce no effects"
-    );
-}
-
-#[tokio::test]
 async fn test_recovering_coworker_names_returns_session_names() {
     let persistent_state = tokio::sync::Mutex::new(DaemonPersistentState::default());
 
     {
         let mut state = persistent_state.lock().await;
-        state.headless_sessions.insert(
-            "amsterdam".to_string(),
-            test_session_info("amsterdam", Some(42)),
-        );
-        state.headless_sessions.insert(
-            "columbus".to_string(),
-            test_session_info("columbus", Some(43)),
-        );
+        let record1 = test_session_record("sess-1", "amsterdam", "dev");
+        state.sessions.insert("sess-1".to_string(), record1);
+        let record2 = test_session_record("sess-2", "columbus", "dev");
+        state.sessions.insert("sess-2".to_string(), record2);
     }
 
     let names = recovering_coworker_names(&persistent_state).await;
@@ -150,50 +45,33 @@ async fn test_recovering_coworker_names_returns_session_names() {
 }
 
 #[tokio::test]
-async fn test_recover_headless_sessions_skips_non_resumable_historical_entries() {
+async fn test_recovering_coworker_names_skips_non_resumable() {
     let persistent_state = tokio::sync::Mutex::new(DaemonPersistentState::default());
 
     {
         let mut state = persistent_state.lock().await;
-        state.headless_sessions.insert(
-            "amsterdam".to_string(),
-            test_session_info("amsterdam", Some(42)),
-        );
-        let mut historical = test_session_info("columbus", Some(43));
-        historical.resume_on_startup = false;
-        state
-            .headless_sessions
-            .insert("columbus".to_string(), historical);
+        let record1 = test_session_record("sess-1", "amsterdam", "dev");
+        state.sessions.insert("sess-1".to_string(), record1);
+        let mut record2 = test_session_record("sess-2", "columbus", "dev");
+        record2.resume_on_startup = false;
+        state.sessions.insert("sess-2".to_string(), record2);
     }
 
-    let effects = recover_headless_sessions(
-        &persistent_state,
-        "test-repo",
-        &std::collections::HashSet::new(),
-    )
-    .await;
-    assert_eq!(effects.len(), 1);
-    match &effects[0] {
-        Effect::ResumeCoworker { name, .. } => assert_eq!(name, "amsterdam"),
-        other => panic!("Expected ResumeCoworker, got {:?}", other),
-    }
+    let names = recovering_coworker_names(&persistent_state).await;
+    assert_eq!(names, vec!["amsterdam".to_string()]);
 }
 
 #[tokio::test]
-async fn test_recovering_coworker_names_skips_non_resumable_historical_entries() {
+async fn test_recovering_coworker_names_skips_stopped() {
     let persistent_state = tokio::sync::Mutex::new(DaemonPersistentState::default());
 
     {
         let mut state = persistent_state.lock().await;
-        state.headless_sessions.insert(
-            "amsterdam".to_string(),
-            test_session_info("amsterdam", Some(42)),
-        );
-        let mut historical = test_session_info("columbus", Some(43));
-        historical.resume_on_startup = false;
-        state
-            .headless_sessions
-            .insert("columbus".to_string(), historical);
+        let record1 = test_session_record("sess-1", "amsterdam", "dev");
+        state.sessions.insert("sess-1".to_string(), record1);
+        let mut record2 = test_session_record("sess-2", "columbus", "dev");
+        record2.is_running = false;
+        state.sessions.insert("sess-2".to_string(), record2);
     }
 
     let names = recovering_coworker_names(&persistent_state).await;
@@ -205,50 +83,6 @@ async fn test_recovering_coworker_names_empty_state() {
     let persistent_state = tokio::sync::Mutex::new(DaemonPersistentState::default());
     let names = recovering_coworker_names(&persistent_state).await;
     assert!(names.is_empty());
-}
-
-#[tokio::test]
-async fn test_startup_recovery_sets_lead_role() {
-    let persistent_state = tokio::sync::Mutex::new(DaemonPersistentState::default());
-
-    {
-        let mut state = persistent_state.lock().await;
-        state.headless_sessions.insert(
-            "lead".to_string(),
-            crate::daemon::state::HeadlessSessionInfo {
-                session_id: "session-lead".to_string(),
-                last_active: chrono::Utc::now(),
-                purpose: "lead session".to_string(),
-                pid: Some(99999),
-                coworker_type: None,
-                task_id: None,
-                pr_number: None,
-                channel: None,
-                working_dir: Some("/tmp/test".to_string()),
-                provider: None,
-                profile: None,
-                resume_on_startup: true,
-                initial_prompt: None,
-            },
-        );
-    }
-
-    let effects = recover_headless_sessions(
-        &persistent_state,
-        "test-repo",
-        &std::collections::HashSet::new(),
-    )
-    .await;
-    assert_eq!(effects.len(), 1);
-
-    match &effects[0] {
-        Effect::ResumeCoworker { name, config, .. } => {
-            assert_eq!(name, "lead");
-            assert_eq!(config.role, crate::launch::CoworkerRole::Lead);
-            // Setting sources are now always "project,local" via the platform arg builder
-        }
-        other => panic!("Expected ResumeCoworker, got {:?}", other),
-    }
 }
 
 // --- Tests for stale daemon and zombie scanner helpers ---
@@ -1068,99 +902,15 @@ async fn test_recover_from_session_records_falls_back_to_current_name() {
 }
 
 #[tokio::test]
-async fn test_headless_sessions_dedup_skips_already_recovered_session_ids() {
-    let persistent_state = tokio::sync::Mutex::new(DaemonPersistentState::default());
-
-    // Insert a session in both session records and headless_sessions with same session_id
-    let session_id = "sess-shared-123".to_string();
-    {
-        let mut state = persistent_state.lock().await;
-
-        // Session record (new path)
-        let record = test_session_record(&session_id, "park", "dev");
-        state.sessions.insert(session_id.clone(), record);
-
-        // Legacy headless_sessions entry with the same session_id
-        let mut info = test_session_info("park", Some(42));
-        info.session_id = session_id.clone();
-        state.headless_sessions.insert("park".to_string(), info);
-    }
-
-    // First recover from session records
-    let (session_effects, recovered_ids) =
-        recover_from_session_records(&persistent_state, "test-repo").await;
-    assert_eq!(
-        session_effects.len(),
-        1,
-        "Session record should produce 1 effect"
-    );
-    assert!(recovered_ids.contains(&session_id));
-
-    // Then recover headless sessions, passing the recovered IDs as skip set
-    let legacy_effects =
-        recover_headless_sessions(&persistent_state, "test-repo", &recovered_ids).await;
-    assert!(
-        legacy_effects.is_empty(),
-        "Legacy recovery should skip session already recovered from session records, got: {:?}",
-        legacy_effects
-    );
-}
-
-#[tokio::test]
-async fn test_headless_sessions_not_skipped_when_different_session_id() {
+async fn test_recovering_coworker_names_multiple_session_records() {
     let persistent_state = tokio::sync::Mutex::new(DaemonPersistentState::default());
 
     {
         let mut state = persistent_state.lock().await;
-
-        // Session record with one session_id
-        let record = test_session_record("sess-new", "park", "dev");
-        state.sessions.insert("sess-new".to_string(), record);
-
-        // Legacy headless_sessions entry with a DIFFERENT session_id
-        let mut info = test_session_info("columbus", Some(43));
-        info.session_id = "sess-legacy-different".to_string();
-        state.headless_sessions.insert("columbus".to_string(), info);
-    }
-
-    // First recover from session records
-    let (_, recovered_ids) = recover_from_session_records(&persistent_state, "test-repo").await;
-    assert!(recovered_ids.contains("sess-new"));
-    assert!(!recovered_ids.contains("sess-legacy-different"));
-
-    // Legacy session with different ID should NOT be skipped
-    let legacy_effects =
-        recover_headless_sessions(&persistent_state, "test-repo", &recovered_ids).await;
-    assert_eq!(
-        legacy_effects.len(),
-        1,
-        "Legacy session with different ID should still be recovered"
-    );
-    match &legacy_effects[0] {
-        Effect::ResumeCoworker {
-            name, session_id, ..
-        } => {
-            assert_eq!(name, "columbus");
-            assert_eq!(session_id, "sess-legacy-different");
-        }
-        other => panic!("Expected ResumeCoworker, got {:?}", other),
-    }
-}
-
-#[tokio::test]
-async fn test_recovering_coworker_names_includes_session_records() {
-    let persistent_state = tokio::sync::Mutex::new(DaemonPersistentState::default());
-
-    {
-        let mut state = persistent_state.lock().await;
-        // Legacy headless session
-        state.headless_sessions.insert(
-            "amsterdam".to_string(),
-            test_session_info("amsterdam", Some(42)),
-        );
-        // Session record (new)
-        let record = test_session_record("sess-abc", "park", "dev");
-        state.sessions.insert("sess-abc".to_string(), record);
+        let record1 = test_session_record("sess-abc", "park", "dev");
+        state.sessions.insert("sess-abc".to_string(), record1);
+        let record2 = test_session_record("sess-def", "amsterdam", "dev");
+        state.sessions.insert("sess-def".to_string(), record2);
     }
 
     let names = recovering_coworker_names(&persistent_state).await;
@@ -1217,12 +967,11 @@ async fn test_recovering_coworker_names_deduplicates() {
 
     {
         let mut state = persistent_state.lock().await;
-        // Same name in both legacy and session records
-        state
-            .headless_sessions
-            .insert("park".to_string(), test_session_info("park", Some(42)));
-        let record = test_session_record("sess-abc", "park", "dev");
-        state.sessions.insert("sess-abc".to_string(), record);
+        // Two session records with the same preferred name
+        let record1 = test_session_record("sess-old", "park", "dev");
+        state.sessions.insert("sess-old".to_string(), record1);
+        let record2 = test_session_record("sess-new", "park", "dev");
+        state.sessions.insert("sess-new".to_string(), record2);
     }
 
     let names = recovering_coworker_names(&persistent_state).await;
