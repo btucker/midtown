@@ -1040,6 +1040,12 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 if message.to_lowercase().contains("@lead") {
                     state.nudge_lead(&message).await;
                 }
+                // If the message contains @ops, nudge the ops channel lead.
+                // Ops owns daemon operational alerts (stuck PRs, orphaned worktrees,
+                // coworker health) and escalates to @lead when human judgment is required.
+                if message.to_lowercase().contains("@ops") {
+                    state.nudge_ops_channel_lead(&message).await;
+                }
                 let mut msg = Message::system(message);
                 msg.channel = channel;
                 if let Err(e) = state.send_and_broadcast_async(&msg).await {

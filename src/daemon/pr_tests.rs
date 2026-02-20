@@ -205,12 +205,12 @@ fn is_lead_branch_detects_lead_branches() {
 #[test]
 fn stuck_nudge_effects_returns_only_system_message() {
     // Bug: stuck_nudge_effects was returning both PostSystemMessage and NudgeLead,
-    // causing double delivery because the chat monitor already routes @lead mentions
-    // in system messages to the lead.
+    // causing double delivery because the PostSystemMessage handler in effects.rs
+    // already routes @ops mentions to the ops channel lead.
     //
-    // The fix is to only return PostSystemMessage and let the channel's @mention
-    // routing handle the nudge.
-    let message = "@lead PR #42 (Add feature) has been open for 60 minutes without a review";
+    // The fix is to only return PostSystemMessage and let the PostSystemMessage
+    // handler handle the nudge via @ops detection.
+    let message = "@ops PR #42 (Add feature) has been open for 60 minutes without a review";
     let effects = stuck_nudge_effects(message);
 
     // Should only return one effect (PostSystemMessage)
@@ -228,8 +228,8 @@ fn stuck_nudge_effects_returns_only_system_message() {
                 "System message should have warning prefix"
             );
             assert!(
-                msg.contains("@lead"),
-                "System message should preserve @lead mention"
+                msg.contains("@ops"),
+                "System message should preserve @ops mention for ops channel lead routing"
             );
         }
         _ => panic!("Expected PostSystemMessage effect, got {:?}", effects[0]),

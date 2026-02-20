@@ -1859,6 +1859,31 @@ impl DaemonState {
             self.enqueue_headed_nudge("lead", message).await;
         }
     }
+
+    /// Nudge the ops channel lead with a message.
+    ///
+    /// The ops channel lead handles daemon operational alerts (stuck PRs, orphaned PRs,
+    /// coworker health) and escalates to @lead when human judgment is required.
+    /// If the ops channel lead is not currently running, the nudge is dropped — the
+    /// message is still posted to the ops channel so the lead can see it on next start.
+    pub(crate) async fn nudge_ops_channel_lead(&self, message: &str) {
+        let session_name = crate::launch::channel_lead_session_name(OPS_CHANNEL);
+        match self
+            .session_manager
+            .send_message(&session_name, message)
+            .await
+        {
+            Ok(()) => {
+                tracing::debug!(
+                    "Nudged ops channel lead: {}",
+                    message.chars().take(60).collect::<String>()
+                );
+            }
+            Err(e) => {
+                tracing::debug!("Failed to nudge ops channel lead: {}", e);
+            }
+        }
+    }
 }
 
 impl DaemonState {

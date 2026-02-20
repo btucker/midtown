@@ -810,7 +810,7 @@ pub(super) async fn poll_prs_for_issues(
                             if should_nudge {
                                 // Post a system message warning about the orphaned PR issue
                                 let warning = format!(
-                                    "@lead Orphaned PR #{} ({}) - {}: {} (owner: {}, branch: {})",
+                                    "@ops Orphaned PR #{} ({}) - {}: {} (owner: {}, branch: {})",
                                     pr_number,
                                     truncate_str(title, 40),
                                     issue_type,
@@ -857,7 +857,7 @@ pub(super) async fn poll_prs_for_issues(
                             // Post a system message warning about the fully orphaned PR issue
                             // (no extractable owner at all, not even from branch name)
                             let warning = format!(
-                                "@lead Orphaned PR #{} ({}) - {}: {} (no owner, branch: {})",
+                                "@ops Orphaned PR #{} ({}) - {}: {} (no owner, branch: {})",
                                 pr_number,
                                 truncate_str(title, 40),
                                 issue_type,
@@ -1393,7 +1393,7 @@ async fn collect_stuck_condition_effects(
                         "No reviewer could be assigned (all slots may be in use)."
                     };
                     format!(
-                        "@lead PR #{} ({}) has been stuck for {} minutes with no review — {} Consider running `midtown e2e capture` to debug.",
+                        "@ops PR #{} ({}) has been stuck for {} minutes with no review — {} Consider running `midtown e2e capture` to debug.",
                         pr_number,
                         truncate_str(title, 40),
                         age_secs / 60,
@@ -1407,7 +1407,7 @@ async fn collect_stuck_condition_effects(
                         "I couldn't assign a reviewer"
                     };
                     format!(
-                        "@lead PR #{} ({}) has been open for {} minutes with no review — {}",
+                        "@ops PR #{} ({}) has been open for {} minutes with no review — {}",
                         pr_number,
                         truncate_str(title, 40),
                         age_secs / 60,
@@ -1435,14 +1435,14 @@ async fn collect_stuck_condition_effects(
 
                 let nudge = if should_escalate(prior_nudges) {
                     format!(
-                        "@lead PR #{} ({}) has had unresolved review feedback for {} minutes — the author hasn't responded despite repeated nudges. The coworker may be stuck or the task may need reassignment.",
+                        "@ops PR #{} ({}) has had unresolved review feedback for {} minutes — the author hasn't responded despite repeated nudges. The coworker may be stuck or the task may need reassignment.",
                         pr_number,
                         truncate_str(title, 40),
                         stuck_duration.as_secs() / 60,
                     )
                 } else {
                     format!(
-                        "@lead PR #{} ({}) has had unresolved review feedback for {} minutes — the author hasn't pushed new changes",
+                        "@ops PR #{} ({}) has had unresolved review feedback for {} minutes — the author hasn't pushed new changes",
                         pr_number,
                         truncate_str(title, 40),
                         stuck_duration.as_secs() / 60,
@@ -1468,14 +1468,14 @@ async fn collect_stuck_condition_effects(
 
                 let nudge = if should_escalate(prior_nudges) {
                     format!(
-                        "@lead PR #{} ({}) is approved and CI is green but hasn't merged after {} minutes — the author isn't responding to merge nudges. Consider merging manually or investigating the coworker.",
+                        "@ops PR #{} ({}) is approved and CI is green but hasn't merged after {} minutes — the author isn't responding to merge nudges. Consider merging manually or investigating the coworker.",
                         pr_number,
                         truncate_str(title, 40),
                         stuck_duration.as_secs() / 60,
                     )
                 } else {
                     format!(
-                        "@lead PR #{} ({}) is approved and CI is green but hasn't merged after {} minutes — author may need a nudge to merge",
+                        "@ops PR #{} ({}) is approved and CI is green but hasn't merged after {} minutes — author may need a nudge to merge",
                         pr_number,
                         truncate_str(title, 40),
                         stuck_duration.as_secs() / 60,
@@ -1543,9 +1543,9 @@ async fn collect_stuck_condition_effects(
                             channel: Some(OPS_CHANNEL.to_string()),
                         });
                     } else {
-                        // Escalation: coworker didn't respond, notify lead
+                        // Escalation: coworker didn't respond, notify ops
                         let nudge = format!(
-                            "@lead {} has been silent on {} for over {} minutes \
+                            "@ops {} has been silent on {} for over {} minutes \
                              (nudged {} previously with no response)",
                             name,
                             task_info,
@@ -1565,7 +1565,7 @@ async fn collect_stuck_condition_effects(
 
     if nudge_count > 0 {
         info!(
-            "Stuck condition check: nudged lead about {} issue(s)",
+            "Stuck condition check: notified ops about {} issue(s)",
             nudge_count
         );
     }
@@ -1588,10 +1588,10 @@ fn should_escalate(prior_nudges: u32) -> bool {
 
 /// Convert a stuck condition nudge message into effects (system message only).
 ///
-/// The message should contain "@lead" which the chat monitor will detect and
-/// route to the lead via headed intercom. We don't return NudgeLead here because
-/// that would cause double delivery (the channel @mention routing already
-/// handles it).
+/// The message should contain "@ops" which the PostSystemMessage handler in
+/// effects.rs will detect and route to the ops channel lead. We don't return
+/// a separate nudge effect here because that would cause double delivery
+/// (the @ops routing in the PostSystemMessage handler already handles it).
 fn stuck_nudge_effects(message: &str) -> Vec<Effect> {
     vec![Effect::PostSystemMessage {
         message: format!("⚠️ {}", message),

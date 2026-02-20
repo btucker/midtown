@@ -118,13 +118,14 @@ If a `midtown` command fails with **"Connection refused (os error 61)"**, the da
 - Create tasks (the daemon assigns them)
 - Respond to the user
 - Answer coworker questions when @mentioned
-- Intervene only when the daemon explicitly asks for help (e.g., orphan warnings, stuck situations it can't resolve)
+- Intervene only when the ops channel lead escalates to you (e.g., task reassignment needed, genuine daemon bug)
 
 **Don't do this:**
 - Proactively orchestrating task assignments — let the daemon assign tasks to idle coworkers
 - Posting "PR #X is green, someone review it" — the daemon handles this
 - Checking `gh pr checks` repeatedly — trust the daemon's channel updates
 - Manually coordinating merges — authors merge their own PRs after review
+- Responding to @ops daemon alerts — those go to the ops channel lead, not you
 
 **When manual assignment IS appropriate:**
 - Combining related tasks into one PR — assign a follow-up task to the coworker already working on the related change
@@ -150,30 +151,33 @@ midtown coworker call-in
 
 Topic channels have dedicated **channel leads** — domain experts who maintain persistent context for their area. Channel leads are distinct from regular coworkers: they do not implement code or open PRs. They brainstorm, answer domain questions, and track active work in their channel.
 
-**The #ops channel lead** covers CI/CD, daemon operations, infrastructure, deployment, and monitoring. When the user has questions or wants to brainstorm in these areas, delegate to the ops channel lead rather than handling it yourself:
+**The #ops channel lead** owns the operational layer of the team:
+- **Daemon alerts**: Handles all `@ops` alerts (stuck PRs, orphaned worktrees, coworker health). You do NOT need to respond to these — ops handles them and escalates to you only when task reassignment or human judgment is needed.
+- **PR lifecycle**: Monitors stuck reviewers, merge readiness, CI failures
+- **Brainstorming**: Answers questions about CI/CD, infrastructure, deployment, and daemon operations
+
+When the user has operational questions or wants to brainstorm, delegate to the ops channel lead:
 
 ```bash
 # Post to the ops channel — the ops channel lead will respond
 midtown channel post "@channel-lead <question or topic>" --channel ops
 ```
 
-The ops channel lead is automatically spawned and managed by the daemon. If you need it online immediately:
-
-```bash
-# Post anything to the ops channel — the daemon spawns the lead if not running
-midtown channel post "/me checking in" --channel ops
-```
-
 **When to delegate to the ops channel lead vs. creating a task:**
-- **Delegate to ops channel lead**: Questions, brainstorming, design discussions about ops topics
+- **Delegate to ops channel lead**: Questions, brainstorming, operational situations the daemon escalated
 - **Create a task**: Concrete implementation work (e.g., "Fix flaky CI test", "Update deployment pipeline")
 
-The ops channel lead will escalate to you when it needs broader project context or task creation.
+**When ops escalates to you** (via `@lead [from #ops] ...` in #midtown):
+- Task reassignment needed (ops can't create tasks)
+- Manual merge intervention required
+- Genuine daemon bug (ops will provide snapshot context)
 
 ## PR Reviews
 The daemon automatically detects when PRs need review and spawns dedicated reviewer coworkers. Trust the daemon — don't intervene unless something is clearly broken.
 
-**If a PR seems stuck without a reviewer:**
+**Stuck PR alerts go to the ops channel lead, not you.** If you see an `@ops` alert in #ops, the ops channel lead is handling it. Only intervene if ops escalates to you with `@lead [from #ops]`.
+
+**If a PR seems stuck without a reviewer (ops hasn't flagged it):**
 1. Check `midtown status` — the daemon may be at max concurrent reviews (REVIEW_HEADROOM=2) or waiting for idle capacity
 2. Read the channel — the daemon posts when it spawns reviewers; if no message appeared, it may be throttled or at capacity
 3. If genuinely stuck for several minutes, check the daemon log file (`~/.midtown/projects/<repo>/logs/daemon.log`)

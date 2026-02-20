@@ -61,22 +61,35 @@ pub(super) async fn chat_monitor_loop(
                                 if SKIP_SENDERS.iter().any(|&s| s.eq_ignore_ascii_case(&msg.from))
                                     || state.is_user_sender(&msg.from)
                                 {
-                                    // System/daemon messages may contain @lead that still
-                                    // needs to trigger a nudge (e.g., orphaned worktree
-                                    // warnings). Route @lead before skipping.
-                                    // Exclude user messages — already handled in
-                                    // handle_channel_post to avoid double-nudging.
-                                    if !state.is_user_sender(&msg.from)
-                                        && msg.content.to_lowercase().contains("@lead")
-                                    {
-                                        let nudge_text = format!("{}: {}", msg.from, msg.content);
-                                        state.nudge_lead(&nudge_text).await;
-                                        info!("Nudged lead about @lead mention in {} message", msg.from);
-                                        state.send_push_notification(
-                                            &format!("@lead from {}", msg.from),
-                                            &msg.content,
-                                            "mention",
-                                        );
+                                    // System/daemon messages may contain @lead or @ops that still
+                                    // need to trigger a nudge (e.g., stuck PR warnings).
+                                    // Route before skipping. Exclude user messages — already
+                                    // handled in handle_channel_post to avoid double-nudging.
+                                    if !state.is_user_sender(&msg.from) {
+                                        let msg_lower = msg.content.to_lowercase();
+                                        if msg_lower.contains("@lead") {
+                                            let nudge_text =
+                                                format!("{}: {}", msg.from, msg.content);
+                                            state.nudge_lead(&nudge_text).await;
+                                            info!(
+                                                "Nudged lead about @lead mention in {} message",
+                                                msg.from
+                                            );
+                                            state.send_push_notification(
+                                                &format!("@lead from {}", msg.from),
+                                                &msg.content,
+                                                "mention",
+                                            );
+                                        }
+                                        if msg_lower.contains("@ops") {
+                                            let nudge_text =
+                                                format!("{}: {}", msg.from, msg.content);
+                                            state.nudge_ops_channel_lead(&nudge_text).await;
+                                            info!(
+                                                "Nudged ops channel lead about @ops mention in {} message",
+                                                msg.from
+                                            );
+                                        }
                                     }
                                     continue;
                                 }
