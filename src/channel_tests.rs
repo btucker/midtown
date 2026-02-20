@@ -319,7 +319,6 @@ fn test_messages_sorted_by_timestamp() {
         content: "New message".to_string(),
         message_type: MessageType::Text,
         channel: None,
-        source_channel: None,
         session_id: None,
         thread_parent_id: None,
     };
@@ -333,7 +332,6 @@ fn test_messages_sorted_by_timestamp() {
         content: "Old message (delayed)".to_string(),
         message_type: MessageType::Text,
         channel: None,
-        source_channel: None,
         session_id: None,
         thread_parent_id: None,
     };
@@ -508,7 +506,6 @@ fn test_rotate_archives_old_messages() {
                 content: format!("Old message {}", i),
                 message_type: MessageType::Text,
                 channel: None,
-                source_channel: None,
                 session_id: None,
                 thread_parent_id: None,
             };
@@ -524,7 +521,6 @@ fn test_rotate_archives_old_messages() {
                 content: format!("Recent message {}", i),
                 message_type: MessageType::Text,
                 channel: None,
-                source_channel: None,
                 session_id: None,
                 thread_parent_id: None,
             };
@@ -590,7 +586,6 @@ fn test_rotate_resets_cursors() {
             content: "Old".to_string(),
             message_type: MessageType::Text,
             channel: None,
-            source_channel: None,
             session_id: None,
             thread_parent_id: None,
         };
@@ -647,7 +642,6 @@ fn test_needs_rotation() {
             content: "Very old".to_string(),
             message_type: MessageType::Text,
             channel: None,
-            source_channel: None,
             session_id: None,
             thread_parent_id: None,
         };
@@ -1353,7 +1347,6 @@ fn test_rotate_writes_archive_to_history_dir() {
             content: "Old".to_string(),
             message_type: MessageType::Text,
             channel: None,
-            source_channel: None,
             session_id: None,
             thread_parent_id: None,
         };

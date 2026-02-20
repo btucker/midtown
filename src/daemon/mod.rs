@@ -1974,10 +1974,6 @@ impl DaemonState {
     /// contention. When called in an async context (like RPC handlers), this can block the
     /// Tokio runtime thread and prevent other tasks from making progress. This async version
     /// moves the blocking file write to a dedicated thread pool.
-    ///
-    /// Also handles insight cross-posting: when a message containing 💡 emoji is sent to a
-    /// topic channel (not the main channel), a cross-post is created in the main channel
-    /// with source_channel attribution.
     async fn send_and_broadcast_async(&self, message: &Message) -> crate::Result<()> {
         let router = self.channel_router.clone();
         let msg = message.clone();
@@ -1995,14 +1991,6 @@ impl DaemonState {
         }
 
         self.broadcast_web_update(web::channel_message_update(message));
-
-        // Cross-post insights from topic channels to main channel
-        if helpers::should_cross_post_insight(message, &self.repo_name)
-            && let Err(e) = self.cross_post_insight_to_main(message).await
-        {
-            warn!("Failed to cross-post insight to main channel: {}", e);
-            // Don't fail the original send if cross-posting fails
-        }
 
         Ok(())
     }
@@ -2028,44 +2016,6 @@ impl DaemonState {
                 pm.send_to_all(&payload).await;
             });
         }
-    }
-
-    /// Cross-post an insight message to the main channel.
-    ///
-    /// Formats the content as `#channel-name | content` and sends it to the
-    /// main channel with `source_channel` set to the original topic channel name.
-    async fn cross_post_insight_to_main(&self, original: &Message) -> crate::Result<()> {
-        let formatted_content = helpers::format_cross_post_content(original);
-
-        // Create cross-posted message with source_channel attribution
-        let mut cross_post = Message::for_channel(
-            self.channel_router.default_channel_name(),
-            &original.from,
-            &formatted_content,
-            original.message_type.clone(),
-        );
-        cross_post.source_channel = Some(original.channel_name().to_string());
-
-        // Send to main channel using the router
-        let router = self.channel_router.clone();
-        let msg = cross_post.clone();
-        let write_result = tokio::task::spawn_blocking(move || router.send(&msg)).await;
-
-        match write_result {
-            Ok(Ok(())) => {}
-            Ok(Err(e)) => return Err(e),
-            Err(e) => {
-                return Err(crate::Error::InvalidMessage(format!(
-                    "spawn_blocking panic during cross-post: {}",
-                    e
-                )));
-            }
-        }
-
-        // Broadcast the cross-posted message to WebSocket clients
-        self.broadcast_web_update(web::channel_message_update(&cross_post));
-
-        Ok(())
     }
 
     /// Broadcast a coworker status change to WebSocket clients.

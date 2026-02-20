@@ -152,7 +152,6 @@ fn generate_messages(count: usize) -> Vec<Message> {
                 MessageType::Text
             },
             channel: None,
-            source_channel: None,
             session_id: None,
             thread_parent_id: None,
         })
@@ -172,7 +171,6 @@ fn generate_long_messages(count: usize) -> Vec<Message> {
             timestamp: Utc::now(),
             message_type: MessageType::Text,
             channel: None,
-            source_channel: None,
             session_id: None,
             thread_parent_id: None,
         })
@@ -193,7 +191,6 @@ fn test_single_message_render_latency() {
         timestamp: Utc::now(),
         message_type: MessageType::Text,
         channel: None,
-        source_channel: None,
         session_id: None,
         thread_parent_id: None,
     };
@@ -637,7 +634,6 @@ fn test_unicode_message_rendering() {
             timestamp: Utc::now(),
             message_type: MessageType::Text,
             channel: None,
-            source_channel: None,
             session_id: None,
             thread_parent_id: None,
         })

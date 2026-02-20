@@ -388,10 +388,6 @@
     return msg.msg_type === 'insight' || msg.type === 'insight'
   }
 
-  function isCrossPost(msg) {
-    return msg.source_channel && msg.source_channel !== msg.channel
-  }
-
   function formatTime(timestamp) {
     try {
       const date = new Date(timestamp)
@@ -658,15 +654,10 @@
             <div class="h-[1.4em]"></div>
           {/if}
           {#if senderChanged(channelMessages, i)}
-            <!-- Author line: bold name + current task + cross-post indicator -->
+            <!-- Author line: bold name + current task -->
             <div
-              class="mt-1 whitespace-nowrap overflow-hidden text-ellipsis flex items-center gap-[7px] {isInsight(msg) && isCrossPost(msg) ? 'py-[5px] px-[10px] -mt-[5px] -mx-[10px] mb-[5px] border-l-[3px] border-l-insight bg-insight/12 rounded-[5px]' : ''}"
+              class="mt-1 whitespace-nowrap overflow-hidden text-ellipsis flex items-center gap-[7px]"
             >
-              {#if isInsight(msg) && isCrossPost(msg)}
-                <span class="text-[#ffaf5f] text-[1.05rem]">&#9733;</span>
-                <span class="text-[#5fafaf] text-[0.88rem] font-semibold">from <a class="channel-link text-inherit no-underline hover:underline" data-channel={msg.source_channel} href="#{msg.source_channel}">#{msg.source_channel}</a></span>
-                <span class="text-[#606060]">|</span>
-              {/if}
               <span class="font-bold" style="color: {getSenderColor(msg.from)}">{msg.from}</span>
               {#if currentTasks[msg.from.toLowerCase()]}
                 <span class="text-muted-foreground"> - {currentTasks[msg.from.toLowerCase()]}</span>

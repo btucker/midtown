@@ -241,9 +241,6 @@ pub struct ChannelMessageData {
     /// Channel name (defaults to "midtown" for backward compat)
     #[serde(default = "default_channel")]
     pub channel: String,
-    /// Optional source channel for cross-posted insights (None if not a cross-post)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub source_channel: Option<String>,
     /// Optional thread parent message ID. When set, this message is a reply
     /// in a thread started by the message with this ID.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -537,7 +534,6 @@ async fn api_channel_history(
                     timestamp: m.timestamp.to_rfc3339(),
                     msg_type: format!("{:?}", m.message_type).to_lowercase(),
                     channel,
-                    source_channel: m.source_channel,
                     thread_parent_id: m.thread_parent_id,
                     reply_count: None,
                     last_reply: None,
@@ -581,7 +577,6 @@ async fn api_channel_history(
                         timestamp: m.timestamp.to_rfc3339(),
                         msg_type: format!("{:?}", m.message_type).to_lowercase(),
                         channel,
-                        source_channel: m.source_channel,
                         thread_parent_id: m.thread_parent_id,
                         reply_count,
                         last_reply,
@@ -1917,7 +1912,6 @@ pub fn channel_message_update(message: &Message) -> WebUpdate {
         timestamp: message.timestamp.to_rfc3339(),
         msg_type: format!("{:?}", message.message_type).to_lowercase(),
         channel: message.channel_name().to_string(),
-        source_channel: message.source_channel.clone(),
         thread_parent_id: message.thread_parent_id.clone(),
         reply_count: None,
         last_reply: None,

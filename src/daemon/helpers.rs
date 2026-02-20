@@ -472,37 +472,6 @@ pub fn is_gh_auth_error(stderr: &str) -> bool {
         || stderr_lower.contains("not logged in")
 }
 
-// ---------------------------------------------------------------------------
-// Insight cross-posting helpers
-// ---------------------------------------------------------------------------
-
-/// Format the content of an insight message for cross-posting to the main channel.
-///
-/// Produces the format: `#channel-name | insight content`.
-/// The author is omitted because all display surfaces (CLI, TUI, web UI)
-/// already render the `from` field as a sender label.
-pub(super) fn format_cross_post_content(message: &crate::message::Message) -> String {
-    format!("#{} | {}", message.channel_name(), message.content)
-}
-
-/// Check if a message should be cross-posted to the main channel as an insight.
-///
-/// Returns true if:
-/// - The message contains the 💡 emoji (insight marker)
-/// - The message is being sent to a topic channel (not the main channel)
-pub(super) fn should_cross_post_insight(
-    message: &crate::message::Message,
-    main_channel_name: &str,
-) -> bool {
-    // Check if message contains insight marker (💡 emoji)
-    let has_insight_marker = message.content.contains('💡');
-
-    // Check if message is being sent to a topic channel (not main)
-    let is_topic_channel = message.channel_name() != main_channel_name;
-
-    has_insight_marker && is_topic_channel
-}
-
 /// Extract task ID from a message content.
 ///
 /// Looks for patterns like "Task !42", "task !123", "!99".

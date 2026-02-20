@@ -89,9 +89,6 @@ pub struct Message {
     /// but always initialized in constructors.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub channel: Option<String>,
-    /// Optional source channel for cross-posts (None if not a cross-post)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub source_channel: Option<String>,
     /// Optional Claude session ID for disambiguation when multiple sessions
     /// share the same coworker name. `None` for messages from system, lead,
     /// or legacy messages before session tracking was added.
@@ -128,7 +125,6 @@ impl Message {
             content: content.into(),
             message_type,
             channel: None,
-            source_channel: None,
             session_id: None,
             thread_parent_id: None,
         }
@@ -157,7 +153,6 @@ impl Message {
             content: content.into(),
             message_type,
             channel: Some(channel.into()),
-            source_channel: None,
             session_id: None,
             thread_parent_id: None,
         }
@@ -339,7 +334,6 @@ mod tests {
     fn test_channel_defaults_to_midtown() {
         let msg = Message::text("agent1", "Hello");
         assert_eq!(msg.channel_name(), "midtown");
-        assert_eq!(msg.source_channel, None);
     }
 
     #[test]
@@ -378,7 +372,6 @@ mod tests {
             content: "Test".to_string(),
             message_type: MessageType::Text,
             channel: None,
-            source_channel: None,
             session_id: None,
             thread_parent_id: None,
         };

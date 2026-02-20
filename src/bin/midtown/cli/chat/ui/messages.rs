@@ -57,8 +57,6 @@ impl MessageRenderContext {
 
         let extra_indent = if msg.message_type == MessageType::Action {
             2 // "* "
-        } else if let Some(ref source_channel) = msg.source_channel {
-            2 + 6 + source_channel.chars().count() + 3 // "★ from #channel | "
         } else {
             0
         };
@@ -133,21 +131,6 @@ pub fn build_first_content_line(
                     Style::default().fg(Color::DarkGray),
                 ),
                 Span::styled("* ", Style::default().fg(ctx.color)),
-            ],
-            parsed_line,
-        )
-    } else if let Some(ref source_channel) = msg.source_channel {
-        prepend_spans(
-            vec![
-                Span::styled(
-                    format!(" {} ", ctx.time),
-                    Style::default().fg(Color::DarkGray),
-                ),
-                Span::styled("★ ", Style::default().fg(Color::Yellow)),
-                Span::styled(
-                    format!("from #{} | ", source_channel),
-                    Style::default().fg(Color::DarkGray),
-                ),
             ],
             parsed_line,
         )
@@ -463,7 +446,7 @@ mod tests {
             timestamp: Utc::now(),
             message_type: MessageType::Text,
             channel: None,
-            source_channel: None,
+
             session_id: None,
             thread_parent_id: None,
         };
@@ -474,7 +457,7 @@ mod tests {
             timestamp: Utc::now(),
             message_type: MessageType::Text,
             channel: None,
-            source_channel: None,
+
             session_id: None,
             thread_parent_id: None,
         };
@@ -519,7 +502,7 @@ mod tests {
             timestamp: Utc::now(),
             message_type: MessageType::Text,
             channel: None,
-            source_channel: None,
+
             session_id: None,
             thread_parent_id: None,
         };
@@ -530,7 +513,7 @@ mod tests {
             timestamp: Utc::now(),
             message_type: MessageType::Text,
             channel: None,
-            source_channel: None,
+
             session_id: None,
             thread_parent_id: None,
         };
@@ -572,7 +555,7 @@ mod tests {
             timestamp: Utc::now(),
             message_type: MessageType::Action,
             channel: None,
-            source_channel: None,
+
             session_id: None,
             thread_parent_id: None,
         };
@@ -639,7 +622,7 @@ mod tests {
             timestamp: Utc::now(),
             message_type: MessageType::System,
             channel: None,
-            source_channel: None,
+
             session_id: None,
             thread_parent_id: None,
         };
@@ -672,7 +655,7 @@ mod tests {
                 timestamp: Utc::now(),
                 message_type: MessageType::Text,
                 channel: None,
-                source_channel: None,
+
                 session_id: None,
                 thread_parent_id: None,
             })
@@ -751,7 +734,7 @@ mod tests {
                 timestamp: Utc::now(),
                 message_type: MessageType::Text,
                 channel: None,
-                source_channel: None,
+
                 session_id: None,
                 thread_parent_id: None,
             })
@@ -875,7 +858,7 @@ mod tests {
             timestamp: Utc::now(),
             message_type: MessageType::Text,
             channel: None,
-            source_channel: None,
+
             session_id: None,
             thread_parent_id: None,
         };
@@ -895,7 +878,7 @@ mod tests {
             timestamp: Utc::now(),
             message_type: MessageType::Text,
             channel: None,
-            source_channel: None,
+
             session_id: None,
             thread_parent_id: None,
         };
@@ -915,7 +898,7 @@ mod tests {
             timestamp: Utc::now(),
             message_type: MessageType::Text,
             channel: None,
-            source_channel: None,
+
             session_id: None,
             thread_parent_id: None,
         };
@@ -935,7 +918,7 @@ mod tests {
             timestamp: Utc::now(),
             message_type: MessageType::Text,
             channel: None,
-            source_channel: None,
+
             session_id: None,
             thread_parent_id: None,
         };
@@ -976,7 +959,7 @@ mod tests {
             timestamp: Utc::now(),
             message_type: MessageType::Text,
             channel: None,
-            source_channel: None,
+
             session_id: None,
             thread_parent_id: None,
         };
@@ -995,7 +978,7 @@ mod tests {
             timestamp: Utc::now(),
             message_type: MessageType::Text,
             channel: None,
-            source_channel: None,
+
             session_id: None,
             thread_parent_id: None,
         };
@@ -1022,7 +1005,7 @@ mod tests {
             timestamp: Utc::now(),
             message_type: MessageType::Text,
             channel: None,
-            source_channel: None,
+
             session_id: None,
             thread_parent_id: None,
         };
@@ -1061,7 +1044,7 @@ mod tests {
             timestamp: Utc::now(),
             message_type: MessageType::Text,
             channel: None,
-            source_channel: None,
+
             session_id: None,
             thread_parent_id: None,
         };
@@ -1117,7 +1100,7 @@ mod tests {
             timestamp: Utc::now(),
             message_type: MessageType::Text,
             channel: None,
-            source_channel: None,
+
             session_id: None,
             thread_parent_id: None,
         };
@@ -1149,7 +1132,7 @@ mod tests {
             timestamp: Utc::now(),
             message_type: MessageType::Text,
             channel: None,
-            source_channel: None,
+
             session_id: None,
             thread_parent_id: None,
         };
@@ -1164,68 +1147,6 @@ mod tests {
         assert!(
             first_line_content.contains("Fix something"),
             "Should find task with case-insensitive lookup"
-        );
-    }
-
-    #[test]
-    fn test_render_crosspost_message() {
-        let mut msg = test_message("The tower::Layer stack composes auth providers independently.");
-        msg.source_channel = Some("auth-refactor".to_string());
-
-        let current_tasks = HashMap::new();
-
-        let lines = render_message(&msg, 80, None, &current_tasks, None, &[]);
-
-        assert!(
-            lines.len() >= 2,
-            "Expected at least 2 lines, got {}",
-            lines.len()
-        );
-
-        let content_line = &lines[1];
-        let spans = &content_line.spans;
-
-        let star_span = spans.iter().find(|s| s.content.contains('★'));
-        assert!(
-            star_span.is_some(),
-            "Expected to find ★ prefix in content line"
-        );
-
-        let channel_span = spans.iter().find(|s| s.content.contains("#auth-refactor"));
-        assert!(
-            channel_span.is_some(),
-            "Expected to find #auth-refactor channel attribution"
-        );
-    }
-
-    #[test]
-    fn test_render_crosspost_utf8_channel_name() {
-        let long_content = "First line of content that is long enough to wrap onto a second continuation line for testing alignment";
-        let mut msg = test_message(long_content);
-        msg.source_channel = Some("design-café".to_string());
-
-        let current_tasks = HashMap::new();
-        let width = 60;
-
-        let lines = render_message(&msg, width, None, &current_tasks, None, &[]);
-
-        assert!(
-            lines.len() >= 3,
-            "Expected at least 3 lines (sender + 2 content), got {}",
-            lines.len()
-        );
-
-        let continuation_line = &lines[2];
-        let first_span_content = &continuation_line.spans[0].content;
-
-        // "design-café" has 11 chars, so prefix_len = 2+6+11+3 = 22
-        let expected_indent = 7 + 22; // TIMESTAMP_GUTTER_WIDTH + prefix_len
-        assert_eq!(
-            first_span_content.len(),
-            expected_indent,
-            "Continuation indent should be {} spaces, got {} (possible byte/char mismatch)",
-            expected_indent,
-            first_span_content.len()
         );
     }
 
@@ -1316,7 +1237,7 @@ mod tests {
             timestamp: chrono::Utc::now(),
             message_type: MessageType::Text,
             channel: None,
-            source_channel: None,
+
             session_id: None,
             thread_parent_id: None,
         }
