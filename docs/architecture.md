@@ -135,6 +135,36 @@ Channel leads are headless Claude Code sessions attached to individual topic cha
 
 **Coworker guidance:** Coworkers are instructed to `@{channel-name}` for domain questions (e.g., architecture, design decisions) and to reserve `@lead` for coordination, task, and priority questions.
 
+## Channel Storage Layout
+
+Each channel is stored as a directory under `~/.midtown/projects/<repo>/channels/`:
+
+```
+channels/
+  midtown/                          # main project channel
+    history/
+      current.jsonl                 # active message file
+      2026-02-18.jsonl              # rotated daily archive
+    notes/                          # channel lead domain knowledge (markdown)
+    cursors/
+      park.json                     # per-agent read position
+  pr-42/                            # topic channel
+    history/current.jsonl
+    notes/
+    cursors/
+  old-feature.archived/             # archived channel (.archived suffix)
+    history/current.jsonl
+    notes/
+    cursors/
+```
+
+**Auto-migration:** On first `Channel::new()` per process, `auto_migrate_channels()` converts legacy layouts:
+- `channel.jsonl` → `channels/midtown/history/current.jsonl` (V0→V3)
+- `channels/<name>.jsonl` → `channels/<name>/history/current.jsonl` (V2→V3)
+- `cursors/<agent>.json` → `channels/midtown/cursors/<agent>.json`
+
+Migration runs once per `base_dir` per process (via `OnceLock`) and is idempotent.
+
 ## Channel Sync
 
 Coworkers stay synchronized via a Claude Code Stop hook. When Claude pauses, the hook reads new channel messages and checks for unclaimed tasks. This means coworkers automatically receive updates at natural pause points.

@@ -70,6 +70,12 @@ impl Cursor {
     ///
     /// Cursors are stored at `channels/<channel>/cursors/<agent>.json`,
     /// colocated with the channel directory they track.
+    ///
+    /// This relies on `Channel::new()` having run first to create the directory
+    /// structure and migrate legacy cursors from `cursors/<agent>.json`. The daemon
+    /// always creates channels on startup before any cursor loading occurs, so the
+    /// migration guarantee holds. If called before `Channel::new()`, a missing
+    /// cursor file results in a fresh cursor at position 0 (agent re-reads all messages).
     pub fn file_path(base_dir: &Path, channel: &str, agent: &str) -> PathBuf {
         base_dir
             .join("channels")
