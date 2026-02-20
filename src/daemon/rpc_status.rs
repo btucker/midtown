@@ -94,18 +94,24 @@ pub(super) async fn handle_status(id: RequestId, state: &DaemonState) -> Respons
         .filter(|t| t.get("status").and_then(|s| s.as_str()) == Some("pending"))
         .count();
 
-    // Get GitHub API rate limit state
-    let rate_limit = {
+    // Get GitHub API rate limit state and channel lead names together to avoid
+    // locking persistent_state twice.
+    let (rate_limit, channel_lead_names) = {
         let ps = state.persistent_state.lock().await;
-        ps.github.rate_limit.clone()
+        let names: std::collections::HashSet<String> =
+            ps.channel_lead_sessions.keys().cloned().collect();
+        (ps.github.rate_limit.clone(), names)
     };
+
+    let (coworkers, active_coworker_count) =
+        tag_channel_leads_and_count(coworkers, &channel_lead_names);
 
     Response::success(
         id,
         serde_json::json!({
             "success": true,
             "daemon_running": true,
-            "active_coworkers": state.coworkers.count(),
+            "active_coworkers": active_coworker_count,
             "max_coworkers": state.max_coworkers,
             "max_dev_coworkers": state.max_coworkers.saturating_sub(REVIEW_HEADROOM).max(1),
             "pending_tasks": pending_count,
@@ -206,6 +212,39 @@ fn get_recent_channel_activity() -> Vec<serde_json::Value> {
         }
         Err(_) => Vec::new(),
     }
+}
+
+/// Tag each coworker JSON value with `is_channel_lead` and return the count
+/// of non-lead coworkers. Channel leads are persistent domain experts and
+/// do not consume coworker slots.
+fn tag_channel_leads_and_count(
+    coworkers: Vec<serde_json::Value>,
+    channel_lead_names: &std::collections::HashSet<String>,
+) -> (Vec<serde_json::Value>, usize) {
+    let coworkers: Vec<serde_json::Value> = coworkers
+        .into_iter()
+        .map(|mut cw| {
+            let name = cw
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let is_lead = channel_lead_names.contains(&name);
+            if let Some(obj) = cw.as_object_mut() {
+                obj.insert("is_channel_lead".to_string(), is_lead.into());
+            }
+            cw
+        })
+        .collect();
+    let active_count = coworkers
+        .iter()
+        .filter(|cw| {
+            !cw.get("is_channel_lead")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+        })
+        .count();
+    (coworkers, active_count)
 }
 
 #[path = "rpc_status_tests.rs"]
