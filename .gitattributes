@@ -1,0 +1,5 @@
+# Suppress diffs for large auto-generated test fixture files.
+# These files can be 10,000+ lines and cause reviewer context limit failures
+# when included in `gh pr diff` output. Marking them as non-diff keeps
+# them tracked in git while preventing reviewers from processing their content.
+tests/fixtures/snapshot/*.json -diff

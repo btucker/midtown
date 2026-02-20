@@ -40,6 +40,21 @@ COMMENT_ID=$(echo "$COMMENT_URL" | grep -o '[0-9]*$')
 midtown state --progress 20
 ```
 
+LARGE FILE CHECK: Before reviewing, detect any large JSON fixture files in the PR that would cause context limit failures. These files are auto-generated test snapshots — they don't need line-by-line code review, and attempting to read them risks exhausting your context window.
+
+```bash
+# Find JSON files with >500 added+deleted lines
+LARGE_JSON_FILES=$(gh pr view {pr_number} --json files \
+  --jq '[.files[] | select(.path | test("\\.json$")) | select((.additions + .deletions) > 500) | "\(.path) (+\(.additions)/-\(.deletions) lines)"] | join(", ")')
+echo "Large JSON files: $LARGE_JSON_FILES"
+```
+
+If `$LARGE_JSON_FILES` is non-empty:
+- Update your initial PR comment to add a line: `**Note**: Skipping large fixture file(s): {$LARGE_JSON_FILES} — auto-generated snapshots, trusting CI tests pass.`
+- Do NOT read or process the content of these files at any point in the review.
+- When the code-review skill runs, disregard any findings that are specific to those JSON fixture files — they are auto-generated and not hand-written code.
+- Do NOT call `gh pr diff` without verifying first that the output will be manageable. If large JSON files exist, use `gh pr view --json files` for file-level analysis instead of reading the full diff.
+
 **WHY NO FRONTMATTER AND DIFFERENT HEADING**: The initial comment deliberately:
 1. Omits `<!-- midtown: {name} -->` frontmatter
 2. Uses "Review Status" instead of "Code Review" as the heading
