@@ -44,6 +44,11 @@ const DEFAULT_CLUSTERER_PROMPT: &str = include_str!("../agents/clusterer.md");
 /// Embedded default for the channel lead system prompt template.
 const DEFAULT_CHANNEL_LEAD_PROMPT: &str = include_str!("../agents/channel-lead.md");
 
+/// Embedded default for the ops channel lead additional instructions.
+///
+/// Appended to the generic channel lead prompt when the channel is "ops".
+const DEFAULT_OPS_CHANNEL_LEAD_PROMPT: &str = include_str!("../agents/ops-channel-lead.md");
+
 /// Find the git repository root directory.
 fn git_repo_root() -> Option<PathBuf> {
     let output = std::process::Command::new("git")
@@ -386,14 +391,26 @@ pub fn clusterer_system_prompt() -> String {
 /// actual channel name, and `{domain_context}` is replaced with daemon-injected
 /// context (channel description, active tasks, recent PRs).
 ///
+/// For the "ops" channel, additional ops-specific instructions from
+/// `agents/ops-channel-lead.md` are appended.
+///
 /// Note: `channel_name` is embedded into bash command examples in the template,
 /// so it must be a shell-safe identifier (alphanumeric + hyphens).
 pub fn channel_lead_system_prompt(channel_name: &str, domain_context: &str) -> String {
     let template = load_prompt_file("channel-lead.md")
         .unwrap_or_else(|| DEFAULT_CHANNEL_LEAD_PROMPT.to_string());
-    template
+    let mut prompt = template
         .replace("{channel_name}", channel_name)
-        .replace("{domain_context}", domain_context)
+        .replace("{domain_context}", domain_context);
+
+    // Append ops-specific instructions for the ops channel lead.
+    if channel_name == "ops" {
+        let ops_extra = load_prompt_file("ops-channel-lead.md")
+            .unwrap_or_else(|| DEFAULT_OPS_CHANNEL_LEAD_PROMPT.to_string());
+        prompt = format!("{prompt}\n\n{ops_extra}");
+    }
+
+    prompt
 }
 
 #[cfg(test)]

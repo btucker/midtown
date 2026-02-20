@@ -1741,7 +1741,7 @@ pub fn decide_orphan_cleanup(data: &OrphanCleanupData) -> Vec<Effect> {
     if !data.due_for_warning.is_empty() {
         let names_list = data.due_for_warning.join(", ");
         let nudge_text = format!(
-            "⚠️ @lead Orphaned worktrees with unmerged commits (not on any PR): {}. \
+            "⚠️ @ops Orphaned worktrees with unmerged commits (not on any PR): {}. \
              Please investigate and decide whether to merge or delete these branches.",
             names_list
         );
@@ -1749,9 +1749,6 @@ pub fn decide_orphan_cleanup(data: &OrphanCleanupData) -> Vec<Effect> {
         effects.push(Effect::PostSystemMessage {
             message: nudge_text.clone(),
             channel: Some(OPS_CHANNEL.to_string()),
-        });
-        effects.push(Effect::NudgeLead {
-            message: nudge_text.clone(),
         });
         effects.push(Effect::SendPushNotification {
             title: "Orphaned worktrees need attention".to_string(),
