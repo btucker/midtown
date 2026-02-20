@@ -31,6 +31,16 @@ pub enum ChannelCommand {
         #[arg(long)]
         channel: Option<String>,
     },
+    /// Create a new channel
+    Create {
+        /// Name of the channel to create
+        name: String,
+    },
+    /// Archive a channel
+    Archive {
+        /// Name of the channel to archive
+        name: String,
+    },
 }
 
 pub fn handle(cmd: &ChannelCommand, client: &DaemonClient) -> Result<Response, String> {
@@ -51,5 +61,7 @@ pub fn handle(cmd: &ChannelCommand, client: &DaemonClient) -> Result<Response, S
             since,
             channel,
         } => client.channel_read(*all, last.as_ref(), since.as_deref(), channel.as_deref()),
+        ChannelCommand::Create { name } => client.channel_create(name),
+        ChannelCommand::Archive { name } => client.channel_archive(name),
     }
 }

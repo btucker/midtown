@@ -755,6 +755,77 @@ async fn test_user_message_with_dead_lead_clears_cooldown() {
     );
 }
 
+/// Verify that channel.create creates a new channel successfully.
+#[tokio::test]
+async fn test_handle_channel_create_new_channel() {
+    let (state, _tmp, _guard) = make_test_state("midtown-test-channel-create");
+
+    let response = super::handle_channel_create(1_i64.into(), "new-channel", &state);
+    assert!(response.error.is_none(), "channel.create should succeed");
+    let result = response.result.unwrap();
+    assert_eq!(result["success"].as_bool(), Some(true));
+}
+
+/// Verify that channel.create is idempotent: creating an existing channel succeeds.
+#[tokio::test]
+async fn test_handle_channel_create_idempotent() {
+    let (state, _tmp, _guard) = make_test_state("midtown-test-channel-create-idempotent");
+
+    // Create twice — second call should also succeed
+    let r1 = super::handle_channel_create(1_i64.into(), "my-channel", &state);
+    assert!(r1.error.is_none(), "first create should succeed");
+    let r2 = super::handle_channel_create(2_i64.into(), "my-channel", &state);
+    assert!(
+        r2.error.is_none(),
+        "second create (idempotent) should succeed"
+    );
+}
+
+/// Verify that channel.archive archives an existing channel.
+#[tokio::test]
+async fn test_handle_channel_archive_existing_channel() {
+    let (state, _tmp, _guard) = make_test_state("midtown-test-channel-archive");
+
+    // Create the channel first
+    let r = super::handle_channel_create(1_i64.into(), "old-channel", &state);
+    assert!(r.error.is_none(), "create should succeed");
+
+    // Archive it
+    let response = super::handle_channel_archive(2_i64.into(), "old-channel", &state);
+    assert!(response.error.is_none(), "channel.archive should succeed");
+    let result = response.result.unwrap();
+    assert_eq!(result["success"].as_bool(), Some(true));
+}
+
+/// Verify that channel.archive rejects archiving a non-existent channel.
+#[tokio::test]
+async fn test_handle_channel_archive_nonexistent_channel() {
+    let (state, _tmp, _guard) = make_test_state("midtown-test-channel-archive-nonexistent");
+
+    let response = super::handle_channel_archive(1_i64.into(), "does-not-exist", &state);
+    assert!(
+        response.error.is_some(),
+        "archiving a non-existent channel should return an error"
+    );
+    let err = response.error.unwrap();
+    assert!(
+        err.message.contains("does not exist"),
+        "error message should indicate the channel does not exist"
+    );
+}
+
+/// Verify that channel.archive rejects archiving the 'midtown' channel.
+#[tokio::test]
+async fn test_handle_channel_archive_rejects_midtown() {
+    let (state, _tmp, _guard) = make_test_state("midtown-test-channel-archive-midtown");
+
+    let response = super::handle_channel_archive(1_i64.into(), "midtown", &state);
+    assert!(
+        response.error.is_some(),
+        "archiving 'midtown' channel should return an error"
+    );
+}
+
 /// Verify that a second rapid user message within 30s does NOT trigger expedite again
 /// (cooldown dedup prevents spam).
 #[tokio::test]

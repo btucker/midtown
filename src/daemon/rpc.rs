@@ -4,7 +4,7 @@
 //! domain-specific handler modules:
 //!
 //! - `rpc_auth` — authentication switching
-//! - `rpc_channel` — channel post/read
+//! - `rpc_channel` — channel post/read/create/archive/list
 //! - `rpc_coworker` — coworker lifecycle (spawn, break, list, view, state, nudge)
 //! - `rpc_headless` — headless execution and snapshot
 //! - `rpc_headed` — headed wrapper intercom (register/poll/ack)
@@ -428,6 +428,16 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
         "channel.list" => {
             let include_archived = params.bool_or("include_archived", false);
             super::rpc_channel::handle_channel_list(request.id, include_archived, state)
+        }
+
+        "channel.create" => {
+            let name = require_str!(params, "name", request.id);
+            super::rpc_channel::handle_channel_create(request.id, name, state)
+        }
+
+        "channel.archive" => {
+            let name = require_str!(params, "name", request.id);
+            super::rpc_channel::handle_channel_archive(request.id, name, state)
         }
 
         // ---- Tasks ----

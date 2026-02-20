@@ -1,7 +1,8 @@
 //! Channel-related RPC handlers.
 //!
-//! Handles `channel.post` and `channel.read` methods, including IRC-style `/me`
-//! actions, review note deduplication, @mention routing, and notification delivery.
+//! Handles `channel.post`, `channel.read`, `channel.create`, `channel.archive`,
+//! and `channel.list` methods, including IRC-style `/me` actions, review note
+//! deduplication, @mention routing, and notification delivery.
 
 use std::time::{Duration, Instant};
 
@@ -363,6 +364,66 @@ pub(super) async fn handle_channel_post(
             "message": "Message posted to channel",
         }),
     )
+}
+
+/// Handle channel.create RPC method.
+///
+/// Creates a new channel directory and history file.
+/// If the channel already exists, this is a no-op (idempotent).
+pub(super) fn handle_channel_create(id: RequestId, name: &str, state: &DaemonState) -> Response {
+    let base_dir = state.channel_router.base_dir();
+    match crate::Channel::create(base_dir, name) {
+        Ok(_) => Response::success(
+            id,
+            serde_json::json!({
+                "success": true,
+                "message": format!("Channel '{}' created", name),
+            }),
+        ),
+        Err(e) => {
+            error!("Failed to create channel '{}': {}", name, e);
+            Response::error(id, RpcError::new(-32603, e.to_string()))
+        }
+    }
+}
+
+/// Handle channel.archive RPC method.
+///
+/// Archives a channel by renaming its directory from `<name>/` to `<name>.archived/`.
+/// Returns an error if the channel does not exist or if trying to archive 'midtown'.
+pub(super) fn handle_channel_archive(id: RequestId, name: &str, state: &DaemonState) -> Response {
+    let base_dir = state.channel_router.base_dir();
+
+    // Check existence before calling Channel::new(), which would create the
+    // directory if it doesn't exist, silently archiving an empty ghost channel.
+    let channel_dir = base_dir.join("channels").join(name);
+    if !channel_dir.exists() {
+        return Response::error(
+            id,
+            RpcError::new(-32602, format!("Channel '{}' does not exist", name)),
+        );
+    }
+
+    let channel = match crate::Channel::new(base_dir, name) {
+        Ok(ch) => ch,
+        Err(e) => {
+            error!("Failed to open channel '{}' for archiving: {}", name, e);
+            return Response::error(id, RpcError::new(-32603, e.to_string()));
+        }
+    };
+    match channel.archive() {
+        Ok(()) => Response::success(
+            id,
+            serde_json::json!({
+                "success": true,
+                "message": format!("Channel '{}' archived", name),
+            }),
+        ),
+        Err(e) => {
+            error!("Failed to archive channel '{}': {}", name, e);
+            Response::error(id, RpcError::new(-32603, e.to_string()))
+        }
+    }
 }
 
 /// Handle channel.list RPC method.
