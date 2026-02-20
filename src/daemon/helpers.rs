@@ -129,7 +129,7 @@ pub fn extract_mentions(content: &str) -> Vec<String> {
 /// - Escalation keywords (blocked, help)
 ///
 /// Insights are handled separately via cross-posting and not included here.
-pub fn should_route_to_main_channel(content: &str) -> bool {
+pub fn should_route_to_main_channel(content: &str, project_name: &str) -> bool {
     let content_lower = content.to_lowercase();
 
     // @user mentions - always go to main for visibility
@@ -137,8 +137,12 @@ pub fn should_route_to_main_channel(content: &str) -> bool {
         return true;
     }
 
-    // @lead mentions - task requests, questions, escalations
+    // @lead or @{project_name} mentions - task requests, questions, escalations
     if content_lower.contains("@lead") {
+        return true;
+    }
+    let lead_mention = format!("@{}", project_name).to_lowercase();
+    if content_lower.contains(&lead_mention) {
         return true;
     }
 
