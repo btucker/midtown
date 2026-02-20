@@ -45,15 +45,16 @@ pub fn extract_lead_text(events: &[StreamEvent]) -> String {
 pub fn process_lead_output(
     events: &HashMap<String, Vec<StreamEvent>>,
     channel_lead_sessions: &HashMap<String, String>,
+    main_lead_session_name: &str,
 ) -> Vec<Effect> {
     let mut effects = Vec::new();
 
     // Main lead → posts to main channel.
-    if let Some(lead_events) = events.get("lead") {
+    if let Some(lead_events) = events.get(main_lead_session_name) {
         let trimmed = extract_lead_text(lead_events).trim().to_string();
         if !trimmed.is_empty() {
             effects.push(Effect::PostToChannel {
-                sender: "lead".to_string(),
+                sender: main_lead_session_name.to_string(),
                 message: trimmed,
                 channel: None,
             });
@@ -87,16 +88,17 @@ pub fn process_lead_output(
 pub fn process_universal_events(
     events: &HashMap<String, Vec<StreamEvent>>,
     channel_lead_sessions: &HashMap<String, String>,
+    main_lead_session_name: &str,
 ) -> Vec<Effect> {
     let timestamp = chrono::Utc::now();
     let mut effects = Vec::new();
 
     // Main lead → shown in the main channel (channel = None).
-    if let Some(lead_events) = events.get("lead") {
+    if let Some(lead_events) = events.get(main_lead_session_name) {
         let items = crate::universal_events::claude::extract_tool_events(lead_events, timestamp);
         if !items.is_empty() {
             effects.push(Effect::BroadcastUniversalItems {
-                agent_name: "lead".to_string(),
+                agent_name: main_lead_session_name.to_string(),
                 channel: None,
                 items,
             });

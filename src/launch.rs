@@ -302,7 +302,7 @@ impl LaunchConfig {
                 crate::config::ExecutionRole::Lead,
             );
             LaunchConfig {
-                name: "lead".to_string(),
+                name: repo.clone(),
                 session_mode: SessionMode::Fresh,
                 role: CoworkerRole::Lead,
                 initial_prompt: Some(crate::agents::main_lead_initial_prompt(&repo, &repo)),

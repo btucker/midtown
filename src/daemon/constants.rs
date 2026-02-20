@@ -207,8 +207,7 @@ pub(super) const OPS_CHANNEL: &str = "ops";
 pub(super) const SKIP_SENDERS: &[&str] = &["midtown", "system", "github", "user", "architect"];
 
 /// Senders that are considered "system" (not coworkers) for channel post handling.
-pub(super) const SYSTEM_SENDERS: &[&str] =
-    &["Lead", "lead", "github", "midtown", "system", "GitHub"];
+pub(super) const SYSTEM_SENDERS: &[&str] = &["github", "midtown", "system", "GitHub"];
 
 /// All valid coworker names for @mention detection.
 pub(super) const COWORKER_NAMES: &[&str] = &[

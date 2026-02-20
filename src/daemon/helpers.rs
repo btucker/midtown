@@ -118,8 +118,8 @@ pub fn extract_mentions(content: &str) -> Vec<String> {
 }
 
 /// Check if a sender is a coworker (not Lead or system).
-pub fn is_coworker_sender(from: &str) -> bool {
-    !SYSTEM_SENDERS.contains(&from)
+pub fn is_coworker_sender(from: &str, main_lead_name: &str) -> bool {
+    !SYSTEM_SENDERS.contains(&from) && !from.eq_ignore_ascii_case(main_lead_name)
 }
 
 /// Extract coworker name from branch prefix (e.g., "lexington/fix-auth" -> "lexington").

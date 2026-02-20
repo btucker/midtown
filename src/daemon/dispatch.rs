@@ -756,7 +756,7 @@ where
         // Skip empty owners, Lead, or channel leads — these are not managed by
         // the coworker dispatch loop and must not be recovered as regular coworkers.
         if owner.is_empty()
-            || owner.eq_ignore_ascii_case("lead")
+            || owner.eq_ignore_ascii_case(&snap.repo_name)
             || snap
                 .channel_lead_sessions
                 .contains_key(&owner.to_lowercase())
@@ -1282,7 +1282,7 @@ pub fn check_for_duplicate_task_workers(snap: &snapshot::WorldSnapshot) -> Vec<e
         // Skip empty owners, Lead, or channel leads — these are not managed by
         // the coworker dispatch loop and should not trigger duplicate detection.
         if owner.is_empty()
-            || owner.eq_ignore_ascii_case("lead")
+            || owner.eq_ignore_ascii_case(&snap.repo_name)
             || snap
                 .channel_lead_sessions
                 .contains_key(&owner.to_lowercase())
@@ -2055,7 +2055,8 @@ pub(super) fn spawn_for_pending_tasks_excluding(
         .running_coworkers
         .iter()
         .filter(|cw| {
-            !cw.name.eq_ignore_ascii_case("lead") && !channel_lead_names.contains(cw.name.as_str())
+            !cw.name.eq_ignore_ascii_case(&snap.repo_name)
+                && !channel_lead_names.contains(cw.name.as_str())
         })
         .count();
 

@@ -1026,7 +1026,7 @@ pub fn ensure_lead_alive(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
     let lead_registered = snap
         .active_coworkers
         .iter()
-        .any(|c| c.name.eq_ignore_ascii_case("lead"));
+        .any(|c| c.name.eq_ignore_ascii_case(&snap.repo_name));
 
     if lead_registered {
         return vec![];
@@ -1034,14 +1034,17 @@ pub fn ensure_lead_alive(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
 
     // Check if lead is currently attached interactively — if so, the daemon
     // shouldn't spawn a headless lead that would conflict.
-    if snap.attached_coworkers.contains_key("lead") {
+    if snap
+        .attached_coworkers
+        .contains_key(&snap.repo_name.to_lowercase())
+    {
         return vec![];
     }
 
     // Cooldown: if the lead was recently stopped (within 5 minutes), don't
     // respawn yet to prevent crash loops. The lead may have been stopped for
     // a good reason (e.g., auth error, attach/detach cycle).
-    if let Some(stop_time) = snap.coworker_stop_times.get("lead") {
+    if let Some(stop_time) = snap.coworker_stop_times.get(&snap.repo_name.to_lowercase()) {
         let since_stop = snap.now_utc.signed_duration_since(*stop_time);
         if since_stop < chrono::Duration::from_std(LEAD_RESPAWN_COOLDOWN).unwrap_or_default() {
             debug!(
@@ -1085,7 +1088,10 @@ pub fn maybe_refresh_lead_session(snap: &snapshot::WorldSnapshot) -> Vec<Effect>
     }
 
     // Don't refresh an interactively attached session
-    if snap.attached_coworkers.contains_key("lead") {
+    if snap
+        .attached_coworkers
+        .contains_key(&snap.repo_name.to_lowercase())
+    {
         return vec![];
     }
 
@@ -1093,7 +1099,7 @@ pub fn maybe_refresh_lead_session(snap: &snapshot::WorldSnapshot) -> Vec<Effect>
     let lead = snap
         .active_coworkers
         .iter()
-        .find(|c| c.name.eq_ignore_ascii_case("lead"));
+        .find(|c| c.name.eq_ignore_ascii_case(&snap.repo_name));
 
     let lead = match lead {
         Some(l) => l,
@@ -1101,7 +1107,10 @@ pub fn maybe_refresh_lead_session(snap: &snapshot::WorldSnapshot) -> Vec<Effect>
     };
 
     // Check how long the lead has been running
-    let start_time = match snap.coworker_start_times.get("lead") {
+    let start_time = match snap
+        .coworker_start_times
+        .get(&snap.repo_name.to_lowercase())
+    {
         Some(t) => t,
         None => return vec![],
     };

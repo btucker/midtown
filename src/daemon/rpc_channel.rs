@@ -161,7 +161,7 @@ pub(super) async fn handle_channel_post(
     info!("Channel post from {}: {}", from, message);
 
     // Track last activity time for coworker (used for silent coworker detection)
-    if is_coworker_sender(from) {
+    if is_coworker_sender(from, &state.repo_name) {
         let mut records = state.coworker_records.write().await;
         records
             .entry(from.to_string())
@@ -318,7 +318,7 @@ pub(super) async fn handle_channel_post(
     // Nudge the Lead when a coworker explicitly mentions @lead or @{project_name}
     let content_lower = content.to_lowercase();
     let project_mention = format!("@{}", state.repo_name).to_lowercase();
-    if is_coworker_sender(from)
+    if is_coworker_sender(from, &state.repo_name)
         && (content_lower.contains("@lead") || content_lower.contains(&project_mention))
     {
         // Use CooldownTracker to avoid duplicate nudges (expires after 1 hour)

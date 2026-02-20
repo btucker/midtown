@@ -732,7 +732,7 @@ impl DaemonState {
     /// Called when a user message arrives while the lead is dead.
     pub(crate) fn clear_lead_respawn_cooldown(&self) {
         let mut stop_times = self.coworker_stop_times.write().unwrap();
-        if stop_times.remove("lead").is_some() {
+        if stop_times.remove(&self.repo_name.to_lowercase()).is_some() {
             tracing::info!("Cleared lead respawn cooldown — user message while lead is dead");
         }
     }
@@ -950,7 +950,8 @@ impl DaemonState {
             .list_running()
             .iter()
             .filter(|cw| {
-                !cw.name.eq_ignore_ascii_case("lead") && !channel_lead_names.contains(&cw.name)
+                !cw.name.eq_ignore_ascii_case(&self.repo_name)
+                    && !channel_lead_names.contains(&cw.name)
             })
             .count();
         non_lead_count >= self.max_coworkers + REVIEW_HEADROOM
@@ -970,7 +971,8 @@ impl DaemonState {
             .list_running()
             .iter()
             .filter(|cw| {
-                !cw.name.eq_ignore_ascii_case("lead") && !channel_lead_names.contains(&cw.name)
+                !cw.name.eq_ignore_ascii_case(&self.repo_name)
+                    && !channel_lead_names.contains(&cw.name)
             })
             .count();
         non_lead_count >= self.max_coworkers
@@ -1850,17 +1852,21 @@ impl DaemonState {
     /// First tries the headless session_manager path (lead running headless).
     /// Falls back to the headed intercom queue (lead attached interactively).
     pub(crate) async fn nudge_lead(&self, message: &str) {
-        if self.session_manager.is_alive("lead").await {
-            if let Err(e) = self.session_manager.send_message("lead", message).await {
+        if self.session_manager.is_alive(&self.repo_name).await {
+            if let Err(e) = self
+                .session_manager
+                .send_message(&self.repo_name, message)
+                .await
+            {
                 tracing::debug!(
                     "Failed to nudge lead via session_manager ({}), falling back to headed intercom",
                     e
                 );
-                self.enqueue_headed_nudge("lead", message).await;
+                self.enqueue_headed_nudge(&self.repo_name, message).await;
             }
         } else {
             // Lead is attached interactively — use headed intercom
-            self.enqueue_headed_nudge("lead", message).await;
+            self.enqueue_headed_nudge(&self.repo_name, message).await;
         }
     }
 
@@ -3379,10 +3385,16 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                 // Both functions need channel_lead_sessions — acquire the lock once.
                 let (lead_effects, universal_effects) = {
                     let ps = state.persistent_state.lock().await;
-                    let lead_effects =
-                        stream::process_lead_output(&events, &ps.channel_lead_sessions);
-                    let universal_effects =
-                        stream::process_universal_events(&events, &ps.channel_lead_sessions);
+                    let lead_effects = stream::process_lead_output(
+                        &events,
+                        &ps.channel_lead_sessions,
+                        &state.repo_name,
+                    );
+                    let universal_effects = stream::process_universal_events(
+                        &events,
+                        &ps.channel_lead_sessions,
+                        &state.repo_name,
+                    );
                     (lead_effects, universal_effects)
                 };
                 effects::execute_effects(lead_effects, &state).await;

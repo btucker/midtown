@@ -744,7 +744,8 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 // A channel post signals the end of a work phase — the activity strip should reset.
                 // Skip system senders (midtown, lead) and channel leads since they don't have
                 // coworker-style tool activity that should be cleared on text posts.
-                let skip = matches!(sender.to_lowercase().as_str(), "midtown" | "lead" | "user")
+                let skip = matches!(sender.to_lowercase().as_str(), "midtown" | "user")
+                    || sender.eq_ignore_ascii_case(&state.repo_name)
                     || has_explicit_channel;
                 if !skip {
                     let mut tool_map = state.recent_tool_items.write().unwrap();
@@ -2079,7 +2080,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     let ps = state.persistent_state.lock().await;
                     ps.channel_lead_sessions.contains_key(name.as_str())
                 };
-                let suffix = if name == "lead" {
+                let suffix = if name.eq_ignore_ascii_case(&state.repo_name) {
                     " Headless session will respawn on the next tick."
                 } else if is_channel_lead {
                     " Channel lead session will be respawned for its channel."
