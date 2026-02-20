@@ -219,56 +219,6 @@ fn test_reviewer_prompts_include_frontmatter_requirement() {
 }
 
 #[test]
-fn test_clusterer_system_prompt_loads() {
-    let prompt = clusterer_system_prompt();
-    assert!(
-        prompt.contains("AI Channel Clusterer"),
-        "Clusterer prompt should contain title"
-    );
-    assert!(
-        prompt.contains("Output Format"),
-        "Clusterer prompt should describe output format"
-    );
-    assert!(
-        prompt.contains("create_channels"),
-        "Clusterer prompt should describe create_channels field"
-    );
-    assert!(
-        prompt.contains("archive_channels"),
-        "Clusterer prompt should describe archive_channels field"
-    );
-    assert!(
-        prompt.contains("merge_channels"),
-        "Clusterer prompt should describe merge_channels field"
-    );
-    assert!(
-        prompt.contains("assign_tasks"),
-        "Clusterer prompt should describe assign_tasks field"
-    );
-}
-
-#[test]
-fn test_clusterer_prompt_contains_constraints() {
-    let prompt = clusterer_system_prompt();
-    assert!(
-        prompt.contains("Code Locality"),
-        "Clusterer prompt should contain Code Locality heuristics"
-    );
-    assert!(
-        prompt.contains("Do NOT reassign in-flight tasks"),
-        "Clusterer prompt should warn against reassigning in-progress tasks"
-    );
-    assert!(
-        prompt.contains("kebab-case"),
-        "Clusterer prompt should specify kebab-case for channel names"
-    );
-    assert!(
-        prompt.contains("main channel"),
-        "Clusterer prompt should explain main channel behavior"
-    );
-}
-
-#[test]
 fn test_channel_lead_system_prompt_substitutes_channel_name() {
     let prompt = channel_lead_system_prompt("web-interface", "No context yet.", "midtown");
     assert!(

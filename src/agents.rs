@@ -29,9 +29,6 @@ const DEFAULT_REVIEWER_PROMPT: &str = include_str!("../agents/reviewer.md");
 /// Embedded default for the reviewer resume prompt template.
 const DEFAULT_REVIEWER_RESUME_PROMPT: &str = include_str!("../agents/reviewer-resume.md");
 
-/// Embedded default for the clusterer system prompt.
-const DEFAULT_CLUSTERER_PROMPT: &str = include_str!("../agents/clusterer.md");
-
 /// Embedded default for the channel lead system prompt template.
 const DEFAULT_CHANNEL_LEAD_PROMPT: &str = include_str!("../agents/channel-lead.md");
 
@@ -239,16 +236,7 @@ pub fn coworker_nudge_prompt(task_id: &str, subject: &str) -> String {
     )
 }
 
-/// Load the clusterer system prompt.
-///
-/// Returns the prompt from `agents/clusterer.md` if found, otherwise returns
-/// the embedded default. This prompt guides the AI clusterer in organizing tasks
-/// into topic channels based on code locality and thematic grouping.
-pub fn clusterer_system_prompt() -> String {
-    load_prompt_file("clusterer.md").unwrap_or_else(|| DEFAULT_CLUSTERER_PROMPT.to_string())
-}
-
-/// Load the channel lead system prompt with channel name, domain context, and project name substitution.
+/// Load the channel lead system prompt with channel name and domain context substitution.
 ///
 /// Assembly: channel-lead.md + lead.md + common.md (+ ops-channel-lead.md for "ops" channel)
 /// For channel leads, `{name}` = channel_name.

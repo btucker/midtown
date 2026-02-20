@@ -150,9 +150,6 @@ pub mod platform_launch;
 // API usage data (session + weekly utilization from Anthropic OAuth API)
 pub mod usage;
 
-// AI channel clustering for task organization
-pub mod clustering;
-
 // Specialized headless coworker abstraction
 pub mod specialized;
 
