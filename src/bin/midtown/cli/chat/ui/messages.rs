@@ -207,6 +207,7 @@ pub fn render_message(
     }
 
     let rendered_content = render_content_lines(&msg.content, content_width, ctx.content_style);
+    let rendered_content = apply_mention_highlights(rendered_content);
 
     let mut result = Vec::new();
 
@@ -220,6 +221,89 @@ pub fn render_message(
         } else {
             result.push(build_continuation_line(&ctx, line));
         }
+    }
+
+    result
+}
+
+/// Apply `@mention` highlighting to rendered lines.
+///
+/// Scans each span's text for `@word` patterns and splits them into separate spans
+/// with a background highlight. Bare `@` not followed by word characters is left as-is.
+/// The base style of the original span is preserved for non-mention segments.
+fn apply_mention_highlights(lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
+    // Fast path: skip processing if no @ signs exist in any span
+    let has_mention = lines
+        .iter()
+        .flat_map(|l| &l.spans)
+        .any(|s| s.content.contains('@'));
+    if !has_mention {
+        return lines;
+    }
+
+    let mention_style = Style::default()
+        .bg(Color::Blue)
+        .fg(Color::White)
+        .add_modifier(Modifier::BOLD);
+
+    lines
+        .into_iter()
+        .map(|line| {
+            let spans: Vec<Span<'static>> = line
+                .spans
+                .into_iter()
+                .flat_map(|span| split_span_at_mentions(span, mention_style))
+                .collect();
+            Line::from(spans)
+        })
+        .collect()
+}
+
+/// Split a single span at `@mention` boundaries.
+///
+/// Returns multiple spans: non-mention segments keep the base style,
+/// `@word` segments get the mention style.
+fn split_span_at_mentions(span: Span<'static>, mention_style: Style) -> Vec<Span<'static>> {
+    if !span.content.contains('@') {
+        return vec![span];
+    }
+
+    let text = span.content.to_string();
+    let base_style = span.style;
+    let mut result: Vec<Span<'static>> = Vec::new();
+    let mut remaining = text.as_str();
+
+    while let Some(at_pos) = remaining.find('@') {
+        if at_pos > 0 {
+            result.push(Span::styled(remaining[..at_pos].to_string(), base_style));
+        }
+
+        let after_at = &remaining[at_pos..];
+
+        // Find the end of the @mention: '@' followed by alphanumeric/underscore/hyphen
+        let word_end = after_at
+            .char_indices()
+            .skip(1) // skip the '@'
+            .take_while(|(_, c)| c.is_alphanumeric() || *c == '_' || *c == '-')
+            .last()
+            .map(|(i, c)| i + c.len_utf8())
+            .unwrap_or(0);
+
+        if word_end > 0 {
+            result.push(Span::styled(
+                after_at[..word_end].to_string(),
+                mention_style,
+            ));
+            remaining = &after_at[word_end..];
+        } else {
+            // Bare '@' with no word following — not a mention
+            result.push(Span::styled("@".to_string(), base_style));
+            remaining = &after_at[1..];
+        }
+    }
+
+    if !remaining.is_empty() {
+        result.push(Span::styled(remaining.to_string(), base_style));
     }
 
     result
@@ -1207,5 +1291,104 @@ mod tests {
             session_id: None,
             thread_parent_id: None,
         }
+    }
+
+    /// Collect all text from a rendered line's spans into a single String.
+    fn line_text(line: &Line<'static>) -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    /// Find a span in a line whose content equals `needle`.
+    fn find_span<'a>(line: &'a Line<'static>, needle: &str) -> Option<&'a Span<'static>> {
+        line.spans.iter().find(|s| s.content.as_ref() == needle)
+    }
+
+    #[test]
+    fn test_mention_highlight_appears_in_rendered_message() {
+        // A message containing @park should render with a highlighted span for "@park"
+        let msg = test_message("hello @park how are you");
+        let tasks = HashMap::new();
+        let lines = render_message(&msg, 80, None, &tasks, None, &[]);
+
+        // Find the content line (second line after sender header)
+        let content_line = lines
+            .iter()
+            .find(|l| line_text(l).contains("@park"))
+            .unwrap();
+        let mention_span = find_span(content_line, "@park");
+
+        assert!(
+            mention_span.is_some(),
+            "@park should be its own span for highlighting"
+        );
+        assert!(
+            mention_span.unwrap().style.bg.is_some(),
+            "@park span should have a background color applied"
+        );
+    }
+
+    #[test]
+    fn test_mention_highlight_preserves_surrounding_text() {
+        // Text around the mention should still be present and unhighlighted
+        let msg = test_message("hello @park how are you");
+        let tasks = HashMap::new();
+        let lines = render_message(&msg, 80, None, &tasks, None, &[]);
+
+        let content_line = lines
+            .iter()
+            .find(|l| line_text(l).contains("@park"))
+            .unwrap();
+        let full_text = line_text(content_line);
+
+        assert!(
+            full_text.contains("hello "),
+            "Text before mention should be preserved"
+        );
+        assert!(
+            full_text.contains(" how are you"),
+            "Text after mention should be preserved"
+        );
+    }
+
+    #[test]
+    fn test_multiple_mentions_all_highlighted() {
+        // All @mentions in a message should be highlighted
+        let msg = test_message("@park and @lexington please review");
+        let tasks = HashMap::new();
+        let lines = render_message(&msg, 80, None, &tasks, None, &[]);
+
+        let content_line = lines
+            .iter()
+            .find(|l| line_text(l).contains("@park"))
+            .unwrap();
+
+        let park_span = find_span(content_line, "@park");
+        let lex_span = find_span(content_line, "@lexington");
+
+        assert!(
+            park_span.is_some_and(|s| s.style.bg.is_some()),
+            "@park should be highlighted"
+        );
+        assert!(
+            lex_span.is_some_and(|s| s.style.bg.is_some()),
+            "@lexington should be highlighted"
+        );
+    }
+
+    #[test]
+    fn test_bare_at_sign_not_highlighted() {
+        // A lone "@" with no following word should not be highlighted
+        let msg = test_message("price is 5 @ 10 each");
+        let tasks = HashMap::new();
+        let lines = render_message(&msg, 80, None, &tasks, None, &[]);
+
+        // No span should have both content "@" and a background style
+        let has_highlighted_bare_at = lines.iter().flat_map(|l| &l.spans).any(|s| {
+            (s.content.as_ref() == "@" || s.content.as_ref() == "@ ") && s.style.bg.is_some()
+        });
+        assert!(
+            !has_highlighted_bare_at,
+            "A bare '@' not followed by a word should not be highlighted"
+        );
     }
 }
