@@ -141,7 +141,9 @@ fn draw_thread_messages(f: &mut Frame, app: &mut App, area: Rect) {
 }
 
 /// Draw the thread input bar
-fn draw_thread_input(f: &mut Frame, app: &App, area: Rect) {
+fn draw_thread_input(f: &mut Frame, app: &mut App, area: Rect) {
+    // Store for click-to-focus detection
+    app.thread_input_area = Some(area);
     let is_focused = app.focused_pane == FocusedPane::Thread;
     let border_color = if is_focused {
         Color::Yellow

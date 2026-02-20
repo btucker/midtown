@@ -239,7 +239,13 @@ fn draw_chat_messages(f: &mut Frame, app: &mut App, area: Rect) {
     // Cache miss — full render
     let current_tasks = app.current_tasks().clone();
     let user_display_name = app.user_display_name.clone();
-    let visible: Vec<midtown::Message> = app.visible_messages().to_vec();
+    // Only show top-level messages in the main channel — thread replies belong in the thread panel.
+    let visible: Vec<midtown::Message> = app
+        .visible_messages()
+        .iter()
+        .filter(|m| m.thread_parent_id.is_none())
+        .cloned()
+        .collect();
 
     // Compute reply counts for thread indicators
     // Maps parent message ID -> (reply count, last replier name)

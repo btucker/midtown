@@ -995,6 +995,17 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                     return EventResult::Continue;
                 }
 
+                // Check if click is in the thread input area
+                if let Some(thread_input_rect) = app.thread_input_area
+                    && x >= thread_input_rect.x
+                    && x < thread_input_rect.x + thread_input_rect.width
+                    && y >= thread_input_rect.y
+                    && y < thread_input_rect.y + thread_input_rect.height
+                {
+                    app.focused_pane = FocusedPane::Thread;
+                    return EventResult::Continue;
+                }
+
                 // Check if click is in the chat messages area
                 if let Some(chat_rect) = app.chat_messages_area
                     && x >= chat_rect.x
