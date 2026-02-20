@@ -2350,9 +2350,16 @@ pub(crate) async fn collect_reviewer_effects_with_source(
             continue;
         }
 
+        // Also exclude the PR author from reviewer selection to prevent self-review.
+        // The author is identified by the branch prefix (e.g., "riverside" from "riverside/feature").
+        let mut excluded_names = channel_lead_names.clone();
+        if let Some(author) = coworker_from_branch_with_map(head_ref, branch_owners_map) {
+            excluded_names.insert(author);
+        }
+
         let reviewer_name = match state
             .coworkers
-            .next_available_name_excluding(&channel_lead_names)
+            .next_available_name_excluding(&excluded_names)
         {
             Some(name) => name,
             None => {
