@@ -70,7 +70,7 @@ pub(super) async fn chat_monitor_loop(
                                         let lead_mention = format!("@{}", state.repo_name).to_lowercase();
                                         if msg_lower.contains("@lead") || msg_lower.contains(&lead_mention) {
                                             let nudge_text =
-                                                format!("{}: {}", msg.from, msg.content);
+                                                format!("{} ({}): {}", msg.from, msg.id, msg.content);
                                             state.nudge_lead(&nudge_text).await;
                                             info!(
                                                 "Nudged lead about @{} mention in {} message",
@@ -85,7 +85,7 @@ pub(super) async fn chat_monitor_loop(
                                         }
                                         if msg_lower.contains("@ops") {
                                             let nudge_text =
-                                                format!("{}: {}", msg.from, msg.content);
+                                                format!("{} ({}): {}", msg.from, msg.id, msg.content);
                                             state.nudge_ops_channel_lead(&nudge_text).await;
                                             info!(
                                                 "Nudged ops channel lead about @ops mention in {} message",
@@ -157,7 +157,7 @@ pub(super) async fn route_mentions(state: &DaemonState, msg: &Message) {
 
     for name in mentions {
         let is_running = state.coworkers.get(&name).is_some();
-        let nudge_text = format!("{} said: {}", msg.from, msg.content);
+        let nudge_text = format!("{} said ({}): {}", msg.from, msg.id, msg.content);
 
         // Decide action using pure decision function
         let action = crate::rules::decide_mention_action(
@@ -178,7 +178,7 @@ pub(super) async fn route_mentions(state: &DaemonState, msg: &Message) {
 async fn route_at_all(state: &DaemonState, msg: &Message) {
     // Only nudge Running coworkers — Stopping/Starting coworkers have no active session.
     let running_coworkers = state.coworkers.list_running();
-    let nudge_text = format!("{} said: {}", msg.from, msg.content);
+    let nudge_text = format!("{} said ({}): {}", msg.from, msg.id, msg.content);
 
     info!(
         "@all broadcast from {} to {} running coworker(s) + lead",

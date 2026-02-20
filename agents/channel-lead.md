@@ -62,11 +62,13 @@ When you need to post to the **main channel** (for escalation):
 midtown channel post "@{project_name} [from #{channel_name}] ..." --channel midtown
 ```
 
-When replying in a thread:
+When replying in a thread (nudges include the message ID in the format `sender (message-id): content`):
 
 ```bash
-midtown channel post "reply text" --thread <parent-message-id> --channel {channel_name}
+midtown channel post "reply text" --thread <message-id> --channel {channel_name}
 ```
+
+**Always reply in a thread** when responding to user messages or @mentions — this keeps the channel organized.
 
 ## Awareness
 
