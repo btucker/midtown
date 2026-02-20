@@ -2215,9 +2215,13 @@ impl App {
         visible
     }
 
-    /// Returns true if any spinner is currently visible (lead working or active coworkers).
+    /// Returns true if any spinner is currently visible (lead working, in-progress tool entries, or active coworkers).
     pub fn any_spinner_visible(&self) -> bool {
         self.lead_working
+            || self
+                .tool_activity
+                .values()
+                .any(|entries| entries.iter().any(|e| e.completed_at.is_none()))
             || self
                 .coworkers
                 .iter()

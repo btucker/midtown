@@ -68,9 +68,10 @@ fn lead_indicator_height(app: &App) -> u16 {
 
 /// Draw the lead working indicator area between chat messages and the input bar.
 ///
-/// Shows up to 3 tool entries (newest first) with color-coded status prefixes.
-/// The first line includes a yellow braille spinner and the agent name in yellow.
+/// Shows up to 3 tool entries in chronological order (oldest at top, newest at bottom).
+/// The last line (newest entry) includes a yellow braille spinner and the agent name in yellow.
 /// Completed (✓/✗) entries age out after 30 seconds, collapsing the area to 0.
+/// Descriptions are not explicitly truncated — ratatui clips at the terminal edge naturally.
 fn draw_lead_indicator(f: &mut Frame, app: &mut App, area: Rect) {
     if area.height == 0 {
         return;
@@ -88,13 +89,19 @@ fn draw_lead_indicator(f: &mut Frame, app: &mut App, area: Rect) {
     }
 
     // Show spinner when any entry is still in-progress.
+    // We don't require lead_working because tool entries can be in-progress even when
+    // lead_working is false (stale RPC data), and the spinner should still animate.
     let has_in_progress = entries.iter().any(|e| e.header.starts_with('›'));
+    let show_spinner = has_in_progress;
     // Width of " ⠋ lead " prefix: 1 space + 1 spinner + 1 space + agent_name + 1 space
     let prefix_width = 3 + agent_key.chars().count() + 1;
 
     let mut lines: Vec<Line<'static>> = Vec::new();
+    let n = entries.len();
 
-    for (i, entry) in entries.iter().enumerate() {
+    // Display oldest first (reverse of visible_tool_entries which returns newest first).
+    // Agent name goes on the last line (newest entry = bottom), like a standard CLI.
+    for (i, entry) in entries.iter().rev().enumerate() {
         let mut chars = entry.header.chars();
         let prefix_char = chars.next().unwrap_or('›');
         let description = chars.as_str().trim_start().to_string();
@@ -110,15 +117,14 @@ fn draw_lead_indicator(f: &mut Frame, app: &mut App, area: Rect) {
             Color::DarkGray
         };
 
-        if i == 0 {
-            // First line: " ⠋ lead  › Read foo.rs" — spinner and agent name in yellow
-            let spinner = if has_in_progress {
+        let is_last = i == n - 1; // last rendered = newest entry = agent name line
+        if is_last {
+            // Last line (newest): " ⠋ lead › Read foo.rs" — spinner and agent name in yellow
+            let spinner = if show_spinner {
                 app.spinner_char()
             } else {
                 " "
             };
-            let available = (area.width as usize).saturating_sub(prefix_width + 2);
-            let desc_text = truncate_for_width(&description, available);
             lines.push(Line::from(vec![
                 Span::styled(format!(" {} ", spinner), Style::default().fg(Color::Yellow)),
                 Span::styled(
@@ -128,32 +134,20 @@ fn draw_lead_indicator(f: &mut Frame, app: &mut App, area: Rect) {
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(prefix_char.to_string(), Style::default().fg(prefix_color)),
-                Span::styled(format!(" {desc_text}"), Style::default().fg(text_color)),
+                Span::styled(format!(" {description}"), Style::default().fg(text_color)),
             ]));
         } else {
-            // Subsequent lines: indented to align with first line's description.
+            // Older entries: indented to align with the agent-name line's description.
             let indent = " ".repeat(prefix_width);
-            let available = (area.width as usize).saturating_sub(prefix_width + 2);
-            let desc_text = truncate_for_width(&description, available);
             lines.push(Line::from(vec![
                 Span::raw(indent),
                 Span::styled(prefix_char.to_string(), Style::default().fg(prefix_color)),
-                Span::styled(format!(" {desc_text}"), Style::default().fg(text_color)),
+                Span::styled(format!(" {description}"), Style::default().fg(text_color)),
             ]));
         }
     }
 
     f.render_widget(Paragraph::new(lines), area);
-}
-
-/// Truncate text to fit within `available` characters, appending "..." if needed.
-fn truncate_for_width(text: &str, available: usize) -> String {
-    if text.chars().count() > available && available > 3 {
-        let boundary = text.floor_char_boundary(available.saturating_sub(3));
-        format!("{}...", &text[..boundary])
-    } else {
-        text.to_string()
-    }
 }
 
 /// Compute the number of lines needed to display pending questions.
@@ -730,3 +724,7 @@ mod tests {
         assert_eq!(height, 5, "3 content lines + 2 border lines = 5");
     }
 }
+
+#[path = "chat_tests.rs"]
+#[cfg(test)]
+mod chat_tests;

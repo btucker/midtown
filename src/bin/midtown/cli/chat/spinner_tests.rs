@@ -1,6 +1,7 @@
 //! Tests for time-based spinner animation.
 
 use super::CoworkerInfo;
+use super::ToolActivityEntry;
 use super::tests::test_app;
 use std::time::Duration;
 
@@ -97,5 +98,25 @@ fn test_any_spinner_visible_false_when_coworker_idle() {
     assert!(
         !app.any_spinner_visible(),
         "Spinner should not be visible when all coworkers idle"
+    );
+}
+
+#[test]
+fn test_any_spinner_visible_true_with_in_progress_tool_entry() {
+    // Regression: when lead_working is false but a tool entry is still in-progress,
+    // the spinner should still be visible so the animation frame keeps advancing.
+    // Without this, the spinner freezes on its last frame.
+    let mut app = test_app();
+    app.lead_working = false; // lead_working is false (stale RPC data)
+    app.tool_activity = std::collections::HashMap::from([(
+        "lead".to_string(),
+        vec![ToolActivityEntry {
+            header: "\u{203a} Read foo.rs".to_string(), // › = in-progress
+            completed_at: None,
+        }],
+    )]);
+    assert!(
+        app.any_spinner_visible(),
+        "Spinner should be visible when there are in-progress tool entries, even if lead_working is false"
     );
 }
