@@ -287,7 +287,7 @@ pub fn refresh_gh_token(github_user: &str) -> bool {
 
 use crate::coworker::CoworkerManager;
 use crate::daemon::effects::Effect;
-use crate::daemon::state::DaemonPersistentState;
+use crate::daemon::state::{DaemonPersistentState, SessionRecord};
 use crate::launch::LaunchConfig;
 use crate::rules::CoworkerRecord;
 
@@ -728,7 +728,10 @@ pub async fn recoverable_session_pids(
 /// Recover sessions from the session-centric `sessions` map.
 ///
 /// Iterates `persistent_state.sessions` (SessionRecord), filters for
-/// `resume_on_startup: true`, and emits `ResumeCoworker` effects.
+/// sessions that were actually running at shutdown (`is_running: true`),
+/// deduplicates by name (keeping the most recently created session for
+/// each coworker name), and emits `ResumeCoworker` effects.
+///
 /// Returns the set of session_ids that were recovered, so the caller
 /// can deduplicate with `recover_headless_sessions`.
 pub async fn recover_from_session_records(
@@ -740,11 +743,40 @@ pub async fn recover_from_session_records(
 
     let sessions = {
         let ps = persistent_state.lock().await;
-        ps.sessions
+        // Filter to sessions that were running at shutdown time.
+        // The `sessions` map accumulates historical records; only those
+        // with `is_running: true` were active when the daemon last persisted.
+        let candidates: Vec<_> = ps
+            .sessions
             .iter()
-            .filter(|(_, record)| record.resume_on_startup)
+            .filter(|(_, record)| record.resume_on_startup && record.is_running)
             .map(|(session_id, record)| (session_id.clone(), record.clone()))
-            .collect::<Vec<_>>()
+            .collect();
+
+        // Deduplicate by name: a coworker name can appear in multiple
+        // historical records. Keep only the most recently created session
+        // for each name so we don't attempt redundant resume effects.
+        let mut by_name: std::collections::HashMap<String, (String, SessionRecord)> =
+            std::collections::HashMap::new();
+        for (session_id, record) in candidates {
+            let name = record
+                .preferred_name
+                .as_deref()
+                .or(record.current_name.as_deref())
+                .unwrap_or("unknown")
+                .to_string();
+            match by_name.entry(name) {
+                std::collections::hash_map::Entry::Vacant(e) => {
+                    e.insert((session_id, record));
+                }
+                std::collections::hash_map::Entry::Occupied(mut e) => {
+                    if record.created_at > e.get().1.created_at {
+                        e.insert((session_id, record));
+                    }
+                }
+            }
+        }
+        by_name.into_values().collect::<Vec<_>>()
     };
 
     if sessions.is_empty() {

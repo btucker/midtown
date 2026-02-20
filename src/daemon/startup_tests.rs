@@ -855,7 +855,7 @@ fn test_session_record(
         initial_prompt: None,
         is_reviewer: false,
         coworker_type: coworker_type.to_string(),
-        is_running: false,
+        is_running: true,
         created_at: Utc::now(),
         resume_on_startup: true,
     }
@@ -1233,4 +1233,71 @@ async fn test_recovering_coworker_names_deduplicates() {
         names
     );
     assert!(names.contains(&"park".to_string()));
+}
+
+#[tokio::test]
+async fn test_recover_from_session_records_skips_stopped_sessions() {
+    let persistent_state = tokio::sync::Mutex::new(DaemonPersistentState::default());
+
+    {
+        let mut state = persistent_state.lock().await;
+        // Running session — should be recovered
+        let mut running = test_session_record("sess-running", "park", "dev");
+        running.is_running = true;
+        running.resume_on_startup = true;
+        state.sessions.insert("sess-running".to_string(), running);
+
+        // Stopped session — should NOT be recovered
+        let mut stopped = test_session_record("sess-stopped", "lexington", "dev");
+        stopped.is_running = false;
+        stopped.resume_on_startup = true;
+        state.sessions.insert("sess-stopped".to_string(), stopped);
+    }
+
+    let (effects, _) = recover_from_session_records(&persistent_state, "test-repo").await;
+
+    // Only the running session should produce an effect
+    assert_eq!(effects.len(), 1, "Should only recover running sessions");
+    match &effects[0] {
+        Effect::ResumeCoworker { config, .. } => {
+            assert_eq!(config.name, "park");
+        }
+        other => panic!("Expected ResumeCoworker, got {:?}", other),
+    }
+}
+
+#[tokio::test]
+async fn test_recover_from_session_records_deduplicates_by_name() {
+    let persistent_state = tokio::sync::Mutex::new(DaemonPersistentState::default());
+
+    {
+        let mut state = persistent_state.lock().await;
+        // Older session for "park"
+        let mut older = test_session_record("sess-old", "park", "dev");
+        older.is_running = true;
+        older.resume_on_startup = true;
+        older.created_at = chrono::Utc::now() - chrono::Duration::hours(2);
+        state.sessions.insert("sess-old".to_string(), older);
+
+        // Newer session for "park" — should win
+        let mut newer = test_session_record("sess-new", "park", "dev");
+        newer.is_running = true;
+        newer.resume_on_startup = true;
+        newer.created_at = chrono::Utc::now();
+        state.sessions.insert("sess-new".to_string(), newer);
+    }
+
+    let (effects, _) = recover_from_session_records(&persistent_state, "test-repo").await;
+
+    // Should only produce one effect despite two sessions with the same name
+    assert_eq!(effects.len(), 1, "Should deduplicate by name");
+    match &effects[0] {
+        Effect::ResumeCoworker {
+            config, session_id, ..
+        } => {
+            assert_eq!(config.name, "park");
+            assert_eq!(session_id, "sess-new", "Should use the newer session");
+        }
+        other => panic!("Expected ResumeCoworker, got {:?}", other),
+    }
 }
