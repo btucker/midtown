@@ -98,7 +98,7 @@ reqwest = { version = "0.12", features = ["rustls-tls", "json", "blocking", "mul
 [dev-dependencies.cargo-husky]
 version = "1"
 default-features = false
-features = ["precommit-hook", "run-cargo-fmt", "run-cargo-clippy"]
+features = ["user-hooks"]
 
 # Main CLI binary
 [[bin]]
