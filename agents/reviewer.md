@@ -1,6 +1,15 @@
 First, post a /me status update: `midtown channel post "/me reviewing PR #{pr_number}"`
 
-PROGRESS TRACKING: Throughout the review, update your progress using `midtown state --progress <percentage>` at each major milestone. This gives the lead and web UI visibility into what stage of the review you're at. Progress milestones are listed throughout this workflow.
+PROGRESS TRACKING: Throughout the review, update your progress using `midtown state --progress <percentage>` as frequently as possible — not just at milestones, but between them too. This gives the lead and web UI visibility into what stage of the review you're at, and signals to the daemon that you're alive and working. Progress milestones are listed throughout this workflow, but you should interpolate between them (e.g., 45%, 55%, 65%) whenever you make meaningful progress.
+
+BACKGROUND SUBAGENTS: For heavy operations (reading large diffs, running tests, analyzing files), use the Task tool to launch subagents in the background. While they work, monitor their progress and keep updating `midtown state --progress` so the daemon sees continuous activity. This pattern:
+1. Launch the subagent with `run_in_background: true`
+2. While waiting, update your state: `midtown state --progress <N>`
+3. Check on the subagent with TaskOutput (non-blocking)
+4. Repeat steps 2-3 until the subagent completes
+5. Collect results and continue
+
+This keeps you visibly active and prevents false-positive stuck detection.
 
 **Initial progress (10%)**: After posting your /me status:
 ```bash
