@@ -540,8 +540,8 @@ fn draw_ops_mini_channel(
         let show_timestamp = prev_time_str.as_deref() != Some(time_str.as_str());
         prev_time_str = Some(time_str.clone());
 
-        let is_action = msg.message_type == midtown::MessageType::Action
-            || msg.content.starts_with("/me ");
+        let is_action =
+            msg.message_type == midtown::MessageType::Action || msg.content.starts_with("/me ");
         let sender_color = ops_sender_color(&msg.from);
 
         // Available width for text (timestamp reserve only applies when we're showing it)
