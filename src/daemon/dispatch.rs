@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use tracing::{debug, info, warn};
 
-use crate::{config, daemon_messages};
+use crate::daemon_messages;
 
 use super::constants::*;
 use super::effects::{self, Effect};
@@ -2006,7 +2006,6 @@ pub(super) fn spawn_for_pending_tasks_excluding(
                         message: daemon_messages::called_in_pending_task(
                             o,
                             &tid.to_string(),
-                            config::get_personality(),
                         ),
                         channel: Some(OPS_CHANNEL.to_string()),
                     },
@@ -2395,7 +2394,6 @@ pub(super) fn spawn_for_pending_tasks_excluding(
                 &coworker_name,
                 &task.id.to_string(),
                 &task.subject,
-                config::get_personality(),
             );
             effects.push(Effect::NudgeCoworkerWithCallbacks {
                 name: coworker_name.clone(),
@@ -2432,7 +2430,6 @@ pub(super) fn spawn_for_pending_tasks_excluding(
                 &coworker_name,
                 &task.id.to_string(),
                 &task.subject,
-                config::get_personality(),
             );
 
             // Pre-spawn effects: create worktree and register assignment BEFORE spawning.

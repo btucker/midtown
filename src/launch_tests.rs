@@ -43,7 +43,7 @@ fn test_lead_system_prompt_saved_on_spawn() {
     assert_eq!(saved_prompt, headless.system_prompt);
     // Lead system prompt should contain lead-specific content
     assert!(
-        saved_prompt.contains("# Lead System Prompt"),
+        saved_prompt.contains("# Main Lead"),
         "Expected lead system prompt content"
     );
 }

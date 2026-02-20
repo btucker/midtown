@@ -88,20 +88,6 @@ fn invalid_bool_returns_error() {
 }
 
 #[test]
-fn invalid_personality_returns_error() {
-    let dir = TempDir::new().unwrap();
-    let config_path = temp_global_config(&dir);
-
-    let result = set_global_key("default.personality", "extreme", &config_path);
-    assert!(result.is_err());
-    let msg = result.unwrap_err();
-    assert!(
-        msg.contains("invalid") || msg.contains("personality") || msg.contains("normal"),
-        "Expected personality error in: {msg}"
-    );
-}
-
-#[test]
 fn invalid_chat_layout_returns_error() {
     let dir = TempDir::new().unwrap();
     let config_path = temp_global_config(&dir);
@@ -127,16 +113,6 @@ fn set_and_get_global_max_coworkers() {
     set_global_key("default.max_coworkers", "4", &config_path).unwrap();
     let value = get_global_key("default.max_coworkers", &config_path).unwrap();
     assert_eq!(value, "4");
-}
-
-#[test]
-fn set_and_get_global_personality() {
-    let dir = TempDir::new().unwrap();
-    let config_path = temp_global_config(&dir);
-
-    set_global_key("default.personality", "fun", &config_path).unwrap();
-    let value = get_global_key("default.personality", &config_path).unwrap();
-    assert_eq!(value, "fun");
 }
 
 #[test]
@@ -305,8 +281,7 @@ fn list_global_shows_all_keys() {
         "Expected key in list: {output}"
     );
     assert!(output.contains("47024"), "Expected value in list: {output}");
-    // All 14 supported keys should appear
-    assert!(output.contains("default.personality"), "Missing: {output}");
+    // All supported keys should appear
     assert!(output.contains("default.chat_layout"), "Missing: {output}");
     assert!(
         output.contains("default.chat_min_width"),
@@ -474,20 +449,6 @@ fn project_scope_invalid_integer_returns_error() {
 }
 
 #[test]
-fn project_scope_invalid_personality_returns_error() {
-    let dir = TempDir::new().unwrap();
-    let config_path = temp_project_config(&dir);
-
-    let result = set_project_key("default.personality", "extreme", &config_path);
-    assert!(result.is_err());
-    let msg = result.unwrap_err();
-    assert!(
-        msg.contains("invalid") || msg.contains("personality") || msg.contains("normal"),
-        "Expected personality error in: {msg}"
-    );
-}
-
-#[test]
 fn project_scope_pane_size_out_of_range_returns_error() {
     let dir = TempDir::new().unwrap();
     let config_path = temp_project_config(&dir);
@@ -610,15 +571,15 @@ fn multiple_sets_accumulate_correctly() {
     let config_path = temp_global_config(&dir);
 
     set_global_key("default.max_coworkers", "5", &config_path).unwrap();
-    set_global_key("default.personality", "wild", &config_path).unwrap();
+    set_global_key("default.user_display_name", "Alice", &config_path).unwrap();
     set_global_key("daemon.webhook_port", "47025", &config_path).unwrap();
 
     let contents = std::fs::read_to_string(&config_path).unwrap();
     let loaded: midtown::config::GlobalConfig = toml::from_str(&contents).unwrap();
     assert_eq!(loaded.default.max_coworkers, Some(5));
     assert_eq!(
-        loaded.default.personality,
-        Some(midtown::config::Personality::Wild)
+        loaded.default.user_display_name,
+        Some("Alice".to_string())
     );
     assert_eq!(loaded.daemon.webhook_port, Some(47025));
 }

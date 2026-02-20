@@ -278,7 +278,7 @@ impl LaunchConfig {
 
     /// Create a config for the Lead session.
     ///
-    /// The Lead uses `lead_system_prompt()`, has unrestricted setting sources,
+    /// The Lead uses `main_lead_system_prompt()`, has unrestricted setting sources,
     /// and runs as a headless session that can be attached/detached like coworkers.
     pub fn lead(repo_name: impl Into<String>) -> Self {
         let repo = repo_name.into();
@@ -404,13 +404,21 @@ impl LaunchConfig {
     /// so it can be re-applied when attaching to the headless session.
     pub fn to_headless_config(&self, project_name: &str) -> HeadlessConfig {
         let system_prompt = match &self.role {
-            CoworkerRole::Reviewer => crate::agents::reviewer_system_prompt(&self.name),
-            CoworkerRole::Lead => crate::agents::lead_system_prompt(),
-            CoworkerRole::Coworker => crate::agents::coworker_system_prompt(&self.name),
+            CoworkerRole::Reviewer => {
+                crate::agents::reviewer_system_prompt(&self.name, project_name)
+            }
+            CoworkerRole::Lead => crate::agents::main_lead_system_prompt(project_name),
+            CoworkerRole::Coworker => {
+                crate::agents::coworker_system_prompt(&self.name, project_name)
+            }
             CoworkerRole::ChannelLead {
                 channel_name,
                 domain_context,
-            } => crate::agents::channel_lead_system_prompt(channel_name, domain_context),
+            } => crate::agents::channel_lead_system_prompt(
+                channel_name,
+                domain_context,
+                project_name,
+            ),
         };
 
         // Save the lead system prompt to disk for attach resumption
@@ -1019,7 +1027,7 @@ mod tests {
         let config = LaunchConfig::lead("myrepo");
         let headless = config.to_headless_config("midtown");
 
-        // Lead should use lead_system_prompt (not coworker)
+        // Lead should use main_lead_system_prompt (not coworker)
         assert!(
             !headless.system_prompt.is_empty(),
             "Lead should have a non-empty system prompt"

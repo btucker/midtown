@@ -5,32 +5,23 @@
 //! 2. `~/.midtown/agents/` (for user customization)
 //! 3. Embedded defaults (compiled into the binary as fallback)
 //!
-//! Additionally, a `MIDTOWN.md` file (similar to `CLAUDE.md`) is loaded from:
-//! 1. The git repository root (project-level, takes precedence)
-//! 2. `~/.midtown/MIDTOWN.md` (user-level)
-//!
-//! Custom prompts can also be appended via `LEAD.md` and `COWORKER.md` files:
-//! 1. `~/.midtown/LEAD.md` / `~/.midtown/COWORKER.md` (global)
-//! 2. `~/.midtown/projects/<repo>/LEAD.md` / `~/.midtown/projects/<repo>/COWORKER.md` (project-level)
-//!
-//! The coworker prompt uses `{name}` as a template variable that gets replaced
-//! with the coworker's actual name at runtime.
+//! Template variables:
+//! - `{name}` — the agent's name (coworker name, channel name, or project name for main lead)
+//! - `{project_name}` — the project name (e.g., "midtown")
 
 use std::path::PathBuf;
 
-use crate::config::Personality;
-
-/// Embedded default for the Lead system prompt.
+/// Embedded default for the shared lead coordination prompt.
 const DEFAULT_LEAD_PROMPT: &str = include_str!("../agents/lead.md");
+
+/// Embedded default for the main lead overlay prompt.
+const DEFAULT_MAIN_LEAD_PROMPT: &str = include_str!("../agents/main-lead.md");
 
 /// Embedded default for the coworker system prompt template.
 const DEFAULT_COWORKER_PROMPT: &str = include_str!("../agents/coworker.md");
 
-/// Embedded default for common prompt content shared by both agents.
+/// Embedded default for common prompt content shared by all agents.
 const DEFAULT_COMMON_PROMPT: &str = include_str!("../agents/common.md");
-
-/// Embedded default for personality definitions.
-const DEFAULT_PERSONALITIES: &str = include_str!("../agents/personalities.md");
 
 /// Embedded default for the reviewer launch prompt template.
 const DEFAULT_REVIEWER_PROMPT: &str = include_str!("../agents/reviewer.md");
@@ -69,11 +60,6 @@ fn user_agents_dir() -> Option<PathBuf> {
     dirs::home_dir().map(|h| h.join(".midtown").join("agents"))
 }
 
-/// Find the user's midtown home directory (~/.midtown/).
-fn user_midtown_dir() -> Option<PathBuf> {
-    dirs::home_dir().map(|h| h.join(".midtown"))
-}
-
 /// Load a prompt file, trying multiple locations.
 ///
 /// Search order:
@@ -100,243 +86,49 @@ fn load_prompt_file(filename: &str) -> Option<String> {
     None
 }
 
-/// Load `MIDTOWN.md` from the project root or `~/.midtown/`.
-///
-/// Search order:
-/// 1. `<git-repo-root>/MIDTOWN.md` (project-level)
-/// 2. `~/.midtown/MIDTOWN.md` (user-level)
-/// 3. Returns None if not found (optional file)
-fn load_midtown_md_from_paths(
-    project_root: Option<PathBuf>,
-    midtown_home: Option<PathBuf>,
-) -> Option<String> {
-    // Try project root first
-    if let Some(repo_root) = project_root {
-        let path = repo_root.join("MIDTOWN.md");
-        if let Ok(content) = std::fs::read_to_string(&path) {
-            return Some(content);
-        }
-    }
-
-    // Try user midtown directory
-    if let Some(midtown_dir) = midtown_home {
-        let path = midtown_dir.join("MIDTOWN.md");
-        if let Ok(content) = std::fs::read_to_string(&path) {
-            return Some(content);
-        }
-    }
-
-    None
-}
-
-fn load_midtown_md() -> Option<String> {
-    load_midtown_md_from_paths(git_repo_root(), user_midtown_dir())
-}
-
-fn merge_common_with_midtown(common: String, midtown: Option<String>) -> String {
-    match midtown {
-        Some(midtown) => format!("{common}\n{midtown}"),
-        None => common,
-    }
-}
-
-/// Load the common prompt content shared by both agents.
-///
-/// Combines `agents/common.md` with `MIDTOWN.md` (if present).
+/// Load the common prompt content shared by all agents.
 fn common_prompt() -> String {
-    let common = load_prompt_file("common.md").unwrap_or_else(|| DEFAULT_COMMON_PROMPT.to_string());
-    merge_common_with_midtown(common, load_midtown_md())
+    load_prompt_file("common.md").unwrap_or_else(|| DEFAULT_COMMON_PROMPT.to_string())
 }
 
-/// Load custom prompt files from global and project-level locations.
+/// Load the main Lead agent's system prompt.
 ///
-/// This loads and concatenates content from:
-/// 1. `~/.midtown/<filename>` (global)
-/// 2. `~/.midtown/projects/<repo>/<filename>` (project-level)
-///
-/// Both files are optional. Content from both locations is concatenated
-/// with newlines between them.
-fn load_custom_prompt_files(filename: &str) -> String {
-    let mut parts = Vec::new();
-
-    // Load global custom prompt
-    if let Some(home) = dirs::home_dir() {
-        let global_path = home.join(".midtown").join(filename);
-        if let Ok(content) = std::fs::read_to_string(&global_path) {
-            let trimmed = content.trim();
-            if !trimmed.is_empty() {
-                parts.push(trimmed.to_string());
-            }
-        }
-    }
-
-    // Load project-level custom prompt
-    if let Some(repo) = crate::paths::detect_repo_name() {
-        let project_path = crate::paths::projects_dir_for_repo(&repo).join(filename);
-        if let Ok(content) = std::fs::read_to_string(&project_path) {
-            let trimmed = content.trim();
-            if !trimmed.is_empty() {
-                parts.push(trimmed.to_string());
-            }
-        }
-    }
-
-    if parts.is_empty() {
-        String::new()
-    } else {
-        parts.join("\n\n")
-    }
-}
-
-/// Extract a personality description for a given agent name and variant.
-///
-/// Parses `personalities.md` which uses `## name` and `### variant` headers.
-/// Returns None if the name or variant is not found.
-fn load_personality(name: &str, personality: Personality) -> Option<String> {
-    let content =
-        load_prompt_file("personalities.md").unwrap_or_else(|| DEFAULT_PERSONALITIES.to_string());
-    let variant = personality.as_str();
-    let name_lower = name.to_lowercase();
-
-    // Find the section for this agent name (## name)
-    let mut in_name_section = false;
-    let mut in_variant_section = false;
-    let mut lines = Vec::new();
-
-    for line in content.lines() {
-        if line.starts_with("## ") && !line.starts_with("### ") {
-            let heading = line.trim_start_matches("## ").trim().to_lowercase();
-            in_name_section = heading == name_lower;
-            in_variant_section = false;
-            continue;
-        }
-
-        if !in_name_section {
-            continue;
-        }
-
-        if line.starts_with("### ") {
-            let heading = line.trim_start_matches("### ").trim().to_lowercase();
-            in_variant_section = heading == variant;
-            continue;
-        }
-
-        if in_variant_section {
-            lines.push(line);
-        }
-    }
-
-    let text = lines.join("\n").trim().to_string();
-    if text.is_empty() { None } else { Some(text) }
-}
-
-/// Build the personality section to append to a system prompt.
-fn personality_section(name: &str, personality: Personality) -> String {
-    match load_personality(name, personality) {
-        Some(desc) => {
-            if personality == Personality::Normal {
-                // Normal mode: strictly professional, no personality flair
-                format!(
-                    "\n\n## Personality\n\n\
-                     Your personality variant is set to **normal**. Be strictly professional \
-                     in all communication. Use direct, factual language with no flair or \
-                     personality expression. Status messages should be plain: \"claimed task 5\", \
-                     \"completed task 7\", \"idle\". Keep code itself clean and professional.\n\n{}",
-                    desc
-                )
-            } else {
-                // Fun/wild modes: encourage personality expression
-                format!(
-                    "\n\n## Personality\n\n\
-                     Your personality variant is set to **{}**. Let this voice come through in your \
-                     channel messages and GitHub comments (PR descriptions, review comments). \
-                     Keep code itself clean and professional regardless.\n\n\
-                     **Standard status messages are NOT exempt.** When you post claiming, developing, \
-                     testing, completing, or idle updates to the channel, phrase them in your personality's \
-                     voice. Don't fall back to generic, formulaic messages — every channel post is a \
-                     chance to bring your character to life. Just make sure the required status keywords \
-                     and task numbers are still present (see Workflow Phases).\n\n{}",
-                    personality.as_str(),
-                    desc
-                )
-            }
-        }
-        None => String::new(),
-    }
-}
-
-/// Load the Lead agent's system prompt.
-///
-/// Returns the prompt from `agents/lead.md` if found, otherwise returns the
-/// embedded default. Appends common prompt content shared with coworkers.
-/// Custom content from `~/.midtown/LEAD.md` and
-/// `~/.midtown/projects/<repo>/LEAD.md` is appended if present.
-/// If a personality variant is configured, the matching personality description
-/// is appended to give the Lead a unique voice.
-pub fn lead_system_prompt() -> String {
+/// Assembly: main-lead.md + lead.md + common.md
+/// For the main lead, `{name}` = project_name (e.g., "midtown").
+pub fn main_lead_system_prompt(project_name: &str) -> String {
+    let main_lead =
+        load_prompt_file("main-lead.md").unwrap_or_else(|| DEFAULT_MAIN_LEAD_PROMPT.to_string());
     let lead = load_prompt_file("lead.md").unwrap_or_else(|| DEFAULT_LEAD_PROMPT.to_string());
     let common = common_prompt();
-    let custom = load_custom_prompt_files("LEAD.md");
-    let personality = crate::config::get_personality();
-
-    let mut prompt = format!("{lead}\n{common}");
-    if !custom.is_empty() {
-        prompt = format!("{prompt}\n\n{custom}");
-    }
-    prompt.push_str(&personality_section("lead", personality));
-    prompt.replace("{name}", "Lead")
+    format!("{main_lead}\n\n{lead}\n\n{common}")
+        .replace("{name}", project_name)
+        .replace("{project_name}", project_name)
 }
 
-/// Load the coworker agent's system prompt with name substitution.
+/// Load the coworker agent's system prompt with name and project substitution.
 ///
-/// Returns the prompt from `agents/coworker.md` if found, otherwise returns the
-/// embedded default. Appends common prompt content. The `{name}` placeholder is
-/// replaced with the coworker's actual name in both the coworker and common sections.
-/// Custom content from `~/.midtown/COWORKER.md` and
-/// `~/.midtown/projects/<repo>/COWORKER.md` is appended if present.
-/// If a personality variant is configured, the matching personality description
-/// is appended to give the coworker a unique voice.
-pub fn coworker_system_prompt(name: &str) -> String {
+/// Assembly: coworker.md + common.md
+pub fn coworker_system_prompt(name: &str, project_name: &str) -> String {
     let template =
         load_prompt_file("coworker.md").unwrap_or_else(|| DEFAULT_COWORKER_PROMPT.to_string());
     let common = common_prompt();
-    let custom = load_custom_prompt_files("COWORKER.md");
-    let personality = crate::config::get_personality();
-
-    let mut prompt = format!("{template}\n{common}");
-    if !custom.is_empty() {
-        prompt = format!("{prompt}\n\n{custom}");
-    }
-    prompt.push_str(&personality_section(name, personality));
-    prompt.replace("{name}", name)
+    format!("{template}\n{common}")
+        .replace("{name}", name)
+        .replace("{project_name}", project_name)
 }
 
-/// Load the reviewer agent's system prompt with name substitution.
+/// Load the reviewer agent's system prompt with name and project substitution.
 ///
-/// Combines content from three sources:
-/// - `agents/coworker.md` (base coworker behaviors)
-/// - `agents/common.md` + `MIDTOWN.md` (shared foundations)
-/// - `agents/reviewer.md` (reviewer-specific instructions)
-///
-/// This ensures reviewers follow reviewer.md instructions as part of their
-/// behavioral identity, not just as a task description.
-pub fn reviewer_system_prompt(name: &str) -> String {
+/// Assembly: coworker.md + common.md + reviewer.md
+pub fn reviewer_system_prompt(name: &str, project_name: &str) -> String {
     let coworker_template =
         load_prompt_file("coworker.md").unwrap_or_else(|| DEFAULT_COWORKER_PROMPT.to_string());
     let common = common_prompt();
     let reviewer =
         load_prompt_file("reviewer.md").unwrap_or_else(|| DEFAULT_REVIEWER_PROMPT.to_string());
-    let custom = load_custom_prompt_files("COWORKER.md");
-    let personality = crate::config::get_personality();
-
-    // Merge: coworker + common + reviewer-specific instructions
-    let mut prompt =
-        format!("{coworker_template}\n{common}\n\n## Reviewer Instructions\n\n{reviewer}");
-    if !custom.is_empty() {
-        prompt = format!("{prompt}\n\n{custom}");
-    }
-    prompt.push_str(&personality_section(name, personality));
-    prompt.replace("{name}", name)
+    format!("{coworker_template}\n{common}\n\n## Reviewer Instructions\n\n{reviewer}")
+        .replace("{name}", name)
+        .replace("{project_name}", project_name)
 }
 
 /// Build the reviewer launch prompt for a given PR number.
@@ -377,33 +169,27 @@ pub fn reviewer_resume_prompt(pr_number: u64) -> String {
 /// Returns the prompt from `agents/clusterer.md` if found, otherwise returns
 /// the embedded default. This prompt guides the AI clusterer in organizing tasks
 /// into topic channels based on code locality and thematic grouping.
-///
-/// The clusterer uses the haiku model to keep costs low while analyzing task
-/// relationships and channel structure.
 pub fn clusterer_system_prompt() -> String {
     load_prompt_file("clusterer.md").unwrap_or_else(|| DEFAULT_CLUSTERER_PROMPT.to_string())
 }
 
-/// Load the channel lead system prompt with channel name and domain context substitution.
+/// Load the channel lead system prompt with channel name, domain context, and project name substitution.
 ///
-/// Returns the prompt from `agents/channel-lead.md` if found, otherwise returns
-/// the embedded default. The `{channel_name}` placeholder is replaced with the
-/// actual channel name, and `{domain_context}` is replaced with daemon-injected
-/// context (channel description, active tasks, recent PRs).
-///
-/// For the "ops" channel, additional ops-specific instructions from
-/// `agents/ops-channel-lead.md` are appended.
-///
-/// Note: `channel_name` is embedded into bash command examples in the template,
-/// so it must be a shell-safe identifier (alphanumeric + hyphens).
-pub fn channel_lead_system_prompt(channel_name: &str, domain_context: &str) -> String {
+/// Assembly: channel-lead.md + lead.md + common.md (+ ops-channel-lead.md for "ops" channel)
+/// For channel leads, `{name}` = channel_name.
+pub fn channel_lead_system_prompt(
+    channel_name: &str,
+    domain_context: &str,
+    project_name: &str,
+) -> String {
     let template = load_prompt_file("channel-lead.md")
         .unwrap_or_else(|| DEFAULT_CHANNEL_LEAD_PROMPT.to_string());
-    let mut prompt = template
-        .replace("{channel_name}", channel_name)
-        .replace("{domain_context}", domain_context);
+    let lead = load_prompt_file("lead.md").unwrap_or_else(|| DEFAULT_LEAD_PROMPT.to_string());
+    let common = common_prompt();
 
-    // Append ops-specific instructions for the ops channel lead.
+    let mut prompt = format!("{template}\n\n{lead}\n\n{common}");
+
+    // Append ops-specific instructions for the ops channel
     if channel_name == "ops" {
         let ops_extra = load_prompt_file("ops-channel-lead.md")
             .unwrap_or_else(|| DEFAULT_OPS_CHANNEL_LEAD_PROMPT.to_string());
@@ -411,6 +197,10 @@ pub fn channel_lead_system_prompt(channel_name: &str, domain_context: &str) -> S
     }
 
     prompt
+        .replace("{channel_name}", channel_name)
+        .replace("{domain_context}", domain_context)
+        .replace("{project_name}", project_name)
+        .replace("{name}", channel_name) // channel lead's {name} = channel name
 }
 
 #[cfg(test)]
@@ -418,15 +208,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_lead_system_prompt_loads() {
-        let prompt = lead_system_prompt();
-        assert!(prompt.contains("Lead System Prompt"));
+    fn test_main_lead_system_prompt_loads() {
+        let prompt = main_lead_system_prompt("midtown");
+        assert!(prompt.contains("Lead Coordination"));
         assert!(prompt.contains("midtown"));
     }
 
     #[test]
     fn test_coworker_system_prompt_substitutes_name() {
-        let prompt = coworker_system_prompt("lexington");
+        let prompt = coworker_system_prompt("lexington", "midtown");
         assert!(prompt.contains("**lexington**"));
         assert!(prompt.contains("git checkout -b lexington/"));
         assert!(!prompt.contains("{name}"));
@@ -434,7 +224,7 @@ mod tests {
 
     #[test]
     fn test_coworker_system_prompt_contains_required_sections() {
-        let prompt = coworker_system_prompt("park");
+        let prompt = coworker_system_prompt("park", "midtown");
         assert!(prompt.contains("Channel Usage"));
         assert!(prompt.contains("Your Task"));
         assert!(prompt.contains("Git Workflow"));
@@ -446,7 +236,7 @@ mod tests {
 
     #[test]
     fn test_lead_prompt_contains_commands() {
-        let prompt = lead_system_prompt();
+        let prompt = main_lead_system_prompt("midtown");
         assert!(prompt.contains("midtown status"));
         assert!(prompt.contains("midtown coworker call-in"));
         assert!(prompt.contains("midtown channel"));
@@ -454,14 +244,14 @@ mod tests {
 
     #[test]
     fn test_lead_prompt_contains_delegation_section() {
-        let prompt = lead_system_prompt();
-        assert!(prompt.contains("Delegation First"));
-        assert!(prompt.contains("COORDINATOR"));
+        let prompt = main_lead_system_prompt("midtown");
+        assert!(prompt.contains("Delegation Mindset"));
+        assert!(prompt.contains("coordinator"));
     }
 
     #[test]
     fn test_common_prompt_included_in_lead() {
-        let prompt = lead_system_prompt();
+        let prompt = main_lead_system_prompt("midtown");
         assert!(
             prompt.contains("CRITICAL: NEVER use @mentions in GitHub"),
             "Lead prompt should include GitHub @mentions rule from common.md"
@@ -478,7 +268,7 @@ mod tests {
 
     #[test]
     fn test_common_prompt_included_in_coworker() {
-        let prompt = coworker_system_prompt("park");
+        let prompt = coworker_system_prompt("park", "midtown");
         assert!(
             prompt.contains("CRITICAL: NEVER use @mentions in GitHub"),
             "Coworker prompt should include GitHub @mentions rule from common.md"
@@ -495,10 +285,10 @@ mod tests {
 
     #[test]
     fn test_common_prompt_name_substitution_in_lead() {
-        let prompt = lead_system_prompt();
+        let prompt = main_lead_system_prompt("midtown");
         assert!(
-            prompt.contains("<!-- midtown: Lead -->"),
-            "Lead prompt should have {{name}} replaced with 'Lead' in common content"
+            prompt.contains("<!-- midtown: midtown -->"),
+            "Lead prompt should have {{name}} replaced with project_name in common content"
         );
         assert!(
             !prompt.contains("{name}"),
@@ -508,187 +298,10 @@ mod tests {
 
     #[test]
     fn test_common_prompt_name_substitution_in_coworker() {
-        let prompt = coworker_system_prompt("broadway");
+        let prompt = coworker_system_prompt("broadway", "midtown");
         assert!(
             prompt.contains("<!-- midtown: broadway -->"),
             "Coworker prompt should have {{name}} replaced in common content"
-        );
-    }
-
-    #[test]
-    fn test_load_midtown_md_from_paths_prefers_project_file() {
-        let project = tempfile::tempdir().unwrap();
-        let user = tempfile::tempdir().unwrap();
-
-        std::fs::write(project.path().join("MIDTOWN.md"), "project-level").unwrap();
-        std::fs::write(user.path().join("MIDTOWN.md"), "user-level").unwrap();
-
-        let loaded = load_midtown_md_from_paths(
-            Some(project.path().to_path_buf()),
-            Some(user.path().to_path_buf()),
-        )
-        .expect("MIDTOWN.md should load from one of the provided paths");
-
-        assert_eq!(loaded, "project-level");
-    }
-
-    #[test]
-    fn test_merge_common_with_midtown_appends_midtown_content() {
-        let merged = merge_common_with_midtown(
-            "base common prompt".to_string(),
-            Some("project steer".into()),
-        );
-        assert_eq!(merged, "base common prompt\nproject steer");
-    }
-
-    #[test]
-    fn test_load_midtown_md_returns_none_when_missing() {
-        // MIDTOWN.md is optional - should return None when not present
-        // (This test verifies the function doesn't panic)
-        let result = load_midtown_md();
-        // Result depends on environment - just verify it doesn't panic
-        drop(result);
-    }
-
-    #[test]
-    fn test_common_prompt_works_without_midtown_md() {
-        // common_prompt should still return common.md content even without MIDTOWN.md
-        let prompt = common_prompt();
-        assert!(
-            prompt.contains("GitHub Etiquette"),
-            "Common prompt should contain base content even without MIDTOWN.md"
-        );
-    }
-
-    #[test]
-    fn test_load_custom_prompt_files_returns_empty_for_nonexistent() {
-        // Should return empty string when no custom files exist
-        let result = load_custom_prompt_files("NONEXISTENT_FILE_12345.md");
-        assert!(result.is_empty());
-    }
-
-    #[test]
-    fn test_load_personality_normal() {
-        let result = load_personality("york", Personality::Normal);
-        assert!(result.is_some());
-        let text = result.unwrap();
-        assert!(
-            text.contains("Professional"),
-            "york normal should be professional"
-        );
-    }
-
-    #[test]
-    fn test_load_personality_fun() {
-        let result = load_personality("york", Personality::Fun);
-        assert!(result.is_some());
-        let text = result.unwrap();
-        assert!(
-            text.contains("Upper East Side"),
-            "york fun should reference Upper East Side"
-        );
-    }
-
-    #[test]
-    fn test_load_personality_wild() {
-        let result = load_personality("york", Personality::Wild);
-        assert!(result.is_some());
-        let text = result.unwrap();
-        assert!(
-            text.contains("Yorkville"),
-            "york wild should reference Yorkville neighborhood"
-        );
-    }
-
-    #[test]
-    fn test_load_personality_lead() {
-        let result = load_personality("lead", Personality::Fun);
-        assert!(result.is_some());
-        let text = result.unwrap();
-        assert!(!text.is_empty(), "lead fun should have content");
-    }
-
-    #[test]
-    fn test_load_personality_unknown_name() {
-        let result = load_personality("nonexistent_agent", Personality::Normal);
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn test_load_personality_case_insensitive() {
-        let result = load_personality("York", Personality::Normal);
-        assert!(
-            result.is_some(),
-            "Personality lookup should be case-insensitive"
-        );
-    }
-
-    #[test]
-    fn test_personality_section_builds_correctly() {
-        let section = personality_section("broadway", Personality::Fun);
-        assert!(section.contains("## Personality"));
-        assert!(section.contains("**fun**"));
-        assert!(section.contains("opening night"));
-    }
-
-    #[test]
-    fn test_personality_section_empty_for_unknown() {
-        let section = personality_section("nonexistent", Personality::Normal);
-        assert!(section.is_empty());
-    }
-
-    #[test]
-    fn test_all_coworker_names_have_personalities() {
-        let names = &[
-            "lexington",
-            "park",
-            "madison",
-            "broadway",
-            "amsterdam",
-            "columbus",
-            "riverside",
-            "york",
-            "pleasant",
-            "vernon",
-            "bleecker",
-            "houston",
-            "canal",
-            "spring",
-            "prince",
-            "mercer",
-        ];
-        for name in names {
-            for personality in &[Personality::Normal, Personality::Fun, Personality::Wild] {
-                let result = load_personality(name, *personality);
-                assert!(
-                    result.is_some(),
-                    "Missing personality for {} / {}",
-                    name,
-                    personality.as_str()
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn test_lead_system_prompt_works_without_custom_files() {
-        // Even without custom files, should return valid prompt with common content
-        let prompt = lead_system_prompt();
-        assert!(prompt.contains("Lead System Prompt"));
-        assert!(
-            prompt.contains("GitHub Etiquette"),
-            "Lead prompt should include common content"
-        );
-    }
-
-    #[test]
-    fn test_coworker_system_prompt_works_without_custom_files() {
-        // Even without custom files, should return valid prompt with common content
-        let prompt = coworker_system_prompt("amsterdam");
-        assert!(prompt.contains("**amsterdam**"));
-        assert!(
-            prompt.contains("GitHub Etiquette"),
-            "Coworker prompt should include common content"
         );
     }
 
@@ -749,12 +362,7 @@ mod tests {
 
     #[test]
     fn test_reviewer_system_prompt_merges_all_sources() {
-        // Bug: Reviewers weren't following instructions in reviewer.md because it was
-        // passed as initial_prompt (just a task), not as part of the system prompt.
-        //
-        // Fix: reviewer_system_prompt() merges common + coworker + reviewer content
-        // so reviewer instructions become part of the agent's identity/behavior.
-        let prompt = reviewer_system_prompt("lexington");
+        let prompt = reviewer_system_prompt("lexington", "midtown");
 
         // Should contain content from common.md
         assert!(
@@ -795,17 +403,13 @@ mod tests {
 
     #[test]
     fn test_reviewer_prompts_include_frontmatter_requirement() {
-        // Task !1068: The code-review skill doesn't include midtown frontmatter by default.
-        // The reviewer prompts must explicitly instruct reviewers to prepend frontmatter.
-        let system_prompt = reviewer_system_prompt("park");
+        let system_prompt = reviewer_system_prompt("park", "midtown");
         let resume_prompt = reviewer_resume_prompt(42);
 
-        // The system prompt (which merges reviewer.md) should contain the frontmatter requirement
         assert!(
             system_prompt.contains("MIDTOWN FRONTMATTER REQUIREMENT"),
             "Reviewer system prompt should contain MIDTOWN FRONTMATTER REQUIREMENT section"
         );
-        // After substitution, {name} becomes "park", so verify the complete frontmatter string
         assert!(
             system_prompt.contains("<!-- midtown: park -->"),
             "Reviewer system prompt should show the frontmatter format with substituted name"
@@ -815,7 +419,6 @@ mod tests {
             "Reviewer system prompt should instruct to prepend frontmatter"
         );
 
-        // Resume prompt should also have the frontmatter requirement
         assert!(
             resume_prompt.contains("MIDTOWN FRONTMATTER REQUIREMENT"),
             "Reviewer resume prompt should contain MIDTOWN FRONTMATTER REQUIREMENT section"
@@ -874,7 +477,7 @@ mod tests {
 
     #[test]
     fn test_channel_lead_system_prompt_substitutes_channel_name() {
-        let prompt = channel_lead_system_prompt("web-interface", "No context yet.");
+        let prompt = channel_lead_system_prompt("web-interface", "No context yet.", "midtown");
         assert!(
             prompt.contains("#web-interface"),
             "Channel lead prompt should contain the channel name with # prefix"
@@ -892,7 +495,7 @@ mod tests {
     #[test]
     fn test_channel_lead_system_prompt_substitutes_domain_context() {
         let context = "Active tasks: !42 Add WebSocket reconnect. Recent PRs: #99 merged.";
-        let prompt = channel_lead_system_prompt("daemon-core", context);
+        let prompt = channel_lead_system_prompt("daemon-core", context, "midtown");
         assert!(
             prompt.contains(context),
             "Channel lead prompt should inject domain context"
@@ -905,22 +508,18 @@ mod tests {
 
     #[test]
     fn test_channel_lead_system_prompt_contains_required_sections() {
-        let prompt = channel_lead_system_prompt("tui", "No context.");
+        let prompt = channel_lead_system_prompt("tui", "No context.", "midtown");
         assert!(
-            prompt.contains("Identity & Role"),
-            "Channel lead prompt should have Identity & Role section"
+            prompt.contains("Identity"),
+            "Channel lead prompt should have Identity section"
         );
         assert!(
-            prompt.contains("Escalation Rules"),
-            "Channel lead prompt should have Escalation Rules section"
+            prompt.contains("Escalation"),
+            "Channel lead prompt should have Escalation section"
         );
         assert!(
             prompt.contains("Living Documents"),
             "Channel lead prompt should have Living Documents section"
-        );
-        assert!(
-            prompt.contains("read-only"),
-            "Channel lead prompt should state read-only constraint"
         );
         assert!(
             prompt.contains("midtown channel post"),
@@ -930,24 +529,17 @@ mod tests {
 
     #[test]
     fn test_channel_lead_system_prompt_contains_escalation_to_lead() {
-        let prompt = channel_lead_system_prompt("github-integration", "No context.");
+        let prompt = channel_lead_system_prompt("github-integration", "No context.", "midtown");
         assert!(
-            prompt.contains("@lead"),
-            "Channel lead prompt should mention @lead for escalation"
-        );
-        assert!(
-            prompt.contains("#midtown"),
-            "Channel lead prompt should reference #midtown for cross-cutting escalations"
+            prompt.contains("@midtown"),
+            "Channel lead prompt should mention @midtown for escalation"
         );
     }
 
     #[test]
     fn test_coworker_prompt_prevents_orphaned_branches() {
-        // Task !1213: Prevent coworkers from pushing orphaned branches without PRs
-        // Coworkers should check for existing PRs before creating new branches
-        let prompt = coworker_system_prompt("park");
+        let prompt = coworker_system_prompt("park", "midtown");
 
-        // Should warn to check for existing PRs before pushing
         assert!(
             prompt.contains("Before pushing"),
             "Coworker prompt should contain 'Before pushing' section"
@@ -965,7 +557,6 @@ mod tests {
             "Coworker prompt should warn against creating duplicate PRs"
         );
 
-        // Should instruct how to handle merged PRs when responding to feedback
         assert!(
             prompt.contains("First, check if the PR is still open"),
             "Coworker prompt should instruct to check PR state before addressing feedback"

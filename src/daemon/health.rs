@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use tracing::{debug, info, warn};
 
-use crate::{config, daemon_messages};
+use crate::daemon_messages;
 
 use super::constants::*;
 use super::effects::Effect;
@@ -140,7 +140,7 @@ pub fn check_and_shutdown_idle_coworkers(snap: &snapshot::WorldSnapshot) -> Vec<
                 );
                 (
                     true,
-                    daemon_messages::break_review_complete(name, pr, config::get_personality()),
+                    daemon_messages::break_review_complete(name, pr),
                 )
             } else {
                 warn!(
@@ -162,7 +162,7 @@ pub fn check_and_shutdown_idle_coworkers(snap: &snapshot::WorldSnapshot) -> Vec<
             info!("Sending idle coworker {} on a break (PR merged)", name);
             (
                 true,
-                daemon_messages::break_work_merged(name, config::get_personality()),
+                daemon_messages::break_work_merged(name),
             )
         } else {
             info!(
@@ -171,7 +171,7 @@ pub fn check_and_shutdown_idle_coworkers(snap: &snapshot::WorldSnapshot) -> Vec<
             );
             (
                 true,
-                daemon_messages::break_idle(name, config::get_personality()),
+                daemon_messages::break_idle(name),
             )
         };
 

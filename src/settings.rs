@@ -118,12 +118,13 @@ pub fn write_lead_settings_file() -> crate::Result<PathBuf> {
 }
 
 /// Write the Lead system prompt to a file and return the path.
-pub fn write_lead_prompt_file() -> crate::Result<PathBuf> {
+pub fn write_lead_prompt_file(project_name: &str) -> crate::Result<PathBuf> {
     let dir = state_dir();
     std::fs::create_dir_all(&dir).map_err(Error::Io)?;
 
     let path = dir.join("lead-prompt.md");
-    std::fs::write(&path, crate::agents::lead_system_prompt()).map_err(Error::Io)?;
+    std::fs::write(&path, crate::agents::main_lead_system_prompt(project_name))
+        .map_err(Error::Io)?;
 
     Ok(path)
 }
