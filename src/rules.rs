@@ -3435,6 +3435,90 @@ mod tests {
         );
     }
 
+    /// A reviewer with `last_event_at=None` (never emitted any events) should be
+    /// detected as stuck if the coworker's `started_at` is older than the threshold.
+    /// This covers reviewers that were spawned/resumed but never produced stream output.
+    #[test]
+    fn stuck_reviewer_no_events_detected_via_start_time_fallback() {
+        let now = Utc::now();
+        let health = crate::daemon::snapshot::ProcessHealth {
+            is_alive: true,
+            last_event_at: None, // no events ever — the specific bug scenario
+            ..Default::default()
+        };
+        let mut map = HashMap::new();
+        map.insert("pleasant".to_string(), health);
+        let mut assignments = HashMap::new();
+        assignments.insert("pleasant".to_string(), 1338u64);
+        let exemptions = StuckExemptions {
+            usage_limited: &HashSet::new(),
+            api_error: &HashSet::new(),
+            auth_error: &HashSet::new(),
+            attached: &HashMap::new(),
+        };
+        // started_at is 10 minutes ago, threshold is 5 minutes — should be stuck
+        let mut start_times = HashMap::new();
+        start_times.insert("pleasant".to_string(), now - chrono::Duration::minutes(10));
+        let restarts = decide_stuck_reviewer_restarts(
+            &map,
+            &assignments,
+            &HashMap::new(),
+            &exemptions,
+            now,
+            Duration::from_secs(300), // 5-minute threshold
+            2,
+            &HashMap::new(),
+            &start_times,
+        );
+        assert_eq!(
+            restarts.len(),
+            1,
+            "reviewer alive 10+ min with no events should be detected as stuck"
+        );
+        assert_eq!(restarts[0].name, "pleasant");
+        assert_eq!(restarts[0].pr_number, 1338);
+    }
+
+    /// A reviewer with `last_event_at=None` but a recent start time should NOT
+    /// be detected as stuck — they haven't exceeded the threshold yet.
+    #[test]
+    fn stuck_reviewer_no_events_not_stuck_if_recently_started() {
+        let now = Utc::now();
+        let health = crate::daemon::snapshot::ProcessHealth {
+            is_alive: true,
+            last_event_at: None,
+            ..Default::default()
+        };
+        let mut map = HashMap::new();
+        map.insert("pleasant".to_string(), health);
+        let mut assignments = HashMap::new();
+        assignments.insert("pleasant".to_string(), 1338u64);
+        let exemptions = StuckExemptions {
+            usage_limited: &HashSet::new(),
+            api_error: &HashSet::new(),
+            auth_error: &HashSet::new(),
+            attached: &HashMap::new(),
+        };
+        // started only 2 minutes ago — below the 5-minute threshold
+        let mut start_times = HashMap::new();
+        start_times.insert("pleasant".to_string(), now - chrono::Duration::minutes(2));
+        let restarts = decide_stuck_reviewer_restarts(
+            &map,
+            &assignments,
+            &HashMap::new(),
+            &exemptions,
+            now,
+            Duration::from_secs(300), // 5-minute threshold
+            2,
+            &HashMap::new(),
+            &start_times,
+        );
+        assert!(
+            restarts.is_empty(),
+            "reviewer with no events but recently started should NOT be stuck yet"
+        );
+    }
+
     #[test]
     fn set_workflow_none_progress_preserves_existing() {
         // Bug: hook fires coworker_report_state with progress=None, which
