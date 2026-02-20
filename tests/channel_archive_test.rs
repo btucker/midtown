@@ -14,23 +14,27 @@ fn test_archive_channel_renames_file_correctly() {
     let msg = Message::text("test", "Hello world");
     channel.send(&msg).unwrap();
 
-    // Verify the channel file exists
-    let channel_file = base_dir.join("channels").join("test-topic.jsonl");
-    assert!(channel_file.exists(), "Channel file should exist");
+    // Verify the channel directory exists with its message file
+    let channel_file = base_dir
+        .join("channels")
+        .join("test-topic")
+        .join("history")
+        .join("current.jsonl");
+    assert!(channel_file.exists(), "Channel message file should exist");
 
     // Archive the channel
     channel.archive().unwrap();
 
-    // Verify the channel file was renamed
+    // Verify the channel directory was renamed
     assert!(
         !channel_file.exists(),
-        "Original channel file should be gone"
+        "Original channel message file should be gone"
     );
-    let archived_file = base_dir.join("channels").join("test-topic.archived.jsonl");
+    let archived_dir = base_dir.join("channels").join("test-topic.archived");
     assert!(
-        archived_file.exists(),
-        "Archived channel file should exist at {:?}",
-        archived_file
+        archived_dir.exists(),
+        "Archived channel directory should exist at {:?}",
+        archived_dir
     );
 
     // Verify archived channels are not listed
@@ -58,7 +62,11 @@ fn test_archive_channel_preserves_messages() {
     channel.archive().unwrap();
 
     // Read the archived file directly to verify messages are preserved
-    let archived_file = base_dir.join("channels").join("test-topic.archived.jsonl");
+    let archived_file = base_dir
+        .join("channels")
+        .join("test-topic.archived")
+        .join("history")
+        .join("current.jsonl");
     let content = std::fs::read_to_string(archived_file).unwrap();
     assert!(
         content.contains("First message"),
@@ -203,11 +211,12 @@ fn test_list_archived_channels_no_ghost_files() {
     let channel = Channel::new(temp_dir.path(), "archived-channel").unwrap();
     channel.archive().unwrap();
 
-    // Verify the archived file exists
+    // Verify the archived directory exists
     let archived_path = temp_dir
         .path()
-        .join("channels/archived-channel.archived.jsonl");
-    assert!(archived_path.exists(), "Archived file should exist");
+        .join("channels")
+        .join("archived-channel.archived");
+    assert!(archived_path.exists(), "Archived directory should exist");
 
     // List channels with include_archived=true
     let channels = Channel::list(temp_dir.path(), true, None).unwrap();
@@ -232,16 +241,16 @@ fn test_list_archived_channels_no_ghost_files() {
         let _channel = Channel::new(temp_dir.path(), &archived_info.name).unwrap();
     }
 
-    // Verify no ghost file was created at channels/archived-channel.jsonl
-    let ghost_path = temp_dir.path().join("channels/archived-channel.jsonl");
+    // Verify no ghost active directory was created at channels/archived-channel/
+    let ghost_path = temp_dir.path().join("channels").join("archived-channel");
     assert!(
         !ghost_path.exists(),
-        "Ghost .jsonl file should NOT be created for archived channels"
+        "Ghost active directory should NOT be created for archived channels"
     );
 
-    // Only the .archived.jsonl file should exist
+    // Only the .archived directory should exist
     assert!(
         archived_path.exists(),
-        "Original archived file should still exist"
+        "Original archived directory should still exist"
     );
 }

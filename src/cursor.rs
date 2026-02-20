@@ -68,22 +68,19 @@ impl Cursor {
 
     /// Get the path for a cursor file
     ///
-    /// For backward compatibility:
-    /// - If channel is "midtown" and cursors/<agent>.json exists (legacy), use that
-    /// - Otherwise use cursors/<channel>/<agent>.json
+    /// Cursors are stored at `channels/<channel>/cursors/<agent>.json`,
+    /// colocated with the channel directory they track.
+    ///
+    /// This relies on `Channel::new()` having run first to create the directory
+    /// structure and migrate legacy cursors from `cursors/<agent>.json`. The daemon
+    /// always creates channels on startup before any cursor loading occurs, so the
+    /// migration guarantee holds. If called before `Channel::new()`, a missing
+    /// cursor file results in a fresh cursor at position 0 (agent re-reads all messages).
     pub fn file_path(base_dir: &Path, channel: &str, agent: &str) -> PathBuf {
-        // Legacy path for midtown channel
-        if channel == "midtown" {
-            let legacy_path = base_dir.join("cursors").join(format!("{}.json", agent));
-            if legacy_path.exists() {
-                return legacy_path;
-            }
-        }
-
-        // New per-channel path
         base_dir
-            .join("cursors")
+            .join("channels")
             .join(channel)
+            .join("cursors")
             .join(format!("{}.json", agent))
     }
 

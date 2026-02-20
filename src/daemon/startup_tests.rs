@@ -307,8 +307,9 @@ fn test_check_sandbox_context_detects_nesting() {
 
 // ── Channel lead session recovery tests ───────────────────────────────
 
-/// Create temporary channel files for testing.
+/// Create temporary channel directories for testing.
 ///
+/// Creates the per-channel directory layout: `channels/<name>/history/current.jsonl`.
 /// Returns the temp dir (must be kept alive) and the base_dir path.
 fn create_temp_channels(channel_names: &[&str]) -> (tempfile::TempDir, std::path::PathBuf) {
     let tmp = tempfile::TempDir::new().expect("create temp dir");
@@ -316,18 +317,21 @@ fn create_temp_channels(channel_names: &[&str]) -> (tempfile::TempDir, std::path
     let channels_dir = base_dir.join("channels");
     std::fs::create_dir_all(&channels_dir).expect("create channels dir");
     for name in channel_names {
-        let channel_file = channels_dir.join(format!("{}.jsonl", name));
-        std::fs::write(&channel_file, "").expect("create channel file");
+        let history_dir = channels_dir.join(name).join("history");
+        std::fs::create_dir_all(&history_dir).expect("create history dir");
+        std::fs::write(history_dir.join("current.jsonl"), "").expect("create channel file");
     }
     (tmp, base_dir)
 }
 
-/// Create an archived channel file (has `.archived.jsonl` extension).
+/// Create an archived channel directory (has `.archived` directory suffix).
 fn create_archived_channel(base_dir: &std::path::Path, channel_name: &str) {
-    let channels_dir = base_dir.join("channels");
-    std::fs::create_dir_all(&channels_dir).expect("create channels dir");
-    let channel_file = channels_dir.join(format!("{}.archived.jsonl", channel_name));
-    std::fs::write(&channel_file, "").expect("create archived channel file");
+    let archived_dir = base_dir
+        .join("channels")
+        .join(format!("{}.archived", channel_name));
+    let history_dir = archived_dir.join("history");
+    std::fs::create_dir_all(&history_dir).expect("create archived history dir");
+    std::fs::write(history_dir.join("current.jsonl"), "").expect("create archived channel file");
 }
 
 #[tokio::test]
@@ -351,8 +355,10 @@ async fn test_recover_channel_lead_sessions_only_midtown_excluded() {
     // Only the main "midtown" channel — no topic channels → no effects
     let tmp = tempfile::TempDir::new().expect("create temp dir");
     let base_dir = tmp.path().to_path_buf();
-    // Create legacy channel.jsonl (detected as "midtown" channel by Channel::list)
-    std::fs::write(base_dir.join("channel.jsonl"), "").expect("create channel.jsonl");
+    // Create midtown channel using the new directory layout
+    let history_dir = base_dir.join("channels").join("midtown").join("history");
+    std::fs::create_dir_all(&history_dir).expect("create history dir");
+    std::fs::write(history_dir.join("current.jsonl"), "").expect("create channel.jsonl");
 
     let persistent_state = tokio::sync::Mutex::new(DaemonPersistentState::default());
     let effects =

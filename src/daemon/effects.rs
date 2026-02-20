@@ -1552,14 +1552,14 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 // Archive the channel by using Channel::archive()
                 let base_dir = crate::paths::projects_dir_for_repo(&state.repo_name);
 
-                // Idempotency guard: check if the channel file still exists before
+                // Idempotency guard: check if the channel directory still exists before
                 // archiving. This effect may fire repeatedly (once per TaskDispatchTick)
                 // because completed tasks still reference the channel name. Without this
-                // guard, Channel::new() would create an empty file at the original path,
-                // and archive() would then overwrite the real archived data with that
-                // empty file — destroying all channel history.
-                let channel_file = base_dir.join("channels").join(format!("{}.jsonl", name));
-                if !channel_file.exists() {
+                // guard, Channel::new() would recreate the channel directory,
+                // and archive() would then overwrite the real archived data — destroying
+                // all channel history.
+                let channel_dir = base_dir.join("channels").join(&name);
+                if !channel_dir.exists() {
                     debug!("Channel '{}' already archived, skipping", name);
                     continue;
                 }

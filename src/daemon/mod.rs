@@ -3529,31 +3529,37 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                 effects::execute_effects(review_effects, &state).await;
             }
 
-            // Periodic channel log rotation (only rotates the default/main channel)
+            // Periodic channel log rotation (rotates all active channels)
             _ = channel_rotation_interval.tick() => {
-                let default_channel = match state.channel_router.default_channel() {
-                    Ok(ch) => ch,
-                    Err(e) => {
-                        error!("Failed to get default channel for rotation: {}", e);
-                        continue;
-                    }
-                };
-                if default_channel.needs_rotation(CHANNEL_ROTATION_MAX_AGE_HOURS) {
-                    info!("Channel rotation triggered (oldest message > {}h)", CHANNEL_ROTATION_MAX_AGE_HOURS);
-                    match default_channel.rotate(CHANNEL_ROTATION_RETAIN_MINUTES) {
-                        Ok(archived) => {
-                            info!("Channel rotated: {} messages archived", archived);
-                            let mut msg = Message::system(format!(
-                                "Channel log rotated: {} old messages archived",
-                                archived
-                            ));
-                            msg.channel = Some(OPS_CHANNEL.to_string());
-                            if let Err(e) = state.send_and_broadcast_async(&msg).await {
-                                warn!("Failed to send rotation notification: {}", e);
-                            }
-                        }
+                let base_dir = crate::paths::projects_dir_for_repo(&state.repo_name);
+                let all_channels = crate::channel::Channel::list(&base_dir, false, None)
+                    .unwrap_or_default();
+                for channel_info in all_channels {
+                    let ch = match crate::channel::Channel::new(&base_dir, &channel_info.name) {
+                        Ok(ch) => ch,
                         Err(e) => {
-                            error!("Channel rotation failed: {}", e);
+                            error!("Failed to open channel '{}' for rotation: {}", channel_info.name, e);
+                            continue;
+                        }
+                    };
+                    if ch.needs_rotation(CHANNEL_ROTATION_MAX_AGE_HOURS) {
+                        info!("Channel '{}' rotation triggered (oldest message > {}h)", channel_info.name, CHANNEL_ROTATION_MAX_AGE_HOURS);
+                        match ch.rotate(CHANNEL_ROTATION_RETAIN_MINUTES) {
+                            Ok(archived) if archived > 0 => {
+                                info!("Channel '{}' rotated: {} messages archived", channel_info.name, archived);
+                                let mut msg = Message::system(format!(
+                                    "Channel '{}' log rotated: {} old messages archived",
+                                    channel_info.name, archived
+                                ));
+                                msg.channel = Some(OPS_CHANNEL.to_string());
+                                if let Err(e) = state.send_and_broadcast_async(&msg).await {
+                                    warn!("Failed to send rotation notification: {}", e);
+                                }
+                            }
+                            Ok(_) => {}
+                            Err(e) => {
+                                error!("Channel '{}' rotation failed: {}", channel_info.name, e);
+                            }
                         }
                     }
                 }
