@@ -15,9 +15,11 @@ mod tests;
 /// Inspects the tool name and input arguments to produce a concise,
 /// Pi-agent-style description of what the tool is doing.
 ///
-/// Headers are **not** truncated here — the TUI render layer (ratatui) clips
-/// lines at the actual terminal width, so pre-truncating with hardcoded limits
-/// would prevent the full text from reaching wide terminals.
+/// Headers are not aggressively truncated — the TUI render layer (ratatui)
+/// clips lines at the actual terminal width. However, headers are capped at
+/// [`MAX_SEMANTIC_HEADER_BYTES`] to bound RPC/WebSocket payload size, since
+/// these strings also flow through `collect_tool_activity()` and
+/// `BroadcastUniversalItems`.
 ///
 /// # Format table
 ///
@@ -38,7 +40,7 @@ mod tests;
 /// | `MultiEdit`  | `multi-edit <file_path>`       |
 /// | (default)    | lowercase tool name            |
 pub fn semantic_header(name: &str, input: &serde_json::Value) -> String {
-    match name {
+    let raw = match name {
         "Bash" => {
             let command = input.get("command").and_then(|v| v.as_str()).unwrap_or("");
             format!("$ {command}")
@@ -92,6 +94,14 @@ pub fn semantic_header(name: &str, input: &serde_json::Value) -> String {
             format!("multi-edit {path}")
         }
         _ => name.to_lowercase(),
+    };
+
+    // Cap header size for RPC/WebSocket payloads (TUI uses ratatui clipping).
+    if raw.len() > MAX_SEMANTIC_HEADER_BYTES {
+        let boundary = raw.floor_char_boundary(MAX_SEMANTIC_HEADER_BYTES);
+        format!("{}\u{2026}", &raw[..boundary])
+    } else {
+        raw
     }
 }
 
@@ -249,6 +259,14 @@ pub fn extract_tool_events(
 
     items
 }
+
+/// Maximum bytes retained in a `semantic_header` string.
+///
+/// Matches the bounding strategy used by [`MAX_TOOL_RESULT_OUTPUT_BYTES`]:
+/// headers flow through RPC (`kanban.data`) and WebSocket broadcasts, so they
+/// need a size cap even though the TUI would clip them naturally. 256 bytes is
+/// generous enough for any practical terminal width.
+const MAX_SEMANTIC_HEADER_BYTES: usize = 256;
 
 /// Maximum bytes retained from a tool result's output string.
 ///
