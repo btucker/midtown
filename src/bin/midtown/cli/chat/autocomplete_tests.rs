@@ -425,3 +425,109 @@ fn test_task_autocomplete_empty_query_shows_in_progress_first() {
     assert_eq!(items[2].value, "!100", "Third should be pending task");
     assert_eq!(items[3].value, "!300", "Fourth should be pending task");
 }
+
+#[test]
+fn test_slash_autocomplete_empty_query_shows_all_commands() {
+    let app = test_app();
+
+    // Empty query after "/" should show all commands
+    let items = app.get_slash_items("");
+    assert!(!items.is_empty(), "Should show commands for empty query");
+    assert!(
+        items.iter().any(|i| i.value == "/channel create"),
+        "Should include /channel create"
+    );
+    assert!(items.iter().any(|i| i.value == "/me"), "Should include /me");
+}
+
+#[test]
+fn test_slash_autocomplete_filters_by_prefix() {
+    let app = test_app();
+
+    // "ch" should match "/channel create"
+    let items = app.get_slash_items("ch");
+    assert_eq!(items.len(), 1, "Should match 1 command starting with 'ch'");
+    assert_eq!(items[0].value, "/channel create");
+
+    // "m" should match "/me"
+    let items = app.get_slash_items("m");
+    assert_eq!(items.len(), 1, "Should match 1 command starting with 'm'");
+    assert_eq!(items[0].value, "/me");
+
+    // "x" should match nothing
+    let items = app.get_slash_items("x");
+    assert!(items.is_empty(), "Should match no commands");
+}
+
+#[test]
+fn test_slash_autocomplete_triggers_at_start_of_input() {
+    let mut app = test_app();
+
+    // Type "/" at start — should trigger slash autocomplete
+    app.input_text = "/".to_string();
+    app.input_cursor = 1;
+    app.detect_autocomplete_trigger();
+
+    assert!(
+        app.autocomplete.show,
+        "Autocomplete should show after '/' at start"
+    );
+    assert_eq!(app.autocomplete.trigger_type, Some('/'));
+    assert_eq!(app.autocomplete.query, "");
+}
+
+#[test]
+fn test_slash_autocomplete_does_not_trigger_mid_message() {
+    let mut app = test_app();
+
+    // "/" in the middle of text should NOT trigger slash autocomplete
+    app.input_text = "hello /me".to_string();
+    app.input_cursor = 9;
+    app.detect_autocomplete_trigger();
+
+    assert!(
+        !app.autocomplete.show,
+        "Autocomplete should NOT trigger for '/' after a space mid-message"
+    );
+}
+
+#[test]
+fn test_slash_autocomplete_query_updates_as_user_types() {
+    let mut app = test_app();
+
+    // Type "/ch" — query should be "ch", filtered to /channel create
+    app.input_text = "/ch".to_string();
+    app.input_cursor = 3;
+    app.detect_autocomplete_trigger();
+
+    assert!(app.autocomplete.show, "Autocomplete should show for '/ch'");
+    assert_eq!(app.autocomplete.query, "ch");
+    assert_eq!(app.autocomplete.items.len(), 1);
+    assert_eq!(app.autocomplete.items[0].value, "/channel create");
+}
+
+#[test]
+fn test_slash_autocomplete_insert_replaces_partial_command() {
+    let mut app = test_app();
+
+    // Set up: user typed "/ch" and selected "/channel create"
+    app.input_text = "/ch".to_string();
+    app.input_cursor = 3;
+    app.autocomplete.show = true;
+    app.autocomplete.trigger_type = Some('/');
+    app.autocomplete.trigger_start_pos = 0;
+    app.autocomplete.query = "ch".to_string();
+    app.autocomplete.selected_index = 0;
+    app.autocomplete.items = vec![super::AutocompleteItem {
+        value: "/channel create".to_string(),
+        description: Some("Create a new channel".to_string()),
+    }];
+
+    app.insert_autocomplete_item();
+
+    assert_eq!(
+        app.input_text, "/channel create ",
+        "Should expand to full command with trailing space"
+    );
+    assert!(!app.autocomplete.show, "Autocomplete should be hidden");
+}
