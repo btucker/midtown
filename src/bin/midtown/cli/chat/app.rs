@@ -261,6 +261,11 @@ pub struct App {
     pub visible_height: usize,
     /// Channel for reading messages
     channel: Option<Channel>,
+    /// Unique session identifier for cursor scoping.
+    ///
+    /// Generated fresh on each TUI startup so each invocation gets its own
+    /// cursor file and starts at end-of-file (only new messages are shown).
+    session_id: String,
     /// Whether initial messages have been loaded
     initial_load_done: bool,
     /// Byte position where loaded history starts (0 means all history loaded)
@@ -529,6 +534,7 @@ impl App {
             scroll_offset: 0,
             visible_height: 20,
             channel,
+            session_id: uuid::Uuid::new_v4().to_string(),
             initial_load_done: false,
             history_start_position: 0,
             history_fully_loaded: false,
@@ -633,14 +639,14 @@ impl App {
                     self.scroll_offset = 0; // Start at bottom (most recent)
                 }
                 // Position cursor at EOF so read_since_cursor only gets NEW messages
-                let _ = channel.set_cursor_to_end("chat-tui");
+                let _ = channel.set_cursor_to_end("chat-tui", &self.session_id);
                 self.initial_load_done = true;
                 return;
             }
 
             // Read new messages since cursor position
             // On subsequent calls, cursor tracks new messages arriving
-            if let Ok(new_messages) = channel.read_since_cursor("chat-tui")
+            if let Ok(new_messages) = channel.read_since_cursor("chat-tui", &self.session_id)
                 && !new_messages.is_empty()
             {
                 let added = new_messages.len();
@@ -873,11 +879,11 @@ impl App {
                 if let Ok((messages, _)) = channel.read_last_n_messages(OPS_MAX) {
                     self.ops_messages = VecDeque::from(messages);
                 }
-                let _ = channel.set_cursor_to_end("chat-tui-ops");
+                let _ = channel.set_cursor_to_end("chat-tui-ops", &self.session_id);
                 self.ops_initial_load_done = true;
                 return;
             }
-            if let Ok(new_msgs) = channel.read_since_cursor("chat-tui-ops")
+            if let Ok(new_msgs) = channel.read_since_cursor("chat-tui-ops", &self.session_id)
                 && !new_msgs.is_empty()
             {
                 self.ops_messages.extend(new_msgs);
@@ -1336,7 +1342,7 @@ impl App {
 
                 // Set cursor to end for new messages
                 if let Some(ref ch) = self.channel {
-                    let _ = ch.set_cursor_to_end("chat-tui");
+                    let _ = ch.set_cursor_to_end("chat-tui", &self.session_id);
                 }
             }
         }
@@ -1772,19 +1778,44 @@ impl App {
             };
 
             // Calculate unread count:
-            // Load the cursor without updating it, then count messages from that position
-            let cursor =
-                match midtown::Cursor::load_or_create(&base_dir, &channel_info.name, "chat-tui") {
-                    Ok(c) => c,
-                    Err(_) => {
-                        // If we can't load cursor, assume all messages are unread
-                        if total_count > 0 {
-                            self.channel_unread_counts
-                                .insert(channel_info.name.clone(), total_count);
+            // First check the current session's cursor, then fall back to the most
+            // recently updated cursor from any previous session. This prevents a
+            // regression where a new TUI session (fresh UUID) shows everything as unread.
+            let cursor = match midtown::Cursor::load_or_create(
+                &base_dir,
+                &channel_info.name,
+                "chat-tui",
+                &self.session_id,
+            ) {
+                Ok(c) if c.last_message_id.is_some() => c,
+                Ok(_fresh) => {
+                    // Current session has a fresh cursor (never updated).
+                    // Try to find the most recent cursor from a previous session.
+                    match midtown::Cursor::load_latest_for_agent(
+                        &base_dir,
+                        &channel_info.name,
+                        "chat-tui",
+                    ) {
+                        Ok(Some(prev)) => prev,
+                        _ => {
+                            // No previous cursor either — all messages are unread
+                            if total_count > 0 {
+                                self.channel_unread_counts
+                                    .insert(channel_info.name.clone(), total_count);
+                            }
+                            continue;
                         }
-                        continue;
                     }
-                };
+                }
+                Err(_) => {
+                    // If we can't load cursor, assume all messages are unread
+                    if total_count > 0 {
+                        self.channel_unread_counts
+                            .insert(channel_info.name.clone(), total_count);
+                    }
+                    continue;
+                }
+            };
 
             // Read all messages and count how many come after the cursor position
             let all_messages = match channel.read_all() {
@@ -3360,6 +3391,7 @@ pub(super) mod tests {
             scroll_offset: 0,
             visible_height: 20,
             channel: None,
+            session_id: "test-session".to_string(),
             initial_load_done: true,
             history_start_position: 0,
             history_fully_loaded: true,
@@ -4118,13 +4150,14 @@ pub(super) mod tests {
             "All 3 messages should be unread initially"
         );
 
-        // Simulate reading messages by updating the cursor
+        // Simulate reading messages by updating the cursor (using test-session to match test_app)
         let messages_read =
-            retry_with_backoff(5, || channel.read_since_cursor("chat-tui")).unwrap();
+            retry_with_backoff(5, || channel.read_since_cursor("chat-tui", "test-session"))
+                .unwrap();
         assert_eq!(messages_read.len(), 3, "Should have read 3 messages");
 
         // Verify cursor was saved - load it and check it points to the last message
-        let cursor = channel.get_cursor("chat-tui").unwrap();
+        let cursor = channel.get_cursor("chat-tui", "test-session").unwrap();
         assert!(
             cursor.last_message_id.is_some(),
             "Cursor should have last_message_id set after reading"
@@ -4154,7 +4187,7 @@ pub(super) mod tests {
         assert_eq!(all_messages.len(), 4, "Should have 4 total messages");
 
         // Verify cursor still points to message 3 (not auto-updated)
-        let cursor_before_refresh = channel.get_cursor("chat-tui").unwrap();
+        let cursor_before_refresh = channel.get_cursor("chat-tui", "test-session").unwrap();
         assert_eq!(
             cursor_before_refresh.last_message_id.as_ref(),
             Some(&messages_read[2].id),

@@ -49,7 +49,6 @@ pub enum HookCommand {
 /// Input structure for hooks (from Claude Code via stdin)
 #[derive(Debug, serde::Deserialize)]
 struct HookInput {
-    #[allow(dead_code)]
     session_id: Option<String>,
     transcript_path: Option<String>,
     #[allow(dead_code)]
@@ -226,8 +225,17 @@ fn hash_insight_for_fallback(insight: &str) -> String {
 /// Handle the Lead stop hook - read channel messages for the Lead.
 /// Orphan recovery, mergeable PR detection, and stuck PR detection are handled by the daemon.
 fn handle_lead_stop_hook() -> Result<Response, String> {
+    // Read hook input from stdin to get the session_id for cursor scoping.
+    // Claude Code passes JSON with session_id on every Stop hook invocation.
+    let mut input = String::new();
+    let _ = std::io::stdin().read_to_string(&mut input);
+    let session_id = serde_json::from_str::<HookInput>(&input)
+        .ok()
+        .and_then(|h| h.session_id)
+        .unwrap_or_else(|| "lead-default".to_string());
+
     // Read channel messages to sync
-    let new_messages = read_channel_messages().unwrap_or_default();
+    let new_messages = read_channel_messages(&session_id).unwrap_or_default();
 
     if let Some(ref repo) = detect_git_repo() {
         hook_log(
@@ -310,18 +318,36 @@ fn check_daemon_health() -> bool {
 }
 
 /// Read channel messages and return them (for stop hook sync).
-fn read_channel_messages() -> Result<Vec<midtown::Message>, String> {
+fn read_channel_messages(session_id: &str) -> Result<Vec<midtown::Message>, String> {
     if let Some(repo) = detect_git_repo() {
-        return read_channel_messages_for_repo(&repo);
+        return read_channel_messages_for_repo(&repo, session_id);
     }
     Ok(Vec::new())
 }
 
 /// Read channel messages for a given repo, respecting `MIDTOWN_CHANNEL`.
-fn read_channel_messages_for_repo(repo: &str) -> Result<Vec<midtown::Message>, String> {
+///
+/// Uses session-scoped cursors so each lead session independently tracks its
+/// read position. On the first Stop event for a new session (no cursor file
+/// exists), initializes the cursor at EOF so only messages from this session
+/// are reported — not the entire channel history.
+fn read_channel_messages_for_repo(
+    repo: &str,
+    session_id: &str,
+) -> Result<Vec<midtown::Message>, String> {
     let channel = open_channel_for_hook(repo)?;
+
+    // For new sessions (no cursor file yet), start at EOF so the first stop
+    // event only reports messages that arrived during this session.
+    let cursor_exists =
+        midtown::Cursor::file_path(channel.base_dir(), channel.channel_name(), session_id).exists();
+    if !cursor_exists {
+        let _ = channel.set_cursor_to_end("lead", session_id);
+        return Ok(Vec::new());
+    }
+
     channel
-        .read_since_cursor("lead")
+        .read_since_cursor("lead", session_id)
         .map_err(|e| format!("Failed to read channel: {}", e))
 }
 
@@ -1277,14 +1303,23 @@ Second insight
         let projects_dir = midtown::paths::projects_dir_for_repo(&repo);
         let _ = std::fs::remove_dir_all(&projects_dir);
 
+        // With MIDTOWN_CHANNEL set to "tui":
+        // - First call initializes a fresh session cursor at EOF and returns empty.
+        // - We then post a message, so subsequent calls should find it.
+        unsafe { std::env::set_var("MIDTOWN_CHANNEL", "tui") };
+        let first_call = read_channel_messages_for_repo(&repo, "test-session").unwrap();
+        assert!(
+            first_call.is_empty(),
+            "fresh cursor should return no messages"
+        );
+
         // Post a message to the topic channel
         let topic_ch = midtown::Channel::for_repo_named(&repo, "tui").unwrap();
         let msg = midtown::Message::text("lead", "topic channel message");
         topic_ch.send(&msg).unwrap();
 
-        // With MIDTOWN_CHANNEL set, should read from topic channel
-        unsafe { std::env::set_var("MIDTOWN_CHANNEL", "tui") };
-        let messages = read_channel_messages_for_repo(&repo).unwrap();
+        // Second call should see the new message from the topic channel
+        let messages = read_channel_messages_for_repo(&repo, "test-session").unwrap();
         assert!(
             messages
                 .iter()
@@ -1292,9 +1327,9 @@ Second insight
             "should read messages from the topic channel"
         );
 
-        // Main channel should have no messages
+        // Main channel should have no messages (different channel, different cursor)
         unsafe { std::env::remove_var("MIDTOWN_CHANNEL") };
-        let main_messages = read_channel_messages_for_repo(&repo).unwrap();
+        let main_messages = read_channel_messages_for_repo(&repo, "test-session-main").unwrap();
         assert!(main_messages.is_empty(), "main channel should be empty");
 
         let _ = std::fs::remove_dir_all(&projects_dir);

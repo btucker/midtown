@@ -147,7 +147,7 @@ channels/
       2026-02-18.jsonl              # rotated daily archive
     notes/                          # channel lead domain knowledge (markdown)
     cursors/
-      park.json                     # per-agent read position
+      <session_id>.json             # per-session read position (keyed by session ID)
   pr-42/                            # topic channel
     history/current.jsonl
     notes/
@@ -161,7 +161,7 @@ channels/
 **Auto-migration:** On first `Channel::new()` per process, `auto_migrate_channels()` converts legacy layouts:
 - `channel.jsonl` → `channels/midtown/history/current.jsonl` (V0→V3)
 - `channels/<name>.jsonl` → `channels/<name>/history/current.jsonl` (V2→V3)
-- `cursors/<agent>.json` → `channels/midtown/cursors/<agent>.json`
+- `cursors/<agent>.json` → deleted (cursors are now session-scoped and ephemeral)
 
 Migration runs once per `base_dir` per process (via `OnceLock`) and is idempotent.
 
