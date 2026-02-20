@@ -4569,6 +4569,7 @@ pub(super) mod tests {
         );
     }
 
+
     #[test]
     fn test_scroll_unblocked_when_rendered_lines_overflow() {
         // Bug: a channel with few messages (< visible_height) could not be scrolled
