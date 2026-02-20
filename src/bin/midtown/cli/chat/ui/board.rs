@@ -131,18 +131,6 @@ pub fn draw_board_panel(f: &mut Frame, app: &mut App, area: Rect) -> (Vec<Hyperl
 
     let wrap_width = area.width.saturating_sub(2).max(20) as usize;
 
-    // Count active PRs per channel
-    let mut prs_by_channel: HashMap<String, Vec<&KanbanPr>> = HashMap::new();
-    for pr in &app.prs {
-        if let Some(task_id) = midtown::tasks::extract_task_id_from_pr_title(&pr.title) {
-            let task_id_str = task_id.to_string();
-            if let Some(task) = app.tasks.iter().find(|t| t.id == task_id_str) {
-                let channel_key = task.channel.as_deref().unwrap_or(main_channel).to_string();
-                prs_by_channel.entry(channel_key).or_default().push(pr);
-            }
-        }
-    }
-
     // Build task_line_map and channel_line_map before rendering (to avoid borrow conflicts)
     // task_line_map: maps line numbers to (task_id, owner) for click-to-attach
     // channel_line_map: maps line numbers to channel_name for click-to-select
@@ -203,7 +191,7 @@ pub fn draw_board_panel(f: &mut Frame, app: &mut App, area: Rect) -> (Vec<Hyperl
 
     // Render each channel as a swimlane
     for (channel_name, tasks) in &channels_to_display {
-        render_channel_header(app, channel_name, tasks, &prs_by_channel, &mut lines);
+        render_channel_header(app, channel_name, &mut lines);
 
         let task_indentation = compute_task_indentation(tasks);
 
@@ -249,22 +237,12 @@ pub fn draw_board_panel(f: &mut Frame, app: &mut App, area: Rect) -> (Vec<Hyperl
     (hyperlinks, tasks_area)
 }
 
-/// Render a channel header line with task count and unread count.
-fn render_channel_header(
-    app: &App,
-    channel_name: &str,
-    tasks: &[&KanbanTask],
-    _prs_by_channel: &HashMap<String, Vec<&KanbanPr>>,
-    lines: &mut Vec<Line<'static>>,
-) {
-    let task_count = tasks.len();
+/// Render a channel header line: `#channel-name` with optional `(X)` unread count.
+fn render_channel_header(app: &App, channel_name: &str, lines: &mut Vec<Line<'static>>) {
     let channel_header = if let Some(&unread_count) = app.channel_unread_counts.get(channel_name) {
-        format!(
-            "#{} ({}) — {} tasks",
-            channel_name, unread_count, task_count
-        )
+        format!("#{} ({})", channel_name, unread_count)
     } else {
-        format!("#{} — {} tasks", channel_name, task_count)
+        format!("#{}", channel_name)
     };
 
     let is_selected = app.board_selection.as_ref().is_some_and(|sel| match sel {

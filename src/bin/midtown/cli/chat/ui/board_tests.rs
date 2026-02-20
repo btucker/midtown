@@ -51,6 +51,44 @@ fn test_task_line_map_registers_continuation_line_with_phase_label() {
     );
 }
 
+// --- render_channel_header tests ---
+
+#[test]
+fn test_channel_header_no_unread() {
+    let app = super::super::super::app::tests::test_app();
+    let mut lines = Vec::new();
+    render_channel_header(&app, "midtown", &mut lines);
+    assert_eq!(lines.len(), 1);
+    assert_eq!(lines[0].spans[0].content.as_ref(), "#midtown");
+}
+
+#[test]
+fn test_channel_header_with_unread() {
+    let mut app = super::super::super::app::tests::test_app();
+    app.channel_unread_counts.insert("auth".to_string(), 5);
+    let mut lines = Vec::new();
+    render_channel_header(&app, "auth", &mut lines);
+    assert_eq!(lines.len(), 1);
+    assert_eq!(lines[0].spans[0].content.as_ref(), "#auth (5)");
+}
+
+#[test]
+fn test_channel_header_no_task_count() {
+    // Task count should not appear in the header regardless of task presence
+    let app = super::super::super::app::tests::test_app();
+    let mut lines = Vec::new();
+    render_channel_header(&app, "tui", &mut lines);
+    let content = lines[0].spans[0].content.as_ref();
+    assert!(
+        !content.contains("tasks"),
+        "header should not mention tasks: {content}"
+    );
+    assert!(
+        !content.contains("—"),
+        "header should not contain separator: {content}"
+    );
+}
+
 // --- draw_ops_mini_channel tests ---
 
 #[test]

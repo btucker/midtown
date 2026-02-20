@@ -835,9 +835,15 @@ impl Channel {
     /// pick up new messages. For new sessions that should not replay
     /// historical messages, call this before the first `read_since_cursor`.
     pub fn set_cursor_to_end(&self, agent: &str, session_id: &str) -> Result<()> {
+        // Read the last message ID so that unread-count calculations
+        // (which key off last_message_id) correctly treat the channel as fully read.
+        let last_message_id = self
+            .read_last_n_messages(1)
+            .ok()
+            .and_then(|(msgs, _)| msgs.into_iter().next().map(|m| m.id));
         let mut cursor =
             Cursor::load_or_create(&self.base_dir, &self.channel_name, agent, session_id)?;
-        cursor.update(self.file_size(), None);
+        cursor.update(self.file_size(), last_message_id);
         cursor.save(&self.base_dir, &self.channel_name)?;
         Ok(())
     }
