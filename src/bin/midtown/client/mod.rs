@@ -259,6 +259,14 @@ impl DaemonClient {
         self.send("channel.read", Some(params))
     }
 
+    pub fn channel_create(&self, name: &str) -> Result<Response, String> {
+        self.send("channel.create", Some(serde_json::json!({ "name": name })))
+    }
+
+    pub fn channel_archive(&self, name: &str) -> Result<Response, String> {
+        self.send("channel.archive", Some(serde_json::json!({ "name": name })))
+    }
+
     /// List all available channels from the daemon.
     ///
     /// This fetches channels from the daemon's HTTP API (same as web UI),
@@ -851,6 +859,10 @@ fn parse_daemon_response(value: Value) -> Result<Response, String> {
 #[path = "channel_read_tests.rs"]
 #[cfg(test)]
 mod channel_read_tests;
+
+#[path = "channel_create_archive_tests.rs"]
+#[cfg(test)]
+mod channel_create_archive_tests;
 
 #[cfg(test)]
 mod tests {

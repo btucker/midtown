@@ -430,6 +430,16 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
             super::rpc_channel::handle_channel_list(request.id, include_archived, state)
         }
 
+        "channel.create" => {
+            let name = require_str!(params, "name", request.id);
+            super::rpc_channel::handle_channel_create(request.id, name, state)
+        }
+
+        "channel.archive" => {
+            let name = require_str!(params, "name", request.id);
+            super::rpc_channel::handle_channel_archive(request.id, name, state)
+        }
+
         // ---- Tasks ----
         "task.create" => {
             let subject = require_str!(params, "subject", request.id);
