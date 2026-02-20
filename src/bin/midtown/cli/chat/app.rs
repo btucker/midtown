@@ -4593,7 +4593,6 @@ pub(super) mod tests {
                 timestamp: Utc::now(),
                 message_type: midtown::MessageType::Text,
                 channel: None,
-                source_channel: None,
                 session_id: None,
                 thread_parent_id: None,
             })
@@ -5159,7 +5158,6 @@ pub(super) mod tests {
                 timestamp: Utc::now(),
                 message_type: midtown::MessageType::Text,
                 channel: None,
-                source_channel: None,
                 session_id: None,
                 thread_parent_id: None,
             })
