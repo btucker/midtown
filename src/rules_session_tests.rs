@@ -73,6 +73,7 @@ fn stuck_coworker_restart_includes_session_id_from_map() {
         now,
         Duration::from_secs(180),
         &name_session_map,
+        &HashMap::new(),
     );
 
     assert_eq!(restarts.len(), 1);
@@ -106,6 +107,7 @@ fn stuck_coworker_restart_session_id_none_when_no_mapping() {
         &exemptions,
         now,
         Duration::from_secs(180),
+        &HashMap::new(),
         &HashMap::new(),
     );
 
@@ -177,6 +179,7 @@ fn stuck_reviewer_restart_includes_session_id_from_map() {
         Duration::from_secs(300),
         2,
         &name_session_map,
+        &HashMap::new(),
     );
 
     assert_eq!(restarts.len(), 1);
@@ -209,6 +212,7 @@ fn stuck_reviewer_restart_session_id_none_when_no_mapping() {
         now,
         Duration::from_secs(300),
         2,
+        &HashMap::new(),
         &HashMap::new(),
     );
 

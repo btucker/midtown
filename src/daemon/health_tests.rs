@@ -903,6 +903,7 @@ fn stuck_coworker_restart_propagates_session_id_to_shutdown_effect() {
         snap.now_utc,
         Duration::from_secs(180),
         &snap.name_session_map,
+        &snap.coworker_start_times,
     );
 
     assert_eq!(restarts.len(), 1);
@@ -1009,6 +1010,7 @@ fn stuck_reviewer_restart_propagates_session_id() {
         Duration::from_secs(300),
         2,
         &snap.name_session_map,
+        &snap.coworker_start_times,
     );
 
     assert_eq!(restarts.len(), 1);
@@ -1064,6 +1066,7 @@ fn session_id_is_none_when_no_session_mapping_exists() {
         snap.now_utc,
         Duration::from_secs(180),
         &snap.name_session_map,
+        &snap.coworker_start_times,
     );
 
     assert_eq!(restarts.len(), 1);
@@ -1355,6 +1358,7 @@ fn pending_api_call_exempts_coworker_from_stuck_detection() {
         snap.now_utc,
         Duration::from_secs(180),
         &snap.name_session_map,
+        &snap.coworker_start_times,
     );
 
     assert_eq!(
@@ -1407,6 +1411,7 @@ fn pending_api_call_exempts_reviewer_from_stuck_detection() {
         Duration::from_secs(300),
         2,
         &snap.name_session_map,
+        &snap.coworker_start_times,
     );
 
     assert_eq!(
