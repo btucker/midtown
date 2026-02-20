@@ -913,12 +913,13 @@ fn test_decide_orphan_cleanup_warns_about_unmerged() {
         stale_branch_cleanup_due: false,
     };
     let effects = decide_orphan_cleanup(&data);
-    // Should produce: PostSystemMessage, NudgeLead, SendPushNotification
-    assert_eq!(effects.len(), 3);
+    // Should produce: PostSystemMessage (contains @ops for routing), SendPushNotification
+    // No NudgeLead — the PostSystemMessage handler in effects.rs detects @ops and
+    // nudges the ops channel lead automatically.
+    assert_eq!(effects.len(), 2);
     assert!(matches!(&effects[0], Effect::PostSystemMessage { .. }));
-    assert!(matches!(&effects[1], Effect::NudgeLead { .. }));
     assert!(matches!(
-        &effects[2],
+        &effects[1],
         Effect::SendPushNotification { tag, .. } if tag == "orphan_warning"
     ));
 }
@@ -941,16 +942,16 @@ fn test_decide_orphan_cleanup_full_scenario() {
     };
     let effects = decide_orphan_cleanup(&data);
     // ClearOrphanedReviewerAssignments(york, park) + ForceCleanupWorktrees(york) +
-    // PostSystemMessage + NudgeLead + SendPushNotification
-    assert_eq!(effects.len(), 5);
+    // PostSystemMessage (contains @ops) + SendPushNotification
+    // No NudgeLead — ops channel lead is nudged via @ops detection in PostSystemMessage handler.
+    assert_eq!(effects.len(), 4);
     assert!(matches!(
         &effects[0],
         Effect::ClearOrphanedReviewerAssignments { .. }
     ));
     assert!(matches!(&effects[1], Effect::ForceCleanupWorktrees { .. }));
     assert!(matches!(&effects[2], Effect::PostSystemMessage { .. }));
-    assert!(matches!(&effects[3], Effect::NudgeLead { .. }));
-    assert!(matches!(&effects[4], Effect::SendPushNotification { .. }));
+    assert!(matches!(&effects[3], Effect::SendPushNotification { .. }));
 }
 
 #[test]
