@@ -172,18 +172,6 @@ pub struct DaemonPersistentState {
     #[serde(default)]
     pub task_execution_skill: HashMap<String, String>,
 
-    /// Clusterer session ID for resume-on-demand.
-    /// The clusterer accumulates context about channel assignments across
-    /// invocations, so we persist the session ID to resume it on next task creation.
-    #[serde(default)]
-    pub clusterer_session_id: Option<String>,
-
-    /// Count of consecutive clusterer failures since last success.
-    /// When this reaches the threshold, `clusterer_session_id` is cleared
-    /// so the next invocation starts a fresh session instead of retrying a dead one.
-    #[serde(default)]
-    pub clusterer_consecutive_failures: u32,
-
     /// Channel lead session IDs for resume-on-demand.
     ///
     /// Maps channel name → Claude Code session ID. One channel lead session
@@ -301,8 +289,6 @@ impl DaemonPersistentState {
             task_model: HashMap::new(),
             task_plan: HashMap::new(),
             task_execution_skill: HashMap::new(),
-            clusterer_session_id: None,
-            clusterer_consecutive_failures: 0,
             channel_lead_sessions: HashMap::new(),
             sessions: HashMap::new(),
         };

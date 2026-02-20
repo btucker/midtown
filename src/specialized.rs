@@ -1,7 +1,7 @@
 //! Specialized headless coworker abstraction.
 //!
 //! Provides a unified interface for headless coworkers with focused roles
-//! (architect, clusterer, etc.) that aren't general-purpose developers.
+//! (e.g., architect) that aren't general-purpose developers.
 //!
 //! # Key Features
 //!
@@ -24,22 +24,21 @@
 //! - Run in the main repo directory (no worktree isolation)
 //! - Process structured requests (not free-form task assignments)
 //! - Return typed responses (JSON, Mermaid diagrams, etc.)
-//! - May be short-lived (one-shot like architect) or long-lived (resume-based like clusterer)
+//! - May be short-lived (one-shot like architect) or long-lived (resume-based)
 //!
 //! # Future: Unified Coworker Model
 //!
-//! Long-term, all coworker types (dev, reviewer, architect, clusterer) should
-//! implement a variant of `SpecializedRole` that defines their behavior
-//! (system prompt, model, request/response patterns). The `SessionManager`
-//! would then become a generic lifecycle manager that handles spawn/nudge/shutdown
-//! for any role type.
+//! Long-term, all coworker types (dev, reviewer, architect) should implement a
+//! variant of `SpecializedRole` that defines their behavior (system prompt, model,
+//! request/response patterns). The `SessionManager` would then become a generic
+//! lifecycle manager that handles spawn/nudge/shutdown for any role type.
 //!
 //! This requires:
-//! - Extending `SpecializedRole` to support interactive (dev/reviewer) vs structured (architect/clusterer) modes
+//! - Extending `SpecializedRole` to support interactive (dev/reviewer) vs structured (architect) modes
 //! - Refactoring `SessionManager` to be role-agnostic
 //! - Migrating dev/reviewer coworker logic to role implementations
 //!
-//! For now, this module focuses on structured-request roles (architect, clusterer)
+//! For now, this module focuses on structured-request roles (architect)
 //! as a proof of concept. Dev/reviewer integration is future work.
 //!
 //! # Example
@@ -83,12 +82,12 @@ use crate::headless::{HeadlessConfig, HeadlessSession, StreamEvent};
 /// - Whether to persist sessions (one-shot vs resume-on-demand)
 /// - Request → Response transformation
 pub trait SpecializedRole {
-    /// Request type for this role (e.g., InsightRequest, ClusteringRequest).
+    /// Request type for this role (e.g., InsightRequest).
     type Request;
-    /// Response type for this role (e.g., DiagramResponse, ClusteringDiff).
+    /// Response type for this role (e.g., DiagramResponse).
     type Response;
 
-    /// Human-readable role name (e.g., "architect", "clusterer").
+    /// Human-readable role name (e.g., "architect").
     fn role_name(&self) -> &'static str;
 
     /// System prompt for this role's Claude session.

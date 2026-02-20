@@ -2,7 +2,7 @@
 //!
 //! Handles `task.create`, `task.update`, `task.done`, `task.metadata`,
 //! `task.request`, and `task.claim` methods, plus their supporting helpers
-//! (model/channel mapping, clustering, active form generation).
+//! (model/channel mapping, active form generation).
 
 use std::collections::HashMap;
 
@@ -11,7 +11,7 @@ use tracing::{debug, info, warn};
 use crate::message::{Message, MessageType};
 use crate::rpc::{RequestId, Response, RpcError};
 
-use super::{DaemonState, effects};
+use super::DaemonState;
 
 // ============================================================================
 // Helper functions
@@ -167,134 +167,6 @@ fn apply_task_channel_mapping(
     }
 }
 
-/// Invoke the clusterer to produce a ClusteringDiff for a new task.
-///
-/// Builds a ClustererRequest with the task ID, subject, description, and current
-/// channel state, then invokes the clusterer headless session. The clusterer
-/// returns a full ClusteringDiff describing channel operations (create, archive,
-/// merge, assign). The clusterer accumulates context across invocations via
-/// session resume.
-///
-/// Returns the ClusteringDiff or an error.
-async fn invoke_clusterer_for_task(
-    task_id: &str,
-    subject: &str,
-    description: &str,
-    state: &DaemonState,
-) -> Result<crate::clustering::ClusteringDiff, String> {
-    use crate::daemon::clusterer::{
-        ChannelInfo, ClustererRequest, CompletedTaskInfo, assign_channel,
-    };
-    use crate::tasks::TaskStatus;
-
-    // Collect channel information: list all channels and their active task counts
-    let base_dir = crate::paths::projects_dir_for_repo(&state.repo_name);
-    // Exclude archived channels from task assignment clustering
-    let channel_names = crate::channel::Channel::list(&base_dir, false, Some(&state.repo_name))
-        .unwrap_or_else(|e| {
-            warn!("Failed to list channels for clusterer: {}", e);
-            vec![crate::channel::ChannelInfo {
-                name: "midtown".to_string(),
-                is_archived: false,
-            }]
-        })
-        .into_iter()
-        .map(|info| info.name)
-        .collect::<Vec<_>>();
-
-    // Read all tasks to compute per-channel stats and recent completions
-    let all_tasks = crate::tasks::read_tasks_for_repo(Some(&state.repo_name));
-
-    // Build map of task_id -> channel from persistent state
-    let task_channel_map = {
-        let ps = state.persistent_state.lock().await;
-        ps.task_channel.clone()
-    };
-
-    // Group tasks by channel and collect stats
-    let mut channel_info_map: std::collections::HashMap<String, ChannelInfo> = channel_names
-        .iter()
-        .map(|name| {
-            (
-                name.clone(),
-                ChannelInfo {
-                    name: name.clone(),
-                    active_task_count: 0,
-                    recent_tasks: vec![],
-                },
-            )
-        })
-        .collect();
-
-    // Track recently completed tasks (last 10)
-    let mut recent_completions = vec![];
-
-    for task in &all_tasks {
-        let task_channel = task
-            .channel
-            .as_ref()
-            .or_else(|| task_channel_map.get(&task.id))
-            .map(|s| s.as_str())
-            .unwrap_or("midtown");
-
-        match task.status {
-            TaskStatus::Completed => {
-                // Collect completed tasks for context
-                if recent_completions.len() < 10 {
-                    recent_completions.push(CompletedTaskInfo {
-                        subject: task.subject.clone(),
-                        channel: Some(task_channel.to_string()),
-                    });
-                }
-            }
-            TaskStatus::InProgress | TaskStatus::Pending => {
-                // Count active tasks per channel and track recent subjects
-                if let Some(info) = channel_info_map.get_mut(task_channel) {
-                    info.active_task_count += 1;
-                    if info.recent_tasks.len() < 3 {
-                        info.recent_tasks.push(task.subject.clone());
-                    }
-                }
-            }
-        }
-    }
-
-    let channels: Vec<ChannelInfo> = channel_info_map.into_values().collect();
-
-    let request = ClustererRequest {
-        task_id: task_id.to_string(),
-        task_subject: subject.to_string(),
-        task_description: description.to_string(),
-        channels,
-        recent_completions,
-    };
-
-    // Get working directory (use primary repo path)
-    let cwd = state
-        .all_repo_paths
-        .first()
-        .ok_or("No repo paths configured")?
-        .clone();
-
-    // Resolve auth for the clusterer session
-    let auth_provider = crate::auth::AuthProvider::Claude;
-    let auth_profile_dir =
-        crate::auth::active_profile_dir_for_project_with_provider(&state.repo_name, auth_provider);
-
-    // Lock persistent state to pass to clusterer
-    let mut ps = state.persistent_state.lock().await;
-
-    // Invoke clusterer
-    let diff = assign_channel(request, cwd, &mut ps, auth_provider, &auth_profile_dir).await?;
-
-    // Save persistent state with updated session ID
-    if let Err(e) = ps.save_for_repo(&state.repo_name) {
-        warn!("Failed to save clusterer session ID: {}", e);
-    }
-
-    Ok(diff)
-}
-
 // ============================================================================
 // Handlers
 // ============================================================================
@@ -330,10 +202,9 @@ pub(super) async fn handle_task_request(
 
 /// Handle task.create RPC — daemon creates a task directly in shared storage.
 ///
-/// Creates the task first with a provisional channel ("midtown" or user-specified),
-/// then invokes the clusterer to get channel assignments. The clusterer may create
-/// new channels, archive old ones, or reassign tasks. Dispatch for the new task
-/// happens on the next `TaskDispatchTick` via the canonical event loop pipeline.
+/// Creates the task with the specified channel (or the default "midtown" channel).
+/// Dispatch for the new task happens on the next `TaskDispatchTick` via the
+/// canonical event loop pipeline.
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn handle_task_create(
     id: RequestId,
@@ -352,9 +223,8 @@ pub(super) async fn handle_task_create(
     // Generate active_form (present continuous) from subject for task UI spinner
     let active_form = generate_active_form(subject);
 
-    // Create the task with provisional channel (user-specified or "midtown")
-    // We need the task ID before invoking the clusterer
-    let provisional_channel = channel.unwrap_or("midtown");
+    // Create the task with the specified channel (or the default "midtown" channel)
+    let task_channel = channel.unwrap_or("midtown");
 
     let task_id = match crate::tasks::create_task_for_repo(
         subject,
@@ -363,7 +233,7 @@ pub(super) async fn handle_task_create(
         "",
         &repo_name,
         blocked_by,
-        Some(provisional_channel),
+        Some(task_channel),
         pr,
     ) {
         Ok(id) => id,
@@ -375,39 +245,10 @@ pub(super) async fn handle_task_create(
         }
     };
 
-    // If no explicit channel was provided, invoke clusterer to get assignments
-    if channel.is_none() {
-        match invoke_clusterer_for_task(&task_id.to_string(), subject, description, state).await {
-            Ok(diff) => {
-                // Validate the diff
-                if let Err(e) = diff.validate() {
-                    warn!(
-                        "Clusterer returned invalid diff: {} — keeping provisional channel",
-                        e
-                    );
-                } else {
-                    // Apply the clustering diff via effects pipeline
-                    info!(
-                        "Clusterer returned diff: {} creates, {} archives, {} merges, {} assignments",
-                        diff.create_channels.len(),
-                        diff.archive_channels.len(),
-                        diff.merge_channels.len(),
-                        diff.assign_tasks.len()
-                    );
-
-                    // Convert clustering diff to effects and execute them
-                    let effects = super::clustering::apply_clustering_diff(diff);
-                    effects::execute_effects(effects, state).await;
-                }
-            }
-            Err(e) => {
-                warn!("Clusterer failed: {} — keeping provisional channel", e);
-            }
-        }
-    } else {
-        // User specified a channel explicitly — persist to task_channel mapping
+    // Persist channel mapping (explicit --channel or default "midtown")
+    {
         let mut ps = state.persistent_state.lock().await;
-        if apply_task_channel_mapping(&mut ps.task_channel, &task_id, channel, false)
+        if apply_task_channel_mapping(&mut ps.task_channel, &task_id, Some(task_channel), false)
             && let Err(e) = ps.save_for_repo(&repo_name)
         {
             warn!("Failed to save task channel mapping: {}", e);

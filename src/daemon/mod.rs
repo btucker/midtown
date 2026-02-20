@@ -8,8 +8,6 @@
 mod architect;
 mod auto_archive;
 mod chat;
-mod clusterer;
-mod clustering;
 mod constants;
 mod dispatch;
 pub(crate) mod effects;
@@ -32,7 +30,6 @@ mod rpc_status;
 mod rpc_task;
 pub(crate) mod sessions;
 pub mod snapshot;
-mod specialized;
 mod startup;
 pub(crate) mod state;
 mod stream;
@@ -55,9 +52,6 @@ pub use trackers::{
 #[doc(hidden)]
 pub use dispatch::should_recover_task_test_helper;
 
-// Test helpers for clustering integration tests
-#[doc(hidden)]
-pub use clustering::apply_clustering_diff;
 #[doc(hidden)]
 pub use effects::Effect;
 
