@@ -190,6 +190,32 @@ fn test_cursor_reset() {
 }
 
 #[test]
+fn test_set_cursor_to_end_records_last_message_id() {
+    // Regression: set_cursor_to_end was passing None for last_message_id,
+    // causing refresh_unread_counts to treat the channel as fully unread.
+    let temp_dir = TempDir::new().unwrap();
+    let channel = Channel::new(temp_dir.path(), "midtown").unwrap();
+
+    let msg1 = Message::text("alice", "first");
+    let msg2 = Message::text("alice", "second");
+    let last_id = msg2.id.clone();
+    channel.send(&msg1).unwrap();
+    channel.send(&msg2).unwrap();
+
+    channel
+        .set_cursor_to_end("chat-tui", "test-session")
+        .unwrap();
+
+    let cursor =
+        Cursor::load_or_create(temp_dir.path(), "midtown", "chat-tui", "test-session").unwrap();
+    assert_eq!(
+        cursor.last_message_id,
+        Some(last_id),
+        "set_cursor_to_end must record the last message ID so unread counts reset to 0"
+    );
+}
+
+#[test]
 fn test_message_count() {
     let temp_dir = TempDir::new().unwrap();
     let channel = Channel::new(temp_dir.path(), "midtown").unwrap();
