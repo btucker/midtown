@@ -1909,7 +1909,7 @@ fn stuck_reviewer_no_events_detected_from_snapshot() {
 /// Subsequent ticks must not re-emit the escalation (idempotency via reviewer_escalations_posted).
 #[test]
 fn dead_reviewer_at_max_restarts_escalates_to_ops() {
-    use std::collections::{HashMap, HashSet};
+    use std::collections::HashMap;
 
     let mut reviewer_pr_assignments = HashMap::new();
     reviewer_pr_assignments.insert("riverside".to_string(), 1352u64);
