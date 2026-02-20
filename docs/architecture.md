@@ -111,7 +111,7 @@ Each coworker runs as:
 
 The daemon uses a **session-centric model** where Claude Code sessions (keyed by session ID) are the primary coordination entity. Names are ephemeral labels drawn from an LRU pool.
 
-**NamePool** (`src/name_pool.rs`): Manhattan avenue names (lexington, park, madison, broadway, amsterdam, columbus, riverside, york, pleasant, vernon) are managed in an LRU queue. When a session spawns, it allocates a name from the front of the queue. When it shuts down, the name returns to the back. Preferred name hints allow a resumed session to get its previous name when available, preserving branch and worktree continuity.
+**NamePool** (`src/name_pool.rs`): Manhattan avenue names (lexington, park, madison, broadway, amsterdam, columbus, riverside, york, pleasant, vernon) are managed in an LRU queue. When a session spawns, it allocates a name from the front of the queue. When it shuts down, the name returns to the back. Preferred name hints allow a resumed session to get its previous name when available, preserving branch and worktree continuity. Name allocation and release both clear the agent's mailbox inbox to prevent message bleed between sessions (see Mailbox Messaging).
 
 **SessionRecord** (`src/daemon/state.rs`): Each session is tracked by a `SessionRecord` containing session ID, task ID, current and preferred names, worktree path, branch, PR number, and running state. Records persist across daemon restarts in `persistent_state.json`.
 
@@ -200,6 +200,8 @@ Nudge decisions are made in `src/rules.rs` (`decide_interrupt_nudges`, `decide_p
 ## Mailbox Messaging
 
 In addition to the shared channel, the daemon can deliver targeted messages to individual coworkers via the Claude Code agent teams mailbox protocol. Messages are written as JSON to `~/.claude/teams/{team-name}/inboxes/{agent-name}.json` using atomic file operations with mkdir-based locking for safe concurrent access.
+
+**Inbox lifecycle**: Inboxes are cleared at two points to prevent message bleed across sessions: (1) when a name is allocated from the `NamePool` during `SpawnSession` (before the new session starts), and (2) when a session releases its name on shutdown. This ensures a newly-allocated name never inherits stale unread messages from a previous session that held the same name. All inbox operations — writes, reads, and clears — acquire the same mkdir-based lock (`{agent-name}.json.lock`) to prevent races.
 
 ## Worktree Lifecycle
 
