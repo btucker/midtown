@@ -2093,8 +2093,10 @@ impl App {
         let item = &self.autocomplete.items[self.autocomplete.selected_index];
         let value = item.value.clone(); // Clone to avoid borrow issues
 
-        // For /thread autocomplete, open the thread and clear input
-        if self.autocomplete.trigger_type == Some('/') {
+        // For /thread autocomplete (value is a thread ID, not a slash command),
+        // open the thread and clear input. Slash commands (value starts with '/')
+        // fall through to the regular insert path.
+        if self.autocomplete.trigger_type == Some('/') && !value.starts_with('/') {
             self.autocomplete.show = false;
             self.input_text.clear();
             self.input_cursor = 0;
