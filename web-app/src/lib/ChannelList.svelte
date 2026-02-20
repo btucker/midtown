@@ -192,50 +192,48 @@
     {@const hasActiveTasks = counts.inProgress > 0 || counts.pending > 0}
 
     <div class="mb-0.5">
-      <button
-        class="flex items-center justify-between w-full px-3 py-2 border-none rounded-md text-sm font-mono cursor-pointer transition-all duration-150 text-left {isActive ? 'bg-accent text-primary' : 'bg-transparent text-muted-foreground hover:bg-[#262626] hover:text-foreground'}"
-        aria-label="Select channel {channel.name}"
-        onclick={() => selectChannel(channel.name)}
-      >
-        <div class="flex items-center gap-1.5 flex-1 min-w-0">
-          {#if hasActiveTasks}
-            <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-            <span
-              class="w-[18px] h-[18px] shrink-0 p-0 border-none bg-transparent text-[#606060] text-[0.65rem] leading-none cursor-pointer flex items-center justify-center transition-colors duration-150 hover:text-[#a0a0a0]"
-              onclick={(e) => toggleChannelTasks(channel.name, e)}
-              title={isExpanded ? 'Collapse tasks' : 'Expand tasks'}
-              role="button"
-              tabindex="0"
-            >
-              {isExpanded ? '▼' : '▶'}
-            </span>
-          {/if}
+      <div class="flex items-center rounded-md {isActive ? 'bg-accent text-primary' : 'text-muted-foreground hover:bg-[#262626] hover:text-foreground'}">
+        {#if hasActiveTasks}
+          <button
+            type="button"
+            class="w-[28px] h-[28px] shrink-0 p-0 border-none bg-transparent text-[#606060] text-[0.65rem] leading-none cursor-pointer flex items-center justify-center transition-colors duration-150 hover:text-[#a0a0a0] ml-1"
+            onclick={(e) => toggleChannelTasks(channel.name, e)}
+            title={isExpanded ? 'Collapse tasks' : 'Expand tasks'}
+          >
+            {isExpanded ? '▼' : '▶'}
+          </button>
+        {/if}
+        <button
+          class="flex items-center justify-between flex-1 min-w-0 px-3 py-2 border-none bg-transparent text-sm font-mono cursor-pointer transition-all duration-150 text-left text-inherit {hasActiveTasks ? 'pl-1' : ''}"
+          aria-label="Select channel {channel.name}"
+          onclick={() => selectChannel(channel.name)}
+        >
           <div class="flex-1 overflow-hidden text-ellipsis whitespace-nowrap">
             {formatChannelName(channel.name)}
           </div>
-        </div>
-        <div class="flex items-center gap-1.5">
-          {#if channel.unread > 0}
-            <span class="text-xs px-1.5 py-0.5 rounded-[10px] bg-[#ff6b6b] text-white min-w-[1.5em] text-center font-semibold" title="{channel.unread} unread messages">{channel.unread}</span>
-          {/if}
-          {#if totalTasks > 0}
-            <span
-              class="text-xs px-1.5 py-0.5 rounded-[10px] min-w-[1.5em] text-center"
-              class:bg-[#3a3a3a]={!isActive}
-              class:text-[#d0d0d0]={!isActive}
-              class:bg-[#5fafaf]={isActive}
-              class:text-[#1c1c1c]={isActive}
-            >{totalTasks}</span>
-          {/if}
-          {#if ciStatus === 'passed'}
-            <span class="text-[0.7rem]" title="CI passing">🟢</span>
-          {:else if ciStatus === 'failed'}
-            <span class="text-[0.7rem]" title="CI failing">🔴</span>
-          {:else if ciStatus === 'pending'}
-            <span class="text-[0.7rem]" title="CI pending">🟡</span>
-          {/if}
-        </div>
-      </button>
+          <div class="flex items-center gap-1.5">
+            {#if channel.unread > 0}
+              <span class="text-xs px-1.5 py-0.5 rounded-[10px] bg-[#ff6b6b] text-white min-w-[1.5em] text-center font-semibold" title="{channel.unread} unread messages">{channel.unread}</span>
+            {/if}
+            {#if totalTasks > 0}
+              <span
+                class="text-xs px-1.5 py-0.5 rounded-[10px] min-w-[1.5em] text-center"
+                class:bg-[#3a3a3a]={!isActive}
+                class:text-[#d0d0d0]={!isActive}
+                class:bg-[#5fafaf]={isActive}
+                class:text-[#1c1c1c]={isActive}
+              >{totalTasks}</span>
+            {/if}
+            {#if ciStatus === 'passed'}
+              <span class="text-[0.7rem]" title="CI passing">🟢</span>
+            {:else if ciStatus === 'failed'}
+              <span class="text-[0.7rem]" title="CI failing">🔴</span>
+            {:else if ciStatus === 'pending'}
+              <span class="text-[0.7rem]" title="CI pending">🟡</span>
+            {/if}
+          </div>
+        </button>
+      </div>
 
       {#if isExpanded && hasActiveTasks}
         <div class="ml-6 py-1 pb-2 pl-3 border-l-2 border-[#2a2a2a]">
