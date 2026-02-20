@@ -1869,6 +1869,19 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                         // 5. Update SessionRecord in persistent state
                         {
                             let mut ps = state.persistent_state.lock().await;
+                            // Mark any old session records with this name as not running.
+                            // Names are reused from the pool, so previous sessions for
+                            // this name may still have is_running=true if they weren't
+                            // properly cleaned up (e.g., after daemon restart).
+                            for record in ps.sessions.values_mut() {
+                                if record.session_id != session_id
+                                    && record.is_running
+                                    && (record.preferred_name.as_deref() == Some(&name)
+                                        || record.current_name.as_deref() == Some(&name))
+                                {
+                                    record.is_running = false;
+                                }
+                            }
                             let record =
                                 ps.sessions.entry(session_id.clone()).or_insert_with(|| {
                                     crate::daemon::state::SessionRecord {

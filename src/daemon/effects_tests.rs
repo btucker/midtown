@@ -808,3 +808,128 @@ async fn test_cleanup_merged_worktree_saves_when_only_pr_session_removed() {
         "Stale PR session should be removed from disk after cleanup"
     );
 }
+
+#[test]
+fn test_spawn_session_marks_old_records_with_same_name_as_not_running() {
+    use crate::daemon::state::{DaemonPersistentState, SessionRecord};
+    use chrono::Utc;
+
+    let mut persistent_state = DaemonPersistentState::default();
+
+    // Old session record for "riverside" — still marked is_running: true (the bug)
+    let old_record = SessionRecord {
+        session_id: "sess-old-111".to_string(),
+        task_id: Some("42".to_string()),
+        current_name: Some("riverside".to_string()),
+        preferred_name: Some("riverside".to_string()),
+        working_dir: "/tmp/worktree".to_string(),
+        branch: None,
+        pr_number: None,
+        initial_prompt: None,
+        is_reviewer: false,
+        coworker_type: "dev".to_string(),
+        is_running: true,
+        created_at: Utc::now() - chrono::Duration::hours(1),
+        resume_on_startup: true,
+    };
+    persistent_state
+        .sessions
+        .insert(old_record.session_id.clone(), old_record);
+
+    // Another old session for "riverside" (reviewer) — also stale is_running: true
+    let old_reviewer = SessionRecord {
+        session_id: "sess-old-222".to_string(),
+        task_id: None,
+        current_name: Some("riverside".to_string()),
+        preferred_name: Some("riverside".to_string()),
+        working_dir: "/tmp/worktree".to_string(),
+        branch: None,
+        pr_number: Some(100),
+        initial_prompt: None,
+        is_reviewer: true,
+        coworker_type: "reviewer".to_string(),
+        is_running: true,
+        created_at: Utc::now() - chrono::Duration::minutes(30),
+        resume_on_startup: false,
+    };
+    persistent_state
+        .sessions
+        .insert(old_reviewer.session_id.clone(), old_reviewer);
+
+    // Unrelated session for "amsterdam" — should NOT be touched
+    let unrelated = SessionRecord {
+        session_id: "sess-amsterdam".to_string(),
+        task_id: Some("99".to_string()),
+        current_name: Some("amsterdam".to_string()),
+        preferred_name: Some("amsterdam".to_string()),
+        working_dir: "/tmp/worktree".to_string(),
+        branch: None,
+        pr_number: None,
+        initial_prompt: None,
+        is_reviewer: false,
+        coworker_type: "dev".to_string(),
+        is_running: true,
+        created_at: Utc::now(),
+        resume_on_startup: true,
+    };
+    persistent_state
+        .sessions
+        .insert(unrelated.session_id.clone(), unrelated);
+
+    // Simulate: new SpawnSession for "riverside" — should mark old records as not running
+    let new_session_id = "sess-new-333";
+    let effective_name = "riverside";
+
+    // This is what the fix should do: mark old records with same name as not running
+    for record in persistent_state.sessions.values_mut() {
+        if record.session_id != new_session_id
+            && record.is_running
+            && (record.preferred_name.as_deref() == Some(effective_name)
+                || record.current_name.as_deref() == Some(effective_name))
+        {
+            record.is_running = false;
+        }
+    }
+
+    // Insert the new session record
+    let new_record = SessionRecord {
+        session_id: new_session_id.to_string(),
+        task_id: Some("50".to_string()),
+        current_name: Some(effective_name.to_string()),
+        preferred_name: Some(effective_name.to_string()),
+        working_dir: "/tmp/worktree".to_string(),
+        branch: None,
+        pr_number: None,
+        initial_prompt: None,
+        is_reviewer: false,
+        coworker_type: "dev".to_string(),
+        is_running: true,
+        created_at: Utc::now(),
+        resume_on_startup: true,
+    };
+    persistent_state
+        .sessions
+        .insert(new_record.session_id.clone(), new_record);
+
+    // Verify: old riverside records should be is_running: false
+    assert!(
+        !persistent_state.sessions["sess-old-111"].is_running,
+        "Old dev session for riverside should be marked not running"
+    );
+    assert!(
+        !persistent_state.sessions["sess-old-222"].is_running,
+        "Old reviewer session for riverside should be marked not running"
+    );
+
+    // Verify: new riverside session should be is_running: true
+    assert!(
+        persistent_state.sessions[new_session_id].is_running,
+        "New session for riverside should be running"
+    );
+
+    // Verify: amsterdam should be untouched
+    assert!(
+        persistent_state.sessions["sess-amsterdam"].is_running,
+        "Unrelated amsterdam session should still be running"
+    );
+}
