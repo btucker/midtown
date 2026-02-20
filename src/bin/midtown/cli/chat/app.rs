@@ -162,15 +162,14 @@ pub struct RepoStatus {
 pub struct KanbanTask {
     pub id: String,
     pub subject: String,
+    pub description: Option<String>,
     pub owner: Option<String>,
     pub status: TaskStatus,
     /// When the task file was last modified (used as proxy for status change time)
-    #[allow(dead_code)] // Will be used in future PR detail views
     pub modified_at: Option<DateTime<Utc>>,
     /// Optional channel assignment for routing coworker messages
     pub channel: Option<String>,
     /// Task IDs this task is blocked by
-    #[allow(dead_code)]
     pub blocked_by: Vec<String>,
 }
 
@@ -447,6 +446,8 @@ pub struct App {
     pub kill_ring: Option<String>,
     /// Whether the previous command was a kill — consecutive kills append to the kill ring
     pub last_was_kill: bool,
+    /// Currently open task detail panel task ID (mutually exclusive with thread_parent_id)
+    pub open_task_id: Option<String>,
     /// Currently open thread parent message ID
     pub thread_parent_id: Option<String>,
     /// Thread reply messages (messages with thread_parent_id matching the open thread)
@@ -639,6 +640,7 @@ impl App {
             main_area_bottom: u16::MAX,
             kill_ring: None,
             last_was_kill: false,
+            open_task_id: None,
             thread_parent_id: None,
             thread_messages: Vec::new(),
             thread_input_text: String::new(),
@@ -1181,6 +1183,8 @@ impl App {
             return;
         }
 
+        // Opening thread closes task panel (mutually exclusive)
+        self.open_task_id = None;
         self.thread_parent_id = Some(parent_id.to_string());
 
         // Collect existing thread replies from loaded messages
@@ -1207,6 +1211,25 @@ impl App {
         self.thread_scroll_offset = 0;
         self.thread_panel_x = None;
         self.focused_pane = FocusedPane::InputBar;
+    }
+
+    /// Open the task detail panel for the given task ID.
+    ///
+    /// The task panel and thread panel are mutually exclusive — opening one closes the other.
+    pub fn open_task(&mut self, task_id: &str) {
+        // Opening task panel closes thread (mutually exclusive)
+        self.thread_parent_id = None;
+        self.thread_messages.clear();
+        self.thread_input_text.clear();
+        self.thread_input_cursor = 0;
+        self.thread_input_area = None;
+        self.open_task_id = Some(task_id.to_string());
+        // Keep focused_pane unchanged — task panel is read-only, no new focus target
+    }
+
+    /// Close the task detail panel.
+    pub fn close_task(&mut self) {
+        self.open_task_id = None;
     }
 
     /// Post a thread reply message to the channel via daemon RPC with fallback.
@@ -2545,6 +2568,12 @@ fn fetch_tasks() -> Vec<KanbanTask> {
                 .and_then(|v| v.as_str())
                 .map(String::from);
 
+            let description = task_data
+                .get("description")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(String::from);
+
             // Read blocked_by array
             let blocked_by = task_data
                 .get("blockedBy")
@@ -2560,6 +2589,7 @@ fn fetch_tasks() -> Vec<KanbanTask> {
                 tasks.push(KanbanTask {
                     id,
                     subject,
+                    description,
                     owner,
                     status,
                     modified_at,
@@ -3584,6 +3614,7 @@ pub(super) mod tests {
             main_area_bottom: u16::MAX,
             kill_ring: None,
             last_was_kill: false,
+            open_task_id: None,
             thread_parent_id: None,
             thread_messages: Vec::new(),
             thread_input_text: String::new(),
@@ -3698,6 +3729,7 @@ pub(super) mod tests {
             status: TaskStatus::InProgress,
             modified_at: None,
             channel: None,
+            description: None,
             blocked_by: vec![],
         };
         let cloned = task.clone();
@@ -3718,6 +3750,7 @@ pub(super) mod tests {
                     status: TaskStatus::Pending,
                     modified_at: None,
                     channel: None,
+                    description: None,
                     blocked_by: vec![],
                 },
                 KanbanTask {
@@ -3727,6 +3760,7 @@ pub(super) mod tests {
                     status: TaskStatus::InProgress,
                     modified_at: None,
                     channel: None,
+                    description: None,
                     blocked_by: vec![],
                 },
                 KanbanTask {
@@ -3736,6 +3770,7 @@ pub(super) mod tests {
                     status: TaskStatus::Completed,
                     modified_at: None,
                     channel: None,
+                    description: None,
                     blocked_by: vec![],
                 },
             ],
@@ -4285,6 +4320,7 @@ pub(super) mod tests {
                     status: TaskStatus::Pending,
                     modified_at: None,
                     channel: Some("midtown".to_string()),
+                    description: None,
                     blocked_by: vec![],
                 },
                 KanbanTask {
@@ -4294,6 +4330,7 @@ pub(super) mod tests {
                     status: TaskStatus::InProgress,
                     modified_at: None,
                     channel: Some("midtown".to_string()),
+                    description: None,
                     blocked_by: vec![],
                 },
                 KanbanTask {
@@ -4303,6 +4340,7 @@ pub(super) mod tests {
                     status: TaskStatus::Pending,
                     modified_at: None,
                     channel: Some("features".to_string()),
+                    description: None,
                     blocked_by: vec![],
                 },
             ],
@@ -4375,6 +4413,7 @@ pub(super) mod tests {
                     status: TaskStatus::Pending,
                     modified_at: None,
                     channel: Some("midtown".to_string()),
+                    description: None,
                     blocked_by: vec![],
                 },
                 KanbanTask {
@@ -4384,6 +4423,7 @@ pub(super) mod tests {
                     status: TaskStatus::Pending,
                     modified_at: None,
                     channel: Some("features".to_string()),
+                    description: None,
                     blocked_by: vec![],
                 },
             ],

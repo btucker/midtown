@@ -16,6 +16,7 @@ fn test_task_line_map_registers_continuation_line_with_phase_label() {
     app.tasks = vec![KanbanTask {
         id: "100".to_string(),
         subject: "A very long task title that will definitely wrap when rendered at a narrow width in the sidebar".to_string(),
+        description: None,
         owner: Some("york".to_string()),
         status: TaskStatus::InProgress,
         modified_at: None,

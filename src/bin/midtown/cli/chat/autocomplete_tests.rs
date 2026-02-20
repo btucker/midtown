@@ -326,6 +326,7 @@ fn test_task_autocomplete_uses_prefix_matching() {
             status: TaskStatus::InProgress,
             modified_at: None,
             channel: None,
+            description: None,
             blocked_by: Vec::new(),
         },
         KanbanTask {
@@ -335,6 +336,7 @@ fn test_task_autocomplete_uses_prefix_matching() {
             status: TaskStatus::Pending,
             modified_at: None,
             channel: None,
+            description: None,
             blocked_by: Vec::new(),
         },
         KanbanTask {
@@ -344,6 +346,7 @@ fn test_task_autocomplete_uses_prefix_matching() {
             status: TaskStatus::Pending,
             modified_at: None,
             channel: None,
+            description: None,
             blocked_by: Vec::new(),
         },
     ];
@@ -384,6 +387,7 @@ fn test_task_autocomplete_empty_query_shows_in_progress_first() {
             status: TaskStatus::Pending,
             modified_at: None,
             channel: None,
+            description: None,
             blocked_by: Vec::new(),
         },
         KanbanTask {
@@ -393,6 +397,7 @@ fn test_task_autocomplete_empty_query_shows_in_progress_first() {
             status: TaskStatus::InProgress,
             modified_at: None,
             channel: None,
+            description: None,
             blocked_by: Vec::new(),
         },
         KanbanTask {
@@ -402,6 +407,7 @@ fn test_task_autocomplete_empty_query_shows_in_progress_first() {
             status: TaskStatus::Pending,
             modified_at: None,
             channel: None,
+            description: None,
             blocked_by: Vec::new(),
         },
         KanbanTask {
@@ -411,6 +417,7 @@ fn test_task_autocomplete_empty_query_shows_in_progress_first() {
             status: TaskStatus::InProgress,
             modified_at: None,
             channel: None,
+            description: None,
             blocked_by: Vec::new(),
         },
     ];
