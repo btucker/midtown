@@ -429,9 +429,23 @@ pub(super) async fn handle_channel_archive(
     };
     match channel.archive() {
         Ok(()) => {
-            // Clean up channel lead session state so the daemon doesn't respawn it.
+            // Shut down the channel lead session (if running) and clean up state.
             // This mirrors the cleanup in Effect::ArchiveChannel (effects.rs).
             let lead_session_name = crate::launch::channel_lead_session_name(name);
+            let goodbye = format!(
+                "Channel '{}' has been archived. Your session is ending.",
+                name
+            );
+            super::effects::execute_effects(
+                vec![super::effects::Effect::ShutdownCoworker {
+                    name: lead_session_name.clone(),
+                    message: goodbye,
+                }],
+                state,
+            )
+            .await;
+
+            // Remove from channel_lead_sessions and headless_sessions
             {
                 let mut ps = state.persistent_state.lock().await;
                 let removed_lead = ps.channel_lead_sessions.remove(name).is_some();

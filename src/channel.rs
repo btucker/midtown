@@ -586,12 +586,17 @@ impl Channel {
             .join("channels")
             .join(format!("{}.archived", &self.channel_name));
 
+        // Clean up any orphaned .bak dir from a previous crash between renames.
+        let backup_dir = self
+            .base_dir
+            .join("channels")
+            .join(format!("{}.archived.bak", &self.channel_name));
+        if backup_dir.exists() {
+            let _ = fs::remove_dir_all(&backup_dir);
+        }
+
         if archived_dir.exists() {
             // Move old archive to a temp name so we can restore it if rename fails
-            let backup_dir = self
-                .base_dir
-                .join("channels")
-                .join(format!("{}.archived.bak", &self.channel_name));
             fs::rename(&archived_dir, &backup_dir)?;
 
             match fs::rename(&channel_dir, &archived_dir) {
