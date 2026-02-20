@@ -99,6 +99,8 @@ The lead is just a claude code session, but it's been booted with some a [specia
 | `midtown view` | Launch chat UI (use `--attach` to open Lead in a split) |
 | `midtown channel post <msg>` | Post to the team channel |
 | `midtown channel read` | Read recent messages |
+| `midtown channel create <name>` | Create a new topic channel |
+| `midtown channel archive <name>` | Archive a channel |
 | `midtown coworker call-in` | Spawn a new coworker |
 | `midtown coworker break <name>` | Send a coworker on break |
 | `midtown coworker list` | List active coworkers |

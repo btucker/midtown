@@ -1,7 +1,8 @@
 //! Channel-related RPC handlers.
 //!
-//! Handles `channel.post` and `channel.read` methods, including IRC-style `/me`
-//! actions, review note deduplication, @mention routing, and notification delivery.
+//! Handles `channel.post`, `channel.read`, `channel.create`, `channel.archive`,
+//! and `channel.list` methods, including IRC-style `/me` actions, review note
+//! deduplication, @mention routing, and notification delivery.
 
 use std::time::{Duration, Instant};
 
@@ -392,6 +393,17 @@ pub(super) fn handle_channel_create(id: RequestId, name: &str, state: &DaemonSta
 /// Returns an error if the channel does not exist or if trying to archive 'midtown'.
 pub(super) fn handle_channel_archive(id: RequestId, name: &str, state: &DaemonState) -> Response {
     let base_dir = state.channel_router.base_dir();
+
+    // Check existence before calling Channel::new(), which would create the
+    // directory if it doesn't exist, silently archiving an empty ghost channel.
+    let channel_dir = base_dir.join("channels").join(name);
+    if !channel_dir.exists() {
+        return Response::error(
+            id,
+            RpcError::new(-32602, format!("Channel '{}' does not exist", name)),
+        );
+    }
+
     let channel = match crate::Channel::new(base_dir, name) {
         Ok(ch) => ch,
         Err(e) => {

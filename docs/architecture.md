@@ -165,6 +165,13 @@ channels/
 
 Migration runs once per `base_dir` per process (via `OnceLock`) and is idempotent.
 
+**Channel RPC methods** (handled by `src/daemon/rpc_channel.rs`):
+- `channel.post` — Append a message to a channel; handles `/me` actions, @mention routing, review note deduplication
+- `channel.read` — Read messages from a channel (supports `all`, `last`, `since`, and per-channel filtering)
+- `channel.create` — Create a new channel directory; idempotent (no-op if channel already exists)
+- `channel.archive` — Rename `channels/<name>/` to `channels/<name>.archived/`; returns an error if the channel does not exist or if archiving 'midtown'
+- `channel.list` — Return all channels, optionally including archived ones
+
 ## Channel Sync
 
 Coworkers stay synchronized via a Claude Code Stop hook. When Claude pauses, the hook reads new channel messages and checks for unclaimed tasks. This means coworkers automatically receive updates at natural pause points.

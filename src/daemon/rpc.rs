@@ -4,7 +4,7 @@
 //! domain-specific handler modules:
 //!
 //! - `rpc_auth` — authentication switching
-//! - `rpc_channel` — channel post/read
+//! - `rpc_channel` — channel post/read/create/archive/list
 //! - `rpc_coworker` — coworker lifecycle (spawn, break, list, view, state, nudge)
 //! - `rpc_headless` — headless execution and snapshot
 //! - `rpc_headed` — headed wrapper intercom (register/poll/ack)

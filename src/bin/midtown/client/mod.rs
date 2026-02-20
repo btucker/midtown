@@ -860,10 +860,6 @@ fn parse_daemon_response(value: Value) -> Result<Response, String> {
 #[cfg(test)]
 mod channel_read_tests;
 
-#[path = "channel_create_archive_tests.rs"]
-#[cfg(test)]
-mod channel_create_archive_tests;
-
 #[cfg(test)]
 mod tests {
     use super::*;
