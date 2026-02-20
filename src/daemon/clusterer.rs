@@ -77,6 +77,34 @@ pub struct CompletedTaskInfo {
 /// archive, and merge channels as part of its decision.
 pub type ClustererResponse = crate::clustering::ClusteringDiff;
 
+/// Strip markdown code fences from a model response.
+///
+/// Models sometimes wrap JSON output in triple-backtick fences, e.g.:
+/// ```json
+/// { ... }
+/// ```
+///
+/// This function returns the inner content when fences are present, or the
+/// original string otherwise.
+fn strip_markdown_fences(s: &str) -> &str {
+    let trimmed = s.trim();
+    // Match opening fence: ``` optionally followed by a language tag
+    let after_open = if let Some(rest) = trimmed.strip_prefix("```") {
+        // Skip optional language tag on the opening line
+        match rest.find('\n') {
+            Some(newline_pos) => &rest[newline_pos + 1..],
+            None => return s, // malformed — no newline after opening fence
+        }
+    } else {
+        return s;
+    };
+    // Strip the closing fence
+    match after_open.rfind("```") {
+        Some(close_pos) => after_open[..close_pos].trim(),
+        None => s, // no closing fence — return original
+    }
+}
+
 /// Clusterer role implementation.
 struct ClustererRole;
 
@@ -121,7 +149,8 @@ impl SpecializedRole for ClustererRole {
     }
 
     fn parse_response(&self, raw: &str) -> Result<Self::Response, String> {
-        serde_json::from_str(raw).map_err(|e| {
+        let stripped = strip_markdown_fences(raw);
+        serde_json::from_str(stripped).map_err(|e| {
             format!(
                 "Failed to parse clusterer response as JSON: {} (response: {})",
                 e, raw

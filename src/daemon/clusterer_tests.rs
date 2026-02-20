@@ -120,6 +120,34 @@ fn test_clusterer_role_basics() {
     assert!(err.is_err());
 }
 
+#[test]
+fn test_parse_response_strips_markdown_fences() {
+    let role = ClustererRole;
+
+    let fenced = "```json\n{\n    \"create_channels\": [],\n    \"archive_channels\": [],\n    \"merge_channels\": [],\n    \"assign_tasks\": [{\"task\": \"1234\", \"channel\": \"auth\"}]\n}\n```";
+    let response = role.parse_response(fenced);
+    assert!(
+        response.is_ok(),
+        "should strip markdown fences before parsing: {:?}",
+        response
+    );
+    assert_eq!(response.unwrap().assign_tasks[0].channel, "auth");
+}
+
+#[test]
+fn test_parse_response_strips_plain_backtick_fences() {
+    let role = ClustererRole;
+
+    let fenced = "```\n{\n    \"create_channels\": [],\n    \"archive_channels\": [],\n    \"merge_channels\": [],\n    \"assign_tasks\": [{\"task\": \"42\", \"channel\": \"midtown\"}]\n}\n```";
+    let response = role.parse_response(fenced);
+    assert!(
+        response.is_ok(),
+        "should strip plain backtick fences before parsing: {:?}",
+        response
+    );
+    assert_eq!(response.unwrap().assign_tasks[0].channel, "midtown");
+}
+
 // ============================================================================
 // Session failure tracking tests
 // ============================================================================
