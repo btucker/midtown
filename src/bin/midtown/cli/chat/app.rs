@@ -1338,6 +1338,9 @@ impl App {
         {
             self.load_channel_messages_called = true;
         }
+        // Defensive: clear coworker line map on channel switch so stale entries
+        // from the previous render can't be clicked before the next draw pass.
+        self.coworker_line_map.clear();
         let channel_repo =
             midtown::paths::detect_repo_name().unwrap_or_else(|| "default".to_string());
         let base_dir = midtown::paths::projects_dir_for_repo(&channel_repo);
