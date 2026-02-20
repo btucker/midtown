@@ -9,7 +9,8 @@
 //! - `rpc_headless` — headless execution and snapshot
 //! - `rpc_headed` — headed wrapper intercom (register/poll/ack)
 //! - `rpc_insight` — insight reporting and deduplication
-//! - `rpc_kanban` — kanban board data
+//! - `rpc_kanban` — kanban board data (legacy combined endpoint)
+//! - `rpc_prs` — PR data for kanban board (`prs.status`)
 //! - `rpc_reminder` — reminder CRUD
 //! - `rpc_session` — session resolve/attach/detach/list
 //! - `rpc_status` — daemon status overview
@@ -193,10 +194,13 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
     let request_method = request.method.clone();
 
     // Methods with their own domain-specific caching should skip the RPC idempotency cache.
-    // kanban.data has a dedicated TTL cache in DaemonState; the RPC cache (60s, keyed by
-    // request ID) would shadow it because the web server always sends id=1 for kanban requests.
-    // coworkers.status is never cached (it returns live state).
-    let skip_rpc_cache = request_method == "kanban.data" || request_method == "coworkers.status";
+    // kanban.data, prs.status, and coworkers.status all use TTL caches or serve live data —
+    // the idempotency cache (keyed by request ID) would shadow them incorrectly because the
+    // web server reuses id=1 for repeated polls.
+    let skip_rpc_cache = matches!(
+        request_method.as_str(),
+        "kanban.data" | "prs.status" | "coworkers.status"
+    );
 
     // Check cache for idempotent response (within 60 second TTL)
     if !skip_rpc_cache {
@@ -392,7 +396,9 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
 
         "kanban.data" => super::rpc_kanban::handle_kanban_data(request.id, state).await,
 
-        "coworkers.status" => super::rpc_kanban::handle_coworkers_status(request.id, state).await,
+        "prs.status" => super::rpc_prs::handle_prs_status(request.id, state).await,
+
+        "coworkers.status" => super::rpc_coworker::handle_coworkers_status(request.id, state).await,
 
         // ---- Channel ----
         "channel.post" => {

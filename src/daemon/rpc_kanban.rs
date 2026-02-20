@@ -402,19 +402,14 @@ fn build_pr_task_map(prs: &[serde_json::Value]) -> HashMap<u32, u64> {
         .collect()
 }
 
-/// Thread-safe TTL cache for kanban GraphQL data.
+/// Thread-safe TTL cache for kanban GraphQL data (legacy `kanban.data` RPC).
 ///
-/// Stores the kanban response (PRs, merged PRs, repos, coworkers) keyed by a
-/// combined hash of repo paths AND coworker state (task assignments).
-/// Note: `lead_working` and `tool_activity` are excluded from the cache and
-/// injected live on each read, since they change on a sub-second cadence.
-/// The cache expires after KANBAN_CACHE_TTL and avoids expensive GraphQL
-/// queries on every RPC call.
+/// Stores the kanban response (PRs, merged PRs, repos) keyed by a hash of
+/// repo paths. Coworker state is now served separately via `coworkers.status`
+/// and is NOT included in this cache.
 ///
-/// The cache key includes coworker state so it invalidates when:
-/// - Coworkers spawn or shut down
-/// - Task assignments change
-/// - Coworker workflow phases change (idle → active, etc.)
+/// Deprecated in favor of `PrsCache` (used by the `prs.status` RPC), but kept
+/// for backward compatibility during migration.
 ///
 /// Lives in `DaemonState` so the daemon can inspect and clean it up alongside
 /// other caches (see `DaemonState::cleanup_rpc_response_cache`).

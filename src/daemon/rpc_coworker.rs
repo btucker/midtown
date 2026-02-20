@@ -1,8 +1,8 @@
 //! Coworker lifecycle RPC handlers.
 //!
 //! Handles `coworker.*` methods: spawn, break, list, view, report-state,
-//! nudge, and asking. These are tightly coupled to the coworker management
-//! subsystem (worktrees, headless sessions).
+//! nudge, and asking. Also handles the `coworkers.status` method which
+//! returns live in-memory coworker state for the TUI at 1-2s poll intervals.
 
 use tracing::{debug, error, info, warn};
 
@@ -583,6 +583,26 @@ async fn task_has_open_pr(task_id: &str, state: &DaemonState) -> bool {
         .pr_author_sessions
         .values()
         .any(|session| session.task_id.as_deref() == Some(task_id))
+}
+
+// ============================================================================
+// coworkers.status handler
+// ============================================================================
+
+/// Handle `coworkers.status` RPC method.
+///
+/// Returns live in-memory coworker state — no GraphQL, no cache.
+/// Delegates to `rpc_kanban::build_coworkers_data` for the actual data
+/// assembly, then adds lead activity and tool activity on top.
+///
+/// Response fields:
+/// - `coworkers`: active non-idle coworkers with phase, task_id, pr_number, health, etc.
+/// - `max_coworkers`: configured coworker limit
+/// - `lead_working`: whether the headless lead session is actively computing
+/// - `tool_activity`: recent tool call/result items per agent
+/// - `channel_leads`: names of active channel lead sessions
+pub(crate) async fn handle_coworkers_status(id: RequestId, state: &DaemonState) -> Response {
+    super::rpc_kanban::handle_coworkers_status(id, state).await
 }
 
 #[path = "rpc_coworker_tests.rs"]

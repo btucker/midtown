@@ -192,6 +192,13 @@ The `midtown chat` command opens a split-panel interface with:
 - Clickable hyperlinks via OSC 8 escape sequences
 - Real-time token usage and cost tracking
 
+**Data polling**:
+- **Coworker state** (2s): `coworkers.status` RPC — live in-memory data, no GraphQL.
+- **PR data** (30s): `prs.status` RPC — GitHub GraphQL, daemon-cached for 60s.
+- **Repo status** (60s): Direct `gh` CLI calls for commit/CI/release info.
+
+The split-poll architecture ensures coworker phase changes appear in real-time (2s) while expensive PR data is fetched at a rate that stays within the daemon's 60s cache TTL.
+
 ## Web UI
 
 The web interface is a Svelte 5 + Vite SPA served on port 47022:
@@ -225,14 +232,14 @@ The `universal_events` module (`src/universal_events/`) provides a provider-agno
 StreamEvent (NDJSON drain) → extract_tool_events() → Vec<UniversalItem>
     → Effect::BroadcastUniversalItems → DaemonState.recent_tool_items (per-agent ring buffer)
                                       → WebUpdate::UniversalItems → WebSocket clients
-                                      → kanban.data RPC → TUI tool activity display
+                                      → coworkers.status RPC → TUI tool activity display
 ```
 
 - **Types** (`mod.rs`): `UniversalItem`, `ItemKind`, `ContentPart`, `ItemStatus` — agent-agnostic, extensible to other providers.
 - **Claude converter** (`claude.rs`): Pure function `extract_tool_events()` that extracts both `tool_use` content blocks from `StreamEvent::Assistant` events and `tool_result` blocks from `StreamEvent::User` events. Each tool call is emitted with a `semantic_header` (human-readable description of the operation) and each tool result carries success/error status.
 - **Integration** (`daemon/stream.rs`): `process_universal_events()` accepts the `channel_lead_sessions` map and emits `BroadcastUniversalItems` effects for the main lead (channel=None) and for each active channel lead (channel=Some(channel_name)). Coworker tool calls are never broadcast.
 - **Broadcast**: The `BroadcastUniversalItems` effect sends `WebUpdate::UniversalItems` to all connected WebSocket clients and updates `DaemonState.recent_tool_items` (a `RwLock<HashMap<String, Vec<UniversalItem>>>`, capped at `MAX_TOOL_ITEMS_PER_AGENT=20` items per agent). Agent name and optional channel are carried at the envelope level (`UniversalItemsData`). The web UI stores items keyed by channel name (`'midtown'` for the main lead, or the topic channel name for channel leads) so each channel view shows only the relevant tool calls.
-- **TUI rendering**: The TUI polls `kanban.data` which calls `collect_tool_activity()` to serialize `recent_tool_items`. The TUI renders a compact activity strip at the bottom of the chat pane showing the most recent tool calls per active agent, using `semantic_header` for tool call labels and "✓ ok" / "✗ error" for tool results.
+- **TUI rendering**: The TUI polls `coworkers.status` (at 2s intervals) which calls `collect_tool_activity()` to serialize `recent_tool_items`. The TUI renders a compact activity strip at the bottom of the chat pane showing the most recent tool calls per active agent, using `semantic_header` for tool call labels and "✓ ok" / "✗ error" for tool results.
 - **Lifecycle**: Tool activity for a coworker is cleared from `recent_tool_items` when the coworker shuts down (in `shutdown_coworker_impl()`), preventing ghost activity from persisting when the avenue name is reused.
 
 ## Headed Intercom RPC

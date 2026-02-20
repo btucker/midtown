@@ -614,18 +614,23 @@ pub struct RepoStatus {
     pub release_time: Option<String>,
 }
 
-/// Send a single JSON-RPC request over a Unix socket and return the result value.
-fn rpc_call(socket: &std::path::Path, method: &str, id: u64) -> Option<serde_json::Value> {
+/// Send a single JSON-RPC request to the daemon and return the `result` field.
+///
+/// Connects to the daemon's Unix socket, sends the request, and reads one
+/// response line. Returns `None` if the daemon is unreachable or the response
+/// is malformed.
+fn daemon_rpc(repo: &str, method: &str) -> Option<serde_json::Value> {
     use std::io::{BufRead, BufReader, Write};
     use std::os::unix::net::UnixStream;
 
-    let mut stream = UnixStream::connect(socket).ok()?;
+    let socket = crate::paths::daemon_socket_for_repo(repo);
+    let mut stream = UnixStream::connect(&socket).ok()?;
     stream.set_read_timeout(Some(Duration::from_secs(5))).ok()?;
 
     let request = serde_json::json!({
         "jsonrpc": "2.0",
         "method": method,
-        "id": id
+        "id": 1
     });
     writeln!(stream, "{}", request).ok()?;
     stream.flush().ok()?;
@@ -638,29 +643,26 @@ fn rpc_call(socket: &std::path::Path, method: &str, id: u64) -> Option<serde_jso
     resp.get("result").cloned()
 }
 
-/// Fetch kanban data (PRs + merged PRs) from the daemon via the `kanban.data` RPC.
+/// Fetch PR data (open PRs + recently merged) from the daemon via `prs.status` RPC.
 ///
 /// Returns `None` if the daemon is unreachable or the response is unexpected.
-fn fetch_kanban_via_rpc(
-    repo: &str,
-) -> Option<(
-    Vec<serde_json::Value>,
-    Vec<serde_json::Value>,
-    Vec<serde_json::Value>,
-)> {
-    let socket = crate::paths::daemon_socket_for_repo(repo);
+fn fetch_prs_via_rpc(repo: &str) -> Option<(Vec<serde_json::Value>, Vec<serde_json::Value>)> {
+    let result = daemon_rpc(repo, "prs.status")?;
+    let prs = result.get("prs")?.as_array()?.clone();
+    let merged = result.get("merged_prs")?.as_array()?.clone();
+    Some((prs, merged))
+}
 
-    // Fetch PR data from kanban.data (cached, may involve GraphQL)
-    let kanban_result = rpc_call(&socket, "kanban.data", 1)?;
-    let prs = kanban_result.get("prs")?.as_array()?.clone();
-    let merged = kanban_result.get("merged_prs")?.as_array()?.clone();
-
-    // Fetch live coworker data from coworkers.status (no GraphQL, no caching)
-    let coworkers = rpc_call(&socket, "coworkers.status", 2)
-        .and_then(|r| r.get("coworkers").and_then(|v| v.as_array()).cloned())
-        .unwrap_or_default();
-
-    Some((prs, merged, coworkers))
+/// Fetch live coworker state from the daemon via `coworkers.status` RPC.
+///
+/// Returns an empty vec if the daemon is unreachable.
+fn fetch_coworkers_via_rpc(repo: &str) -> Vec<serde_json::Value> {
+    daemon_rpc(repo, "coworkers.status")
+        .as_ref()
+        .and_then(|r| r.get("coworkers"))
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default()
 }
 
 /// Fetch repository status via gh CLI
@@ -746,8 +748,9 @@ fn fetch_repo_status(default_branch: &str) -> RepoStatus {
 
 /// Get daemon/coworker status including tasks and PRs for kanban board.
 ///
-/// Uses TTL caches (30 s) and the daemon's `kanban.data` RPC to avoid
-/// redundant GitHub API calls on every poll.
+/// PR data comes from the daemon's `prs.status` RPC (60s server-side cache).
+/// Coworker state comes from `coworkers.status` (live, no cache).
+/// Both fall back to cached gh CLI calls if the daemon is unreachable.
 async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoResponse, StatusCode> {
     // Read tasks directly from Claude Code task storage (local file, cheap)
     let tasks: Vec<serde_json::Value> = crate::tasks::read_tasks()
@@ -793,25 +796,35 @@ async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoRespo
         .cloned()
         .collect();
 
-    // --- PR data + coworker data: prefer daemon RPC, fall back to cached gh CLI calls ---
+    // --- PR data: prefer prs.status RPC (60s server-side cache), fall back to gh CLI ---
+    // --- Coworker data: prefer coworkers.status RPC (live, no cache) ---
     let repo_name = state.config.repo.clone();
     let (pull_requests, merged_prs, rpc_coworkers) = tokio::task::spawn_blocking(move || {
-        // Try daemon RPC first (single GraphQL call inside the daemon)
-        if let Some((rpc_prs, rpc_merged, rpc_coworkers)) = fetch_kanban_via_rpc(&repo_name) {
-            return (rpc_prs, rpc_merged, Some(rpc_coworkers));
-        }
-        // Fall back to cached gh CLI calls
-        let open = OPEN_PRS_CACHE.get(CACHE_TTL).unwrap_or_else(|| {
-            let prs = fetch_open_prs_via_cli();
-            OPEN_PRS_CACHE.set(prs.clone());
-            prs
+        // Fetch PR data from daemon (cached 60s server-side)
+        let (rpc_prs, rpc_merged) = fetch_prs_via_rpc(&repo_name).unwrap_or_else(|| {
+            // Fall back to cached gh CLI calls
+            let open = OPEN_PRS_CACHE.get(CACHE_TTL).unwrap_or_else(|| {
+                let prs = fetch_open_prs_via_cli();
+                OPEN_PRS_CACHE.set(prs.clone());
+                prs
+            });
+            let merged = MERGED_PRS_CACHE.get(CACHE_TTL).unwrap_or_else(|| {
+                let prs = fetch_merged_prs_via_cli();
+                MERGED_PRS_CACHE.set(prs.clone());
+                prs
+            });
+            (open, merged)
         });
-        let merged = MERGED_PRS_CACHE.get(CACHE_TTL).unwrap_or_else(|| {
-            let prs = fetch_merged_prs_via_cli();
-            MERGED_PRS_CACHE.set(prs.clone());
-            prs
-        });
-        (open, merged, None)
+
+        // Fetch coworker state separately (live, no cache)
+        let rpc_coworkers = fetch_coworkers_via_rpc(&repo_name);
+        let coworkers = if rpc_coworkers.is_empty() {
+            None
+        } else {
+            Some(rpc_coworkers)
+        };
+
+        (rpc_prs, rpc_merged, coworkers)
     })
     .await
     .unwrap_or_default();

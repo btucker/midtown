@@ -588,16 +588,25 @@ impl DaemonClient {
 
     // Kanban commands
 
+    #[allow(dead_code)] // Kept for backward compatibility with kanban.data RPC
     pub fn kanban_data(&self) -> Result<Value, String> {
         self.send_raw("kanban.data", None)
     }
 
-    /// Fetch live coworker status from the daemon.
+    /// Fetch live coworker state via `coworkers.status` RPC.
     ///
-    /// This is a lightweight call — no GraphQL, no caching. Returns coworkers,
-    /// max_coworkers, lead_working, tool_activity, and channel_leads.
+    /// Returns coworker phase, health, task assignments, lead activity, and
+    /// tool call activity. No GraphQL — intended for fast 1-2s polling.
     pub fn coworkers_status(&self) -> Result<Value, String> {
         self.send_raw("coworkers.status", None)
+    }
+
+    /// Fetch PR data via `prs.status` RPC.
+    ///
+    /// Returns open and recently merged PRs with CI status. Backed by a 60s
+    /// server-side cache — intended for slower 30s polling.
+    pub fn prs_status(&self) -> Result<Value, String> {
+        self.send_raw("prs.status", None)
     }
 
     // Headless execution
