@@ -259,6 +259,10 @@ pub struct App {
     pub scroll_offset: usize,
     /// Visible height for chat panel (updated during render)
     pub visible_height: usize,
+    /// Number of rendered lines that were cut off above the visible area in the last frame.
+    /// Set by the chat renderer after each draw. When > 0, max_scroll() allows scrolling
+    /// even if message count fits within visible_height, so users can reach hidden content.
+    pub rendered_overflow: usize,
     /// Channel for reading messages
     channel: Option<Channel>,
     /// Whether initial messages have been loaded
@@ -528,6 +532,7 @@ impl App {
             messages: VecDeque::new(),
             scroll_offset: 0,
             visible_height: 20,
+            rendered_overflow: 0,
             channel,
             initial_load_done: false,
             history_start_position: 0,
@@ -1344,7 +1349,19 @@ impl App {
 
     /// Maximum scroll offset
     fn max_scroll(&self) -> usize {
-        self.messages.len().saturating_sub(self.visible_height)
+        let msg_based = self.messages.len().saturating_sub(self.visible_height);
+        if msg_based > 0 {
+            return msg_based;
+        }
+        // When message count fits within visible_height but rendered lines still
+        // overflow the display area, allow scrolling so the user can reach the
+        // hidden content above. Allow scrolling up to (messages - 1) so at least
+        // one message always remains visible.
+        if self.rendered_overflow > 0 {
+            self.messages.len().saturating_sub(1)
+        } else {
+            0
+        }
     }
 
     /// Clamp scroll_offset to valid bounds.
@@ -1864,6 +1881,13 @@ impl App {
                 break;
             }
 
+            // Slash commands: only trigger at the very start of input (position 0)
+            if ch == '/' && prev_char.is_none() {
+                trigger_pos = Some(byte_idx);
+                trigger_char = Some(ch);
+                break;
+            }
+
             // Stop if we hit a space or newline (no trigger found in this word)
             if ch == ' ' || ch == '\n' {
                 break;
@@ -1894,8 +1918,25 @@ impl App {
             '@' => self.get_mention_items(&query_lower),
             '#' => self.get_channel_items(&query_lower),
             '!' => self.get_task_items(&query_lower),
+            '/' => self.get_slash_items(&query_lower),
             _ => Vec::new(),
         }
+    }
+
+    /// Get /slash command autocomplete items.
+    fn get_slash_items(&self, query: &str) -> Vec<AutocompleteItem> {
+        let commands: &[(&str, &str)] = &[
+            ("/channel create", "Create a new channel"),
+            ("/me", "Post an action message"),
+        ];
+        commands
+            .iter()
+            .filter(|(cmd, _)| cmd[1..].starts_with(query))
+            .map(|(cmd, desc)| AutocompleteItem {
+                value: cmd.to_string(),
+                description: Some(desc.to_string()),
+            })
+            .collect()
     }
 
     /// Get @mention autocomplete items (coworkers + lead)
@@ -3359,6 +3400,7 @@ pub(super) mod tests {
             messages: VecDeque::new(),
             scroll_offset: 0,
             visible_height: 20,
+            rendered_overflow: 0,
             channel: None,
             initial_load_done: true,
             history_start_position: 0,
@@ -4484,6 +4526,53 @@ pub(super) mod tests {
     }
 
     #[test]
+    fn test_scroll_unblocked_when_rendered_lines_overflow() {
+        // Bug: a channel with few messages (< visible_height) could not be scrolled
+        // even when the rendered output overflowed the display area.
+        //
+        // max_scroll() was 0 because messages.len() <= visible_height, but those
+        // few messages rendered to more lines than the display area, hiding older content.
+        let messages: VecDeque<Message> = (0..10)
+            .map(|i| Message {
+                id: i.to_string(),
+                from: "user".to_string(),
+                content: format!("message {}", i),
+                timestamp: Utc::now(),
+                message_type: midtown::MessageType::Text,
+                channel: None,
+                source_channel: None,
+                session_id: None,
+                thread_parent_id: None,
+            })
+            .collect();
+
+        let mut app = App {
+            messages,
+            visible_height: 40, // 10 messages < 40 rows → old max_scroll() = 0
+            ..test_app()
+        };
+
+        // Without overflow, max_scroll() is 0 and scroll is correctly blocked
+        assert_eq!(app.max_scroll(), 0, "No overflow: max_scroll should be 0");
+
+        // Simulate the renderer detecting rendered line overflow (set by chat.rs renderer)
+        app.rendered_overflow = 20; // 20 rendered lines hidden above visible area
+
+        // With overflow, max_scroll() should be > 0 to allow scrolling
+        assert!(
+            app.max_scroll() > 0,
+            "With rendered overflow, max_scroll() should be > 0 to allow scrolling"
+        );
+
+        let before = app.scroll_offset;
+        app.scroll_up();
+        assert!(
+            app.scroll_offset > before,
+            "scroll_up() should increment scroll_offset when rendered lines overflow"
+        );
+    }
+
+    #[test]
     fn test_open_thread_collects_only_matching_replies() {
         let mut app = test_app();
         let parent = Message::text("agent1", "Parent");
@@ -5002,6 +5091,42 @@ pub(super) mod tests {
         assert!(
             !app.channel_lead_thinking.contains_key("myproject"),
             "Thinking should be cleared when an InProgress tool entry exists"
+        );
+    }
+
+    #[test]
+    fn test_scroll_not_unblocked_when_no_overflow() {
+        // When rendered lines fit in the display area and message count also fits,
+        // scrolling should remain blocked (there is genuinely nothing to scroll).
+        let messages: VecDeque<Message> = (0..5)
+            .map(|i| Message {
+                id: i.to_string(),
+                from: "user".to_string(),
+                content: format!("message {}", i),
+                timestamp: Utc::now(),
+                message_type: midtown::MessageType::Text,
+                channel: None,
+                source_channel: None,
+                session_id: None,
+                thread_parent_id: None,
+            })
+            .collect();
+
+        let mut app = App {
+            messages,
+            visible_height: 40,
+            ..test_app()
+        };
+
+        app.rendered_overflow = 0;
+
+        assert_eq!(app.max_scroll(), 0, "No overflow: max_scroll should be 0");
+
+        let before = app.scroll_offset;
+        app.scroll_up();
+        assert_eq!(
+            app.scroll_offset, before,
+            "scroll_up() should do nothing when there is no rendered overflow"
         );
     }
 }
