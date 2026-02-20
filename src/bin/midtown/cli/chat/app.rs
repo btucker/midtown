@@ -412,6 +412,9 @@ pub struct App {
     /// Mapping of board panel line numbers to channel headers (for click-to-select)
     /// Maps line_number -> channel_name where line_number is relative to board content area
     pub channel_line_map: HashMap<u16, String>,
+    /// Mapping of absolute terminal y-coordinates to coworker names (for click-to-attach).
+    /// Updated each render pass by draw_coworker_status().
+    pub coworker_line_map: HashMap<u16, String>,
     /// Mapping of chat message area line numbers to thread parent IDs.
     /// Used for click-to-open on "↳ N replies" indicator lines.
     /// Line numbers are relative to the chat content area (inside borders).
@@ -612,6 +615,7 @@ impl App {
             thread_input_area: None,
             task_line_map: HashMap::new(),
             channel_line_map: HashMap::new(),
+            coworker_line_map: HashMap::new(),
             thread_reply_line_map: HashMap::new(),
             message_line_map: HashMap::new(),
             sidebar_width_pct: 40,
@@ -3510,6 +3514,7 @@ pub(super) mod tests {
             thread_input_area: None,
             task_line_map: HashMap::new(),
             channel_line_map: HashMap::new(),
+            coworker_line_map: HashMap::new(),
             thread_reply_line_map: HashMap::new(),
             message_line_map: HashMap::new(),
             sidebar_width_pct: 40,

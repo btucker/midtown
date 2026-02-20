@@ -89,6 +89,117 @@ fn test_channel_header_no_task_count() {
     );
 }
 
+// --- coworker_line_map tests ---
+
+fn make_active_coworker(name: &str, phase: &str) -> CoworkerInfo {
+    CoworkerInfo {
+        name: name.to_string(),
+        task_id: None,
+        phase: Some(phase.to_string()),
+        pr_number: None,
+        health: "green".to_string(),
+        provider: "claude".to_string(),
+        profile: "default".to_string(),
+        progress: None,
+        time_estimate: None,
+    }
+}
+
+/// draw_board_panel must populate coworker_line_map so that clicking a coworker row
+/// in the status table triggers click-to-attach.
+#[test]
+fn test_draw_board_panel_populates_coworker_line_map() {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    let mut app = test_app();
+    app.coworkers = vec![
+        make_active_coworker("park", "developing"),
+        make_active_coworker("york", "testing"),
+    ];
+    app.max_coworkers = 4;
+
+    let backend = TestBackend::new(80, 40);
+    let mut terminal = Terminal::new(backend).unwrap();
+
+    terminal
+        .draw(|f| {
+            let area = f.area();
+            draw_board_panel(f, &mut app, area);
+        })
+        .unwrap();
+
+    // Both coworkers should be present in the map
+    let names: Vec<&String> = app.coworker_line_map.values().collect();
+    assert!(
+        names.iter().any(|n| n.as_str() == "park"),
+        "park should be in coworker_line_map, got: {:?}",
+        names
+    );
+    assert!(
+        names.iter().any(|n| n.as_str() == "york"),
+        "york should be in coworker_line_map, got: {:?}",
+        names
+    );
+
+    // The two coworkers should be on consecutive y-lines
+    let mut y_lines: Vec<u16> = app.coworker_line_map.keys().cloned().collect();
+    y_lines.sort();
+    assert_eq!(
+        y_lines.len(),
+        2,
+        "expected exactly 2 lines in coworker_line_map"
+    );
+    assert_eq!(
+        y_lines[1] - y_lines[0],
+        1,
+        "coworker rows should be on consecutive y-lines"
+    );
+}
+
+/// Idle coworkers should NOT appear in coworker_line_map (they are excluded from the table).
+#[test]
+fn test_coworker_line_map_excludes_idle() {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    let mut app = test_app();
+    app.coworkers = vec![
+        CoworkerInfo {
+            name: "park".to_string(),
+            task_id: None,
+            phase: Some("idle".to_string()),
+            pr_number: None,
+            health: "green".to_string(),
+            provider: "claude".to_string(),
+            profile: "default".to_string(),
+            progress: None,
+            time_estimate: None,
+        },
+        make_active_coworker("york", "developing"),
+    ];
+
+    let backend = TestBackend::new(80, 40);
+    let mut terminal = Terminal::new(backend).unwrap();
+
+    terminal
+        .draw(|f| {
+            let area = f.area();
+            draw_board_panel(f, &mut app, area);
+        })
+        .unwrap();
+
+    let names: Vec<&String> = app.coworker_line_map.values().collect();
+    assert!(
+        !names.iter().any(|n| n.as_str() == "park"),
+        "idle coworker 'park' should NOT be in coworker_line_map"
+    );
+    assert!(
+        names.iter().any(|n| n.as_str() == "york"),
+        "active coworker 'york' should be in coworker_line_map"
+    );
+}
+
 // --- draw_ops_mini_channel tests ---
 
 #[test]

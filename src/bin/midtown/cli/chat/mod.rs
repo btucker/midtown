@@ -1073,6 +1073,11 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                     return EventResult::Continue;
                 }
 
+                // Check if click is on a coworker row (uses absolute y, not content-relative)
+                if let Some(coworker_name) = app.coworker_line_map.get(&y) {
+                    return EventResult::AttachCoworker(coworker_name.clone());
+                }
+
                 EventResult::Continue
             }
             MouseEventKind::Drag(crossterm::event::MouseButton::Left) => {
