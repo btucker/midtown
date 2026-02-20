@@ -21,8 +21,8 @@ cargo test <test_name>          # run a single test by name
 cargo test --test daemon_e2e -- --ignored --test-threads=1  # E2E (requires Zellij)
 
 # Lint (CI enforces -D warnings)
-cargo clippy -- -D warnings
-cargo fmt -- --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo fmt --all -- --check
 
 # Code coverage (requires: cargo install cargo-llvm-cov)
 ./scripts/coverage.sh           # HTML report → target/llvm-cov/html/

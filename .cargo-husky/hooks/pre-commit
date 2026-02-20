@@ -8,5 +8,5 @@ set -e
 
 echo '+cargo clippy --all-targets --all-features -- -D warnings'
 cargo clippy --all-targets --all-features -- -D warnings
-echo '+cargo fmt -- --check'
-cargo fmt -- --check
+echo '+cargo fmt --all -- --check'
+cargo fmt --all -- --check
