@@ -441,3 +441,59 @@ fn test_session_dispatch_skips_channel_lead_owned_tasks() {
             .collect::<Vec<_>>()
     );
 }
+
+#[test]
+fn test_session_dispatch_skips_active_reviewer() {
+    // Regression test for: daemon reassigning coworker mid-review to a task.
+    //
+    // Scenario: "columbus" was previously working on task !1675 (stopped session),
+    // then was called in to review PR #1384 (new running reviewer session).
+    // dispatch_via_sessions must NOT resume the stopped task session while
+    // columbus is actively serving as a reviewer.
+    let task_session = make_session_record("sess-task-1675", Some("1675"), Some("columbus"), false);
+
+    let snap = snapshot::WorldSnapshot {
+        in_progress_tasks: vec![(
+            "1675".to_string(),
+            "Fix some bug".to_string(),
+            "columbus".to_string(),
+        )],
+        // columbus is active (running as reviewer in a separate session)
+        active_names: ["columbus".to_string()].into_iter().collect(),
+        active_reviewers: ["columbus".to_string()].into_iter().collect(),
+        reviewer_pr_assignments: [("columbus".to_string(), 1384_u64)].into_iter().collect(),
+        sessions: [("sess-task-1675".to_string(), task_session)]
+            .into_iter()
+            .collect(),
+        session_task_map: [("1675".to_string(), "sess-task-1675".to_string())]
+            .into_iter()
+            .collect(),
+        session_name_map: HashMap::new(),
+        name_session_map: HashMap::new(),
+        ..snapshot::minimal_snapshot_for_test()
+    };
+
+    let effects = dispatch_via_sessions_for_test(&snap, None, |_| None);
+
+    // Then: no spawn effects — columbus is actively reviewing PR #1384
+    let spawn_effects: Vec<_> = effects
+        .iter()
+        .filter(|e| {
+            matches!(
+                e,
+                Effect::SpawnCoworker(_)
+                    | Effect::SpawnCoworkerWithCallbacks { .. }
+                    | Effect::AssignAndSpawn { .. }
+                    | Effect::ResumeCoworker { .. }
+            )
+        })
+        .collect();
+    assert!(
+        spawn_effects.is_empty(),
+        "Should NOT spawn a coworker that is actively reviewing a PR, got: {:?}",
+        spawn_effects
+            .iter()
+            .map(|e| format!("{:?}", e))
+            .collect::<Vec<_>>()
+    );
+}

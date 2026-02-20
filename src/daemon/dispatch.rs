@@ -802,6 +802,20 @@ where
             .or(record.current_name.as_deref())
             .unwrap_or(owner);
 
+        // Skip if this coworker is currently serving as a reviewer.
+        // A coworker can have a stopped task session AND a running reviewer session.
+        // Resuming the task session would interrupt their review work.
+        if snap
+            .active_reviewers
+            .contains(&coworker_name.to_lowercase())
+        {
+            debug!(
+                "Session dispatch: skipping task !{} — coworker {} is an active reviewer",
+                task_id, coworker_name
+            );
+            continue;
+        }
+
         // Check per-coworker spawn failure cooldown (pre-evaluated in snapshot)
         if snap
             .spawn_failure_cooldown_names
