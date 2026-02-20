@@ -380,6 +380,8 @@ pub struct App {
     pub chat_messages_area: Option<ratatui::layout::Rect>,
     /// Last rendered input bar area (for click detection)
     pub input_area: Option<ratatui::layout::Rect>,
+    /// Last rendered thread input area (for click detection; None when thread is closed)
+    pub thread_input_area: Option<ratatui::layout::Rect>,
     /// Mapping of board panel line numbers to tasks (for click-to-attach)
     /// Maps (line_number) -> (task_id, task_owner) where line_number is relative to board content area
     pub task_line_map: HashMap<u16, (String, Option<String>)>,
@@ -574,6 +576,7 @@ impl App {
             board_area: None,
             chat_messages_area: None,
             input_area: None,
+            thread_input_area: None,
             task_line_map: HashMap::new(),
             channel_line_map: HashMap::new(),
             thread_reply_line_map: HashMap::new(),
@@ -1113,6 +1116,7 @@ impl App {
         self.thread_messages.clear();
         self.thread_input_text.clear();
         self.thread_input_cursor = 0;
+        self.thread_input_area = None;
         self.focused_pane = FocusedPane::InputBar;
     }
 
@@ -3366,6 +3370,7 @@ pub(super) mod tests {
             board_area: None,
             chat_messages_area: None,
             input_area: None,
+            thread_input_area: None,
             task_line_map: HashMap::new(),
             channel_line_map: HashMap::new(),
             thread_reply_line_map: HashMap::new(),
