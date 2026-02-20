@@ -69,6 +69,69 @@ fn test_click_reply_indicator_opens_thread() {
     assert_eq!(app.thread_messages.len(), 1);
 }
 
+/// Clicking the body of any message (even one with no replies yet) opens the thread panel.
+///
+/// Before this feature, clicks only triggered on "↳ N replies" indicator lines.
+/// Now any click on a message's body lines opens that message's thread.
+#[test]
+fn test_click_message_body_opens_thread() {
+    let backend = TestBackend::new(120, 40);
+    let mut terminal = Terminal::new(backend).unwrap();
+
+    let mut app = test_app();
+
+    // A message with NO replies — thread_reply_line_map will be empty for this message,
+    // so the test verifies the new message_line_map path, not the old reply-indicator path.
+    let parent = midtown::Message::text("park", "Top-level message with no replies yet");
+    let parent_id = parent.id.clone();
+
+    app.messages = VecDeque::from(vec![parent]);
+    app.selected_channel = "midtown".to_string();
+
+    // Render once so message_line_map is populated.
+    terminal
+        .draw(|f| {
+            ui::draw(f, &mut app);
+        })
+        .unwrap();
+
+    assert!(
+        !app.message_line_map.is_empty(),
+        "message_line_map should be populated after render"
+    );
+    assert!(
+        app.thread_reply_line_map.is_empty(),
+        "thread_reply_line_map must be empty (message has no replies)"
+    );
+
+    let (line, mapped_id) = app
+        .message_line_map
+        .iter()
+        .next()
+        .map(|(line, id)| (*line, id.clone()))
+        .expect("expected at least one clickable message line");
+    assert_eq!(
+        mapped_id, parent_id,
+        "message_line_map must map to the parent message ID"
+    );
+
+    let chat_area = app
+        .chat_messages_area
+        .expect("chat_messages_area should be populated after render");
+
+    let click_x = chat_area.x + 8;
+    let click_y = chat_area.y + 1 + line;
+    let result = handle_event(&mut app, mouse_click(click_x, click_y));
+    assert!(matches!(result, EventResult::Continue));
+
+    assert_eq!(
+        app.thread_parent_id,
+        Some(parent_id),
+        "clicking a message body line must open that message's thread"
+    );
+    assert_eq!(app.focused_pane, app::FocusedPane::Thread);
+}
+
 /// Bug #1: Thread reply messages must not appear in the main channel chat area.
 ///
 /// When a message has `thread_parent_id` set, it is a reply in a thread and

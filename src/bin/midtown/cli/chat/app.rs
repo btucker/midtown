@@ -416,6 +416,11 @@ pub struct App {
     /// Used for click-to-open on "↳ N replies" indicator lines.
     /// Line numbers are relative to the chat content area (inside borders).
     pub thread_reply_line_map: HashMap<u16, String>,
+    /// Mapping of chat message area line numbers to message IDs.
+    /// Maps every visible line of a top-level message to that message's ID.
+    /// Line numbers are relative to the chat content area (inside borders).
+    /// Updated on every full render pass (cache misses only).
+    pub message_line_map: HashMap<u16, String>,
     /// Sidebar width as a percentage of the total horizontal area (20–60).
     /// The rendered width is further capped at `MAX_SIDEBAR_WIDTH` columns.
     pub sidebar_width_pct: u16,
@@ -608,6 +613,7 @@ impl App {
             task_line_map: HashMap::new(),
             channel_line_map: HashMap::new(),
             thread_reply_line_map: HashMap::new(),
+            message_line_map: HashMap::new(),
             sidebar_width_pct: 40,
             divider_x: None,
             dragging_divider: false,
@@ -3505,6 +3511,7 @@ pub(super) mod tests {
             task_line_map: HashMap::new(),
             channel_line_map: HashMap::new(),
             thread_reply_line_map: HashMap::new(),
+            message_line_map: HashMap::new(),
             sidebar_width_pct: 40,
             divider_x: None,
             dragging_divider: false,
