@@ -15,35 +15,35 @@ mod tests;
 /// Inspects the tool name and input arguments to produce a concise,
 /// Pi-agent-style description of what the tool is doing.
 ///
+/// Headers are not aggressively truncated — the TUI render layer (ratatui)
+/// clips lines at the actual terminal width. However, headers are capped at
+/// [`MAX_SEMANTIC_HEADER_BYTES`] to bound RPC/WebSocket payload size, since
+/// these strings also flow through `collect_tool_activity()` and
+/// `BroadcastUniversalItems`.
+///
 /// # Format table
 ///
-/// | Tool name    | Header format                            |
-/// |--------------|------------------------------------------|
-/// | `Bash`       | `$ <command>` (truncated at 60 chars)    |
-/// | `Edit`       | `edit <file_path>`                       |
-/// | `Write`      | `write <file_path>`                      |
-/// | `Read`       | `read <file_path>`                       |
-/// | `Glob`       | `glob <pattern>`                         |
-/// | `Grep`       | `grep /<pattern>/`                       |
-/// | `Task`       | `task: <description>` (first 40 chars)   |
-/// | `NotebookEdit` | `notebook edit <notebook_path>`        |
-/// | `WebFetch`   | `fetch <host>` (domain only)             |
-/// | `WebSearch`  | `search "<query>"`                       |
-/// | `TodoWrite`  | `todo: update`                           |
-/// | `ExitPlanMode` | `exit plan mode`                       |
-/// | `MultiEdit`  | `multi-edit <file_path>`                 |
-/// | (default)    | lowercase tool name                      |
+/// | Tool name    | Header format                  |
+/// |--------------|--------------------------------|
+/// | `Bash`       | `$ <command>`                  |
+/// | `Edit`       | `edit <file_path>`             |
+/// | `Write`      | `write <file_path>`            |
+/// | `Read`       | `read <file_path>`             |
+/// | `Glob`       | `glob <pattern>`               |
+/// | `Grep`       | `grep /<pattern>/`             |
+/// | `Task`       | `task: <description>`          |
+/// | `NotebookEdit` | `notebook edit <notebook_path>` |
+/// | `WebFetch`   | `fetch <host>` (domain only)   |
+/// | `WebSearch`  | `search "<query>"`             |
+/// | `TodoWrite`  | `todo: update`                 |
+/// | `ExitPlanMode` | `exit plan mode`             |
+/// | `MultiEdit`  | `multi-edit <file_path>`       |
+/// | (default)    | lowercase tool name            |
 pub fn semantic_header(name: &str, input: &serde_json::Value) -> String {
-    match name {
+    let raw = match name {
         "Bash" => {
             let command = input.get("command").and_then(|v| v.as_str()).unwrap_or("");
-            let char_count = command.chars().count();
-            if char_count > 60 {
-                let truncated = truncate_chars(command, 59);
-                format!("$ {truncated}\u{2026}")
-            } else {
-                format!("$ {command}")
-            }
+            format!("$ {command}")
         }
         "Edit" => {
             let path = first_path_field(input);
@@ -70,8 +70,7 @@ pub fn semantic_header(name: &str, input: &serde_json::Value) -> String {
                 .get("description")
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
-            let truncated = truncate_chars(desc, 40);
-            format!("task: {truncated}")
+            format!("task: {desc}")
         }
         "NotebookEdit" => {
             let path = first_path_field(input);
@@ -81,7 +80,7 @@ pub fn semantic_header(name: &str, input: &serde_json::Value) -> String {
             let url_str = input.get("url").and_then(|v| v.as_str()).unwrap_or("");
             // Extract just the host from the URL (e.g. "https://example.com/path" → "example.com").
             // We strip the scheme prefix and take the first path component.
-            let host = extract_url_host(url_str).unwrap_or_else(|| truncate_chars(url_str, 60));
+            let host = extract_url_host(url_str).unwrap_or(url_str);
             format!("fetch {host}")
         }
         "WebSearch" => {
@@ -95,6 +94,14 @@ pub fn semantic_header(name: &str, input: &serde_json::Value) -> String {
             format!("multi-edit {path}")
         }
         _ => name.to_lowercase(),
+    };
+
+    // Cap header size for RPC/WebSocket payloads (TUI uses ratatui clipping).
+    if raw.len() > MAX_SEMANTIC_HEADER_BYTES {
+        let boundary = raw.floor_char_boundary(MAX_SEMANTIC_HEADER_BYTES);
+        format!("{}\u{2026}", &raw[..boundary])
+    } else {
+        raw
     }
 }
 
@@ -108,21 +115,6 @@ fn first_path_field(input: &serde_json::Value) -> &str {
         }
     }
     ""
-}
-
-/// Truncate a string to at most `max_chars` Unicode scalar values.
-///
-/// If truncated, the returned slice ends before the character that would exceed the limit.
-/// Callers that need ellipsis should append it themselves.
-fn truncate_chars(s: &str, max_chars: usize) -> &str {
-    let mut char_indices = s.char_indices();
-    // Advance past `max_chars` characters.
-    let cutoff = char_indices.nth(max_chars).map(|(i, _)| i);
-    match cutoff {
-        // String is longer than max_chars — slice to the byte offset of char at max_chars.
-        Some(end) => &s[..end],
-        None => s,
-    }
 }
 
 /// Extract only the host portion from a URL string.
@@ -267,6 +259,14 @@ pub fn extract_tool_events(
 
     items
 }
+
+/// Maximum bytes retained in a `semantic_header` string.
+///
+/// Matches the bounding strategy used by [`MAX_TOOL_RESULT_OUTPUT_BYTES`]:
+/// headers flow through RPC (`kanban.data`) and WebSocket broadcasts, so they
+/// need a size cap even though the TUI would clip them naturally. 256 bytes is
+/// generous enough for any practical terminal width.
+const MAX_SEMANTIC_HEADER_BYTES: usize = 256;
 
 /// Maximum bytes retained from a tool result's output string.
 ///
