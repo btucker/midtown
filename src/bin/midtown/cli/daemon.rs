@@ -1084,17 +1084,188 @@ fn kill_orphaned_webhook_forwarders(messages: &mut Vec<String>) {
     }
 }
 
+/// How long `midtown restart` waits for active review coworkers to go on break.
+const REVIEWER_BREAK_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(900);
+/// Poll interval while waiting for review coworkers to drain.
+const REVIEWER_BREAK_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Extract coworker names that are currently in review phase from `coworkers.status` RPC payload.
+fn extract_review_phase_names(
+    coworkers_status: &serde_json::Value,
+) -> std::collections::HashSet<String> {
+    coworkers_status
+        .get("coworkers")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|coworker| {
+            let phase = coworker.get("phase").and_then(|v| v.as_str())?;
+            if phase != "review" {
+                return None;
+            }
+            coworker
+                .get("name")
+                .and_then(|v| v.as_str())
+                .map(|name| name.to_string())
+        })
+        .collect()
+}
+
+/// Extract assigned reviewers for open PRs that still need review from `prs.status` payload.
+fn extract_unreviewed_assigned_reviewer_names(
+    prs_status: &serde_json::Value,
+) -> std::collections::HashSet<String> {
+    prs_status
+        .get("prs")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|pr| {
+            let review_posted = pr
+                .get("review_posted")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            if review_posted {
+                return None;
+            }
+            pr.get("reviewer")
+                .and_then(|v| v.as_str())
+                .filter(|name| !name.is_empty())
+                .map(|name| name.to_string())
+        })
+        .collect()
+}
+
+/// Get currently running coworker names from `coworker.list`.
+fn running_coworker_names(
+    client: &DaemonClient,
+) -> Result<std::collections::HashSet<String>, String> {
+    match client.coworker_list()? {
+        Response::Coworkers { coworkers } => Ok(coworkers
+            .into_iter()
+            .filter(|cw| cw.status != "stopped" && cw.status != "stopping")
+            .filter(|cw| !cw.is_channel_lead)
+            .map(|cw| cw.name)
+            .collect()),
+        _ => Err("Unexpected response from coworker.list".to_string()),
+    }
+}
+
+/// Return currently active reviewer coworkers that should be allowed to finish before restart.
+///
+/// Uses two signals:
+/// 1. Coworkers explicitly reporting `phase=review`.
+/// 2. PR reviewer assignments (for in-flight reviews where phase reporting may lag/miss).
+fn active_review_coworkers(client: &DaemonClient) -> Result<Vec<String>, String> {
+    let mut names = std::collections::HashSet::new();
+    let mut detection_errors = Vec::new();
+
+    match client.coworkers_status() {
+        Ok(raw) => {
+            names.extend(extract_review_phase_names(&raw));
+        }
+        Err(e) => detection_errors.push(format!("coworkers.status failed: {}", e)),
+    }
+
+    let running = match running_coworker_names(client) {
+        Ok(names) => Some(names),
+        Err(e) => {
+            detection_errors.push(format!("coworker.list failed: {}", e));
+            None
+        }
+    };
+
+    match (client.prs_status(), running.as_ref()) {
+        (Ok(raw), Some(running_names)) => {
+            for name in extract_unreviewed_assigned_reviewer_names(&raw) {
+                if running_names.contains(&name) {
+                    names.insert(name);
+                }
+            }
+        }
+        (Err(e), _) => detection_errors.push(format!("prs.status failed: {}", e)),
+        (Ok(_), None) => {}
+    }
+
+    if names.is_empty() && detection_errors.len() >= 2 {
+        return Err(detection_errors.join("; "));
+    }
+
+    let mut active: Vec<String> = names.into_iter().collect();
+    active.sort();
+    Ok(active)
+}
+
+/// Wait until no active review coworkers remain (they have gone on break).
+/// How many consecutive RPC errors abort the wait loop.
+///
+/// Transient failures (socket hiccup, brief daemon busy) are logged and
+/// retried. Only sustained failures — where every poll fails — abort the loop
+/// to avoid masking a permanently unreachable daemon.
+const REVIEWER_BREAK_MAX_CONSECUTIVE_ERRORS: u32 = 3;
+
+fn wait_for_review_coworkers_to_break(client: &DaemonClient) -> Result<(), String> {
+    let start = std::time::Instant::now();
+    let mut last_reported: Vec<String> = Vec::new();
+    let mut consecutive_errors: u32 = 0;
+
+    loop {
+        match active_review_coworkers(client) {
+            Ok(active) => {
+                consecutive_errors = 0;
+                if active.is_empty() {
+                    if !last_reported.is_empty() {
+                        eprintln!("All review coworkers are on break.");
+                    }
+                    return Ok(());
+                }
+
+                if active != last_reported {
+                    eprintln!(
+                        "Waiting for review coworker(s) to go on break before restart: {}",
+                        active.join(", ")
+                    );
+                    last_reported = active.clone();
+                }
+
+                if start.elapsed() >= REVIEWER_BREAK_WAIT_TIMEOUT {
+                    return Err(format!(
+                        "Timed out after {}s waiting for review coworker(s): {}",
+                        REVIEWER_BREAK_WAIT_TIMEOUT.as_secs(),
+                        active.join(", ")
+                    ));
+                }
+            }
+            Err(e) => {
+                consecutive_errors += 1;
+                eprintln!(
+                    "Warning: failed to query active reviewers (attempt {}): {}",
+                    consecutive_errors, e
+                );
+                if consecutive_errors >= REVIEWER_BREAK_MAX_CONSECUTIVE_ERRORS {
+                    return Err(format!(
+                        "Aborting reviewer wait after {} consecutive RPC failures: {}",
+                        consecutive_errors, e
+                    ));
+                }
+            }
+        }
+
+        std::thread::sleep(REVIEWER_BREAK_POLL_INTERVAL);
+    }
+}
+
 /// Handle `midtown restart` command.
 ///
-/// Restarts the daemon and webserver by sending SIGTERM to all running coworker
-/// sessions before re-execing the daemon process.
+/// Restarts the daemon and webserver by waiting for active review coworkers to
+/// go on break, then sending SIGTERM to all running coworker sessions before
+/// re-execing the daemon process.
 ///
-/// Both default and `--force` modes send SIGTERM to coworkers. The `--force`
-/// flag now has no additional effect on coworker shutdown (SIGTERM is always
-/// sent); it exists for backwards compatibility.
+/// Default behavior waits for reviewers to finish current reviews. `--force`
+/// skips that wait.
 ///
 /// For a full fresh start, use `midtown stop && midtown start`.
-pub fn handle_restart(_force: bool) -> Result<Response, String> {
+pub fn handle_restart(force: bool) -> Result<Response, String> {
     // Send SIGTERM to all running coworker sessions via daemon RPC.
     // The daemon's graceful_shutdown_all() sends SIGTERM and waits up to 10s,
     // then SIGKILL as fallback.
@@ -1109,6 +1280,22 @@ pub fn handle_restart(_force: bool) -> Result<Response, String> {
             });
         }
     };
+
+    // Signal the daemon to stop assigning new review tasks immediately.
+    // This prevents a race where TaskDispatchTick hands out a new reviewer
+    // assignment during the REVIEWER_BREAK_WAIT_TIMEOUT window.
+    if let Err(e) = client.set_draining() {
+        eprintln!(
+            "Warning: failed to set daemon draining flag: {}. Continuing.",
+            e
+        );
+    }
+
+    if force {
+        eprintln!("--force set: skipping wait for review coworkers to go on break.");
+    } else if let Err(e) = wait_for_review_coworkers_to_break(&client) {
+        eprintln!("Warning: {}. Continuing restart with coworker shutdown.", e);
+    }
 
     eprintln!("Sending SIGTERM to all coworker sessions...");
     match client.stop_all_coworkers() {
