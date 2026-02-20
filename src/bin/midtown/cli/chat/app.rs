@@ -283,6 +283,10 @@ pub struct App {
     /// Contains human-readable semantic headers (e.g., "$ git status", "read src/lib.rs").
     /// Updated from coworkers.status RPC (live, not cached). Cleared when agent posts a message.
     pub tool_activity: HashMap<String, Vec<ToolActivityEntry>>,
+    /// Optimistic thinking state: channels where user just submitted a message.
+    /// Set immediately on message submit; cleared when real tool activity arrives
+    /// or after 30 seconds. Used to show spinner before channel lead responds.
+    pub channel_lead_thinking: HashMap<String, std::time::Instant>,
     /// Maximum number of coworkers allowed
     pub max_coworkers: usize,
     /// Pending questions from coworkers waiting for user input
@@ -531,6 +535,7 @@ impl App {
             coworkers: Vec::new(),
             lead_working: false,
             tool_activity: HashMap::new(),
+            channel_lead_thinking: HashMap::new(),
             max_coworkers: 10, // Default, will be updated from daemon
             pending_questions: Vec::new(),
             repo_name,
@@ -716,6 +721,16 @@ impl App {
                         std::mem::take(&mut self.tool_activity),
                         data.tool_activity,
                     );
+                    // Clear optimistic thinking state for channels that now have real tool activity
+                    let channels_with_activity: Vec<String> = self
+                        .tool_activity
+                        .iter()
+                        .filter(|(_, entries)| !entries.is_empty())
+                        .map(|(ch, _)| ch.clone())
+                        .collect();
+                    for ch in channels_with_activity {
+                        self.channel_lead_thinking.remove(&ch);
+                    }
                     self.max_coworkers = data.max_coworkers;
                     self.pending_questions = data.pending_questions;
                     self.channel_lead_names = data.channel_lead_names;
@@ -2231,6 +2246,12 @@ impl App {
         SPINNER_FRAMES[self.spinner_frame % SPINNER_FRAMES.len()]
     }
 
+    /// Set optimistic thinking state for a topic channel after user submits a message.
+    pub fn set_channel_lead_thinking(&mut self, channel: &str) {
+        self.channel_lead_thinking
+            .insert(channel.to_string(), std::time::Instant::now());
+    }
+
     /// Returns the visible tool activity entries for the given agent, newest first.
     ///
     /// Applies 30-second age-out for completed (✓/✗) entries. In-progress (›) entries
@@ -2263,6 +2284,7 @@ impl App {
 
     /// Returns true if any spinner is currently visible (lead working, in-progress tool entries, or active coworkers).
     pub fn any_spinner_visible(&self) -> bool {
+        const THINKING_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
         self.lead_working
             || self
                 .tool_activity
@@ -2272,6 +2294,10 @@ impl App {
                 .coworkers
                 .iter()
                 .any(|cw| cw.phase.as_deref() != Some("idle") && cw.phase.is_some())
+            || self
+                .channel_lead_thinking
+                .values()
+                .any(|t| t.elapsed() < THINKING_TIMEOUT)
     }
 
     /// Advance the spinner frame if enough time has elapsed since the last tick.
@@ -3323,6 +3349,7 @@ pub(super) mod tests {
             coworkers: Vec::new(),
             lead_working: false,
             tool_activity: HashMap::new(),
+            channel_lead_thinking: HashMap::new(),
             max_coworkers: 10, // Test default
             pending_questions: Vec::new(),
             repo_name: "test".to_string(),

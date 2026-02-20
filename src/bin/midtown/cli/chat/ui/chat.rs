@@ -57,13 +57,25 @@ pub fn draw_chat_panel(f: &mut Frame, app: &mut App, area: Rect) {
 /// Compute the number of lines the lead indicator area should occupy (0–3).
 ///
 /// Returns 0 when no active/recent tool entries exist (area collapses entirely).
+/// Returns 1 when only the optimistic thinking state is active (before tool activity arrives).
 fn lead_indicator_height(app: &App) -> u16 {
     let agent_key = if app.selected_channel == "main" || app.selected_channel == "midtown" {
         "lead"
     } else {
         app.selected_channel.as_str()
     };
-    app.visible_tool_entries(agent_key).len() as u16
+    let entries_len = app.visible_tool_entries(agent_key).len();
+    if entries_len > 0 {
+        entries_len as u16
+    } else {
+        const THINKING_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+        let channel_thinking = app
+            .channel_lead_thinking
+            .get(agent_key)
+            .map(|t| t.elapsed() < THINKING_TIMEOUT)
+            .unwrap_or(false);
+        if channel_thinking { 1 } else { 0 }
+    }
 }
 
 /// Draw the lead working indicator area between chat messages and the input bar.
@@ -84,7 +96,31 @@ fn draw_lead_indicator(f: &mut Frame, app: &mut App, area: Rect) {
     };
 
     let entries = app.visible_tool_entries(agent_key);
+
+    // Check for optimistic thinking state (show spinner even before tool activity arrives)
+    const THINKING_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+    let channel_thinking = app
+        .channel_lead_thinking
+        .get(agent_key)
+        .map(|t| t.elapsed() < THINKING_TIMEOUT)
+        .unwrap_or(false);
+
     if entries.is_empty() {
+        if !channel_thinking {
+            return; // nothing to show
+        }
+        // Show just the spinner with agent name, no tool entries
+        let spinner = app.spinner_char();
+        let line = Line::from(vec![
+            Span::styled(format!(" {} ", spinner), Style::default().fg(Color::Yellow)),
+            Span::styled(
+                agent_key.to_string(),
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]);
+        f.render_widget(Paragraph::new(vec![line]), area);
         return;
     }
 
