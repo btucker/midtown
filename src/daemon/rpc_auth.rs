@@ -5,7 +5,7 @@
 //! handler—it validates, switches profiles, shuts down and relaunches
 //! coworkers, and optionally restarts the lead window.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use tracing::{info, warn};
 
@@ -43,6 +43,65 @@ fn build_coworker_relaunch_config(
     config.model = coworker.model.clone();
     config.auth_provider = coworker.provider;
     config
+}
+
+fn build_fresh_coworker_relaunch_config(
+    coworker: &crate::coworker::Coworker,
+    repo_name: &str,
+    task_id: Option<&str>,
+) -> crate::launch::LaunchConfig {
+    let initial_prompt = task_id.map(|task_id| {
+        format!(
+            "You've been assigned task !{}. Run `midtown task view {}` for full details.",
+            task_id, task_id
+        )
+    });
+    let mut config = crate::launch::LaunchConfig::coworker(
+        coworker.name.clone(),
+        repo_name.to_string(),
+        crate::launch::SessionMode::Fresh,
+        initial_prompt,
+    );
+    config.model = coworker.model.clone();
+    config
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SessionPlatform {
+    ClaudeCli,
+    CodexCli,
+}
+
+fn platform_for_provider(provider: crate::auth::AuthProvider) -> SessionPlatform {
+    match provider {
+        crate::auth::AuthProvider::Claude | crate::auth::AuthProvider::Zai => {
+            SessionPlatform::ClaudeCli
+        }
+        crate::auth::AuthProvider::Codex => SessionPlatform::CodexCli,
+    }
+}
+
+fn can_resume_between_providers(
+    from: crate::auth::AuthProvider,
+    to: crate::auth::AuthProvider,
+) -> bool {
+    platform_for_provider(from) == platform_for_provider(to)
+}
+
+fn execution_role_for_coworker(
+    coworker: &crate::coworker::Coworker,
+    reviewer_pr_by_name: &HashMap<String, u64>,
+    channel_lead_session_names: &HashSet<String>,
+) -> crate::config::ExecutionRole {
+    if coworker.name.eq_ignore_ascii_case("lead") {
+        crate::config::ExecutionRole::Lead
+    } else if reviewer_pr_by_name.contains_key(&coworker.name) {
+        crate::config::ExecutionRole::Reviewer
+    } else if channel_lead_session_names.contains(&coworker.name) {
+        crate::config::ExecutionRole::ChannelLead
+    } else {
+        crate::config::ExecutionRole::Coworker
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -86,7 +145,7 @@ impl LeadRelaunchStatus {
 ///
 /// Switches the active auth profile.
 ///
-/// For Claude, also re-launches active sessions:
+/// Also re-launches active sessions for the switched provider:
 /// 1. Validates and switches the profile on disk (project or global)
 /// 2. Shuts down all running coworkers (daemon will re-spawn for pending tasks)
 /// 3. Re-launches the lead window with the new credentials
@@ -188,9 +247,19 @@ pub(super) async fn handle_auth_switch(
         if all { "global" } else { "project" }
     );
 
-    // Shut down all running coworkers for this provider
+    // Shut down all running non-lead coworkers for this provider.
     let running_coworkers: Vec<crate::coworker::Coworker> =
-        filter_coworkers_by_provider(&state.coworkers.list(), provider);
+        filter_coworkers_by_provider(&state.coworkers.list(), provider)
+            .into_iter()
+            .filter(|cw| !cw.name.eq_ignore_ascii_case("lead"))
+            .collect();
+
+    let current_lead_provider = state
+        .coworkers
+        .list()
+        .into_iter()
+        .find(|cw| cw.name.eq_ignore_ascii_case("lead"))
+        .map(|cw| cw.provider);
 
     let shutdown_count = running_coworkers.len();
     for coworker in &running_coworkers {
@@ -213,11 +282,11 @@ pub(super) async fn handle_auth_switch(
         state.broadcast_coworker_update(name, "stopped", None);
     }
 
-    // Capture reviewer assignments before relaunch so reviewer coworkers can
-    // be re-spawned with the reviewer role/prompt.
-    let reviewer_pr_by_name: HashMap<String, u64> = {
+    // Capture reviewer + channel-lead role context before relaunch so role-aware
+    // provider resolution can decide between resume and fresh spawn.
+    let (reviewer_pr_by_name, channel_lead_session_names): (HashMap<String, u64>, HashSet<String>) = {
         let persistent = state.persistent_state.lock().await;
-        running_coworkers
+        let reviewers = running_coworkers
             .iter()
             .filter_map(|cw| {
                 persistent
@@ -225,25 +294,47 @@ pub(super) async fn handle_auth_switch(
                     .pr_for_reviewer(&cw.name)
                     .map(|pr| (cw.name.clone(), pr))
             })
+            .collect();
+        let channel_leads = persistent
+            .channel_lead_sessions
+            .keys()
+            .map(|channel| crate::launch::channel_lead_session_name(channel))
+            .collect();
+        (reviewers, channel_leads)
+    };
+    let task_id_by_coworker: HashMap<String, String> = {
+        let assignments = state.coworker_task_assignments.lock().unwrap();
+        assignments
+            .iter()
+            .map(|(coworker_name, assignment)| (coworker_name.clone(), assignment.task_id.clone()))
             .collect()
     };
 
-    // Re-launch lead only when switching the provider backing the interactive
-    // lead session. Today lead is Claude-backed; other providers leave lead
-    // untouched instead of reporting a relaunch failure.
-    let lead_relaunch_status = if provider == crate::auth::AuthProvider::Claude {
+    // Re-launch lead only if it currently runs on the switched provider.
+    // Target provider always comes from role-based config (lead provider).
+    let configured_lead_provider = crate::config::get_execution_provider_for_role(
+        &state.repo_name,
+        crate::config::ExecutionRole::Lead,
+    );
+    let lead_relaunch_status = if current_lead_provider == Some(provider) {
         // Shut down the existing headless lead session if running
         if state.session_manager.is_alive("lead").await {
             let _ = state.session_manager.shutdown("lead").await;
             state.coworkers.deregister("lead");
         }
         let mut lead_config = crate::launch::LaunchConfig::lead(&state.repo_name, None);
-        lead_config.auth_profile_dir = Some(crate::auth::active_profile_dir_for_project(
-            &state.repo_name,
-        ));
+        lead_config.auth_provider = configured_lead_provider;
+        lead_config.auth_profile_dir =
+            Some(crate::auth::active_profile_dir_for_project_with_provider(
+                &state.repo_name,
+                configured_lead_provider,
+            ));
         match state.spawn_coworker(&lead_config).await {
             Ok(()) => {
-                info!("Re-launched lead with auth profile '{}'", profile);
+                info!(
+                    "Re-launched lead with {} auth profile '{}'",
+                    configured_lead_provider, profile
+                );
                 LeadRelaunchStatus::Relaunched
             }
             Err(e) => {
@@ -255,32 +346,78 @@ pub(super) async fn handle_auth_switch(
         LeadRelaunchStatus::Unchanged
     };
 
-    // Re-launch all sessions for this provider using the updated auth profile.
-    // Get the new profile's directory (the config switch at lines 142-181 has
-    // already updated the active profile, so this reads the NEW profile's dir).
-    let provider_auth_dir =
-        crate::auth::active_profile_dir_for_project_with_provider(&state.repo_name, provider);
     let mut relaunch_count = 0usize;
+    let mut resumed_count = 0usize;
+    let mut fresh_count = 0usize;
     for coworker in &running_coworkers {
-        let mut config = if let Some(pr_number) = reviewer_pr_by_name.get(&coworker.name).copied() {
-            let mut reviewer =
-                crate::launch::LaunchConfig::reviewer(coworker.name.clone(), pr_number);
-            reviewer.session_mode = crate::launch::SessionMode::Resume;
-            reviewer.model = coworker.model.clone();
-            reviewer
-        } else {
-            build_coworker_relaunch_config(coworker, &state.repo_name)
+        let role = execution_role_for_coworker(
+            coworker,
+            &reviewer_pr_by_name,
+            &channel_lead_session_names,
+        );
+        let target_provider =
+            crate::config::get_execution_provider_for_role(&state.repo_name, role);
+        let resume_compatible = can_resume_between_providers(coworker.provider, target_provider);
+
+        let mut config = match role {
+            crate::config::ExecutionRole::Reviewer => {
+                if let Some(pr_number) = reviewer_pr_by_name.get(&coworker.name).copied() {
+                    let mut reviewer =
+                        crate::launch::LaunchConfig::reviewer(coworker.name.clone(), pr_number);
+                    reviewer.session_mode = if resume_compatible {
+                        crate::launch::SessionMode::Resume
+                    } else {
+                        crate::launch::SessionMode::Fresh
+                    };
+                    reviewer.model = coworker.model.clone();
+                    reviewer
+                } else if resume_compatible {
+                    build_coworker_relaunch_config(coworker, &state.repo_name)
+                } else {
+                    build_fresh_coworker_relaunch_config(coworker, &state.repo_name, None)
+                }
+            }
+            crate::config::ExecutionRole::ChannelLead => {
+                let mut channel_lead = crate::launch::LaunchConfig::channel_lead(
+                    coworker.name.clone(),
+                    &state.repo_name,
+                    if resume_compatible {
+                        crate::launch::SessionMode::Resume
+                    } else {
+                        crate::launch::SessionMode::Fresh
+                    },
+                    "",
+                );
+                channel_lead.model = coworker.model.clone();
+                channel_lead
+            }
+            _ if resume_compatible => build_coworker_relaunch_config(coworker, &state.repo_name),
+            _ => build_fresh_coworker_relaunch_config(
+                coworker,
+                &state.repo_name,
+                task_id_by_coworker
+                    .get(&coworker.name.to_lowercase())
+                    .map(String::as_str),
+            ),
         };
-        config.auth_profile_dir = Some(provider_auth_dir.clone());
-        // CRITICAL: Set the NEW provider on the launch config. Without this line,
-        // coworkers would restart with the wrong provider:
-        // - Reviewers get AuthProvider::Claude from LaunchConfig::reviewer() (line 280)
-        // - Non-reviewers get their old provider from build_coworker_relaunch_config() (line 285)
-        // Either way, they'd use the old provider's auth env var, causing credential failures.
-        config.auth_provider = provider;
+        if !coworker.working_dir.is_empty() {
+            config.working_dir = Some(std::path::PathBuf::from(&coworker.working_dir));
+        }
+        config.auth_provider = target_provider;
+        config.auth_profile_dir = Some(crate::auth::active_profile_dir_for_project_with_provider(
+            &state.repo_name,
+            target_provider,
+        ));
 
         match state.spawn_coworker(&config).await {
-            Ok(()) => relaunch_count += 1,
+            Ok(()) => {
+                relaunch_count += 1;
+                if resume_compatible {
+                    resumed_count += 1;
+                } else {
+                    fresh_count += 1;
+                }
+            }
             Err(e) => warn!(
                 "Failed to relaunch coworker '{}' after {} auth switch: {}",
                 coworker.name, provider, e
@@ -290,11 +427,13 @@ pub(super) async fn handle_auth_switch(
 
     // Post to ops channel — auth switch is daemon operational info
     let mut msg = Message::system(format!(
-        "Switched to {} auth profile '{}' - restarted {}/{} coworker(s), {}",
+        "Switched to {} auth profile '{}' - restarted {}/{} coworker(s) (resumed {}, fresh {}), {}",
         provider,
         profile,
         relaunch_count,
         shutdown_count,
+        resumed_count,
+        fresh_count,
         lead_relaunch_status.summary()
     ));
     msg.channel = Some(OPS_CHANNEL.to_string());
@@ -317,6 +456,8 @@ pub(super) async fn handle_auth_switch(
             "switched": true,
             "coworkers_shutdown": shutdown_count,
             "coworkers_relaunched": relaunch_count,
+            "coworkers_relaunched_resumed": resumed_count,
+            "coworkers_relaunched_fresh": fresh_count,
             "lead_relaunched": lead_relaunch_status.relaunched(),
             "lead_relaunch_attempted": lead_relaunch_status.attempted(),
             "lead_relaunch_status": lead_relaunch_status.as_str(),

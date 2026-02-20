@@ -186,6 +186,26 @@ fn set_and_get_global_chat_monitor_enabled() {
 }
 
 #[test]
+fn set_and_get_global_execution_provider() {
+    let dir = TempDir::new().unwrap();
+    let config_path = temp_global_config(&dir);
+
+    set_global_key("execution.coworker_provider", "codex", &config_path).unwrap();
+    let value = get_global_key("execution.coworker_provider", &config_path).unwrap();
+    assert_eq!(value, "codex");
+}
+
+#[test]
+fn set_and_get_project_specialized_override_provider() {
+    let dir = TempDir::new().unwrap();
+    let config_path = temp_project_config(&dir);
+
+    set_project_key("execution.architect_provider", "zai", &config_path).unwrap();
+    let value = get_project_key("execution.architect_provider", &config_path).unwrap();
+    assert_eq!(value, "zai");
+}
+
+#[test]
 fn get_unset_key_returns_not_set() {
     let dir = TempDir::new().unwrap();
     let config_path = temp_global_config(&dir);
@@ -315,6 +335,34 @@ fn list_global_shows_all_keys() {
     assert!(output.contains("daemon.github_user"), "Missing: {output}");
     assert!(
         output.contains("daemon.worktree_cleanup_retention_hours"),
+        "Missing: {output}"
+    );
+    assert!(
+        output.contains("execution.lead_provider"),
+        "Missing: {output}"
+    );
+    assert!(
+        output.contains("execution.coworker_provider"),
+        "Missing: {output}"
+    );
+    assert!(
+        output.contains("execution.reviewer_provider"),
+        "Missing: {output}"
+    );
+    assert!(
+        output.contains("execution.channel_lead_provider"),
+        "Missing: {output}"
+    );
+    assert!(
+        output.contains("execution.specialized_provider"),
+        "Missing: {output}"
+    );
+    assert!(
+        output.contains("execution.architect_provider"),
+        "Missing: {output}"
+    );
+    assert!(
+        output.contains("execution.headless_execute_provider"),
         "Missing: {output}"
     );
 }

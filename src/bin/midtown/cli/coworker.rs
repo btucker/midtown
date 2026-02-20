@@ -7,6 +7,7 @@ use crate::client::DaemonClient;
 pub enum ProviderArg {
     Claude,
     Codex,
+    Zai,
 }
 
 impl From<ProviderArg> for midtown::auth::AuthProvider {
@@ -14,6 +15,7 @@ impl From<ProviderArg> for midtown::auth::AuthProvider {
         match value {
             ProviderArg::Claude => midtown::auth::AuthProvider::Claude,
             ProviderArg::Codex => midtown::auth::AuthProvider::Codex,
+            ProviderArg::Zai => midtown::auth::AuthProvider::Zai,
         }
     }
 }
@@ -30,8 +32,8 @@ pub enum CoworkerCommand {
         #[arg(long, short)]
         prompt: Option<String>,
         /// Execution provider for this coworker
-        #[arg(long, value_enum, default_value = "claude")]
-        provider: ProviderArg,
+        #[arg(long, value_enum)]
+        provider: Option<ProviderArg>,
     },
     /// Send a coworker on a break
     Break {
@@ -61,7 +63,16 @@ pub fn handle(cmd: &CoworkerCommand, client: &DaemonClient) -> Result<Response, 
             resume,
             prompt,
             provider,
-        } => client.coworker_spawn(*resume, prompt.as_deref(), (*provider).into()),
+        } => {
+            let resolved_provider = provider.map(Into::into).unwrap_or_else(|| {
+                let project_name = midtown::paths::detect_repo_name().unwrap_or_default();
+                midtown::config::get_execution_provider_for_role(
+                    &project_name,
+                    midtown::config::ExecutionRole::Coworker,
+                )
+            });
+            client.coworker_spawn(*resume, prompt.as_deref(), resolved_provider)
+        }
         CoworkerCommand::Break { name } => client.coworker_break(name),
         CoworkerCommand::List => client.coworker_list(),
         CoworkerCommand::View { name } => handle_view(name, client),
