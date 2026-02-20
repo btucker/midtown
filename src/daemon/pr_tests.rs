@@ -2238,3 +2238,94 @@ async fn test_resolve_pr_owner_via_session_preferred_name_fallback() {
         "Should fall back to preferred_name when current_name is None"
     );
 }
+
+/// Bug: Reviewer spawning selects the PR author's name as the reviewer, causing a coworker
+/// to review its own PR.
+///
+/// Root cause: `collect_reviewer_effects_with_source` calls `next_available_name_excluding`
+/// with only channel lead names excluded. When all other avenue names are in use, the PR
+/// author's name is the only available avenue name and gets selected as the reviewer.
+///
+/// Example: "riverside" opens PR, finishes task, goes idle. Next poll cycle finds PR needs
+/// review. All other avenue names are in use. "riverside" is the only available name →
+/// "riverside" is spawned to review its own PR.
+///
+/// Fix: Also exclude the PR author's name (extracted from the branch) from reviewer selection.
+#[tokio::test]
+async fn test_reviewer_not_assigned_to_pr_author() {
+    // PR whose branch identifies "riverside" as the author
+    let pr = json!({
+        "number": 9998,  // Non-existent PR — gh call fails gracefully → is_pr_reviewed returns false
+        "headRefName": "riverside/some-feature",
+        "title": "feat: Some feature [Midtown !100]",
+        "isDraft": false,
+        "createdAt": "2026-01-01T00:00:00Z",
+        "state": "OPEN",
+    });
+
+    let (state, _tmp, _guard) = make_test_state("midtown");
+
+    // Register all AVENUE_NAMES except "riverside" as active coworkers.
+    // This forces next_available_name_excluding to see "riverside" as the only
+    // available avenue name — reproducing the collision deterministically.
+    // (The function prefers avenue names over overflow names, so with all other
+    // avenue names in use, it would always pick "riverside" before the fix.)
+    for (i, name) in crate::coworker::AVENUE_NAMES
+        .iter()
+        .filter(|&&n| n != "riverside")
+        .enumerate()
+    {
+        state
+            .coworkers
+            .register(
+                &format!("slot-{i}"),
+                name,
+                "/tmp".to_string(),
+                None,
+                "claude-sonnet".to_string(),
+                crate::auth::AuthProvider::Claude,
+                "default".to_string(),
+            )
+            .unwrap();
+    }
+
+    let branch_owners: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let registry = crate::worktree_registry::WorktreeRegistry::new();
+    // "riverside" is active (it's the PR author), so the PR is not orphaned
+    let active_names: std::collections::HashSet<String> =
+        ["riverside".to_string()].into_iter().collect();
+
+    let effects = collect_reviewer_effects_with_source(
+        Some(&branch_owners),
+        &registry,
+        &active_names,
+        &state,
+        &[pr],
+        crate::github_state::AssignmentSource::PollingFallback,
+    )
+    .await;
+
+    // A reviewer should be spawned (overflow names are available) — assert there IS an assignment
+    let reviewer_name = effects.iter().find_map(|e| {
+        if let Effect::AssignReviewer { reviewer_name, .. } = e {
+            Some(reviewer_name.clone())
+        } else {
+            None
+        }
+    });
+
+    assert!(
+        reviewer_name.is_some(),
+        "Expected a reviewer to be assigned (overflow names are still available). \
+         Before fix: 'riverside' was incorrectly selected as reviewer for its own PR. \
+         After fix: an overflow name should be selected instead."
+    );
+
+    assert_ne!(
+        reviewer_name.unwrap().as_str(),
+        "riverside",
+        "PR author 'riverside' should NOT be assigned as reviewer for their own PR. \
+         Before fix: 'riverside' was the only available avenue name and was selected. \
+         After fix: the author's name is excluded from reviewer selection."
+    );
+}
