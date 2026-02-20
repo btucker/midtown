@@ -473,6 +473,16 @@
     }
   })
 
+  // Ensure the timeout is cleared when the component is destroyed
+  $effect(() => {
+    return () => {
+      if (channelLeadThinkingTimeout) {
+        clearTimeout(channelLeadThinkingTimeout)
+        channelLeadThinkingTimeout = null
+      }
+    }
+  })
+
   async function handleSubmit(e) {
     e.preventDefault()
 

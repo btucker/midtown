@@ -223,6 +223,12 @@ const INITIAL_MESSAGE_COUNT: usize = 100;
 /// This prevents unbounded memory growth when scrolling through large channel logs.
 const MAX_LOADED_MESSAGES: usize = 500;
 
+/// How long an optimistic "thinking" state lasts before expiring.
+///
+/// When a user submits a message to a channel lead, we immediately show a spinner
+/// for up to this duration, before real tool activity arrives from the daemon.
+pub const CHANNEL_LEAD_THINKING_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// Which pane has focus in the split-panel layout
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FocusedPane {
@@ -1650,6 +1656,14 @@ impl App {
             self.selected_channel.as_str()
         };
         self.visible_tool_entries(agent_key).len().hash(&mut hasher);
+        // Hash channel_lead_thinking for the current agent — the optimistic thinking state
+        // also changes lead_indicator_height (0 -> 1), affecting the message area layout.
+        let is_thinking = self
+            .channel_lead_thinking
+            .get(agent_key)
+            .map(|t| t.elapsed() < CHANNEL_LEAD_THINKING_TIMEOUT)
+            .unwrap_or(false);
+        is_thinking.hash(&mut hasher);
         hasher.finish()
     }
 
@@ -2284,7 +2298,6 @@ impl App {
 
     /// Returns true if any spinner is currently visible (lead working, in-progress tool entries, or active coworkers).
     pub fn any_spinner_visible(&self) -> bool {
-        const THINKING_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
         self.lead_working
             || self
                 .tool_activity
@@ -2297,7 +2310,7 @@ impl App {
             || self
                 .channel_lead_thinking
                 .values()
-                .any(|t| t.elapsed() < THINKING_TIMEOUT)
+                .any(|t| t.elapsed() < CHANNEL_LEAD_THINKING_TIMEOUT)
     }
 
     /// Advance the spinner frame if enough time has elapsed since the last tick.

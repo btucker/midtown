@@ -12,7 +12,9 @@ use crate::cli::chat::mermaid;
 
 use std::collections::HashMap;
 
-use super::super::app::{App, FocusedPane, MessageRenderCache, PendingQuestion};
+use super::super::app::{
+    App, CHANNEL_LEAD_THINKING_TIMEOUT, FocusedPane, MessageRenderCache, PendingQuestion,
+};
 use super::messages::{build_reply_indicator_line, render_message};
 use super::messages_mermaid::render_message_with_mermaid;
 use super::text::wrap_content;
@@ -68,11 +70,10 @@ fn lead_indicator_height(app: &App) -> u16 {
     if entries_len > 0 {
         entries_len as u16
     } else {
-        const THINKING_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
         let channel_thinking = app
             .channel_lead_thinking
             .get(agent_key)
-            .map(|t| t.elapsed() < THINKING_TIMEOUT)
+            .map(|t| t.elapsed() < CHANNEL_LEAD_THINKING_TIMEOUT)
             .unwrap_or(false);
         if channel_thinking { 1 } else { 0 }
     }
@@ -98,11 +99,10 @@ fn draw_lead_indicator(f: &mut Frame, app: &mut App, area: Rect) {
     let entries = app.visible_tool_entries(agent_key);
 
     // Check for optimistic thinking state (show spinner even before tool activity arrives)
-    const THINKING_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
     let channel_thinking = app
         .channel_lead_thinking
         .get(agent_key)
-        .map(|t| t.elapsed() < THINKING_TIMEOUT)
+        .map(|t| t.elapsed() < CHANNEL_LEAD_THINKING_TIMEOUT)
         .unwrap_or(false);
 
     if entries.is_empty() {
