@@ -727,16 +727,7 @@ impl App {
                         std::mem::take(&mut self.tool_activity),
                         data.tool_activity,
                     );
-                    // Clear optimistic thinking state for channels that now have real tool activity
-                    let channels_with_activity: Vec<String> = self
-                        .tool_activity
-                        .iter()
-                        .filter(|(_, entries)| !entries.is_empty())
-                        .map(|(ch, _)| ch.clone())
-                        .collect();
-                    for ch in channels_with_activity {
-                        self.channel_lead_thinking.remove(&ch);
-                    }
+                    self.clear_channel_lead_thinking_for_in_progress();
                     self.max_coworkers = data.max_coworkers;
                     self.pending_questions = data.pending_questions;
                     self.channel_lead_names = data.channel_lead_names;
@@ -2264,6 +2255,23 @@ impl App {
     pub fn set_channel_lead_thinking(&mut self, channel: &str) {
         self.channel_lead_thinking
             .insert(channel.to_string(), std::time::Instant::now());
+    }
+
+    /// Clear optimistic thinking state for channels that now have InProgress tool activity.
+    ///
+    /// Only clears when InProgress entries (completed_at == None) exist, not stale completed
+    /// entries. Completed entries are retained in tool_activity until they age out, so
+    /// filtering on non-empty would prematurely clear the spinner.
+    pub fn clear_channel_lead_thinking_for_in_progress(&mut self) {
+        let channels_with_in_progress: Vec<String> = self
+            .tool_activity
+            .iter()
+            .filter(|(_, entries)| entries.iter().any(|e| e.completed_at.is_none()))
+            .map(|(ch, _)| ch.clone())
+            .collect();
+        for ch in channels_with_in_progress {
+            self.channel_lead_thinking.remove(&ch);
+        }
     }
 
     /// Returns the visible tool activity entries for the given agent, newest first.
@@ -4942,6 +4950,53 @@ pub(super) mod tests {
         assert_ne!(
             key_before, key_after,
             "Cache key should change when channel_lead_thinking is set for the selected channel"
+        );
+    }
+
+    #[test]
+    fn test_clear_channel_lead_thinking_not_cleared_by_completed_entries() {
+        // Optimistic thinking state must NOT be cleared when tool_activity only has
+        // completed entries. The spinner should persist until an InProgress entry arrives.
+        let mut app = test_app();
+        app.set_channel_lead_thinking("myproject");
+
+        // Add only completed (aged-out) entries for the channel
+        app.tool_activity.insert(
+            "myproject".to_string(),
+            vec![ToolActivityEntry {
+                header: "\u{2713} Read foo.rs".to_string(),
+                completed_at: Some(std::time::Instant::now()),
+            }],
+        );
+
+        app.clear_channel_lead_thinking_for_in_progress();
+
+        assert!(
+            app.channel_lead_thinking.contains_key("myproject"),
+            "Thinking should NOT be cleared when tool_activity only has completed entries"
+        );
+    }
+
+    #[test]
+    fn test_clear_channel_lead_thinking_cleared_by_in_progress_entry() {
+        // Optimistic thinking state MUST be cleared when an InProgress entry arrives,
+        // since the channel lead has started responding.
+        let mut app = test_app();
+        app.set_channel_lead_thinking("myproject");
+
+        app.tool_activity.insert(
+            "myproject".to_string(),
+            vec![ToolActivityEntry {
+                header: "\u{203a} Write bar.rs".to_string(),
+                completed_at: None, // InProgress
+            }],
+        );
+
+        app.clear_channel_lead_thinking_for_in_progress();
+
+        assert!(
+            !app.channel_lead_thinking.contains_key("myproject"),
+            "Thinking should be cleared when an InProgress tool entry exists"
         );
     }
 }

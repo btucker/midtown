@@ -219,11 +219,14 @@ fn test_lead_indicator_height_with_optimistic_thinking() {
 }
 
 #[test]
-fn test_lead_indicator_height_thinking_expired_returns_zero() {
-    // An expired thinking entry should not reserve indicator space.
+fn test_lead_indicator_height_idle_returns_one() {
+    // Even when idle (no entries, no thinking), the indicator height must be 1.
+    // The stable status area never collapses to zero to prevent message jumping.
     use super::super::super::app::CHANNEL_LEAD_THINKING_TIMEOUT;
     let mut app = test_app();
     app.selected_channel = "myproject".to_string();
+
+    // Expired thinking — now fully idle
     let expired = std::time::Instant::now()
         - CHANNEL_LEAD_THINKING_TIMEOUT
         - std::time::Duration::from_secs(1);
@@ -231,8 +234,20 @@ fn test_lead_indicator_height_thinking_expired_returns_zero() {
         .insert("myproject".to_string(), expired);
     assert_eq!(
         lead_indicator_height(&app),
-        0,
-        "Should return 0 when thinking has expired"
+        1,
+        "Should return 1 (stable placeholder) even when thinking has expired"
+    );
+}
+
+#[test]
+fn test_lead_indicator_height_completely_idle_returns_one() {
+    // With no entries and no thinking state at all, height should still be 1.
+    let mut app = test_app();
+    app.selected_channel = "main".to_string();
+    assert_eq!(
+        lead_indicator_height(&app),
+        1,
+        "Should always return at least 1 for stable status area"
     );
 }
 
@@ -307,5 +322,41 @@ fn test_draw_lead_indicator_shows_spinner_when_channel_thinking() {
     assert!(
         has_spinner,
         "Spinner glyph should appear when channel_lead_thinking is active. Got: {row:?}",
+    );
+}
+
+#[test]
+fn test_draw_lead_indicator_shows_dim_placeholder_when_idle() {
+    // When there are no tool entries and no thinking state, the indicator area
+    // should render a dim placeholder with the agent name (not an empty blank row).
+    // This keeps the status area visible so messages don't jump when activity arrives.
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use ratatui::layout::Rect;
+
+    let backend = TestBackend::new(80, 1);
+    let mut terminal = Terminal::new(backend).unwrap();
+
+    let mut app = test_app();
+    // No tool entries, no thinking state — fully idle
+
+    terminal
+        .draw(|f| {
+            let area = Rect {
+                x: 0,
+                y: 0,
+                width: 80,
+                height: 1,
+            };
+            draw_lead_indicator(f, &mut app, area);
+        })
+        .unwrap();
+
+    let buffer = terminal.backend().buffer();
+    let row = buffer_row(buffer, 0, 80);
+
+    assert!(
+        row.contains("lead"),
+        "Idle indicator should show agent name 'lead' as dim placeholder. Got: {row:?}",
     );
 }

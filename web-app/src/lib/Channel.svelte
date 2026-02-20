@@ -499,7 +499,7 @@
           : `[Attached file: ${result.filename}]\nPlease read: ${result.path}`
 
         sendMessage(message, $activeChannel)
-        if ($activeChannel !== 'midtown') {
+        if ($activeChannel !== 'midtown' && $activeChannel !== 'main') {
           channelLeadThinking = true
           if (channelLeadThinkingTimeout) clearTimeout(channelLeadThinkingTimeout)
           channelLeadThinkingTimeout = setTimeout(() => {
@@ -515,7 +515,7 @@
       }
     } else if (inputText.trim()) {
       sendMessage(inputText.trim(), $activeChannel)
-      if ($activeChannel !== 'midtown') {
+      if ($activeChannel !== 'midtown' && $activeChannel !== 'main') {
         channelLeadThinking = true
         if (channelLeadThinkingTimeout) clearTimeout(channelLeadThinkingTimeout)
         channelLeadThinkingTimeout = setTimeout(() => {
