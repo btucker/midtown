@@ -159,8 +159,11 @@ fn draw_thread_input(f: &mut Frame, app: &mut App, area: Rect) {
 
     let prompt = "\u{21b3} "; // ↳
     let char_count = app.thread_input_text.chars().count();
-    let text_with_cursor = if is_focused && app.thread_input_cursor == char_count {
-        format!("{}{}\u{2588}", prompt, app.thread_input_text) // █
+    let cursor_style = Style::default().fg(Color::Black).bg(Color::Yellow);
+    let mut spans: Vec<Span> = vec![Span::raw(prompt)];
+    if is_focused && app.thread_input_cursor == char_count {
+        spans.push(Span::raw(app.thread_input_text.clone()));
+        spans.push(Span::styled("\u{2588}", cursor_style)); // █
     } else if is_focused {
         let byte_idx = app
             .thread_input_text
@@ -168,13 +171,17 @@ fn draw_thread_input(f: &mut Frame, app: &mut App, area: Rect) {
             .nth(app.thread_input_cursor)
             .map(|(idx, _)| idx)
             .unwrap_or(app.thread_input_text.len());
-        let (before, after) = app.thread_input_text.split_at(byte_idx);
-        format!("{}{}\u{2588}{}", prompt, before, after)
+        let (before, after_str) = app.thread_input_text.split_at(byte_idx);
+        let cursor_char = after_str.chars().next().unwrap_or(' ');
+        let rest = &after_str[cursor_char.len_utf8()..];
+        spans.push(Span::raw(before.to_string()));
+        spans.push(Span::styled(cursor_char.to_string(), cursor_style));
+        spans.push(Span::raw(rest.to_string()));
     } else {
-        format!("{}{}", prompt, app.thread_input_text)
-    };
+        spans.push(Span::raw(app.thread_input_text.clone()));
+    }
 
-    let paragraph = Paragraph::new(text_with_cursor).wrap(Wrap { trim: false });
+    let paragraph = Paragraph::new(Line::from(spans)).wrap(Wrap { trim: false });
     f.render_widget(block, area);
     f.render_widget(paragraph, inner);
 }
