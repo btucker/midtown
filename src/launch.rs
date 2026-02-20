@@ -278,25 +278,36 @@ impl LaunchConfig {
 
     /// Create a config for the Lead session.
     ///
-    /// The Lead uses `main_lead_system_prompt()`, has unrestricted setting sources,
-    /// and runs as a headless session that can be attached/detached like coworkers.
-    pub fn lead(repo_name: impl Into<String>) -> Self {
+    /// When `channel` is None, creates a main lead (uses `main_lead_system_prompt()`).
+    /// When `channel` is Some, creates a channel lead for that channel
+    /// (uses `channel_lead_system_prompt()`).
+    ///
+    /// The Lead uses unrestricted setting sources and runs as a headless session
+    /// that can be attached/detached like coworkers.
+    pub fn lead(repo_name: impl Into<String>, channel: Option<&str>) -> Self {
         let repo = repo_name.into();
         let team = crate::mailbox::team_name_for_repo(&repo);
-        LaunchConfig {
-            name: "lead".to_string(),
-            session_mode: SessionMode::Fresh,
-            role: CoworkerRole::Lead,
-            initial_prompt: Some(crate::agents::main_lead_initial_prompt(&repo, "main")),
-            additional_dirs: vec![],
-            pr_number: None,
-            team_name: Some(team),
-            working_dir: None,
-            model: "opus".to_string(),
-            channel: None,
-            auth_profile_dir: None,
-            auth_provider: crate::auth::AuthProvider::Claude,
-            persisted_initial_prompt: None,
+
+        if let Some(channel_name) = channel {
+            // Channel lead — delegate to channel_lead factory
+            LaunchConfig::channel_lead(channel_name, &repo, SessionMode::Fresh, "")
+        } else {
+            // Main lead
+            LaunchConfig {
+                name: "lead".to_string(),
+                session_mode: SessionMode::Fresh,
+                role: CoworkerRole::Lead,
+                initial_prompt: Some(crate::agents::main_lead_initial_prompt(&repo, "main")),
+                additional_dirs: vec![],
+                pr_number: None,
+                team_name: Some(team),
+                working_dir: None,
+                model: "opus".to_string(),
+                channel: None,
+                auth_profile_dir: None,
+                auth_provider: crate::auth::AuthProvider::Claude,
+                persisted_initial_prompt: None,
+            }
         }
     }
 
@@ -705,7 +716,7 @@ mod tests {
             "setting_sources should be None — handled by platform arg builder"
         );
 
-        let config = LaunchConfig::lead("myrepo");
+        let config = LaunchConfig::lead("myrepo", None);
         let headless = config.to_headless_config("midtown");
         assert_eq!(
             headless.setting_sources, None,
@@ -1021,7 +1032,7 @@ mod tests {
 
     #[test]
     fn test_headless_config_lead_role_uses_lead_prompt() {
-        let config = LaunchConfig::lead("myrepo");
+        let config = LaunchConfig::lead("myrepo", None);
         let headless = config.to_headless_config("midtown");
 
         // Lead should use main_lead_system_prompt (not coworker)
@@ -1038,7 +1049,7 @@ mod tests {
     fn test_lead_config_setting_sources_handled_by_platform_builder() {
         // All sessions now get --setting-sources project,local via the platform
         // arg builder. The HeadlessConfig.setting_sources field is always None.
-        let config = LaunchConfig::lead("myrepo");
+        let config = LaunchConfig::lead("myrepo", None);
         let headless = config.to_headless_config("midtown");
         assert_eq!(
             headless.setting_sources, None,
@@ -1048,7 +1059,7 @@ mod tests {
 
     #[test]
     fn test_launch_config_lead_factory() {
-        let config = LaunchConfig::lead("myrepo");
+        let config = LaunchConfig::lead("myrepo", None);
         assert_eq!(config.name, "lead");
         assert_eq!(config.role, CoworkerRole::Lead);
         assert!(
@@ -1062,7 +1073,7 @@ mod tests {
 
     #[test]
     fn test_lead_config_has_team_name() {
-        let config = LaunchConfig::lead("myrepo");
+        let config = LaunchConfig::lead("myrepo", None);
         let headless = config.to_headless_config("midtown");
 
         assert_eq!(headless.team_name, Some("midtown-myrepo".to_string()));

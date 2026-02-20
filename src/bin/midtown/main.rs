@@ -162,8 +162,11 @@ enum Commands {
     /// Lead-specific commands
     #[command(hide = true)]
     Lead {
+        /// Channel to lead (defaults to main project channel)
+        #[arg(long)]
+        channel: Option<String>,
         #[command(subcommand)]
-        command: LeadCommand,
+        command: Option<LeadCommand>,
     },
     /// Open IRC-style chat TUI
     #[command(hide = true)]
@@ -554,20 +557,28 @@ fn main() {
     }
 
     // Lead commands
-    if let Commands::Lead { command } = &command {
-        let result = match command {
-            LeadCommand::RegisterSession => cli::handle_register_session(),
-            LeadCommand::Remind {
-                command: remind_cmd,
-            } => match DaemonClient::connect() {
-                Ok(client) => cli::handle_remind(remind_cmd, &client),
-                Err(e) => Err(format!(
-                    "Failed to connect to daemon: {}. Is it running?",
-                    e
-                )),
-            },
-        };
-        handle_result(format, result);
+    if let Commands::Lead { channel, command } = &command {
+        if let Some(cmd) = command {
+            let result = match cmd {
+                LeadCommand::RegisterSession => cli::handle_register_session(),
+                LeadCommand::Remind {
+                    command: remind_cmd,
+                } => match DaemonClient::connect() {
+                    Ok(client) => cli::handle_remind(remind_cmd, &client),
+                    Err(e) => Err(format!(
+                        "Failed to connect to daemon: {}. Is it running?",
+                        e
+                    )),
+                },
+            };
+            handle_result(format, result);
+        } else {
+            // No subcommand — print info about channel if specified
+            if let Some(ch) = channel {
+                println!("Channel lead mode: #{}", ch);
+            }
+            // midtown lead without subcommand is a no-op (sessions are managed by daemon)
+        }
         return;
     }
 

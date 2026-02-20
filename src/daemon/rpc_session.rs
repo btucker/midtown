@@ -642,7 +642,7 @@ pub(super) async fn handle_session_detach(
     };
 
     let mut config = if name == "lead" {
-        let mut c = crate::launch::LaunchConfig::lead(&state.repo_name);
+        let mut c = crate::launch::LaunchConfig::lead(&state.repo_name, None);
         c.session_mode = session_mode;
         c
     } else {
@@ -930,7 +930,7 @@ pub(super) async fn handle_session_clear(
     };
 
     let mut config = if name == "lead" {
-        let mut c = crate::launch::LaunchConfig::lead(&state.repo_name);
+        let mut c = crate::launch::LaunchConfig::lead(&state.repo_name, None);
         c.session_mode = crate::launch::SessionMode::Fresh;
         c.initial_prompt = Some(fresh_prompt);
         // Persist the original prompt, not the decorated "fresh restart" wrapper.

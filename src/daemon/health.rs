@@ -1056,7 +1056,7 @@ pub fn ensure_lead_alive(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
 
     warn!("Lead session is not running — respawning");
 
-    let mut config = crate::launch::LaunchConfig::lead(&snap.repo_name);
+    let mut config = crate::launch::LaunchConfig::lead(&snap.repo_name, None);
     let lead_wt = crate::paths::lead_worktree_path(&snap.repo_name);
     if lead_wt.exists() {
         config.working_dir = Some(lead_wt);
