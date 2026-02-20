@@ -37,11 +37,10 @@
     return out
   })
 
-  // Most recent items first for display
-  let sorted = $derived([...merged].reverse())
-  // Collapsed: show only the 1 most recent item; expanded: show up to maxVisible
-  let visible = $derived(expanded ? sorted.slice(0, maxVisible) : sorted.slice(0, 1))
-  let hasMore = $derived(sorted.length > 1 && !expanded)
+  // Chronological order: oldest at top, newest at bottom (CLI-style, new lines come in at bottom).
+  // merged is already oldest-first. Show the most recent maxVisible items.
+  let visible = $derived(expanded ? merged.slice(-maxVisible) : merged.slice(-1))
+  let hasMore = $derived(merged.length > 1 && !expanded)
 
   function describeItem(item) {
     for (const part of item.content) {
@@ -66,10 +65,10 @@
 </script>
 
 {#if merged.length > 0}
-  <div class="tool-activity mt-[2px] ml-[4.2em] text-[0.80rem] leading-[1.4]">
+  <div class="tool-activity mt-[2px] text-[0.80rem] leading-[1.4]">
     {#each visible as entry (entry.item.item_id)}
       <div
-        class="tool-item flex items-center gap-[0.4em] py-[1px]"
+        class="tool-item flex items-center gap-[0.4em] py-[1px] overflow-hidden"
         class:text-red-400={isError(entry)}
         class:text-[#4a4a4a]={isInProgress(entry)}
       >
@@ -82,7 +81,7 @@
             <span class="text-[#3a6a3a]">›</span>
           {/if}
         </span>
-        <span class="font-mono truncate">{describeItem(entry.item)}</span>
+        <span class="font-mono min-w-0 overflow-hidden whitespace-nowrap">{describeItem(entry.item)}</span>
       </div>
     {/each}
     {#if hasMore}
@@ -90,9 +89,9 @@
         class="text-[#3a5a5a] hover:text-[#5fafaf] text-[0.78rem] mt-[1px] bg-transparent border-none cursor-pointer p-0"
         onclick={() => { expanded = true }}
       >
-        ▼ {sorted.length - 1} more
+        ▼ {merged.length - 1} more
       </button>
-    {:else if expanded && sorted.length > 1}
+    {:else if expanded && merged.length > 1}
       <button
         class="text-[#3a5a5a] hover:text-[#5fafaf] text-[0.78rem] mt-[1px] bg-transparent border-none cursor-pointer p-0"
         onclick={() => { expanded = false }}

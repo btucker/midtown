@@ -68,9 +68,10 @@ fn lead_indicator_height(app: &App) -> u16 {
 
 /// Draw the lead working indicator area between chat messages and the input bar.
 ///
-/// Shows up to 3 tool entries (newest first) with color-coded status prefixes.
-/// The first line includes a yellow braille spinner and the agent name in yellow.
+/// Shows up to 3 tool entries in chronological order (oldest at top, newest at bottom).
+/// The last line (newest entry) includes a yellow braille spinner and the agent name in yellow.
 /// Completed (✓/✗) entries age out after 30 seconds, collapsing the area to 0.
+/// Descriptions are not explicitly truncated — ratatui clips at the terminal edge naturally.
 fn draw_lead_indicator(f: &mut Frame, app: &mut App, area: Rect) {
     if area.height == 0 {
         return;
@@ -87,14 +88,18 @@ fn draw_lead_indicator(f: &mut Frame, app: &mut App, area: Rect) {
         return;
     }
 
-    // Show spinner when any entry is still in-progress.
+    // Show spinner when any entry is still in-progress AND the lead is working.
     let has_in_progress = entries.iter().any(|e| e.header.starts_with('›'));
+    let show_spinner = has_in_progress && app.lead_working;
     // Width of " ⠋ lead " prefix: 1 space + 1 spinner + 1 space + agent_name + 1 space
     let prefix_width = 3 + agent_key.chars().count() + 1;
 
     let mut lines: Vec<Line<'static>> = Vec::new();
+    let n = entries.len();
 
-    for (i, entry) in entries.iter().enumerate() {
+    // Display oldest first (reverse of visible_tool_entries which returns newest first).
+    // Agent name goes on the last line (newest entry = bottom), like a standard CLI.
+    for (i, entry) in entries.iter().rev().enumerate() {
         let mut chars = entry.header.chars();
         let prefix_char = chars.next().unwrap_or('›');
         let description = chars.as_str().trim_start().to_string();
@@ -110,15 +115,14 @@ fn draw_lead_indicator(f: &mut Frame, app: &mut App, area: Rect) {
             Color::DarkGray
         };
 
-        if i == 0 {
-            // First line: " ⠋ lead  › Read foo.rs" — spinner and agent name in yellow
-            let spinner = if has_in_progress {
+        let is_last = i == n - 1; // last rendered = newest entry = agent name line
+        if is_last {
+            // Last line (newest): " ⠋ lead › Read foo.rs" — spinner and agent name in yellow
+            let spinner = if show_spinner {
                 app.spinner_char()
             } else {
                 " "
             };
-            let available = (area.width as usize).saturating_sub(prefix_width + 2);
-            let desc_text = truncate_for_width(&description, available);
             lines.push(Line::from(vec![
                 Span::styled(format!(" {} ", spinner), Style::default().fg(Color::Yellow)),
                 Span::styled(
@@ -128,32 +132,20 @@ fn draw_lead_indicator(f: &mut Frame, app: &mut App, area: Rect) {
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(prefix_char.to_string(), Style::default().fg(prefix_color)),
-                Span::styled(format!(" {desc_text}"), Style::default().fg(text_color)),
+                Span::styled(format!(" {description}"), Style::default().fg(text_color)),
             ]));
         } else {
-            // Subsequent lines: indented to align with first line's description.
+            // Older entries: indented to align with the agent-name line's description.
             let indent = " ".repeat(prefix_width);
-            let available = (area.width as usize).saturating_sub(prefix_width + 2);
-            let desc_text = truncate_for_width(&description, available);
             lines.push(Line::from(vec![
                 Span::raw(indent),
                 Span::styled(prefix_char.to_string(), Style::default().fg(prefix_color)),
-                Span::styled(format!(" {desc_text}"), Style::default().fg(text_color)),
+                Span::styled(format!(" {description}"), Style::default().fg(text_color)),
             ]));
         }
     }
 
     f.render_widget(Paragraph::new(lines), area);
-}
-
-/// Truncate text to fit within `available` characters, appending "..." if needed.
-fn truncate_for_width(text: &str, available: usize) -> String {
-    if text.chars().count() > available && available > 3 {
-        let boundary = text.floor_char_boundary(available.saturating_sub(3));
-        format!("{}...", &text[..boundary])
-    } else {
-        text.to_string()
-    }
 }
 
 /// Compute the number of lines needed to display pending questions.
@@ -728,5 +720,203 @@ mod tests {
         let text = "Line 1\nLine 2\nLine 3";
         let height = calculate_input_bar_height(text, 80);
         assert_eq!(height, 5, "3 content lines + 2 border lines = 5");
+    }
+
+    // --- draw_lead_indicator ordering tests ---
+
+    fn make_tool_entry(
+        header: &str,
+        completed: bool,
+    ) -> super::super::super::app::ToolActivityEntry {
+        super::super::super::app::ToolActivityEntry {
+            header: header.to_string(),
+            completed_at: if completed {
+                Some(std::time::Instant::now())
+            } else {
+                None
+            },
+        }
+    }
+
+    #[test]
+    fn test_draw_lead_indicator_agent_name_on_last_line() {
+        // Agent name should appear on the LAST (bottom) line, not the first.
+        // New entries should come in at the bottom (CLI-style ordering).
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        use ratatui::layout::Rect;
+
+        let backend = TestBackend::new(80, 2);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let mut app = test_app();
+        // Two entries: older completed, newer in-progress
+        app.tool_activity = std::collections::HashMap::from([(
+            "lead".to_string(),
+            vec![
+                make_tool_entry("\u{2713} Read foo.rs", true), // older, completed
+                make_tool_entry("\u{203a} Write bar.rs", false), // newer, in-progress
+            ],
+        )]);
+        app.lead_working = true;
+
+        terminal
+            .draw(|f| {
+                let area = Rect {
+                    x: 0,
+                    y: 0,
+                    width: 80,
+                    height: 2,
+                };
+                draw_lead_indicator(f, &mut app, area);
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+
+        // Collect text from first row (y=0) and last row (y=1)
+        let row0: String = (0..20)
+            .map(|x| {
+                buffer
+                    .cell((x, 0))
+                    .map(|c| c.symbol().to_string())
+                    .unwrap_or_default()
+            })
+            .collect();
+        let row1: String = (0..20)
+            .map(|x| {
+                buffer
+                    .cell((x, 1))
+                    .map(|c| c.symbol().to_string())
+                    .unwrap_or_default()
+            })
+            .collect();
+
+        assert!(
+            row1.contains("lead"),
+            "Agent name 'lead' should be on the LAST line (row 1), got row1={:?} row0={:?}",
+            row1,
+            row0
+        );
+        assert!(
+            !row0.contains("lead"),
+            "Agent name 'lead' should NOT be on the first line (row 0), got row0={:?}",
+            row0
+        );
+    }
+
+    #[test]
+    fn test_draw_lead_indicator_older_entries_on_top() {
+        // Older entries should be displayed above newer entries (chronological order).
+        // The completed (✓) older entry should be on row 0; in-progress (›) newer on row 1.
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        use ratatui::layout::Rect;
+
+        let backend = TestBackend::new(80, 2);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let mut app = test_app();
+        app.tool_activity = std::collections::HashMap::from([(
+            "lead".to_string(),
+            vec![
+                make_tool_entry("\u{2713} Read foo.rs", true), // older
+                make_tool_entry("\u{203a} Write bar.rs", false), // newer
+            ],
+        )]);
+        app.lead_working = true;
+
+        terminal
+            .draw(|f| {
+                let area = Rect {
+                    x: 0,
+                    y: 0,
+                    width: 80,
+                    height: 2,
+                };
+                draw_lead_indicator(f, &mut app, area);
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+
+        // Collect text from each row
+        let row0: String = (0..80)
+            .map(|x| {
+                buffer
+                    .cell((x, 0))
+                    .map(|c| c.symbol().to_string())
+                    .unwrap_or_default()
+            })
+            .collect();
+        let row1: String = (0..80)
+            .map(|x| {
+                buffer
+                    .cell((x, 1))
+                    .map(|c| c.symbol().to_string())
+                    .unwrap_or_default()
+            })
+            .collect();
+
+        assert!(
+            row0.contains("foo"),
+            "Older entry (foo.rs) should be on row 0 (top), got row0={:?}",
+            row0
+        );
+        assert!(
+            row1.contains("bar"),
+            "Newer entry (bar.rs) should be on row 1 (bottom), got row1={:?}",
+            row1
+        );
+    }
+
+    #[test]
+    fn test_draw_lead_indicator_no_ellipsis_truncation() {
+        // Descriptions should NOT be truncated with "..." when rendered.
+        // The text should just be clipped at the terminal edge, not have "..." added.
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        use ratatui::layout::Rect;
+
+        // Use a 30-wide terminal so the description overflows
+        // prefix_width = 3 + len("lead") + 1 = 8; available = 30 - 8 - 2 = 20
+        // Description of 25 chars would currently be truncated to 17 + "..." = 20 chars
+        let backend = TestBackend::new(30, 1);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let mut app = test_app();
+        app.tool_activity = std::collections::HashMap::from([(
+            "lead".to_string(),
+            vec![make_tool_entry("\u{203a} ABCDEFGHIJKLMNOPQRSTUVWXY", false)],
+        )]);
+        app.lead_working = true;
+
+        terminal
+            .draw(|f| {
+                let area = Rect {
+                    x: 0,
+                    y: 0,
+                    width: 30,
+                    height: 1,
+                };
+                draw_lead_indicator(f, &mut app, area);
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let row: String = (0..30)
+            .map(|x| {
+                buffer
+                    .cell((x, 0))
+                    .map(|c| c.symbol().to_string())
+                    .unwrap_or_default()
+            })
+            .collect();
+
+        assert!(
+            !row.contains("..."),
+            "Lead indicator should NOT use '...' truncation — just clip at terminal edge. Got: {:?}",
+            row
+        );
     }
 }
