@@ -1,8 +1,8 @@
 //! Kanban board data handler and helpers.
 //!
 //! Extracted from `rpc.rs` to keep the main RPC module focused on dispatch.
-//! Contains the `kanban.data` RPC handler, the `KanbanCache`, and all
-//! GraphQL/PR-formatting logic for the web UI kanban board.
+//! Contains the `kanban.data` and `coworkers.status` RPC handlers, the `KanbanCache`,
+//! and all GraphQL/PR-formatting logic for the web UI kanban board.
 
 use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
@@ -13,7 +13,6 @@ use chrono::Utc;
 use tracing::{debug, error, warn};
 
 use crate::rpc::{RequestId, Response, RpcError};
-use crate::rules::CoworkerRecord;
 
 use super::DaemonState;
 use super::snapshot::ProcessHealth;
@@ -30,100 +29,39 @@ use super::snapshot::ProcessHealth;
 /// Runs blocking GraphQL operations in spawn_blocking to avoid blocking
 /// the async runtime and causing RPC timeouts.
 ///
-/// Uses a 30s TTL cache (via `DaemonState::kanban_cache`) to avoid expensive
-/// GraphQL queries on every call and reduce GitHub API usage.
+/// Uses a 60s TTL cache (via `DaemonState::kanban_cache`) to avoid expensive
+/// GraphQL queries on every call and reduce GitHub API usage. The cache key
+/// is based only on repo paths — coworker state is no longer included since
+/// coworker data is served by the separate `coworkers.status` RPC.
 pub(crate) async fn handle_kanban_data(id: RequestId, state: &DaemonState) -> Response {
     // Clone data needed for cache key computation
     let all_repo_paths = state.all_repo_paths.clone();
-
-    // Extract channel lead names early for cache key computation (best-effort)
-    let cache_channel_lead_names: std::collections::HashSet<String> = state
-        .persistent_state
-        .try_lock()
-        .map(|ps| ps.channel_lead_sessions.keys().cloned().collect())
-        .unwrap_or_default();
 
     // Compute a hash of all repo paths for cache keying
     let mut hasher = DefaultHasher::new();
     for path in &all_repo_paths {
         path.hash(&mut hasher);
     }
-    let repo_hash = hasher.finish();
-
-    // Compute a hash of coworker state for cache invalidation
-    let coworker_state_hash = {
-        let coworker_records = state.coworker_records.read().await;
-        compute_coworker_state_hash(&coworker_records, &cache_channel_lead_names)
-    };
-
-    // Combine repo hash, coworker state hash, and channel lead names for the final cache key.
-    // Channel lead names must be included because they appear in the cached `channel_leads`
-    // response field — if the set changes (lead added/removed), the cache must be invalidated.
-    // Sort the names before hashing for determinism (HashSet iteration order is not guaranteed).
-    let mut sorted_lead_names: Vec<&String> = cache_channel_lead_names.iter().collect();
-    sorted_lead_names.sort();
-
-    let mut cache_key_hasher = DefaultHasher::new();
-    repo_hash.hash(&mut cache_key_hasher);
-    coworker_state_hash.hash(&mut cache_key_hasher);
-    sorted_lead_names.hash(&mut cache_key_hasher);
-    let cache_key = cache_key_hasher.finish();
+    let cache_key = hasher.finish();
 
     // Check cache first
-    if let Some(mut cached) = state.kanban_cache.get(cache_key) {
+    if let Some(cached) = state.kanban_cache.get(cache_key) {
         debug!(
             "Returning cached kanban data (TTL: {}s)",
             KANBAN_CACHE_TTL.as_secs()
         );
-        // lead_working and tool_activity are never cached — inject live values.
-        let lead_working = is_lead_actively_working(state);
-        let tool_activity = collect_tool_activity(state);
-        if let Some(obj) = cached.as_object_mut() {
-            obj.insert("lead_working".to_string(), serde_json::json!(lead_working));
-            obj.insert("tool_activity".to_string(), tool_activity);
-        }
         return Response::success(id, cached);
     }
 
     // Cache miss - fetch fresh data
     debug!("Cache miss, fetching fresh kanban data");
 
-    // Get reviewer assignments, worktree registry, and channel lead names from persistent state
-    // (best-effort via try_lock)
-    let (reviewer_assignments, worktree_pr_map, channel_lead_names): (
-        HashMap<u64, crate::github_state::PrReviewerAssignment>,
-        HashMap<String, u64>,
-        std::collections::HashSet<String>,
-    ) = state
+    // Get reviewer assignments from persistent state (best-effort via try_lock)
+    let reviewer_assignments: HashMap<u64, crate::github_state::PrReviewerAssignment> = state
         .persistent_state
         .try_lock()
-        .map(|ps| {
-            let assignments = ps.github.active_assignments();
-            // Build coworker -> PR map from worktree registry (for reviewers)
-            let wt_map: HashMap<String, u64> = ps
-                .worktree_registry
-                .all_assignments()
-                .iter()
-                .filter_map(|(_, assignment)| {
-                    let coworker = assignment.current_coworker.as_ref()?;
-                    let pr_number = assignment.pr_number?;
-                    Some((coworker.clone(), pr_number))
-                })
-                .collect();
-            let cl_names: std::collections::HashSet<String> =
-                ps.channel_lead_sessions.keys().cloned().collect();
-            (assignments, wt_map, cl_names)
-        })
+        .map(|ps| ps.github.active_assignments())
         .unwrap_or_default();
-
-    // Build reviewer -> PR number map from reviewer_assignments
-    // We do this before spawn_blocking so we can use the reviewer_assignments data
-    // without needing a second try_lock() later (which could fail and cause reviewers
-    // to show their internal task IDs instead of the source task ID from PR titles).
-    let reviewer_pr_map: HashMap<String, u64> = reviewer_assignments
-        .iter()
-        .map(|(pr_number, assignment)| (assignment.reviewer.clone(), *pr_number))
-        .collect();
 
     let is_multi_repo = all_repo_paths.len() > 1;
 
@@ -176,135 +114,196 @@ pub(crate) async fn handle_kanban_data(id: RequestId, state: &DaemonState) -> Re
         }
     };
 
-    // Collect coworker data from daemon state
-    let coworkers_data = {
-        let active_coworkers = state.coworkers.list();
-        let coworker_records = state.coworker_records.read().await;
-        let prs_by_task_id = build_pr_task_map(&prs);
-
-        // Read tasks to get explicit PR associations (task !1151)
-        let all_tasks = crate::tasks::read_tasks();
-        let task_pr_map: HashMap<u32, u64> = all_tasks
-            .iter()
-            .filter_map(|task| {
-                let task_id: u32 = task.id.parse().ok()?;
-                let pr = task.pr?;
-                Some((task_id, pr))
-            })
-            .collect();
-
-        // Build reverse map: PR number -> source task ID (from PR titles)
-        let task_id_by_pr: HashMap<u64, u32> = prs
-            .iter()
-            .filter_map(|pr| {
-                let pr_number = pr.get("number")?.as_u64()?;
-                let title = pr.get("title")?.as_str()?;
-                let task_id = crate::tasks::extract_task_id_from_pr_title(title)?;
-                let task_id_u32 = u32::try_from(task_id).ok()?;
-                Some((pr_number, task_id_u32))
-            })
-            .collect();
-
-        // Clone health data to avoid holding the lock across await
-        let health_snapshot: HashMap<String, ProcessHealth> = {
-            let health_guard = state.headless_health.read().unwrap();
-            health_guard.clone()
-        };
-
-        active_coworkers
-            .iter()
-            .filter_map(|cw| {
-                // Skip channel lead sessions — they are scoped to a specific topic
-                // channel and must not appear in the general coworker status panel.
-                // The lead session itself also uses a reserved name and is excluded.
-                if is_channel_lead(&cw.name, &channel_lead_names)
-                    || cw.name.eq_ignore_ascii_case("lead")
-                {
-                    return None;
-                }
-
-                // Get coworker's workflow state from records
-                let record = coworker_records.get(&cw.name);
-                let workflow_phase = record.and_then(|r| r.workflow_phase);
-                let task_id = record.and_then(|r| r.task_id);
-
-                // Skip idle coworkers (phase = Idle or Completed)
-                if matches!(
-                    workflow_phase,
-                    Some(crate::coworker_state::WorkflowPhase::Idle)
-                        | Some(crate::coworker_state::WorkflowPhase::Completed)
-                ) {
-                    return None;
-                }
-
-                // Get health status
-                let health = health_snapshot.get(&cw.name);
-                let health_color = if let Some(h) = health {
-                    if !h.is_alive {
-                        "red" // dead
-                    } else if h.has_usage_limit || h.has_api_error {
-                        "yellow" // degraded
-                    } else {
-                        "green" // healthy
-                    }
-                } else {
-                    "green" // default healthy
-                };
-
-                // Find PR number for this coworker, trying sources in priority order:
-                // 1. Explicit task.pr field (task !1151) - most authoritative
-                // 2. GitHub reviewer assignment (for review tasks)
-                // 3. Worktree registry (for reviewers when reviewer_pr_map is empty)
-                // 4. PR title extraction (final fallback)
-                let pr_number = task_id
-                    .and_then(|tid| task_pr_map.get(&tid).copied())
-                    .or_else(|| reviewer_pr_map.get(&cw.name).copied())
-                    .or_else(|| worktree_pr_map.get(&cw.name).copied())
-                    .or_else(|| task_id.and_then(|tid| prs_by_task_id.get(&tid).copied()));
-
-                // For display: prefer source task ID (from PR title) over internal task ID
-                // This ensures reviewers show the meaningful task ID, not their ephemeral one
-                let display_task_id = pr_number
-                    .and_then(|pr| task_id_by_pr.get(&pr).copied())
-                    .or(task_id);
-
-                Some(serde_json::json!({
-                    "name": cw.name,
-                    "task_id": display_task_id,
-                    "phase": workflow_phase.map(|p| p.abbreviation()),
-                    "pr_number": pr_number,
-                    "health": health_color,
-                    "provider": cw.provider.as_str(),
-                    "profile": cw.profile,
-                    "progress": record.and_then(|r| r.progress),
-                    "time_estimate": record.and_then(|r| r.format_time_remaining()),
-                }))
-            })
-            .collect::<Vec<_>>()
-    };
-
-    // Build the cacheable response (WITHOUT lead_working or tool_activity — they're live state)
-    let channel_leads: Vec<&String> = channel_lead_names.iter().collect();
-    let mut response_data = serde_json::json!({
+    let response_data = serde_json::json!({
         "prs": prs,
         "merged_prs": merged_prs,
         "repos": repos,
-        "coworkers": coworkers_data,
-        "max_coworkers": state.max_coworkers,
-        "channel_leads": channel_leads,
     });
 
     state.kanban_cache.set(response_data.clone(), cache_key);
 
-    // Inject live state (not cached): lead_working and tool_activity.
+    Response::success(id, response_data)
+}
+
+/// Handle coworkers.status RPC method - returns live coworker state.
+///
+/// This is a lightweight endpoint with no GraphQL queries and no caching.
+/// It reads directly from in-memory daemon state so responses are always
+/// current (microsecond latency). The TUI polls this at 1–2s to keep the
+/// coworker status panel up-to-date without delay.
+///
+/// Returns: coworkers, max_coworkers, lead_working, tool_activity, channel_leads.
+pub(crate) async fn handle_coworkers_status(id: RequestId, state: &DaemonState) -> Response {
+    let (coworkers_data, channel_lead_names) = build_coworkers_data(state, &[]).await;
+
     let lead_working = is_lead_actively_working(state);
     let tool_activity = collect_tool_activity(state);
-    if let Some(obj) = response_data.as_object_mut() {
-        obj.insert("lead_working".to_string(), serde_json::json!(lead_working));
-        obj.insert("tool_activity".to_string(), tool_activity);
-    }
+    let channel_leads: Vec<&String> = channel_lead_names.iter().collect();
 
-    Response::success(id, response_data)
+    Response::success(
+        id,
+        serde_json::json!({
+            "coworkers": coworkers_data,
+            "max_coworkers": state.max_coworkers,
+            "lead_working": lead_working,
+            "tool_activity": tool_activity,
+            "channel_leads": channel_leads,
+        }),
+    )
+}
+
+/// Build the coworker data array from daemon state.
+///
+/// Accepts an optional slice of PR JSON objects. When non-empty, PR title
+/// parsing is used to map PR numbers to source task IDs (for reviewers).
+/// Pass an empty slice from `coworkers.status` (no GraphQL available);
+/// pass the fetched PRs from `kanban.data` for richer display.
+///
+/// Returns `(coworkers_data, channel_lead_names)`.
+async fn build_coworkers_data(
+    state: &DaemonState,
+    prs: &[serde_json::Value],
+) -> (Vec<serde_json::Value>, std::collections::HashSet<String>) {
+    // Get reviewer assignments, worktree registry, and channel lead names from persistent state
+    // (best-effort via try_lock)
+    let (reviewer_assignments, worktree_pr_map, channel_lead_names): (
+        HashMap<u64, crate::github_state::PrReviewerAssignment>,
+        HashMap<String, u64>,
+        std::collections::HashSet<String>,
+    ) = state
+        .persistent_state
+        .try_lock()
+        .map(|ps| {
+            let assignments = ps.github.active_assignments();
+            // Build coworker -> PR map from worktree registry (for reviewers)
+            let wt_map: HashMap<String, u64> = ps
+                .worktree_registry
+                .all_assignments()
+                .iter()
+                .filter_map(|(_, assignment)| {
+                    let coworker = assignment.current_coworker.as_ref()?;
+                    let pr_number = assignment.pr_number?;
+                    Some((coworker.clone(), pr_number))
+                })
+                .collect();
+            let cl_names: std::collections::HashSet<String> =
+                ps.channel_lead_sessions.keys().cloned().collect();
+            (assignments, wt_map, cl_names)
+        })
+        .unwrap_or_default();
+
+    // Build reviewer -> PR number map from reviewer_assignments
+    let reviewer_pr_map: HashMap<String, u64> = reviewer_assignments
+        .iter()
+        .map(|(pr_number, assignment)| (assignment.reviewer.clone(), *pr_number))
+        .collect();
+
+    let active_coworkers = state.coworkers.list();
+    let coworker_records = state.coworker_records.read().await;
+
+    let prs_by_task_id = build_pr_task_map(prs);
+
+    // Read tasks to get explicit PR associations (task !1151)
+    let all_tasks = crate::tasks::read_tasks();
+    let task_pr_map: HashMap<u32, u64> = all_tasks
+        .iter()
+        .filter_map(|task| {
+            let task_id: u32 = task.id.parse().ok()?;
+            let pr = task.pr?;
+            Some((task_id, pr))
+        })
+        .collect();
+
+    // Build reverse map: PR number -> source task ID (from PR titles)
+    let task_id_by_pr: HashMap<u64, u32> = prs
+        .iter()
+        .filter_map(|pr| {
+            let pr_number = pr.get("number")?.as_u64()?;
+            let title = pr.get("title")?.as_str()?;
+            let task_id = crate::tasks::extract_task_id_from_pr_title(title)?;
+            let task_id_u32 = u32::try_from(task_id).ok()?;
+            Some((pr_number, task_id_u32))
+        })
+        .collect();
+
+    // Clone health data to avoid holding the lock across await
+    let health_snapshot: HashMap<String, ProcessHealth> = {
+        let health_guard = state.headless_health.read().unwrap();
+        health_guard.clone()
+    };
+
+    let coworkers_data = active_coworkers
+        .iter()
+        .filter_map(|cw| {
+            // Skip channel lead sessions — they are scoped to a specific topic
+            // channel and must not appear in the general coworker status panel.
+            // The lead session itself also uses a reserved name and is excluded.
+            if is_channel_lead(&cw.name, &channel_lead_names)
+                || cw.name.eq_ignore_ascii_case("lead")
+            {
+                return None;
+            }
+
+            // Get coworker's workflow state from records
+            let record = coworker_records.get(&cw.name);
+            let workflow_phase = record.and_then(|r| r.workflow_phase);
+            let task_id = record.and_then(|r| r.task_id);
+
+            // Skip idle coworkers (phase = Idle or Completed)
+            if matches!(
+                workflow_phase,
+                Some(crate::coworker_state::WorkflowPhase::Idle)
+                    | Some(crate::coworker_state::WorkflowPhase::Completed)
+            ) {
+                return None;
+            }
+
+            // Get health status
+            let health = health_snapshot.get(&cw.name);
+            let health_color = if let Some(h) = health {
+                if !h.is_alive {
+                    "red" // dead
+                } else if h.has_usage_limit || h.has_api_error {
+                    "yellow" // degraded
+                } else {
+                    "green" // healthy
+                }
+            } else {
+                "green" // default healthy
+            };
+
+            // Find PR number for this coworker, trying sources in priority order:
+            // 1. Explicit task.pr field (task !1151) - most authoritative
+            // 2. GitHub reviewer assignment (for review tasks)
+            // 3. Worktree registry (for reviewers when reviewer_pr_map is empty)
+            // 4. PR title extraction (final fallback, only when PR data is available)
+            let pr_number = task_id
+                .and_then(|tid| task_pr_map.get(&tid).copied())
+                .or_else(|| reviewer_pr_map.get(&cw.name).copied())
+                .or_else(|| worktree_pr_map.get(&cw.name).copied())
+                .or_else(|| task_id.and_then(|tid| prs_by_task_id.get(&tid).copied()));
+
+            // For display: prefer source task ID (from PR title) over internal task ID
+            // This ensures reviewers show the meaningful task ID, not their ephemeral one
+            let display_task_id = pr_number
+                .and_then(|pr| task_id_by_pr.get(&pr).copied())
+                .or(task_id);
+
+            Some(serde_json::json!({
+                "name": cw.name,
+                "task_id": display_task_id,
+                "phase": workflow_phase.map(|p| p.abbreviation()),
+                "pr_number": pr_number,
+                "health": health_color,
+                "provider": cw.provider.as_str(),
+                "profile": cw.profile,
+                "progress": record.and_then(|r| r.progress),
+                "time_estimate": record.and_then(|r| r.format_time_remaining()),
+            }))
+        })
+        .collect::<Vec<_>>();
+
+    (coworkers_data, channel_lead_names)
 }
 
 // ============================================================================
@@ -384,68 +383,6 @@ fn serialize_tool_activity(
         .filter_map(|(agent, items)| serde_json::to_value(items).ok().map(|v| (agent.clone(), v)))
         .collect();
     serde_json::Value::Object(obj)
-}
-
-/// Compute a hash representing coworker state for cache invalidation.
-///
-/// The hash includes:
-/// - Coworker count
-/// - Each coworker's name, task_id, and workflow phase
-///
-/// When any of these change (coworker spawns/shuts down, task assigned, phase changes),
-/// the hash changes and the cache misses, ensuring fresh data is fetched.
-/// Progress is intentionally excluded — see `compute_coworker_state_hash` for details.
-fn compute_coworker_state_hash(
-    coworker_records: &HashMap<String, CoworkerRecord>,
-    channel_lead_names: &std::collections::HashSet<String>,
-) -> u64 {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-
-    let mut hasher = DefaultHasher::new();
-
-    // Collect (name, task_id, phase) tuples and sort by name for deterministic hashing.
-    // Progress is intentionally excluded: it changes frequently (every `midtown state --progress N`
-    // call) and including it would cause a cache miss and a new GraphQL API call on every progress
-    // update. The cached response includes progress data that grows stale within the 30s TTL window,
-    // which is acceptable — kanban consumers don't need sub-second progress precision.
-    let mut state: Vec<(
-        &String,
-        Option<u32>,
-        Option<crate::coworker_state::WorkflowPhase>,
-    )> = coworker_records
-        .iter()
-        .filter_map(|(name, record)| {
-            // Skip channel leads and the lead session — they don't appear in the kanban
-            // response (mirroring the filter in handle_kanban_data's output section).
-            if is_channel_lead(name, channel_lead_names) || name.eq_ignore_ascii_case("lead") {
-                return None;
-            }
-
-            // Skip idle coworkers (they don't appear in the kanban response)
-            if matches!(
-                record.workflow_phase,
-                Some(crate::coworker_state::WorkflowPhase::Idle)
-                    | Some(crate::coworker_state::WorkflowPhase::Completed)
-            ) {
-                return None;
-            }
-
-            Some((name, record.task_id, record.workflow_phase))
-        })
-        .collect();
-
-    state.sort_by(|a, b| a.0.cmp(b.0));
-
-    for (name, task_id, phase) in state {
-        name.hash(&mut hasher);
-        task_id.hash(&mut hasher);
-        // WorkflowPhase derives Hash, so Option<WorkflowPhase> is also Hash. This correctly
-        // distinguishes Developing from PullRequest, etc., while excluding progress.
-        phase.hash(&mut hasher);
-    }
-
-    hasher.finish()
 }
 
 /// Build a map of task_id -> pr_number from PR data.

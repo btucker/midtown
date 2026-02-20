@@ -193,9 +193,10 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
     let request_method = request.method.clone();
 
     // Methods with their own domain-specific caching should skip the RPC idempotency cache.
-    // kanban.data has a dedicated 30s TTL cache in DaemonState; the RPC cache (60s, keyed by
+    // kanban.data has a dedicated TTL cache in DaemonState; the RPC cache (60s, keyed by
     // request ID) would shadow it because the web server always sends id=1 for kanban requests.
-    let skip_rpc_cache = request_method == "kanban.data";
+    // coworkers.status is never cached (it returns live state).
+    let skip_rpc_cache = request_method == "kanban.data" || request_method == "coworkers.status";
 
     // Check cache for idempotent response (within 60 second TTL)
     if !skip_rpc_cache {
@@ -390,6 +391,8 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
         "status" => super::rpc_status::handle_status(request.id, state).await,
 
         "kanban.data" => super::rpc_kanban::handle_kanban_data(request.id, state).await,
+
+        "coworkers.status" => super::rpc_kanban::handle_coworkers_status(request.id, state).await,
 
         // ---- Channel ----
         "channel.post" => {

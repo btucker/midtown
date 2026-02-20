@@ -70,24 +70,30 @@ pub struct PendingImageInfo {
     pub media_type: String,
 }
 
-/// Data fetched from background thread for kanban refresh
+/// Data fetched from background thread for kanban refresh (PR/repo data only).
 struct KanbanData {
     prs: Vec<KanbanPr>,
     merged_prs: Vec<MergedPr>,
     /// Repo metadata from daemon RPC (label, full_name)
     repos: Vec<(String, String)>,
-    /// Coworker status data from daemon
+}
+
+/// Data fetched from background thread for coworker status refresh.
+///
+/// Polled via `coworkers.status` RPC at a faster interval than PR data.
+/// No GraphQL involved — always reflects current daemon state.
+struct CoworkerStatusData {
+    /// Active coworkers with their current status
     coworkers: Vec<CoworkerInfo>,
     /// Maximum number of coworkers from daemon config
     max_coworkers: usize,
     /// Whether the headless lead session is actively working
     lead_working: bool,
-    /// Recent tool call activity per agent: agent name → list of semantic headers.
-    /// Populated from kanban.data RPC `tool_activity` field (live, not cached).
+    /// Recent tool call activity per agent
     tool_activity: HashMap<String, Vec<String>>,
     /// Pending questions from coworkers waiting for user input
     pending_questions: Vec<PendingQuestion>,
-    /// Names of active channel leads (e.g. "auth", "tui"), for sender color assignment.
+    /// Names of active channel leads (e.g. "auth", "tui")
     channel_lead_names: Vec<String>,
 }
 
@@ -275,7 +281,7 @@ pub struct App {
     pub lead_working: bool,
     /// Recent tool call activity per agent, keyed by lowercase agent name.
     /// Contains human-readable semantic headers (e.g., "$ git status", "read src/lib.rs").
-    /// Updated from kanban.data RPC (live, not cached). Cleared when agent posts a message.
+    /// Updated from coworkers.status RPC (live, not cached). Cleared when agent posts a message.
     pub tool_activity: HashMap<String, Vec<ToolActivityEntry>>,
     /// Maximum number of coworkers allowed
     pub max_coworkers: usize,
@@ -288,6 +294,10 @@ pub struct App {
     kanban_last_refresh: Instant,
     /// Receiver for async kanban data from background thread
     kanban_receiver: Option<Receiver<KanbanData>>,
+    /// Last time coworker status was refreshed
+    coworker_status_last_refresh: Instant,
+    /// Receiver for async coworker status from background thread
+    coworker_status_receiver: Option<Receiver<CoworkerStatusData>>,
     /// Repository status (commit, CI, release info) - primary repo
     pub repo_status: RepoStatus,
     /// Multi-repo statuses (label, full_name, status) for all project repos
@@ -355,7 +365,7 @@ pub struct App {
     spinner_frame: usize,
     /// Last time the spinner frame was advanced (for time-based animation)
     spinner_last_tick: Instant,
-    /// Names of active channel leads (e.g. "auth", "tui"), populated from kanban data.
+    /// Names of active channel leads (e.g. "auth", "tui"), populated from coworkers.status.
     /// Used to color their messages LightYellow like the main lead.
     pub channel_lead_names: Vec<String>,
     /// List of all available channels (including empty ones)
@@ -462,8 +472,11 @@ pub struct ChannelSwitcherItem {
     pub unread_count: usize,
 }
 
-/// Interval between kanban data refreshes (5 seconds)
+/// Interval between kanban data refreshes (5 seconds — PR data via GraphQL)
 const KANBAN_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
+
+/// Interval between coworker status refreshes (2 seconds — live in-memory state, no GraphQL)
+const COWORKER_STATUS_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
 
 /// Interval between repo status refreshes (60 seconds)
 const REPO_STATUS_REFRESH_INTERVAL: Duration = Duration::from_secs(60);
@@ -520,6 +533,8 @@ impl App {
             repo_name,
             kanban_last_refresh: Instant::now() - KANBAN_REFRESH_INTERVAL, // Force initial refresh
             kanban_receiver: None,
+            coworker_status_last_refresh: Instant::now() - COWORKER_STATUS_REFRESH_INTERVAL, // Force initial refresh
+            coworker_status_receiver: None,
             repo_status: RepoStatus::default(),
             repo_statuses: Vec::new(),
             repo_status_last_refresh: Instant::now() - REPO_STATUS_REFRESH_INTERVAL, // Force initial refresh
@@ -642,15 +657,6 @@ impl App {
                 Ok(data) => {
                     self.prs = data.prs;
                     self.merged_prs = data.merged_prs;
-                    self.coworkers = data.coworkers;
-                    self.lead_working = data.lead_working;
-                    self.tool_activity = merge_tool_activity(
-                        std::mem::take(&mut self.tool_activity),
-                        data.tool_activity,
-                    );
-                    self.max_coworkers = data.max_coworkers;
-                    self.pending_questions = data.pending_questions;
-                    self.channel_lead_names = data.channel_lead_names;
                     // Update repo info from daemon if available
                     if !data.repos.is_empty() {
                         let new_repos: Vec<RepoInfo> = data
@@ -695,6 +701,38 @@ impl App {
         {
             self.refresh_kanban();
             self.kanban_last_refresh = Instant::now();
+        }
+
+        // Check for coworker status data from background thread (non-blocking)
+        if let Some(ref receiver) = self.coworker_status_receiver {
+            match receiver.try_recv() {
+                Ok(data) => {
+                    self.coworkers = data.coworkers;
+                    self.lead_working = data.lead_working;
+                    self.tool_activity = merge_tool_activity(
+                        std::mem::take(&mut self.tool_activity),
+                        data.tool_activity,
+                    );
+                    self.max_coworkers = data.max_coworkers;
+                    self.pending_questions = data.pending_questions;
+                    self.channel_lead_names = data.channel_lead_names;
+                    self.coworker_status_receiver = None;
+                }
+                Err(TryRecvError::Empty) => {
+                    // Still waiting for data, continue
+                }
+                Err(TryRecvError::Disconnected) => {
+                    self.coworker_status_receiver = None;
+                }
+            }
+        }
+
+        // Refresh coworker status frequently — cheap RPC call, no GraphQL
+        if self.coworker_status_last_refresh.elapsed() >= COWORKER_STATUS_REFRESH_INTERVAL
+            && self.coworker_status_receiver.is_none()
+        {
+            self.refresh_coworker_status();
+            self.coworker_status_last_refresh = Instant::now();
         }
 
         // Check for repo status data from background thread (non-blocking)
@@ -833,7 +871,9 @@ impl App {
         }
     }
 
-    /// Refresh kanban board data (tasks and PRs)
+    /// Refresh kanban board data (tasks and PRs via kanban.data RPC).
+    ///
+    /// Coworker status is refreshed separately by `refresh_coworker_status`.
     fn refresh_kanban(&mut self) {
         // Tasks are local file reads - fast, can stay synchronous
         self.tasks = fetch_tasks();
@@ -843,40 +883,35 @@ impl App {
         self.kanban_receiver = Some(rx);
 
         thread::spawn(move || {
-            let (
-                prs,
-                merged_prs,
-                repos,
-                coworkers,
-                max_coworkers,
-                lead_working,
-                tool_activity,
-                channel_lead_names,
-            ) = fetch_kanban_data_via_rpc().unwrap_or_else(|| {
-                (
-                    fetch_prs(),
-                    fetch_merged_prs(),
-                    Vec::new(),
-                    Vec::new(),
-                    10,
-                    false,
-                    HashMap::new(),
-                    Vec::new(),
-                )
-            });
-            let pending_questions = fetch_pending_questions_via_rpc();
+            let (prs, merged_prs, repos) = fetch_kanban_data_via_rpc()
+                .unwrap_or_else(|| (fetch_prs(), fetch_merged_prs(), Vec::new()));
             // Ignore send error if receiver dropped (app closed)
             let _ = tx.send(KanbanData {
                 prs,
                 merged_prs,
                 repos,
-                coworkers,
-                max_coworkers,
-                lead_working,
-                tool_activity,
-                pending_questions,
-                channel_lead_names,
             });
+        });
+    }
+
+    /// Refresh coworker status via the `coworkers.status` RPC.
+    ///
+    /// Runs in a background thread to avoid blocking the TUI. The result is
+    /// received in `refresh()` via `coworker_status_receiver`.
+    fn refresh_coworker_status(&mut self) {
+        let (tx, rx) = mpsc::channel();
+        self.coworker_status_receiver = Some(rx);
+
+        thread::spawn(move || {
+            let data = fetch_coworker_status_via_rpc().unwrap_or_else(|| CoworkerStatusData {
+                coworkers: Vec::new(),
+                max_coworkers: 10,
+                lead_working: false,
+                tool_activity: HashMap::new(),
+                pending_questions: Vec::new(),
+                channel_lead_names: Vec::new(),
+            });
+            let _ = tx.send(data);
         });
     }
 
@@ -2631,20 +2666,13 @@ fn fetch_merged_prs() -> Vec<MergedPr> {
     prs
 }
 
-/// Fetch kanban PR data from the daemon via RPC.
+type KanbanRpcResult = Option<(Vec<KanbanPr>, Vec<MergedPr>, Vec<(String, String)>)>;
+
+/// Fetch kanban PR data from the daemon via RPC (`kanban.data`).
 ///
-/// Returns None if the daemon is not available, allowing fallback to direct gh CLI.
-#[allow(clippy::type_complexity)]
-fn fetch_kanban_data_via_rpc() -> Option<(
-    Vec<KanbanPr>,
-    Vec<MergedPr>,
-    Vec<(String, String)>,
-    Vec<CoworkerInfo>,
-    usize,
-    bool,
-    HashMap<String, Vec<String>>,
-    Vec<String>,
-)> {
+/// Returns `None` if the daemon is not available, allowing fallback to direct gh CLI.
+/// Coworker data is fetched separately via `fetch_coworker_status_via_rpc`.
+fn fetch_kanban_data_via_rpc() -> KanbanRpcResult {
     use crate::client::DaemonClient;
 
     let client = DaemonClient::connect().ok()?;
@@ -2652,7 +2680,6 @@ fn fetch_kanban_data_via_rpc() -> Option<(
 
     let prs_json = data.get("prs").and_then(|v| v.as_array())?;
     let merged_json = data.get("merged_prs").and_then(|v| v.as_array())?;
-    let coworkers_json = data.get("coworkers").and_then(|v| v.as_array());
 
     // Extract repo metadata if present
     let repos: Vec<(String, String)> = data
@@ -2672,13 +2699,6 @@ fn fetch_kanban_data_via_rpc() -> Option<(
                 .collect()
         })
         .unwrap_or_default();
-
-    // Extract max_coworkers from daemon config
-    let max_coworkers = data
-        .get("max_coworkers")
-        .and_then(|v| v.as_u64())
-        .map(|n| n as usize)
-        .unwrap_or(10); // Default fallback
 
     let prs: Vec<KanbanPr> = prs_json
         .iter()
@@ -2786,7 +2806,27 @@ fn fetch_kanban_data_via_rpc() -> Option<(
         })
         .collect();
 
-    // Parse coworker data from the daemon response
+    Some((prs, merged_prs, repos))
+}
+
+/// Fetch live coworker status from the daemon via the `coworkers.status` RPC.
+///
+/// Also fetches pending questions via `coworker.questions`. Returns `None` if
+/// the daemon is unreachable so the caller can use a default empty value.
+fn fetch_coworker_status_via_rpc() -> Option<CoworkerStatusData> {
+    use crate::client::DaemonClient;
+
+    let client = DaemonClient::connect().ok()?;
+    let data = client.coworkers_status().ok()?;
+
+    let coworkers_json = data.get("coworkers").and_then(|v| v.as_array());
+
+    let max_coworkers = data
+        .get("max_coworkers")
+        .and_then(|v| v.as_u64())
+        .map(|n| n as usize)
+        .unwrap_or(10);
+
     let coworkers: Vec<CoworkerInfo> = coworkers_json
         .map(|arr| {
             arr.iter()
@@ -2811,7 +2851,6 @@ fn fetch_kanban_data_via_rpc() -> Option<(
                         .and_then(|v| v.as_str())
                         .unwrap_or("claude")
                         .to_string();
-                    // Profile is not currently in kanban response, use default
                     let profile = cw
                         .get("profile")
                         .and_then(|v| v.as_str())
@@ -2822,7 +2861,6 @@ fn fetch_kanban_data_via_rpc() -> Option<(
                         .get("time_estimate")
                         .and_then(|v| v.as_str())
                         .map(|s| s.to_string());
-
                     Some(CoworkerInfo {
                         name,
                         task_id,
@@ -2844,7 +2882,6 @@ fn fetch_kanban_data_via_rpc() -> Option<(
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
-    // Parse tool_activity: { agent_name: [UniversalItem, ...] } → { agent_name: [semantic_header, ...] }
     let tool_activity: HashMap<String, Vec<String>> = data
         .get("tool_activity")
         .and_then(|v| v.as_object())
@@ -2861,8 +2898,7 @@ fn fetch_kanban_data_via_rpc() -> Option<(
         })
         .unwrap_or_default();
 
-    // Parse channel_leads: list of channel lead names (e.g. ["auth", "tui"])
-    let channel_leads: Vec<String> = data
+    let channel_lead_names: Vec<String> = data
         .get("channel_leads")
         .and_then(|v| v.as_array())
         .map(|arr| {
@@ -2872,16 +2908,16 @@ fn fetch_kanban_data_via_rpc() -> Option<(
         })
         .unwrap_or_default();
 
-    Some((
-        prs,
-        merged_prs,
-        repos,
+    let pending_questions = fetch_pending_questions_via_rpc();
+
+    Some(CoworkerStatusData {
         coworkers,
         max_coworkers,
         lead_working,
         tool_activity,
-        channel_leads,
-    ))
+        pending_questions,
+        channel_lead_names,
+    })
 }
 
 /// Fetch pending questions from coworkers via daemon RPC.
@@ -3281,6 +3317,8 @@ pub(super) mod tests {
             repo_name: "test".to_string(),
             kanban_last_refresh: Instant::now(),
             kanban_receiver: None,
+            coworker_status_last_refresh: Instant::now(),
+            coworker_status_receiver: None,
             repo_status: RepoStatus::default(),
             repo_statuses: Vec::new(),
             repo_status_last_refresh: Instant::now(),
