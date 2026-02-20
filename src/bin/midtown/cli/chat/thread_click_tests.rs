@@ -166,3 +166,38 @@ fn test_click_thread_input_focuses_thread_pane() {
         "Clicking the thread input area should focus the Thread pane"
     );
 }
+
+/// Closing a thread must clear `thread_input_area` so stale click regions
+/// don't accidentally capture clicks after the panel is gone.
+#[test]
+fn test_close_thread_clears_thread_input_area() {
+    let backend = TestBackend::new(120, 40);
+    let mut terminal = Terminal::new(backend).unwrap();
+
+    let mut app = test_app();
+
+    let parent = midtown::Message::text("park", "Parent message");
+    let parent_id = parent.id.clone();
+    app.messages = VecDeque::from(vec![parent]);
+    app.open_thread(&parent_id);
+
+    // Render to populate thread_input_area.
+    terminal
+        .draw(|f| {
+            ui::draw(f, &mut app);
+        })
+        .unwrap();
+
+    assert!(
+        app.thread_input_area.is_some(),
+        "thread_input_area should be set while thread is open"
+    );
+
+    app.close_thread();
+
+    assert!(
+        app.thread_input_area.is_none(),
+        "thread_input_area must be None after closing the thread"
+    );
+    assert_eq!(app.focused_pane, FocusedPane::InputBar);
+}
