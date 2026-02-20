@@ -17,6 +17,8 @@
   let uploading = $state(false)
   let textareaElement = $state(null)
   let formWrapperElement = $state(null)
+  let channelLeadThinking = $state(false)
+  let channelLeadThinkingTimeout = null
 
   // Autocomplete state
   let showAutocomplete = $state(false)
@@ -450,6 +452,27 @@
     tick().then(() => resizeTextarea())
   })
 
+  // Clear optimistic thinking state when real tool activity arrives
+  $effect(() => {
+    if (activeChannelToolItems.some((item) => item.status === 'InProgress')) {
+      channelLeadThinking = false
+      if (channelLeadThinkingTimeout) {
+        clearTimeout(channelLeadThinkingTimeout)
+        channelLeadThinkingTimeout = null
+      }
+    }
+  })
+
+  // Clear optimistic thinking state when switching channels
+  $effect(() => {
+    $activeChannel // track dependency
+    channelLeadThinking = false
+    if (channelLeadThinkingTimeout) {
+      clearTimeout(channelLeadThinkingTimeout)
+      channelLeadThinkingTimeout = null
+    }
+  })
+
   async function handleSubmit(e) {
     e.preventDefault()
 
@@ -466,6 +489,14 @@
           : `[Attached file: ${result.filename}]\nPlease read: ${result.path}`
 
         sendMessage(message, $activeChannel)
+        if ($activeChannel !== 'midtown') {
+          channelLeadThinking = true
+          if (channelLeadThinkingTimeout) clearTimeout(channelLeadThinkingTimeout)
+          channelLeadThinkingTimeout = setTimeout(() => {
+            channelLeadThinking = false
+            channelLeadThinkingTimeout = null
+          }, 30000)
+        }
         inputText = ''
         pendingFile = null
       } else {
@@ -474,6 +505,14 @@
       }
     } else if (inputText.trim()) {
       sendMessage(inputText.trim(), $activeChannel)
+      if ($activeChannel !== 'midtown') {
+        channelLeadThinking = true
+        if (channelLeadThinkingTimeout) clearTimeout(channelLeadThinkingTimeout)
+        channelLeadThinkingTimeout = setTimeout(() => {
+          channelLeadThinking = false
+          channelLeadThinkingTimeout = null
+        }, 30000)
+      }
       inputText = ''
     }
   }
@@ -695,11 +734,11 @@
            and tool call activity. In the main channel, uses lead_working (same signal as
            the TUI braille spinner) to drive the dots. In topic channels, InProgress tool
            items drive the dots (channel leads don't have a separate lead_working signal). -->
-      {#if activeChannelToolItems.length > 0 || ($activeChannel === 'midtown' && !!$daemonStatus?.lead_working)}
+      {#if activeChannelToolItems.length > 0 || channelLeadThinking || ($activeChannel === 'midtown' && !!$daemonStatus?.lead_working)}
         {@const agentName = $activeChannel === 'midtown' ? 'lead' : $activeChannel}
         {@const isLeadWorking = $activeChannel === 'midtown' ? !!$daemonStatus?.lead_working : false}
         {@const hasInProgressItems = activeChannelToolItems.some((item) => item.status === 'InProgress')}
-        {@const showDots = isLeadWorking || hasInProgressItems}
+        {@const showDots = isLeadWorking || hasInProgressItems || channelLeadThinking}
         <div class="mt-[3px]">
           {#if activeChannelToolItems.length > 0}
             <ToolActivity {agentName} items={activeChannelToolItems} />
