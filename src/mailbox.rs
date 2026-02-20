@@ -340,6 +340,31 @@ fn upsert_team_member_at(team_dir: &Path, member: TeamMember) -> std::io::Result
     Ok(())
 }
 
+/// Clear the inbox file for a named agent.
+///
+/// Called when a name is allocated to a new session (before spawn) and when a
+/// session releases its name (on shutdown). This prevents a newly-allocated
+/// session from inheriting the previous session's unread inbox messages.
+///
+/// If no inbox file exists this is a no-op (first allocation of the name).
+pub fn clear_inbox(team_name: &str, agent_name: &str) -> std::io::Result<()> {
+    let inboxes_dir = teams_dir(team_name).join("inboxes");
+    clear_inbox_at(&inboxes_dir, agent_name)
+}
+
+/// Internal implementation that accepts an inboxes directory path (testable).
+fn clear_inbox_at(inboxes_dir: &Path, agent_name: &str) -> std::io::Result<()> {
+    let inbox = inboxes_dir.join(format!("{}.json", agent_name));
+    match fs::remove_file(&inbox) {
+        Ok(()) => {
+            debug!("Cleared inbox for {} at {}", agent_name, inbox.display());
+            Ok(())
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
+    }
+}
+
 /// Clean up a team directory (remove config and inboxes).
 ///
 /// Called when the daemon shuts down to avoid stale team state.
@@ -359,6 +384,46 @@ mod tests {
 
     /// Override the teams dir for testing by working with a temp directory.
     /// We test the internal functions directly by constructing paths manually.
+
+    /// Verifies that `clear_inbox` removes an existing inbox so a newly-allocated
+    /// name does not inherit the previous session's unread messages.
+    #[test]
+    fn test_clear_inbox_removes_existing_messages() {
+        let tmp = TempDir::new().unwrap();
+        let team_dir = tmp.path().join("test-team");
+        let inboxes_dir = team_dir.join("inboxes");
+        fs::create_dir_all(&inboxes_dir).unwrap();
+
+        // Simulate messages left by a previous session that held the name "lexington".
+        let inbox_file = inboxes_dir.join("lexington.json");
+        let stale_messages = vec![MailboxMessage::new("stale message", "daemon")];
+        fs::write(
+            &inbox_file,
+            serde_json::to_string_pretty(&stale_messages).unwrap(),
+        )
+        .unwrap();
+        assert!(inbox_file.exists(), "Inbox should exist before clear");
+
+        // Clear the inbox (simulating name re-allocation to a new session).
+        clear_inbox_at(&inboxes_dir, "lexington").unwrap();
+
+        // The inbox file must be gone so the new session starts with an empty inbox.
+        assert!(
+            !inbox_file.exists(),
+            "Inbox must not exist after clear_inbox — new session should not inherit stale messages"
+        );
+    }
+
+    /// Verifies that `clear_inbox` is a no-op when no inbox exists (first allocation).
+    #[test]
+    fn test_clear_inbox_no_file_is_ok() {
+        let tmp = TempDir::new().unwrap();
+        let inboxes_dir = tmp.path().join("inboxes");
+        fs::create_dir_all(&inboxes_dir).unwrap();
+
+        // Should succeed even when the file doesn't exist.
+        clear_inbox_at(&inboxes_dir, "lexington").unwrap();
+    }
 
     #[test]
     fn test_mailbox_message_new() {

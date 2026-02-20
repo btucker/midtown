@@ -881,6 +881,18 @@ impl DaemonState {
             let mut tool_map = self.recent_tool_items.write().unwrap();
             tool_map.remove(name);
         }
+        // Clear the inbox for this name so the next session that gets
+        // allocated this name does not inherit unread messages from this session.
+        {
+            let team_name = crate::mailbox::team_name_for_repo(&self.repo_name);
+            if let Err(e) = crate::mailbox::clear_inbox(&team_name, name) {
+                warn!(
+                    "cleanup_coworker_state: failed to clear inbox for '{}': {}",
+                    name, e
+                );
+            }
+        }
+
         // Release name back to NamePool and clean up session reverse maps.
         // Each lock is acquired and released independently (no nesting)
         // to avoid implicit lock-ordering dependencies.
