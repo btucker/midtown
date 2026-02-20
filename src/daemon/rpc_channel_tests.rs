@@ -142,7 +142,12 @@ async fn test_user_message_queues_headed_lead_nudge() {
         .expect("poll headed queue");
     assert_eq!(messages.len(), 1);
     assert_eq!(messages[0].kind, "nudge_text");
-    assert_eq!(messages[0].text, "user: please check this");
+    assert!(
+        messages[0].text.starts_with("user (")
+            && messages[0].text.ends_with("): please check this"),
+        "nudge text should be 'user (<id>): please check this', got: {}",
+        messages[0].text
+    );
     assert!(messages[0].submit);
 }
 
@@ -276,7 +281,11 @@ async fn test_user_message_to_main_channel_nudges_lead() {
         1,
         "Main lead should be nudged for main channel user messages"
     );
-    assert_eq!(messages[0].text, "user: hello main");
+    assert!(
+        messages[0].text.starts_with("user (") && messages[0].text.ends_with("): hello main"),
+        "nudge text should be 'user (<id>): hello main', got: {}",
+        messages[0].text
+    );
 }
 
 /// Verify that a user message to the main channel nudges the lead EVEN when the user
@@ -311,7 +320,12 @@ async fn test_user_message_with_coworker_mention_still_nudges_lead() {
         1,
         "Lead should be nudged even when user @mentions a coworker"
     );
-    assert_eq!(messages[0].text, "user: @york can you check this?");
+    assert!(
+        messages[0].text.starts_with("user (")
+            && messages[0].text.ends_with("): @york can you check this?"),
+        "nudge text should be 'user (<id>): @york can you check this?', got: {}",
+        messages[0].text
+    );
 }
 
 /// Verify that a user message to a topic channel with an inactive session
