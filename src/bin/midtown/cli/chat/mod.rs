@@ -827,6 +827,10 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                                 if posted {
                                     app.input_text.clear();
                                     app.input_cursor = 0;
+                                    // Set optimistic thinking state for topic channels
+                                    if channel_name != "midtown" && channel_name != "main" {
+                                        app.set_channel_lead_thinking(&channel_name);
+                                    }
                                 }
                                 // TODO: When error display is implemented, show error here if !posted
                                 EventResult::Continue

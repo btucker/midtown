@@ -12,7 +12,9 @@ use crate::cli::chat::mermaid;
 
 use std::collections::HashMap;
 
-use super::super::app::{App, FocusedPane, MessageRenderCache, PendingQuestion};
+use super::super::app::{
+    App, CHANNEL_LEAD_THINKING_TIMEOUT, FocusedPane, MessageRenderCache, PendingQuestion,
+};
 use super::messages::{build_reply_indicator_line, render_message};
 use super::messages_mermaid::render_message_with_mermaid;
 use super::text::wrap_content;
@@ -54,16 +56,23 @@ pub fn draw_chat_panel(f: &mut Frame, app: &mut App, area: Rect) {
     }
 }
 
-/// Compute the number of lines the lead indicator area should occupy (0–3).
+/// Compute the number of lines the lead indicator area should occupy (1–3).
 ///
-/// Returns 0 when no active/recent tool entries exist (area collapses entirely).
+/// Always returns at least 1 to maintain a stable status area — the indicator
+/// never collapses to zero, preventing messages from jumping when activity starts.
+/// Returns 1 when idle (dim placeholder), optimistic thinking, or only one entry.
 fn lead_indicator_height(app: &App) -> u16 {
     let agent_key = if app.selected_channel == "main" || app.selected_channel == "midtown" {
         "lead"
     } else {
         app.selected_channel.as_str()
     };
-    app.visible_tool_entries(agent_key).len() as u16
+    let entries_len = app.visible_tool_entries(agent_key).len();
+    if entries_len > 0 {
+        entries_len as u16
+    } else {
+        1 // Always reserve at least 1 line (dim placeholder or optimistic spinner)
+    }
 }
 
 /// Draw the lead working indicator area between chat messages and the input bar.
@@ -84,7 +93,39 @@ fn draw_lead_indicator(f: &mut Frame, app: &mut App, area: Rect) {
     };
 
     let entries = app.visible_tool_entries(agent_key);
+
+    // Check for optimistic thinking state (show spinner even before tool activity arrives)
+    let channel_thinking = app
+        .channel_lead_thinking
+        .get(agent_key)
+        .map(|t| t.elapsed() < CHANNEL_LEAD_THINKING_TIMEOUT)
+        .unwrap_or(false);
+
     if entries.is_empty() {
+        if channel_thinking {
+            // Show just the spinner with agent name, no tool entries
+            let spinner = app.spinner_char();
+            let line = Line::from(vec![
+                Span::styled(format!(" {} ", spinner), Style::default().fg(Color::Yellow)),
+                Span::styled(
+                    agent_key.to_string(),
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                ),
+            ]);
+            f.render_widget(Paragraph::new(vec![line]), area);
+        } else {
+            // Idle: render a dim placeholder to keep the status area stable.
+            // This prevents messages from jumping when activity starts/stops.
+            let line = Line::from(vec![Span::styled(
+                format!("   {agent_key}"),
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::DIM),
+            )]);
+            f.render_widget(Paragraph::new(vec![line]), area);
+        }
         return;
     }
 
@@ -677,8 +718,9 @@ mod tests {
 
     #[test]
     fn test_lead_indicator_height_empty() {
+        // Even with no tool entries, the stable status area always reserves 1 line.
         let app = test_app();
-        assert_eq!(lead_indicator_height(&app), 0);
+        assert_eq!(lead_indicator_height(&app), 1);
     }
 
     #[test]

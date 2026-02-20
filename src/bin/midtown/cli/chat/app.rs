@@ -223,6 +223,12 @@ const INITIAL_MESSAGE_COUNT: usize = 100;
 /// This prevents unbounded memory growth when scrolling through large channel logs.
 const MAX_LOADED_MESSAGES: usize = 500;
 
+/// How long an optimistic "thinking" state lasts before expiring.
+///
+/// When a user submits a message to a channel lead, we immediately show a spinner
+/// for up to this duration, before real tool activity arrives from the daemon.
+pub const CHANNEL_LEAD_THINKING_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// Which pane has focus in the split-panel layout
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FocusedPane {
@@ -283,6 +289,10 @@ pub struct App {
     /// Contains human-readable semantic headers (e.g., "$ git status", "read src/lib.rs").
     /// Updated from coworkers.status RPC (live, not cached). Cleared when agent posts a message.
     pub tool_activity: HashMap<String, Vec<ToolActivityEntry>>,
+    /// Optimistic thinking state: channels where user just submitted a message.
+    /// Set immediately on message submit; cleared when real tool activity arrives
+    /// or after 30 seconds. Used to show spinner before channel lead responds.
+    pub channel_lead_thinking: HashMap<String, std::time::Instant>,
     /// Maximum number of coworkers allowed
     pub max_coworkers: usize,
     /// Pending questions from coworkers waiting for user input
@@ -533,6 +543,7 @@ impl App {
             coworkers: Vec::new(),
             lead_working: false,
             tool_activity: HashMap::new(),
+            channel_lead_thinking: HashMap::new(),
             max_coworkers: 10, // Default, will be updated from daemon
             pending_questions: Vec::new(),
             repo_name,
@@ -719,6 +730,7 @@ impl App {
                         std::mem::take(&mut self.tool_activity),
                         data.tool_activity,
                     );
+                    self.clear_channel_lead_thinking_for_in_progress();
                     self.max_coworkers = data.max_coworkers;
                     self.pending_questions = data.pending_questions;
                     self.channel_lead_names = data.channel_lead_names;
@@ -1639,6 +1651,14 @@ impl App {
             self.selected_channel.as_str()
         };
         self.visible_tool_entries(agent_key).len().hash(&mut hasher);
+        // Hash channel_lead_thinking for the current agent — the optimistic thinking state
+        // also changes lead_indicator_height (0 -> 1), affecting the message area layout.
+        let is_thinking = self
+            .channel_lead_thinking
+            .get(agent_key)
+            .map(|t| t.elapsed() < CHANNEL_LEAD_THINKING_TIMEOUT)
+            .unwrap_or(false);
+        is_thinking.hash(&mut hasher);
         hasher.finish()
     }
 
@@ -2235,6 +2255,29 @@ impl App {
         SPINNER_FRAMES[self.spinner_frame % SPINNER_FRAMES.len()]
     }
 
+    /// Set optimistic thinking state for a topic channel after user submits a message.
+    pub fn set_channel_lead_thinking(&mut self, channel: &str) {
+        self.channel_lead_thinking
+            .insert(channel.to_string(), std::time::Instant::now());
+    }
+
+    /// Clear optimistic thinking state for channels that now have InProgress tool activity.
+    ///
+    /// Only clears when InProgress entries (completed_at == None) exist, not stale completed
+    /// entries. Completed entries are retained in tool_activity until they age out, so
+    /// filtering on non-empty would prematurely clear the spinner.
+    pub fn clear_channel_lead_thinking_for_in_progress(&mut self) {
+        let channels_with_in_progress: Vec<String> = self
+            .tool_activity
+            .iter()
+            .filter(|(_, entries)| entries.iter().any(|e| e.completed_at.is_none()))
+            .map(|(ch, _)| ch.clone())
+            .collect();
+        for ch in channels_with_in_progress {
+            self.channel_lead_thinking.remove(&ch);
+        }
+    }
+
     /// Returns the visible tool activity entries for the given agent, newest first.
     ///
     /// Applies 30-second age-out for completed (✓/✗) entries. In-progress (›) entries
@@ -2276,6 +2319,10 @@ impl App {
                 .coworkers
                 .iter()
                 .any(|cw| cw.phase.as_deref() != Some("idle") && cw.phase.is_some())
+            || self
+                .channel_lead_thinking
+                .values()
+                .any(|t| t.elapsed() < CHANNEL_LEAD_THINKING_TIMEOUT)
     }
 
     /// Advance the spinner frame if enough time has elapsed since the last tick.
@@ -3327,6 +3374,7 @@ pub(super) mod tests {
             coworkers: Vec::new(),
             lead_working: false,
             tool_activity: HashMap::new(),
+            channel_lead_thinking: HashMap::new(),
             max_coworkers: 10, // Test default
             pending_questions: Vec::new(),
             repo_name: "test".to_string(),
@@ -4877,5 +4925,83 @@ pub(super) mod tests {
         );
         assert_eq!(result[1].header, "\u{2713} call4");
         assert_eq!(result[2].header, "\u{2713} call3");
+    }
+
+    #[test]
+    fn test_set_channel_lead_thinking_inserts_entry() {
+        let mut app = test_app();
+        assert!(app.channel_lead_thinking.is_empty());
+        app.set_channel_lead_thinking("myproject");
+        assert!(
+            app.channel_lead_thinking.contains_key("myproject"),
+            "set_channel_lead_thinking should insert an entry for the channel"
+        );
+        let elapsed = app.channel_lead_thinking["myproject"].elapsed();
+        assert!(
+            elapsed < CHANNEL_LEAD_THINKING_TIMEOUT,
+            "The inserted instant should be recent (elapsed={elapsed:?})"
+        );
+    }
+
+    #[test]
+    fn test_message_cache_key_changes_when_channel_thinking_set() {
+        // The render cache key must include channel_lead_thinking state because
+        // it affects lead_indicator_height (0 -> 1), changing the message area layout.
+        let mut app = test_app();
+        app.selected_channel = "myproject".to_string();
+        let key_before = app.message_cache_key(80, 24);
+        app.set_channel_lead_thinking("myproject");
+        let key_after = app.message_cache_key(80, 24);
+        assert_ne!(
+            key_before, key_after,
+            "Cache key should change when channel_lead_thinking is set for the selected channel"
+        );
+    }
+
+    #[test]
+    fn test_clear_channel_lead_thinking_not_cleared_by_completed_entries() {
+        // Optimistic thinking state must NOT be cleared when tool_activity only has
+        // completed entries. The spinner should persist until an InProgress entry arrives.
+        let mut app = test_app();
+        app.set_channel_lead_thinking("myproject");
+
+        // Add only completed (aged-out) entries for the channel
+        app.tool_activity.insert(
+            "myproject".to_string(),
+            vec![ToolActivityEntry {
+                header: "\u{2713} Read foo.rs".to_string(),
+                completed_at: Some(std::time::Instant::now()),
+            }],
+        );
+
+        app.clear_channel_lead_thinking_for_in_progress();
+
+        assert!(
+            app.channel_lead_thinking.contains_key("myproject"),
+            "Thinking should NOT be cleared when tool_activity only has completed entries"
+        );
+    }
+
+    #[test]
+    fn test_clear_channel_lead_thinking_cleared_by_in_progress_entry() {
+        // Optimistic thinking state MUST be cleared when an InProgress entry arrives,
+        // since the channel lead has started responding.
+        let mut app = test_app();
+        app.set_channel_lead_thinking("myproject");
+
+        app.tool_activity.insert(
+            "myproject".to_string(),
+            vec![ToolActivityEntry {
+                header: "\u{203a} Write bar.rs".to_string(),
+                completed_at: None, // InProgress
+            }],
+        );
+
+        app.clear_channel_lead_thinking_for_in_progress();
+
+        assert!(
+            !app.channel_lead_thinking.contains_key("myproject"),
+            "Thinking should be cleared when an InProgress tool entry exists"
+        );
     }
 }
