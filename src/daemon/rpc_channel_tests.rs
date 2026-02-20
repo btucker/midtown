@@ -793,7 +793,7 @@ async fn test_handle_channel_archive_existing_channel() {
     assert!(r.error.is_none(), "create should succeed");
 
     // Archive it
-    let response = super::handle_channel_archive(2_i64.into(), "old-channel", &state);
+    let response = super::handle_channel_archive(2_i64.into(), "old-channel", &state).await;
     assert!(response.error.is_none(), "channel.archive should succeed");
     let result = response.result.unwrap();
     assert_eq!(result["success"].as_bool(), Some(true));
@@ -804,7 +804,7 @@ async fn test_handle_channel_archive_existing_channel() {
 async fn test_handle_channel_archive_nonexistent_channel() {
     let (state, _tmp, _guard) = make_test_state("midtown-test-channel-archive-nonexistent");
 
-    let response = super::handle_channel_archive(1_i64.into(), "does-not-exist", &state);
+    let response = super::handle_channel_archive(1_i64.into(), "does-not-exist", &state).await;
     assert!(
         response.error.is_some(),
         "archiving a non-existent channel should return an error"
@@ -821,11 +821,67 @@ async fn test_handle_channel_archive_nonexistent_channel() {
 async fn test_handle_channel_archive_rejects_midtown() {
     let (state, _tmp, _guard) = make_test_state("midtown-test-channel-archive-midtown");
 
-    let response = super::handle_channel_archive(1_i64.into(), "midtown", &state);
+    let response = super::handle_channel_archive(1_i64.into(), "midtown", &state).await;
     assert!(
         response.error.is_some(),
         "archiving 'midtown' channel should return an error"
     );
+}
+
+/// Verify that channel.archive cleans up channel_lead_sessions and headless_sessions.
+///
+/// Bug: archiving via CLI (`midtown channel archive`) didn't remove channel lead
+/// session state. The daemon's `ensure_channel_leads_alive` would then respawn the
+/// lead, which recreated the archived channel directory.
+#[tokio::test]
+async fn test_handle_channel_archive_cleans_up_channel_lead_sessions() {
+    let (state, _tmp, _guard) = make_test_state("midtown-test-channel-archive-cleanup-leads");
+
+    // Create the channel
+    let r = super::handle_channel_create(1_i64.into(), "feature-x", &state);
+    assert!(r.error.is_none(), "create should succeed");
+
+    // Simulate a running channel lead by inserting into persistent state
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.channel_lead_sessions
+            .insert("feature-x".to_string(), "session-fx-123".to_string());
+        ps.headless_sessions.insert(
+            "feature-x".to_string(),
+            crate::daemon::state::HeadlessSessionInfo {
+                session_id: "session-fx-123".to_string(),
+                last_active: chrono::Utc::now(),
+                purpose: "channel lead for feature-x".to_string(),
+                pid: None,
+                coworker_type: Some("channel-lead".to_string()),
+                task_id: None,
+                pr_number: None,
+                channel: Some("feature-x".to_string()),
+                working_dir: None,
+                provider: None,
+                profile: None,
+                resume_on_startup: false,
+                initial_prompt: None,
+            },
+        );
+    }
+
+    // Archive the channel
+    let response = super::handle_channel_archive(2_i64.into(), "feature-x", &state).await;
+    assert!(response.error.is_none(), "channel.archive should succeed");
+
+    // Verify channel_lead_sessions and headless_sessions are cleaned up
+    {
+        let ps = state.persistent_state.lock().await;
+        assert!(
+            !ps.channel_lead_sessions.contains_key("feature-x"),
+            "channel_lead_sessions should be cleaned up after archive"
+        );
+        assert!(
+            !ps.headless_sessions.contains_key("feature-x"),
+            "headless_sessions should be cleaned up after archive"
+        );
+    }
 }
 
 /// Verify that a second rapid user message within 30s does NOT trigger expedite again

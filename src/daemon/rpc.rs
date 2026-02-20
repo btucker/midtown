@@ -473,7 +473,7 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
 
         "channel.archive" => {
             let name = require_str!(params, "name", request.id);
-            super::rpc_channel::handle_channel_archive(request.id, name, state)
+            super::rpc_channel::handle_channel_archive(request.id, name, state).await
         }
 
         // ---- Tasks ----

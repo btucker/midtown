@@ -1305,6 +1305,28 @@ fn ensure_channel_leads_alive_normal_recovery_within_cooldown_no_effects() {
     );
 }
 
+#[test]
+fn ensure_channel_leads_alive_skips_archived_channels() {
+    // Bug: archived channels still had entries in channel_lead_sessions after
+    // archiving via CLI (handle_channel_archive). ensure_channel_leads_alive
+    // would respawn channel leads for archived channels, recreating the
+    // archived channel directories.
+    let mut snap = empty_snap();
+    snap.channel_lead_sessions
+        .insert("old-feature".to_string(), "session-old-123".to_string());
+    snap.archived_channels.insert("old-feature".to_string());
+    // Stop time well beyond cooldown — would normally trigger a respawn
+    snap.coworker_stop_times.insert(
+        "old-feature".to_string(),
+        snap.now_utc - chrono::Duration::minutes(10),
+    );
+    let effects = ensure_channel_leads_alive(&snap);
+    assert!(
+        effects.is_empty(),
+        "Archived channel should not get a channel lead respawned"
+    );
+}
+
 // -----------------------------------------------------------------------
 // has_pending_api_call exemption tests
 // -----------------------------------------------------------------------
