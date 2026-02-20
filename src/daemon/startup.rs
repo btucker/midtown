@@ -778,7 +778,11 @@ pub async fn recover_from_session_records(
         );
 
         // Build launch config from SessionRecord
-        let mut config = if record.is_reviewer {
+        let mut config = if name == "lead" {
+            // Lead session — uses lead system prompt, opus model, unrestricted settings.
+            // Must match recover_headless_sessions() which also special-cases the lead.
+            LaunchConfig::lead(repo_name)
+        } else if record.is_reviewer {
             if let Some(pr_number) = record.pr_number {
                 LaunchConfig::reviewer(name, pr_number)
             } else {

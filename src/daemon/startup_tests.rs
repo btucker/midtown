@@ -1169,6 +1169,48 @@ async fn test_recovering_coworker_names_includes_session_records() {
     assert!(names.contains(&"park".to_string()));
 }
 
+/// Regression test: recover_from_session_records must use LaunchConfig::lead()
+/// for the lead session, not LaunchConfig::coworker(). Without this fix, the
+/// lead was recovered with model=sonnet and role=Coworker instead of
+/// model=opus and role=Lead.
+#[tokio::test]
+async fn test_recover_from_session_records_uses_lead_config_for_lead() {
+    let persistent_state = tokio::sync::Mutex::new(DaemonPersistentState::default());
+    {
+        let mut state = persistent_state.lock().await;
+        // The lead's SessionRecord has coworker_type="dev", not "lead"
+        let record = test_session_record("sess-lead", "lead", "dev");
+        state.sessions.insert("sess-lead".to_string(), record);
+    }
+
+    let (effects, recovered_ids) =
+        recover_from_session_records(&persistent_state, "test-repo").await;
+
+    assert_eq!(effects.len(), 1);
+    assert!(recovered_ids.contains("sess-lead"));
+
+    match &effects[0] {
+        Effect::ResumeCoworker {
+            name,
+            session_id,
+            config,
+        } => {
+            assert_eq!(name, "lead");
+            assert_eq!(session_id, "sess-lead");
+            assert_eq!(
+                config.role,
+                crate::launch::CoworkerRole::Lead,
+                "Lead should use CoworkerRole::Lead, not Coworker"
+            );
+            assert_eq!(
+                config.model, "opus",
+                "Lead should use opus model, not sonnet"
+            );
+        }
+        other => panic!("Expected ResumeCoworker, got {:?}", other),
+    }
+}
+
 #[tokio::test]
 async fn test_recovering_coworker_names_deduplicates() {
     let persistent_state = tokio::sync::Mutex::new(DaemonPersistentState::default());
