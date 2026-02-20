@@ -192,6 +192,10 @@ pub struct FullProjectConfig {
     #[serde(default)]
     pub daemon: DaemonSection,
 
+    /// Project-specific execution provider overrides.
+    #[serde(default)]
+    pub execution: ExecutionSection,
+
     /// Channel configuration (seed channels)
     #[serde(default)]
     pub channels: ChannelsSection,
@@ -244,6 +248,7 @@ impl FullProjectConfig {
                 ..ProjectConfig::default()
             },
             daemon: DaemonSection::default(),
+            execution: ExecutionSection::default(),
             channels: ChannelsSection::default(),
             sandbox: SandboxSection::default(),
             channel_leads: ChannelLeadsConfig::default(),
@@ -566,6 +571,66 @@ impl DaemonSection {
     }
 }
 
+/// Role-specific execution provider settings.
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct ExecutionSection {
+    /// Provider used for the Lead session.
+    #[serde(default)]
+    pub lead_provider: Option<crate::auth::AuthProvider>,
+    /// Provider used for general developer coworkers.
+    #[serde(default)]
+    pub coworker_provider: Option<crate::auth::AuthProvider>,
+    /// Provider used for reviewer sessions.
+    #[serde(default)]
+    pub reviewer_provider: Option<crate::auth::AuthProvider>,
+    /// Provider used for channel lead sessions.
+    #[serde(default)]
+    pub channel_lead_provider: Option<crate::auth::AuthProvider>,
+    /// Provider used for specialized workers (architect/clusterer/headless.execute default).
+    #[serde(default)]
+    pub specialized_provider: Option<crate::auth::AuthProvider>,
+    /// Provider override for architect specialized worker.
+    #[serde(default)]
+    pub architect_provider: Option<crate::auth::AuthProvider>,
+    /// Provider override for clusterer specialized worker.
+    #[serde(default)]
+    pub clusterer_provider: Option<crate::auth::AuthProvider>,
+    /// Provider override for ad-hoc `headless.execute` RPC.
+    #[serde(default)]
+    pub headless_execute_provider: Option<crate::auth::AuthProvider>,
+}
+
+impl ExecutionSection {
+    /// Merge another execution section into this one, with `other` taking precedence.
+    pub fn merge(&self, other: &ExecutionSection) -> ExecutionSection {
+        ExecutionSection {
+            lead_provider: other.lead_provider.or(self.lead_provider),
+            coworker_provider: other.coworker_provider.or(self.coworker_provider),
+            reviewer_provider: other.reviewer_provider.or(self.reviewer_provider),
+            channel_lead_provider: other.channel_lead_provider.or(self.channel_lead_provider),
+            specialized_provider: other.specialized_provider.or(self.specialized_provider),
+            architect_provider: other.architect_provider.or(self.architect_provider),
+            clusterer_provider: other.clusterer_provider.or(self.clusterer_provider),
+            headless_execute_provider: other
+                .headless_execute_provider
+                .or(self.headless_execute_provider),
+        }
+    }
+}
+
+/// Runtime role used to resolve the effective execution provider.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExecutionRole {
+    Lead,
+    Coworker,
+    Reviewer,
+    ChannelLead,
+    Specialized,
+    Architect,
+    Clusterer,
+    HeadlessExecute,
+}
+
 /// Claude provider configuration within `[providers.claude]`.
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct ClaudeProviderConfig {
@@ -656,6 +721,10 @@ pub struct GlobalConfig {
     /// Daemon configuration
     #[serde(default)]
     pub daemon: DaemonSection,
+
+    /// Default execution provider settings.
+    #[serde(default)]
+    pub execution: ExecutionSection,
 
     /// Sandbox configuration (additional writable paths)
     #[serde(default)]
@@ -794,6 +863,24 @@ impl GlobalConfig {
 # When set, fetches token and sets GH_TOKEN env var at daemon startup
 # github_user = ""
 
+[execution]
+# Default provider for the lead session: "claude", "codex", or "zai"
+# lead_provider = "claude"
+# Default provider for developer coworkers
+# coworker_provider = "claude"
+# Default provider for reviewers
+# reviewer_provider = "claude"
+# Default provider for channel leads
+# channel_lead_provider = "claude"
+# Default provider for specialized workers (architect/clusterer/headless.execute)
+# specialized_provider = "claude"
+# Optional override provider for architect
+# architect_provider = "claude"
+# Optional override provider for clusterer
+# clusterer_provider = "claude"
+# Optional override provider for headless.execute RPC
+# headless_execute_provider = "claude"
+
 [providers.claude]
 # Auth profile (email address) to use for Claude Code sessions
 # This replaces the old ~/.midtown/auth/current file
@@ -867,6 +954,46 @@ pub fn get_project_daemon_config(project_name: &str) -> DaemonSection {
         Some(proj) => global.daemon.merge(&proj.daemon),
         None => global.daemon,
     }
+}
+
+/// Get the project-specific execution provider configuration, merged with global.
+///
+/// Priority: project execution section > global execution section.
+pub fn get_project_execution_config(project_name: &str) -> ExecutionSection {
+    let global = GlobalConfig::load();
+    let project = FullProjectConfig::load(project_name);
+
+    match project {
+        Some(proj) => global.execution.merge(&proj.execution),
+        None => global.execution,
+    }
+}
+
+/// Resolve the effective execution provider for a role in a project.
+///
+/// If no role-specific provider is configured, defaults to Claude.
+pub fn get_execution_provider_for_role(
+    project_name: &str,
+    role: ExecutionRole,
+) -> crate::auth::AuthProvider {
+    let execution = get_project_execution_config(project_name);
+    let direct = match role {
+        ExecutionRole::Lead => execution.lead_provider,
+        ExecutionRole::Coworker => execution.coworker_provider,
+        ExecutionRole::Reviewer => execution.reviewer_provider,
+        ExecutionRole::ChannelLead => execution.channel_lead_provider,
+        ExecutionRole::Specialized => execution.specialized_provider,
+        ExecutionRole::Architect => execution.architect_provider,
+        ExecutionRole::Clusterer => execution.clusterer_provider,
+        ExecutionRole::HeadlessExecute => execution.headless_execute_provider,
+    };
+    let configured = match role {
+        ExecutionRole::Architect | ExecutionRole::Clusterer | ExecutionRole::HeadlessExecute => {
+            direct.or(execution.specialized_provider)
+        }
+        _ => direct,
+    };
+    configured.unwrap_or(crate::auth::AuthProvider::Claude)
 }
 
 /// Get the project-specific sandbox configuration, merged with global.
@@ -1960,6 +2087,8 @@ name = "solo"
         assert!(config.default.personality.is_none());
         assert!(config.plugins.required.is_empty());
         assert!(config.daemon.webhook_port.is_none());
+        assert!(config.execution.lead_provider.is_none());
+        assert!(config.execution.coworker_provider.is_none());
     }
 
     #[test]
@@ -1968,6 +2097,7 @@ name = "solo"
         assert!(template.contains("[default]"));
         assert!(template.contains("[plugins]"));
         assert!(template.contains("[daemon]"));
+        assert!(template.contains("[execution]"));
         assert!(template.contains("max_coworkers"));
         assert!(template.contains("personality"));
         assert!(template.contains("webhook_port"));
@@ -1975,6 +2105,7 @@ name = "solo"
         assert!(template.contains("zellij_swap_layout"));
         assert!(template.contains("zellij_chat_pane_size"));
         assert!(template.contains("github_user"));
+        assert!(template.contains("lead_provider"));
     }
 
     #[test]
@@ -2274,6 +2405,102 @@ webhook_port = 47024
         let template = GlobalConfig::default_template();
         assert!(template.contains("[providers.claude]"));
         assert!(template.contains("auth_profile"));
+    }
+
+    #[test]
+    fn test_execution_section_merge() {
+        let global = ExecutionSection {
+            lead_provider: Some(crate::auth::AuthProvider::Claude),
+            coworker_provider: Some(crate::auth::AuthProvider::Claude),
+            reviewer_provider: None,
+            channel_lead_provider: None,
+            specialized_provider: None,
+            architect_provider: None,
+            clusterer_provider: None,
+            headless_execute_provider: None,
+        };
+        let project = ExecutionSection {
+            lead_provider: Some(crate::auth::AuthProvider::Codex),
+            coworker_provider: None,
+            reviewer_provider: Some(crate::auth::AuthProvider::Codex),
+            channel_lead_provider: None,
+            specialized_provider: None,
+            architect_provider: None,
+            clusterer_provider: None,
+            headless_execute_provider: None,
+        };
+
+        let merged = global.merge(&project);
+        assert_eq!(merged.lead_provider, Some(crate::auth::AuthProvider::Codex));
+        assert_eq!(
+            merged.coworker_provider,
+            Some(crate::auth::AuthProvider::Claude)
+        );
+        assert_eq!(
+            merged.reviewer_provider,
+            Some(crate::auth::AuthProvider::Codex)
+        );
+    }
+
+    #[test]
+    fn test_parse_execution_section() {
+        let toml = r#"
+[execution]
+lead_provider = "codex"
+coworker_provider = "zai"
+reviewer_provider = "claude"
+specialized_provider = "codex"
+architect_provider = "zai"
+"#;
+        let config: GlobalConfig = toml::from_str(toml).unwrap();
+        assert_eq!(
+            config.execution.lead_provider,
+            Some(crate::auth::AuthProvider::Codex)
+        );
+        assert_eq!(
+            config.execution.coworker_provider,
+            Some(crate::auth::AuthProvider::Zai)
+        );
+        assert_eq!(
+            config.execution.reviewer_provider,
+            Some(crate::auth::AuthProvider::Claude)
+        );
+        assert_eq!(
+            config.execution.specialized_provider,
+            Some(crate::auth::AuthProvider::Codex)
+        );
+        assert_eq!(
+            config.execution.architect_provider,
+            Some(crate::auth::AuthProvider::Zai)
+        );
+    }
+
+    #[test]
+    fn test_specialized_override_fallback_order() {
+        let execution = ExecutionSection {
+            lead_provider: None,
+            coworker_provider: None,
+            reviewer_provider: None,
+            channel_lead_provider: None,
+            specialized_provider: Some(crate::auth::AuthProvider::Codex),
+            architect_provider: Some(crate::auth::AuthProvider::Zai),
+            clusterer_provider: None,
+            headless_execute_provider: None,
+        };
+
+        // Role-specific override should win when set.
+        let architect = execution
+            .architect_provider
+            .or(execution.specialized_provider)
+            .unwrap_or(crate::auth::AuthProvider::Claude);
+        assert_eq!(architect, crate::auth::AuthProvider::Zai);
+
+        // Otherwise specialized default should be used.
+        let clusterer = execution
+            .clusterer_provider
+            .or(execution.specialized_provider)
+            .unwrap_or(crate::auth::AuthProvider::Claude);
+        assert_eq!(clusterer, crate::auth::AuthProvider::Codex);
     }
 
     #[test]

@@ -54,6 +54,14 @@ const VALID_KEYS: &[&str] = &[
     "daemon.github_user",
     "daemon.webhook_restart_interval_secs",
     "daemon.worktree_cleanup_retention_hours",
+    "execution.lead_provider",
+    "execution.coworker_provider",
+    "execution.reviewer_provider",
+    "execution.channel_lead_provider",
+    "execution.specialized_provider",
+    "execution.architect_provider",
+    "execution.clusterer_provider",
+    "execution.headless_execute_provider",
 ];
 
 /// Dispatch a `ConfigCommand` to the appropriate handler.
@@ -281,6 +289,31 @@ fn global_field_value(config: &midtown::config::GlobalConfig, key: &str) -> Stri
         "daemon.worktree_cleanup_retention_hours" => {
             fmt_opt(config.daemon.worktree_cleanup_retention_hours)
         }
+        "execution.lead_provider" => fmt_opt(config.execution.lead_provider.map(|p| p.as_str())),
+        "execution.coworker_provider" => {
+            fmt_opt(config.execution.coworker_provider.map(|p| p.as_str()))
+        }
+        "execution.reviewer_provider" => {
+            fmt_opt(config.execution.reviewer_provider.map(|p| p.as_str()))
+        }
+        "execution.channel_lead_provider" => {
+            fmt_opt(config.execution.channel_lead_provider.map(|p| p.as_str()))
+        }
+        "execution.specialized_provider" => {
+            fmt_opt(config.execution.specialized_provider.map(|p| p.as_str()))
+        }
+        "execution.architect_provider" => {
+            fmt_opt(config.execution.architect_provider.map(|p| p.as_str()))
+        }
+        "execution.clusterer_provider" => {
+            fmt_opt(config.execution.clusterer_provider.map(|p| p.as_str()))
+        }
+        "execution.headless_execute_provider" => fmt_opt(
+            config
+                .execution
+                .headless_execute_provider
+                .map(|p| p.as_str()),
+        ),
         // validate_key() is called before every read, so this arm is unreachable.
         // If it fires, a key was added to VALID_KEYS without adding a read arm here.
         _ => unreachable!(
@@ -312,6 +345,31 @@ fn project_field_value(config: &midtown::config::FullProjectConfig, key: &str) -
         "daemon.worktree_cleanup_retention_hours" => {
             fmt_opt(config.daemon.worktree_cleanup_retention_hours)
         }
+        "execution.lead_provider" => fmt_opt(config.execution.lead_provider.map(|p| p.as_str())),
+        "execution.coworker_provider" => {
+            fmt_opt(config.execution.coworker_provider.map(|p| p.as_str()))
+        }
+        "execution.reviewer_provider" => {
+            fmt_opt(config.execution.reviewer_provider.map(|p| p.as_str()))
+        }
+        "execution.channel_lead_provider" => {
+            fmt_opt(config.execution.channel_lead_provider.map(|p| p.as_str()))
+        }
+        "execution.specialized_provider" => {
+            fmt_opt(config.execution.specialized_provider.map(|p| p.as_str()))
+        }
+        "execution.architect_provider" => {
+            fmt_opt(config.execution.architect_provider.map(|p| p.as_str()))
+        }
+        "execution.clusterer_provider" => {
+            fmt_opt(config.execution.clusterer_provider.map(|p| p.as_str()))
+        }
+        "execution.headless_execute_provider" => fmt_opt(
+            config
+                .execution
+                .headless_execute_provider
+                .map(|p| p.as_str()),
+        ),
         // validate_key() is called before every read, so this arm is unreachable.
         // If it fires, a key was added to VALID_KEYS without adding a read arm here.
         _ => unreachable!(
@@ -372,6 +430,30 @@ fn apply_global_key(
         }
         "daemon.worktree_cleanup_retention_hours" => {
             config.daemon.worktree_cleanup_retention_hours = Some(parse_u64(key, value)?);
+        }
+        "execution.lead_provider" => {
+            config.execution.lead_provider = Some(parse_provider(key, value)?);
+        }
+        "execution.coworker_provider" => {
+            config.execution.coworker_provider = Some(parse_provider(key, value)?);
+        }
+        "execution.reviewer_provider" => {
+            config.execution.reviewer_provider = Some(parse_provider(key, value)?);
+        }
+        "execution.channel_lead_provider" => {
+            config.execution.channel_lead_provider = Some(parse_provider(key, value)?);
+        }
+        "execution.specialized_provider" => {
+            config.execution.specialized_provider = Some(parse_provider(key, value)?);
+        }
+        "execution.architect_provider" => {
+            config.execution.architect_provider = Some(parse_provider(key, value)?);
+        }
+        "execution.clusterer_provider" => {
+            config.execution.clusterer_provider = Some(parse_provider(key, value)?);
+        }
+        "execution.headless_execute_provider" => {
+            config.execution.headless_execute_provider = Some(parse_provider(key, value)?);
         }
         // validate_key() is called before every write, so this arm is unreachable.
         // If it fires, a key was added to VALID_KEYS without adding a write arm here.
@@ -435,6 +517,30 @@ fn apply_project_key(
         "daemon.worktree_cleanup_retention_hours" => {
             config.daemon.worktree_cleanup_retention_hours = Some(parse_u64(key, value)?);
         }
+        "execution.lead_provider" => {
+            config.execution.lead_provider = Some(parse_provider(key, value)?);
+        }
+        "execution.coworker_provider" => {
+            config.execution.coworker_provider = Some(parse_provider(key, value)?);
+        }
+        "execution.reviewer_provider" => {
+            config.execution.reviewer_provider = Some(parse_provider(key, value)?);
+        }
+        "execution.channel_lead_provider" => {
+            config.execution.channel_lead_provider = Some(parse_provider(key, value)?);
+        }
+        "execution.specialized_provider" => {
+            config.execution.specialized_provider = Some(parse_provider(key, value)?);
+        }
+        "execution.architect_provider" => {
+            config.execution.architect_provider = Some(parse_provider(key, value)?);
+        }
+        "execution.clusterer_provider" => {
+            config.execution.clusterer_provider = Some(parse_provider(key, value)?);
+        }
+        "execution.headless_execute_provider" => {
+            config.execution.headless_execute_provider = Some(parse_provider(key, value)?);
+        }
         // validate_key() is called before every write, so this arm is unreachable.
         // If it fires, a key was added to VALID_KEYS without adding a write arm here.
         _ => unreachable!(
@@ -482,6 +588,15 @@ fn parse_bool(key: &str, value: &str) -> Result<bool, String> {
             value, key
         )),
     }
+}
+
+fn parse_provider(key: &str, value: &str) -> Result<midtown::auth::AuthProvider, String> {
+    value.parse::<midtown::auth::AuthProvider>().map_err(|_| {
+        format!(
+            "Invalid provider value '{}' for '{}'. Valid values: claude, codex, zai.",
+            value, key
+        )
+    })
 }
 
 fn parse_usize(key: &str, value: &str) -> Result<usize, String> {

@@ -236,6 +236,10 @@ impl LaunchConfig {
     ) -> Self {
         let repo = repo_name.into();
         let team = crate::mailbox::team_name_for_repo(&repo);
+        let auth_provider = crate::config::get_execution_provider_for_role(
+            &repo,
+            crate::config::ExecutionRole::Coworker,
+        );
         LaunchConfig {
             name: name.into(),
             session_mode,
@@ -248,7 +252,7 @@ impl LaunchConfig {
             model: "sonnet".to_string(),
             channel: None,
             auth_profile_dir: None,
-            auth_provider: crate::auth::AuthProvider::Claude,
+            auth_provider,
             persisted_initial_prompt: None,
         }
     }
@@ -283,6 +287,10 @@ impl LaunchConfig {
     pub fn lead(repo_name: impl Into<String>) -> Self {
         let repo = repo_name.into();
         let team = crate::mailbox::team_name_for_repo(&repo);
+        let auth_provider = crate::config::get_execution_provider_for_role(
+            &repo,
+            crate::config::ExecutionRole::Lead,
+        );
         LaunchConfig {
             name: "lead".to_string(),
             session_mode: SessionMode::Fresh,
@@ -295,7 +303,7 @@ impl LaunchConfig {
             model: "opus".to_string(),
             channel: None,
             auth_profile_dir: None,
-            auth_provider: crate::auth::AuthProvider::Claude,
+            auth_provider,
             persisted_initial_prompt: None,
         }
     }
@@ -315,6 +323,10 @@ impl LaunchConfig {
     ) -> Self {
         let repo = repo_name.into();
         let team = crate::mailbox::team_name_for_repo(&repo);
+        let auth_provider = crate::config::get_execution_provider_for_role(
+            &repo,
+            crate::config::ExecutionRole::Coworker,
+        );
         let initial_prompt = format!(
             "You're taking over PR #{} from {}.\n\n\
             First, checkout the branch:\n\
@@ -341,7 +353,7 @@ impl LaunchConfig {
             model: "opus".to_string(),
             channel: None,
             auth_profile_dir: None,
-            auth_provider: crate::auth::AuthProvider::Claude,
+            auth_provider,
             persisted_initial_prompt: None,
         }
     }
@@ -369,6 +381,10 @@ impl LaunchConfig {
         let session_name = channel_lead_session_name(&channel_name_str);
         let repo = repo_name.into();
         let team = crate::mailbox::team_name_for_repo(&repo);
+        let auth_provider = crate::config::get_execution_provider_for_role(
+            &repo,
+            crate::config::ExecutionRole::ChannelLead,
+        );
         let domain_ctx = domain_context.into();
         LaunchConfig {
             name: session_name,
@@ -388,7 +404,7 @@ impl LaunchConfig {
             model: "sonnet".to_string(),
             channel: Some(channel_name_str),
             auth_profile_dir: None,
-            auth_provider: crate::auth::AuthProvider::Claude,
+            auth_provider,
             persisted_initial_prompt: None,
         }
     }

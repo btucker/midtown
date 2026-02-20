@@ -277,7 +277,10 @@ async fn invoke_clusterer_for_task(
         .clone();
 
     // Resolve auth for the clusterer session
-    let auth_provider = crate::auth::AuthProvider::Claude;
+    let auth_provider = crate::config::get_execution_provider_for_role(
+        &state.repo_name,
+        crate::config::ExecutionRole::Clusterer,
+    );
     let auth_profile_dir =
         crate::auth::active_profile_dir_for_project_with_provider(&state.repo_name, auth_provider);
 

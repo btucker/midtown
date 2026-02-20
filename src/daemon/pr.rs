@@ -2373,6 +2373,10 @@ pub(crate) async fn collect_reviewer_effects_with_source(
         // reviewer() now takes the PR number and generates both the system prompt
         // (with merged reviewer.md instructions) and the launch prompt internally
         let mut config = crate::launch::LaunchConfig::reviewer(reviewer_name.clone(), pr_number);
+        config.auth_provider = crate::config::get_execution_provider_for_role(
+            &state.repo_name,
+            crate::config::ExecutionRole::Reviewer,
+        );
         config.working_dir = Some(wt_path.clone());
 
         effects.push(Effect::EnsureWorktree {

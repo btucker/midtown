@@ -387,6 +387,10 @@ pub fn check_and_restart_stuck_reviewers(snap: &snapshot::WorldSnapshot) -> Vec<
 
         let mut config =
             crate::launch::LaunchConfig::reviewer(restart.name.clone(), restart.pr_number);
+        config.auth_provider = crate::config::get_execution_provider_for_role(
+            &snap.repo_name,
+            crate::config::ExecutionRole::Reviewer,
+        );
         config.working_dir = Some(wt_path.clone());
 
         effects.push(Effect::EnsureWorktree {
@@ -557,6 +561,10 @@ pub fn check_and_restart_dead_reviewers(snap: &snapshot::WorldSnapshot) -> Vec<E
 
         let mut config =
             crate::launch::LaunchConfig::reviewer(restart.name.clone(), restart.pr_number);
+        config.auth_provider = crate::config::get_execution_provider_for_role(
+            &snap.repo_name,
+            crate::config::ExecutionRole::Reviewer,
+        );
         config.working_dir = Some(wt_path.clone());
 
         effects.push(Effect::EnsureWorktree {
