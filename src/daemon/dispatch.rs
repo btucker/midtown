@@ -13,7 +13,6 @@ use crate::daemon_messages;
 
 use super::constants::*;
 use super::effects::{self, Effect};
-use super::helpers::format_task_prompt;
 use super::{DaemonState, snapshot};
 
 // ============================================================================
@@ -474,13 +473,7 @@ where
     );
 
     let plan_section = build_plan_prompt_section(&recovery.task_id, snap);
-    let prompt = format_task_prompt(
-        &recovery.task_id,
-        &format!(
-            "You've been assigned task !{}: {}. Your previous session was interrupted but your worktree and branch are still intact. Check your git status and get started!{}",
-            recovery.task_id, recovery.task_subject, plan_section
-        ),
-    );
+    let prompt = crate::agents::coworker_recovery_prompt(&recovery.task_id, &recovery.task_subject, &plan_section);
 
     // Set channel from task if available
     let channel = snap
@@ -823,13 +816,7 @@ where
         );
 
         let plan_section = build_plan_prompt_section(task_id, snap);
-        let prompt = format_task_prompt(
-            task_id,
-            &format!(
-                "You've been assigned task !{}: {}. Your previous session was interrupted but your worktree and branch are still intact. Check your git status and get started!{}",
-                task_id, task_subject, plan_section
-            ),
-        );
+        let prompt = crate::agents::coworker_recovery_prompt(task_id, task_subject, &plan_section);
 
         // Prepare worktree (reuse existing or create new) and build config.
         // Uses prepare_task_worktree to keep the worktree registry current and
@@ -1008,13 +995,7 @@ where
     );
 
     let plan_section = build_plan_prompt_section(&recovery.task_id, snap);
-    let prompt = format_task_prompt(
-        &recovery.task_id,
-        &format!(
-            "You've been assigned task !{}: {}. Your previous session was interrupted but your worktree and branch are still intact. Check your git status and get started!{}",
-            recovery.task_id, recovery.task_subject, plan_section
-        ),
-    );
+    let prompt = crate::agents::coworker_recovery_prompt(&recovery.task_id, &recovery.task_subject, &plan_section);
 
     // Set channel from task if available
     let channel = snap
@@ -1214,6 +1195,7 @@ fn decide_discovered_coworker_nudges(
     owner_tasks: &HashMap<String, (String, String, Option<String>)>,
     reviewer_prs: &HashMap<String, u64>,
 ) -> Vec<Effect> {
+    use super::helpers::format_task_prompt;
     let mut effects = Vec::new();
 
     for name in discovered {
@@ -1913,10 +1895,7 @@ pub(super) fn spawn_for_pending_tasks_excluding(
                 task_id: ref tid,
                 task_subject: ref subj,
             } => {
-                let nudge_msg = format_task_prompt(
-                    tid,
-                    &format!("You have pending task !{}: {}. Get started!", tid, subj),
-                );
+                let nudge_msg = crate::agents::coworker_nudge_prompt(tid, subj);
                 // Deliver via mailbox (non-urgent task assignment to idle coworker).
                 // Deliver via mailbox for non-urgent task assignment.
                 effects.push(Effect::DeliverMailboxMessage {
@@ -1959,13 +1938,7 @@ pub(super) fn spawn_for_pending_tasks_excluding(
                     tid, o
                 );
                 let plan_section = build_plan_prompt_section(tid, snap);
-                let prompt = format_task_prompt(
-                    tid,
-                    &format!(
-                        "You've been assigned task !{}: {}. Get started!{}",
-                        tid, subj, plan_section
-                    ),
-                );
+                let prompt = crate::agents::coworker_task_prompt(tid, subj, &plan_section);
 
                 let wt = prepare_task_worktree(tid, subj, &state.repo_name, snap);
 
@@ -2157,13 +2130,7 @@ pub(super) fn spawn_for_pending_tasks_excluding(
                     task.id, record.session_id
                 );
                 let plan_section = build_plan_prompt_section(&task.id, snap);
-                let prompt = format_task_prompt(
-                    &task.id,
-                    &format!(
-                        "You've been assigned task !{}: {}. Your previous session was interrupted but your worktree and branch are still intact. Check your git status and get started!{}",
-                        task.id, task.subject, plan_section
-                    ),
-                );
+                let prompt = crate::agents::coworker_recovery_prompt(&task.id, &task.subject, &plan_section);
                 let wt = prepare_task_worktree(&task.id, &task.subject, &snap.repo_name, snap);
                 let working_dir = if !record.working_dir.is_empty() {
                     std::path::PathBuf::from(&record.working_dir)
@@ -2369,21 +2336,9 @@ pub(super) fn spawn_for_pending_tasks_excluding(
         // Build the prompt message — already-running coworkers need explicit claim instruction
         let plan_section = build_plan_prompt_section(&task.id, snap);
         let prompt = if already_running {
-            format_task_prompt(
-                &task.id,
-                &format!(
-                    "You've been assigned task !{}: {}. Run `midtown task claim {}` to claim it, then get started!{}",
-                    task.id, task.subject, task.id, plan_section
-                ),
-            )
+            crate::agents::coworker_claim_prompt(&task.id, &task.subject, &plan_section)
         } else {
-            format_task_prompt(
-                &task.id,
-                &format!(
-                    "You've been assigned task !{}: {}. Get started!{}",
-                    task.id, task.subject, plan_section
-                ),
-            )
+            crate::agents::coworker_task_prompt(&task.id, &task.subject, &plan_section)
         };
 
         if already_running {

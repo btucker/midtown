@@ -287,7 +287,7 @@ impl LaunchConfig {
             name: "lead".to_string(),
             session_mode: SessionMode::Fresh,
             role: CoworkerRole::Lead,
-            initial_prompt: Some("Read the channel for context, then post to the channel that you're online and ready.".to_string()),
+            initial_prompt: Some(crate::agents::main_lead_initial_prompt(&repo, "main")),
             additional_dirs: vec![],
             pr_number: None,
             team_name: Some(team),
@@ -377,10 +377,7 @@ impl LaunchConfig {
                 channel_name: channel_name_str.clone(),
                 domain_context: domain_ctx,
             },
-            initial_prompt: Some(format!(
-                "Read the recent messages in #{channel_name_str} for context, then introduce yourself as the domain expert for this channel.",
-                channel_name_str = channel_name_str
-            )),
+            initial_prompt: Some(crate::agents::channel_lead_initial_prompt(&channel_name_str)),
             additional_dirs: vec![],
             pr_number: None,
             team_name: Some(team),

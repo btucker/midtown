@@ -164,6 +164,81 @@ pub fn reviewer_resume_prompt(pr_number: u64) -> String {
     template.replace("{pr_number}", &pr_number.to_string())
 }
 
+/// Build the initial prompt for the main lead session.
+///
+/// Follows a standardized Role/Channel/Mission/First Actions structure
+/// so all initial prompts are consistent and informative.
+pub fn main_lead_initial_prompt(project_name: &str, main_channel: &str) -> String {
+    format!(
+        "## Role\nMain lead for {project_name}\n\n\
+         ## Channel\n#{main_channel}\n\n\
+         ## Mission\nCoordinate the team, triage incoming work, delegate to coworkers.\n\n\
+         ## First Actions\n\
+         1. Read the channel for context\n\
+         2. Post to the channel that you're online and ready"
+    )
+}
+
+/// Build the initial prompt for a channel lead session.
+pub fn channel_lead_initial_prompt(channel_name: &str) -> String {
+    format!(
+        "## Role\nChannel lead for #{channel_name}\n\n\
+         ## Channel\n#{channel_name}\n\n\
+         ## Mission\nDomain expert for this channel. Track active work, brainstorm, surface issues proactively.\n\n\
+         ## First Actions\n\
+         1. Read recent messages in #{channel_name} for context\n\
+         2. Introduce yourself as the domain expert for this channel"
+    )
+}
+
+/// Build the initial prompt for a fresh coworker task assignment.
+///
+/// Used when a coworker is spawned fresh to work on a task.
+/// The `plan_section` parameter is a pre-built string from `build_plan_prompt_section()`
+/// that may contain plan context and execution skill instructions (or be empty).
+pub fn coworker_task_prompt(task_id: &str, subject: &str, plan_section: &str) -> String {
+    format!(
+        "You've been assigned task !{task_id}: {subject}. Get started!{plan_section}\n\n\
+         Run `midtown task view {task_id}` for full details."
+    )
+}
+
+/// Build the initial prompt for a coworker claiming a task while already running.
+///
+/// Used when a running coworker is nudged to pick up a new task (e.g., grouped
+/// tasks from the same PR or blockedBy chain).
+pub fn coworker_claim_prompt(task_id: &str, subject: &str, plan_section: &str) -> String {
+    format!(
+        "You've been assigned task !{task_id}: {subject}. \
+         Run `midtown task claim {task_id}` to claim it, then get started!{plan_section}\n\n\
+         Run `midtown task view {task_id}` for full details."
+    )
+}
+
+/// Build the initial prompt for recovering a coworker whose session was interrupted.
+///
+/// Used when a coworker's previous session died and needs to be resumed or
+/// respawned. The worktree and branch from the previous run are intact.
+pub fn coworker_recovery_prompt(task_id: &str, subject: &str, plan_section: &str) -> String {
+    format!(
+        "You've been assigned task !{task_id}: {subject}. \
+         Your previous session was interrupted but your worktree and branch are still intact. \
+         Check your git status and get started!{plan_section}\n\n\
+         Run `midtown task view {task_id}` for full details."
+    )
+}
+
+/// Build a nudge prompt for a coworker with a pending task.
+///
+/// Used when a coworker is idle and has a pending task to work on.
+/// Unlike other prompts, this is a brief reminder rather than a full assignment.
+pub fn coworker_nudge_prompt(task_id: &str, subject: &str) -> String {
+    format!(
+        "You have pending task !{task_id}: {subject}. Get started!\n\n\
+         Run `midtown task view {task_id}` for full details."
+    )
+}
+
 /// Load the clusterer system prompt.
 ///
 /// Returns the prompt from `agents/clusterer.md` if found, otherwise returns
@@ -573,5 +648,67 @@ mod tests {
             prompt.contains("git push origin --delete"),
             "Coworker prompt should show command to delete remote branches"
         );
+    }
+
+    #[test]
+    fn test_main_lead_initial_prompt_structure() {
+        let prompt = main_lead_initial_prompt("midtown", "main");
+        assert!(prompt.contains("## Role"));
+        assert!(prompt.contains("Main lead for midtown"));
+        assert!(prompt.contains("## Channel"));
+        assert!(prompt.contains("#main"));
+        assert!(prompt.contains("## Mission"));
+        assert!(prompt.contains("## First Actions"));
+    }
+
+    #[test]
+    fn test_channel_lead_initial_prompt_structure() {
+        let prompt = channel_lead_initial_prompt("web-interface");
+        assert!(prompt.contains("## Role"));
+        assert!(prompt.contains("Channel lead for #web-interface"));
+        assert!(prompt.contains("## Channel"));
+        assert!(prompt.contains("#web-interface"));
+        assert!(prompt.contains("## Mission"));
+        assert!(prompt.contains("## First Actions"));
+    }
+
+    #[test]
+    fn test_coworker_task_prompt_contains_id_and_subject() {
+        let prompt = coworker_task_prompt("42", "Fix login bug", "");
+        assert!(prompt.contains("task !42"));
+        assert!(prompt.contains("Fix login bug"));
+        assert!(prompt.contains("Get started!"));
+        assert!(prompt.contains("midtown task view 42"));
+    }
+
+    #[test]
+    fn test_coworker_task_prompt_includes_plan_section() {
+        let plan = "\n\n## Plan Context\nSome plan details here.";
+        let prompt = coworker_task_prompt("42", "Fix login bug", plan);
+        assert!(prompt.contains("## Plan Context"));
+        assert!(prompt.contains("Some plan details here."));
+    }
+
+    #[test]
+    fn test_coworker_claim_prompt_includes_claim_command() {
+        let prompt = coworker_claim_prompt("42", "Fix login bug", "");
+        assert!(prompt.contains("midtown task claim 42"));
+        assert!(prompt.contains("task !42"));
+    }
+
+    #[test]
+    fn test_coworker_recovery_prompt_mentions_intact_worktree() {
+        let prompt = coworker_recovery_prompt("42", "Fix login bug", "");
+        assert!(prompt.contains("worktree and branch are still intact"));
+        assert!(prompt.contains("git status"));
+        assert!(prompt.contains("task !42"));
+    }
+
+    #[test]
+    fn test_coworker_nudge_prompt_is_brief() {
+        let prompt = coworker_nudge_prompt("42", "Fix login bug");
+        assert!(prompt.contains("pending task !42"));
+        assert!(prompt.contains("Fix login bug"));
+        assert!(prompt.contains("Get started!"));
     }
 }
