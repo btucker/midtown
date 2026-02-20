@@ -259,8 +259,6 @@ fn test_coworker_from_branch_not_coworker() {
 #[test]
 fn test_is_coworker_sender() {
     // System senders should not be coworkers
-    assert!(!is_coworker_sender("Lead", "myrepo"));
-    assert!(!is_coworker_sender("lead", "lead"));
     assert!(!is_coworker_sender("github", "myrepo"));
     assert!(!is_coworker_sender("GitHub", "myrepo"));
     assert!(!is_coworker_sender("midtown", "myrepo"));
@@ -268,6 +266,9 @@ fn test_is_coworker_sender() {
     // The main lead session name (repo name) should not be a coworker
     assert!(!is_coworker_sender("myrepo", "myrepo"));
     assert!(!is_coworker_sender("MyRepo", "myrepo"));
+    // "lead" as a literal name is now just another name (not special unless it's the repo name)
+    assert!(is_coworker_sender("Lead", "myrepo"));
+    assert!(!is_coworker_sender("lead", "lead"));
 
     // Actual coworker names should be detected
     assert!(is_coworker_sender("lexington", "myrepo"));

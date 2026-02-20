@@ -511,9 +511,10 @@ fn ensure_lead_alive_respawns_missing_lead() {
     let snap = empty_snap();
     let effects = ensure_lead_alive(&snap);
     assert_eq!(effects.len(), 1, "Should spawn lead when missing");
+    // After rename, lead session name = repo name (test-repo in test snapshots)
     assert!(
-        matches!(&effects[0], Effect::SpawnCoworker(config) if config.name == "lead"),
-        "Should spawn a lead config"
+        matches!(&effects[0], Effect::SpawnCoworker(config) if config.name == snap.repo_name),
+        "Should spawn a lead config with the repo name"
     );
 }
 
@@ -521,9 +522,10 @@ fn ensure_lead_alive_respawns_missing_lead() {
 fn ensure_lead_alive_no_op_when_lead_registered() {
     use crate::coworker::{Coworker, CoworkerStatus};
     let mut snap = empty_snap();
+    // After rename, lead session name = repo name (test-repo in test snapshots)
     snap.active_coworkers.push(Coworker {
         slot_id: uuid::Uuid::new_v4().to_string(),
-        name: "lead".to_string(),
+        name: snap.repo_name.clone(),
         status: CoworkerStatus::Running,
         working_dir: "/tmp/test".to_string(),
         started_at: chrono::Utc::now(),
@@ -541,8 +543,9 @@ fn ensure_lead_alive_no_op_when_lead_registered() {
 fn ensure_lead_alive_cooldown_prevents_respawn_loop() {
     let mut snap = empty_snap();
     // Lead stopped 1 minute ago — within the 5-minute cooldown
+    // Key is the repo name (not "lead") after rename
     snap.coworker_stop_times.insert(
-        "lead".to_string(),
+        snap.repo_name.to_lowercase(),
         chrono::Utc::now() - chrono::Duration::minutes(1),
     );
     let effects = ensure_lead_alive(&snap);
@@ -571,8 +574,9 @@ fn ensure_lead_alive_respawns_after_cooldown() {
 #[test]
 fn ensure_lead_alive_skips_when_attached() {
     let mut snap = empty_snap();
+    // After rename, lead is keyed by repo name (lowercase)
     snap.attached_coworkers
-        .insert("lead".to_string(), chrono::Utc::now());
+        .insert(snap.repo_name.to_lowercase(), chrono::Utc::now());
     let effects = ensure_lead_alive(&snap);
     assert!(
         effects.is_empty(),
@@ -598,8 +602,8 @@ fn ensure_lead_alive_respawns_immediately_when_stop_time_cleared() {
         "ensure_lead_alive should respawn immediately when no stop time exists"
     );
     assert!(
-        matches!(&effects[0], Effect::SpawnCoworker(config) if config.name == "lead"),
-        "Effect should be SpawnCoworker for lead"
+        matches!(&effects[0], Effect::SpawnCoworker(config) if config.name == snap.repo_name),
+        "Effect should be SpawnCoworker with repo name"
     );
 }
 
@@ -728,7 +732,7 @@ fn test_maybe_refresh_lead_session_triggers_when_old() {
     let started = snap.now_utc - chrono::Duration::minutes(91);
     let lead = Coworker {
         slot_id: uuid::Uuid::new_v4().to_string(),
-        name: "lead".to_string(),
+        name: snap.repo_name.clone(), // lead session name = repo name
         status: CoworkerStatus::Running,
         working_dir: "/tmp/test".to_string(),
         started_at: started,
@@ -740,7 +744,7 @@ fn test_maybe_refresh_lead_session_triggers_when_old() {
     };
     snap.active_coworkers.push(lead);
     snap.coworker_start_times
-        .insert("lead".to_string(), started);
+        .insert(snap.repo_name.to_lowercase(), started);
 
     let effects = maybe_refresh_lead_session(&snap);
     assert_eq!(
@@ -753,8 +757,8 @@ fn test_maybe_refresh_lead_session_triggers_when_old() {
         "First effect should be PostToChannel from midtown"
     );
     assert!(
-        matches!(&effects[1], Effect::ShutdownCoworker { name, .. } if name == "lead"),
-        "Second effect should be ShutdownCoworker for lead"
+        matches!(&effects[1], Effect::ShutdownCoworker { name, .. } if name == &snap.repo_name),
+        "Second effect should be ShutdownCoworker for the repo-named lead"
     );
 }
 
@@ -1095,11 +1099,13 @@ fn snapshot_lead_not_responding_cooldown_blocks_respawn_until_cleared() {
     let mut snap: super::snapshot::WorldSnapshot =
         serde_json::from_str(fixture).expect("Failed to deserialize WorldSnapshot from fixture");
 
+    let lead_name = snap.repo_name.to_lowercase();
+
     // Precondition: lead is not registered (dead)
     let lead_registered = snap
         .active_coworkers
         .iter()
-        .any(|c| c.name.eq_ignore_ascii_case("lead"));
+        .any(|c| c.name.eq_ignore_ascii_case(&snap.repo_name));
     assert!(
         !lead_registered,
         "Lead should not be registered in snapshot"
@@ -1107,15 +1113,15 @@ fn snapshot_lead_not_responding_cooldown_blocks_respawn_until_cleared() {
 
     // Precondition: lead is not attached interactively
     assert!(
-        !snap.attached_coworkers.contains_key("lead"),
+        !snap.attached_coworkers.contains_key(&lead_name),
         "Lead should not be attached in snapshot"
     );
 
     // Precondition: lead has a recent stop time (within cooldown)
     let stop_time = snap
         .coworker_stop_times
-        .get("lead")
-        .expect("Lead should have a stop time in snapshot");
+        .get(&lead_name)
+        .expect("Lead should have a stop time in snapshot (keyed by repo name)");
     let since_stop = snap.now_utc.signed_duration_since(*stop_time);
     assert!(
         since_stop < chrono::Duration::minutes(5),
@@ -1132,7 +1138,7 @@ fn snapshot_lead_not_responding_cooldown_blocks_respawn_until_cleared() {
     );
 
     // Simulate what clear_lead_respawn_cooldown() does: remove the stop time
-    snap.coworker_stop_times.remove("lead");
+    snap.coworker_stop_times.remove(&lead_name);
 
     // Now ensure_lead_alive should respawn immediately
     let effects_after_clear = ensure_lead_alive(&snap);
@@ -1142,8 +1148,8 @@ fn snapshot_lead_not_responding_cooldown_blocks_respawn_until_cleared() {
         "ensure_lead_alive should respawn after stop time is cleared"
     );
     assert!(
-        matches!(&effects_after_clear[0], Effect::SpawnCoworker(config) if config.name == "lead"),
-        "Effect should be SpawnCoworker for lead"
+        matches!(&effects_after_clear[0], Effect::SpawnCoworker(config) if config.name == snap.repo_name),
+        "Effect should be SpawnCoworker with repo name (lead session name = repo name)"
     );
 }
 

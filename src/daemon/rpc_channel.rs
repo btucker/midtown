@@ -288,21 +288,25 @@ pub(super) async fn handle_channel_post(
             // so the user isn't left in silence. We check both headless (session_manager)
             // and interactive (attached_coworkers) paths — if either is live, the lead
             // is reachable and we skip the expedite.
-            let lead_is_dead = !state.session_manager.is_alive("lead").await
+            let lead_is_dead = !state.session_manager.is_alive(&state.repo_name).await
                 && !state
                     .attached_coworkers
                     .lock()
                     .unwrap()
-                    .contains_key("lead");
+                    .contains_key(&state.repo_name.to_lowercase());
             if lead_is_dead {
                 let should_expedite = {
                     let cooldowns = state.cooldowns.lock().unwrap();
-                    cooldowns.check("lead_dead_expedite", "lead", Duration::from_secs(30))
+                    cooldowns.check(
+                        "lead_dead_expedite",
+                        &state.repo_name,
+                        Duration::from_secs(30),
+                    )
                 };
                 if should_expedite {
                     {
                         let mut cooldowns = state.cooldowns.lock().unwrap();
-                        cooldowns.record("lead_dead_expedite", "lead");
+                        cooldowns.record("lead_dead_expedite", &state.repo_name);
                     }
                     info!("Lead is dead — expediting respawn on user message");
                     state.expedite_lead_respawn_on_user_message().await;
