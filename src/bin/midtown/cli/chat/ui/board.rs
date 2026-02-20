@@ -11,6 +11,8 @@ use ratatui::{
     widgets::{Block, Borders, Cell, Paragraph, Row, Table},
 };
 
+use ratatui_themes::ThemePalette;
+
 use super::super::app::{
     App, BoardSelection, CiStatus, CoworkerInfo, FocusedPane, KanbanPr, KanbanTask, TaskStatus,
 };
@@ -218,11 +220,12 @@ pub fn draw_board_panel(f: &mut Frame, app: &mut App, area: Rect) -> (Vec<Hyperl
     }
 
     // Determine border color based on focus
+    let palette = app.theme.palette();
     let is_focused = app.focused_pane == FocusedPane::Board;
     let border_color = if is_focused {
-        Color::Yellow
+        palette.accent
     } else {
-        Color::White
+        palette.fg
     };
 
     // Render the tasks panel with focus-dependent border
@@ -241,7 +244,7 @@ pub fn draw_board_panel(f: &mut Frame, app: &mut App, area: Rect) -> (Vec<Hyperl
         chunk_idx += 1;
     }
     let ops_refs: Vec<&midtown::Message> = ops_messages.iter().collect();
-    draw_ops_mini_channel(f, &ops_refs, chunks[chunk_idx]);
+    draw_ops_mini_channel(f, &ops_refs, chunks[chunk_idx], palette);
 
     (hyperlinks, tasks_area)
 }
@@ -269,11 +272,12 @@ fn render_channel_header(
         _ => false,
     });
 
+    let palette = app.theme.palette();
     let mut style = Style::default()
-        .fg(Color::Cyan)
+        .fg(palette.accent)
         .add_modifier(Modifier::BOLD);
     if is_selected {
-        style = style.bg(Color::DarkGray);
+        style = style.bg(palette.selection);
     }
 
     lines.push(Line::from(vec![Span::styled(channel_header, style)]));
@@ -374,20 +378,21 @@ fn render_task_item(
     });
 
     // Determine bullet color based on task and PR status
+    let palette = app.theme.palette();
     let (bullet_color, text_color) = match task_pr {
         // PR exists - check for conflicts or CI status
         Some(pr) => {
             if pr.has_conflicts {
-                // Merge conflict takes priority - show red
-                (Color::Red, Color::Red)
+                // Merge conflict takes priority - show error color
+                (palette.error, palette.error)
             } else {
                 match pr.ci_status {
-                    CiStatus::Passed => (Color::Green, Color::Green),
-                    CiStatus::Failed => (Color::Red, Color::Red),
-                    CiStatus::Running => (Color::Yellow, Color::Yellow),
+                    CiStatus::Passed => (palette.success, palette.success),
+                    CiStatus::Failed => (palette.error, palette.error),
+                    CiStatus::Running => (palette.warning, palette.warning),
                     CiStatus::Unknown => {
                         // PR exists but CI status unknown - treat as in-progress
-                        (Color::Yellow, Color::Green)
+                        (palette.warning, palette.success)
                     }
                 }
             }
@@ -395,9 +400,9 @@ fn render_task_item(
         // No PR - use task status
         None => {
             if task.status == TaskStatus::InProgress {
-                (Color::Yellow, Color::Green)
+                (palette.warning, palette.success)
             } else {
-                (Color::DarkGray, Color::DarkGray)
+                (palette.muted, palette.muted)
             }
         }
     };
@@ -425,7 +430,7 @@ fn render_task_item(
             );
             let mut text_style = Style::default().fg(text_color);
             if is_task_selected {
-                text_style = text_style.bg(Color::DarkGray);
+                text_style = text_style.bg(palette.selection);
             }
             let text_span = Span::styled(wrapped.to_string(), text_style);
             lines.push(Line::from(vec![bullet_span, text_span]));
@@ -453,7 +458,7 @@ fn render_task_item(
             );
             let mut style = Style::default().fg(text_color);
             if is_task_selected {
-                style = style.bg(Color::DarkGray);
+                style = style.bg(palette.selection);
             }
             lines.push(Line::from(vec![Span::styled(text, style)]));
         }
@@ -465,7 +470,7 @@ fn render_task_item(
         let label_line = format!("{:width$}{}", "", label_text, width = bullet_prefix_width);
         lines.push(Line::from(vec![Span::styled(
             label_line,
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(palette.muted),
         )]));
     }
 }
@@ -474,7 +479,12 @@ fn render_task_item(
 ///
 /// Displays daemon, github, and system messages in a compact scrollable view.
 /// The most recent `ops_messages` entries are shown (already in chronological order).
-fn draw_ops_mini_channel(f: &mut Frame, ops_messages: &[&midtown::Message], area: Rect) {
+fn draw_ops_mini_channel(
+    f: &mut Frame,
+    ops_messages: &[&midtown::Message],
+    area: Rect,
+    palette: ThemePalette,
+) {
     // Split: header line + content
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -487,14 +497,14 @@ fn draw_ops_mini_channel(f: &mut Frame, ops_messages: &[&midtown::Message], area
     // Render the bordered container
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::DarkGray));
+        .border_style(Style::default().fg(palette.muted));
     f.render_widget(block, area);
 
     // Header: "MIDTOWN OPS" in dim style, inside the border
     let header = Paragraph::new(Line::from(vec![Span::styled(
         " MIDTOWN OPS",
         Style::default()
-            .fg(Color::DarkGray)
+            .fg(palette.muted)
             .add_modifier(Modifier::BOLD),
     )]));
     f.render_widget(header, chunks[0]);
@@ -510,64 +520,93 @@ fn draw_ops_mini_channel(f: &mut Frame, ops_messages: &[&midtown::Message], area
     if ops_messages.is_empty() {
         let empty = Paragraph::new(Line::from(vec![Span::styled(
             "No ops messages",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(palette.muted),
         )]));
         f.render_widget(empty, inner);
         return;
     }
 
     // Build message lines (most recent at bottom)
-    let content_width = inner.width.saturating_sub(1) as usize; // 1 for left pad
+    // Timestamp ("HH:MM" = 5 chars, plus a leading space = 6) is right-aligned and only shown
+    // when it changes from the previous message, freeing horizontal space for content otherwise.
+    let total_width = inner.width as usize;
+    let time_width = 6usize; // " HH:MM"
+    let left_pad = 1usize;
     let mut lines: Vec<Line<'static>> = Vec::new();
+    let mut prev_time_str: Option<String> = None;
 
     for msg in ops_messages {
         let time_str = format_ops_time(&msg.timestamp);
+        let show_timestamp = prev_time_str.as_deref() != Some(time_str.as_str());
+        prev_time_str = Some(time_str.clone());
+
+        let is_action =
+            msg.message_type == midtown::MessageType::Action || msg.content.starts_with("/me ");
         let sender_color = ops_sender_color(&msg.from);
 
-        // Format: "HH:MM content" for system senders (midtown/system/daemon/github)
-        // — the ops channel context makes the sender obvious.
-        // For coworker messages: "HH:MM name: content"
-        let is_system_sender = matches!(
-            msg.from.to_lowercase().as_str(),
-            "midtown" | "system" | "daemon" | "github"
-        );
-        let remaining = if is_system_sender {
-            content_width.saturating_sub(time_str.len() + 1)
+        // Available width for text (timestamp reserve only applies when we're showing it)
+        let ts_reserve = if show_timestamp { time_width } else { 0 };
+        let text_width = total_width.saturating_sub(left_pad + ts_reserve);
+
+        let mut spans: Vec<Span<'static>> = vec![Span::raw(" ")]; // left pad
+        let content_len;
+
+        if is_action {
+            // Format: "* name content"
+            let content = msg.content.trim_start_matches("/me").trim().to_string();
+            let name = msg.from.clone();
+            let name_len = name.chars().count();
+            let remaining = text_width.saturating_sub(2 + name_len + 1); // "* " + name + " "
+            let body = if remaining > 0 && content.chars().count() > remaining {
+                let truncate_at = content
+                    .char_indices()
+                    .nth(remaining.saturating_sub(2))
+                    .map(|(i, _)| i)
+                    .unwrap_or(content.len());
+                format!("{}..", &content[..truncate_at])
+            } else {
+                content.clone()
+            };
+            let body_str = format!(" {body}");
+            content_len = 2 + name_len + body_str.chars().count();
+            spans.push(Span::styled("* ", Style::default().fg(sender_color)));
+            spans.push(Span::styled(name, Style::default().fg(sender_color)));
+            spans.push(Span::styled(body_str, Style::default().fg(palette.muted)));
         } else {
-            let sender = &msg.from;
-            content_width.saturating_sub(time_str.len() + 1 + sender.len() + 2)
-        };
-        let body = if remaining > 0 && msg.content.len() > remaining {
-            let mut end = remaining.saturating_sub(2);
-            while end > 0 && !msg.content.is_char_boundary(end) {
-                end -= 1;
-            }
-            format!("{}..", &msg.content[..end])
-        } else {
-            msg.content.clone()
-        };
-        if is_system_sender {
-            lines.push(Line::from(vec![
-                Span::styled(
-                    format!("{time_str} "),
-                    Style::default().fg(Color::Rgb(90, 90, 90)),
-                ),
-                Span::styled(body, Style::default().fg(Color::Rgb(90, 90, 90))),
-            ]));
-        } else {
+            // Format: "sender: message"
             let sender = msg.from.clone();
-            lines.push(Line::from(vec![
-                Span::styled(
-                    format!("{time_str} "),
-                    Style::default().fg(Color::Rgb(90, 90, 90)),
-                ),
-                Span::styled(sender, Style::default().fg(sender_color)),
-                Span::styled(
-                    format!(": {body}"),
-                    Style::default().fg(Color::Rgb(90, 90, 90)),
-                ),
-            ]));
+            let sender_len = sender.chars().count();
+            let remaining = text_width.saturating_sub(sender_len + 2); // "sender: "
+            let body = if remaining > 0 && msg.content.chars().count() > remaining {
+                let truncate_at = msg
+                    .content
+                    .char_indices()
+                    .nth(remaining.saturating_sub(2))
+                    .map(|(i, _)| i)
+                    .unwrap_or(msg.content.len());
+                format!("{}..", &msg.content[..truncate_at])
+            } else {
+                msg.content.clone()
+            };
+            let colon_body = format!(": {body}");
+            content_len = sender_len + colon_body.chars().count();
+            spans.push(Span::styled(sender, Style::default().fg(sender_color)));
+            spans.push(Span::styled(colon_body, Style::default().fg(palette.muted)));
         }
+
+        if show_timestamp {
+            // Pad between content and right-aligned timestamp
+            let pad = text_width.saturating_sub(content_len);
+            if pad > 0 {
+                spans.push(Span::raw(" ".repeat(pad)));
+            }
+            spans.push(Span::styled(
+                format!(" {time_str}"),
+                Style::default().fg(palette.muted),
+            ));
+        }
+
+        lines.push(Line::from(spans));
     }
 
     // Show the last N lines that fit in the available height
@@ -611,10 +650,11 @@ fn draw_coworker_status(f: &mut Frame, app: &mut App, area: Rect) {
     // channel leads are already excluded upstream by build_coworkers_data
     let active_count = active_coworkers.len();
     let header = format!("Coworkers ({}/{})", active_count, app.max_coworkers);
+    let palette = app.theme.palette();
     let header_paragraph = Paragraph::new(Line::from(vec![Span::styled(
         header,
         Style::default()
-            .fg(Color::Cyan)
+            .fg(palette.accent)
             .add_modifier(Modifier::BOLD),
     )]));
     f.render_widget(header_paragraph, chunks[0]);
@@ -706,6 +746,7 @@ fn draw_coworker_status(f: &mut Frame, app: &mut App, area: Rect) {
                 show_pr,
                 show_progress,
                 show_time,
+                palette,
             )
         })
         .collect();
@@ -714,7 +755,7 @@ fn draw_coworker_status(f: &mut Frame, app: &mut App, area: Rect) {
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .style(Style::default().fg(Color::White)),
+                .style(Style::default().fg(palette.fg)),
         )
         .column_spacing(1);
 
@@ -722,6 +763,7 @@ fn draw_coworker_status(f: &mut Frame, app: &mut App, area: Rect) {
 }
 
 /// Build a single table Row for a coworker.
+#[allow(clippy::too_many_arguments)]
 fn coworker_table_row(
     cw: &CoworkerInfo,
     spinner: &str,
@@ -730,42 +772,43 @@ fn coworker_table_row(
     show_pr: bool,
     show_progress: bool,
     show_time: bool,
+    palette: ThemePalette,
 ) -> Row<'static> {
     let health_color = match cw.health.as_str() {
-        "green" => Color::Green,
-        "yellow" => Color::Yellow,
-        "red" => Color::Red,
-        _ => Color::Green,
+        "green" => palette.success,
+        "yellow" => palette.warning,
+        "red" => palette.error,
+        _ => palette.success,
     };
 
     let mut cells: Vec<Cell> = vec![
-        Cell::from(spinner.to_string()).style(Style::default().fg(Color::Yellow)),
+        Cell::from(spinner.to_string()).style(Style::default().fg(palette.warning)),
         Cell::from(cw.name.clone()).style(Style::default().fg(health_color)),
     ];
 
     if show_task_id {
         let task_text = cw.task_id.map(|id| format!("!{id}")).unwrap_or_default();
-        cells.push(Cell::from(task_text).style(Style::default().fg(Color::DarkGray)));
+        cells.push(Cell::from(task_text).style(Style::default().fg(palette.muted)));
     }
 
     if show_phase {
         let phase_text = cw.phase.as_deref().unwrap_or("").to_string();
-        cells.push(Cell::from(phase_text).style(Style::default().fg(Color::DarkGray)));
+        cells.push(Cell::from(phase_text).style(Style::default().fg(palette.muted)));
     }
 
     if show_pr {
         let pr_text = cw.pr_number.map(|n| format!("#{n}")).unwrap_or_default();
-        cells.push(Cell::from(pr_text).style(Style::default().fg(Color::Blue)));
+        cells.push(Cell::from(pr_text).style(Style::default().fg(palette.info)));
     }
 
     if show_progress {
         let progress_text = cw.progress.map(|p| format!("{p}%")).unwrap_or_default();
-        cells.push(Cell::from(progress_text).style(Style::default().fg(Color::Cyan)));
+        cells.push(Cell::from(progress_text).style(Style::default().fg(palette.accent)));
     }
 
     if show_time {
         let time_text = cw.time_estimate.as_deref().unwrap_or("").to_string();
-        cells.push(Cell::from(time_text).style(Style::default().fg(Color::Green)));
+        cells.push(Cell::from(time_text).style(Style::default().fg(palette.success)));
     }
 
     Row::new(cells)
@@ -1000,22 +1043,24 @@ mod tests {
     }
 
     #[test]
-    fn test_render_task_item_pending_uses_dark_gray() {
+    fn test_render_task_item_pending_uses_muted_color() {
         let app = test_app();
+        let expected_muted = app.theme.palette().muted;
         let task = make_task("1", vec![]);
         let indentation = HashMap::from([("1".to_string(), 0)]);
         let mut lines = Vec::new();
 
         render_task_item(&app, &task, "midtown", &indentation, 80, &mut lines);
 
-        // Pending task (no PR) should use DarkGray
+        // Pending task (no PR) should use muted theme color
         let bullet_style = lines[0].spans[0].style;
-        assert_eq!(bullet_style.fg, Some(Color::DarkGray));
+        assert_eq!(bullet_style.fg, Some(expected_muted));
     }
 
     #[test]
-    fn test_render_task_item_in_progress_uses_yellow_bullet() {
+    fn test_render_task_item_in_progress_uses_warning_and_success() {
         let app = test_app();
+        let palette = app.theme.palette();
         let mut task = make_task("5", vec![]);
         task.status = TaskStatus::InProgress;
         let indentation = HashMap::from([("5".to_string(), 0)]);
@@ -1023,11 +1068,11 @@ mod tests {
 
         render_task_item(&app, &task, "midtown", &indentation, 80, &mut lines);
 
-        // InProgress task (no PR) should use Yellow bullet, Green text
+        // InProgress task (no PR) should use warning for bullet, success for text
         let bullet_style = lines[0].spans[0].style;
         let text_style = lines[0].spans[1].style;
-        assert_eq!(bullet_style.fg, Some(Color::Yellow));
-        assert_eq!(text_style.fg, Some(Color::Green));
+        assert_eq!(bullet_style.fg, Some(palette.warning));
+        assert_eq!(text_style.fg, Some(palette.success));
     }
 
     #[test]
@@ -1154,13 +1199,15 @@ mod tests {
 
     #[test]
     fn test_coworker_table_row_all_columns() {
+        use ratatui_themes::{Theme, ThemeName};
+        let palette = Theme::new(ThemeName::CatppuccinMocha).palette();
         let mut cw = make_coworker("park");
         cw.task_id = Some(1418);
         cw.pr_number = Some(1207);
         cw.progress = Some(42);
         cw.time_estimate = Some("~3m".to_string());
 
-        let row = coworker_table_row(&cw, "⠋", true, true, true, true, true);
+        let row = coworker_table_row(&cw, "⠋", true, true, true, true, true, palette);
 
         // Verify all 7 columns are present by checking the row can be constructed
         // (Row doesn't expose cell count directly, but we verify data is correct
@@ -1170,9 +1217,11 @@ mod tests {
 
     #[test]
     fn test_coworker_table_row_minimal_columns() {
+        use ratatui_themes::{Theme, ThemeName};
+        let palette = Theme::new(ThemeName::CatppuccinMocha).palette();
         let cw = make_coworker("york");
         // Minimal: only spinner + name (all show_* = false)
-        let row = coworker_table_row(&cw, "⠙", false, false, false, false, false);
+        let row = coworker_table_row(&cw, "⠙", false, false, false, false, false, palette);
         let _ = row;
     }
 
@@ -1489,13 +1538,15 @@ mod tests {
 
     #[test]
     fn test_coworker_table_row_review_phase_untruncated() {
+        use ratatui_themes::{Theme, ThemeName};
         // Verify that "review" (the longest phase abbreviation) renders
         // without truncation in the coworker table row.
+        let palette = Theme::new(ThemeName::CatppuccinMocha).palette();
         let mut cw = make_coworker("york");
         cw.phase = Some("review".to_string());
         cw.task_id = Some(42);
 
-        let row = coworker_table_row(&cw, "⠋", true, true, false, false, false);
+        let row = coworker_table_row(&cw, "⠋", true, true, false, false, false, palette);
         let _ = row; // Row builds successfully with the phase data
     }
 
@@ -1640,8 +1691,9 @@ mod tests {
     }
 
     #[test]
-    fn test_phase_label_second_line_rendered_in_gray() {
+    fn test_phase_label_second_line_rendered_in_muted_color() {
         let app = test_app();
+        let expected_muted = app.theme.palette().muted;
         let mut task = make_task("5", vec![]);
         task.status = TaskStatus::InProgress;
         let indentation = HashMap::from([("5".to_string(), 0)]);
@@ -1654,7 +1706,7 @@ mod tests {
         let label_line = &lines[1];
         assert_eq!(label_line.spans.len(), 1);
         let span = &label_line.spans[0];
-        assert_eq!(span.style.fg, Some(Color::DarkGray));
+        assert_eq!(span.style.fg, Some(expected_muted));
         // Content should contain "dev" for in_progress task with no PR
         assert!(
             span.content.contains("dev"),

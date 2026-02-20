@@ -28,6 +28,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::Paragraph,
 };
+use ratatui_themes::ThemePalette;
 
 use super::app::{App, CiStatus, RepoStatus};
 
@@ -179,40 +180,46 @@ fn format_relative_time(time: DateTime<Utc>) -> String {
 
 /// Draw stacked repo status lines (one per repo, or single line for single-repo)
 fn draw_repo_status_lines(f: &mut Frame, app: &App, area: Rect) {
+    let palette = app.theme.palette();
     if app.repo_statuses.len() > 1 {
         let lines: Vec<Line> = app
             .repo_statuses
             .iter()
-            .map(|(info, status)| build_repo_status_line(&info.label, status, area.width))
+            .map(|(info, status)| build_repo_status_line(&info.label, status, area.width, palette))
             .collect();
         let paragraph = Paragraph::new(lines);
         f.render_widget(paragraph, area);
     } else {
-        let line = build_repo_status_line(&app.repo_name, &app.repo_status, area.width);
+        let line = build_repo_status_line(&app.repo_name, &app.repo_status, area.width, palette);
         let paragraph = Paragraph::new(line);
         f.render_widget(paragraph, area);
     }
 }
 
 /// Build a single repo status line with commit, CI, and release info
-fn build_repo_status_line(repo_label: &str, status: &RepoStatus, width: u16) -> Line<'static> {
+fn build_repo_status_line(
+    repo_label: &str,
+    status: &RepoStatus,
+    width: u16,
+    palette: ThemePalette,
+) -> Line<'static> {
     let bg = Color::Indexed(236);
     let mut spans = Vec::new();
 
     spans.push(Span::styled(
         format!(" {}  ", repo_label),
-        Style::default().fg(Color::DarkGray).bg(bg),
+        Style::default().fg(palette.muted).bg(bg),
     ));
 
     if !status.commit_hash.is_empty() {
         spans.push(Span::styled(
             status.commit_hash.clone(),
-            Style::default().fg(Color::Yellow).bg(bg),
+            Style::default().fg(palette.accent).bg(bg),
         ));
         if let Some(commit_time) = status.commit_time {
             spans.push(Span::styled(
                 format!("  {}  ", format_relative_time(commit_time)),
-                Style::default().fg(Color::DarkGray).bg(bg),
+                Style::default().fg(palette.muted).bg(bg),
             ));
         } else {
             spans.push(Span::styled("  ", Style::default().bg(bg)));
@@ -220,10 +227,10 @@ fn build_repo_status_line(repo_label: &str, status: &RepoStatus, width: u16) -> 
     }
 
     let (ci_char, ci_color) = match status.ci_status {
-        CiStatus::Passed => ("●", Color::Rgb(0, 208, 80)),
-        CiStatus::Failed => ("●", Color::Red),
-        CiStatus::Running => ("●", Color::Yellow),
-        CiStatus::Unknown => ("○", Color::DarkGray),
+        CiStatus::Passed => ("●", palette.success),
+        CiStatus::Failed => ("●", palette.error),
+        CiStatus::Running => ("●", palette.warning),
+        CiStatus::Unknown => ("○", palette.muted),
     };
     spans.push(Span::styled(
         ci_char.to_string(),
@@ -234,16 +241,16 @@ fn build_repo_status_line(repo_label: &str, status: &RepoStatus, width: u16) -> 
     if let Some(tag) = &status.release_tag {
         spans.push(Span::styled(
             "Releases: ".to_string(),
-            Style::default().fg(Color::DarkGray).bg(bg),
+            Style::default().fg(palette.muted).bg(bg),
         ));
         spans.push(Span::styled(
             tag.to_string(),
-            Style::default().fg(Color::Cyan).bg(bg),
+            Style::default().fg(palette.info).bg(bg),
         ));
         if let Some(release_time) = status.release_time {
             spans.push(Span::styled(
                 format!("  {}", format_relative_time(release_time)),
-                Style::default().fg(Color::DarkGray).bg(bg),
+                Style::default().fg(palette.muted).bg(bg),
             ));
         }
     }

@@ -78,8 +78,10 @@ fn test_draw_ops_mini_channel_renders_without_panic() {
 
     terminal
         .draw(|f| {
+            use ratatui_themes::{Theme, ThemeName};
+            let palette = Theme::new(ThemeName::CatppuccinMocha).palette();
             let area = f.area();
-            draw_ops_mini_channel(f, &refs, area);
+            draw_ops_mini_channel(f, &refs, area, palette);
         })
         .unwrap();
     // No panic = success
@@ -95,8 +97,10 @@ fn test_draw_ops_mini_channel_empty_messages() {
 
     terminal
         .draw(|f| {
+            use ratatui_themes::{Theme, ThemeName};
+            let palette = Theme::new(ThemeName::CatppuccinMocha).palette();
             let area = f.area();
-            draw_ops_mini_channel(f, &[], area);
+            draw_ops_mini_channel(f, &[], area, palette);
         })
         .unwrap();
     // Empty state renders without panic
