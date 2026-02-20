@@ -1754,14 +1754,35 @@ impl App {
             };
 
             // Calculate unread count:
-            // Load the cursor without updating it, then count messages from that position
+            // First check the current session's cursor, then fall back to the most
+            // recently updated cursor from any previous session. This prevents a
+            // regression where a new TUI session (fresh UUID) shows everything as unread.
             let cursor = match midtown::Cursor::load_or_create(
                 &base_dir,
                 &channel_info.name,
                 "chat-tui",
                 &self.session_id,
             ) {
-                Ok(c) => c,
+                Ok(c) if c.last_message_id.is_some() => c,
+                Ok(_fresh) => {
+                    // Current session has a fresh cursor (never updated).
+                    // Try to find the most recent cursor from a previous session.
+                    match midtown::Cursor::load_latest_for_agent(
+                        &base_dir,
+                        &channel_info.name,
+                        "chat-tui",
+                    ) {
+                        Ok(Some(prev)) => prev,
+                        _ => {
+                            // No previous cursor either — all messages are unread
+                            if total_count > 0 {
+                                self.channel_unread_counts
+                                    .insert(channel_info.name.clone(), total_count);
+                            }
+                            continue;
+                        }
+                    }
+                }
                 Err(_) => {
                     // If we can't load cursor, assume all messages are unread
                     if total_count > 0 {

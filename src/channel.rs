@@ -33,7 +33,7 @@ pub struct ChannelInfo {
 /// - `channels/<name>/history/current.jsonl` — active message file
 /// - `channels/<name>/history/YYYY-MM-DD.jsonl` — rotated daily archives
 /// - `channels/<name>/notes/` — channel lead domain knowledge (markdown files)
-/// - `channels/<name>/cursors/<agent>/<session_id>.json` — per-session read positions
+/// - `channels/<name>/cursors/<session_id>.json` — per-session read positions
 ///
 /// Archived channels use a `.archived` suffix on the directory name:
 /// - `channels/<name>.archived/history/current.jsonl`
@@ -92,8 +92,8 @@ pub struct ChannelInfo {
 /// - `channel-YYYY-MM-DD.jsonl` → `channels/midtown/history/YYYY-MM-DD.jsonl`
 /// - `channels/<name>.jsonl` → `channels/<name>/history/current.jsonl`
 /// - `channels/<name>.archived.jsonl` → `channels/<name>.archived/history/current.jsonl`
-/// - `cursors/<agent>.json` → `channels/midtown/cursors/<agent>.json`
-/// - `cursors/<channel>/<agent>.json` → `channels/<channel>/cursors/<agent>.json`
+/// - `cursors/<agent>.json` → deleted (cursors are now session-scoped)
+/// - `cursors/<channel>/<agent>.json` → deleted (cursors are now session-scoped)
 fn auto_migrate_channels(base_dir: &Path) {
     use std::collections::HashSet;
     use std::sync::{Mutex, OnceLock};
@@ -226,7 +226,7 @@ fn do_migrate_channels(base_dir: &Path) -> std::io::Result<()> {
     }
 
     // 4. Delete old flat cursor files channels/<channel>/cursors/<agent>.json.
-    // Cursors are now session-scoped: channels/<channel>/cursors/<agent>/<session_id>.json.
+    // Cursors are now session-scoped: channels/<channel>/cursors/<session_id>.json.
     // Old flat files are ephemeral (no data loss), so we delete them.
     if channels_dir.exists()
         && let Ok(channel_dirs) = fs::read_dir(&channels_dir)
@@ -243,8 +243,16 @@ fn do_migrate_channels(base_dir: &Path) -> std::io::Result<()> {
             if let Ok(cursor_entries) = fs::read_dir(&cursors_dir) {
                 for cursor_entry in cursor_entries.flatten() {
                     let cursor_path = cursor_entry.path();
-                    // Old flat format: cursors/<agent>.json (file, not directory)
-                    if cursor_path.is_file() && cursor_path.extension().is_some_and(|e| e == "json")
+                    // Old flat format: cursors/<agent>.json (no session_id field).
+                    // New session-scoped format: cursors/<session_id>.json (has session_id field).
+                    // Only delete old-format cursors to avoid destroying new ones on restart.
+                    if cursor_path.is_file()
+                        && cursor_path.extension().is_some_and(|e| e == "json")
+                        && !cursor_path
+                            .to_str()
+                            .is_some_and(|s| s.ends_with(".json.tmp"))
+                        && let Ok(content) = fs::read_to_string(&cursor_path)
+                        && !content.contains("\"session_id\"")
                     {
                         let _ = fs::remove_file(&cursor_path);
                     }
@@ -1140,38 +1148,26 @@ impl Channel {
         crate::paths::atomic_rename(&temp_path, &self.channel_file)?;
 
         // Reset all cursor files for this channel since byte positions have changed.
-        // Cursors live in channels/<name>/cursors/<agent>/<session_id>.json.
+        // Cursors live in channels/<name>/cursors/<session_id>.json.
         let channel_cursors_dir = self
             .base_dir
             .join("channels")
             .join(&self.channel_name)
             .join("cursors");
         if channel_cursors_dir.exists()
-            && let Ok(agent_dirs) = fs::read_dir(&channel_cursors_dir)
+            && let Ok(cursor_files) = fs::read_dir(&channel_cursors_dir)
         {
-            for agent_entry in agent_dirs.flatten() {
-                let agent_path = agent_entry.path();
-                if !agent_path.is_dir() {
-                    continue;
-                }
-                let Ok(session_files) = fs::read_dir(&agent_path) else {
-                    continue;
-                };
-                for session_entry in session_files.flatten() {
-                    let cursor_path = session_entry.path();
-                    if cursor_path.extension().is_some_and(|e| e == "json")
-                        && let Some(agent) = agent_path.file_name().and_then(|s| s.to_str())
-                        && let Some(session_id) = cursor_path.file_stem().and_then(|s| s.to_str())
-                        && let Ok(mut cursor) = crate::cursor::Cursor::load_or_create(
-                            &self.base_dir,
-                            &self.channel_name,
-                            agent,
-                            session_id,
-                        )
-                    {
-                        cursor.reset();
-                        let _ = cursor.save(&self.base_dir, &self.channel_name);
-                    }
+            for entry in cursor_files.flatten() {
+                let cursor_path = entry.path();
+                if cursor_path.is_file()
+                    && cursor_path.extension().is_some_and(|e| e == "json")
+                    && !cursor_path
+                        .to_str()
+                        .is_some_and(|s| s.ends_with(".json.tmp"))
+                    && let Ok(mut cursor) = crate::cursor::Cursor::load(&cursor_path)
+                {
+                    cursor.reset();
+                    let _ = cursor.save(&self.base_dir, &self.channel_name);
                 }
             }
         }

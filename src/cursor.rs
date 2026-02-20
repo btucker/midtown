@@ -73,16 +73,16 @@ impl Cursor {
 
     /// Get the path for a cursor file
     ///
-    /// Cursors are stored at `channels/<channel>/cursors/<agent>/<session_id>.json`,
-    /// colocated with the channel directory they track. The per-agent subdirectory
-    /// isolates sessions from each other: each session_id gets its own file, so
-    /// concurrent or successive sessions with the same name don't share state.
-    pub fn file_path(base_dir: &Path, channel: &str, agent: &str, session_id: &str) -> PathBuf {
+    /// Cursors are stored at `channels/<channel>/cursors/<session_id>.json`,
+    /// colocated with the channel directory they track. Each session_id gets its
+    /// own file, so concurrent or successive sessions don't share state.
+    /// The agent name is stored inside the JSON, not in the file path — this
+    /// ensures a session resumed under a different name still finds its cursor.
+    pub fn file_path(base_dir: &Path, channel: &str, session_id: &str) -> PathBuf {
         base_dir
             .join("channels")
             .join(channel)
             .join("cursors")
-            .join(agent)
             .join(format!("{}.json", session_id))
     }
 
@@ -98,7 +98,7 @@ impl Cursor {
         agent: &str,
         session_id: &str,
     ) -> Result<Self> {
-        let path = Self::file_path(base_dir, channel, agent, session_id);
+        let path = Self::file_path(base_dir, channel, session_id);
         if path.exists() {
             Self::load(&path)
         } else {
@@ -118,9 +118,9 @@ impl Cursor {
     ///
     /// Note: The channel name must be provided since it's not stored in the Cursor struct.
     pub fn save(&self, base_dir: &Path, channel: &str) -> Result<()> {
-        let path = Self::file_path(base_dir, channel, &self.agent, &self.session_id);
+        let path = Self::file_path(base_dir, channel, &self.session_id);
 
-        // Ensure cursors/<agent>/ directory exists
+        // Ensure cursors/ directory exists
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
@@ -140,13 +140,52 @@ impl Cursor {
     ///
     /// Silently ignores errors (e.g., file already deleted).
     pub fn delete(&self, base_dir: &Path, channel: &str) {
-        let path = Self::file_path(base_dir, channel, &self.agent, &self.session_id);
+        let path = Self::file_path(base_dir, channel, &self.session_id);
         let _ = fs::remove_file(&path);
+    }
 
-        // Remove the agent directory if it's now empty
-        if let Some(agent_dir) = path.parent() {
-            let _ = fs::remove_dir(agent_dir); // only succeeds if empty
+    /// Load the most recently updated cursor for a given agent across all sessions.
+    ///
+    /// Scans all cursor files in the channel's cursors directory, parses each one,
+    /// and returns the cursor with the most recent `updated_at` that matches the
+    /// given agent name. Returns `None` if no matching cursor exists.
+    ///
+    /// Used by the TUI for unread counts: a new session needs to know the user's
+    /// last read position from any previous session.
+    pub fn load_latest_for_agent(
+        base_dir: &Path,
+        channel: &str,
+        agent: &str,
+    ) -> Result<Option<Self>> {
+        let cursors_dir = base_dir.join("channels").join(channel).join("cursors");
+
+        if !cursors_dir.exists() {
+            return Ok(None);
         }
+
+        let mut latest: Option<Self> = None;
+        if let Ok(entries) = fs::read_dir(&cursors_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_file()
+                    && path.extension().is_some_and(|e| e == "json")
+                    && let Ok(cursor) = Self::load(&path)
+                    && cursor.agent == agent
+                {
+                    match &latest {
+                        Some(prev) if cursor.updated_at > prev.updated_at => {
+                            latest = Some(cursor);
+                        }
+                        None => {
+                            latest = Some(cursor);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        Ok(latest)
     }
 
     /// Update the cursor position
@@ -255,10 +294,10 @@ mod tests {
     fn test_cursor_file_path() {
         use std::path::Path;
         let base = Path::new("/tmp/test");
-        let path = Cursor::file_path(base, "midtown", "lead", "session-abc");
+        let path = Cursor::file_path(base, "midtown", "session-abc");
         assert_eq!(
             path,
-            Path::new("/tmp/test/channels/midtown/cursors/lead/session-abc.json")
+            Path::new("/tmp/test/channels/midtown/cursors/session-abc.json")
         );
     }
 
@@ -270,12 +309,74 @@ mod tests {
         cursor.save(temp_dir.path(), "midtown").unwrap();
 
         // Verify file exists
-        let path = Cursor::file_path(temp_dir.path(), "midtown", "agent1", "session-abc");
+        let path = Cursor::file_path(temp_dir.path(), "midtown", "session-abc");
         assert!(path.exists());
 
         // Delete and verify gone
         cursor.delete(temp_dir.path(), "midtown");
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn test_cursor_resumed_session_finds_cursor_regardless_of_agent_name() {
+        let temp_dir = TempDir::new().unwrap();
+
+        // Session "abc-123" saves a cursor as agent "park"
+        let mut cursor = Cursor::new("park", "abc-123");
+        cursor.update(100, Some("msg-1".to_string()));
+        cursor.save(temp_dir.path(), "midtown").unwrap();
+
+        // Same session resumed as agent "madison" should find the cursor
+        let loaded =
+            Cursor::load_or_create(temp_dir.path(), "midtown", "madison", "abc-123").unwrap();
+        assert_eq!(loaded.position, 100);
+        assert_eq!(loaded.last_message_id, Some("msg-1".to_string()));
+    }
+
+    #[test]
+    fn test_load_latest_for_agent() {
+        let temp_dir = TempDir::new().unwrap();
+
+        // Session 1 reads up to position 100
+        let mut cursor1 = Cursor::new("chat-tui", "session-1");
+        cursor1.update(100, Some("msg-old".to_string()));
+        cursor1.save(temp_dir.path(), "midtown").unwrap();
+
+        // Session 2 reads up to position 200 (more recent)
+        let mut cursor2 = Cursor::new("chat-tui", "session-2");
+        cursor2.update(200, Some("msg-new".to_string()));
+        cursor2.save(temp_dir.path(), "midtown").unwrap();
+
+        // load_latest_for_agent should return session-2's cursor
+        let latest = Cursor::load_latest_for_agent(temp_dir.path(), "midtown", "chat-tui").unwrap();
+        assert!(latest.is_some());
+        let latest = latest.unwrap();
+        assert_eq!(latest.position, 200);
+        assert_eq!(latest.last_message_id, Some("msg-new".to_string()));
+    }
+
+    #[test]
+    fn test_load_latest_for_agent_filters_by_agent() {
+        let temp_dir = TempDir::new().unwrap();
+
+        // Two agents, same channel
+        let mut cursor1 = Cursor::new("chat-tui", "session-1");
+        cursor1.update(100, Some("msg-1".to_string()));
+        cursor1.save(temp_dir.path(), "midtown").unwrap();
+
+        let mut cursor2 = Cursor::new("lead", "session-2");
+        cursor2.update(200, Some("msg-2".to_string()));
+        cursor2.save(temp_dir.path(), "midtown").unwrap();
+
+        // Should only find the chat-tui cursor
+        let latest = Cursor::load_latest_for_agent(temp_dir.path(), "midtown", "chat-tui").unwrap();
+        assert!(latest.is_some());
+        assert_eq!(latest.unwrap().position, 100);
+
+        // No cursor for unknown agent
+        let none =
+            Cursor::load_latest_for_agent(temp_dir.path(), "midtown", "nonexistent").unwrap();
+        assert!(none.is_none());
     }
 
     #[test]

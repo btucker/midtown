@@ -49,7 +49,6 @@ pub enum HookCommand {
 /// Input structure for hooks (from Claude Code via stdin)
 #[derive(Debug, serde::Deserialize)]
 struct HookInput {
-    #[allow(dead_code)]
     session_id: Option<String>,
     transcript_path: Option<String>,
     #[allow(dead_code)]
@@ -340,13 +339,8 @@ fn read_channel_messages_for_repo(
 
     // For new sessions (no cursor file yet), start at EOF so the first stop
     // event only reports messages that arrived during this session.
-    let cursor_exists = midtown::Cursor::file_path(
-        channel.base_dir(),
-        channel.channel_name(),
-        "lead",
-        session_id,
-    )
-    .exists();
+    let cursor_exists =
+        midtown::Cursor::file_path(channel.base_dir(), channel.channel_name(), session_id).exists();
     if !cursor_exists {
         let _ = channel.set_cursor_to_end("lead", session_id);
         return Ok(Vec::new());
