@@ -343,7 +343,8 @@ fn should_recover_task(
 ///
 /// Rate limiting: Only spawns ONE coworker per tick with a cooldown between
 /// spawns to prevent window flashing from spawn storms.
-// Legacy: kept for existing tests. Will be removed in cleanup task.
+// Backward-compat test infrastructure: exercises the original orphan recovery
+// path (case 3 only) independently of the full session-aware dispatch.
 #[cfg(test)]
 #[allow(dead_code)]
 pub fn check_and_recover_orphans(
@@ -353,7 +354,7 @@ pub fn check_and_recover_orphans(
     check_and_recover_orphans_with_task_lookup(snap, state, crate::tasks::read_task)
 }
 
-// Legacy: kept for existing tests. Will be removed in cleanup task.
+// Backward-compat test infrastructure: testable version with injectable task lookup.
 #[cfg(test)]
 fn check_and_recover_orphans_with_task_lookup<F>(
     snap: &snapshot::WorldSnapshot,
@@ -692,7 +693,9 @@ pub(super) fn extract_claimed_task_ids_from_effects(effects: &[Effect]) -> HashS
 ///
 /// For remaining tasks, handles three cases:
 /// 1. Task has running session -> skip (being worked on)
-/// 2. Task has stopped session -> resume via SpawnCoworkerWithCallbacks
+/// 2. Task has stopped session -> resume via SpawnCoworkerWithCallbacks,
+///    unless the coworker is an active reviewer (skip to avoid interrupting
+///    their review work)
 /// 3. Task has no session record -> apply recovery filtering (PR merge checks,
 ///    dev limit, grace period) and fresh spawn if eligible
 ///
@@ -801,6 +804,20 @@ where
             .as_deref()
             .or(record.current_name.as_deref())
             .unwrap_or(owner);
+
+        // Skip if this coworker is currently serving as a reviewer.
+        // A coworker can have a stopped task session AND a running reviewer session.
+        // Resuming the task session would interrupt their review work.
+        if snap
+            .active_reviewers
+            .contains(&coworker_name.to_lowercase())
+        {
+            debug!(
+                "Session dispatch: skipping task !{} — coworker {} is an active reviewer",
+                task_id, coworker_name
+            );
+            continue;
+        }
 
         // Check per-coworker spawn failure cooldown (pre-evaluated in snapshot)
         if snap
