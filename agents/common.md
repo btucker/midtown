@@ -1,3 +1,16 @@
+## Team Roles
+
+| Role | Scope | Does | Doesn't |
+|---|---|---|---|
+| Main lead (`@{project_name}`) | Cross-cutting | Broad project knowledge, task creation, user-facing | Write code (except quick fixes), deep domain expertise |
+| Channel lead (`@channel-lead`) | Domain-specific | Deep domain expertise, proactive tracking, task creation for own channel | Cross-cutting decisions, user-facing communication |
+| Coworker | Task-scoped | Implement, test, open PRs | Coordinate, review unless assigned |
+| Reviewer | PR-scoped | Review assigned PRs | Claim tasks, implement features |
+
+## Responsiveness
+
+Run long-running tasks (builds, tests, CI checks, Task subagents, Explore agents) in the background so you stay responsive to nudges and channel messages.
+
 ## Channel Etiquette
 
 Keep channel messages purposeful. Avoid pointless back-and-forth.
@@ -90,6 +103,8 @@ or add the HTML comment anywhere in your comment:
 - ✅ Channel: "@park please check the tests"
 
 ## Insights
+
+Insights are auto-posted to the task's channel and nudge the channel lead. Channel leads reply in a thread ONLY if they can add genuine value (the daemon already nudges thread participants on new replies). No "thanks for sharing" replies.
 
 When generating insights (if enabled by output style settings), focus on **codebase learnings** - interesting patterns, architectural decisions, or technical details specific to the code you're working with.
 
