@@ -25,6 +25,7 @@ mod rpc_headed;
 mod rpc_headless;
 mod rpc_insight;
 mod rpc_kanban;
+mod rpc_prs;
 mod rpc_reminder;
 mod rpc_session;
 mod rpc_status;
@@ -600,12 +601,18 @@ pub(crate) struct DaemonState {
     /// to "exactly-once" semantics.
     rpc_response_cache:
         Mutex<HashMap<crate::rpc::RequestId, (crate::rpc::Response, std::time::Instant)>>,
-    /// Kanban data cache with 30s TTL.
+    /// Kanban data cache with 60s TTL.
     ///
-    /// Stores the full kanban GraphQL response (PRs, merged PRs, repos) keyed by
-    /// a hash of the repo paths. Integrated into DaemonState (rather than a global
-    /// static) so the daemon can inspect and clean it up alongside other caches.
+    /// Deprecated — use `prs_cache` + `coworkers.status` instead. Kept for backward
+    /// compatibility with the `kanban.data` RPC during migration.
     kanban_cache: rpc_kanban::KanbanCache,
+    /// PR data cache with 60s TTL for the `prs.status` RPC.
+    ///
+    /// Stores the PR GraphQL response (open PRs, merged PRs, repos) keyed by a
+    /// hash of repo paths. Unlike `kanban_cache`, this cache does NOT include
+    /// coworker state — coworker state is served separately via `coworkers.status`
+    /// at 1-2s poll intervals (no cache needed).
+    pub(crate) prs_cache: rpc_prs::PrsCache,
     /// Draining mode flag - when true, daemon stops assigning new tasks to coworkers.
     ///
     /// Set via `coworker.stop_all` RPC handler before sending SIGTERM to coworkers,
@@ -634,7 +641,7 @@ pub(crate) struct DaemonState {
     /// Capped at `MAX_TOOL_ITEMS_PER_AGENT` per agent to bound memory.
     /// Cleared when a channel message from the agent is posted (work phase done),
     /// and when a coworker session stops (via `cleanup_coworker_state`).
-    /// Exposed via `kanban.data` RPC (live, not cached) so the TUI can display
+    /// Exposed via `coworkers.status` RPC (live, not cached) so the TUI can display
     /// per-coworker tool activity alongside chat messages.
     pub(crate) recent_tool_items:
         std::sync::RwLock<HashMap<String, Vec<crate::universal_events::UniversalItem>>>,
@@ -931,6 +938,7 @@ impl DaemonState {
         cache.retain(|_, (_, timestamp)| now.duration_since(*timestamp).as_secs() < 60);
         // Also clean up expired kanban cache entries
         self.kanban_cache.cleanup();
+        self.prs_cache.cleanup();
     }
 
     /// Check if the daemon is at the absolute coworker limit (including reviewer headroom).
@@ -1166,6 +1174,7 @@ impl DaemonState {
             session_manager: sessions::SessionManager::new(session_manager_repo_name),
             rpc_response_cache: Mutex::new(HashMap::new()),
             kanban_cache: rpc_kanban::KanbanCache::new(),
+            prs_cache: rpc_prs::PrsCache::new(),
             pr_review_negative_cache: std::sync::Mutex::new(HashMap::new()),
             draining: std::sync::atomic::AtomicBool::new(false),
             restart_requested: std::sync::atomic::AtomicBool::new(false),

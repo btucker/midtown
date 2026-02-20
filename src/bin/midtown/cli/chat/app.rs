@@ -472,8 +472,11 @@ pub struct ChannelSwitcherItem {
     pub unread_count: usize,
 }
 
-/// Interval between kanban data refreshes (5 seconds — PR data via GraphQL)
-const KANBAN_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
+/// Interval between PR/kanban data refreshes (30 seconds).
+///
+/// PR data requires a GitHub GraphQL round-trip, cached for 60s on the daemon side.
+/// 30s is short enough to stay within cache TTL while avoiding redundant fetches.
+const KANBAN_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 
 /// Interval between coworker status refreshes (2 seconds — live in-memory state, no GraphQL)
 const COWORKER_STATUS_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
@@ -2668,7 +2671,7 @@ fn fetch_merged_prs() -> Vec<MergedPr> {
 
 type KanbanRpcResult = Option<(Vec<KanbanPr>, Vec<MergedPr>, Vec<(String, String)>)>;
 
-/// Fetch kanban PR data from the daemon via RPC (`kanban.data`).
+/// Fetch PR data from the daemon via the `prs.status` RPC.
 ///
 /// Returns `None` if the daemon is not available, allowing fallback to direct gh CLI.
 /// Coworker data is fetched separately via `fetch_coworker_status_via_rpc`.
@@ -2676,7 +2679,7 @@ fn fetch_kanban_data_via_rpc() -> KanbanRpcResult {
     use crate::client::DaemonClient;
 
     let client = DaemonClient::connect().ok()?;
-    let data = client.kanban_data().ok()?;
+    let data = client.prs_status().ok()?;
 
     let prs_json = data.get("prs").and_then(|v| v.as_array())?;
     let merged_json = data.get("merged_prs").and_then(|v| v.as_array())?;
