@@ -1,5 +1,7 @@
 //! Tests for auth RPC handlers.
 
+use std::collections::{HashMap, HashSet};
+
 use super::*;
 use crate::auth::AuthProvider;
 
@@ -95,4 +97,92 @@ fn test_build_coworker_relaunch_config_preserves_old_provider() {
     // The config preserves the coworker's provider
     assert_eq!(config.auth_provider, AuthProvider::Claude);
     // handle_auth_switch() must override this with the NEW provider
+}
+
+#[test]
+fn test_provider_platform_compatibility() {
+    assert_eq!(
+        platform_for_provider(AuthProvider::Claude),
+        SessionPlatform::ClaudeCli
+    );
+    assert_eq!(
+        platform_for_provider(AuthProvider::Zai),
+        SessionPlatform::ClaudeCli
+    );
+    assert_eq!(
+        platform_for_provider(AuthProvider::Codex),
+        SessionPlatform::CodexCli
+    );
+    assert!(can_resume_between_providers(
+        AuthProvider::Claude,
+        AuthProvider::Zai
+    ));
+    assert!(can_resume_between_providers(
+        AuthProvider::Zai,
+        AuthProvider::Claude
+    ));
+    assert!(!can_resume_between_providers(
+        AuthProvider::Claude,
+        AuthProvider::Codex
+    ));
+    assert!(!can_resume_between_providers(
+        AuthProvider::Codex,
+        AuthProvider::Zai
+    ));
+}
+
+#[test]
+fn test_execution_role_for_coworker() {
+    let mut reviewer_pr_by_name = HashMap::new();
+    reviewer_pr_by_name.insert("park".to_string(), 42);
+
+    let channel_lead_session_names = HashSet::from(["auth".to_string()]);
+
+    let lead = crate::coworker::Coworker {
+        slot_id: "1".to_string(),
+        name: "lead".to_string(),
+        status: crate::coworker::CoworkerStatus::Running,
+        working_dir: "/tmp/lead".to_string(),
+        started_at: chrono::Utc::now(),
+        current_task: None,
+        session_id: None,
+        model: "opus".to_string(),
+        provider: AuthProvider::Claude,
+        profile: "default".to_string(),
+    };
+    assert_eq!(
+        execution_role_for_coworker(&lead, &reviewer_pr_by_name, &channel_lead_session_names),
+        crate::config::ExecutionRole::Lead
+    );
+
+    let reviewer = crate::coworker::Coworker {
+        name: "park".to_string(),
+        ..lead.clone()
+    };
+    assert_eq!(
+        execution_role_for_coworker(&reviewer, &reviewer_pr_by_name, &channel_lead_session_names),
+        crate::config::ExecutionRole::Reviewer
+    );
+
+    let channel_lead = crate::coworker::Coworker {
+        name: "auth".to_string(),
+        ..lead.clone()
+    };
+    assert_eq!(
+        execution_role_for_coworker(
+            &channel_lead,
+            &reviewer_pr_by_name,
+            &channel_lead_session_names
+        ),
+        crate::config::ExecutionRole::ChannelLead
+    );
+
+    let coworker = crate::coworker::Coworker {
+        name: "lexington".to_string(),
+        ..lead
+    };
+    assert_eq!(
+        execution_role_for_coworker(&coworker, &reviewer_pr_by_name, &channel_lead_session_names),
+        crate::config::ExecutionRole::Coworker
+    );
 }
