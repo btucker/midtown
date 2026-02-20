@@ -67,16 +67,18 @@ pub(super) async fn chat_monitor_loop(
                                     // handled in handle_channel_post to avoid double-nudging.
                                     if !state.is_user_sender(&msg.from) {
                                         let msg_lower = msg.content.to_lowercase();
-                                        if msg_lower.contains("@lead") {
+                                        let lead_mention = format!("@{}", state.repo_name).to_lowercase();
+                                        if msg_lower.contains("@lead") || msg_lower.contains(&lead_mention) {
                                             let nudge_text =
                                                 format!("{}: {}", msg.from, msg.content);
                                             state.nudge_lead(&nudge_text).await;
                                             info!(
-                                                "Nudged lead about @lead mention in {} message",
+                                                "Nudged lead about @{} mention in {} message",
+                                                state.repo_name,
                                                 msg.from
                                             );
                                             state.send_push_notification(
-                                                &format!("@lead from {}", msg.from),
+                                                &format!("@{} from {}", state.repo_name, msg.from),
                                                 &msg.content,
                                                 "mention",
                                             );
@@ -185,7 +187,7 @@ async fn route_at_all(state: &DaemonState, msg: &Message) {
     );
 
     // Nudge the lead (unless the lead sent the message)
-    if !msg.from.eq_ignore_ascii_case("lead") {
+    if !msg.from.eq_ignore_ascii_case("lead") && !msg.from.eq_ignore_ascii_case(&state.repo_name) {
         state.nudge_lead(&nudge_text).await;
         info!("Nudged lead for @all from {}", msg.from);
     }

@@ -39,7 +39,6 @@ pub enum ConfigCommand {
 
 /// All supported config key paths.
 const VALID_KEYS: &[&str] = &[
-    "default.personality",
     "default.max_coworkers",
     "default.chat_layout",
     "default.chat_min_width",
@@ -262,7 +261,6 @@ fn fmt_secret(opt: Option<&str>) -> String {
 /// Read a field from `GlobalConfig` by dotted key name.
 fn global_field_value(config: &midtown::config::GlobalConfig, key: &str) -> String {
     match key {
-        "default.personality" => fmt_opt(config.default.personality.map(|p| p.as_str())),
         "default.max_coworkers" => fmt_opt(config.default.max_coworkers),
         "default.chat_layout" => fmt_opt(config.default.chat_layout.map(chat_layout_str)),
         "default.chat_min_width" => fmt_opt(config.default.chat_min_width),
@@ -293,7 +291,6 @@ fn global_field_value(config: &midtown::config::GlobalConfig, key: &str) -> Stri
 /// Read a field from `FullProjectConfig` by dotted key name.
 fn project_field_value(config: &midtown::config::FullProjectConfig, key: &str) -> String {
     match key {
-        "default.personality" => fmt_opt(config.default.personality.map(|p| p.as_str())),
         "default.max_coworkers" => fmt_opt(config.default.max_coworkers),
         "default.chat_layout" => fmt_opt(config.default.chat_layout.map(chat_layout_str)),
         "default.chat_min_width" => fmt_opt(config.default.chat_min_width),
@@ -328,9 +325,6 @@ fn apply_global_key(
     value: &str,
 ) -> Result<(), String> {
     match key {
-        "default.personality" => {
-            config.default.personality = Some(parse_personality(value)?);
-        }
         "default.max_coworkers" => {
             config.default.max_coworkers = Some(parse_usize(key, value)?);
         }
@@ -390,9 +384,6 @@ fn apply_project_key(
     value: &str,
 ) -> Result<(), String> {
     match key {
-        "default.personality" => {
-            config.default.personality = Some(parse_personality(value)?);
-        }
         "default.max_coworkers" => {
             config.default.max_coworkers = Some(parse_usize(key, value)?);
         }
@@ -448,18 +439,6 @@ fn apply_project_key(
 // ──────────────────────────────────────────────────────────────────────────────
 // Type parsers
 // ──────────────────────────────────────────────────────────────────────────────
-
-fn parse_personality(value: &str) -> Result<midtown::config::Personality, String> {
-    match value {
-        "normal" => Ok(midtown::config::Personality::Normal),
-        "fun" => Ok(midtown::config::Personality::Fun),
-        "wild" => Ok(midtown::config::Personality::Wild),
-        _ => Err(format!(
-            "Invalid personality '{}'. Valid values: normal, fun, wild",
-            value
-        )),
-    }
-}
 
 fn parse_chat_layout(value: &str) -> Result<midtown::config::ChatLayout, String> {
     match value {

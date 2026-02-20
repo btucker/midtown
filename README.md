@@ -271,7 +271,6 @@ midtown config get default.max_coworkers
 midtown config get daemon.webhook_port --global
 
 # Set a setting (persisted to config.toml, comments preserved)
-midtown config set default.personality fun
 midtown config set default.max_coworkers 6
 midtown config set daemon.webhook_port 47099 --global
 ```
@@ -290,15 +289,6 @@ Daemon settings can be overridden with environment variables:
 | `MIDTOWN_PR_POLL_INTERVAL` | `pr_poll_interval_secs` |
 | `MIDTOWN_CHAT_MONITOR` | `chat_monitor_enabled` (set to `0` to disable) |
 | `MIDTOWN_MAX_COWORKERS` | `max_coworkers` |
-
-### Custom System Prompts
-
-Customize the system prompts for Lead and Coworkers with markdown files:
-
-- `~/.midtown/LEAD.md` / `~/.midtown/COWORKER.md` - Global custom prompts
-- `~/.midtown/projects/<project>/LEAD.md` / `COWORKER.md` - Per-project custom prompts
-
-Content from these files is appended to the built-in system prompts. Project-level files supplement global ones.
 
 ## Docker
 

@@ -38,3 +38,6 @@ state.json
 
 # Captured snapshots staging area (move to tests/fixtures/snapshot/ when writing tests)
 tests/fixtures/snapshot/captured/
+
+# Git worktrees
+.worktrees/

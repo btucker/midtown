@@ -128,7 +128,7 @@ pub(super) async fn handle_lead_spawn(
         );
     }
 
-    let mut config = crate::launch::LaunchConfig::lead(&state.repo_name);
+    let mut config = crate::launch::LaunchConfig::lead(&state.repo_name, None);
     config.auth_provider = provider;
 
     // Use the canonical lead worktree path so spawn_coworker uses it

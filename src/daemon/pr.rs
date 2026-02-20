@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 use tracing::{debug, info, warn};
 
-use crate::{config, daemon_messages};
+use crate::daemon_messages;
 
 use super::DaemonState;
 use super::constants::*;
@@ -1222,7 +1222,6 @@ fn pr_action_to_effects(
                         &owner,
                         &issue_type.to_string(),
                         pr_number,
-                        config::get_personality(),
                     ),
                     channel: Some(OPS_CHANNEL.to_string()),
                 },
@@ -1896,11 +1895,7 @@ fn comment_action_to_effects(
                 },
                 Effect::PostToChannel {
                     sender: "midtown".to_string(),
-                    message: crate::daemon_messages::called_in_review_feedback(
-                        &owner,
-                        pr_number,
-                        crate::config::get_personality(),
-                    ),
+                    message: crate::daemon_messages::called_in_review_feedback(&owner, pr_number),
                     channel: Some(OPS_CHANNEL.to_string()),
                 },
                 Effect::RecordPrNudge {
@@ -2417,11 +2412,7 @@ pub(crate) async fn collect_reviewer_effects_with_source(
             },
             Effect::PostToChannel {
                 sender: "midtown".to_string(),
-                message: daemon_messages::called_in_reviewer(
-                    &reviewer_name,
-                    pr_number,
-                    config::get_personality(),
-                ),
+                message: daemon_messages::called_in_reviewer(&reviewer_name, pr_number),
                 channel: Some(OPS_CHANNEL.to_string()),
             },
         ];
@@ -2513,11 +2504,7 @@ fn review_complete_action_to_effects(
                 },
                 Effect::PostToChannel {
                     sender: "midtown".to_string(),
-                    message: daemon_messages::called_in_review_feedback(
-                        &owner,
-                        pr_number,
-                        config::get_personality(),
-                    ),
+                    message: daemon_messages::called_in_review_feedback(&owner, pr_number),
                     channel: Some(OPS_CHANNEL.to_string()),
                 },
                 Effect::RecordPrNudge {

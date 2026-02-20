@@ -237,7 +237,7 @@ pub(super) async fn handle_auth_switch(
             let _ = state.session_manager.shutdown("lead").await;
             state.coworkers.deregister("lead");
         }
-        let mut lead_config = crate::launch::LaunchConfig::lead(&state.repo_name);
+        let mut lead_config = crate::launch::LaunchConfig::lead(&state.repo_name, None);
         lead_config.auth_profile_dir = Some(crate::auth::active_profile_dir_for_project(
             &state.repo_name,
         ));

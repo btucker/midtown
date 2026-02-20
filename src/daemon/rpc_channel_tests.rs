@@ -172,8 +172,10 @@ async fn test_coworker_at_lead_queues_headed_lead_nudge() {
         .expect("poll headed queue");
     assert_eq!(messages.len(), 1);
     assert!(
-        messages[0].text.contains("york mentioned @lead"),
-        "queue entry should summarize coworker @lead mention"
+        messages[0]
+            .text
+            .contains("york mentioned @midtown-test-rpc-channel-queue-coworker"),
+        "queue entry should summarize coworker @{{project_name}} mention"
     );
 }
 

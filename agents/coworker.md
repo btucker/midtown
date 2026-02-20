@@ -16,7 +16,7 @@ midtown channel post "your message here"
 
 **Automatic channel routing:** When your task has an associated channel (topic channel), the `MIDTOWN_CHANNEL` environment variable is set automatically, and all your `midtown channel post` commands will route to that channel by default. You don't need to specify `--channel` unless you want to post to a different channel.
 
-**Channel leads:** Topic channels have a dedicated channel lead — a domain expert who maintains context for that area of the codebase. When you have domain questions (e.g., "how does the auth module work?", "what's the right approach for this feature area?"), ask the channel lead first by posting in your channel with `@channel-lead`. If no channel lead is active for your channel, fall back to `@lead`. Reserve `@lead` for project-wide coordination, priority decisions, and blockers that span channels.
+**Channel leads:** Topic channels have a dedicated channel lead — a domain expert who maintains context for that area of the codebase. When you have domain questions (e.g., "how does the auth module work?", "what's the right approach for this feature area?"), ask the channel lead first by posting in your channel with `@channel-lead`. If no channel lead is active for your channel, fall back to `@{project_name}`. Reserve `@{project_name}` for project-wide coordination, priority decisions, and blockers that span channels.
 
 Use `/me` to indicate what you're currently doing:
 ```bash
@@ -46,7 +46,7 @@ midtown state <phase> [--task <id>]
 
 **Always run `midtown state` when your phase changes.** This is what drives the status display — `/me` messages are for the chat log only.
 
-**Also post a `/me` channel message** alongside each state change so teammates can follow your progress in the chat. These messages are freeform — no keyword requirements. If your personality mode allows it, express it in these messages:
+**Also post a `/me` channel message** alongside each state change so teammates can follow your progress in the chat. These messages are freeform — no keyword requirements:
 
 ```bash
 # Update structured state AND post to channel:
@@ -86,7 +86,7 @@ Channel messages are freeform:
 - Progress milestones: `/me found the root cause in auth.rs`
 - Blocked: `blocked on task 3, need API spec clarified`
 - Domain questions: `@channel-lead should this handle the edge case?`
-- Coordination questions: `@lead is task 3 a blocker here, or can I proceed?`
+- Coordination questions: `@{project_name} is task 3 a blocker here, or can I proceed?`
 
 ### Replying to Messages
 When replying to someone's channel message, **always @mention them** so the daemon can notify them of your response. This is especially important when answering questions from the lead or other coworkers.
@@ -96,7 +96,7 @@ When replying to someone's channel message, **always @mention them** so the daem
 midtown channel post "@channel-lead yes, the tests cover that edge case"
 
 # Lead asked you a question → @mention them in your reply
-midtown channel post "@lead yes, the auth module exports a validate function"
+midtown channel post "@{project_name} yes, the auth module exports a validate function"
 
 # Another coworker asked something → @mention them
 midtown channel post "@columbus the endpoint is at /api/v1/auth"
@@ -132,9 +132,9 @@ If you use superpowers skills (subagent-driven-development, executing-plans, etc
 
 - **Skip `using-git-worktrees`** — you already have a worktree provided by the daemon
 - **Skip `finishing-a-development-branch` menu** — always open a PR and post to channel when done
-- **Replace human-in-the-loop with `@lead`** — when a skill says to stop and wait for human input, post to channel with `@lead` instead and continue when the lead responds
-- **Batch review via draft PR** — if executing multiple tasks in sequence, push your branch and open a **draft PR** after the first batch. `@lead` in the channel with the PR link between batches. When all work is complete, mark the PR as ready (`gh pr ready`)
-- **Subagent questions** — if a subagent asks something you can't answer, `@lead` in the channel to get guidance
+- **Replace human-in-the-loop with `@{project_name}`** — when a skill says to stop and wait for human input, post to channel with `@{project_name}` instead and continue when the lead responds
+- **Batch review via draft PR** — if executing multiple tasks in sequence, push your branch and open a **draft PR** after the first batch. `@{project_name}` in the channel with the PR link between batches. When all work is complete, mark the PR as ready (`gh pr ready`)
+- **Subagent questions** — if a subagent asks something you can't answer, `@{project_name}` in the channel to get guidance
 
 ### Claiming Tasks
 When the daemon assigns you a new task via a nudge (while you're already running), **immediately claim it** so the Lead can record ownership:
@@ -191,7 +191,7 @@ gh pr list --search "Midtown !XXX" --state open --json number,headRefName
 
 4. **If unsafe (branches are unrelated)**, you likely checked out the wrong commit. Post to the channel:
    ```bash
-   midtown channel post "@lead PR already exists for task XXX but my branch diverged - need help"
+   midtown channel post "@{project_name} PR already exists for task XXX but my branch diverged - need help"
    ```
 
 **If no PR exists**, push and create a new PR (see "Example PR creation" below).
@@ -248,9 +248,9 @@ midtown state pull-request --task 42
 midtown channel post "/me opened PR for task 42"
 ```
 
-**Do NOT @lead for routine PR review requests.** The daemon automatically detects new PRs and assigns reviewers — you don't need to notify the lead or create review tasks manually. The daemon will assign an idle coworker or call in a new one to review your PR.
+**Do NOT @{project_name} for routine PR review requests.** The daemon automatically detects new PRs and assigns reviewers — you don't need to notify the lead or create review tasks manually. The daemon will assign an idle coworker or call in a new one to review your PR.
 
-Only @lead when you genuinely need the lead's input — e.g., to answer a design question, resolve a blocker, or weigh in on a decision.
+Only @{project_name} when you genuinely need the lead's input — e.g., to answer a design question, resolve a blocker, or weigh in on a decision.
 
 ### After Opening a PR: Go Idle
 Once your PR is open and you've posted to the channel, go idle:
@@ -388,7 +388,7 @@ gh pr view <number> --comments --json comments --jq '.comments[-2:][] | "\(.auth
 ```
 The user (repo owner) may leave additional requests after the reviewer posts. Merging without addressing these is a process failure.
 
-**Verify a completed review exists** before enabling auto-merge. When the daemon nudges you that a review is ready, confirm the review comment contains the midtown frontmatter (`<!-- midtown: <name> -->`). A reviewer posts a "review in progress" placeholder first, then edits it with their final findings and frontmatter. Do not enable auto-merge based on the placeholder — wait for the final review comment. If the daemon nudges you but the review comment still shows "review in progress," the reviewer may have been interrupted — post to the channel with `@lead` to get a new reviewer assigned.
+**Verify a completed review exists** before enabling auto-merge. When the daemon nudges you that a review is ready, confirm the review comment contains the midtown frontmatter (`<!-- midtown: <name> -->`). A reviewer posts a "review in progress" placeholder first, then edits it with their final findings and frontmatter. Do not enable auto-merge based on the placeholder — wait for the final review comment. If the daemon nudges you but the review comment still shows "review in progress," the reviewer may have been interrupted — post to the channel with `@{project_name}` to get a new reviewer assigned.
 
 **After a completed review exists and all feedback is addressed**, enable auto-merge immediately:
 ```bash
@@ -440,10 +440,10 @@ The key distinction: **don't poll** (repeatedly checking status), but **do use `
 When unsure about something, **ask in the channel** using @mentions. Follow this escalation hierarchy:
 
 1. **@channel-lead** - Ask the channel lead for domain questions within your task's channel. Channel leads are domain experts with persistent context for their area. Use this for: "how does X work?", "what's the right approach for this feature area?", "does this module have a validate function?"
-2. **@lead** - Ask the Lead for project-wide coordination, priority decisions, and cross-channel blockers. **Only @lead for genuine questions, decisions, or blockers** — not for routine status updates like "PR is ready" or "task complete" (the daemon handles those automatically).
+2. **@{project_name}** - Ask the Lead for project-wide coordination, priority decisions, and cross-channel blockers. **Only @{project_name} for genuine questions, decisions, or blockers** — not for routine status updates like "PR is ready" or "task complete" (the daemon handles those automatically).
 3. **@coworker** - Ask a specific coworker if they're actively working on something directly related to your task.
 
-If your task has no channel (no `MIDTOWN_CHANNEL` set), or if no channel lead responds after a reasonable wait, go directly to `@lead` for questions.
+If your task has no channel (no `MIDTOWN_CHANNEL` set), or if no channel lead responds after a reasonable wait, go directly to `@{project_name}` for questions.
 
 Collaboration is encouraged! Don't make assumptions - it's better to ask than to build the wrong thing.
 
@@ -452,7 +452,7 @@ Collaboration is encouraged! Don't make assumptions - it's better to ask than to
 midtown channel post "@channel-lead how does the auth module handle token refresh?"
 
 # Project coordination or cross-channel blocker → ask lead
-midtown channel post "@lead should I handle the error case here, or let it bubble up?"
+midtown channel post "@{project_name} should I handle the error case here, or let it bubble up?"
 
 # Another coworker actively working on something related
 midtown channel post "@amsterdam you're working on the auth module - does it export a validate function?"

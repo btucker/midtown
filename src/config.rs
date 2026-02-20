@@ -41,7 +41,6 @@
 //!    max_coworkers = 4
 //!    chat_layout = "split"
 //!    zellij_swap_layout = true
-//!    personality = "fun"  # "normal" (default), "fun", or "wild"
 //!
 //!    [daemon]
 //!    webhook_port = 47023
@@ -136,30 +135,6 @@ impl ProjectMetadata {
             self.primary_repo.as_deref().into_iter().collect()
         } else {
             self.repos.iter().map(|s| s.as_str()).collect()
-        }
-    }
-}
-
-/// Personality variant for agent channel/GitHub voice.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum Personality {
-    /// Professional and concise
-    #[default]
-    Normal,
-    /// Playful and expressive
-    Fun,
-    /// Over-the-top creative
-    Wild,
-}
-
-impl Personality {
-    /// Return the variant name as used in personalities.md headers.
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Personality::Normal => "normal",
-            Personality::Fun => "fun",
-            Personality::Wild => "wild",
         }
     }
 }
@@ -323,10 +298,6 @@ pub struct ProjectConfig {
     #[serde(default)]
     pub max_coworkers: Option<usize>,
 
-    /// Personality variant for agent voice in channel/GitHub (normal, fun, wild)
-    #[serde(default)]
-    pub personality: Option<Personality>,
-
     /// User display name shown in chat and @mentions (default: "user")
     #[serde(default)]
     pub user_display_name: Option<String>,
@@ -345,7 +316,6 @@ impl ProjectConfig {
             zellij_swap_layout: other.zellij_swap_layout.or(self.zellij_swap_layout),
             zellij_chat_pane_size: other.zellij_chat_pane_size.or(self.zellij_chat_pane_size),
             max_coworkers: other.max_coworkers.or(self.max_coworkers),
-            personality: other.personality.or(self.personality),
             user_display_name: other
                 .user_display_name
                 .clone()
@@ -387,11 +357,6 @@ impl ProjectConfig {
     /// Get max_coworkers, or None if not configured (falls back to daemon default).
     pub fn max_coworkers(&self) -> Option<usize> {
         self.max_coworkers
-    }
-
-    /// Get personality with fallback to Normal.
-    pub fn personality(&self) -> Personality {
-        self.personality.unwrap_or_default()
     }
 
     /// Get user display name, or None if not configured (falls back to "user").
@@ -764,9 +729,6 @@ impl GlobalConfig {
 # Maximum concurrent coworkers
 # max_coworkers = 8
 
-# Personality for coworker messages: "normal", "fun", or "wild"
-# personality = "normal"
-
 # Your display name shown in chat and @mentions (default: "user")
 # user_display_name = "Ben"
 
@@ -831,7 +793,6 @@ fn load_project_config(project_name: &str) -> Option<ProjectConfig> {
             || full.default.zellij_swap_layout.is_some()
             || full.default.zellij_chat_pane_size.is_some()
             || full.default.max_coworkers.is_some()
-            || full.default.personality.is_some()
             || full.project.name.is_some()
             || full.project.auth_profile.is_some()
             || full
@@ -1097,19 +1058,6 @@ pub fn get_required_plugins() -> Vec<String> {
     GlobalConfig::load().plugins.required.clone()
 }
 
-/// Get the personality setting for the current project.
-pub fn get_personality() -> Personality {
-    let project_name = get_project_name().unwrap_or_default();
-
-    let config = if project_name.is_empty() {
-        GlobalConfig::load().default
-    } else {
-        get_project_config(&project_name)
-    };
-
-    config.personality()
-}
-
 /// Get the user display name for the current project, if configured.
 pub fn get_user_display_name() -> Option<String> {
     let project_name = get_project_name().unwrap_or_default();
@@ -1203,7 +1151,6 @@ bin_command = "custom-command"
             zellij_swap_layout: Some(false),
             zellij_chat_pane_size: Some(35),
             max_coworkers: Some(8),
-            personality: Some(Personality::Fun),
             user_display_name: None,
         };
 
@@ -1214,7 +1161,6 @@ bin_command = "custom-command"
             zellij_swap_layout: None,
             zellij_chat_pane_size: None,
             max_coworkers: None, // Not overridden
-            personality: None,   // Not overridden
             user_display_name: None,
         };
 
@@ -1226,7 +1172,6 @@ bin_command = "custom-command"
         assert!(!merged.zellij_swap_layout()); // From global
         assert_eq!(merged.zellij_chat_pane_size(), 35); // From global
         assert_eq!(merged.max_coworkers(), Some(8)); // From global
-        assert_eq!(merged.personality(), Personality::Fun); // From global
     }
 
     #[test]
@@ -1238,7 +1183,6 @@ bin_command = "custom-command"
             zellij_swap_layout: None,
             zellij_chat_pane_size: None,
             max_coworkers: Some(8),
-            personality: None,
             user_display_name: None,
         };
 
@@ -1249,7 +1193,6 @@ bin_command = "custom-command"
             zellij_swap_layout: None,
             zellij_chat_pane_size: None,
             max_coworkers: Some(4),
-            personality: None,
             user_display_name: None,
         };
 
@@ -1498,66 +1441,6 @@ github_user = "midtown-sh"
     }
 
     #[test]
-    fn test_personality_default() {
-        let config = ProjectConfig::default();
-        assert_eq!(config.personality(), Personality::Normal);
-    }
-
-    #[test]
-    fn test_personality_parse() {
-        let toml = r#"
-[default]
-personality = "fun"
-"#;
-        let config: GlobalConfig = toml::from_str(toml).unwrap();
-        assert_eq!(config.default.personality(), Personality::Fun);
-    }
-
-    #[test]
-    fn test_personality_wild() {
-        let toml = r#"
-personality = "wild"
-"#;
-        let config: ProjectConfig = toml::from_str(toml).unwrap();
-        assert_eq!(config.personality(), Personality::Wild);
-    }
-
-    #[test]
-    fn test_personality_normal_explicit() {
-        let toml = r#"
-personality = "normal"
-"#;
-        let config: ProjectConfig = toml::from_str(toml).unwrap();
-        assert_eq!(config.personality(), Personality::Normal);
-    }
-
-    #[test]
-    fn test_personality_merge_override() {
-        let global = ProjectConfig {
-            bin_command: None,
-            chat_layout: None,
-            chat_min_width: None,
-            zellij_swap_layout: None,
-            zellij_chat_pane_size: None,
-            max_coworkers: None,
-            personality: Some(Personality::Normal),
-            user_display_name: None,
-        };
-        let project = ProjectConfig {
-            bin_command: None,
-            chat_layout: None,
-            chat_min_width: None,
-            zellij_swap_layout: None,
-            zellij_chat_pane_size: None,
-            max_coworkers: None,
-            personality: Some(Personality::Wild),
-            user_display_name: None,
-        };
-        let merged = global.merge(&project);
-        assert_eq!(merged.personality(), Personality::Wild);
-    }
-
-    #[test]
     fn test_user_display_name_merge() {
         // Global sets display name, project doesn't override
         let global = ProjectConfig {
@@ -1595,13 +1478,6 @@ personality = "normal"
         let toml_str = "";
         let config: ProjectConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(config.user_display_name(), None);
-    }
-
-    #[test]
-    fn test_personality_as_str() {
-        assert_eq!(Personality::Normal.as_str(), "normal");
-        assert_eq!(Personality::Fun.as_str(), "fun");
-        assert_eq!(Personality::Wild.as_str(), "wild");
     }
 
     #[test]
@@ -1957,7 +1833,6 @@ name = "solo"
         // All values should be defaults since everything is commented out
         assert!(config.default.bin_command.is_none());
         assert!(config.default.max_coworkers.is_none());
-        assert!(config.default.personality.is_none());
         assert!(config.plugins.required.is_empty());
         assert!(config.daemon.webhook_port.is_none());
     }
@@ -1969,7 +1844,6 @@ name = "solo"
         assert!(template.contains("[plugins]"));
         assert!(template.contains("[daemon]"));
         assert!(template.contains("max_coworkers"));
-        assert!(template.contains("personality"));
         assert!(template.contains("webhook_port"));
         assert!(template.contains("chat_layout"));
         assert!(template.contains("zellij_swap_layout"));
@@ -2212,7 +2086,7 @@ webhook_port = 47024
 
         // Load, modify, and save
         let mut config = FullProjectConfig::load_from(&path).unwrap();
-        config.default.personality = Some(Personality::Fun); // Add a new field
+        config.default.user_display_name = Some("Alice".to_string()); // Add a new field
         config.save_to(&path).unwrap();
 
         // Verify comments are preserved
@@ -2236,7 +2110,7 @@ webhook_port = 47024
 
         // Verify the new field was added
         assert!(
-            saved_contents.contains("personality"),
+            saved_contents.contains("user_display_name"),
             "New field should be added"
         );
 
@@ -2244,7 +2118,7 @@ webhook_port = 47024
         let reloaded = FullProjectConfig::load_from(&path).unwrap();
         assert_eq!(reloaded.project.name(), Some("testproj"));
         assert_eq!(reloaded.default.max_coworkers(), Some(4));
-        assert_eq!(reloaded.default.personality(), Personality::Fun);
+        assert_eq!(reloaded.default.user_display_name(), Some("Alice"));
         assert_eq!(reloaded.daemon.webhook_port, Some(47024));
     }
 
@@ -2339,7 +2213,6 @@ auth_profile = "old@example.com"
 bin_command = "cargo run --"
 chat_layout = "split"
 max_coworkers = 8
-personality = "fun"
 user_display_name = "OldUser"
 
 [daemon]
@@ -2354,7 +2227,6 @@ webhook_secret = "old-secret"
         config.default.bin_command = None;
         config.default.chat_layout = None;
         config.default.max_coworkers = None;
-        config.default.personality = None;
         config.default.user_display_name = None;
         config.daemon.webhook_port = None;
         config.daemon.webhook_secret = None;
@@ -2379,10 +2251,6 @@ webhook_secret = "old-secret"
             "max_coworkers should be removed when set to None"
         );
         assert!(
-            !saved_contents.contains("personality"),
-            "personality should be removed when set to None"
-        );
-        assert!(
             !saved_contents.contains("user_display_name"),
             "user_display_name should be removed when set to None"
         );
@@ -2401,7 +2269,6 @@ webhook_secret = "old-secret"
         assert_eq!(reloaded.default.bin_command, None);
         assert_eq!(reloaded.default.chat_layout, None);
         assert_eq!(reloaded.default.max_coworkers, None);
-        assert_eq!(reloaded.default.personality, None);
         assert_eq!(reloaded.default.user_display_name, None);
         assert_eq!(reloaded.daemon.webhook_port, None);
         assert_eq!(reloaded.daemon.webhook_secret, None);
@@ -2418,7 +2285,6 @@ webhook_secret = "old-secret"
 bin_command = "midtown"
 chat_layout = "split"
 max_coworkers = 8
-personality = "wild"
 user_display_name = "OldUser"
 
 [daemon]
@@ -2437,7 +2303,6 @@ auth_profile = "old@example.com"
         config.default.bin_command = None;
         config.default.chat_layout = None;
         config.default.max_coworkers = None;
-        config.default.personality = None;
         config.default.user_display_name = None;
         config.daemon.webhook_port = None;
         config.daemon.webhook_secret = None;
@@ -2458,10 +2323,6 @@ auth_profile = "old@example.com"
         assert!(
             !saved_contents.contains("max_coworkers"),
             "max_coworkers should be removed when set to None"
-        );
-        assert!(
-            !saved_contents.contains("personality"),
-            "personality should be removed when set to None"
         );
         assert!(
             !saved_contents.contains("user_display_name"),
@@ -2490,7 +2351,6 @@ auth_profile = "old@example.com"
         assert_eq!(reloaded.default.bin_command, None);
         assert_eq!(reloaded.default.chat_layout, None);
         assert_eq!(reloaded.default.max_coworkers, None);
-        assert_eq!(reloaded.default.personality, None);
         assert_eq!(reloaded.default.user_display_name, None);
         assert_eq!(reloaded.daemon.webhook_port, None);
         assert_eq!(reloaded.daemon.webhook_secret, None);

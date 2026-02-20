@@ -388,11 +388,10 @@ fn handle_idle_hook() -> Result<Response, String> {
     // Coworkers have MIDTOWN_AGENT set to their name at spawn time (see launch.rs).
     // Lead sessions don't have this set, so default to "lead".
     let agent = std::env::var("MIDTOWN_AGENT").unwrap_or_else(|_| "lead".to_string());
-    let personality = midtown::config::get_personality();
 
     hook_log(&repo, &format!("idle: {} posting idle status", agent));
 
-    let idle_text = midtown::daemon_messages::idle_waiting(personality);
+    let idle_text = midtown::daemon_messages::idle_waiting();
     let message = midtown::Message::action(&agent, &idle_text);
     if let Err(e) = channel.send(&message) {
         // Don't fail the hook on lock contention — Claude waits for hooks synchronously

@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use tracing::{debug, info, warn};
 
-use crate::{config, daemon_messages};
+use crate::daemon_messages;
 
 use super::constants::*;
 use super::effects::Effect;
@@ -138,10 +138,7 @@ pub fn check_and_shutdown_idle_coworkers(snap: &snapshot::WorldSnapshot) -> Vec<
                     "Sending reviewer {} on a break (review verified for PR #{})",
                     name, pr
                 );
-                (
-                    true,
-                    daemon_messages::break_review_complete(name, pr, config::get_personality()),
-                )
+                (true, daemon_messages::break_review_complete(name, pr))
             } else {
                 warn!(
                     "Reviewer {} is idle but no review found for PR #{} - keeping alive",
@@ -160,19 +157,13 @@ pub fn check_and_shutdown_idle_coworkers(snap: &snapshot::WorldSnapshot) -> Vec<
             }
         } else if snap.coworkers_with_merged_prs.contains(name) {
             info!("Sending idle coworker {} on a break (PR merged)", name);
-            (
-                true,
-                daemon_messages::break_work_merged(name, config::get_personality()),
-            )
+            (true, daemon_messages::break_work_merged(name))
         } else {
             info!(
                 "Sending idle coworker {} on a break (idle for 30+ seconds)",
                 name
             );
-            (
-                true,
-                daemon_messages::break_idle(name, config::get_personality()),
-            )
+            (true, daemon_messages::break_idle(name))
         };
 
         if !should_shutdown {
@@ -1056,7 +1047,7 @@ pub fn ensure_lead_alive(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
 
     warn!("Lead session is not running — respawning");
 
-    let mut config = crate::launch::LaunchConfig::lead(&snap.repo_name);
+    let mut config = crate::launch::LaunchConfig::lead(&snap.repo_name, None);
     let lead_wt = crate::paths::lead_worktree_path(&snap.repo_name);
     if lead_wt.exists() {
         config.working_dir = Some(lead_wt);

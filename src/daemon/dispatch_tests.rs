@@ -1014,7 +1014,14 @@ fn test_discovered_nudges_task_owner() {
     match &effects[0] {
         Effect::NudgeCoworker { name, message, .. } => {
             assert_eq!(name, "lexington");
-            assert!(message.contains("Resume task !42"));
+            assert!(
+                message.contains("task !42"),
+                "nudge should reference task ID"
+            );
+            assert!(
+                message.contains("Fix auth bug"),
+                "nudge should include task subject"
+            );
         }
         _ => panic!("Expected NudgeCoworker"),
     }
@@ -1107,7 +1114,10 @@ fn test_discovered_nudges_task_takes_priority_over_review() {
     // Should nudge about the task, not the review
     match &effects[0] {
         Effect::NudgeCoworker { message, .. } => {
-            assert!(message.contains("Resume task !42"));
+            assert!(
+                message.contains("task !42"),
+                "nudge should reference task ID"
+            );
         }
         _ => panic!("Expected NudgeCoworker"),
     }

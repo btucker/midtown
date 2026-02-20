@@ -133,18 +133,18 @@ This applies whether the review finds issues or reports "no issues found". The f
 
 If a test isn't applicable (e.g., documentation-only issues, style issues that a linter would catch), say "Test suggestion: N/A (style/docs issue)".
 
-REFACTOR DETECTION: While reviewing, look for similar changes repeated across multiple locations in the diff. When a PR makes analogous modifications in several places (similar match arms, duplicated logic across functions, parallel struct/enum additions), this may indicate the codebase needs a refactor to consolidate the pattern. If you spot this, mention it in your review comment and post to the channel: `midtown channel post "@lead PR #{pr_number} repeats similar changes in N places (describe pattern). Recommend a refactor task to (suggested approach)."`
+REFACTOR DETECTION: While reviewing, look for similar changes repeated across multiple locations in the diff. When a PR makes analogous modifications in several places (similar match arms, duplicated logic across functions, parallel struct/enum additions), this may indicate the codebase needs a refactor to consolidate the pattern. If you spot this, mention it in your review comment and post to the channel: `midtown channel post "@{project_name} PR #{pr_number} repeats similar changes in N places (describe pattern). Recommend a refactor task to (suggested approach)."`
 
 NOTIFY LEAD OF SIGNIFICANT FINDINGS: Post to the channel to notify the lead about:
 
 1. **Verification milestones** — When you verify something significant works (containerized E2E tests pass locally, a complex integration works, a tricky edge case is handled correctly):
-   - "@lead [Verification] Ran containerized E2E tests locally — all 41 tests pass"
-   - "@lead [Verification] Tested webhook flow end-to-end — events are routed correctly"
+   - "@{project_name} [Verification] Ran containerized E2E tests locally — all 41 tests pass"
+   - "@{project_name} [Verification] Tested webhook flow end-to-end — events are routed correctly"
 
-2. **Below-threshold issues** — Consolidate ALL below-threshold issues for the PR into a **single** `@lead [Review Note]` message. Do NOT post separate messages for each issue. Use markdown formatting for readability:
+2. **Below-threshold issues** — Consolidate ALL below-threshold issues for the PR into a **single** `@{project_name} [Review Note]` message. Do NOT post separate messages for each issue. Use markdown formatting for readability:
    - Multiple issues — use bullet points with **bold** key terms and backticks for `code references`:
      ```
-     @lead [Review Note] PR #123:
+     @{project_name} [Review Note] PR #123:
      - **Untested edge case** — `process_event()` in `handler.rs` doesn't check for empty input
      - **Missing null check** — `get_repo_url()` returns empty string instead of `None`
 
@@ -152,14 +152,14 @@ NOTIFY LEAD OF SIGNIFICANT FINDINGS: Post to the channel to notify the lead abou
      ```
    - Single issue — a single sentence with backticks for code references:
      ```
-     @lead [Review Note] PR #123: **Unvalidated input** — `parse_config()` in `config.rs` accepts negative values without bounds check. Please determine if this warrants a follow-up task.
+     @{project_name} [Review Note] PR #123: **Unvalidated input** — `parse_config()` in `config.rs` accepts negative values without bounds check. Please determine if this warrants a follow-up task.
      ```
 
-**Do NOT include numeric scores in @lead messages.** Scores are an internal tool for deciding what to include/exclude — the lead should evaluate each issue on its own merit without being anchored by scores. Describe the issue plainly and let the lead judge its importance.
+**Do NOT include numeric scores in @{project_name} messages.** Scores are an internal tool for deciding what to include/exclude — the lead should evaluate each issue on its own merit without being anchored by scores. Describe the issue plainly and let the lead judge its importance.
 
 The threshold filters the PR comment to avoid noise for the PR author, but the lead sees everything. Below-threshold issues may still be real bugs that the scoring misjudged.
 
-**Progress (100%)**: After posting your final review comment and any @lead notifications:
+**Progress (100%)**: After posting your final review comment and any @{project_name} notifications:
 ```bash
 midtown state --progress 100
 ```
