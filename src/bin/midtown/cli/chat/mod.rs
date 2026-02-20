@@ -1073,6 +1073,16 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                     return EventResult::Continue;
                 }
 
+                // Check if click is on a coworker row (uses absolute y, not content-relative).
+                // X-guard: coworker section shares x-bounds with the board panel (same sidebar).
+                if let Some(board_rect) = app.board_area
+                    && x >= board_rect.x
+                    && x < board_rect.x + board_rect.width
+                    && let Some(coworker_name) = app.coworker_line_map.get(&y)
+                {
+                    return EventResult::AttachCoworker(coworker_name.clone());
+                }
+
                 EventResult::Continue
             }
             MouseEventKind::Drag(crossterm::event::MouseButton::Left) => {
@@ -2771,3 +2781,7 @@ mod thread_click_tests;
 #[path = "thread_reply_tests.rs"]
 #[cfg(test)]
 mod thread_reply_tests;
+
+#[path = "coworker_click_tests.rs"]
+#[cfg(test)]
+mod coworker_click_tests;

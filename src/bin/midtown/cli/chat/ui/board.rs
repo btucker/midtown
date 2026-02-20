@@ -36,6 +36,7 @@ pub fn draw_board_panel(f: &mut Frame, app: &mut App, area: Rect) -> (Vec<Hyperl
     // Clear line maps for new render
     app.task_line_map.clear();
     app.channel_line_map.clear();
+    app.coworker_line_map.clear();
 
     // Split board area vertically: tasks at top, coworkers + ops at bottom
     let active_coworker_count = app
@@ -711,6 +712,14 @@ fn draw_coworker_status(f: &mut Frame, app: &mut App, area: Rect) {
     if show_time {
         // Min (not Length) so the last column absorbs remaining width.
         constraints.push(Constraint::Min(w_time as u16));
+    }
+
+    // Populate coworker_line_map: map absolute terminal y-coordinates to coworker names.
+    // chunks[1] is the bordered table; top border is at chunks[1].y, first data row at chunks[1].y + 1.
+    let table_content_y = chunks[1].y + 1; // skip top border
+    for (i, cw) in active_coworkers.iter().enumerate() {
+        app.coworker_line_map
+            .insert(table_content_y + i as u16, cw.name.clone());
     }
 
     let rows: Vec<Row> = active_coworkers
