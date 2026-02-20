@@ -27,6 +27,9 @@ pub enum ChannelCommand {
         /// Show messages from the last duration (e.g., 5m, 1h, 30s)
         #[arg(long)]
         since: Option<String>,
+        /// Channel to read from (defaults to MIDTOWN_CHANNEL env var or main channel)
+        #[arg(long)]
+        channel: Option<String>,
     },
 }
 
@@ -42,8 +45,11 @@ pub fn handle(cmd: &ChannelCommand, client: &DaemonClient) -> Result<Response, S
             }
             None => client.channel_post(message, channel.as_deref()),
         },
-        ChannelCommand::Read { all, last, since } => {
-            client.channel_read(*all, last.as_ref(), since.as_deref())
-        }
+        ChannelCommand::Read {
+            all,
+            last,
+            since,
+            channel,
+        } => client.channel_read(*all, last.as_ref(), since.as_deref(), channel.as_deref()),
     }
 }
