@@ -12,30 +12,17 @@ fn test_semantic_header_bash() {
 }
 
 #[test]
-fn test_semantic_header_bash_truncation() {
-    // A command longer than 60 chars should be truncated with ellipsis.
+fn test_semantic_header_bash_no_premature_truncation() {
+    // Commands longer than 60 chars must NOT be truncated.
+    // The render layer (ratatui) clips at the actual terminal width.
     let long_cmd = "a".repeat(70);
     let input = json!({"command": long_cmd});
     let header = semantic_header("Bash", &input);
-    // Should start with "$ " and be at most "$ " + 59 chars + "…"
-    assert!(header.starts_with("$ "));
-    // The visible part after "$ " should end with "…"
-    assert!(
-        header.ends_with('\u{2026}'),
-        "Expected ellipsis at end, got: {header}"
+    assert_eq!(
+        header,
+        format!("$ {long_cmd}"),
+        "Bash command should not be pre-truncated"
     );
-    // Total char count: "$ " (2) + 59 'a's + "…" (1) = 62
-    let char_count = header.chars().count();
-    assert_eq!(char_count, 62, "Expected 62 chars total, got {char_count}");
-}
-
-#[test]
-fn test_semantic_header_bash_exactly_60_chars_no_truncation() {
-    let cmd = "b".repeat(60);
-    let input = json!({"command": cmd});
-    let header = semantic_header("Bash", &input);
-    assert_eq!(header, format!("$ {cmd}"));
-    assert!(!header.ends_with('\u{2026}'));
 }
 
 #[test]
@@ -75,14 +62,17 @@ fn test_semantic_header_task() {
 }
 
 #[test]
-fn test_semantic_header_task_truncation() {
+fn test_semantic_header_task_no_premature_truncation() {
+    // Task descriptions longer than 40 chars must NOT be truncated.
+    // The render layer (ratatui) clips at the actual terminal width.
     let long_desc = "x".repeat(50);
     let input = json!({"description": long_desc});
     let header = semantic_header("Task", &input);
-    assert!(header.starts_with("task: "));
-    // 40 chars of description max
-    let desc_part = &header["task: ".len()..];
-    assert_eq!(desc_part.chars().count(), 40);
+    assert_eq!(
+        header,
+        format!("task: {long_desc}"),
+        "Task description should not be pre-truncated"
+    );
 }
 
 #[test]
