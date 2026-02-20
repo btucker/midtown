@@ -624,15 +624,11 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
     let (active_reviewers, reviewer_pr_assignments, reviewer_restart_counts) = {
         let ps = state.persistent_state.lock().await;
         let reviewers = ps.github.active_reviewers();
-        // Collect reviewer → PR assignments for all active coworkers
-        let assignments: HashMap<String, u64> = active_coworkers
-            .iter()
-            .filter_map(|cw| {
-                ps.github
-                    .pr_for_reviewer(&cw.name)
-                    .map(|pr| (cw.name.clone(), pr))
-            })
-            .collect();
+        // Build reviewer → PR assignments from persistent state so that dead
+        // reviewers (absent from active_coworkers) are still included.
+        // This is required for decide_dead_reviewer_respawns to detect and
+        // respawn reviewers whose processes have exited without posting a review.
+        let assignments = build_reviewer_pr_assignments(&ps.github);
         // Collect PR → restart_count for stuck reviewer backoff
         let restart_counts: HashMap<u64, u32> = ps
             .github
@@ -1014,6 +1010,23 @@ pub(super) fn minimal_snapshot_for_test() -> WorldSnapshot {
         session_dispatch_cooldown_active: false,
         spawn_failure_cooldown_names: HashSet::new(),
     }
+}
+
+/// Build the reviewer → PR number assignment map from persistent GitHub state.
+///
+/// This reads from `pr_reviewers` directly rather than filtering through
+/// `active_coworkers`, so that dead reviewers (whose processes have exited)
+/// are still included in the map. This is required for
+/// `decide_dead_reviewer_respawns` to detect and respawn reviewers that died
+/// before posting their review.
+pub(crate) fn build_reviewer_pr_assignments(
+    github: &crate::github_state::GitHubState,
+) -> HashMap<String, u64> {
+    github
+        .pr_reviewers
+        .iter()
+        .map(|(&pr_number, assignment)| (assignment.reviewer.clone(), pr_number))
+        .collect()
 }
 
 #[path = "snapshot_tests.rs"]
