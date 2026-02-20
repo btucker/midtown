@@ -522,7 +522,8 @@ pub fn check_and_restart_stuck_reviewers(snap: &snapshot::WorldSnapshot) -> Vec<
 /// because it exempts dead processes.
 ///
 /// This function detects dead reviewers with unposted reviews and respawns them,
-/// up to `MAX_REVIEWER_RESTARTS` attempts per PR.
+/// up to `MAX_REVIEWER_RESTARTS` attempts per PR. When a dead reviewer exhausts
+/// the restart budget, it escalates to the ops channel instead.
 pub fn check_and_restart_dead_reviewers(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
     let respawns = crate::rules::decide_dead_reviewer_respawns(
         &snap.headless_process_health,
@@ -533,7 +534,16 @@ pub fn check_and_restart_dead_reviewers(snap: &snapshot::WorldSnapshot) -> Vec<E
         &snap.name_session_map,
     );
 
-    if respawns.is_empty() {
+    let escalations = crate::rules::decide_dead_reviewer_escalations(
+        &snap.headless_process_health,
+        &snap.reviewer_pr_assignments,
+        &snap.reviewed_prs,
+        &snap.reviewer_restart_counts,
+        &snap.reviewer_escalations_posted,
+        MAX_REVIEWER_RESTARTS,
+    );
+
+    if respawns.is_empty() && escalations.is_empty() {
         return vec![];
     }
 
@@ -607,6 +617,33 @@ pub fn check_and_restart_dead_reviewers(snap: &snapshot::WorldSnapshot) -> Vec<E
                 MAX_REVIEWER_RESTARTS,
             ),
             channel: Some(OPS_CHANNEL.to_string()),
+        });
+    }
+
+    for escalation in escalations {
+        warn!(
+            "Reviewer {} exited without posting review for PR #{} after {} restarts — escalating to ops",
+            escalation.name, escalation.pr_number, escalation.restart_count
+        );
+
+        effects.push(Effect::PostToChannel {
+            sender: "midtown".to_string(),
+            message: format!(
+                "@ops PR #{} has hit max reviewer restarts — needs manual intervention. \
+                 Reviewer {} exited without posting a review {} times.",
+                escalation.pr_number, escalation.name, escalation.restart_count,
+            ),
+            channel: Some(OPS_CHANNEL.to_string()),
+        });
+        effects.push(Effect::NudgeLead {
+            message: format!(
+                "Reviewer {} failed to post a review for PR #{} after {} attempts. \
+                 Escalated to ops — please investigate.",
+                escalation.name, escalation.pr_number, escalation.restart_count,
+            ),
+        });
+        effects.push(Effect::RecordReviewerEscalation {
+            pr_number: escalation.pr_number,
         });
     }
 
