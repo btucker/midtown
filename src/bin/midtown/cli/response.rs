@@ -154,7 +154,7 @@ impl Response {
                         None => format!("Coworkers: {} active\n", worker_count),
                     };
                     out.push_str(&coworker_header);
-                    for cw in &full.coworkers {
+                    for cw in full.coworkers.iter().filter(|cw| !cw.is_channel_lead) {
                         let task_desc = match &cw.current_task {
                             Some(task) => format!("working on: {}", task),
                             None => "idle".to_string(),
