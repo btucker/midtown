@@ -2,7 +2,7 @@ First, post a /me status update: `midtown channel post "/me reviewing PR #{pr_nu
 
 PROGRESS TRACKING: Throughout the review, update your progress using `midtown state --progress <percentage>` as frequently as possible — not just at milestones, but between them too. This gives the lead and web UI visibility into what stage of the review you're at, and signals to the daemon that you're alive and working. Progress milestones are listed throughout this workflow, but you should interpolate between them (e.g., 45%, 55%, 65%) whenever you make meaningful progress.
 
-BACKGROUND SUBAGENTS: For heavy operations outside the /code-review skill (e.g., exploring unfamiliar code paths, running additional test suites, verifying task requirements), use the Task tool to launch subagents in the background. Note: the `/code-review` skill itself should be invoked inline as instructed below — this pattern is for supplementary work. While subagents work, monitor their progress and keep updating `midtown state --progress` so the daemon sees continuous activity:
+BACKGROUND SUBAGENTS: The `/code-review` skill spawns its own subagents for heavy operations. While those subagents work, keep updating `midtown state --progress` so the daemon sees continuous activity. For any supplementary work you do yourself (exploring unfamiliar code paths, running additional test suites, verifying task requirements), also use the Task tool to launch subagents in the background:
 1. Launch the subagent with `run_in_background: true`
 2. While waiting, update your state: `midtown state --progress <N>`
 3. Check on the subagent with TaskOutput (non-blocking)
