@@ -1056,3 +1056,129 @@ async fn test_recover_from_session_records_deduplicates_by_name() {
         other => panic!("Expected ResumeCoworker, got {:?}", other),
     }
 }
+
+// ── clear_stale_running_sessions tests ────────────────────────────────
+
+/// On daemon restart, sessions with is_running=True but resume_on_startup=False
+/// are skipped by recover_from_session_records — but their is_running flag was
+/// never cleared, causing dispatch to treat them as active indefinitely.
+///
+/// This test verifies that clear_stale_running_sessions() resets is_running to
+/// false for any session not included in the recovered set (excluding channel leads).
+#[tokio::test]
+async fn test_clear_stale_running_sessions_clears_non_resumed() {
+    let persistent_state = tokio::sync::Mutex::new(DaemonPersistentState::default());
+
+    {
+        let mut state = persistent_state.lock().await;
+        // This session will be recovered (resume_on_startup=true, is_running=true)
+        let active = test_session_record("sess-active", "park", "dev");
+        state.sessions.insert("sess-active".to_string(), active);
+
+        // This session was running before restart but won't be resumed
+        // (resume_on_startup=false). Its is_running flag is stale.
+        let mut stale = test_session_record("sess-stale", "lexington", "dev");
+        stale.resume_on_startup = false;
+        state.sessions.insert("sess-stale".to_string(), stale);
+    }
+
+    // Simulate recovery: only "sess-active" was recovered
+    let mut recovered = std::collections::HashSet::new();
+    recovered.insert("sess-active".to_string());
+
+    clear_stale_running_sessions(&persistent_state, &recovered).await;
+
+    let state = persistent_state.lock().await;
+    assert!(
+        state.sessions["sess-active"].is_running,
+        "Recovered session should remain is_running=true"
+    );
+    assert!(
+        !state.sessions["sess-stale"].is_running,
+        "Stale session (not recovered) should have is_running cleared to false"
+    );
+}
+
+/// Channel lead sessions are recovered separately via recover_channel_lead_sessions.
+/// clear_stale_running_sessions must NOT clear their is_running flag.
+#[tokio::test]
+async fn test_clear_stale_running_sessions_preserves_channel_leads() {
+    let persistent_state = tokio::sync::Mutex::new(DaemonPersistentState::default());
+
+    {
+        let mut state = persistent_state.lock().await;
+        // Channel lead — recovered separately, must not be touched
+        let lead = test_session_record("sess-lead", "payments", "channel-lead");
+        state.sessions.insert("sess-lead".to_string(), lead);
+    }
+
+    // Recovered set is empty (channel leads go through a different path)
+    let recovered = std::collections::HashSet::new();
+
+    clear_stale_running_sessions(&persistent_state, &recovered).await;
+
+    let state = persistent_state.lock().await;
+    assert!(
+        state.sessions["sess-lead"].is_running,
+        "Channel lead sessions must not be cleared by clear_stale_running_sessions"
+    );
+}
+
+/// Reviewer sessions have resume_on_startup=false and are never resumed.
+/// Their stale is_running=true should be cleared.
+#[tokio::test]
+async fn test_clear_stale_running_sessions_clears_stale_reviewers() {
+    let persistent_state = tokio::sync::Mutex::new(DaemonPersistentState::default());
+
+    {
+        let mut state = persistent_state.lock().await;
+        let mut reviewer = test_session_record("sess-reviewer", "amsterdam", "reviewer");
+        reviewer.is_reviewer = true;
+        reviewer.pr_number = Some(42);
+        reviewer.resume_on_startup = false;
+        state.sessions.insert("sess-reviewer".to_string(), reviewer);
+    }
+
+    let recovered = std::collections::HashSet::new();
+    clear_stale_running_sessions(&persistent_state, &recovered).await;
+
+    let state = persistent_state.lock().await;
+    assert!(
+        !state.sessions["sess-reviewer"].is_running,
+        "Stale reviewer session should have is_running cleared"
+    );
+}
+
+/// When there are no sessions at all, clear_stale_running_sessions is a no-op.
+#[tokio::test]
+async fn test_clear_stale_running_sessions_empty_state() {
+    let persistent_state = tokio::sync::Mutex::new(DaemonPersistentState::default());
+    let recovered = std::collections::HashSet::new();
+    // Must not panic
+    clear_stale_running_sessions(&persistent_state, &recovered).await;
+    let state = persistent_state.lock().await;
+    assert!(state.sessions.is_empty());
+}
+
+/// Sessions already marked is_running=false are not affected.
+#[tokio::test]
+async fn test_clear_stale_running_sessions_skips_already_stopped() {
+    let persistent_state = tokio::sync::Mutex::new(DaemonPersistentState::default());
+
+    {
+        let mut state = persistent_state.lock().await;
+        let mut stopped = test_session_record("sess-stopped", "york", "dev");
+        stopped.is_running = false;
+        stopped.resume_on_startup = false;
+        state.sessions.insert("sess-stopped".to_string(), stopped);
+    }
+
+    let recovered = std::collections::HashSet::new();
+    clear_stale_running_sessions(&persistent_state, &recovered).await;
+
+    let state = persistent_state.lock().await;
+    assert!(
+        !state.sessions["sess-stopped"].is_running,
+        "Already-stopped session should remain stopped"
+    );
+}

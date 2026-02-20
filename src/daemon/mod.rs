@@ -2882,7 +2882,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
     // The legacy headless_sessions map is no longer used for recovery — all
     // running sessions are tracked in session records since the session-centric
     // model was introduced. Channel leads are recovered separately below.
-    let (session_recovery_effects, _recovered_session_ids) =
+    let (session_recovery_effects, recovered_session_ids) =
         startup::recover_from_session_records(&state.persistent_state, &repo_name).await;
     if !session_recovery_effects.is_empty() {
         info!(
@@ -2890,6 +2890,21 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
             session_recovery_effects.len()
         );
         effects::execute_effects(session_recovery_effects, &state).await;
+    }
+
+    // Clear stale is_running flags for sessions that were not recovered.
+    // Sessions with is_running=true but resume_on_startup=false (e.g., reviewers,
+    // manually-stopped sessions) are skipped by recover_from_session_records but
+    // retain their stale flag — causing dispatch to think they're still active.
+    startup::clear_stale_running_sessions(&state.persistent_state, &recovered_session_ids).await;
+    {
+        let ps = state.persistent_state.lock().await;
+        if let Err(e) = ps.save_for_repo(&repo_name) {
+            warn!(
+                "Failed to save persistent state after clearing stale session flags: {}",
+                e
+            );
+        }
     }
 
     // Recover channel lead sessions for active (non-archived) topic channels.

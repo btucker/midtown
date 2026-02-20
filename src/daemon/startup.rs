@@ -675,6 +675,58 @@ pub async fn recover_from_session_records(
     (effects, recovered_session_ids)
 }
 
+/// Clear is_running flags for sessions that were not recovered on startup.
+///
+/// On restart, `recover_from_session_records` resumes sessions where both
+/// `is_running=true` and `resume_on_startup=true`. Sessions that are skipped
+/// (non-resumable or reviewer sessions without PR numbers) retain their stale
+/// `is_running=true` flag, causing dispatch to treat them as still active and
+/// skip pending tasks indefinitely.
+///
+/// This function clears `is_running` to `false` for any session that:
+/// - Has `is_running=true`
+/// - Is NOT in `recovered_session_ids` (was not recovered by `recover_from_session_records`)
+/// - Is NOT a channel lead (those are recovered separately via `recover_channel_lead_sessions`)
+///
+/// Call this after `recover_from_session_records` completes, before the event loop starts.
+/// The caller is responsible for saving persistent state after this call.
+pub async fn clear_stale_running_sessions(
+    persistent_state: &tokio::sync::Mutex<DaemonPersistentState>,
+    recovered_session_ids: &HashSet<String>,
+) {
+    let mut state = persistent_state.lock().await;
+    let mut cleared = 0usize;
+
+    for record in state.sessions.values_mut() {
+        if !record.is_running {
+            continue;
+        }
+        if recovered_session_ids.contains(&record.session_id) {
+            continue;
+        }
+        // Channel leads are recovered separately — do not clear their flags here.
+        if record.coworker_type == "channel-lead" {
+            continue;
+        }
+        info!(
+            "Clearing stale is_running flag for session {} (name={:?}, type={}, resume_on_startup={})",
+            record.session_id,
+            record
+                .preferred_name
+                .as_deref()
+                .or(record.current_name.as_deref()),
+            record.coworker_type,
+            record.resume_on_startup
+        );
+        record.is_running = false;
+        cleared += 1;
+    }
+
+    if cleared > 0 {
+        info!("Cleared stale is_running flag for {} session(s)", cleared);
+    }
+}
+
 /// Recover channel lead sessions from persisted state after daemon restart.
 ///
 /// For each active (non-archived) topic channel:
