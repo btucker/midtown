@@ -655,6 +655,79 @@ pub(crate) fn decide_dead_reviewer_respawns(
     respawns
 }
 
+/// A dead reviewer that has hit the restart limit and needs ops escalation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DeadReviewerEscalation {
+    pub name: String,
+    pub pr_number: u64,
+    pub restart_count: u32,
+}
+
+/// Identify dead reviewers that have exhausted their restart budget.
+///
+/// Returns escalation entries for reviewers where:
+/// - The process has exited (`is_alive` is false)
+/// - The reviewer has an active PR assignment
+/// - The review was never posted
+/// - The restart count is at or above `max_restarts`
+/// - No escalation has been posted yet for this PR
+///
+/// This is the counterpart to `decide_dead_reviewer_respawns` — it catches
+/// the cases that function filters out, ensuring ops is always notified
+/// instead of PRs silently accumulating without review.
+///
+/// Pure function: takes snapshot data and returns escalation decisions.
+pub(crate) fn decide_dead_reviewer_escalations(
+    process_health: &HashMap<String, crate::daemon::snapshot::ProcessHealth>,
+    reviewer_pr_assignments: &HashMap<String, u64>,
+    reviewed_prs: &std::collections::HashSet<u64>,
+    reviewer_restart_counts: &HashMap<u64, u32>,
+    reviewer_escalations_posted: &std::collections::HashSet<u64>,
+    max_restarts: u32,
+) -> Vec<DeadReviewerEscalation> {
+    let mut escalations = Vec::new();
+
+    for (name, health) in process_health {
+        // Only escalate dead reviewers — alive ones are handled by the stuck path.
+        if health.is_alive {
+            continue;
+        }
+
+        // Must have a reviewer PR assignment.
+        let pr_number = match reviewer_pr_assignments.get(name) {
+            Some(&pr) => pr,
+            None => continue,
+        };
+
+        // Review was already posted — no escalation needed.
+        if reviewed_prs.contains(&pr_number) {
+            continue;
+        }
+
+        // Only escalate when restart budget is exhausted.
+        let restart_count = reviewer_restart_counts
+            .get(&pr_number)
+            .copied()
+            .unwrap_or(0);
+        if restart_count < max_restarts {
+            continue;
+        }
+
+        // Skip if escalation already posted for this PR.
+        if reviewer_escalations_posted.contains(&pr_number) {
+            continue;
+        }
+
+        escalations.push(DeadReviewerEscalation {
+            name: name.clone(),
+            pr_number,
+            restart_count,
+        });
+    }
+
+    escalations
+}
+
 // ---------------------------------------------------------------------------
 // PR owner resume decision
 // ---------------------------------------------------------------------------
@@ -3504,6 +3577,177 @@ mod tests {
         assert!(
             respawns.is_empty(),
             "alive reviewer should not be handled by dead reviewer detection"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // decide_dead_reviewer_escalations tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn dead_reviewer_at_max_restarts_escalates() {
+        let mut process_health = HashMap::new();
+        process_health.insert(
+            "riverside".to_string(),
+            crate::daemon::snapshot::ProcessHealth {
+                is_alive: false,
+                exit_code: Some(0),
+                ..Default::default()
+            },
+        );
+        let mut reviewer_pr_assignments = HashMap::new();
+        reviewer_pr_assignments.insert("riverside".to_string(), 1352u64);
+        let reviewed_prs: HashSet<u64> = HashSet::new();
+        let mut restart_counts = HashMap::new();
+        restart_counts.insert(1352u64, 2u32); // at max
+        let escalations_posted: HashSet<u64> = HashSet::new();
+
+        let escalations = decide_dead_reviewer_escalations(
+            &process_health,
+            &reviewer_pr_assignments,
+            &reviewed_prs,
+            &restart_counts,
+            &escalations_posted,
+            2,
+        );
+
+        assert_eq!(escalations.len(), 1);
+        assert_eq!(escalations[0].name, "riverside");
+        assert_eq!(escalations[0].pr_number, 1352u64);
+        assert_eq!(escalations[0].restart_count, 2);
+    }
+
+    #[test]
+    fn dead_reviewer_below_max_restarts_not_escalated() {
+        let mut process_health = HashMap::new();
+        process_health.insert(
+            "riverside".to_string(),
+            crate::daemon::snapshot::ProcessHealth {
+                is_alive: false,
+                exit_code: Some(0),
+                ..Default::default()
+            },
+        );
+        let mut reviewer_pr_assignments = HashMap::new();
+        reviewer_pr_assignments.insert("riverside".to_string(), 1352u64);
+        let reviewed_prs: HashSet<u64> = HashSet::new();
+        let mut restart_counts = HashMap::new();
+        restart_counts.insert(1352u64, 1u32); // below max
+        let escalations_posted: HashSet<u64> = HashSet::new();
+
+        let escalations = decide_dead_reviewer_escalations(
+            &process_health,
+            &reviewer_pr_assignments,
+            &reviewed_prs,
+            &restart_counts,
+            &escalations_posted,
+            2,
+        );
+
+        assert!(
+            escalations.is_empty(),
+            "reviewer below max restarts should not be escalated"
+        );
+    }
+
+    #[test]
+    fn dead_reviewer_escalation_skipped_if_already_posted() {
+        let mut process_health = HashMap::new();
+        process_health.insert(
+            "riverside".to_string(),
+            crate::daemon::snapshot::ProcessHealth {
+                is_alive: false,
+                exit_code: Some(0),
+                ..Default::default()
+            },
+        );
+        let mut reviewer_pr_assignments = HashMap::new();
+        reviewer_pr_assignments.insert("riverside".to_string(), 1352u64);
+        let reviewed_prs: HashSet<u64> = HashSet::new();
+        let mut restart_counts = HashMap::new();
+        restart_counts.insert(1352u64, 2u32);
+        let mut escalations_posted: HashSet<u64> = HashSet::new();
+        escalations_posted.insert(1352u64); // already posted
+
+        let escalations = decide_dead_reviewer_escalations(
+            &process_health,
+            &reviewer_pr_assignments,
+            &reviewed_prs,
+            &restart_counts,
+            &escalations_posted,
+            2,
+        );
+
+        assert!(
+            escalations.is_empty(),
+            "escalation already posted should not be re-emitted"
+        );
+    }
+
+    #[test]
+    fn dead_reviewer_escalation_skipped_if_review_posted() {
+        let mut process_health = HashMap::new();
+        process_health.insert(
+            "riverside".to_string(),
+            crate::daemon::snapshot::ProcessHealth {
+                is_alive: false,
+                exit_code: Some(0),
+                ..Default::default()
+            },
+        );
+        let mut reviewer_pr_assignments = HashMap::new();
+        reviewer_pr_assignments.insert("riverside".to_string(), 1352u64);
+        let mut reviewed_prs: HashSet<u64> = HashSet::new();
+        reviewed_prs.insert(1352u64); // review was posted
+        let mut restart_counts = HashMap::new();
+        restart_counts.insert(1352u64, 2u32);
+        let escalations_posted: HashSet<u64> = HashSet::new();
+
+        let escalations = decide_dead_reviewer_escalations(
+            &process_health,
+            &reviewer_pr_assignments,
+            &reviewed_prs,
+            &restart_counts,
+            &escalations_posted,
+            2,
+        );
+
+        assert!(
+            escalations.is_empty(),
+            "reviewer who posted review should not be escalated"
+        );
+    }
+
+    #[test]
+    fn alive_reviewer_not_escalated_by_dead_reviewer_escalations() {
+        let mut process_health = HashMap::new();
+        process_health.insert(
+            "riverside".to_string(),
+            crate::daemon::snapshot::ProcessHealth {
+                is_alive: true, // alive — handled by stuck reviewer path
+                exit_code: None,
+                ..Default::default()
+            },
+        );
+        let mut reviewer_pr_assignments = HashMap::new();
+        reviewer_pr_assignments.insert("riverside".to_string(), 1352u64);
+        let reviewed_prs: HashSet<u64> = HashSet::new();
+        let mut restart_counts = HashMap::new();
+        restart_counts.insert(1352u64, 2u32);
+        let escalations_posted: HashSet<u64> = HashSet::new();
+
+        let escalations = decide_dead_reviewer_escalations(
+            &process_health,
+            &reviewer_pr_assignments,
+            &reviewed_prs,
+            &restart_counts,
+            &escalations_posted,
+            2,
+        );
+
+        assert!(
+            escalations.is_empty(),
+            "alive reviewer should not be escalated by dead reviewer path"
         );
     }
 

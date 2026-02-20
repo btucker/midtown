@@ -1925,3 +1925,109 @@ fn stuck_reviewer_no_events_detected_from_snapshot() {
         effects
     );
 }
+
+/// When a dead reviewer exhausts the restart budget, `check_and_restart_dead_reviewers`
+/// must emit a PostToChannel to the ops channel, a NudgeLead, and a RecordReviewerEscalation.
+/// Subsequent ticks must not re-emit the escalation (idempotency via reviewer_escalations_posted).
+#[test]
+fn dead_reviewer_at_max_restarts_escalates_to_ops() {
+    use std::collections::HashMap;
+
+    let mut reviewer_pr_assignments = HashMap::new();
+    reviewer_pr_assignments.insert("riverside".to_string(), 1352u64);
+
+    let mut reviewer_restart_counts = HashMap::new();
+    reviewer_restart_counts.insert(1352u64, MAX_REVIEWER_RESTARTS); // at limit
+
+    let mut headless_process_health = HashMap::new();
+    headless_process_health.insert(
+        "riverside".to_string(),
+        snapshot::ProcessHealth {
+            is_alive: false,
+            exit_code: Some(0),
+            ..Default::default()
+        },
+    );
+
+    let snap = snapshot::WorldSnapshot {
+        headless_process_health,
+        reviewer_pr_assignments,
+        reviewer_restart_counts,
+        ..empty_snap()
+    };
+
+    let effects = check_and_restart_dead_reviewers(&snap);
+
+    let has_ops_post = effects.iter().any(|e| {
+        matches!(
+            e,
+            Effect::PostToChannel { channel: Some(ch), message, .. }
+                if ch == OPS_CHANNEL && message.contains("1352")
+        )
+    });
+    assert!(
+        has_ops_post,
+        "expected PostToChannel to ops for PR #1352, got: {:#?}",
+        effects
+    );
+
+    let has_nudge_lead = effects
+        .iter()
+        .any(|e| matches!(e, Effect::NudgeLead { .. }));
+    assert!(
+        has_nudge_lead,
+        "expected NudgeLead effect, got: {:#?}",
+        effects
+    );
+
+    let has_record_escalation = effects.iter().any(
+        |e| matches!(e, Effect::RecordReviewerEscalation { pr_number } if *pr_number == 1352u64),
+    );
+    assert!(
+        has_record_escalation,
+        "expected RecordReviewerEscalation for PR #1352, got: {:#?}",
+        effects
+    );
+}
+
+/// Once an escalation is posted (pr_number in reviewer_escalations_posted),
+/// subsequent ticks must not re-emit the ops message.
+#[test]
+fn dead_reviewer_escalation_not_repeated_after_recorded() {
+    use std::collections::{HashMap, HashSet};
+
+    let mut reviewer_pr_assignments = HashMap::new();
+    reviewer_pr_assignments.insert("riverside".to_string(), 1352u64);
+
+    let mut reviewer_restart_counts = HashMap::new();
+    reviewer_restart_counts.insert(1352u64, MAX_REVIEWER_RESTARTS);
+
+    let mut reviewer_escalations_posted = HashSet::new();
+    reviewer_escalations_posted.insert(1352u64); // already escalated
+
+    let mut headless_process_health = HashMap::new();
+    headless_process_health.insert(
+        "riverside".to_string(),
+        snapshot::ProcessHealth {
+            is_alive: false,
+            exit_code: Some(0),
+            ..Default::default()
+        },
+    );
+
+    let snap = snapshot::WorldSnapshot {
+        headless_process_health,
+        reviewer_pr_assignments,
+        reviewer_restart_counts,
+        reviewer_escalations_posted,
+        ..empty_snap()
+    };
+
+    let effects = check_and_restart_dead_reviewers(&snap);
+
+    assert!(
+        effects.is_empty(),
+        "no effects expected when escalation already posted, got: {:#?}",
+        effects
+    );
+}
