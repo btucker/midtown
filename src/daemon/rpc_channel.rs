@@ -262,7 +262,7 @@ pub(super) async fn handle_channel_post(
             };
 
             if session_ready {
-                let nudge_msg = format!("user: {}", content);
+                let nudge_msg = format!("user ({}): {}", msg.id, content);
                 info!(
                     "Nudging channel lead '{}' about user message in #{}",
                     channel_name, channel_name
@@ -309,7 +309,7 @@ pub(super) async fn handle_channel_post(
                 }
             }
 
-            let nudge_msg = format!("user: {}", content);
+            let nudge_msg = format!("user ({}): {}", msg.id, content);
             info!("Nudging Lead about user message");
             state.nudge_lead(&nudge_msg).await;
         }
@@ -337,7 +337,10 @@ pub(super) async fn handle_channel_post(
             // Truncate message for nudge (max 100 chars)
             let summary = truncate_str(&content, 100);
 
-            let nudge_msg = format!("{} mentioned @{}: {}", from, state.repo_name, summary);
+            let nudge_msg = format!(
+                "{} mentioned @{} ({}): {}",
+                from, state.repo_name, msg.id, summary
+            );
             info!(
                 "Nudging Lead about @{} mention from {}",
                 state.repo_name, from
