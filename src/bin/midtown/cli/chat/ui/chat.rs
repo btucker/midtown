@@ -312,6 +312,9 @@ fn draw_chat_messages(f: &mut Frame, app: &mut App, area: Rect) {
 
     let mut lines: Vec<Line> = Vec::new();
     let mut reply_line_map: HashMap<usize, String> = HashMap::new();
+    // Tracks (start_line, end_line_exclusive, message_id) for each rendered message.
+    // Used to build message_line_map after scroll truncation.
+    let mut message_ranges: Vec<(usize, usize, String)> = Vec::new();
     let prev_sender: Option<&str> = None;
 
     let mut mermaid_to_render: Vec<String> = Vec::new();
@@ -328,6 +331,8 @@ fn draw_chat_messages(f: &mut Frame, app: &mut App, area: Rect) {
         } else {
             prev_sender
         };
+
+        let msg_start_line = lines.len();
 
         if !has_special {
             let msg_lines = render_message(
@@ -354,6 +359,8 @@ fn draw_chat_messages(f: &mut Frame, app: &mut App, area: Rect) {
                 &mut mermaid_to_render,
             );
         }
+
+        message_ranges.push((msg_start_line, lines.len(), msg.id.clone()));
 
         // Add reply indicator if this message has thread replies
         if let Some((count, last_from)) = thread_reply_counts.get(&msg.id) {
@@ -395,6 +402,21 @@ fn draw_chat_messages(f: &mut Frame, app: &mut App, area: Rect) {
             } else {
                 None
             }
+        })
+        .collect();
+
+    // Rebuild click map covering every visible line of each top-level message.
+    // This allows clicking anywhere on a message (not just reply indicators) to open its thread.
+    app.message_line_map = message_ranges
+        .into_iter()
+        .flat_map(|(start, end, id)| {
+            (start..end).filter_map(move |line_idx| {
+                if line_idx >= visible_start && line_idx < visible_start + visible_len {
+                    Some(((line_idx - visible_start) as u16, id.clone()))
+                } else {
+                    None
+                }
+            })
         })
         .collect();
 

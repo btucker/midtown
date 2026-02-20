@@ -1017,13 +1017,19 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                     && y >= chat_rect.y
                     && y < chat_rect.y + chat_rect.height
                 {
-                    // Check if click is on a reply indicator line (inside chat content area)
+                    // Check if click landed on any message or reply-indicator line.
+                    // message_line_map covers every visible line of each top-level message body.
+                    // thread_reply_line_map covers "↳ N replies" indicator lines below messages.
                     if x > chat_rect.x
                         && x < chat_rect.x + chat_rect.width.saturating_sub(1)
                         && y > chat_rect.y
                         && y < chat_rect.y + chat_rect.height.saturating_sub(1)
                     {
                         let content_y = y.saturating_sub(chat_rect.y + 1);
+                        if let Some(msg_id) = app.message_line_map.get(&content_y).cloned() {
+                            app.open_thread(&msg_id);
+                            return EventResult::Continue;
+                        }
                         if let Some(parent_id) = app.thread_reply_line_map.get(&content_y).cloned()
                         {
                             app.open_thread(&parent_id);
