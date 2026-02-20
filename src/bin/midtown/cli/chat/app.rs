@@ -5037,4 +5037,75 @@ pub(super) mod tests {
             "Thinking should be cleared when an InProgress tool entry exists"
         );
     }
+
+    /// Bug #3: Thread replies must not accumulate in `messages` or `thread_messages`
+    /// across multiple refresh cycles.
+    ///
+    /// Before the fix, thread replies stored with `thread_parent_id` were included
+    /// in `visible_messages()` without filtering. They appeared in the main channel
+    /// on every render — not just once at arrival, but on every subsequent refresh
+    /// cycle because the reply remained in `app.messages` and was rendered without
+    /// any filter. The fix adds a `thread_parent_id.is_none()` filter in
+    /// `draw_chat_messages()`, and the cursor-based reader ensures each reply is
+    /// only ingested once regardless of how many times `refresh()` is called.
+    #[test]
+    fn test_thread_replies_not_duplicated_across_refresh_cycles() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let channel = Channel::new(temp_dir.path(), "test-channel").unwrap();
+
+        // Write a parent message and a thread reply to the channel file.
+        let parent = Message::text("alice", "parent message");
+        let parent_id = parent.id.clone();
+        let mut reply = Message::text("bob", "thread reply content");
+        reply.thread_parent_id = Some(parent_id.clone());
+        channel.send(&parent).unwrap();
+        channel.send(&reply).unwrap();
+
+        // Allow the write lock to be released before reading.
+        std::thread::sleep(Duration::from_millis(50));
+
+        // Create an App with the real channel. `test_app()` sets
+        // `initial_load_done: true` and `session_id: "test-session"`, so the
+        // first `refresh()` uses cursor-based reading starting at byte 0,
+        // which reads all pre-existing messages exactly once.
+        let mut app = App {
+            channel: Some(channel),
+            ..test_app()
+        };
+
+        // First refresh reads both parent and reply from the cursor.
+        app.refresh();
+        assert_eq!(
+            app.messages.len(),
+            2,
+            "Initial refresh must read parent + reply"
+        );
+
+        // Open the thread — open_thread() collects existing replies from messages.
+        app.open_thread(&parent_id);
+        assert_eq!(
+            app.thread_messages.len(),
+            1,
+            "Thread panel must show exactly 1 reply after open"
+        );
+
+        // Bug #3: subsequent refresh cycles must NOT re-add the reply.
+        // The cursor is now at EOF, so read_since_cursor returns nothing.
+        app.refresh();
+        app.refresh();
+        app.refresh();
+
+        assert_eq!(
+            app.messages.len(),
+            2,
+            "messages must not accumulate across refresh cycles (bug #3)"
+        );
+        assert_eq!(
+            app.thread_messages.len(),
+            1,
+            "thread_messages must not accumulate across refresh cycles (bug #3)"
+        );
+    }
 }
