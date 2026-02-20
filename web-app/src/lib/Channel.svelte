@@ -638,7 +638,7 @@
           >
           {#if !msg.thread_parent_id}
             <button
-              class="hidden lg:flex absolute right-0 top-[1px] items-center gap-1 px-2 py-[1px] rounded border border-border bg-card/95 text-[0.68rem] text-muted-foreground cursor-pointer opacity-0 pointer-events-none transition-opacity duration-150 group-hover:opacity-100 group-hover:pointer-events-auto focus:opacity-100 focus:pointer-events-auto hover:text-foreground hover:border-[#5fafaf]"
+              class="hidden lg:flex absolute right-0 top-[1px] items-center gap-1 px-2 py-[1px] rounded border border-border bg-card/95 text-[0.68rem] text-muted-foreground cursor-pointer opacity-0 pointer-events-none transition-opacity duration-150 group-hover:opacity-100 group-hover:pointer-events-auto focus:opacity-100 focus:pointer-events-auto hover:text-foreground hover:border-ring"
               onclick={() => openThread(msg, $activeChannel)}
               aria-label="Reply in thread"
             >
@@ -651,7 +651,7 @@
           {#if senderChanged(channelMessages, i)}
             <!-- Author line: bold name + current task + cross-post indicator -->
             <div
-              class="mt-1 whitespace-nowrap overflow-hidden text-ellipsis flex items-center gap-[7px] {isInsight(msg) && isCrossPost(msg) ? 'py-[5px] px-[10px] -mt-[5px] -mx-[10px] mb-[5px] border-l-[3px] border-l-[#af5faf] bg-[rgba(175,95,175,0.12)] rounded-[5px]' : ''}"
+              class="mt-1 whitespace-nowrap overflow-hidden text-ellipsis flex items-center gap-[7px] {isInsight(msg) && isCrossPost(msg) ? 'py-[5px] px-[10px] -mt-[5px] -mx-[10px] mb-[5px] border-l-[3px] border-l-insight bg-insight/12 rounded-[5px]' : ''}"
             >
               {#if isInsight(msg) && isCrossPost(msg)}
                 <span class="text-[#ffaf5f] text-[1.05rem]">&#9733;</span>
@@ -769,7 +769,7 @@
 
   {#if !autoScroll}
     <button
-      class="absolute bottom-[90px] right-[22px] w-[40px] h-[40px] rounded-full border-2 border-border bg-card text-foreground text-[1.2rem] cursor-pointer flex items-center justify-center transition-all duration-200 opacity-85 hover:opacity-100 hover:border-[#5faf5f] hover:text-[#5faf5f] z-10"
+      class="absolute bottom-[90px] right-[22px] w-[40px] h-[40px] rounded-full border-2 border-border bg-card text-foreground text-[1.2rem] cursor-pointer flex items-center justify-center transition-all duration-200 opacity-85 hover:opacity-100 hover:border-primary hover:text-primary z-10"
       onclick={scrollToBottom}
       aria-label="Scroll to bottom"
     >
@@ -820,7 +820,7 @@
           bind:value={inputText}
           placeholder="Message to #{$activeChannel}..."
           rows="1"
-          class="flex-1 py-[13px] px-[17px] border-2 border-border rounded-[18px] bg-card text-foreground text-[1.02rem] font-inherit outline-none resize-none min-h-[1.6em] max-h-[9em] overflow-y-auto focus:border-[#5faf5f] placeholder:text-muted-foreground"
+          class="flex-1 py-[13px] px-[17px] border-2 border-border rounded-[18px] bg-card text-foreground text-[1.02rem] font-inherit outline-none resize-none min-h-[1.6em] max-h-[9em] overflow-y-auto focus:border-primary placeholder:text-muted-foreground"
           onkeydown={handleKeyDown}
           onpaste={handlePaste}
           oninput={handleInput}
