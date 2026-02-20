@@ -26,7 +26,7 @@ use crossterm::{
 };
 use futures::StreamExt;
 use ratatui::{Terminal, prelude::CrosstermBackend};
-use tokio::time::interval;
+use tokio::time::{MissedTickBehavior, interval};
 
 use app::App;
 use ratatui::style::Color as RatatuiColor;
@@ -138,7 +138,11 @@ async fn run_app_async(
 
     // Animation timer (~100ms) for spinner frame advancement.
     // Advances unconditionally so all spinners (lead + coworkers) animate.
+    // Skip missed ticks instead of bursting: if the event loop was busy handling
+    // keyboard events, dropped animation ticks are discarded rather than firing
+    // all at once, which would cause wasted redraws without frame progress.
     let mut animation_interval = interval(Duration::from_millis(100));
+    animation_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
     // Track previous hyperlinks to skip redundant OSC 8 rendering
     let mut last_hyperlinks: Vec<Hyperlink> = Vec::new();
