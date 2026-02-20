@@ -586,15 +586,31 @@ impl Channel {
             .join("channels")
             .join(format!("{}.archived", &self.channel_name));
 
+        // Clean up any orphaned .bak dir from a previous crash between renames.
+        let backup_dir = self
+            .base_dir
+            .join("channels")
+            .join(format!("{}.archived.bak", &self.channel_name));
+        if backup_dir.exists() {
+            let _ = fs::remove_dir_all(&backup_dir);
+        }
+
         if archived_dir.exists() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::AlreadyExists,
-                format!(
-                    "An archived version of channel '{}' already exists",
-                    self.channel_name
-                ),
-            )
-            .into());
+            // Move old archive to a temp name so we can restore it if rename fails
+            fs::rename(&archived_dir, &backup_dir)?;
+
+            match fs::rename(&channel_dir, &archived_dir) {
+                Ok(()) => {
+                    // Success — remove the backup
+                    let _ = fs::remove_dir_all(&backup_dir);
+                }
+                Err(e) => {
+                    // Restore the backup
+                    let _ = fs::rename(&backup_dir, &archived_dir);
+                    return Err(e.into());
+                }
+            }
+            return Ok(());
         }
 
         fs::rename(&channel_dir, &archived_dir)?;

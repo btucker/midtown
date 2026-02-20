@@ -899,29 +899,30 @@ fn test_both_active_and_archived_files_treats_channel_as_active() {
 }
 
 #[test]
-fn test_archive_fails_with_clear_error_when_archived_dir_already_exists() {
+fn test_archive_replaces_existing_archived_dir() {
     let temp_dir = TempDir::new().unwrap();
 
-    // Create a channel and archive it once successfully
+    // Create a channel, write a message, and archive it
     let channel = Channel::new(temp_dir.path(), "test-channel").unwrap();
+    channel
+        .send(&Message::text("agent1", "old message"))
+        .unwrap();
     channel.archive().unwrap();
 
-    // Re-create the active channel directory so archive() has something to rename
-    Channel::new(temp_dir.path(), "test-channel").unwrap();
+    // Re-create the active channel with a different message
+    let channel2 = Channel::new(temp_dir.path(), "test-channel").unwrap();
+    channel2
+        .send(&Message::text("agent1", "new message"))
+        .unwrap();
 
-    // Archiving again should fail with a clear AlreadyExists error, not an
-    // opaque OS-level "Directory not empty" error
-    let result = channel.archive();
-    assert!(
-        result.is_err(),
-        "archive() should fail when .archived dir exists"
-    );
-    let err = result.unwrap_err();
-    let err_str = err.to_string();
-    assert!(
-        err_str.contains("already exists"),
-        "Error should mention 'already exists', got: {err_str}"
-    );
+    // Archiving again should succeed, replacing the old archive
+    channel2.archive().unwrap();
+
+    // The archived channel should contain the new message, not the old one
+    let archived = Channel::open_archived(temp_dir.path(), "test-channel").unwrap();
+    let messages = archived.read_all().unwrap();
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0].content, "new message");
 }
 
 #[test]

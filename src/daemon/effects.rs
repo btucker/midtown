@@ -1676,16 +1676,27 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     warn!("Failed to post merge notice: {}", e);
                 }
 
-                // Archive the source channel using Channel::archive()
-                if let Err(e) = from_channel.archive() {
-                    warn!(
-                        "Failed to archive source channel '{}' after merge: {}",
-                        from, e
-                    );
+                // Archive the source channel using Channel::archive().
+                // Idempotency guard: only archive if the active directory still exists.
+                // Without this, a duplicate merge could recreate the channel via Channel::new()
+                // and then archive() would overwrite the real archived data.
+                let from_channel_dir = base_dir.join("channels").join(&from);
+                if from_channel_dir.exists() {
+                    if let Err(e) = from_channel.archive() {
+                        warn!(
+                            "Failed to archive source channel '{}' after merge: {}",
+                            from, e
+                        );
+                    } else {
+                        info!(
+                            "Merged channel '{}' into '{}' and archived source",
+                            from, into
+                        );
+                    }
                 } else {
-                    info!(
-                        "Merged channel '{}' into '{}' and archived source",
-                        from, into
+                    debug!(
+                        "Source channel '{}' already archived after merge, skipping",
+                        from
                     );
                 }
             }

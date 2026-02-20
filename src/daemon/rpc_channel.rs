@@ -6,7 +6,7 @@
 
 use std::time::{Duration, Instant};
 
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 use crate::message::{Message, MessageType};
 use crate::rpc::{RequestId, Response, RpcError};
@@ -400,8 +400,14 @@ pub(super) fn handle_channel_create(id: RequestId, name: &str, state: &DaemonSta
 /// Handle channel.archive RPC method.
 ///
 /// Archives a channel by renaming its directory from `<name>/` to `<name>.archived/`.
+/// Also cleans up any running channel lead session for the archived channel by
+/// removing it from `channel_lead_sessions` and `headless_sessions` in persistent state.
 /// Returns an error if the channel does not exist or if trying to archive 'midtown'.
-pub(super) fn handle_channel_archive(id: RequestId, name: &str, state: &DaemonState) -> Response {
+pub(super) async fn handle_channel_archive(
+    id: RequestId,
+    name: &str,
+    state: &DaemonState,
+) -> Response {
     let base_dir = state.channel_router.base_dir();
 
     // Check existence before calling Channel::new(), which would create the
@@ -422,13 +428,50 @@ pub(super) fn handle_channel_archive(id: RequestId, name: &str, state: &DaemonSt
         }
     };
     match channel.archive() {
-        Ok(()) => Response::success(
-            id,
-            serde_json::json!({
-                "success": true,
-                "message": format!("Channel '{}' archived", name),
-            }),
-        ),
+        Ok(()) => {
+            // Shut down the channel lead session (if running) and clean up state.
+            // This mirrors the cleanup in Effect::ArchiveChannel (effects.rs).
+            let lead_session_name = crate::launch::channel_lead_session_name(name);
+            let goodbye = format!(
+                "Channel '{}' has been archived. Your session is ending.",
+                name
+            );
+            super::effects::execute_effects(
+                vec![super::effects::Effect::ShutdownCoworker {
+                    name: lead_session_name.clone(),
+                    message: goodbye,
+                }],
+                state,
+            )
+            .await;
+
+            // Remove from channel_lead_sessions and headless_sessions
+            {
+                let mut ps = state.persistent_state.lock().await;
+                let removed_lead = ps.channel_lead_sessions.remove(name).is_some();
+                let removed_headless = ps.headless_sessions.remove(&lead_session_name).is_some();
+                if removed_lead || removed_headless {
+                    debug!(
+                        "Removed channel lead session for archived channel '{}'",
+                        name
+                    );
+                    if let Err(e) = ps.save_for_repo(&state.repo_name) {
+                        warn!(
+                            "Failed to save daemon state after removing channel lead: {}",
+                            e
+                        );
+                    }
+                }
+            }
+
+            Response::success(
+                id,
+                serde_json::json!({
+                    "success": true,
+                    "message": format!("Channel '{}' archived", name),
+                }),
+            )
+        }
         Err(e) => {
             error!("Failed to archive channel '{}': {}", name, e);
             Response::error(id, RpcError::new(-32603, e.to_string()))

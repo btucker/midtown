@@ -1184,6 +1184,18 @@ pub fn ensure_channel_leads_alive(snap: &snapshot::WorldSnapshot) -> Vec<Effect>
     let mut effects = Vec::new();
 
     for (channel_name, session_id) in &snap.channel_lead_sessions {
+        // Skip archived channels — their leads should not be respawned.
+        // This is defense-in-depth; handle_channel_archive and ArchiveChannel
+        // both clean up channel_lead_sessions, but if a stale entry persists
+        // (e.g., CLI archive without daemon restart), this prevents respawning.
+        if snap.archived_channels.contains(channel_name.as_str()) {
+            debug!(
+                "Channel lead '{}': channel is archived, skipping respawn",
+                channel_name
+            );
+            continue;
+        }
+
         let session_name = crate::launch::channel_lead_session_name(channel_name);
 
         // Skip if this channel lead is already registered as an active coworker.
