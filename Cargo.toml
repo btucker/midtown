@@ -60,7 +60,8 @@ fastrand = "2"
 daemonize = "0.5"
 
 # TUI for chat interface
-ratatui = "0.29"
+ratatui = "0.30"
+ratatui-themes = { version = "0.1", features = ["serde"] }
 crossterm = { version = "0.29", features = ["event-stream"] }
 portable-pty = "0.8"
 

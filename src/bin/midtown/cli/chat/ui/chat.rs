@@ -10,6 +10,8 @@ use ratatui::{
 
 use crate::cli::chat::mermaid;
 
+use ratatui_themes::ThemePalette;
+
 use super::super::app::{App, FocusedPane, MessageRenderCache, PendingQuestion};
 use super::messages::render_message;
 use super::messages_mermaid::render_message_with_mermaid;
@@ -39,7 +41,7 @@ pub fn draw_chat_panel(f: &mut Frame, app: &mut App, area: Rect) {
     // Draw pending questions banner (collapsed to 0 height when empty)
     if questions_height > 0 {
         let questions = app.pending_questions.clone();
-        draw_pending_questions(f, &questions, chunks[0]);
+        draw_pending_questions(f, &questions, chunks[0], app.theme.palette());
     }
     draw_chat_messages(f, app, chunks[1]);
     draw_lead_indicator(f, app, chunks[2]);
@@ -59,7 +61,7 @@ fn draw_lead_indicator(f: &mut Frame, app: &mut App, area: Rect) {
         let spinner = app.spinner_char();
         Line::from(vec![Span::styled(
             format!(" {} lead...", spinner),
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(app.theme.palette().muted),
         )])
     } else {
         Line::from("")
@@ -86,27 +88,32 @@ fn pending_questions_height(questions: &[PendingQuestion]) -> u16 {
 /// Each question is shown as:
 ///   [coworker_name asks]: question text
 ///   (answer with: midtown coworker nudge --to <name> --message "your answer")
-fn draw_pending_questions(f: &mut Frame, questions: &[PendingQuestion], area: Rect) {
+fn draw_pending_questions(
+    f: &mut Frame,
+    questions: &[PendingQuestion],
+    area: Rect,
+    palette: ThemePalette,
+) {
     let mut lines: Vec<Line<'static>> = Vec::new();
 
     for q in questions {
-        // Question line: bold yellow "[name asks]: question"
+        // Question line: bold warning "[name asks]: question"
         lines.push(Line::from(vec![
             Span::styled(
                 format!("[{} asks]: ", q.coworker_name),
                 Style::default()
-                    .fg(Color::Yellow)
+                    .fg(palette.warning)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(q.question.clone(), Style::default().fg(Color::Yellow)),
+            Span::styled(q.question.clone(), Style::default().fg(palette.warning)),
         ]));
-        // Hint line: dim gray answer instruction
+        // Hint line: muted answer instruction
         lines.push(Line::from(vec![Span::styled(
             format!(
                 "  (answer: midtown coworker nudge --to {} --message \"...\")",
                 q.coworker_name
             ),
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(palette.muted),
         )]));
     }
 
@@ -121,11 +128,12 @@ fn draw_chat_messages(f: &mut Frame, app: &mut App, area: Rect) {
     } else {
         format!(" #{} ", app.selected_channel)
     };
+    let palette = app.theme.palette();
     let is_focused = app.focused_pane == FocusedPane::Chat;
     let border_color = if app.selection_mode || is_focused {
-        Color::Yellow
+        palette.accent
     } else {
-        Color::DarkGray
+        palette.muted
     };
     let block = Block::default()
         .title(title)
@@ -368,11 +376,12 @@ fn calculate_input_bar_height(input_text: &str, area_width: u16) -> u16 {
 
 /// Draw the input bar at the bottom of the chat panel
 fn draw_input_bar(f: &mut Frame, app: &App, area: Rect) {
+    let palette = app.theme.palette();
     let is_focused = app.focused_pane == FocusedPane::InputBar;
     let border_color = if is_focused {
-        Color::Yellow
+        palette.accent
     } else {
-        Color::DarkGray
+        palette.muted
     };
 
     let block = Block::default()
@@ -411,6 +420,7 @@ fn draw_autocomplete_dropdown(f: &mut Frame, app: &App, input_area: Rect) {
         return;
     }
 
+    let palette = app.theme.palette();
     let item_count = items.len().min(8);
     let dropdown_height = (item_count * 2) as u16;
     let dropdown_width = 40u16.min(input_area.width.saturating_sub(4));
@@ -435,11 +445,11 @@ fn draw_autocomplete_dropdown(f: &mut Frame, app: &App, input_area: Rect) {
 
         let value_style = if is_selected {
             Style::default()
-                .fg(Color::Black)
-                .bg(Color::Yellow)
+                .fg(palette.bg)
+                .bg(palette.accent)
                 .add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(Color::White).bg(Color::Black)
+            Style::default().fg(palette.fg).bg(palette.bg)
         };
 
         lines.push(Line::from(vec![Span::styled(
@@ -454,15 +464,15 @@ fn draw_autocomplete_dropdown(f: &mut Frame, app: &App, input_area: Rect) {
                 format!(" {}", desc)
             };
             let desc_style = if is_selected {
-                Style::default().fg(Color::Black).bg(Color::Yellow)
+                Style::default().fg(palette.bg).bg(palette.accent)
             } else {
-                Style::default().fg(Color::DarkGray).bg(Color::Black)
+                Style::default().fg(palette.muted).bg(palette.bg)
             };
             lines.push(Line::from(vec![Span::styled(desc_text, desc_style)]));
         } else {
             lines.push(Line::from(Span::styled(
                 "",
-                Style::default().bg(Color::Black),
+                Style::default().bg(palette.bg),
             )));
         }
     }
@@ -472,8 +482,8 @@ fn draw_autocomplete_dropdown(f: &mut Frame, app: &App, input_area: Rect) {
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan))
-        .style(Style::default().bg(Color::Black));
+        .border_style(Style::default().fg(palette.accent))
+        .style(Style::default().bg(palette.bg));
 
     let paragraph = Paragraph::new(lines).block(block);
     f.render_widget(paragraph, dropdown_area);
@@ -484,6 +494,8 @@ pub fn draw_channel_switcher_overlay(f: &mut Frame, app: &App, area: Rect) {
     if !app.channel_switcher.show {
         return;
     }
+
+    let palette = app.theme.palette();
 
     // Calculate centered popup size
     let popup_width = 50u16.min(area.width.saturating_sub(4));
@@ -517,22 +529,20 @@ pub fn draw_channel_switcher_overlay(f: &mut Frame, app: &App, area: Rect) {
     let input_line = format!("🔍 {}", app.channel_switcher.input);
     lines.push(Line::from(Span::styled(
         input_line,
-        Style::default()
-            .fg(Color::White)
-            .add_modifier(Modifier::BOLD),
+        Style::default().fg(palette.fg).add_modifier(Modifier::BOLD),
     )));
 
     // Separator line
     lines.push(Line::from(Span::styled(
         "─".repeat(popup_width.saturating_sub(2) as usize),
-        Style::default().fg(Color::DarkGray),
+        Style::default().fg(palette.muted),
     )));
 
     // Channel list
     if app.channel_switcher.filtered_channels.is_empty() {
         lines.push(Line::from(Span::styled(
             " No matching channels",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(palette.muted),
         )));
     } else {
         // Calculate scrolling offset to keep selected item visible
@@ -571,11 +581,11 @@ pub fn draw_channel_switcher_overlay(f: &mut Frame, app: &App, area: Rect) {
 
             let style = if is_selected {
                 Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::Yellow)
+                    .fg(palette.bg)
+                    .bg(palette.accent)
                     .add_modifier(Modifier::BOLD)
             } else {
-                Style::default().fg(Color::White)
+                Style::default().fg(palette.fg)
             };
 
             lines.push(Line::from(Span::styled(channel_text, style)));
@@ -584,14 +594,14 @@ pub fn draw_channel_switcher_overlay(f: &mut Frame, app: &App, area: Rect) {
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan))
+        .border_style(Style::default().fg(palette.accent))
         .title(" Quick Channel Switcher (Ctrl+K) ")
         .title_style(
             Style::default()
-                .fg(Color::Cyan)
+                .fg(palette.accent)
                 .add_modifier(Modifier::BOLD),
         )
-        .style(Style::default().bg(Color::Black));
+        .style(Style::default().bg(palette.bg));
 
     let paragraph = Paragraph::new(lines).block(block);
     f.render_widget(paragraph, popup_area);
