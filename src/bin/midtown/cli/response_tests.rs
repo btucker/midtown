@@ -233,6 +233,18 @@ fn test_status_pretty_excludes_channel_leads_from_count() {
         "Channel leads should be excluded from coworker count, got: {}",
         pretty
     );
+    // Channel lead rows should not appear in output
+    assert!(
+        !pretty.contains("tui - idle"),
+        "Channel lead 'tui' should not appear as a row, got: {}",
+        pretty
+    );
+    // Regular coworker rows should still appear
+    assert!(
+        pretty.contains("amsterdam - idle"),
+        "Regular coworker 'amsterdam' should appear as a row, got: {}",
+        pretty
+    );
 }
 
 #[test]
