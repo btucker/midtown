@@ -396,3 +396,45 @@ fn make_test_state() -> (
     .expect("daemon state");
     (state, temp_dir, _guard)
 }
+
+#[test]
+fn test_session_dispatch_skips_channel_lead_owned_tasks() {
+    // Given: a channel lead has an in-progress task with a stopped session.
+    // The session recovery loop must NOT resume it as a regular coworker.
+    let session = make_session_record("sess-cl-123", Some("99"), Some("canal-lead"), false);
+
+    let snap = snapshot::WorldSnapshot {
+        in_progress_tasks: vec![(
+            "99".to_string(),
+            "Maintain canal channel".to_string(),
+            "canal-lead".to_string(),
+        )],
+        active_names: HashSet::new(), // canal-lead is NOT active
+        sessions: [("sess-cl-123".to_string(), session)].into_iter().collect(),
+        session_task_map: [("99".to_string(), "sess-cl-123".to_string())]
+            .into_iter()
+            .collect(),
+        session_name_map: HashMap::new(),
+        name_session_map: HashMap::new(),
+        // canal-lead is registered as a channel lead
+        channel_lead_sessions: [("canal-lead".to_string(), "sess-cl-123".to_string())]
+            .into_iter()
+            .collect(),
+        ..snapshot::minimal_snapshot_for_test()
+    };
+
+    let effects = dispatch_via_sessions_for_test(&snap, None, |_| None);
+
+    // Then: no spawn effects — channel leads must not be recovered as coworkers
+    let has_spawn = effects
+        .iter()
+        .any(|e| matches!(e, Effect::SpawnCoworkerWithCallbacks { .. }));
+    assert!(
+        !has_spawn,
+        "Should NOT spawn a coworker for a channel lead's task, got effects: {:?}",
+        effects
+            .iter()
+            .map(|e| format!("{:?}", e))
+            .collect::<Vec<_>>()
+    );
+}

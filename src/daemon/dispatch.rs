@@ -752,6 +752,17 @@ where
     let mut tasks_without_sessions: Vec<(String, String, String)> = Vec::new();
 
     for (task_id, task_subject, owner) in &snap.in_progress_tasks {
+        // Skip empty owners, Lead, or channel leads — these are not managed by
+        // the coworker dispatch loop and must not be recovered as regular coworkers.
+        if owner.is_empty()
+            || owner.eq_ignore_ascii_case("lead")
+            || snap
+                .channel_lead_sessions
+                .contains_key(&owner.to_lowercase())
+        {
+            continue;
+        }
+
         // Check if this task has a session record.
         let session_id = match snap.session_task_map.get(task_id) {
             Some(id) => id,
