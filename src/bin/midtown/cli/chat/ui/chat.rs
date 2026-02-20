@@ -19,7 +19,7 @@ use super::super::app::{
 };
 use super::messages::{build_reply_indicator_line, render_message};
 use super::messages_mermaid::render_message_with_mermaid;
-use super::text::wrap_content;
+use super::text::count_wrapped_lines;
 
 /// Draw the chat panel showing messages
 pub fn draw_chat_panel(f: &mut Frame, app: &mut App, area: Rect) {
@@ -463,7 +463,7 @@ fn calculate_input_bar_height(input_text: &str, area_width: u16) -> u16 {
     let line_count = if input_text.is_empty() {
         1
     } else {
-        wrap_content(input_text, content_width).len()
+        count_wrapped_lines(input_text, content_width)
     };
 
     let content_lines = (line_count as u16).clamp(MIN_CONTENT_LINES, MAX_CONTENT_LINES);

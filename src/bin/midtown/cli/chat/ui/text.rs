@@ -12,6 +12,59 @@ pub fn wrap_content(content: &str, width: usize) -> Vec<String> {
     result
 }
 
+/// Count how many wrapped lines `content` produces at the given width,
+/// without allocating any intermediate strings.
+pub fn count_wrapped_lines(content: &str, width: usize) -> usize {
+    let width = width.max(1);
+    content
+        .split('\n')
+        .map(|line| count_line_wraps(line, width))
+        .sum::<usize>()
+        .max(1)
+}
+
+/// Count how many lines a single (newline-free) text segment produces when
+/// word-wrapped to `width` columns — mirrors the logic in `wrap_line` but
+/// returns only the count with no heap allocation.
+fn count_line_wraps(text: &str, width: usize) -> usize {
+    if text.is_empty() {
+        return 1;
+    }
+    let char_count = text.chars().count();
+    if char_count <= width {
+        return 1;
+    }
+
+    let mut count = 0;
+    let mut remaining = text;
+
+    while !remaining.is_empty() {
+        let rem_chars = remaining.chars().count();
+        if rem_chars <= width {
+            count += 1;
+            break;
+        }
+
+        // Find the byte position of the width-th character
+        let byte_pos = remaining
+            .char_indices()
+            .nth(width)
+            .map(|(i, _)| i)
+            .unwrap_or(remaining.len());
+
+        // Try to find a word boundary within the width limit
+        let break_at = remaining[..byte_pos]
+            .rfind(' ')
+            .map(|pos| pos + 1)
+            .unwrap_or(byte_pos);
+
+        count += 1;
+        remaining = remaining[break_at..].trim_start();
+    }
+
+    count
+}
+
 /// Wrap a single line of text to fit within the given width
 ///
 /// Uses word boundaries when possible, falls back to character wrapping.

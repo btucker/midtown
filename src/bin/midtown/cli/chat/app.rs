@@ -1899,28 +1899,28 @@ impl App {
             return;
         }
 
-        // Look backward from cursor to find trigger character
-        let mut trigger_pos: Option<usize> = None;
-        let mut trigger_char: Option<char> = None;
-
-        // Convert character indices to byte positions
-        let chars: Vec<(usize, char)> = text.char_indices().collect();
-        if cursor_pos > chars.len() {
+        // Look backward from cursor to find trigger character.
+        // Compute cursor byte position without allocating — nth() scans lazily.
+        let char_count = text.chars().count();
+        if cursor_pos > char_count {
             self.autocomplete.show = false;
             return;
         }
+        let cursor_byte_pos = text
+            .char_indices()
+            .nth(cursor_pos)
+            .map(|(i, _)| i)
+            .unwrap_or(text.len());
 
-        // Find byte position of cursor
-        let cursor_byte_pos = if cursor_pos < chars.len() {
-            chars[cursor_pos].0
-        } else {
-            text.len()
-        };
+        // Scan backward over the text up to the cursor using byte-indexed iteration.
+        // char_indices().rev() on a slice gives (byte_offset, char) in reverse order
+        // without any heap allocation.
+        let mut trigger_pos: Option<usize> = None;
+        let mut trigger_char: Option<char> = None;
 
-        // Scan backward from cursor
-        for i in (0..cursor_pos).rev() {
-            let (byte_idx, ch) = chars[i];
-            let prev_char = if i > 0 { Some(chars[i - 1].1) } else { None };
+        for (byte_idx, ch) in text[..cursor_byte_pos].char_indices().rev() {
+            // "previous character" is the last char of the text before byte_idx
+            let prev_char = text[..byte_idx].chars().next_back();
 
             // Check if this is a trigger character preceded by whitespace or start of line
             if matches!(ch, '@' | '#' | '!')
@@ -1931,8 +1931,8 @@ impl App {
                 break;
             }
 
-            // Slash commands: only trigger at the very start of input (position 0)
-            if ch == '/' && prev_char.is_none() {
+            // Slash commands: only trigger at the very start of input (byte 0)
+            if ch == '/' && byte_idx == 0 {
                 trigger_pos = Some(byte_idx);
                 trigger_char = Some(ch);
                 break;
@@ -2155,12 +2155,12 @@ impl App {
         }
 
         // Convert cursor position (character index) to byte position
-        let chars: Vec<(usize, char)> = self.input_text.char_indices().collect();
-        let cursor_byte_pos = if self.input_cursor < chars.len() {
-            chars[self.input_cursor].0
-        } else {
-            self.input_text.len()
-        };
+        let cursor_byte_pos = self
+            .input_text
+            .char_indices()
+            .nth(self.input_cursor)
+            .map(|(i, _)| i)
+            .unwrap_or(self.input_text.len());
 
         // Extract parts before trigger and after cursor
         let before_trigger = self.input_text[..self.autocomplete.trigger_start_pos].to_string();

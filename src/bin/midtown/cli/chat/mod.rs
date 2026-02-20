@@ -26,7 +26,7 @@ use crossterm::{
 };
 use futures::StreamExt;
 use ratatui::{Terminal, prelude::CrosstermBackend};
-use tokio::time::interval;
+use tokio::time::{MissedTickBehavior, interval};
 
 use app::App;
 use ratatui::style::Color as RatatuiColor;
@@ -138,7 +138,11 @@ async fn run_app_async(
 
     // Animation timer (~100ms) for spinner frame advancement.
     // Advances unconditionally so all spinners (lead + coworkers) animate.
+    // Skip missed ticks instead of bursting: if the event loop was busy handling
+    // keyboard events, dropped animation ticks are discarded rather than firing
+    // all at once, which would cause wasted redraws without frame progress.
     let mut animation_interval = interval(Duration::from_millis(100));
+    animation_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
     // Track previous hyperlinks to skip redundant OSC 8 rendering
     let mut last_hyperlinks: Vec<Hyperlink> = Vec::new();
@@ -758,6 +762,9 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                             if posted {
                                 app.thread_input_text.clear();
                                 app.thread_input_cursor = 0;
+                                // Refresh immediately so the reply appears without
+                                // waiting for the next tailf event or 1-second timer.
+                                app.refresh();
                             }
                         }
                         EventResult::Continue
@@ -827,6 +834,9 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                                 if posted {
                                     app.input_text.clear();
                                     app.input_cursor = 0;
+                                    // Refresh immediately so the message appears without
+                                    // waiting for the next tailf event or 1-second timer.
+                                    app.refresh();
                                     // Set optimistic thinking state for topic channels
                                     if channel_name != "midtown" && channel_name != "main" {
                                         app.set_channel_lead_thinking(&channel_name);
@@ -2785,3 +2795,7 @@ mod thread_reply_tests;
 #[path = "coworker_click_tests.rs"]
 #[cfg(test)]
 mod coworker_click_tests;
+
+#[path = "post_message_tests.rs"]
+#[cfg(test)]
+mod post_message_tests;
