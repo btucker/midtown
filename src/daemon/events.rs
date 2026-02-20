@@ -66,6 +66,7 @@ pub async fn evaluate_tick(
             effects.extend(super::health::check_and_shutdown_idle_coworkers(snap));
             effects.extend(super::health::check_and_restart_stuck_coworkers(snap, state).await);
             effects.extend(super::health::check_and_restart_stuck_reviewers(snap));
+            effects.extend(super::health::check_and_restart_dead_reviewers(snap));
             effects.extend(super::health::check_for_usage_limits(snap));
             effects.extend(super::health::maybe_nudge_usage_limit_expiry(snap));
             effects.extend(super::health::check_and_nudge_api_errors(snap, state));
