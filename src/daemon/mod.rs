@@ -3545,7 +3545,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                     let batched = buffer.flush();
                     for batch in batched {
                         let msg = trackers::format_batched_ci_notification(&batch);
-                        let message = Message::text("github", msg);
+                        let message = Message::for_channel("ops", "github", msg, crate::message::MessageType::Text);
                         if let Err(e) = state.send_and_broadcast_async(&message).await {
                             error!("Failed to post batched CI notification: {}", e);
                         }
