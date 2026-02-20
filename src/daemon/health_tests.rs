@@ -1844,3 +1844,62 @@ fn test_stuck_reviewer_restart_falls_back_to_shutdown_coworker_without_mapping()
         effects
     );
 }
+
+/// Reviewers that are alive but have never emitted any stream events (`last_event_at: None`)
+/// should be treated as stuck and restarted after `REVIEWER_STUCK_DURATION` elapses from
+/// their start time. This tests the real captured state where `pleasant` and `riverside`
+/// were assigned reviewers that went idle immediately without ever emitting events.
+#[test]
+fn stuck_reviewer_no_events_detected_from_snapshot() {
+    let fixture = include_str!(
+        "../../tests/fixtures/snapshot/snapshot-reviewer-stuck-no-review-pr1338-20260220-011159.json"
+    );
+    let snap: super::snapshot::WorldSnapshot =
+        serde_json::from_str(fixture).expect("Failed to deserialize WorldSnapshot from fixture");
+
+    // Preconditions: both reviewers have been alive 31+ minutes with no stream events
+    assert!(
+        snap.reviewer_pr_assignments.contains_key("pleasant"),
+        "pleasant should be in reviewer_pr_assignments"
+    );
+    assert!(
+        snap.reviewer_pr_assignments.contains_key("riverside"),
+        "riverside should be in reviewer_pr_assignments"
+    );
+    assert_eq!(
+        snap.headless_process_health
+            .get("pleasant")
+            .expect("pleasant should have health")
+            .last_event_at,
+        None,
+        "pleasant should have no stream events"
+    );
+    assert_eq!(
+        snap.headless_process_health
+            .get("riverside")
+            .expect("riverside should have health")
+            .last_event_at,
+        None,
+        "riverside should have no stream events"
+    );
+
+    let effects = check_and_restart_stuck_reviewers(&snap);
+
+    // Both reviewers have been alive 31+ min with no events — both should be restarted
+    let stuck_shutdowns: Vec<_> = effects
+        .iter()
+        .filter(|e| {
+            matches!(
+                e,
+                Effect::ShutdownSession { reason, .. } if reason.contains("stuck reviewer")
+            )
+        })
+        .collect();
+
+    assert_eq!(
+        stuck_shutdowns.len(),
+        2,
+        "Both stuck reviewers (no events, alive 31+ min) should trigger ShutdownSession, got effects: {:#?}",
+        effects
+    );
+}
