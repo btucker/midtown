@@ -1841,6 +1841,17 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 config.working_dir = Some(working_dir.clone());
                 config.initial_prompt = Some(initial_prompt.clone());
 
+                // 2b. Clear any stale inbox messages left by a previous session
+                // that held this name. Names are recycled from the NamePool, so
+                // without this a new session would inherit unread messages meant
+                // for its predecessor.
+                {
+                    let team_name = crate::mailbox::team_name_for_repo(&state.repo_name);
+                    if let Err(e) = crate::mailbox::clear_inbox(&team_name, &name) {
+                        warn!("SpawnSession: failed to clear inbox for '{}': {}", name, e);
+                    }
+                }
+
                 // 3. Spawn via state.spawn_coworker (handles worktree, register, session manager)
                 match state.spawn_coworker(&config).await {
                     Ok(()) => {
