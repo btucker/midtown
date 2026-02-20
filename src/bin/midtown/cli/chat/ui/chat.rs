@@ -224,6 +224,10 @@ fn draw_chat_messages(f: &mut Frame, app: &mut App, area: Rect) {
         lines
     };
 
+    // Feed rendered overflow back to app so max_scroll() can unblock scrolling
+    // on channels where few messages render to more lines than the display area.
+    app.rendered_overflow = total_lines.saturating_sub(msg_height);
+
     app.message_render_cache = Some(MessageRenderCache::new(
         visible_lines.clone(),
         app.diagram_sources.clone(),
