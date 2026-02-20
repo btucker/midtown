@@ -240,6 +240,7 @@ impl DaemonClient {
         all: bool,
         last: Option<&usize>,
         since: Option<&str>,
+        channel: Option<&str>,
     ) -> Result<Response, String> {
         let mut params = serde_json::json!({ "all": all });
         if let Some(n) = last {
@@ -248,9 +249,11 @@ impl DaemonClient {
         if let Some(duration) = since {
             params["since"] = serde_json::json!(duration);
         }
-        // If MIDTOWN_CHANNEL is set (channel lead context), read from that channel.
-        // Mirrors how channel_post() respects MIDTOWN_CHANNEL.
-        if let Ok(ch) = std::env::var("MIDTOWN_CHANNEL") {
+        // Explicit --channel flag takes priority over MIDTOWN_CHANNEL env var.
+        let resolved_channel = channel
+            .map(|s| s.to_string())
+            .or_else(|| std::env::var("MIDTOWN_CHANNEL").ok());
+        if let Some(ch) = resolved_channel {
             params["channel"] = serde_json::json!(ch);
         }
         self.send("channel.read", Some(params))
@@ -827,6 +830,10 @@ fn parse_daemon_response(value: Value) -> Result<Response, String> {
 
     Ok(Response::Json { value })
 }
+
+#[path = "channel_read_tests.rs"]
+#[cfg(test)]
+mod channel_read_tests;
 
 #[cfg(test)]
 mod tests {
