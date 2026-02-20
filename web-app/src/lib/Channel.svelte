@@ -417,8 +417,10 @@
     const link = target?.closest('a')
     if (link && !link.dataset.channel && !link.dataset.task && !link.dataset.pr && !link.dataset.coworker) return
     openThread(msg, $activeChannel)
-    // Prevent the click from also triggering the internal link handler (handleLinkClick).
+    // Prevent the click from also triggering the internal link handler (handleLinkClick),
+    // and prevent the browser from following href="#" which would scroll to page top.
     event.stopPropagation()
+    event.preventDefault()
   }
 
   // Build a map of coworker name -> current task
