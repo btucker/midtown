@@ -212,9 +212,13 @@ impl EffectTestFixture {
         serde_json::from_str(&response_line).ok()
     }
 
-    /// Get the path to the channel.jsonl file.
+    /// Get the path to the midtown channel's active message file.
     fn channel_path(&self) -> PathBuf {
-        self.project_dir.join("channel.jsonl")
+        self.project_dir
+            .join("channels")
+            .join("midtown")
+            .join("history")
+            .join("current.jsonl")
     }
 
     /// List tmux windows in the session.

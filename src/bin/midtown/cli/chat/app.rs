@@ -1261,18 +1261,22 @@ impl App {
 
             // Only reload messages if the channel actually changed
             if new_channel != self.selected_channel {
-                // Determine if the new channel is archived by checking for the archived file.
-                // A channel is only archived if the .archived.jsonl file exists AND the
-                // active .jsonl file does NOT exist. If both exist, the active file wins.
+                // Determine if the new channel is archived by checking directory layout.
+                // A channel is archived if the .archived directory exists AND the
+                // active directory does NOT exist. If both exist, the active one wins.
                 let channel_repo =
                     midtown::paths::detect_repo_name().unwrap_or_else(|| "default".to_string());
                 let base_dir = midtown::paths::projects_dir_for_repo(&channel_repo);
                 let channels_dir = base_dir.join("channels");
                 let has_active = channels_dir
-                    .join(format!("{}.jsonl", &new_channel))
+                    .join(&new_channel)
+                    .join("history")
+                    .join("current.jsonl")
                     .exists();
                 let has_archived = channels_dir
-                    .join(format!("{}.archived.jsonl", &new_channel))
+                    .join(format!("{}.archived", &new_channel))
+                    .join("history")
+                    .join("current.jsonl")
                     .exists();
                 self.selected_channel_archived = has_archived && !has_active;
 
@@ -2183,10 +2187,14 @@ impl App {
         let base_dir = midtown::paths::projects_dir_for_repo(&channel_repo);
         let channels_dir = base_dir.join("channels");
         let has_active = channels_dir
-            .join(format!("{}.jsonl", &selected_channel))
+            .join(&selected_channel)
+            .join("history")
+            .join("current.jsonl")
             .exists();
         let has_archived = channels_dir
-            .join(format!("{}.archived.jsonl", &selected_channel))
+            .join(format!("{}.archived", &selected_channel))
+            .join("history")
+            .join("current.jsonl")
             .exists();
         self.selected_channel_archived = has_archived && !has_active;
         self.selected_channel = selected_channel.clone();

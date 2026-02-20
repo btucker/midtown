@@ -22,8 +22,12 @@
 //! │       └── session-id    # Lead's Claude session ID
 //! └── projects/             # Project-specific runtime data
 //!     └── <repo>/
-//!         ├── channel.jsonl # IRC-style message log
-//!         ├── cursors/      # Per-agent read cursors
+//!         ├── channels/     # Per-channel directories
+//!         │   └── <name>/   # e.g., "midtown", "features"
+//!         │       ├── history/current.jsonl  # Active message log
+//!         │       ├── history/YYYY-MM-DD.jsonl # Rotated daily archives
+//!         │       ├── notes/                 # Channel lead knowledge files
+//!         │       └── cursors/               # Per-agent read cursors
 //!         ├── logs/         # Daemon logs
 //!         └── daemon.pid    # Daemon PID file
 //! ```
@@ -188,8 +192,7 @@ pub fn midtown_base_dir() -> PathBuf {
 /// Returns `~/.midtown/projects/<repo>/`.
 ///
 /// This is where project-specific runtime data is stored:
-/// - channel.jsonl (message log)
-/// - cursors/ (per-agent read positions)
+/// - channels/ (per-channel directories with history, notes, cursors)
 /// - logs/ (daemon logs)
 /// - daemon.pid (daemon PID file)
 ///
@@ -300,11 +303,15 @@ pub fn task_list_id() -> String {
     task_list_id_for_repo(&repo)
 }
 
-/// Get the channel file path for a specific repository.
+/// Get the active channel file path for the default "midtown" channel.
 ///
-/// Returns `~/.midtown/projects/<repo>/channel.jsonl`.
+/// Returns `~/.midtown/projects/<repo>/channels/midtown/history/current.jsonl`.
 pub fn channel_file_for_repo(repo: &str) -> PathBuf {
-    projects_dir_for_repo(repo).join("channel.jsonl")
+    projects_dir_for_repo(repo)
+        .join("channels")
+        .join("midtown")
+        .join("history")
+        .join("current.jsonl")
 }
 
 /// Get the cursors directory for a specific repository.
@@ -645,7 +652,7 @@ mod tests {
         assert!(path.to_string_lossy().contains(".midtown"));
         assert!(path.to_string_lossy().contains("projects"));
         assert!(path.to_string_lossy().contains("myproject"));
-        assert!(path.to_string_lossy().ends_with("channel.jsonl"));
+        assert!(path.to_string_lossy().ends_with("current.jsonl"));
     }
 
     #[test]

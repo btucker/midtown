@@ -27,6 +27,17 @@ pub struct ChannelInfo {
 /// Channels use an append-only JSONL file for messages and per-agent cursor
 /// tracking for read positions. File locking ensures thread-safe concurrent access.
 ///
+/// # Channel Directory Layout
+///
+/// Each channel is stored as a directory under `channels/`:
+/// - `channels/<name>/history/current.jsonl` — active message file
+/// - `channels/<name>/history/YYYY-MM-DD.jsonl` — rotated daily archives
+/// - `channels/<name>/notes/` — channel lead domain knowledge (markdown files)
+/// - `channels/<name>/cursors/<agent>.json` — per-agent read positions
+///
+/// Archived channels use a `.archived` suffix on the directory name:
+/// - `channels/<name>.archived/history/current.jsonl`
+///
 /// # Examples
 ///
 /// Basic channel operations:
@@ -71,13 +82,170 @@ pub struct ChannelInfo {
 /// assert_eq!(new_msgs.len(), 1);
 /// assert_eq!(new_msgs[0].content, "Third");
 /// ```
+/// Migrate all channels under `base_dir` from the flat JSONL layout to per-channel directories.
+///
+/// This is called once per `base_dir` per process (via `OnceLock`) from `Channel::new()`.
+/// It is idempotent — safe to interrupt and resume.
+///
+/// Migrates:
+/// - `channel.jsonl` → `channels/midtown/history/current.jsonl`
+/// - `channel-YYYY-MM-DD.jsonl` → `channels/midtown/history/YYYY-MM-DD.jsonl`
+/// - `channels/<name>.jsonl` → `channels/<name>/history/current.jsonl`
+/// - `channels/<name>.archived.jsonl` → `channels/<name>.archived/history/current.jsonl`
+/// - `cursors/<agent>.json` → `channels/midtown/cursors/<agent>.json`
+/// - `cursors/<channel>/<agent>.json` → `channels/<channel>/cursors/<agent>.json`
+fn auto_migrate_channels(base_dir: &Path) {
+    use std::collections::HashSet;
+    use std::sync::{Mutex, OnceLock};
+
+    static MIGRATED: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    let migrated = MIGRATED.get_or_init(|| Mutex::new(HashSet::new()));
+
+    let key = base_dir.to_string_lossy().to_string();
+    {
+        let mut guard = migrated.lock().unwrap();
+        if guard.contains(&key) {
+            return;
+        }
+        guard.insert(key);
+    }
+
+    let _ = do_migrate_channels(base_dir);
+}
+
+fn do_migrate_channels(base_dir: &Path) -> std::io::Result<()> {
+    let channels_dir = base_dir.join("channels");
+
+    // 1. Migrate legacy channel.jsonl → channels/midtown/history/current.jsonl
+    let legacy_midtown = base_dir.join("channel.jsonl");
+    if legacy_midtown.exists() {
+        let midtown_dir = channels_dir.join("midtown");
+        let history_dir = midtown_dir.join("history");
+        let new_file = history_dir.join("current.jsonl");
+        if !new_file.exists() {
+            fs::create_dir_all(&history_dir)?;
+            fs::create_dir_all(midtown_dir.join("notes"))?;
+            fs::create_dir_all(midtown_dir.join("cursors"))?;
+            fs::rename(&legacy_midtown, &new_file)?;
+
+            // Also migrate rotated archives: channel-YYYY-MM-DD.jsonl → history/YYYY-MM-DD.jsonl
+            if let Ok(entries) = fs::read_dir(base_dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if let Some(fname) = path.file_name().and_then(|s| s.to_str())
+                        && fname.starts_with("channel-")
+                        && fname.ends_with(".jsonl")
+                    {
+                        // e.g., "channel-2026-02-19.jsonl" → "2026-02-19.jsonl"
+                        let archive_name = fname.trim_start_matches("channel-");
+                        let dest = history_dir.join(archive_name);
+                        if !dest.exists() {
+                            let _ = fs::rename(&path, &dest);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 2. Migrate flat channel files in channels/ directory
+    if channels_dir.exists() {
+        let entries: Vec<_> = fs::read_dir(&channels_dir)?.flatten().collect();
+        for entry in entries {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let fname = match path.file_name().and_then(|s| s.to_str()) {
+                Some(n) => n.to_string(),
+                None => continue,
+            };
+
+            if fname.ends_with(".archived.jsonl") {
+                // channels/<name>.archived.jsonl → channels/<name>.archived/history/current.jsonl
+                let stem = fname.trim_end_matches(".archived.jsonl");
+                let archived_dir = channels_dir.join(format!("{}.archived", stem));
+                let history_dir = archived_dir.join("history");
+                let new_file = history_dir.join("current.jsonl");
+                if !new_file.exists() {
+                    fs::create_dir_all(&history_dir)?;
+                    fs::create_dir_all(archived_dir.join("notes"))?;
+                    fs::create_dir_all(archived_dir.join("cursors"))?;
+                    let _ = fs::rename(&path, &new_file);
+                }
+            } else if fname.ends_with(".jsonl") {
+                // channels/<name>.jsonl → channels/<name>/history/current.jsonl
+                let channel_name = fname.trim_end_matches(".jsonl");
+                let channel_dir = channels_dir.join(channel_name);
+                let history_dir = channel_dir.join("history");
+                let new_file = history_dir.join("current.jsonl");
+                if !new_file.exists() {
+                    fs::create_dir_all(&history_dir)?;
+                    fs::create_dir_all(channel_dir.join("notes"))?;
+                    fs::create_dir_all(channel_dir.join("cursors"))?;
+                    let _ = fs::rename(&path, &new_file);
+                }
+            }
+        }
+    }
+
+    // 3. Migrate old cursors directory
+    let old_cursors_base = base_dir.join("cursors");
+    if old_cursors_base.exists() {
+        if let Ok(entries) = fs::read_dir(&old_cursors_base) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_file() && path.extension().is_some_and(|e| e == "json") {
+                    // Legacy midtown cursor: cursors/<agent>.json → channels/midtown/cursors/<agent>.json
+                    let new_cursors_dir = channels_dir.join("midtown").join("cursors");
+                    if new_cursors_dir.exists()
+                        && let Some(name) = path.file_name()
+                    {
+                        let dest = new_cursors_dir.join(name);
+                        if !dest.exists() {
+                            let _ = fs::rename(&path, &dest);
+                        }
+                    }
+                } else if path.is_dir() {
+                    // Per-channel cursor dir: cursors/<channel>/ → channels/<channel>/cursors/
+                    let channel_name = match path.file_name().and_then(|s| s.to_str()) {
+                        Some(n) => n.to_string(),
+                        None => continue,
+                    };
+                    let new_cursors_dir = channels_dir.join(&channel_name).join("cursors");
+                    if new_cursors_dir.exists() {
+                        if let Ok(cursor_entries) = fs::read_dir(&path) {
+                            for cursor_entry in cursor_entries.flatten() {
+                                let cursor_path = cursor_entry.path();
+                                if cursor_path.extension().is_some_and(|e| e == "json")
+                                    && let Some(name) = cursor_path.file_name()
+                                {
+                                    let dest = new_cursors_dir.join(name);
+                                    if !dest.exists() {
+                                        let _ = fs::rename(&cursor_path, &dest);
+                                    }
+                                }
+                            }
+                        }
+                        let _ = fs::remove_dir(&path);
+                    }
+                }
+            }
+        }
+        // Try to remove old cursors dir if now empty
+        let _ = fs::remove_dir(&old_cursors_base);
+    }
+
+    Ok(())
+}
+
 #[derive(Clone)]
 pub struct Channel {
     /// Base directory for this channel (~/.midtown/projects/<repo>/)
     base_dir: PathBuf,
     /// Channel name (e.g., "midtown", "pr-discussion")
     channel_name: String,
-    /// Path to the channel.jsonl file
+    /// Path to the active history/current.jsonl file
     channel_file: PathBuf,
 }
 
@@ -128,27 +296,18 @@ impl Channel {
             )));
         }
 
-        fs::create_dir_all(&base_dir)?;
-        fs::create_dir_all(base_dir.join("cursors"))?;
+        // Run one-time migration from flat JSONL layout to per-channel directories.
+        // This is idempotent and only runs once per base_dir per process.
+        auto_migrate_channels(&base_dir);
 
-        // Determine channel file path
-        let channel_file = if channel_name == "midtown" {
-            // For "midtown" channel, prefer legacy channel.jsonl if it exists,
-            // otherwise use channels/midtown.jsonl
-            let legacy = base_dir.join("channel.jsonl");
-            if legacy.exists() {
-                legacy
-            } else {
-                fs::create_dir_all(base_dir.join("channels"))?;
-                base_dir.join("channels").join("midtown.jsonl")
-            }
-        } else {
-            // All other channels use channels/<name>.jsonl
-            fs::create_dir_all(base_dir.join("channels"))?;
-            base_dir
-                .join("channels")
-                .join(format!("{}.jsonl", channel_name))
-        };
+        // New layout: channels/<name>/history/current.jsonl
+        let channel_dir = base_dir.join("channels").join(&channel_name);
+        let history_dir = channel_dir.join("history");
+        fs::create_dir_all(&history_dir)?;
+        fs::create_dir_all(channel_dir.join("notes"))?;
+        fs::create_dir_all(channel_dir.join("cursors"))?;
+
+        let channel_file = history_dir.join("current.jsonl");
 
         // Create the channel file if it doesn't exist.
         // This enables file watchers like tailf to start monitoring immediately.
@@ -195,15 +354,26 @@ impl Channel {
         &self.channel_name
     }
 
-    /// Get the path to the channel.jsonl file
+    /// Get the path to the active channel file (history/current.jsonl)
     pub fn channel_file_path(&self) -> &Path {
         &self.channel_file
+    }
+
+    /// Get the path to the notes directory for this channel
+    ///
+    /// Channel leads store domain knowledge as markdown files in this directory.
+    pub fn notes_dir(&self) -> PathBuf {
+        self.base_dir
+            .join("channels")
+            .join(&self.channel_name)
+            .join("notes")
     }
 
     /// List all available channels in the base directory
     ///
     /// Returns channel metadata including name and archived status.
-    /// Includes both legacy channel.jsonl (as "midtown") and channels/*.jsonl files.
+    /// Scans `channels/` for subdirectories containing `history/current.jsonl`.
+    /// Active channels are plain directories; archived channels use a `.archived` suffix.
     ///
     /// # Arguments
     ///
@@ -216,71 +386,64 @@ impl Channel {
         project_name: Option<&str>,
     ) -> Result<Vec<ChannelInfo>> {
         let base_dir = base_dir.into();
-        let mut channels = Vec::new();
+        let mut channels: Vec<ChannelInfo> = Vec::new();
 
-        // Check for legacy channel.jsonl
-        if base_dir.join("channel.jsonl").exists() {
-            channels.push(ChannelInfo {
-                name: "midtown".to_string(),
-                is_archived: false,
-            });
-        }
-
-        // Check channels/ directory
         let channels_dir = base_dir.join("channels");
         if channels_dir.exists() {
-            for entry in fs::read_dir(channels_dir)? {
+            for entry in fs::read_dir(&channels_dir)? {
                 let entry = entry?;
                 let path = entry.path();
-                // Filter for .jsonl files
-                // Note: path.extension() returns the part after the *last* dot, so
-                // "foo.archived.jsonl" has extension "jsonl". We need to check the
-                // file_stem to determine if it's archived.
-                if path.extension().is_some_and(|e| e == "jsonl")
-                    && let Some(stem) = path.file_stem().and_then(|s| s.to_str())
-                {
-                    let is_archived = stem.ends_with(".archived");
 
-                    // Skip archived channels unless include_archived is true
-                    if is_archived && !include_archived {
-                        continue;
-                    }
-
-                    // Extract the channel name (remove .archived suffix if present)
-                    let channel_name = if is_archived {
-                        stem.strip_suffix(".archived").unwrap()
-                    } else {
-                        stem
-                    };
-
-                    // Validate channel name - skip files with invalid names
-                    // (could be created by filesystem bugs, manual edits, etc.)
-                    if !Self::is_valid_channel_name(channel_name) {
-                        continue;
-                    }
-
-                    // Don't duplicate "midtown" if we already found channel.jsonl
-                    if channel_name == "midtown" && channels.iter().any(|c| c.name == "midtown") {
-                        continue;
-                    }
-
-                    // If both active and archived files exist for the same channel,
-                    // the active one wins — the channel is not considered archived.
-                    if let Some(existing) = channels.iter_mut().find(|c| c.name == channel_name) {
-                        if !is_archived {
-                            // Active file found, override any previous archived entry
-                            existing.is_archived = false;
-                        }
-                        // Skip duplicate (archived entry when active already exists,
-                        // or second active entry)
-                        continue;
-                    }
-
-                    channels.push(ChannelInfo {
-                        name: channel_name.to_string(),
-                        is_archived,
-                    });
+                // Only process directories
+                if !path.is_dir() {
+                    continue;
                 }
+
+                let dir_name = match path.file_name().and_then(|s| s.to_str()) {
+                    Some(n) => n.to_string(),
+                    None => continue,
+                };
+
+                let is_archived = dir_name.ends_with(".archived");
+
+                // Skip archived channels unless include_archived is true
+                if is_archived && !include_archived {
+                    continue;
+                }
+
+                // Extract the channel name (remove .archived suffix if present)
+                let channel_name = if is_archived {
+                    dir_name.trim_end_matches(".archived").to_string()
+                } else {
+                    dir_name.clone()
+                };
+
+                // Validate channel name - skip directories with invalid names
+                if !Self::is_valid_channel_name(&channel_name) {
+                    continue;
+                }
+
+                // A channel exists only if it has a history/current.jsonl file
+                if !path.join("history").join("current.jsonl").exists() {
+                    continue;
+                }
+
+                // If both active and archived directories exist for the same channel,
+                // the active one wins — the channel is not considered archived.
+                if let Some(existing) = channels.iter_mut().find(|c| c.name == channel_name) {
+                    if !is_archived {
+                        // Active directory found, override any previous archived entry
+                        existing.is_archived = false;
+                    }
+                    // Skip duplicate (archived entry when active already exists,
+                    // or second active entry)
+                    continue;
+                }
+
+                channels.push(ChannelInfo {
+                    name: channel_name,
+                    is_archived,
+                });
             }
         }
 
@@ -302,24 +465,32 @@ impl Channel {
 
     /// List all archived channels in the base directory
     ///
-    /// Returns channel names (without `.archived.jsonl` extension).
-    /// Scans the `channels/` directory for files matching `*.archived.jsonl`.
+    /// Returns channel names (without `.archived` directory suffix).
+    /// Scans `channels/` for directories matching `*.archived` that contain
+    /// `history/current.jsonl`.
     pub fn list_archived(base_dir: impl Into<PathBuf>) -> Result<Vec<String>> {
         let base_dir = base_dir.into();
         let mut archived = Vec::new();
 
         let channels_dir = base_dir.join("channels");
         if channels_dir.exists() {
-            for entry in fs::read_dir(channels_dir)? {
+            for entry in fs::read_dir(&channels_dir)? {
                 let entry = entry?;
                 let path = entry.path();
-                if path.extension().is_some_and(|e| e == "jsonl")
-                    && let Some(stem) = path.file_stem().and_then(|s| s.to_str())
-                    && stem.ends_with(".archived")
+                if !path.is_dir() {
+                    continue;
+                }
+                let dir_name = match path.file_name().and_then(|s| s.to_str()) {
+                    Some(n) => n,
+                    None => continue,
+                };
+                if dir_name.ends_with(".archived")
+                    && path.join("history").join("current.jsonl").exists()
                 {
-                    // Strip the ".archived" suffix to get the channel name
-                    let name = stem.trim_end_matches(".archived");
-                    archived.push(name.to_string());
+                    let name = dir_name.trim_end_matches(".archived");
+                    if Self::is_valid_channel_name(name) {
+                        archived.push(name.to_string());
+                    }
                 }
             }
         }
@@ -338,7 +509,7 @@ impl Channel {
 
     /// Open an archived channel for reading
     ///
-    /// Opens a channel that has been archived (renamed to .archived.jsonl).
+    /// Opens a channel that has been archived (directory renamed to `<name>.archived`).
     /// The returned Channel instance can read messages but should not be used for sending
     /// (though technically possible, it would write to the archived file).
     pub fn open_archived(
@@ -348,12 +519,13 @@ impl Channel {
         let base_dir = base_dir.into();
         let channel_name = channel_name.into();
 
-        // Construct the path to the archived channel file
-        let archived_path = base_dir
+        // Archived channels use a `.archived` suffix on the directory name
+        let archived_dir = base_dir
             .join("channels")
-            .join(format!("{}.archived.jsonl", channel_name));
+            .join(format!("{}.archived", channel_name));
+        let channel_file = archived_dir.join("history").join("current.jsonl");
 
-        if !archived_path.exists() {
+        if !channel_file.exists() {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
                 format!("Archived channel '{}' not found", channel_name),
@@ -361,17 +533,16 @@ impl Channel {
             .into());
         }
 
-        // Create a Channel instance pointing to the archived file
         Ok(Self {
             base_dir,
             channel_name,
-            channel_file: archived_path,
+            channel_file,
         })
     }
 
     /// Mark a channel as archived
     ///
-    /// Renames the channel file from `channels/<name>.jsonl` to `channels/<name>.archived.jsonl`.
+    /// Renames the channel directory from `channels/<name>/` to `channels/<name>.archived/`.
     /// Archived channels are excluded from the list() results.
     ///
     /// Returns an error if trying to archive the "midtown" channel (not allowed).
@@ -384,8 +555,12 @@ impl Channel {
             .into());
         }
 
-        let archived_path = self.channel_file.with_extension("archived.jsonl");
-        crate::paths::atomic_rename(&self.channel_file, &archived_path)?;
+        let channel_dir = self.base_dir.join("channels").join(&self.channel_name);
+        let archived_dir = self
+            .base_dir
+            .join("channels")
+            .join(format!("{}.archived", &self.channel_name));
+        fs::rename(&channel_dir, &archived_dir)?;
         Ok(())
     }
 
@@ -902,9 +1077,14 @@ impl Channel {
 
         let archived_count = archive.len();
 
-        // Write archived messages to channel-YYYY-MM-DD.jsonl
+        // Write archived messages to channels/<name>/history/YYYY-MM-DD.jsonl
         let date_str = Utc::now().format("%Y-%m-%d").to_string();
-        let archive_file_path = self.base_dir.join(format!("channel-{}.jsonl", date_str));
+        let history_dir = self
+            .base_dir
+            .join("channels")
+            .join(&self.channel_name)
+            .join("history");
+        let archive_file_path = history_dir.join(format!("{}.jsonl", date_str));
 
         {
             let mut archive_file = OpenOptions::new()
@@ -936,34 +1116,13 @@ impl Channel {
         // Note: on Unix, rename is atomic within the same filesystem.
         crate::paths::atomic_rename(&temp_path, &self.channel_file)?;
 
-        // Reset all cursor files for this channel since byte positions have changed
-        // Check both legacy (cursors/<agent>.json) and new (cursors/<channel>/<agent>.json) paths
-        let cursors_dir = self.base_dir.join("cursors");
-
-        // For "midtown" channel, reset legacy cursors if they exist
-        if self.channel_name == "midtown"
-            && cursors_dir.exists()
-            && let Ok(entries) = fs::read_dir(&cursors_dir)
-        {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.is_file()
-                    && path.extension().is_some_and(|e| e == "json")
-                    && let Some(agent) = path.file_stem().and_then(|s| s.to_str())
-                    && let Ok(mut cursor) = crate::cursor::Cursor::load_or_create(
-                        &self.base_dir,
-                        &self.channel_name,
-                        agent,
-                    )
-                {
-                    cursor.reset();
-                    let _ = cursor.save(&self.base_dir, &self.channel_name);
-                }
-            }
-        }
-
-        // Reset cursors in the channel-specific directory
-        let channel_cursors_dir = cursors_dir.join(&self.channel_name);
+        // Reset all cursor files for this channel since byte positions have changed.
+        // Cursors live in channels/<name>/cursors/<agent>.json.
+        let channel_cursors_dir = self
+            .base_dir
+            .join("channels")
+            .join(&self.channel_name)
+            .join("cursors");
         if channel_cursors_dir.exists()
             && let Ok(entries) = fs::read_dir(&channel_cursors_dir)
         {
@@ -1217,7 +1376,14 @@ mod tests {
     fn test_channel_creation() {
         let temp_dir = TempDir::new().unwrap();
         let channel = Channel::new(temp_dir.path(), "midtown").unwrap();
-        assert!(temp_dir.path().join("cursors").exists());
+        assert!(
+            temp_dir
+                .path()
+                .join("channels")
+                .join("midtown")
+                .join("cursors")
+                .exists()
+        );
         // Channel file should exist (for tailf) but be empty (no messages)
         assert!(channel.exists());
         assert_eq!(message_count_with_retry(&channel, 5).unwrap(), 0);
@@ -1437,18 +1603,13 @@ mod tests {
         let now = Utc::now();
         let old_time = now - Duration::minutes(40);
 
-        // Create legacy channel.jsonl (so Channel picks it up for midtown)
-        let channel_file = temp_dir.path().join("channel.jsonl");
-        File::create(&channel_file).unwrap();
-
-        // Now create the channel - it will use the legacy file
         let channel = Channel::new(temp_dir.path(), "midtown").unwrap();
 
         // Write messages directly to file in wrong order (simulating delayed write)
         let mut file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
-            .open(&channel_file)
+            .open(channel.channel_file_path())
             .unwrap();
 
         // First: write a "new" message (timestamp = now)
@@ -1626,10 +1787,6 @@ mod tests {
 
         let temp_dir = TempDir::new().unwrap();
 
-        // Create legacy channel.jsonl first so Channel uses it
-        let channel_file = temp_dir.path().join("channel.jsonl");
-        File::create(&channel_file).unwrap();
-
         let channel = Channel::new(temp_dir.path(), "midtown").unwrap();
 
         // Write old messages directly with timestamps > 60 min ago
@@ -1640,7 +1797,7 @@ mod tests {
             let mut file = std::fs::OpenOptions::new()
                 .create(true)
                 .append(true)
-                .open(&channel_file)
+                .open(channel.channel_file_path())
                 .unwrap();
 
             // Write 3 old messages
@@ -1688,7 +1845,12 @@ mod tests {
 
         // Archive file should exist with old messages
         let today = Utc::now().format("%Y-%m-%d").to_string();
-        let archive_path = temp_dir.path().join(format!("channel-{}.jsonl", today));
+        let archive_path = temp_dir
+            .path()
+            .join("channels")
+            .join("midtown")
+            .join("history")
+            .join(format!("{}.jsonl", today));
         assert!(archive_path.exists(), "Archive file should exist");
 
         // Read archive and verify
@@ -1709,10 +1871,6 @@ mod tests {
 
         let temp_dir = TempDir::new().unwrap();
 
-        // Create legacy channel.jsonl first
-        let channel_file = temp_dir.path().join("channel.jsonl");
-        File::create(&channel_file).unwrap();
-
         let channel = Channel::new(temp_dir.path(), "midtown").unwrap();
 
         // Write old + recent messages
@@ -1723,7 +1881,7 @@ mod tests {
             let mut file = std::fs::OpenOptions::new()
                 .create(true)
                 .append(true)
-                .open(&channel_file)
+                .open(channel.channel_file_path())
                 .unwrap();
 
             let old_msg = Message {
@@ -1767,11 +1925,8 @@ mod tests {
 
         let temp_dir = TempDir::new().unwrap();
 
-        // Create legacy channel.jsonl first
-        let channel_file = temp_dir.path().join("channel.jsonl");
-        File::create(&channel_file).unwrap();
-
         let channel = Channel::new(temp_dir.path(), "midtown").unwrap();
+        let channel_file = channel.channel_file_path().to_path_buf();
 
         // Empty channel doesn't need rotation
         assert!(!channel.needs_rotation(24));
@@ -1828,10 +1983,6 @@ mod tests {
 
         let temp_dir = TempDir::new().unwrap();
 
-        // Create legacy channel.jsonl first
-        let channel_file = temp_dir.path().join("channel.jsonl");
-        File::create(&channel_file).unwrap();
-
         let channel = Channel::new(temp_dir.path(), "midtown").unwrap();
 
         // Write some valid messages
@@ -1847,7 +1998,7 @@ mod tests {
         {
             let mut file = std::fs::OpenOptions::new()
                 .append(true)
-                .open(&channel_file)
+                .open(channel.channel_file_path())
                 .unwrap();
             writeln!(file, "@lead Some raw text that is not JSON").unwrap();
         }
@@ -1877,10 +2028,6 @@ mod tests {
 
         let temp_dir = TempDir::new().unwrap();
 
-        // Create legacy channel.jsonl first
-        let channel_file = temp_dir.path().join("channel.jsonl");
-        File::create(&channel_file).unwrap();
-
         let channel = Channel::new(temp_dir.path(), "midtown").unwrap();
 
         // Write initial messages and read to set cursor position
@@ -1898,7 +2045,7 @@ mod tests {
         {
             let mut file = std::fs::OpenOptions::new()
                 .append(true)
-                .open(&channel_file)
+                .open(channel.channel_file_path())
                 .unwrap();
             writeln!(file, "This is raw text, not JSON").unwrap();
         }
@@ -1952,14 +2099,11 @@ mod tests {
             "test2 should still be in the list"
         );
 
-        // Verify the archived file exists with correct name
-        let archived_path = temp_dir
-            .path()
-            .join("channels")
-            .join("test1.archived.jsonl");
+        // Verify the archived directory exists with correct name
+        let archived_path = temp_dir.path().join("channels").join("test1.archived");
         assert!(
             archived_path.exists(),
-            "Archived file should exist at {:?}",
+            "Archived directory should exist at {:?}",
             archived_path
         );
     }
@@ -1972,13 +2116,17 @@ mod tests {
         Channel::new(temp_dir.path(), "valid-channel").unwrap();
         Channel::new(temp_dir.path(), "feature_123").unwrap();
 
-        // Manually create files with invalid names in channels/ directory
+        // Manually create directories with invalid names in channels/ directory
         // (these could be created by filesystem bugs, manual edits, etc.)
+        // Each has a history/current.jsonl so they pass the file-existence check,
+        // but their names should be rejected by is_valid_channel_name().
         let channels_dir = temp_dir.path().join("channels");
         fs::create_dir_all(&channels_dir).unwrap();
-        File::create(channels_dir.join("test extra text.jsonl")).unwrap(); // spaces
-        File::create(channels_dir.join("has\nnewline.jsonl")).unwrap(); // newline (if filesystem allows)
-        File::create(channels_dir.join(".hidden.jsonl")).unwrap(); // leading dot
+        for invalid_dir in &["test extra text", ".hidden"] {
+            let hist = channels_dir.join(invalid_dir).join("history");
+            fs::create_dir_all(&hist).unwrap();
+            File::create(hist.join("current.jsonl")).unwrap();
+        }
 
         // List should only return valid channel names
         let channels = Channel::list(temp_dir.path(), false, None).unwrap();
@@ -1995,10 +2143,6 @@ mod tests {
         assert!(
             !channel_names.contains(&"test extra text"),
             "Channel with spaces should be filtered out"
-        );
-        assert!(
-            !channel_names.contains(&"has\nnewline"),
-            "Channel with newline should be filtered out"
         );
         assert!(
             !channel_names.contains(&".hidden"),
@@ -2023,10 +2167,22 @@ mod tests {
         // re-created while the archived file still exists)
         Channel::new(temp_dir.path(), "tui").unwrap();
 
-        // Both files should exist
+        // Both directories should exist
         let channels_dir = temp_dir.path().join("channels");
-        assert!(channels_dir.join("tui.jsonl").exists());
-        assert!(channels_dir.join("tui.archived.jsonl").exists());
+        assert!(
+            channels_dir
+                .join("tui")
+                .join("history")
+                .join("current.jsonl")
+                .exists()
+        );
+        assert!(
+            channels_dir
+                .join("tui.archived")
+                .join("history")
+                .join("current.jsonl")
+                .exists()
+        );
 
         // Channel::list should treat it as active (not archived)
         let channels = Channel::list(temp_dir.path(), true, None).unwrap();
@@ -2053,22 +2209,16 @@ mod tests {
     fn test_midtown_channel_not_duplicated_with_legacy_and_channels_dir() {
         let temp_dir = TempDir::new().unwrap();
 
-        // Create the legacy channel.jsonl at the base directory
-        // (this is the old-style midtown channel location)
-        File::create(temp_dir.path().join("channel.jsonl")).unwrap();
+        // Create the midtown channel (directory layout)
+        Channel::new(temp_dir.path(), "midtown").unwrap();
 
-        // Also create a midtown.jsonl in the channels/ subdirectory
-        let channels_dir = temp_dir.path().join("channels");
-        fs::create_dir_all(&channels_dir).unwrap();
-        File::create(channels_dir.join("midtown.jsonl")).unwrap();
-
-        // Channel::list should return exactly one "midtown" entry, not two
+        // Channel::list should return exactly one "midtown" entry
         let channels = Channel::list(temp_dir.path(), false, None).unwrap();
         let midtown_entries: Vec<_> = channels.iter().filter(|c| c.name == "midtown").collect();
         assert_eq!(
             midtown_entries.len(),
             1,
-            "Should have exactly one 'midtown' entry even with both legacy and channels-dir files"
+            "Should have exactly one 'midtown' entry"
         );
     }
 
@@ -2424,10 +2574,7 @@ mod tests {
         channel.send(&reply).unwrap();
 
         // Read raw JSONL file and verify field presence
-        // Channel::new("midtown") uses channels/midtown.jsonl
-        let content =
-            std::fs::read_to_string(temp_dir.path().join("channels").join("midtown.jsonl"))
-                .unwrap();
+        let content = std::fs::read_to_string(channel.channel_file_path()).unwrap();
         let lines: Vec<&str> = content.lines().collect();
         assert_eq!(lines.len(), 2);
 
@@ -2437,5 +2584,182 @@ mod tests {
         // Reply should have thread_parent_id in JSONL
         assert!(lines[1].contains("thread_parent_id"));
         assert!(lines[1].contains(&parent_id));
+    }
+
+    #[test]
+    fn test_notes_dir_returns_correct_path() {
+        let temp_dir = TempDir::new().unwrap();
+        let channel = Channel::new(temp_dir.path(), "midtown").unwrap();
+
+        let notes = channel.notes_dir();
+        assert_eq!(
+            notes,
+            temp_dir
+                .path()
+                .join("channels")
+                .join("midtown")
+                .join("notes")
+        );
+        // notes/ directory is created by Channel::new()
+        assert!(
+            notes.exists(),
+            "notes/ directory should be created by Channel::new()"
+        );
+    }
+
+    #[test]
+    fn test_rotate_writes_archive_to_history_dir() {
+        use chrono::{Duration, Utc};
+        use std::io::Write;
+
+        let temp_dir = TempDir::new().unwrap();
+        let channel = Channel::new(temp_dir.path(), "midtown").unwrap();
+        let now = Utc::now();
+
+        // Write one old message directly so rotation has something to archive
+        {
+            let mut file = std::fs::OpenOptions::new()
+                .append(true)
+                .open(channel.channel_file_path())
+                .unwrap();
+            let old_msg = Message {
+                id: "old-1".to_string(),
+                timestamp: now - Duration::hours(3),
+                from: "agent1".to_string(),
+                content: "Old".to_string(),
+                message_type: MessageType::Text,
+                channel: None,
+                source_channel: None,
+                session_id: None,
+                thread_parent_id: None,
+            };
+            writeln!(file, "{}", serde_json::to_string(&old_msg).unwrap()).unwrap();
+        }
+
+        let archived = channel.rotate(60).unwrap();
+        assert_eq!(archived, 1);
+
+        // Archive should be written to channels/midtown/history/<date>.jsonl
+        let today = now.format("%Y-%m-%d").to_string();
+        let archive_path = temp_dir
+            .path()
+            .join("channels")
+            .join("midtown")
+            .join("history")
+            .join(format!("{}.jsonl", today));
+        assert!(
+            archive_path.exists(),
+            "Archive should be in history/ dir: {:?}",
+            archive_path
+        );
+
+        // Active file should still exist (for tailf compatibility)
+        assert!(channel.channel_file_path().exists());
+    }
+
+    #[test]
+    fn test_migration_legacy_channel_jsonl() {
+        let temp_dir = TempDir::new().unwrap();
+
+        // Write a message to the legacy channel.jsonl
+        let legacy = temp_dir.path().join("channel.jsonl");
+        std::fs::write(&legacy, "{\"id\":\"1\",\"content\":\"hi\"}\n").unwrap();
+
+        // Channel::new triggers migration
+        let _ = Channel::new(temp_dir.path(), "midtown").unwrap();
+
+        // Legacy file should be gone (renamed to new location)
+        assert!(
+            !legacy.exists(),
+            "Legacy channel.jsonl should be migrated away"
+        );
+
+        // New location should contain the content
+        let new_path = temp_dir
+            .path()
+            .join("channels")
+            .join("midtown")
+            .join("history")
+            .join("current.jsonl");
+        assert!(new_path.exists(), "Migrated file should exist at new path");
+        let content = std::fs::read_to_string(&new_path).unwrap();
+        assert!(
+            content.contains("hi"),
+            "Migrated content should be preserved"
+        );
+    }
+
+    #[test]
+    fn test_migration_flat_channel_jsonl_in_channels_dir() {
+        let temp_dir = TempDir::new().unwrap();
+
+        // Write a message to the flat channels/features.jsonl (old layout)
+        let channels_dir = temp_dir.path().join("channels");
+        fs::create_dir_all(&channels_dir).unwrap();
+        let flat_file = channels_dir.join("features.jsonl");
+        std::fs::write(&flat_file, "{\"id\":\"2\",\"content\":\"feature msg\"}\n").unwrap();
+
+        // Channel::new("midtown") triggers migration of all flat files
+        let _ = Channel::new(temp_dir.path(), "midtown").unwrap();
+
+        // Flat file should be gone
+        assert!(
+            !flat_file.exists(),
+            "Flat channels/features.jsonl should be migrated away"
+        );
+
+        // New location should exist
+        let new_path = channels_dir
+            .join("features")
+            .join("history")
+            .join("current.jsonl");
+        assert!(
+            new_path.exists(),
+            "Migrated features channel should exist at new path"
+        );
+        let content = std::fs::read_to_string(&new_path).unwrap();
+        assert!(
+            content.contains("feature msg"),
+            "Migrated content should be preserved"
+        );
+    }
+
+    #[test]
+    fn test_migration_archived_jsonl() {
+        let temp_dir = TempDir::new().unwrap();
+
+        // Write a message to the old-style archived file
+        let channels_dir = temp_dir.path().join("channels");
+        fs::create_dir_all(&channels_dir).unwrap();
+        let archived_flat = channels_dir.join("old-feature.archived.jsonl");
+        std::fs::write(
+            &archived_flat,
+            "{\"id\":\"3\",\"content\":\"archived msg\"}\n",
+        )
+        .unwrap();
+
+        // Migration triggered by Channel::new
+        let _ = Channel::new(temp_dir.path(), "midtown").unwrap();
+
+        // Old file should be gone
+        assert!(
+            !archived_flat.exists(),
+            "Old .archived.jsonl should be migrated away"
+        );
+
+        // New directory layout should exist
+        let new_path = channels_dir
+            .join("old-feature.archived")
+            .join("history")
+            .join("current.jsonl");
+        assert!(
+            new_path.exists(),
+            "Migrated archived channel should exist at new path"
+        );
+        let content = std::fs::read_to_string(&new_path).unwrap();
+        assert!(
+            content.contains("archived msg"),
+            "Archived content should be preserved"
+        );
     }
 }
