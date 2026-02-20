@@ -1022,7 +1022,10 @@ pub(super) async fn poll_prs_for_issues(
     );
 
     // Check for stuck conditions and nudge lead if self-healing has failed
-    effects.extend(collect_stuck_condition_effects(state, &prs, &reviewed_prs).await);
+    effects.extend(
+        collect_stuck_condition_effects(state, &prs, &reviewed_prs, &snap.worktree_branch_owners)
+            .await,
+    );
 
     // Detect stale CI checks and trigger re-runs
     effects.extend(collect_stale_check_effects(state, &prs).await);
@@ -1326,6 +1329,7 @@ async fn collect_stuck_condition_effects(
     state: &DaemonState,
     prs: &[serde_json::Value],
     reviewed_prs: &HashSet<u64>,
+    branch_owners: &HashMap<String, String>,
 ) -> Vec<Effect> {
     let mut effects: Vec<Effect> = Vec::new();
     let mut tracker = state.stuck_tracker.lock().await;
@@ -1390,7 +1394,8 @@ async fn collect_stuck_condition_effects(
                         "A reviewer was assigned but hasn't posted a review.".to_string()
                     } else {
                         let head_ref = pr.get("headRefName").and_then(|s| s.as_str()).unwrap_or("");
-                        let pr_author = coworker_from_branch(head_ref);
+                        let pr_author =
+                            coworker_from_branch_with_map(head_ref, Some(branch_owners));
                         let running = state.coworkers.list_running();
                         let mut busy: Vec<String> = running
                             .iter()
@@ -1419,7 +1424,8 @@ async fn collect_stuck_condition_effects(
                         "I assigned a reviewer but no review has been posted yet".to_string()
                     } else {
                         let head_ref = pr.get("headRefName").and_then(|s| s.as_str()).unwrap_or("");
-                        let pr_author = coworker_from_branch(head_ref);
+                        let pr_author =
+                            coworker_from_branch_with_map(head_ref, Some(branch_owners));
                         let running = state.coworkers.list_running();
                         let mut busy: Vec<String> = running
                             .iter()

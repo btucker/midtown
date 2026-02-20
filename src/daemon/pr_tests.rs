@@ -279,6 +279,39 @@ fn format_no_reviewer_reason_only_author_excluded() {
     );
 }
 
+/// Task-based branches (the common case in Midtown) require the worktree_branch_owners
+/// map to resolve to a coworker name. Without the map, `coworker_from_branch` returns
+/// None, so the diagnostic message omits the `excluded-author` annotation even when the
+/// PR author is identifiable. This test verifies the full resolution path works correctly.
+#[test]
+fn format_no_reviewer_reason_task_based_branch_resolves_with_map() {
+    let mut branch_owners = std::collections::HashMap::new();
+    branch_owners.insert("task-42-fix-auth".to_string(), "york".to_string());
+
+    // Without the map, coworker_from_branch returns None for task-based branches
+    let without_map = coworker_from_branch("task-42-fix-auth");
+    assert_eq!(
+        without_map, None,
+        "coworker_from_branch should return None for task-based branches"
+    );
+
+    // With the map, coworker_from_branch_with_map resolves correctly
+    let with_map = coworker_from_branch_with_map("task-42-fix-auth", Some(&branch_owners));
+    assert_eq!(
+        with_map,
+        Some("york".to_string()),
+        "coworker_from_branch_with_map should resolve task-based branch via map"
+    );
+
+    // The resolved author should appear as excluded-author in the diagnostic
+    let busy = vec!["madison".to_string(), "york".to_string()];
+    let reason = format_no_reviewer_reason(&busy, with_map.as_deref());
+    assert_eq!(
+        reason, "no eligible reviewers (busy: [madison, york], excluded-author: york)",
+        "excluded-author should appear when task-based branch resolves via map"
+    );
+}
+
 /// Bug: When a coworker goes on break, their PR's branch is no longer in
 /// worktree_branch_owners. The poll_prs_for_issues loop (lines 664-669) skips
 /// any PR whose branch doesn't map to an active coworker via
