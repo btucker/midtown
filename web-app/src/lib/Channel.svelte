@@ -409,9 +409,16 @@
     // Mobile-only affordance: tap a top-level message to open its thread view.
     if ($isWideScreen || msg.thread_parent_id) return
     const target = event.target instanceof Element ? event.target : null
-    const interactiveTarget = target?.closest('a, button, input, textarea, select, label')
-    if (interactiveTarget) return
+    // Block real interactive controls.
+    if (target?.closest('button, input, textarea, select, label')) return
+    // Block external links but not internal pseudo-links (channel/task/PR/coworker refs).
+    // Internal refs use <a> tags from renderContent() and cover most message text on mobile,
+    // so blocking all <a> elements effectively breaks tap-to-reply on nearly every message.
+    const link = target?.closest('a')
+    if (link && !link.dataset.channel && !link.dataset.task && !link.dataset.pr && !link.dataset.coworker) return
     openThread(msg, $activeChannel)
+    // Prevent the click from also triggering the internal link handler (handleLinkClick).
+    event.stopPropagation()
   }
 
   // Build a map of coworker name -> current task
