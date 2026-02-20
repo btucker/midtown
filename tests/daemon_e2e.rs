@@ -361,6 +361,7 @@ fn test_headed_intercom_register_poll_ack() {
     );
 
     let unique_tag = format!("headed-intercom-{}", std::process::id());
+    let repo_name = fixture.repo_name.clone();
     let post = fixture.rpc_call(
         "channel.post",
         Some(serde_json::json!({
@@ -387,9 +388,9 @@ fn test_headed_intercom_register_poll_ack() {
         .expect("headed.poll messages should be an array");
     assert!(
         messages.iter().any(|m| {
-            m["text"]
-                .as_str()
-                .is_some_and(|s| s.contains("park mentioned @lead") && s.contains(&unique_tag))
+            m["text"].as_str().is_some_and(|s| {
+                s.contains(&format!("park mentioned @{}", repo_name)) && s.contains(&unique_tag)
+            })
         }),
         "Expected intercom nudge in headed.poll response, got: {:?}",
         messages
