@@ -8,7 +8,7 @@
 |---------|-------------|
 | `midtown start [--swap-layout] [--project <name>] [--add-repo <path>]` | Start the daemon and Zellij session |
 | `midtown stop [--keep-session]` | Stop the daemon (optionally keep Zellij session) |
-| `midtown restart` | Restart the daemon |
+| `midtown restart [--force]` | Restart the daemon (waits for active reviewers to go on break unless `--force`) |
 | `midtown attach [<project>]` | Attach to the project's Zellij session |
 | `midtown status` | Show system status |
 | `midtown chat` | Open the IRC-style chat TUI |

@@ -1084,17 +1084,162 @@ fn kill_orphaned_webhook_forwarders(messages: &mut Vec<String>) {
     }
 }
 
+/// How long `midtown restart` waits for active review coworkers to go on break.
+const REVIEWER_BREAK_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(900);
+/// Poll interval while waiting for review coworkers to drain.
+const REVIEWER_BREAK_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Extract coworker names that are currently in review phase from `coworkers.status` RPC payload.
+fn extract_review_phase_names(
+    coworkers_status: &serde_json::Value,
+) -> std::collections::HashSet<String> {
+    coworkers_status
+        .get("coworkers")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|coworker| {
+            let phase = coworker.get("phase").and_then(|v| v.as_str())?;
+            if phase != "review" {
+                return None;
+            }
+            coworker
+                .get("name")
+                .and_then(|v| v.as_str())
+                .map(|name| name.to_string())
+        })
+        .collect()
+}
+
+/// Extract assigned reviewers for open PRs that still need review from `prs.status` payload.
+fn extract_unreviewed_assigned_reviewer_names(
+    prs_status: &serde_json::Value,
+) -> std::collections::HashSet<String> {
+    prs_status
+        .get("prs")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|pr| {
+            let review_posted = pr
+                .get("review_posted")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            if review_posted {
+                return None;
+            }
+            pr.get("reviewer")
+                .and_then(|v| v.as_str())
+                .filter(|name| !name.is_empty())
+                .map(|name| name.to_string())
+        })
+        .collect()
+}
+
+/// Get currently running coworker names from `coworker.list`.
+fn running_coworker_names(
+    client: &DaemonClient,
+) -> Result<std::collections::HashSet<String>, String> {
+    match client.coworker_list()? {
+        Response::Coworkers { coworkers } => Ok(coworkers
+            .into_iter()
+            .filter(|cw| cw.status != "stopped" && cw.status != "stopping")
+            .map(|cw| cw.name)
+            .collect()),
+        _ => Err("Unexpected response from coworker.list".to_string()),
+    }
+}
+
+/// Return currently active reviewer coworkers that should be allowed to finish before restart.
+///
+/// Uses two signals:
+/// 1. Coworkers explicitly reporting `phase=review`.
+/// 2. PR reviewer assignments (for in-flight reviews where phase reporting may lag/miss).
+fn active_review_coworkers(client: &DaemonClient) -> Result<Vec<String>, String> {
+    let mut names = std::collections::HashSet::new();
+    let mut detection_errors = Vec::new();
+
+    match client.coworkers_status() {
+        Ok(raw) => {
+            names.extend(extract_review_phase_names(&raw));
+        }
+        Err(e) => detection_errors.push(format!("coworkers.status failed: {}", e)),
+    }
+
+    let running = match running_coworker_names(client) {
+        Ok(names) => Some(names),
+        Err(e) => {
+            detection_errors.push(format!("coworker.list failed: {}", e));
+            None
+        }
+    };
+
+    match (client.prs_status(), running.as_ref()) {
+        (Ok(raw), Some(running_names)) => {
+            for name in extract_unreviewed_assigned_reviewer_names(&raw) {
+                if running_names.contains(&name) {
+                    names.insert(name);
+                }
+            }
+        }
+        (Err(e), _) => detection_errors.push(format!("prs.status failed: {}", e)),
+        (Ok(_), None) => {}
+    }
+
+    if names.is_empty() && detection_errors.len() >= 2 {
+        return Err(detection_errors.join("; "));
+    }
+
+    let mut active: Vec<String> = names.into_iter().collect();
+    active.sort();
+    Ok(active)
+}
+
+/// Wait until no active review coworkers remain (they have gone on break).
+fn wait_for_review_coworkers_to_break(client: &DaemonClient) -> Result<(), String> {
+    let start = std::time::Instant::now();
+    let mut last_reported: Vec<String> = Vec::new();
+
+    loop {
+        let active = active_review_coworkers(client)?;
+        if active.is_empty() {
+            if !last_reported.is_empty() {
+                eprintln!("All review coworkers are on break.");
+            }
+            return Ok(());
+        }
+
+        if active != last_reported {
+            eprintln!(
+                "Waiting for review coworker(s) to go on break before restart: {}",
+                active.join(", ")
+            );
+            last_reported = active.clone();
+        }
+
+        if start.elapsed() >= REVIEWER_BREAK_WAIT_TIMEOUT {
+            return Err(format!(
+                "Timed out after {}s waiting for review coworker(s): {}",
+                REVIEWER_BREAK_WAIT_TIMEOUT.as_secs(),
+                active.join(", ")
+            ));
+        }
+
+        std::thread::sleep(REVIEWER_BREAK_POLL_INTERVAL);
+    }
+}
+
 /// Handle `midtown restart` command.
 ///
-/// Restarts the daemon and webserver by sending SIGTERM to all running coworker
-/// sessions before re-execing the daemon process.
+/// Restarts the daemon and webserver by waiting for active review coworkers to
+/// go on break, then sending SIGTERM to all running coworker sessions before
+/// re-execing the daemon process.
 ///
-/// Both default and `--force` modes send SIGTERM to coworkers. The `--force`
-/// flag now has no additional effect on coworker shutdown (SIGTERM is always
-/// sent); it exists for backwards compatibility.
+/// Default behavior waits for reviewers to finish current reviews. `--force`
+/// skips that wait.
 ///
 /// For a full fresh start, use `midtown stop && midtown start`.
-pub fn handle_restart(_force: bool) -> Result<Response, String> {
+pub fn handle_restart(force: bool) -> Result<Response, String> {
     // Send SIGTERM to all running coworker sessions via daemon RPC.
     // The daemon's graceful_shutdown_all() sends SIGTERM and waits up to 10s,
     // then SIGKILL as fallback.
@@ -1109,6 +1254,12 @@ pub fn handle_restart(_force: bool) -> Result<Response, String> {
             });
         }
     };
+
+    if force {
+        eprintln!("--force set: skipping wait for review coworkers to go on break.");
+    } else if let Err(e) = wait_for_review_coworkers_to_break(&client) {
+        eprintln!("Warning: {}. Continuing restart with coworker shutdown.", e);
+    }
 
     eprintln!("Sending SIGTERM to all coworker sessions...");
     match client.stop_all_coworkers() {
@@ -2228,6 +2379,42 @@ mod tests {
             is_working,
             "Status 'idle' doesn't exist in CoworkerStatus — if it appeared, it would be conservatively treated as 'working' (safe default for unknown statuses)"
         );
+    }
+
+    #[test]
+    fn test_extract_review_phase_names() {
+        let payload = serde_json::json!({
+            "coworkers": [
+                {"name": "lexington", "phase": "review"},
+                {"name": "park", "phase": "dev"},
+                {"name": "broadway", "phase": "review"},
+                {"name": "york", "phase": null}
+            ]
+        });
+
+        let reviewers = extract_review_phase_names(&payload);
+        assert!(reviewers.contains("lexington"));
+        assert!(reviewers.contains("broadway"));
+        assert!(!reviewers.contains("park"));
+        assert!(!reviewers.contains("york"));
+    }
+
+    #[test]
+    fn test_extract_unreviewed_assigned_reviewer_names() {
+        let payload = serde_json::json!({
+            "prs": [
+                {"number": 1, "reviewer": "lexington", "review_posted": false},
+                {"number": 2, "reviewer": "park", "review_posted": true},
+                {"number": 3, "reviewer": "", "review_posted": false},
+                {"number": 4, "reviewer": null, "review_posted": false},
+                {"number": 5, "reviewer": "broadway"}
+            ]
+        });
+
+        let reviewers = extract_unreviewed_assigned_reviewer_names(&payload);
+        assert!(reviewers.contains("lexington"));
+        assert!(reviewers.contains("broadway"));
+        assert!(!reviewers.contains("park"));
     }
 }
 

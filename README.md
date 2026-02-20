@@ -94,7 +94,7 @@ The lead is just a claude code session, but it's been booted with some a [specia
 |---------|-------------|
 | `midtown start` | Start the daemon and Zellij session |
 | `midtown stop` | Stop everything |
-| `midtown restart` | Restart the daemon |
+| `midtown restart [--force]` | Restart the daemon (`--force` skips reviewer drain wait) |
 | `midtown status` | Show system status |
 | `midtown view` | Launch chat UI (use `--attach` to open Lead in a split) |
 | `midtown channel post <msg>` | Post to the team channel |

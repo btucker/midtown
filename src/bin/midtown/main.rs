@@ -100,7 +100,7 @@ enum Commands {
     },
     /// Restart midtown (stop + start)
     Restart {
-        /// Reserved for future use (currently no-op)
+        /// Skip waiting for active review coworkers to go on break before restart
         #[arg(long)]
         force: bool,
     },
