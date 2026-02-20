@@ -169,6 +169,32 @@ impl Response {
                         out.push_str(&format!("  {} - {}{}\n", cw.name, task_desc, auth_info));
                     }
 
+                    // Lead Sessions section — channel leads are domain experts per channel
+                    let lead_sessions: Vec<_> = full
+                        .coworkers
+                        .iter()
+                        .filter(|cw| cw.is_channel_lead)
+                        .collect();
+                    if !lead_sessions.is_empty() {
+                        out.push_str(&format!(
+                            "\nLead Sessions: {} active\n",
+                            lead_sessions.len()
+                        ));
+                        for cw in &lead_sessions {
+                            let task_desc = match &cw.current_task {
+                                Some(task) => format!("working on: {}", task),
+                                None => "idle".to_string(),
+                            };
+                            let auth_info = match (&cw.provider, &cw.profile) {
+                                (Some(provider), Some(profile)) => {
+                                    format!(" ({}: {})", provider, profile)
+                                }
+                                _ => String::new(),
+                            };
+                            out.push_str(&format!("  {} - {}{}\n", cw.name, task_desc, auth_info));
+                        }
+                    }
+
                     // Tasks section
                     let open_tasks: Vec<_> = full
                         .tasks

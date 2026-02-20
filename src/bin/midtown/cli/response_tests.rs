@@ -233,10 +233,15 @@ fn test_status_pretty_excludes_channel_leads_from_count() {
         "Channel leads should be excluded from coworker count, got: {}",
         pretty
     );
-    // Channel lead rows should not appear in output
+    // Channel lead should appear in the Lead Sessions section, not the Coworkers section
     assert!(
-        !pretty.contains("tui - idle"),
-        "Channel lead 'tui' should not appear as a row, got: {}",
+        pretty.contains("Lead Sessions:"),
+        "Should have a Lead Sessions section, got: {}",
+        pretty
+    );
+    assert!(
+        pretty.contains("tui - idle"),
+        "Channel lead 'tui' should appear in Lead Sessions section, got: {}",
         pretty
     );
     // Regular coworker rows should still appear
@@ -427,6 +432,72 @@ fn test_coworkers_pretty_excludes_channel_leads() {
     assert!(
         !pretty.contains("tui"),
         "Channel lead should not appear in output, got: {}",
+        pretty
+    );
+}
+
+#[test]
+fn test_status_pretty_shows_lead_sessions() {
+    // Channel leads should appear in a separate "Lead Sessions" section,
+    // not mixed in with regular coworkers.
+    let status = StatusResponse {
+        daemon_running: true,
+        active_coworkers: 1,
+        max_coworkers: Some(10),
+        pending_tasks: 0,
+        socket_path: "/tmp/test.sock".to_string(),
+        lead_session: None,
+        lead_session_active: None,
+        full_status: Some(FullStatusInfo {
+            coworkers: vec![
+                CoworkerInfo {
+                    name: "amsterdam".to_string(),
+                    status: "running".to_string(),
+                    current_task: None,
+                    started_at: None,
+                    provider: Some("claude".to_string()),
+                    profile: Some("ben@quotably.com".to_string()),
+                    is_channel_lead: false,
+                },
+                CoworkerInfo {
+                    name: "cli".to_string(),
+                    status: "running".to_string(),
+                    current_task: None,
+                    started_at: None,
+                    provider: Some("claude".to_string()),
+                    profile: Some("ben@quotably.com".to_string()),
+                    is_channel_lead: true,
+                },
+            ],
+            tasks: vec![],
+            pull_requests: vec![],
+            recent_activity: vec![],
+        }),
+    };
+
+    let response = Response::Status(status);
+    let pretty = response.to_pretty();
+
+    // Lead sessions section should exist and include the channel lead
+    assert!(
+        pretty.contains("Lead Sessions:"),
+        "Should have a Lead Sessions section, got:\n{}",
+        pretty
+    );
+    assert!(
+        pretty.contains("cli - idle"),
+        "Channel lead 'cli' should appear in Lead Sessions section, got:\n{}",
+        pretty
+    );
+    // Regular coworker count and rows should be unchanged
+    assert!(
+        pretty.contains("Coworkers: 1/10 active"),
+        "Regular coworker count should be unchanged, got:\n{}",
+        pretty
+    );
+    assert!(
+        pretty.contains("amsterdam - idle"),
+        "Regular coworker 'amsterdam' should still appear, got:\n{}",
         pretty
     );
 }
