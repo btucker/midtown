@@ -624,7 +624,7 @@
     onscroll={handleScroll}
   >
       {#if channelMessages.length === 0}
-        <div class="text-center text-[#606060] py-[50px] px-[22px] font-[system-ui,-apple-system,sans-serif]">
+        <div class="text-center text-muted-foreground py-[50px] px-[22px] font-[system-ui,-apple-system,sans-serif]">
           <p>No messages in #{$activeChannel}</p>
           <p class="text-[0.9rem] mt-[10px]">Messages posted to this channel will appear here</p>
         </div>
@@ -638,7 +638,7 @@
           >
           {#if !msg.thread_parent_id}
             <button
-              class="hidden lg:flex absolute right-0 top-[1px] items-center gap-1 px-2 py-[1px] rounded border border-[#2a2a2a] bg-[rgba(15,15,15,0.95)] text-[0.68rem] text-[#808080] cursor-pointer opacity-0 pointer-events-none transition-opacity duration-150 group-hover:opacity-100 group-hover:pointer-events-auto focus:opacity-100 focus:pointer-events-auto hover:text-[#d0d0d0] hover:border-[#5fafaf]"
+              class="hidden lg:flex absolute right-0 top-[1px] items-center gap-1 px-2 py-[1px] rounded border border-border bg-card/95 text-[0.68rem] text-muted-foreground cursor-pointer opacity-0 pointer-events-none transition-opacity duration-150 group-hover:opacity-100 group-hover:pointer-events-auto focus:opacity-100 focus:pointer-events-auto hover:text-foreground hover:border-ring"
               onclick={() => openThread(msg, $activeChannel)}
               aria-label="Reply in thread"
             >
@@ -646,12 +646,12 @@
             </button>
           {/if}
           {#if needsBlankLine(channelMessages, i)}
-            <div class="h-[0.8em]"></div>
+            <div class="h-[1.4em]"></div>
           {/if}
           {#if senderChanged(channelMessages, i)}
             <!-- Author line: bold name + current task + cross-post indicator -->
             <div
-              class="whitespace-nowrap overflow-hidden text-ellipsis flex items-center gap-[7px] {isInsight(msg) && isCrossPost(msg) ? 'py-[5px] px-[10px] -mt-[5px] -mx-[10px] mb-[5px] border-l-[3px] border-l-[#af5faf] bg-[rgba(175,95,175,0.12)] rounded-[5px]' : ''}"
+              class="mt-1 whitespace-nowrap overflow-hidden text-ellipsis flex items-center gap-[7px] {isInsight(msg) && isCrossPost(msg) ? 'py-[5px] px-[10px] -mt-[5px] -mx-[10px] mb-[5px] border-l-[3px] border-l-insight bg-insight/12 rounded-[5px]' : ''}"
             >
               {#if isInsight(msg) && isCrossPost(msg)}
                 <span class="text-[#ffaf5f] text-[1.05rem]">&#9733;</span>
@@ -660,7 +660,7 @@
               {/if}
               <span class="font-bold" style="color: {getSenderColor(msg.from)}">{msg.from}</span>
               {#if currentTasks[msg.from.toLowerCase()]}
-                <span class="text-[#606060]"> - {currentTasks[msg.from.toLowerCase()]}</span>
+                <span class="text-muted-foreground"> - {currentTasks[msg.from.toLowerCase()]}</span>
               {/if}
             </div>
           {/if}
@@ -668,9 +668,9 @@
           {#if isAction(msg) && !hasMermaid(msg.content)}
             <!-- Action message: HH:MM * content -->
             <div class="flex gap-0 break-words">
-              <span class="text-[#4a4a4a] flex-shrink-0 w-[3.7em] text-right mr-[0.5em] select-none">{formatTime(msg.timestamp)}</span>
+              <span class="text-muted-foreground/60 flex-shrink-0 w-[3.7em] text-right mr-[0.5em] select-none">{formatTime(msg.timestamp)}</span>
               <span class="flex-shrink-0 mr-[0.3em]" style="color: {getSenderColor(msg.from)}">*</span>
-              <span class="flex-1 min-w-0" style="color: {getSenderColor(msg.from)}">{@html renderContent(getActionContent(msg))}</span>
+              <span class="action-text flex-1 min-w-0" style="color: {getSenderColor(msg.from)}">{@html renderContent(getActionContent(msg))}</span>
             </div>
           {:else if isAction(msg) && hasMermaid(msg.content)}
             <!-- Action message with mermaid diagram(s) -->
@@ -682,13 +682,13 @@
               {:else}
                 <div class="flex gap-0 break-words">
                   {#if si === 0}
-                    <span class="text-[#4a4a4a] flex-shrink-0 w-[3.7em] text-right mr-[0.5em] select-none">{formatTime(msg.timestamp)}</span>
+                    <span class="text-muted-foreground/60 flex-shrink-0 w-[3.7em] text-right mr-[0.5em] select-none">{formatTime(msg.timestamp)}</span>
                     <span class="flex-shrink-0 mr-[0.3em]" style="color: {getSenderColor(msg.from)}">*</span>
                   {:else}
-                    <span class="text-[#4a4a4a] flex-shrink-0 w-[3.7em] text-right mr-[0.5em] select-none"></span>
+                    <span class="text-muted-foreground/60 flex-shrink-0 w-[3.7em] text-right mr-[0.5em] select-none"></span>
                     <span class="flex-shrink-0 mr-[0.3em] invisible">*</span>
                   {/if}
-                  <span class="flex-1 min-w-0" style="color: {getSenderColor(msg.from)}">{@html renderContent(segment.content)}</span>
+                  <span class="action-text flex-1 min-w-0" style="color: {getSenderColor(msg.from)}">{@html renderContent(segment.content)}</span>
                 </div>
               {/if}
             {/each}
@@ -702,19 +702,19 @@
               {:else}
                 <div class="flex gap-0 break-words">
                   {#if si === 0}
-                    <span class="text-[#4a4a4a] flex-shrink-0 w-[3.7em] text-right mr-[0.5em] select-none">{formatTime(msg.timestamp)}</span>
+                    <span class="text-muted-foreground/60 flex-shrink-0 w-[3.7em] text-right mr-[0.5em] select-none">{formatTime(msg.timestamp)}</span>
                   {:else}
-                    <span class="text-[#4a4a4a] flex-shrink-0 w-[3.7em] text-right mr-[0.5em] select-none"></span>
+                    <span class="text-muted-foreground/60 flex-shrink-0 w-[3.7em] text-right mr-[0.5em] select-none"></span>
                   {/if}
-                  <span class="flex-1 min-w-0 {isDimSender(msg.from) ? 'text-[#606060]' : 'text-[#d0d0d0]'}">{@html renderContent(segment.content)}</span>
+                  <span class="message-text flex-1 min-w-0 {isDimSender(msg.from) ? 'text-muted-foreground' : 'text-foreground'}">{@html renderContent(segment.content)}</span>
                 </div>
               {/if}
             {/each}
           {:else}
             <!-- Regular message: HH:MM content -->
             <div class="flex gap-0 break-words">
-              <span class="text-[#4a4a4a] flex-shrink-0 w-[3.7em] text-right mr-[0.5em] select-none">{formatTime(msg.timestamp)}</span>
-              <span class="flex-1 min-w-0 {isDimSender(msg.from) ? 'text-[#606060]' : 'text-[#d0d0d0]'}">{@html renderContent(msg.content)}</span>
+              <span class="text-muted-foreground/60 flex-shrink-0 w-[3.7em] text-right mr-[0.5em] select-none">{formatTime(msg.timestamp)}</span>
+              <span class="message-text flex-1 min-w-0 {isDimSender(msg.from) ? 'text-muted-foreground' : 'text-foreground'}">{@html renderContent(msg.content)}</span>
             </div>
           {/if}
 
@@ -728,10 +728,10 @@
               >
                 <span>{msg.reply_count} {msg.reply_count === 1 ? 'reply' : 'replies'}</span>
                 {#if msg.last_reply}
-                  <span class="text-[#4a4a4a]">&middot;</span>
-                  <span class="text-[#808080]">{msg.last_reply.from}</span>
-                  <span class="text-[#4a4a4a]">&middot;</span>
-                  <span class="text-[#606060]">{formatTime(msg.last_reply.timestamp)}</span>
+                  <span class="text-muted-foreground/60">&middot;</span>
+                  <span class="text-muted-foreground">{msg.last_reply.from}</span>
+                  <span class="text-muted-foreground/60">&middot;</span>
+                  <span class="text-muted-foreground">{formatTime(msg.last_reply.timestamp)}</span>
                 {/if}
               </button>
             </div>
@@ -769,7 +769,7 @@
 
   {#if !autoScroll}
     <button
-      class="absolute bottom-[90px] right-[22px] w-[40px] h-[40px] rounded-full border-2 border-[#2a2a2a] bg-[#1a1a1a] text-[#d0d0d0] text-[1.2rem] cursor-pointer flex items-center justify-center transition-all duration-200 opacity-85 hover:opacity-100 hover:border-[#5faf5f] hover:text-[#5faf5f] z-10"
+      class="absolute bottom-[90px] right-[22px] w-[40px] h-[40px] rounded-full border-2 border-border bg-card text-foreground text-[1.2rem] cursor-pointer flex items-center justify-center transition-all duration-200 opacity-85 hover:opacity-100 hover:border-primary hover:text-primary z-10"
       onclick={scrollToBottom}
       aria-label="Scroll to bottom"
     >
@@ -795,11 +795,11 @@
     />
     <form class="flex flex-col gap-2 px-3 pt-2 pb-1 bg-card border-t border-border" onsubmit={handleSubmit}>
       {#if pendingFile}
-        <div class="relative inline-block max-w-[200px] border border-[#3a3a3a] rounded-lg p-2 bg-[#1c1c1c]">
+        <div class="relative inline-block max-w-[200px] border border-border rounded-lg p-2 bg-card">
           {#if pendingFile.type.startsWith('image/')}
             <img src={URL.createObjectURL(pendingFile)} alt="Preview" class="max-w-full max-h-[120px] rounded block" />
           {:else}
-            <div class="flex items-center gap-2 text-[#d0d0d0]">
+            <div class="flex items-center gap-2 text-foreground">
               <span class="text-[1.5rem]">&#128196;</span>
               <span class="text-[0.85rem] overflow-hidden text-ellipsis whitespace-nowrap">{pendingFile.name}</span>
             </div>
@@ -820,7 +820,7 @@
           bind:value={inputText}
           placeholder="Message to #{$activeChannel}..."
           rows="1"
-          class="flex-1 py-[13px] px-[17px] border-2 border-[#2a2a2a] rounded-[18px] bg-[#0f0f0f] text-[#d0d0d0] text-[1.02rem] font-inherit outline-none resize-none min-h-[1.6em] max-h-[9em] overflow-y-auto focus:border-[#5faf5f] placeholder:text-[#606060]"
+          class="flex-1 py-[13px] px-[17px] border-2 border-border rounded-[18px] bg-card text-foreground text-[1.02rem] font-inherit outline-none resize-none min-h-[1.6em] max-h-[9em] overflow-y-auto focus:border-primary placeholder:text-muted-foreground"
           onkeydown={handleKeyDown}
           onpaste={handlePaste}
           oninput={handleInput}
@@ -839,33 +839,39 @@
 
 <!-- Task detail modal (opened by clicking !N task links in chat) -->
 <Dialog.Root open={selectedTask != null} onOpenChange={(open) => { if (!open) selectedTask = null }}>
-  <Dialog.Content class="bg-[#16213e] rounded-[9px] p-[18px] max-w-[420px] max-h-[80vh] overflow-y-auto border border-[#0f3460]">
+  <Dialog.Content class="bg-card rounded-[9px] p-[18px] max-w-[420px] max-h-[80vh] overflow-y-auto border border-border">
     <Dialog.Header>
       <div class="flex items-center gap-[9px]">
-        <span class="text-[#00d9ff] font-mono text-[0.88rem]">!{selectedTask?.id}</span>
-        <span class="text-[0.72rem] py-[3px] px-[9px] rounded-[13px] bg-[#0f3460] text-[#888] capitalize">{selectedTask?.status}</span>
+        <span class="text-primary font-mono text-[0.88rem]">!{selectedTask?.id}</span>
+        <span class="text-[0.72rem] py-[3px] px-[9px] rounded-[13px] bg-accent text-muted-foreground capitalize">{selectedTask?.status}</span>
       </div>
-      <Dialog.Title class="text-[#eee] text-[1.05rem] font-semibold m-0 leading-[1.45]">
+      <Dialog.Title class="text-foreground text-[1.05rem] font-semibold m-0 leading-[1.45]">
         {selectedTask?.subject}
       </Dialog.Title>
     </Dialog.Header>
 
     {#if selectedTask?.description}
-      <p class="text-[#aaa] text-[0.88rem] leading-[1.55] m-0 mb-[13px] whitespace-pre-wrap">{selectedTask.description}</p>
+      <p class="text-muted-foreground text-[0.88rem] leading-[1.55] m-0 mb-[13px] whitespace-pre-wrap">{selectedTask.description}</p>
     {:else}
-      <p class="text-[#666] text-[0.88rem] italic leading-[1.55] m-0 mb-[13px]">No description</p>
+      <p class="text-muted-foreground/60 text-[0.88rem] italic leading-[1.55] m-0 mb-[13px]">No description</p>
     {/if}
 
     {#if selectedTask?.owner}
       <div class="flex gap-[9px] text-[0.85rem] mb-[5px]">
-        <span class="text-[#666]">Owner:</span>
-        <span class="text-[#ccc]">{selectedTask.owner}</span>
+        <span class="text-muted-foreground/60">Owner:</span>
+        <span class="text-foreground">{selectedTask.owner}</span>
       </div>
     {/if}
   </Dialog.Content>
 </Dialog.Root>
 
 <style>
+  /* Font for message prose — Lato for readability, monospace inherited for code */
+  :global(.message-text),
+  :global(.action-text) {
+    font-family: 'Lato', system-ui, -apple-system, sans-serif;
+  }
+
   /* Link styles - applied globally within message content */
   :global(.message-text a),
   :global(.action-text a) {
@@ -909,16 +915,17 @@
   /* Inline code */
   :global(.message-text code),
   :global(.action-text code) {
-    background: #1a1a1a;
+    background: hsl(var(--accent));
     padding: 0.12em 0.45em;
     border-radius: 3px;
     font-size: 0.92em;
+    font-family: 'SF Mono', 'Menlo', 'Consolas', 'Monaco', 'Courier New', monospace;
   }
 
   /* Code blocks */
   :global(.message-text pre),
   :global(.action-text pre) {
-    background: #1a1a1a;
+    background: hsl(var(--accent));
     padding: 10px 14px;
     border-radius: 5px;
     overflow-x: auto;
@@ -957,10 +964,10 @@
   /* Blockquotes */
   :global(.message-text blockquote),
   :global(.action-text blockquote) {
-    border-left: 2px solid #4a4a4a;
+    border-left: 2px solid hsl(var(--border));
     margin: 3px 0;
     padding-left: 10px;
-    color: #888;
+    color: hsl(var(--muted-foreground));
   }
 
   /* Tables */
@@ -973,24 +980,24 @@
 
   :global(.message-text th),
   :global(.action-text th) {
-    background: #1e2a1e;
-    color: #87d787;
+    background: hsl(var(--accent));
+    color: hsl(var(--primary));
     padding: 4px 10px;
     text-align: left;
-    border: 1px solid #2a3a2a;
+    border: 1px solid hsl(var(--border));
     font-weight: 600;
   }
 
   :global(.message-text td),
   :global(.action-text td) {
     padding: 3px 10px;
-    border: 1px solid #2a2a2a;
-    color: #c0c0c0;
+    border: 1px solid hsl(var(--border));
+    color: hsl(var(--foreground));
   }
 
   :global(.message-text tr:nth-child(even) td),
   :global(.action-text tr:nth-child(even) td) {
-    background: #141414;
+    background: hsl(var(--secondary));
   }
 
   /* Typing indicator bounce animation */

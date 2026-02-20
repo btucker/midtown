@@ -1,6 +1,8 @@
 @import 'tailwindcss';
 @import 'tw-animate-css';
 @import 'tailwindcss-safe-area';
+@import '@fontsource/lato/400.css';
+@import '@fontsource/lato/700.css';
 
 /* shadcn-svelte CSS variables for theming */
 :root {
@@ -32,6 +34,7 @@
   --sidebar-accent-foreground: 240 5.9% 10%;
   --sidebar-border: 220 13% 91%;
   --sidebar-ring: 217.2 91.2% 59.8%;
+  --insight: 300 50% 35%;
 }
 
 .dark {
@@ -62,6 +65,7 @@
   --sidebar-accent-foreground: 0 0% 81.6%;
   --sidebar-border: 0 0% 16.5%;
   --sidebar-ring: 180 29.4% 52.9%;
+  --insight: 300 29.4% 52.9%;
 }
 
 @theme inline {
@@ -92,6 +96,7 @@
   --color-sidebar-accent-foreground: hsl(var(--sidebar-accent-foreground));
   --color-sidebar-border: hsl(var(--sidebar-border));
   --color-sidebar-ring: hsl(var(--sidebar-ring));
+  --color-insight: hsl(var(--insight));
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
@@ -109,7 +114,7 @@ html, body {
 }
 
 body {
-  font-family: 'SF Mono', 'Menlo', 'Consolas', 'Monaco', 'Courier New', monospace;
+  font-family: system-ui, -apple-system, sans-serif;
   background-color: hsl(var(--card));
   color: hsl(var(--foreground));
   -webkit-font-smoothing: antialiased;
