@@ -77,6 +77,11 @@ pub struct CoworkerInfo {
     pub provider: Option<String>,
     #[serde(default)]
     pub profile: Option<String>,
+    /// Whether this coworker is a channel lead session.
+    /// Channel leads are persistent domain experts and should not count
+    /// toward the coworker slot limit.
+    #[serde(default)]
+    pub is_channel_lead: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -135,12 +140,18 @@ impl Response {
                 if let Some(ref full) = status.full_status {
                     let mut out = String::new();
 
-                    // Coworkers section
+                    // Coworkers section — channel leads are persistent domain experts,
+                    // not workers competing for slots, so exclude them from the count.
+                    let worker_count = full
+                        .coworkers
+                        .iter()
+                        .filter(|cw| !cw.is_channel_lead)
+                        .count();
                     let coworker_header = match status.max_coworkers {
                         Some(max) => {
-                            format!("Coworkers: {}/{} active\n", full.coworkers.len(), max)
+                            format!("Coworkers: {}/{} active\n", worker_count, max)
                         }
-                        None => format!("Coworkers: {} active\n", full.coworkers.len()),
+                        None => format!("Coworkers: {} active\n", worker_count),
                     };
                     out.push_str(&coworker_header);
                     for cw in &full.coworkers {

@@ -166,6 +166,7 @@ fn test_coworkers_response_display_includes_provider_and_profile() {
                 started_at: None,
                 provider: Some("claude".to_string()),
                 profile: Some("ben@quotably.com".to_string()),
+                is_channel_lead: false,
             },
             CoworkerInfo {
                 name: "park".to_string(),
@@ -174,6 +175,7 @@ fn test_coworkers_response_display_includes_provider_and_profile() {
                 started_at: None,
                 provider: Some("zai".to_string()),
                 profile: Some("ben@btucker.net".to_string()),
+                is_channel_lead: false,
             },
         ],
     };
@@ -183,6 +185,54 @@ fn test_coworkers_response_display_includes_provider_and_profile() {
     assert!(pretty.contains("(claude: ben@quotably.com)"));
     assert!(pretty.contains("park"));
     assert!(pretty.contains("(zai: ben@btucker.net)"));
+}
+
+#[test]
+fn test_status_pretty_excludes_channel_leads_from_count() {
+    // Channel leads should not count toward the coworker slot display.
+    // Two coworkers: one regular, one channel lead. Should show 1/10, not 2/10.
+    let status = StatusResponse {
+        daemon_running: true,
+        active_coworkers: 1,
+        max_coworkers: Some(10),
+        pending_tasks: 0,
+        socket_path: "/tmp/test.sock".to_string(),
+        lead_session: None,
+        lead_session_active: None,
+        full_status: Some(FullStatusInfo {
+            coworkers: vec![
+                CoworkerInfo {
+                    name: "amsterdam".to_string(),
+                    status: "running".to_string(),
+                    current_task: None,
+                    started_at: None,
+                    provider: None,
+                    profile: None,
+                    is_channel_lead: false,
+                },
+                CoworkerInfo {
+                    name: "tui".to_string(),
+                    status: "running".to_string(),
+                    current_task: None,
+                    started_at: None,
+                    provider: None,
+                    profile: None,
+                    is_channel_lead: true,
+                },
+            ],
+            tasks: vec![],
+            pull_requests: vec![],
+            recent_activity: vec![],
+        }),
+    };
+
+    let response = Response::Status(status);
+    let pretty = response.to_pretty();
+    assert!(
+        pretty.contains("Coworkers: 1/10 active"),
+        "Channel leads should be excluded from coworker count, got: {}",
+        pretty
+    );
 }
 
 #[test]
@@ -287,6 +337,7 @@ fn test_status_pretty_format() {
                     started_at: None,
                     provider: Some("claude".to_string()),
                     profile: Some("ben@quotably.com".to_string()),
+                    is_channel_lead: false,
                 },
                 CoworkerInfo {
                     name: "park".to_string(),
@@ -295,6 +346,7 @@ fn test_status_pretty_format() {
                     started_at: None,
                     provider: Some("zai".to_string()),
                     profile: Some("ben@btucker.net".to_string()),
+                    is_channel_lead: false,
                 },
             ],
             tasks: vec![TaskInfo {

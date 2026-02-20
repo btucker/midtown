@@ -608,7 +608,12 @@ fn draw_coworker_status(f: &mut Frame, app: &mut App, area: Rect) {
         .filter(|cw| !matches!(cw.phase.as_deref(), Some("idle") | Some("done")))
         .collect();
 
-    let active_count = active_coworkers.len();
+    // Exclude channel leads from the count — they are persistent domain experts,
+    // not workers competing for slots.
+    let active_count = active_coworkers
+        .iter()
+        .filter(|cw| !app.channel_lead_names.contains(&cw.name))
+        .count();
     let header = format!("Coworkers ({}/{})", active_count, app.max_coworkers);
     let header_paragraph = Paragraph::new(Line::from(vec![Span::styled(
         header,

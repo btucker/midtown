@@ -94,18 +94,47 @@ pub(super) async fn handle_status(id: RequestId, state: &DaemonState) -> Respons
         .filter(|t| t.get("status").and_then(|s| s.as_str()) == Some("pending"))
         .count();
 
-    // Get GitHub API rate limit state
-    let rate_limit = {
+    // Get GitHub API rate limit state and channel lead names together to avoid
+    // locking persistent_state twice.
+    let (rate_limit, channel_lead_names) = {
         let ps = state.persistent_state.lock().await;
-        ps.github.rate_limit.clone()
+        let names: std::collections::HashSet<String> =
+            ps.channel_lead_sessions.keys().cloned().collect();
+        (ps.github.rate_limit.clone(), names)
     };
+
+    // Tag each coworker as a channel lead and compute the non-lead count.
+    // Channel leads are persistent domain experts and do not consume coworker slots.
+    let coworkers: Vec<serde_json::Value> = coworkers
+        .into_iter()
+        .map(|mut cw| {
+            let name = cw
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let is_lead = channel_lead_names.contains(&name);
+            if let Some(obj) = cw.as_object_mut() {
+                obj.insert("is_channel_lead".to_string(), is_lead.into());
+            }
+            cw
+        })
+        .collect();
+    let active_coworker_count = coworkers
+        .iter()
+        .filter(|cw| {
+            !cw.get("is_channel_lead")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+        })
+        .count();
 
     Response::success(
         id,
         serde_json::json!({
             "success": true,
             "daemon_running": true,
-            "active_coworkers": state.coworkers.count(),
+            "active_coworkers": active_coworker_count,
             "max_coworkers": state.max_coworkers,
             "max_dev_coworkers": state.max_coworkers.saturating_sub(REVIEW_HEADROOM).max(1),
             "pending_tasks": pending_count,
