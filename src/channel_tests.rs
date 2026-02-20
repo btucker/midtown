@@ -36,7 +36,9 @@ fn read_since_cursor_with_retry(
     agent: &str,
     max_attempts: u32,
 ) -> Result<Vec<Message>> {
-    retry_with_backoff(max_attempts, || channel.read_since_cursor(agent))
+    retry_with_backoff(max_attempts, || {
+        channel.read_since_cursor(agent, "test-session")
+    })
 }
 
 #[test]
@@ -176,7 +178,7 @@ fn test_cursor_reset() {
     let _ = read_since_cursor_with_retry(&channel, "reader", 5).unwrap();
 
     // Reset cursor
-    channel.reset_cursor("reader").unwrap();
+    channel.reset_cursor("reader", "test-session").unwrap();
 
     // Should see message again
     let messages = read_since_cursor_with_retry(&channel, "reader", 5).unwrap();
@@ -570,7 +572,7 @@ fn test_rotate_resets_cursors() {
 
     // Agent reads to establish a cursor at some byte offset
     let _ = read_since_cursor_with_retry(&channel, "reader", 5).unwrap();
-    let cursor_before = channel.get_cursor("reader").unwrap();
+    let cursor_before = channel.get_cursor("reader", "test-session").unwrap();
     assert!(cursor_before.position > 0, "Cursor should be past 0");
 
     // Rotate
@@ -578,7 +580,7 @@ fn test_rotate_resets_cursors() {
     assert_eq!(archived, 1);
 
     // Cursor should be reset to 0
-    let cursor_after = channel.get_cursor("reader").unwrap();
+    let cursor_after = channel.get_cursor("reader", "test-session").unwrap();
     assert_eq!(
         cursor_after.position, 0,
         "Cursor should be reset after rotation"

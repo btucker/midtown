@@ -30,13 +30,13 @@
 //! channel.send(&Message::status("worker1", "Compiling...")).unwrap();
 //! channel.send(&Message::text("worker1", "Build complete")).unwrap();
 //!
-//! // Each agent tracks their read position with cursors
-//! let messages = channel.read_since_cursor("worker2").unwrap();
+//! // Each agent session tracks their read position with cursors
+//! let messages = channel.read_since_cursor("worker2", "session-abc").unwrap();
 //! assert_eq!(messages.len(), 3);
 //!
 //! // Subsequent reads only return new messages
 //! channel.send(&Message::text("lead", "Deploy now")).unwrap();
-//! let new_messages = channel.read_since_cursor("worker2").unwrap();
+//! let new_messages = channel.read_since_cursor("worker2", "session-abc").unwrap();
 //! assert_eq!(new_messages.len(), 1);
 //! ```
 

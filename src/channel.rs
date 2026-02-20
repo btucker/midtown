@@ -33,7 +33,7 @@ pub struct ChannelInfo {
 /// - `channels/<name>/history/current.jsonl` — active message file
 /// - `channels/<name>/history/YYYY-MM-DD.jsonl` — rotated daily archives
 /// - `channels/<name>/notes/` — channel lead domain knowledge (markdown files)
-/// - `channels/<name>/cursors/<agent>.json` — per-agent read positions
+/// - `channels/<name>/cursors/<agent>/<session_id>.json` — per-session read positions
 ///
 /// Archived channels use a `.archived` suffix on the directory name:
 /// - `channels/<name>.archived/history/current.jsonl`
@@ -71,14 +71,14 @@ pub struct ChannelInfo {
 /// channel.send(&Message::text("bob", "Second")).unwrap();
 ///
 /// // Agent reads all messages (moves cursor)
-/// let msgs = channel.read_since_cursor("agent1").unwrap();
+/// let msgs = channel.read_since_cursor("agent1", "session-abc").unwrap();
 /// assert_eq!(msgs.len(), 2);
 ///
 /// // New message arrives
 /// channel.send(&Message::text("alice", "Third")).unwrap();
 ///
 /// // Agent only sees new message
-/// let new_msgs = channel.read_since_cursor("agent1").unwrap();
+/// let new_msgs = channel.read_since_cursor("agent1", "session-abc").unwrap();
 /// assert_eq!(new_msgs.len(), 1);
 /// assert_eq!(new_msgs[0].content, "Third");
 /// ```
@@ -205,44 +205,52 @@ fn do_migrate_channels(base_dir: &Path) -> std::io::Result<()> {
             for entry in entries.flatten() {
                 let path = entry.path();
                 if path.is_file() && path.extension().is_some_and(|e| e == "json") {
-                    // Legacy midtown cursor: cursors/<agent>.json → channels/midtown/cursors/<agent>.json
-                    let new_cursors_dir = channels_dir.join("midtown").join("cursors");
-                    if new_cursors_dir.exists()
-                        && let Some(name) = path.file_name()
-                    {
-                        let dest = new_cursors_dir.join(name);
-                        if !dest.exists() {
-                            let _ = fs::rename(&path, &dest);
-                        }
-                    }
+                    // Legacy midtown cursor: cursors/<agent>.json — delete (cursors are ephemeral)
+                    let _ = fs::remove_file(&path);
                 } else if path.is_dir() {
-                    // Per-channel cursor dir: cursors/<channel>/ → channels/<channel>/cursors/
-                    let channel_name = match path.file_name().and_then(|s| s.to_str()) {
-                        Some(n) => n.to_string(),
-                        None => continue,
-                    };
-                    let new_cursors_dir = channels_dir.join(&channel_name).join("cursors");
-                    if new_cursors_dir.exists() {
-                        if let Ok(cursor_entries) = fs::read_dir(&path) {
-                            for cursor_entry in cursor_entries.flatten() {
-                                let cursor_path = cursor_entry.path();
-                                if cursor_path.extension().is_some_and(|e| e == "json")
-                                    && let Some(name) = cursor_path.file_name()
-                                {
-                                    let dest = new_cursors_dir.join(name);
-                                    if !dest.exists() {
-                                        let _ = fs::rename(&cursor_path, &dest);
-                                    }
-                                }
+                    // Per-channel cursor dir: cursors/<channel>/ — delete all files (ephemeral)
+                    if let Ok(cursor_entries) = fs::read_dir(&path) {
+                        for cursor_entry in cursor_entries.flatten() {
+                            let cursor_path = cursor_entry.path();
+                            if cursor_path.extension().is_some_and(|e| e == "json") {
+                                let _ = fs::remove_file(&cursor_path);
                             }
                         }
-                        let _ = fs::remove_dir(&path);
                     }
+                    let _ = fs::remove_dir(&path);
                 }
             }
         }
         // Try to remove old cursors dir if now empty
         let _ = fs::remove_dir(&old_cursors_base);
+    }
+
+    // 4. Delete old flat cursor files channels/<channel>/cursors/<agent>.json.
+    // Cursors are now session-scoped: channels/<channel>/cursors/<agent>/<session_id>.json.
+    // Old flat files are ephemeral (no data loss), so we delete them.
+    if channels_dir.exists()
+        && let Ok(channel_dirs) = fs::read_dir(&channels_dir)
+    {
+        for channel_entry in channel_dirs.flatten() {
+            let channel_path = channel_entry.path();
+            if !channel_path.is_dir() {
+                continue;
+            }
+            let cursors_dir = channel_path.join("cursors");
+            if !cursors_dir.exists() {
+                continue;
+            }
+            if let Ok(cursor_entries) = fs::read_dir(&cursors_dir) {
+                for cursor_entry in cursor_entries.flatten() {
+                    let cursor_path = cursor_entry.path();
+                    // Old flat format: cursors/<agent>.json (file, not directory)
+                    if cursor_path.is_file() && cursor_path.extension().is_some_and(|e| e == "json")
+                    {
+                        let _ = fs::remove_file(&cursor_path);
+                    }
+                }
+            }
+        }
     }
 
     Ok(())
@@ -695,18 +703,21 @@ impl Channel {
         Ok(messages)
     }
 
-    /// Read messages since the agent's cursor position
+    /// Read messages since the agent session's cursor position
     ///
-    /// Returns new messages and updates the cursor.
+    /// Returns new messages and updates the cursor. Cursors are scoped to
+    /// `(agent, session_id)` so concurrent or successive sessions with the
+    /// same agent name don't share state.
     ///
     /// Uses a non-blocking lock to avoid blocking when there's lock contention.
     /// If the lock can't be acquired immediately, returns an error.
-    pub fn read_since_cursor(&self, agent: &str) -> Result<Vec<Message>> {
+    pub fn read_since_cursor(&self, agent: &str, session_id: &str) -> Result<Vec<Message>> {
         if !self.channel_file.exists() {
             return Ok(Vec::new());
         }
 
-        let mut cursor = Cursor::load_or_create(&self.base_dir, &self.channel_name, agent)?;
+        let mut cursor =
+            Cursor::load_or_create(&self.base_dir, &self.channel_name, agent, session_id)?;
 
         let file = File::open(&self.channel_file)?;
 
@@ -784,25 +795,28 @@ impl Channel {
         Ok(messages)
     }
 
-    /// Get the current cursor for an agent
-    pub fn get_cursor(&self, agent: &str) -> Result<Cursor> {
-        Cursor::load_or_create(&self.base_dir, &self.channel_name, agent)
+    /// Get the current cursor for an agent session
+    pub fn get_cursor(&self, agent: &str, session_id: &str) -> Result<Cursor> {
+        Cursor::load_or_create(&self.base_dir, &self.channel_name, agent, session_id)
     }
 
-    /// Reset an agent's cursor to the beginning
-    pub fn reset_cursor(&self, agent: &str) -> Result<()> {
-        let mut cursor = Cursor::load_or_create(&self.base_dir, &self.channel_name, agent)?;
+    /// Reset an agent session's cursor to the beginning
+    pub fn reset_cursor(&self, agent: &str, session_id: &str) -> Result<()> {
+        let mut cursor =
+            Cursor::load_or_create(&self.base_dir, &self.channel_name, agent, session_id)?;
         cursor.reset();
         cursor.save(&self.base_dir, &self.channel_name)?;
         Ok(())
     }
 
-    /// Set an agent's cursor to the end of the file
+    /// Set an agent session's cursor to the end of the file
     ///
-    /// This is useful after initial load to ensure subsequent reads
-    /// only pick up new messages.
-    pub fn set_cursor_to_end(&self, agent: &str) -> Result<()> {
-        let mut cursor = Cursor::load_or_create(&self.base_dir, &self.channel_name, agent)?;
+    /// This is useful after initial load to ensure subsequent reads only
+    /// pick up new messages. For new sessions that should not replay
+    /// historical messages, call this before the first `read_since_cursor`.
+    pub fn set_cursor_to_end(&self, agent: &str, session_id: &str) -> Result<()> {
+        let mut cursor =
+            Cursor::load_or_create(&self.base_dir, &self.channel_name, agent, session_id)?;
         cursor.update(self.file_size(), None);
         cursor.save(&self.base_dir, &self.channel_name)?;
         Ok(())
@@ -1126,27 +1140,38 @@ impl Channel {
         crate::paths::atomic_rename(&temp_path, &self.channel_file)?;
 
         // Reset all cursor files for this channel since byte positions have changed.
-        // Cursors live in channels/<name>/cursors/<agent>.json.
+        // Cursors live in channels/<name>/cursors/<agent>/<session_id>.json.
         let channel_cursors_dir = self
             .base_dir
             .join("channels")
             .join(&self.channel_name)
             .join("cursors");
         if channel_cursors_dir.exists()
-            && let Ok(entries) = fs::read_dir(&channel_cursors_dir)
+            && let Ok(agent_dirs) = fs::read_dir(&channel_cursors_dir)
         {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.extension().is_some_and(|e| e == "json")
-                    && let Some(agent) = path.file_stem().and_then(|s| s.to_str())
-                    && let Ok(mut cursor) = crate::cursor::Cursor::load_or_create(
-                        &self.base_dir,
-                        &self.channel_name,
-                        agent,
-                    )
-                {
-                    cursor.reset();
-                    let _ = cursor.save(&self.base_dir, &self.channel_name);
+            for agent_entry in agent_dirs.flatten() {
+                let agent_path = agent_entry.path();
+                if !agent_path.is_dir() {
+                    continue;
+                }
+                let Ok(session_files) = fs::read_dir(&agent_path) else {
+                    continue;
+                };
+                for session_entry in session_files.flatten() {
+                    let cursor_path = session_entry.path();
+                    if cursor_path.extension().is_some_and(|e| e == "json")
+                        && let Some(agent) = agent_path.file_name().and_then(|s| s.to_str())
+                        && let Some(session_id) = cursor_path.file_stem().and_then(|s| s.to_str())
+                        && let Ok(mut cursor) = crate::cursor::Cursor::load_or_create(
+                            &self.base_dir,
+                            &self.channel_name,
+                            agent,
+                            session_id,
+                        )
+                    {
+                        cursor.reset();
+                        let _ = cursor.save(&self.base_dir, &self.channel_name);
+                    }
                 }
             }
         }
