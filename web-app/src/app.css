@@ -1,6 +1,8 @@
 @import 'tailwindcss';
 @import 'tw-animate-css';
 @import 'tailwindcss-safe-area';
+@import '@fontsource/lato/400.css';
+@import '@fontsource/lato/700.css';
 
 /* shadcn-svelte CSS variables for theming */
 :root {
@@ -109,7 +111,7 @@ html, body {
 }
 
 body {
-  font-family: 'SF Mono', 'Menlo', 'Consolas', 'Monaco', 'Courier New', monospace;
+  font-family: system-ui, -apple-system, sans-serif;
   background-color: hsl(var(--card));
   color: hsl(var(--foreground));
   -webkit-font-smoothing: antialiased;
