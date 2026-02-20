@@ -236,6 +236,49 @@ fn stuck_nudge_effects_returns_only_system_message() {
     }
 }
 
+/// Tests for `format_no_reviewer_reason` — the diagnostic string included in
+/// "I couldn't assign a reviewer" messages to help ops triage without reading logs.
+#[test]
+fn format_no_reviewer_reason_all_busy() {
+    let busy = vec!["madison".to_string(), "york".to_string()];
+    let reason = format_no_reviewer_reason(&busy, None);
+    assert_eq!(
+        reason, "no eligible reviewers (busy: [madison, york])",
+        "All slots busy, no author exclusion"
+    );
+}
+
+#[test]
+fn format_no_reviewer_reason_busy_and_author_excluded() {
+    let busy = vec!["madison".to_string(), "york".to_string()];
+    let reason = format_no_reviewer_reason(&busy, Some("york"));
+    assert_eq!(
+        reason, "no eligible reviewers (busy: [madison, york], excluded-author: york)",
+        "All slots busy, york also excluded as PR author"
+    );
+}
+
+#[test]
+fn format_no_reviewer_reason_no_coworkers() {
+    let busy: Vec<String> = vec![];
+    let reason = format_no_reviewer_reason(&busy, None);
+    assert_eq!(
+        reason, "no eligible reviewers (no coworkers running)",
+        "No coworkers are running at all"
+    );
+}
+
+#[test]
+fn format_no_reviewer_reason_only_author_excluded() {
+    // Only one coworker running, but it's the PR author
+    let busy = vec!["york".to_string()];
+    let reason = format_no_reviewer_reason(&busy, Some("york"));
+    assert_eq!(
+        reason, "no eligible reviewers (busy: [york], excluded-author: york)",
+        "Only available coworker is the PR author"
+    );
+}
+
 /// Bug: When a coworker goes on break, their PR's branch is no longer in
 /// worktree_branch_owners. The poll_prs_for_issues loop (lines 664-669) skips
 /// any PR whose branch doesn't map to an active coworker via

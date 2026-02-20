@@ -1383,13 +1383,28 @@ async fn collect_stuck_condition_effects(
                 let nudge = if should_escalate(prior_nudges) {
                     // Escalation: this has persisted too long, suggest investigation
                     let context = if is_assigned && has_available_slots {
-                        "A reviewer was assigned but hasn't posted a review, and coworker slots are available. This looks like a daemon bug."
+                        "A reviewer was assigned but hasn't posted a review, and coworker slots are available. This looks like a daemon bug.".to_string()
                     } else if !is_assigned && has_available_slots {
-                        "Coworker slots are available but no reviewer was assigned. This looks like a daemon bug."
+                        "Coworker slots are available but no reviewer was assigned. This looks like a daemon bug.".to_string()
                     } else if is_assigned {
-                        "A reviewer was assigned but hasn't posted a review."
+                        "A reviewer was assigned but hasn't posted a review.".to_string()
                     } else {
-                        "No reviewer could be assigned (all slots may be in use)."
+                        let head_ref = pr.get("headRefName").and_then(|s| s.as_str()).unwrap_or("");
+                        let pr_author = coworker_from_branch(head_ref);
+                        let running = state.coworkers.list_running();
+                        let mut busy: Vec<String> = running
+                            .iter()
+                            .filter(|cw| {
+                                !cw.name.eq_ignore_ascii_case("lead")
+                                    && !channel_lead_names.contains(&cw.name)
+                            })
+                            .map(|cw| cw.name.clone())
+                            .collect();
+                        busy.sort();
+                        format!(
+                            "No reviewer could be assigned — {}",
+                            format_no_reviewer_reason(&busy, pr_author.as_deref())
+                        )
                     };
                     format!(
                         "@ops PR #{} ({}) has been stuck for {} minutes with no review — {} Consider running `midtown e2e capture` to debug.",
@@ -1401,9 +1416,24 @@ async fn collect_stuck_condition_effects(
                 } else {
                     // Normal warning
                     let context = if is_assigned {
-                        "I assigned a reviewer but no review has been posted yet"
+                        "I assigned a reviewer but no review has been posted yet".to_string()
                     } else {
-                        "I couldn't assign a reviewer"
+                        let head_ref = pr.get("headRefName").and_then(|s| s.as_str()).unwrap_or("");
+                        let pr_author = coworker_from_branch(head_ref);
+                        let running = state.coworkers.list_running();
+                        let mut busy: Vec<String> = running
+                            .iter()
+                            .filter(|cw| {
+                                !cw.name.eq_ignore_ascii_case("lead")
+                                    && !channel_lead_names.contains(&cw.name)
+                            })
+                            .map(|cw| cw.name.clone())
+                            .collect();
+                        busy.sort();
+                        format!(
+                            "I couldn't assign a reviewer — {}",
+                            format_no_reviewer_reason(&busy, pr_author.as_deref())
+                        )
                     };
                     format!(
                         "@ops PR #{} ({}) has been open for {} minutes with no review — {}",
@@ -1583,6 +1613,27 @@ async fn collect_stuck_condition_effects(
 /// - Second nudge (prior=1): 1+1=2 >= 2, escalation
 fn should_escalate(prior_nudges: u32) -> bool {
     prior_nudges + 1 >= STUCK_ESCALATION_NUDGE_COUNT
+}
+
+/// Format a diagnostic string explaining why a reviewer couldn't be assigned.
+///
+/// Returns a string like "no eligible reviewers (busy: [madison, york], excluded-author: york)"
+/// that helps ops triage the issue without reading daemon logs.
+///
+/// Parameters:
+/// - `busy_names`: coworker names that are currently running (non-lead, non-channel-lead)
+/// - `pr_author`: the PR author's coworker name, if determinable from the branch prefix
+pub(super) fn format_no_reviewer_reason(busy_names: &[String], pr_author: Option<&str>) -> String {
+    let mut parts = Vec::new();
+    if !busy_names.is_empty() {
+        parts.push(format!("busy: [{}]", busy_names.join(", ")));
+    } else {
+        parts.push("no coworkers running".to_string());
+    }
+    if let Some(author) = pr_author {
+        parts.push(format!("excluded-author: {}", author));
+    }
+    format!("no eligible reviewers ({})", parts.join(", "))
 }
 
 /// Convert a stuck condition nudge message into effects (system message only).
