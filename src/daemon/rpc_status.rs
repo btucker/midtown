@@ -103,31 +103,8 @@ pub(super) async fn handle_status(id: RequestId, state: &DaemonState) -> Respons
         (ps.github.rate_limit.clone(), names)
     };
 
-    // Tag each coworker as a channel lead and compute the non-lead count.
-    // Channel leads are persistent domain experts and do not consume coworker slots.
-    let coworkers: Vec<serde_json::Value> = coworkers
-        .into_iter()
-        .map(|mut cw| {
-            let name = cw
-                .get("name")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            let is_lead = channel_lead_names.contains(&name);
-            if let Some(obj) = cw.as_object_mut() {
-                obj.insert("is_channel_lead".to_string(), is_lead.into());
-            }
-            cw
-        })
-        .collect();
-    let active_coworker_count = coworkers
-        .iter()
-        .filter(|cw| {
-            !cw.get("is_channel_lead")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false)
-        })
-        .count();
+    let (coworkers, active_coworker_count) =
+        tag_channel_leads_and_count(coworkers, &channel_lead_names);
 
     Response::success(
         id,
@@ -235,6 +212,39 @@ fn get_recent_channel_activity() -> Vec<serde_json::Value> {
         }
         Err(_) => Vec::new(),
     }
+}
+
+/// Tag each coworker JSON value with `is_channel_lead` and return the count
+/// of non-lead coworkers. Channel leads are persistent domain experts and
+/// do not consume coworker slots.
+fn tag_channel_leads_and_count(
+    coworkers: Vec<serde_json::Value>,
+    channel_lead_names: &std::collections::HashSet<String>,
+) -> (Vec<serde_json::Value>, usize) {
+    let coworkers: Vec<serde_json::Value> = coworkers
+        .into_iter()
+        .map(|mut cw| {
+            let name = cw
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let is_lead = channel_lead_names.contains(&name);
+            if let Some(obj) = cw.as_object_mut() {
+                obj.insert("is_channel_lead".to_string(), is_lead.into());
+            }
+            cw
+        })
+        .collect();
+    let active_count = coworkers
+        .iter()
+        .filter(|cw| {
+            !cw.get("is_channel_lead")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+        })
+        .count();
+    (coworkers, active_count)
 }
 
 #[path = "rpc_status_tests.rs"]
