@@ -2762,3 +2762,7 @@ mod paste_tests;
 #[path = "thread_click_tests.rs"]
 #[cfg(test)]
 mod thread_click_tests;
+
+#[path = "thread_reply_tests.rs"]
+#[cfg(test)]
+mod thread_reply_tests;

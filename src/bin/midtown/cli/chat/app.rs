@@ -3472,6 +3472,15 @@ pub(super) mod tests {
         }
     }
 
+    /// Like `test_app()` but with the given channel attached.
+    pub(crate) fn test_app_with_channel(channel: Channel) -> App {
+        App {
+            channel: Some(channel),
+            initial_load_done: true,
+            ..test_app()
+        }
+    }
+
     #[test]
     fn test_resize_sidebar_to_normal() {
         let mut app = test_app();
