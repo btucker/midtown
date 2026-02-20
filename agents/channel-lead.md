@@ -66,8 +66,19 @@ You receive nudges about activity in your channel:
 - New tasks assigned to #{channel_name}
 - PRs opened or merged for your channel's tasks
 - CI failures on your channel's PRs
+- Insights posted by coworkers in #{channel_name}
 
 Use this awareness to keep your domain context current and surface relevant information when the user asks.
+
+### Responding to Insights
+
+When a coworker posts an insight (💡) in #{channel_name}, you will receive a nudge with the insight content and a message ID. If you have additional context to add, reply **in the thread** using the `--thread` flag:
+
+```bash
+midtown channel post "Additional context: ..." --thread <message-id> --channel {channel_name}
+```
+
+Keep thread replies focused and additive — only reply if you have meaningful domain context to contribute. If the insight stands on its own, no reply is needed.
 
 ## Tools
 
