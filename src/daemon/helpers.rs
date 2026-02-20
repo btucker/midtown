@@ -117,69 +117,6 @@ pub fn extract_mentions(content: &str) -> Vec<String> {
     mentions
 }
 
-/// Determine if message content should override task channel routing and go to main.
-///
-/// Returns true if the message contains any of these patterns that warrant
-/// routing to the main channel even when the sender has a task channel assignment:
-///
-/// - @user mentions (important cross-cutting communication)
-/// - @lead mentions (task requests, questions)
-/// - Task lifecycle events (created, completed)
-/// - Error messages and warnings
-/// - Escalation keywords (blocked, help)
-///
-/// Insights are handled separately via cross-posting and not included here.
-pub fn should_route_to_main_channel(content: &str, project_name: &str) -> bool {
-    let content_lower = content.to_lowercase();
-
-    // @user mentions - always go to main for visibility
-    if contains_at_user(content) {
-        return true;
-    }
-
-    // @lead or @{project_name} mentions - task requests, questions, escalations
-    if content_lower.contains("@lead") {
-        return true;
-    }
-    let lead_mention = format!("@{}", project_name).to_lowercase();
-    if content_lower.contains(&lead_mention) {
-        return true;
-    }
-
-    // Task lifecycle events
-    // Pattern: "task !N completed", "created task !N", "📋 Created task"
-    if (content_lower.contains("task") && content_lower.contains("completed"))
-        || (content_lower.contains("task") && content_lower.contains("created"))
-        || content.contains("📋")
-    {
-        return true;
-    }
-
-    // Error and warning messages
-    // Match specific error reporting patterns; avoid discussions about errors
-    // Only match when error/failed appears in a reporting context, not as a topic
-    if content_lower.contains("error:")
-        || content.contains("⚠️")
-        || content.contains("❌")
-        || content_lower.starts_with("failed ")
-        || content_lower.contains(" failed ")
-        || content_lower.contains("failed to")
-    {
-        return true;
-    }
-
-    // Escalation keywords indicating the coworker needs attention
-    if content_lower.contains("blocked on")
-        || content_lower.contains("i'm blocked")
-        || content_lower.contains("help needed")
-        || content_lower.contains("need help")
-    {
-        return true;
-    }
-
-    false
-}
-
 /// Check if a sender is a coworker (not Lead or system).
 pub fn is_coworker_sender(from: &str) -> bool {
     !SYSTEM_SENDERS.contains(&from)

@@ -314,9 +314,12 @@ pub(super) async fn handle_channel_post(
         }
     }
 
-    // Nudge the Lead when a coworker explicitly mentions @lead
+    // Nudge the Lead when a coworker explicitly mentions @lead or @{project_name}
     let content_lower = content.to_lowercase();
-    if is_coworker_sender(from) && content_lower.contains("@lead") {
+    let project_mention = format!("@{}", state.repo_name).to_lowercase();
+    if is_coworker_sender(from)
+        && (content_lower.contains("@lead") || content_lower.contains(&project_mention))
+    {
         // Use CooldownTracker to avoid duplicate nudges (expires after 1 hour)
         let should_nudge = {
             let cooldowns = state.cooldowns.lock().unwrap();
@@ -333,12 +336,19 @@ pub(super) async fn handle_channel_post(
             // Truncate message for nudge (max 100 chars)
             let summary = truncate_str(&content, 100);
 
-            let nudge_msg = format!("{} mentioned @lead: {}", from, summary);
-            info!("Nudging Lead about @lead mention from {}", from);
+            let nudge_msg = format!("{} mentioned @{}: {}", from, state.repo_name, summary);
+            info!(
+                "Nudging Lead about @{} mention from {}",
+                state.repo_name, from
+            );
             state.nudge_lead(&nudge_msg).await;
 
             // Send push notification to mobile PWA
-            state.send_push_notification(&format!("@lead from {}", from), &summary, "mention");
+            state.send_push_notification(
+                &format!("@{} from {}", state.repo_name, from),
+                &summary,
+                "mention",
+            );
         }
     }
 

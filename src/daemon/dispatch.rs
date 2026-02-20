@@ -1203,7 +1203,6 @@ fn decide_discovered_coworker_nudges(
     owner_tasks: &HashMap<String, (String, String, Option<String>)>,
     reviewer_prs: &HashMap<String, u64>,
 ) -> Vec<Effect> {
-    use super::helpers::format_task_prompt;
     let mut effects = Vec::new();
 
     for name in discovered {
@@ -1211,13 +1210,7 @@ fn decide_discovered_coworker_nudges(
 
         // Check for an in_progress task owned by this coworker
         if let Some((task_id, task_subject, _channel)) = owner_tasks.get(&name_lower) {
-            let prompt = format_task_prompt(
-                task_id,
-                &format!(
-                    "Resume task !{}: {}. The daemon was restarted and discovered you still running. Check your git status and continue where you left off.",
-                    task_id, task_subject
-                ),
-            );
+            let prompt = crate::agents::coworker_recovery_prompt(task_id, task_subject, "");
 
             info!(
                 "Nudging discovered coworker {} to resume task !{}",

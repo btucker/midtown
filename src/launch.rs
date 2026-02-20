@@ -297,7 +297,7 @@ impl LaunchConfig {
                 name: "lead".to_string(),
                 session_mode: SessionMode::Fresh,
                 role: CoworkerRole::Lead,
-                initial_prompt: Some(crate::agents::main_lead_initial_prompt(&repo, "main")),
+                initial_prompt: Some(crate::agents::main_lead_initial_prompt(&repo, &repo)),
                 additional_dirs: vec![],
                 pr_number: None,
                 team_name: Some(team),

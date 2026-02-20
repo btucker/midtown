@@ -172,28 +172,6 @@ pub(super) async fn route_mentions(state: &DaemonState, msg: &Message) {
         let effects = mention_action_to_effects(action, &name, &state.repo_name);
         super::effects::execute_effects(effects, state).await;
     }
-
-    // Check for @{project_name} mention → route to lead
-    let lead_mention = format!("@{}", state.repo_name).to_lowercase();
-    let msg_lower = msg.content.to_lowercase();
-    if msg_lower.contains(&lead_mention) || msg_lower.contains("@lead") {
-        let nudge_text = format!("{} said: {}", msg.from, msg.content);
-        // Don't nudge the lead about their own messages
-        if !msg.from.eq_ignore_ascii_case("lead")
-            && !msg.from.eq_ignore_ascii_case(&state.repo_name)
-        {
-            state.nudge_lead(&nudge_text).await;
-            info!(
-                "Nudged lead about @{} mention from {}",
-                state.repo_name, msg.from
-            );
-            state.send_push_notification(
-                &format!("@{} from {}", state.repo_name, msg.from),
-                &msg.content,
-                "mention",
-            );
-        }
-    }
 }
 
 /// Route an @all broadcast: nudge every running coworker and the lead, except the sender.

@@ -123,17 +123,31 @@ The daemon uses a **session-centric model** where Claude Code sessions (keyed by
 
 On daemon startup, the `NamePool` is restored from persisted session records: names with active sessions are marked allocated, the rest are available in LRU order.
 
+## Prompt Architecture
+
+Prompts are assembled from composable markdown files in `agents/` and loaded at runtime by `src/agents.rs`. The file-based approach allows customization without recompilation: the binary embeds defaults, but `agents/` in the git repo root (or `~/.midtown/agents/`) takes precedence.
+
+**Assembly by agent type:**
+- **Main lead**: `main-lead.md` + `lead.md` + `common.md`
+- **Coworker**: `coworker.md` + `common.md`
+- **Reviewer**: `coworker.md` + `common.md` + `reviewer.md`
+- **Channel lead**: `channel-lead.md` (with optional `ops-channel-lead.md` suffix for the ops channel)
+
+**Template variables:** `{name}` (agent name; project name for main lead), `{project_name}` (e.g., `midtown`), `{channel_name}`, `{domain_context}` (channel lead only).
+
+**@mention routing:** Agents use `@{project_name}` (e.g., `@midtown`) to mention the lead — not the literal `@lead`. Both `@lead` and `@{project_name}` are recognized by the daemon's nudge routing in `rpc_channel.rs` and `chat.rs`.
+
 ## Channel Leads
 
 Channel leads are headless Claude Code sessions attached to individual topic channels. Where coworkers are temporary implementers that come and go with tasks, channel leads are long-lived domain experts that accumulate context across conversations.
 
-**Role:** A channel lead brainstorms, maintains living design documents, answers domain questions, and tracks awareness of active tasks and PRs in its channel. It does not write code, open PRs, or create tasks. When implementation work is needed, it escalates to @lead.
+**Role:** A channel lead brainstorms, maintains living design documents, answers domain questions, and tracks awareness of active tasks and PRs in its channel. It does not write code, open PRs, or create tasks. When implementation work is needed, it escalates to `@{project_name}`.
 
-**Message routing:** When a user posts to a topic channel (any non-main channel), `handle_channel_post` in `src/daemon/mod.rs` nudges the channel lead for that channel via `SessionManager::send_message`. If no channel lead session is alive for that channel, the message is silently skipped — it remains in the channel log and is available when the channel lead next starts up. Main channel behavior is unchanged. Note: `route_mentions()` is intentionally disabled for topic channels — user `@coworker` and `@all` mentions in topic channels are silently dropped; only the channel lead nudge path is active.
+**Message routing:** When a user posts to a topic channel (any non-main channel), `handle_channel_post` in `src/daemon/rpc_channel.rs` nudges the channel lead for that channel via `SessionManager::send_message`. If no channel lead session is alive for that channel, the message is silently skipped — it remains in the channel log and is available when the channel lead next starts up. Main channel behavior is unchanged. Note: `route_mentions()` is intentionally disabled for topic channels — user `@coworker` and `@all` mentions in topic channels are silently dropped; only the channel lead nudge path is active.
 
-**System prompt:** Channel leads use the `agents/channel-lead.md` template, instantiated with `{channel_name}` and `{domain_context}` via `channel_lead_system_prompt()` in `src/agents.rs`.
+**System prompt:** Channel leads use the `agents/channel-lead.md` template, instantiated with `{channel_name}`, `{domain_context}`, and `{project_name}` via `channel_lead_system_prompt()` in `src/agents.rs`.
 
-**Coworker guidance:** Coworkers are instructed to `@{channel-name}` for domain questions (e.g., architecture, design decisions) and to reserve `@lead` for coordination, task, and priority questions.
+**Coworker guidance:** Coworkers are instructed to `@{channel-name}` (e.g., `@daemon-core`) for domain questions and to reserve `@{project_name}` for coordination, task, and priority questions.
 
 ## Channel Storage Layout
 
