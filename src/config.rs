@@ -60,6 +60,7 @@
 //! - `MIDTOWN_CHAT_MONITOR` (set to 0 to disable)
 //! - `MIDTOWN_GITHUB_USER`
 
+use ratatui_themes::ThemeName;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use toml_edit::{Item, Table};
@@ -301,6 +302,14 @@ pub struct ProjectConfig {
     /// User display name shown in chat and @mentions (default: "user")
     #[serde(default)]
     pub user_display_name: Option<String>,
+
+    /// TUI color theme (e.g. "dracula", "nord", "catppuccin-mocha", "gruvbox-dark",
+    /// "tokyo-night", "one-dark-pro"). Defaults to "catppuccin-mocha".
+    /// Full list: dracula, nord, catppuccin-mocha, catppuccin-latte, gruvbox-dark,
+    /// gruvbox-light, tokyo-night, one-dark-pro, solarized-dark, solarized-light,
+    /// monokai-pro, rose-pine, kanagawa, everforest, cyberpunk.
+    #[serde(default)]
+    pub theme: Option<ThemeName>,
 }
 
 impl ProjectConfig {
@@ -320,6 +329,7 @@ impl ProjectConfig {
                 .user_display_name
                 .clone()
                 .or_else(|| self.user_display_name.clone()),
+            theme: other.theme.or(self.theme),
         }
     }
 
@@ -362,6 +372,11 @@ impl ProjectConfig {
     /// Get user display name, or None if not configured (falls back to "user").
     pub fn user_display_name(&self) -> Option<&str> {
         self.user_display_name.as_deref()
+    }
+
+    /// Get the TUI theme name, defaulting to Catppuccin Mocha.
+    pub fn theme(&self) -> ThemeName {
+        self.theme.unwrap_or(ThemeName::CatppuccinMocha)
     }
 }
 
@@ -1071,6 +1086,17 @@ pub fn get_user_display_name() -> Option<String> {
     config.user_display_name().map(|s| s.to_string())
 }
 
+/// Get the TUI theme name for the current project. Defaults to Catppuccin Mocha.
+pub fn get_theme() -> ThemeName {
+    let project_name = get_project_name().unwrap_or_default();
+    let config = if project_name.is_empty() {
+        GlobalConfig::load().default
+    } else {
+        get_project_config(&project_name)
+    };
+    config.theme()
+}
+
 /// Get the user display name for a specific project, if configured.
 pub fn get_user_display_name_for_project(project_name: &str) -> Option<String> {
     get_project_config(project_name)
@@ -1152,6 +1178,7 @@ bin_command = "custom-command"
             zellij_chat_pane_size: Some(35),
             max_coworkers: Some(8),
             user_display_name: None,
+            theme: None,
         };
 
         let project = ProjectConfig {
@@ -1162,6 +1189,7 @@ bin_command = "custom-command"
             zellij_chat_pane_size: None,
             max_coworkers: None, // Not overridden
             user_display_name: None,
+            theme: None,
         };
 
         let merged = global.merge(&project);
@@ -1184,6 +1212,7 @@ bin_command = "custom-command"
             zellij_chat_pane_size: None,
             max_coworkers: Some(8),
             user_display_name: None,
+            theme: None,
         };
 
         let project = ProjectConfig {
@@ -1194,6 +1223,7 @@ bin_command = "custom-command"
             zellij_chat_pane_size: None,
             max_coworkers: Some(4),
             user_display_name: None,
+            theme: None,
         };
 
         let merged = global.merge(&project);
