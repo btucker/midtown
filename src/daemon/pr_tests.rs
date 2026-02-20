@@ -376,8 +376,12 @@ async fn test_orphaned_pr_with_merge_conflict_is_ignored() {
 ///
 /// Expected: Lead PRs should never be marked as orphaned because the lead's
 /// main worktree is always available to address review feedback.
+///
+/// Note: Uses PATH_LOCK to mock gh CLI. collect_reviewer_effects_with_source calls
+/// is_pr_reviewed() which shells out to `gh pr view --json reviews,comments`. Without
+/// mocking, the test fails once the real PR #1164 has a Claude review posted to it.
 #[tokio::test]
-#[allow(clippy::await_holding_lock)]
+#[allow(clippy::await_holding_lock)] // Intentionally hold PATH_LOCK across await to prevent test interference
 async fn test_lead_pr_without_task_id_should_not_be_orphaned() {
     use crate::worktree_registry::WorktreeRegistry;
 
@@ -389,6 +393,36 @@ async fn test_lead_pr_without_task_id_should_not_be_orphaned() {
         "isDraft": false,
         "createdAt": "2024-01-01T00:00:00Z",  // Old enough to pass review delay
     });
+
+    // Acquire lock to prevent parallel tests from interfering with PATH mocking
+    let _path_guard = PATH_LOCK.lock().unwrap();
+
+    // Mock gh CLI to return no reviews/comments so is_pr_reviewed() returns false.
+    // Without this mock, the test makes a real API call and fails once PR #1164
+    // has a Claude review posted (is_pr_reviewed returns true → continue → no effects).
+    let temp_dir = tempfile::tempdir().unwrap();
+    let mock_gh_dir = temp_dir.path().join("bin");
+    std::fs::create_dir_all(&mock_gh_dir).unwrap();
+    let mock_gh_script = mock_gh_dir.join("gh");
+
+    #[cfg(unix)]
+    {
+        std::fs::write(
+            &mock_gh_script,
+            "#!/bin/bash\necho '{\"reviews\":[],\"comments\":[]}'",
+        )
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&mock_gh_script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    let original_path = std::env::var("PATH").unwrap_or_default();
+    unsafe {
+        std::env::set_var(
+            "PATH",
+            format!("{}:{}", mock_gh_dir.display(), original_path),
+        );
+    }
 
     let (state, _tmp, _guard) = make_test_state("midtown");
     let registry = WorktreeRegistry::new();
@@ -406,6 +440,12 @@ async fn test_lead_pr_without_task_id_should_not_be_orphaned() {
         crate::github_state::AssignmentSource::PollingFallback,
     )
     .await;
+
+    // Restore PATH and release lock
+    unsafe {
+        std::env::set_var("PATH", original_path);
+    }
+    drop(_path_guard);
 
     // Bug: Currently returns 0 effects (PR marked as orphaned, skipped)
     // Expected: Should spawn a reviewer (lead can address feedback)
