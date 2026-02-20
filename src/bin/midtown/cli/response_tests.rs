@@ -390,3 +390,66 @@ fn test_status_pretty_format() {
     assert!(pretty.contains("PRs: 1 open"));
     assert!(pretty.contains("PR#42 Add auth (lex) - awaiting review"));
 }
+
+#[test]
+fn test_coworkers_pretty_excludes_channel_leads() {
+    // Channel leads should not appear in `midtown coworkers` output.
+    // Two coworkers: one regular, one channel lead. Only the regular one should appear.
+    let response = Response::Coworkers {
+        coworkers: vec![
+            CoworkerInfo {
+                name: "amsterdam".to_string(),
+                status: "running".to_string(),
+                current_task: Some("!1653 Filter leads".to_string()),
+                started_at: None,
+                provider: None,
+                profile: None,
+                is_channel_lead: false,
+            },
+            CoworkerInfo {
+                name: "tui".to_string(),
+                status: "running".to_string(),
+                current_task: None,
+                started_at: None,
+                provider: None,
+                profile: None,
+                is_channel_lead: true,
+            },
+        ],
+    };
+
+    let pretty = response.to_pretty();
+    assert!(
+        pretty.contains("amsterdam"),
+        "Regular coworker should appear in output, got: {}",
+        pretty
+    );
+    assert!(
+        !pretty.contains("tui"),
+        "Channel lead should not appear in output, got: {}",
+        pretty
+    );
+}
+
+#[test]
+fn test_coworkers_pretty_empty_when_only_channel_leads() {
+    // If all coworkers are channel leads, output should say "No active coworkers".
+    let response = Response::Coworkers {
+        coworkers: vec![CoworkerInfo {
+            name: "tui".to_string(),
+            status: "running".to_string(),
+            current_task: None,
+            started_at: None,
+            provider: None,
+            profile: None,
+            is_channel_lead: true,
+        }],
+    };
+
+    let pretty = response.to_pretty();
+    assert_eq!(
+        pretty, "No active coworkers",
+        "Should show 'No active coworkers' when all are channel leads, got: {}",
+        pretty
+    );
+}

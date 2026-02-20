@@ -209,7 +209,7 @@ pub(super) async fn handle_coworker_break(
 }
 
 /// Handle coworker.list RPC method.
-pub(super) fn handle_coworker_list(id: RequestId, state: &DaemonState) -> Response {
+pub(super) async fn handle_coworker_list(id: RequestId, state: &DaemonState) -> Response {
     // Build a map of coworker name -> task display string from in_progress tasks
     // Format: "!1234 Task subject" (task ID + subject) — matches handle_status()
     let coworker_tasks: std::collections::HashMap<String, String> =
@@ -225,6 +225,11 @@ pub(super) fn handle_coworker_list(id: RequestId, state: &DaemonState) -> Respon
             })
             .collect();
 
+    let channel_lead_names: std::collections::HashSet<String> = {
+        let ps = state.persistent_state.lock().await;
+        ps.channel_lead_sessions.keys().cloned().collect()
+    };
+
     let coworkers: Vec<serde_json::Value> = state
         .coworkers
         .list()
@@ -232,6 +237,7 @@ pub(super) fn handle_coworker_list(id: RequestId, state: &DaemonState) -> Respon
         .map(|cw| {
             // Look up current task from task storage (case-insensitive)
             let current_task = coworker_tasks.get(&cw.name.to_lowercase()).cloned();
+            let is_channel_lead = channel_lead_names.contains(&cw.name);
             serde_json::json!({
                 "name": cw.name,
                 "status": cw.status.to_string(),
@@ -239,6 +245,7 @@ pub(super) fn handle_coworker_list(id: RequestId, state: &DaemonState) -> Respon
                 "started_at": cw.started_at.to_rfc3339(),
                 "provider": cw.provider.as_str(),
                 "profile": cw.profile,
+                "is_channel_lead": is_channel_lead,
             })
         })
         .collect();

@@ -347,7 +347,7 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
             super::rpc_coworker::handle_coworker_break(request.id, name, state).await
         }
 
-        "coworker.list" => super::rpc_coworker::handle_coworker_list(request.id, state),
+        "coworker.list" => super::rpc_coworker::handle_coworker_list(request.id, state).await,
 
         "coworker.view" => {
             let name = require_str!(params, "name", request.id);

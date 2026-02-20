@@ -244,11 +244,12 @@ impl Response {
                 }
             }
             Response::Coworkers { coworkers } => {
-                if coworkers.is_empty() {
+                let workers: Vec<_> = coworkers.iter().filter(|cw| !cw.is_channel_lead).collect();
+                if workers.is_empty() {
                     return "No active coworkers".to_string();
                 }
                 let mut out = String::from("Coworkers\n─────────────────────────────\n");
-                for cw in coworkers {
+                for cw in workers {
                     // Format provider:profile (e.g., "claude: ben@quotably.com")
                     let auth_info = match (&cw.provider, &cw.profile) {
                         (Some(provider), Some(profile)) => {
