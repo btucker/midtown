@@ -24,10 +24,7 @@ pub fn called_in_review_feedback(name: &str, pr_number: u64) -> String {
 
 /// Called in {name} to review PR #{pr_number}.
 pub fn called_in_reviewer(name: &str, pr_number: u64) -> String {
-    format!(
-        "\u{1f50d} Called in {} to review PR #{}",
-        name, pr_number
-    )
+    format!("\u{1f50d} Called in {} to review PR #{}", name, pr_number)
 }
 
 /// Called in coworker {name} for pending task !{task_id}.
@@ -79,10 +76,7 @@ pub fn break_no_pr(name: &str) -> String {
 
 /// Letting {name} take a break (work merged).
 pub fn break_work_merged(name: &str) -> String {
-    format!(
-        "\u{2615} Letting {} take a break (work's all merged)",
-        name
-    )
+    format!("\u{2615} Letting {} take a break (work's all merged)", name)
 }
 
 /// Letting {name} take a break (PR CI passed — session saved for resume).
@@ -104,10 +98,7 @@ mod tests {
 
     #[test]
     fn returns_canonical_messages() {
-        assert_eq!(
-            break_idle("bob"),
-            "\u{2615} Letting bob take a break"
-        );
+        assert_eq!(break_idle("bob"), "\u{2615} Letting bob take a break");
         assert_eq!(
             break_review_complete("carol", 42),
             "\u{2615} Letting carol take a break (review complete for PR #42)"

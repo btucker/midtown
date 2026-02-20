@@ -179,9 +179,14 @@ pub(super) async fn route_mentions(state: &DaemonState, msg: &Message) {
     if msg_lower.contains(&lead_mention) || msg_lower.contains("@lead") {
         let nudge_text = format!("{} said: {}", msg.from, msg.content);
         // Don't nudge the lead about their own messages
-        if !msg.from.eq_ignore_ascii_case("lead") && !msg.from.eq_ignore_ascii_case(&state.repo_name) {
+        if !msg.from.eq_ignore_ascii_case("lead")
+            && !msg.from.eq_ignore_ascii_case(&state.repo_name)
+        {
             state.nudge_lead(&nudge_text).await;
-            info!("Nudged lead about @{} mention from {}", state.repo_name, msg.from);
+            info!(
+                "Nudged lead about @{} mention from {}",
+                state.repo_name, msg.from
+            );
             state.send_push_notification(
                 &format!("@{} from {}", state.repo_name, msg.from),
                 &msg.content,

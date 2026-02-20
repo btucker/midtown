@@ -473,7 +473,11 @@ where
     );
 
     let plan_section = build_plan_prompt_section(&recovery.task_id, snap);
-    let prompt = crate::agents::coworker_recovery_prompt(&recovery.task_id, &recovery.task_subject, &plan_section);
+    let prompt = crate::agents::coworker_recovery_prompt(
+        &recovery.task_id,
+        &recovery.task_subject,
+        &plan_section,
+    );
 
     // Set channel from task if available
     let channel = snap
@@ -995,7 +999,11 @@ where
     );
 
     let plan_section = build_plan_prompt_section(&recovery.task_id, snap);
-    let prompt = crate::agents::coworker_recovery_prompt(&recovery.task_id, &recovery.task_subject, &plan_section);
+    let prompt = crate::agents::coworker_recovery_prompt(
+        &recovery.task_id,
+        &recovery.task_subject,
+        &plan_section,
+    );
 
     // Set channel from task if available
     let channel = snap
@@ -1976,10 +1984,7 @@ pub(super) fn spawn_for_pending_tasks_excluding(
                     },
                     Effect::PostToChannel {
                         sender: "midtown".to_string(),
-                        message: daemon_messages::called_in_pending_task(
-                            o,
-                            &tid.to_string(),
-                        ),
+                        message: daemon_messages::called_in_pending_task(o, &tid.to_string()),
                         channel: Some(OPS_CHANNEL.to_string()),
                     },
                 ];
@@ -2130,7 +2135,8 @@ pub(super) fn spawn_for_pending_tasks_excluding(
                     task.id, record.session_id
                 );
                 let plan_section = build_plan_prompt_section(&task.id, snap);
-                let prompt = crate::agents::coworker_recovery_prompt(&task.id, &task.subject, &plan_section);
+                let prompt =
+                    crate::agents::coworker_recovery_prompt(&task.id, &task.subject, &plan_section);
                 let wt = prepare_task_worktree(&task.id, &task.subject, &snap.repo_name, snap);
                 let working_dir = if !record.working_dir.is_empty() {
                     std::path::PathBuf::from(&record.working_dir)

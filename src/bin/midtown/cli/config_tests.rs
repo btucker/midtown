@@ -577,9 +577,6 @@ fn multiple_sets_accumulate_correctly() {
     let contents = std::fs::read_to_string(&config_path).unwrap();
     let loaded: midtown::config::GlobalConfig = toml::from_str(&contents).unwrap();
     assert_eq!(loaded.default.max_coworkers, Some(5));
-    assert_eq!(
-        loaded.default.user_display_name,
-        Some("Alice".to_string())
-    );
+    assert_eq!(loaded.default.user_display_name, Some("Alice".to_string()));
     assert_eq!(loaded.daemon.webhook_port, Some(47025));
 }

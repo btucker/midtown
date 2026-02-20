@@ -388,7 +388,9 @@ impl LaunchConfig {
                 channel_name: channel_name_str.clone(),
                 domain_context: domain_ctx,
             },
-            initial_prompt: Some(crate::agents::channel_lead_initial_prompt(&channel_name_str)),
+            initial_prompt: Some(crate::agents::channel_lead_initial_prompt(
+                &channel_name_str,
+            )),
             additional_dirs: vec![],
             pr_number: None,
             team_name: Some(team),

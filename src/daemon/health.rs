@@ -138,10 +138,7 @@ pub fn check_and_shutdown_idle_coworkers(snap: &snapshot::WorldSnapshot) -> Vec<
                     "Sending reviewer {} on a break (review verified for PR #{})",
                     name, pr
                 );
-                (
-                    true,
-                    daemon_messages::break_review_complete(name, pr),
-                )
+                (true, daemon_messages::break_review_complete(name, pr))
             } else {
                 warn!(
                     "Reviewer {} is idle but no review found for PR #{} - keeping alive",
@@ -160,19 +157,13 @@ pub fn check_and_shutdown_idle_coworkers(snap: &snapshot::WorldSnapshot) -> Vec<
             }
         } else if snap.coworkers_with_merged_prs.contains(name) {
             info!("Sending idle coworker {} on a break (PR merged)", name);
-            (
-                true,
-                daemon_messages::break_work_merged(name),
-            )
+            (true, daemon_messages::break_work_merged(name))
         } else {
             info!(
                 "Sending idle coworker {} on a break (idle for 30+ seconds)",
                 name
             );
-            (
-                true,
-                daemon_messages::break_idle(name),
-            )
+            (true, daemon_messages::break_idle(name))
         };
 
         if !should_shutdown {
