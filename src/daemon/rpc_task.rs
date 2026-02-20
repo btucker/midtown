@@ -245,10 +245,10 @@ pub(super) async fn handle_task_create(
         }
     };
 
-    // Persist channel mapping if user specified an explicit channel
-    if channel.is_some() {
+    // Persist channel mapping (explicit --channel or default "midtown")
+    {
         let mut ps = state.persistent_state.lock().await;
-        if apply_task_channel_mapping(&mut ps.task_channel, &task_id, channel, false)
+        if apply_task_channel_mapping(&mut ps.task_channel, &task_id, Some(task_channel), false)
             && let Err(e) = ps.save_for_repo(&repo_name)
         {
             warn!("Failed to save task channel mapping: {}", e);
