@@ -2,26 +2,15 @@
 
 # Midtown
 
-Work with a "lead" to manage your team of **Claude Code** "coworkers" to accomplish tasks following a github PR workflow.
+Midtown provides a familiar, unified interface for collaborating with a team of coding agents, coordinated through IRC-style channels in the terminal, the web, and a mobile PWA.
 
-## Why Midtown?
+## How Midtown Works
 
-Midtown is inspired by [Gastown](https://github.com/anthropics/claude-code/tree/main/.claude/docs/gastown.md), but a bit simpler, less exciting, and, well, more mid.
+Each channel is led by a specialized agent (a “channel lead”) with long-running context in that domain, while a project lead maintains a broad view of the overall effort. You can collaborate at either level: work with the project lead on planning and direction, or engage directly with any channel lead to brainstorm within a specific area. It works much like an organization: broad communication in #general, with focused discussions in specialized channels (eg. #webui, #api, #proj-tanstack-adoption, etc).
 
-At its core, Midtown is built around an IRC-like messaging model: a shared channel where team members (both the human-facing "Lead" and autonomous "Coworkers") post updates, coordinate handoffs, and stay in sync. This append-only message stream is the backbone of multi-agent collaboration—each Claude Code instance reads the channel at natural pause points, just like checking a team chat. At anytime the "lead" or a "coworker" can be @mentioned and then receive that into their context context immediately.
+After a brainstorm, the channel lead turns the outcome into an execution plan (using skills) and creates tasks using the Claude Code native Tasks system. Those tasks include dependencies, so Midtown can distinguish what can run in parallel from what must happen in sequence.
 
-When you're working with Claude Code on a complex project, you might want to parallelize work:
-
-- The Lead collaborates with the human to create a plan & split up the work into tasks & dependencies.
-- Multiple "coworkers" implement independent components simultaneously but with context of the full project
-- The "coworkers"" review & merge PRs while the "lead"" & human collaborate on what's next
-
-Midtown provides two UIs:
-
-1. A Zellij-based terminal workspace with an IRC-style chat pane and Lead terminal (includes mermaid diagram rendering with inline ASCII art)
-2. A web interface (meant to be run as a PWA) so you can collaborate with the lead (and the team) while on the go.
-
-Midtown makes extensive use of the new Claude Code Tasks system to manage the state of all work, create dependencies, and assign ownership.
+Coworkers are the agents created to pick up and execute those tasks. Coworkers operate headlessly, but collaborate in the channels with you & the leads. You can also pair program directly with a Coworker and "attach" to their session. This becomes like working directly in the coding agent (currently Claude Code & Codex are supported).
 
 ## Quick Start
 
@@ -29,8 +18,6 @@ Midtown makes extensive use of the new Claude Code Tasks system to manage the st
 
 1. Install the [GitHub CLI](https://cli.github.com/).
 2. Install [Rust & Cargo](https://doc.rust-lang.org/cargo/getting-started/installation.html).
-3. Install [Zellij](https://zellij.dev/documentation/installation) (v0.43+).
-4. Install the WASM target: `rustup target add wasm32-wasip1`.
 
 ### 1. Install
 
@@ -54,39 +41,31 @@ From your project directory:
 midtown start
 ```
 
-This starts the daemon and launches a Zellij session with chat on the left and the Lead terminal on the right.
-
-Prefer the opposite split? Use:
-
-```bash
-midtown start --swap-layout
-```
-
 For multi-repo projects, specify a project name and additional repos:
 
 ```bash
 midtown start --project myapp --add-repo /path/to/frontend --add-repo /path/to/shared-lib
 ```
 
-### 3. Attach to the session
+### 3. Start the TUI
 
 If you're in a repo that's part of a project:
 
 ```bash
-midtown attach
+midtown view
 ```
 
-You're now in the Zellij session with the Lead's Claude Code instance.
+You're now in the Zellij session with the Project Lead's Claude Code instance.
 
 To attach to a named project from any directory:
 
 ```bash
-midtown attach myapp
+midtown view myapp
 ```
 
-### 4. Work with the lead as you typically would work with Claude Code
+### 4. Work with the Project Lead as you typically would work with Claude Code
 
-The lead is just a claude code session, but it's been booted with some a [special system prompt](agents/lead.md). The system prompt instructs the lead how to execute in the midtown environment-- mostly to not take on work itself (unless it's trivial) and to instead make Claude Code tasks.
+The Project Lead is just a Claude Code session, but it's been booted with a [special system prompt](agents/lead.md). The system prompt instructs the Project Lead how to execute in the midtown environment—mostly to not take on work itself (unless it's trivial) and to instead make Claude Code tasks.
 
 ## CLI Overview
 
@@ -96,15 +75,11 @@ The lead is just a claude code session, but it's been booted with some a [specia
 | `midtown stop` | Stop everything |
 | `midtown restart [--force]` | Restart the daemon (`--force` skips reviewer drain wait) |
 | `midtown status` | Show system status |
-| `midtown view` | Launch chat UI (use `--attach` to open Lead in a split) |
+| `midtown view` | Launch chat UI (use `--attach` to open Project Lead in a split) |
 | `midtown channel post <msg>` | Post to the team channel |
 | `midtown channel read` | Read recent messages |
 | `midtown channel create <name>` | Create a new topic channel |
 | `midtown channel archive <name>` | Archive a channel |
-| `midtown coworker call-in` | Spawn a new coworker |
-| `midtown coworker break <name>` | Send a coworker on break |
-| `midtown coworker list` | List active coworkers |
-| `midtown coworker view <name>` | View a coworker's output |
 | `midtown session attach name/<n>` | Attach to a headless session |
 | `midtown session detach <name>` | Resume headless execution |
 | `midtown session clear <lookup>` | Stop and restart a session fresh (preserves original task prompt) |
@@ -400,6 +375,7 @@ Profiles are stored under `~/.midtown/`:
 Claude profiles use a two-tier structure: per-profile auth credentials (`.claude.json`) live in `auth/<profile>/claude/`, while shared state (projects, tasks, settings) is symlinked from `~/.midtown/platforms/claude/`. This allows multiple auth profiles to share the same Claude Code data.
 
 When Midtown launches a session, it sets provider-specific env vars:
+
 - Claude: `CLAUDE_CONFIG_DIR` to the profile directory
 - Codex: `CODEX_HOME` to the profile directory
 - z.ai: `ANTHROPIC_AUTH_TOKEN` (API key) and `ANTHROPIC_BASE_URL` (defaults to `https://api.z.ai/api/anthropic`)
@@ -459,6 +435,7 @@ midtown auth --provider codex switch work@example.com
 The daemon is the central coordinator. It runs an event-driven state machine that collects an immutable snapshot of the world each tick, makes pure decisions about what should happen, and then executes the resulting effects. This strict separation between decision logic and side effects keeps the core testable.
 
 The daemon handles:
+
 - Coworker lifecycle (spawning, health checks, stuck detection, shutdown)
 - Task assignment and dispatch
 - GitHub webhook processing (PR events, CI status, reviews)
@@ -482,6 +459,7 @@ Coworkers are named after Manhattan avenues: lexington, park, madison, broadway,
 Each topic channel can have a **channel lead** — a headless Claude Code session that acts as a domain expert for that channel. Channel leads accumulate context across conversations and are available to answer domain questions.
 
 **What channel leads do:**
+
 - Brainstorm with the user on domain topics in their channel
 - Maintain living design documents, architecture notes, and decision logs
 - Answer domain questions with accumulated context
@@ -516,11 +494,13 @@ Each project daemon runs its own webhook server for GitHub integration. Port 470
 The `midtown chat` command opens a split-panel interface with:
 
 **Layout**:
+
 - **Board panel** (left 40%): Channel swimlanes showing in-progress (●) and pending (○) tasks per channel
 - **Chat panel** (right 60%): Real-time message display with mermaid diagram rendering
 - **Input bar** (bottom): Text input for posting messages (Tab to focus, Enter to send)
 
 **Features**:
+
 - Real-time channel message display
 - Mermaid diagram detection and rendering (via `selkie-rs` with content-hash caching)
 - Inline ASCII art for flowchart diagrams (press number keys to open SVG in browser)
@@ -601,12 +581,14 @@ The sandbox allows reads from anywhere but restricts writes to explicitly permit
 You can add extra writable directories to the sandbox via config. This is useful for tools that need to write outside the project directory (e.g., `~/.cargo` for Rust tooling, `~/.npm` for Node.js).
 
 Global config (`~/.midtown/config.toml`):
+
 ```toml
 [sandbox]
 allowed_paths = ["~/.cargo", "~/.rustup"]
 ```
 
 Project-level config (`~/.midtown/projects/<repo>/config.toml`):
+
 ```toml
 [sandbox]
 allowed_paths = ["/opt/toolchain"]
@@ -617,6 +599,7 @@ Project-level paths **extend** (not replace) global paths. Paths support `~` exp
 **Git worktree support:** When the primary repo is a git worktree, Midtown detects this and automatically adds the main repository's `.git/` directory to the writable list, ensuring git operations (commits, refs, objects) work correctly.
 
 **macOS SBPL profile structure:**
+
 ```scheme
 (allow default)                          ; Allow all operations by default
 (deny file-write* (subpath "$HOME"))    ; Block writes under home directory

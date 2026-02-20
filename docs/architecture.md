@@ -57,7 +57,7 @@ Each concern has a primary owner. The non-owner path only acts as reconciliation
 
 **Temp-file pattern for shell arguments**: When passing long text to the `claude` CLI (system prompts, initial prompts), write to a temp file and use `$(cat file)` in the command string. This avoids shell quoting issues. See prompt writing in `launch.rs`.
 
-**Hybrid process model**: The Lead runs in a terminal pane managed by a launcher; coworkers run as headless Claude Code sessions. Lead nudges flow through headed intercom queues; coworker nudges use JSON streaming via `SessionManager`.
+**Hybrid process model**: The Project Lead runs in a terminal pane managed by a launcher; coworkers run as headless Claude Code sessions. Project Lead nudges flow through headed intercom queues; coworker nudges use JSON streaming via `SessionManager`.
 
 ---
 
@@ -128,14 +128,14 @@ On daemon startup, the `NamePool` is restored from persisted session records: na
 Prompts are assembled from composable markdown files in `agents/` and loaded at runtime by `src/agents.rs`. The file-based approach allows customization without recompilation: the binary embeds defaults, but `agents/` in the git repo root (or `~/.midtown/agents/`) takes precedence.
 
 **Assembly by agent type:**
-- **Main lead**: `main-lead.md` + `lead.md` + `common.md`
+- **Project Lead**: `project-lead.md` + `lead.md` + `common.md`
 - **Coworker**: `coworker.md` + `common.md`
 - **Reviewer**: `coworker.md` + `common.md` + `reviewer.md`
 - **Channel lead**: `channel-lead.md` (with optional `ops-channel-lead.md` suffix for the ops channel)
 
-**Template variables:** `{name}` (agent name; project name for main lead), `{project_name}` (e.g., `midtown`), `{channel_name}`, `{domain_context}` (channel lead only).
+**Template variables:** `{name}` (agent name; project name for Project Lead), `{project_name}` (e.g., `midtown`), `{channel_name}`, `{domain_context}` (channel lead only).
 
-**@mention routing:** Agents use `@{project_name}` (e.g., `@midtown`) to mention the lead — not the literal `@lead`. Both `@lead` and `@{project_name}` are recognized by the daemon's nudge routing in `rpc_channel.rs` and `chat.rs`.
+**@mention routing:** Agents use `@{project_name}` (e.g., `@midtown`) to mention the Project Lead — not the literal `@lead`. Both `@lead` and `@{project_name}` are recognized by the daemon's nudge routing in `rpc_channel.rs` and `chat.rs`.
 
 ## Channel Leads
 
@@ -194,7 +194,7 @@ Coworkers stay synchronized via a Claude Code Stop hook. When Claude pauses, the
 
 Nudge decisions are made in `src/rules.rs` (`decide_interrupt_nudges`, `decide_prompt_nudges`) using `CooldownTracker` for per-coworker cooldowns and `CoworkerPhase` for deduplication (Idle → Prompted → Interrupted). Delivery is via `Effect::NudgeCoworker` / `Effect::NudgeLead` in `src/daemon/effects.rs`:
 
-- **Lead nudges**: Delivered through headed intercom queues (`headed.register/poll/ack`) with tmux fallback
+- **Project Lead nudges**: Delivered through headed intercom queues (`headed.register/poll/ack`) with tmux fallback
 - **Coworker nudges**: JSON streaming via `SessionManager` for headless sessions
 
 ## Mailbox Messaging
