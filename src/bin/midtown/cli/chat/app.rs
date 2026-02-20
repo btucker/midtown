@@ -11,6 +11,9 @@ use midtown::tasks::extract_task_id_from_pr_title;
 use midtown::{Channel, Message};
 
 use ratatui::text::Line;
+use ratatui_themes::Theme;
+#[cfg(test)]
+use ratatui_themes::ThemeName;
 
 use super::mermaid::MermaidCache;
 use midtown::usage::UsageData;
@@ -327,6 +330,8 @@ pub struct App {
     repo_status_receiver: Option<Receiver<Vec<(RepoInfo, RepoStatus)>>>,
     /// User display name from config (None = "user")
     pub user_display_name: Option<String>,
+    /// Active color theme (from config `theme` field, defaults to Catppuccin Mocha)
+    pub theme: Theme,
     /// Cached mapping of coworker name -> current task subject.
     /// Rebuilt only when tasks change, not every frame.
     current_tasks_cache: HashMap<String, String>,
@@ -567,6 +572,7 @@ impl App {
             repo_status_last_refresh: Instant::now() - REPO_STATUS_REFRESH_INTERVAL, // Force initial refresh
             repo_status_receiver: None,
             user_display_name: midtown::config::get_user_display_name(),
+            theme: Theme::new(midtown::config::get_theme()),
             current_tasks_cache: HashMap::new(),
             tasks_cache_hash: 0,
             intentionally_at_top: false,
@@ -3463,6 +3469,7 @@ pub(super) mod tests {
             repo_status_last_refresh: Instant::now(),
             repo_status_receiver: None,
             user_display_name: None,
+            theme: Theme::new(ThemeName::CatppuccinMocha),
             current_tasks_cache: HashMap::new(),
             tasks_cache_hash: 0,
             intentionally_at_top: false,
