@@ -300,6 +300,36 @@ pub(super) async fn handle_coworker_report_state(
 
     // For Idle phase, immediately send the coworker on break.
     if phase == crate::coworker_state::WorkflowPhase::Idle && state.coworkers.get(name).is_some() {
+        // Before shutting down, check if this coworker is an active reviewer who hasn't
+        // posted their review yet. If so, nudge them to post the review first instead of
+        // going idle. This prevents the case where a reviewer calls `midtown state idle`
+        // before completing their review (e.g., thinking they're done but forgot to post).
+        let pre_snap = snapshot::collect_world_snapshot(state).await;
+        if let Some(&pr_number) = pre_snap.reviewer_pr_assignments.get(name)
+            && !pre_snap.reviewed_prs.contains(&pr_number)
+        {
+            warn!(
+                "Reviewer {} reported idle but has not posted review for PR #{} — nudging to post first",
+                name, pr_number
+            );
+            let nudge_effects = vec![effects::Effect::NudgeCoworker {
+                name: name.to_string(),
+                message: format!(
+                    "You are assigned as reviewer for PR #{pr_number} but have not posted \
+                     your review yet. Please complete and post your review comment on the PR \
+                     before going idle."
+                ),
+            }];
+            effects::execute_effects(nudge_effects, state).await;
+            return Response::success(
+                id,
+                serde_json::json!({
+                    "success": true,
+                    "message": format!("{} nudged to post review for PR #{}", name, pr_number),
+                }),
+            );
+        }
+
         let shutdown_effects = vec![effects::Effect::ShutdownCoworkerWithCallbacks {
             name: name.to_string(),
             message: String::new(),

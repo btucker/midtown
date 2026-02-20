@@ -518,6 +518,102 @@ pub fn check_and_restart_stuck_reviewers(snap: &snapshot::WorldSnapshot) -> Vec<
     effects
 }
 
+/// Check for reviewer processes that exited without posting their review.
+///
+/// When a reviewer's Claude Code session ends naturally (max turns, rate limit,
+/// context window full) before posting the review, the process dies while the
+/// reviewer assignment remains. Unlike stuck reviewers (alive but unresponsive),
+/// these reviewers are dead — so `decide_stuck_reviewer_restarts` won't catch them
+/// because it exempts dead processes.
+///
+/// This function detects dead reviewers with unposted reviews and respawns them,
+/// up to `MAX_REVIEWER_RESTARTS` attempts per PR.
+pub fn check_and_restart_dead_reviewers(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
+    let respawns = crate::rules::decide_dead_reviewer_respawns(
+        &snap.headless_process_health,
+        &snap.reviewer_pr_assignments,
+        &snap.reviewed_prs,
+        &snap.reviewer_restart_counts,
+        MAX_REVIEWER_RESTARTS,
+        &snap.name_session_map,
+    );
+
+    if respawns.is_empty() {
+        return vec![];
+    }
+
+    let mut effects = Vec::new();
+    for restart in respawns {
+        let new_restart_count = restart.restart_count + 1;
+
+        warn!(
+            "Reviewer {} exited without posting review for PR #{} (attempt {}/{})",
+            restart.name, restart.pr_number, new_restart_count, MAX_REVIEWER_RESTARTS,
+        );
+
+        // Respawn the reviewer with an incremented restart count.
+        let worktree_id = crate::worktree_registry::review_slug_for_pr(restart.pr_number);
+        let wt_path = crate::paths::worktrees_dir_for_repo(&snap.repo_name).join(&worktree_id);
+
+        let mut config =
+            crate::launch::LaunchConfig::reviewer(restart.name.clone(), restart.pr_number);
+        config.working_dir = Some(wt_path.clone());
+
+        effects.push(Effect::EnsureWorktree {
+            worktree_id: worktree_id.clone(),
+            path: wt_path,
+        });
+
+        let on_success = vec![
+            Effect::BindCoworkerToWorktree {
+                worktree_id,
+                coworker: restart.name.clone(),
+            },
+            Effect::BroadcastCoworkerUpdate {
+                name: restart.name.clone(),
+                status: "running".to_string(),
+                current_task: Some(format!("reviewing PR #{}", restart.pr_number)),
+            },
+            Effect::AssignReviewer {
+                pr_number: restart.pr_number,
+                reviewer_name: restart.name.clone(),
+                source: crate::github_state::AssignmentSource::Manual,
+                restart_count: new_restart_count,
+                reviewer_session_id: None,
+            },
+        ];
+
+        let on_failure = vec![Effect::PostToChannel {
+            sender: "midtown".to_string(),
+            message: format!(
+                "⚠️ Failed to respawn reviewer {} for PR #{} (attempt {}/{})",
+                restart.name, restart.pr_number, new_restart_count, MAX_REVIEWER_RESTARTS,
+            ),
+            channel: Some(OPS_CHANNEL.to_string()),
+        }];
+
+        effects.push(Effect::SpawnCoworkerWithCallbacks {
+            config,
+            on_success,
+            on_failure,
+        });
+
+        effects.push(Effect::PostToChannel {
+            sender: "midtown".to_string(),
+            message: format!(
+                "🔄 Respawning reviewer {} for PR #{} — exited without posting review (attempt {}/{})",
+                restart.name,
+                restart.pr_number,
+                new_restart_count,
+                MAX_REVIEWER_RESTARTS,
+            ),
+            channel: Some(OPS_CHANNEL.to_string()),
+        });
+    }
+
+    effects
+}
+
 /// Check headless coworker process health for usage/rate limit detection.
 /// If detected, schedule a nudge for when the limit expires.
 ///

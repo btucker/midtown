@@ -593,6 +593,69 @@ pub(crate) fn decide_dead_process_respawns(
 }
 
 // ---------------------------------------------------------------------------
+// Dead reviewer detection
+// ---------------------------------------------------------------------------
+
+/// Detect reviewers whose process has exited without posting a review.
+///
+/// A reviewer is considered a dead unfinished reviewer if:
+/// - `is_alive` is false (process exited)
+/// - The coworker has an active reviewer PR assignment
+/// - The assigned PR is NOT in `reviewed_prs` (review was not posted)
+/// - The restart count is below `max_restarts`
+///
+/// This covers reviewers that exit due to max turns, rate limits, or
+/// natural session end before completing and posting their review.
+///
+/// Pure function: takes ProcessHealth data and returns respawn decisions.
+pub(crate) fn decide_dead_reviewer_respawns(
+    process_health: &HashMap<String, crate::daemon::snapshot::ProcessHealth>,
+    reviewer_pr_assignments: &HashMap<String, u64>,
+    reviewed_prs: &std::collections::HashSet<u64>,
+    reviewer_restart_counts: &HashMap<u64, u32>,
+    max_restarts: u32,
+    name_session_map: &HashMap<String, String>,
+) -> Vec<StuckReviewerRestart> {
+    let mut respawns = Vec::new();
+
+    for (name, health) in process_health {
+        // Only handle dead processes — alive reviewers are handled by stuck detection.
+        if health.is_alive {
+            continue;
+        }
+
+        // Must have a reviewer PR assignment.
+        let pr_number = match reviewer_pr_assignments.get(name) {
+            Some(&pr) => pr,
+            None => continue,
+        };
+
+        // Review was already posted — no need to respawn.
+        if reviewed_prs.contains(&pr_number) {
+            continue;
+        }
+
+        // Check restart limit to prevent infinite loops.
+        let current_count = reviewer_restart_counts
+            .get(&pr_number)
+            .copied()
+            .unwrap_or(0);
+        if current_count >= max_restarts {
+            continue;
+        }
+
+        respawns.push(StuckReviewerRestart {
+            name: name.clone(),
+            pr_number,
+            restart_count: current_count,
+            session_id: name_session_map.get(name).cloned(),
+        });
+    }
+
+    respawns
+}
+
+// ---------------------------------------------------------------------------
 // PR owner resume decision
 // ---------------------------------------------------------------------------
 
@@ -3303,6 +3366,145 @@ mod tests {
                 reason
             );
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // decide_dead_reviewer_respawns tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn dead_reviewer_detected_when_process_exits_without_review() {
+        let now = Utc::now();
+        let mut process_health = HashMap::new();
+        process_health.insert(
+            "riverside".to_string(),
+            crate::daemon::snapshot::ProcessHealth {
+                is_alive: false,
+                exit_code: Some(0),
+                last_event_at: Some(now - chrono::Duration::minutes(5)),
+                ..Default::default()
+            },
+        );
+        let mut reviewer_pr_assignments = HashMap::new();
+        reviewer_pr_assignments.insert("riverside".to_string(), 1352u64);
+        let reviewed_prs: HashSet<u64> = HashSet::new(); // review NOT posted
+
+        let respawns = decide_dead_reviewer_respawns(
+            &process_health,
+            &reviewer_pr_assignments,
+            &reviewed_prs,
+            &HashMap::new(),
+            2,
+            &HashMap::new(),
+        );
+
+        assert_eq!(
+            respawns.len(),
+            1,
+            "dead reviewer without review should be flagged for respawn"
+        );
+        assert_eq!(respawns[0].name, "riverside");
+        assert_eq!(respawns[0].pr_number, 1352u64);
+    }
+
+    #[test]
+    fn dead_reviewer_not_respawned_if_review_was_posted() {
+        let now = Utc::now();
+        let mut process_health = HashMap::new();
+        process_health.insert(
+            "columbus".to_string(),
+            crate::daemon::snapshot::ProcessHealth {
+                is_alive: false,
+                exit_code: Some(0),
+                last_event_at: Some(now - chrono::Duration::minutes(5)),
+                ..Default::default()
+            },
+        );
+        let mut reviewer_pr_assignments = HashMap::new();
+        reviewer_pr_assignments.insert("columbus".to_string(), 1351u64);
+        let mut reviewed_prs: HashSet<u64> = HashSet::new();
+        reviewed_prs.insert(1351); // review WAS posted
+
+        let respawns = decide_dead_reviewer_respawns(
+            &process_health,
+            &reviewer_pr_assignments,
+            &reviewed_prs,
+            &HashMap::new(),
+            2,
+            &HashMap::new(),
+        );
+
+        assert!(
+            respawns.is_empty(),
+            "dead reviewer whose review was posted should NOT be respawned"
+        );
+    }
+
+    #[test]
+    fn dead_reviewer_not_respawned_at_max_restarts() {
+        let now = Utc::now();
+        let mut process_health = HashMap::new();
+        process_health.insert(
+            "riverside".to_string(),
+            crate::daemon::snapshot::ProcessHealth {
+                is_alive: false,
+                exit_code: Some(0),
+                last_event_at: Some(now - chrono::Duration::minutes(5)),
+                ..Default::default()
+            },
+        );
+        let mut reviewer_pr_assignments = HashMap::new();
+        reviewer_pr_assignments.insert("riverside".to_string(), 1352u64);
+        let reviewed_prs: HashSet<u64> = HashSet::new();
+        let mut restart_counts = HashMap::new();
+        restart_counts.insert(1352u64, 2u32); // already at max
+
+        let respawns = decide_dead_reviewer_respawns(
+            &process_health,
+            &reviewer_pr_assignments,
+            &reviewed_prs,
+            &restart_counts,
+            2,
+            &HashMap::new(),
+        );
+
+        assert!(
+            respawns.is_empty(),
+            "dead reviewer at max restarts should NOT be respawned"
+        );
+    }
+
+    #[test]
+    fn alive_reviewer_not_handled_by_dead_reviewer_respawns() {
+        // Alive reviewers are handled by the stuck reviewer path, not this one.
+        let now = Utc::now();
+        let mut process_health = HashMap::new();
+        process_health.insert(
+            "park".to_string(),
+            crate::daemon::snapshot::ProcessHealth {
+                is_alive: true,
+                exit_code: None,
+                last_event_at: Some(now - chrono::Duration::hours(1)),
+                ..Default::default()
+            },
+        );
+        let mut reviewer_pr_assignments = HashMap::new();
+        reviewer_pr_assignments.insert("park".to_string(), 42u64);
+        let reviewed_prs: HashSet<u64> = HashSet::new();
+
+        let respawns = decide_dead_reviewer_respawns(
+            &process_health,
+            &reviewer_pr_assignments,
+            &reviewed_prs,
+            &HashMap::new(),
+            2,
+            &HashMap::new(),
+        );
+
+        assert!(
+            respawns.is_empty(),
+            "alive reviewer should not be handled by dead reviewer detection"
+        );
     }
 
     // -----------------------------------------------------------------------
