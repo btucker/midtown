@@ -460,12 +460,16 @@ pub(crate) struct StuckExemptions<'a> {
 /// Returns `true` if the process is alive, not exempt (usage-limited, API error,
 /// auth error, attached, subagent running, pending tool, pending API call), and has not
 /// emitted events for longer than `stuck_threshold`.
+///
+/// When `last_event_at` is `None` (zero events received), falls back to `started_at`
+/// so that zombie processes that never produce output are eventually flagged.
 fn is_process_stuck(
     name: &str,
     health: &crate::daemon::snapshot::ProcessHealth,
     exemptions: &StuckExemptions<'_>,
     now_utc: DateTime<Utc>,
     stuck_threshold: chrono::Duration,
+    started_at: Option<DateTime<Utc>>,
 ) -> bool {
     let is_exempt = !health.is_alive
         || health.has_running_subagent
@@ -476,10 +480,15 @@ fn is_process_stuck(
         || hashset_contains_icase(exemptions.auth_error, name)
         || exemptions.attached.contains_key(&name.to_lowercase());
 
-    !is_exempt
-        && health
-            .last_event_at
-            .is_some_and(|t| now_utc.signed_duration_since(t) >= stuck_threshold)
+    if is_exempt {
+        return false;
+    }
+
+    // Use last event time if available, otherwise fall back to spawn time.
+    // A process that has been alive for longer than the threshold without ever
+    // emitting an event is stuck (e.g., resumed from a stale session ID).
+    let reference_time = health.last_event_at.or(started_at);
+    reference_time.is_some_and(|t| now_utc.signed_duration_since(t) >= stuck_threshold)
 }
 
 /// Detect coworkers whose headless process has not emitted events for
@@ -497,12 +506,14 @@ pub(crate) fn decide_stuck_coworker_restarts(
     now_utc: DateTime<Utc>,
     stuck_duration: Duration,
     name_session_map: &HashMap<String, String>,
+    coworker_start_times: &HashMap<String, DateTime<Utc>>,
 ) -> Vec<StuckCoworkerRestart> {
     let threshold = chrono::Duration::from_std(stuck_duration).unwrap_or_default();
     let mut restarts = Vec::new();
 
     for (name, health) in process_health {
-        if !is_process_stuck(name, health, exemptions, now_utc, threshold) {
+        let started_at = coworker_start_times.get(&name.to_lowercase()).copied();
+        if !is_process_stuck(name, health, exemptions, now_utc, threshold, started_at) {
             continue;
         }
 
@@ -644,6 +655,7 @@ pub(crate) fn decide_stuck_reviewer_restarts(
     stuck_duration: Duration,
     max_restarts: u32,
     name_session_map: &HashMap<String, String>,
+    coworker_start_times: &HashMap<String, DateTime<Utc>>,
 ) -> Vec<StuckReviewerRestart> {
     let threshold = chrono::Duration::from_std(stuck_duration).unwrap_or_default();
     let mut restarts = Vec::new();
@@ -654,7 +666,8 @@ pub(crate) fn decide_stuck_reviewer_restarts(
             None => continue,
         };
 
-        if !is_process_stuck(name, health, exemptions, now_utc, threshold) {
+        let started_at = coworker_start_times.get(&name.to_lowercase()).copied();
+        if !is_process_stuck(name, health, exemptions, now_utc, threshold, started_at) {
             continue;
         }
 
@@ -2711,6 +2724,7 @@ mod tests {
             now,
             Duration::from_secs(180),
             &HashMap::new(),
+            &HashMap::new(),
         )
     }
 
@@ -2727,6 +2741,70 @@ mod tests {
         );
         assert_eq!(restarts.len(), 1);
         assert_eq!(restarts[0].name, "riverside");
+    }
+
+    /// Regression: coworkers with zero events (last_event_at=None) were never
+    /// flagged as stuck. With the started_at fallback, a coworker that has been
+    /// alive longer than the threshold with no events should be detected.
+    #[test]
+    fn stuck_detection_zero_events_uses_start_time() {
+        let now = Utc::now();
+        let health = crate::daemon::snapshot::ProcessHealth {
+            is_alive: true,
+            last_event_at: None, // zero events
+            ..Default::default()
+        };
+        let mut health_map = HashMap::new();
+        health_map.insert("riverside".to_string(), health);
+        let tasks = vec![(
+            "42".to_string(),
+            "Fix bug".to_string(),
+            "riverside".to_string(),
+        )];
+        let exemptions = StuckExemptions {
+            usage_limited: &HashSet::new(),
+            api_error: &HashSet::new(),
+            auth_error: &HashSet::new(),
+            attached: &HashMap::new(),
+        };
+        // Started 10 minutes ago — well past the 3-minute threshold
+        let mut start_times = HashMap::new();
+        start_times.insert("riverside".to_string(), now - chrono::Duration::minutes(10));
+        let restarts = decide_stuck_coworker_restarts(
+            &health_map,
+            &tasks,
+            &exemptions,
+            now,
+            Duration::from_secs(180),
+            &HashMap::new(),
+            &start_times,
+        );
+        assert_eq!(restarts.len(), 1, "Zero-event coworker should be flagged");
+        assert_eq!(restarts[0].name, "riverside");
+    }
+
+    /// When last_event_at is None AND no start time is available, the coworker
+    /// should NOT be flagged (no reference time to measure against).
+    #[test]
+    fn stuck_detection_zero_events_no_start_time_skipped() {
+        let now = Utc::now();
+        let health = crate::daemon::snapshot::ProcessHealth {
+            is_alive: true,
+            last_event_at: None,
+            ..Default::default()
+        };
+        let restarts = run_stuck_check(
+            "riverside",
+            health,
+            now,
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashMap::new(),
+        );
+        assert!(
+            restarts.is_empty(),
+            "No start time and no events — cannot determine stuck"
+        );
     }
 
     #[test]
@@ -3259,6 +3337,7 @@ mod tests {
             Duration::from_secs(300),
             2,
             &HashMap::new(),
+            &HashMap::new(),
         )
     }
 
@@ -3347,6 +3426,7 @@ mod tests {
             now,
             Duration::from_secs(300),
             2,
+            &HashMap::new(),
             &HashMap::new(),
         );
         assert!(

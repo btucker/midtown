@@ -252,6 +252,7 @@ pub(super) async fn check_and_restart_stuck_coworkers(
         snap.now_utc,
         COWORKER_STUCK_DURATION,
         &snap.name_session_map,
+        &snap.coworker_start_times,
     );
 
     let mut effects = Vec::new();
@@ -347,6 +348,7 @@ pub fn check_and_restart_stuck_reviewers(snap: &snapshot::WorldSnapshot) -> Vec<
         REVIEWER_STUCK_DURATION,
         MAX_REVIEWER_RESTARTS,
         &snap.name_session_map,
+        &snap.coworker_start_times,
     );
 
     let mut effects = Vec::new();
@@ -468,12 +470,16 @@ pub fn check_and_restart_stuck_reviewers(snap: &snapshot::WorldSnapshot) -> Vec<
         if restart_count < MAX_REVIEWER_RESTARTS {
             continue;
         }
-        // Check if actually stuck (same criteria as the pure function)
-        let last_event = match health.last_event_at {
+        // Check if actually stuck (same criteria as the pure function).
+        // Fall back to spawn time if no events were ever received.
+        let reference_time = health
+            .last_event_at
+            .or_else(|| snap.coworker_start_times.get(&name.to_lowercase()).copied());
+        let reference_time = match reference_time {
             Some(t) => t,
             None => continue,
         };
-        if snap.now_utc.signed_duration_since(last_event) < stuck_threshold {
+        if snap.now_utc.signed_duration_since(reference_time) < stuck_threshold {
             continue;
         }
         // Skip if already excluded
