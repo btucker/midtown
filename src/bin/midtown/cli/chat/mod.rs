@@ -758,6 +758,9 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                             if posted {
                                 app.thread_input_text.clear();
                                 app.thread_input_cursor = 0;
+                                // Refresh immediately so the reply appears without
+                                // waiting for the next tailf event or 1-second timer.
+                                app.refresh();
                             }
                         }
                         EventResult::Continue
@@ -827,6 +830,9 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                                 if posted {
                                     app.input_text.clear();
                                     app.input_cursor = 0;
+                                    // Refresh immediately so the message appears without
+                                    // waiting for the next tailf event or 1-second timer.
+                                    app.refresh();
                                     // Set optimistic thinking state for topic channels
                                     if channel_name != "midtown" && channel_name != "main" {
                                         app.set_channel_lead_thinking(&channel_name);
@@ -2785,3 +2791,7 @@ mod thread_reply_tests;
 #[path = "coworker_click_tests.rs"]
 #[cfg(test)]
 mod coworker_click_tests;
+
+#[path = "post_message_tests.rs"]
+#[cfg(test)]
+mod post_message_tests;
