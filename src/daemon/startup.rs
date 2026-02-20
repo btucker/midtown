@@ -657,6 +657,12 @@ pub async fn recover_from_session_records(
 
         // Clear auth_profile_dir to re-resolve from project config
         config.auth_profile_dir = None;
+        if matches!(config.role, crate::launch::CoworkerRole::Reviewer) {
+            config.auth_provider = crate::config::get_execution_provider_for_role(
+                repo_name,
+                crate::config::ExecutionRole::Reviewer,
+            );
+        }
 
         recovered_session_ids.insert(session_id.clone());
         effects.push(Effect::ResumeCoworker {

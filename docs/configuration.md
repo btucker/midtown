@@ -28,6 +28,15 @@ webhook_secret = "your-secret"        # GitHub webhook signature secret
 webhook_restart_interval_secs = 300   # Webhook forwarder restart interval
 pr_poll_interval_secs = 30            # PR polling interval
 chat_monitor_enabled = true           # Enable @mention routing
+
+[execution]
+lead_provider = "claude"              # "claude", "codex", or "zai"
+coworker_provider = "codex"           # Default provider for dev coworkers
+reviewer_provider = "claude"          # Independent default for reviewers
+channel_lead_provider = "codex"       # Default provider for channel leads
+specialized_provider = "claude"       # Default for specialized workers
+architect_provider = "zai"            # Optional override (falls back to specialized_provider)
+headless_execute_provider = "claude"  # Optional override (falls back to specialized_provider)
 ```
 
 ## Project `config.toml`
@@ -50,6 +59,10 @@ zellij_chat_pane_size = 40      # Wider chat for this project
 
 [daemon]
 webhook_port = 47023              # Auto-assigned if not set
+
+[execution]
+lead_provider = "codex"           # Project-specific provider override
+reviewer_provider = "claude"      # Keep reviewers independent
 ```
 
 The `[project]` section defines:
@@ -59,6 +72,16 @@ The `[project]` section defines:
 - `primary_repo` - The main repo used for the daemon socket and channel
 
 For single-repo projects, only `name` is needed; `repos` and `primary_repo` are inferred from the working directory. This config is auto-created on first `midtown start`.
+
+Execution provider resolution is role-based:
+
+- Lead: `execution.lead_provider` (default: `claude`)
+- Dev coworkers: `execution.coworker_provider` (default: `claude`)
+- Reviewers: `execution.reviewer_provider` (default: `claude`)
+- Channel leads: `execution.channel_lead_provider` (default: `claude`)
+- Specialized workers:
+  - Architect: `execution.architect_provider` → `execution.specialized_provider` → `claude`
+  - `headless.execute`: `execution.headless_execute_provider` → `execution.specialized_provider` → `claude`
 
 ## Environment Variable Overrides
 

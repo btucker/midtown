@@ -727,10 +727,14 @@ pub fn handle_start(project: Option<String>, repos: Vec<PathBuf>) -> Result<Resp
 
     // Step 2: Spawn the Lead as a headless session (idempotent).
     emit_startup_progress(88, "spawning headless lead session");
+    let configured_lead_provider = midtown::config::get_execution_provider_for_role(
+        &project_name,
+        midtown::config::ExecutionRole::Lead,
+    );
     let lead_provider = std::env::var("MIDTOWN_LEAD_PROVIDER")
         .ok()
         .and_then(|s| s.parse::<midtown::auth::AuthProvider>().ok())
-        .unwrap_or(midtown::auth::AuthProvider::Claude);
+        .unwrap_or(configured_lead_provider);
     match DaemonClient::connect() {
         Ok(client) => match client.lead_spawn(lead_provider) {
             Ok(_) => messages.push("Lead session running".to_string()),

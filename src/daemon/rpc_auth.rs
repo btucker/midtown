@@ -228,19 +228,22 @@ pub(super) async fn handle_auth_switch(
             .collect()
     };
 
-    // Re-launch lead only when switching the provider backing the interactive
-    // lead session. Today lead is Claude-backed; other providers leave lead
-    // untouched instead of reporting a relaunch failure.
-    let lead_relaunch_status = if provider == crate::auth::AuthProvider::Claude {
+    // Re-launch lead only when switching the provider backing the lead session.
+    let configured_lead_provider = crate::config::get_execution_provider_for_role(
+        &state.repo_name,
+        crate::config::ExecutionRole::Lead,
+    );
+    let lead_relaunch_status = if provider == configured_lead_provider {
         // Shut down the existing headless lead session if running
         if state.session_manager.is_alive("lead").await {
             let _ = state.session_manager.shutdown("lead").await;
             state.coworkers.deregister("lead");
         }
         let mut lead_config = crate::launch::LaunchConfig::lead(&state.repo_name, None);
-        lead_config.auth_profile_dir = Some(crate::auth::active_profile_dir_for_project(
-            &state.repo_name,
-        ));
+        lead_config.auth_provider = provider;
+        lead_config.auth_profile_dir = Some(
+            crate::auth::active_profile_dir_for_project_with_provider(&state.repo_name, provider),
+        );
         match state.spawn_coworker(&lead_config).await {
             Ok(()) => {
                 info!("Re-launched lead with auth profile '{}'", profile);

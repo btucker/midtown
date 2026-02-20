@@ -110,6 +110,18 @@ fn parse_provider_param(
         .map_err(|e| e.to_string())
 }
 
+/// Parse an optional auth provider from RPC params without applying a default.
+fn parse_optional_provider_param(
+    params: Option<&serde_json::Value>,
+) -> Result<Option<crate::auth::AuthProvider>, String> {
+    params
+        .and_then(|p| p.get("provider"))
+        .and_then(|v| v.as_str())
+        .map(str::parse::<crate::auth::AuthProvider>)
+        .transpose()
+        .map_err(|e| e.to_string())
+}
+
 // ============================================================================
 // Connection handling
 // ============================================================================
@@ -311,6 +323,14 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
 
         "headless.execute" => {
             let prompt = require_str!(params, "prompt", request.id);
+            let auth_provider = match parse_optional_provider_param(params) {
+                Ok(Some(provider)) => provider,
+                Ok(None) => crate::config::get_execution_provider_for_role(
+                    &state.repo_name,
+                    crate::config::ExecutionRole::HeadlessExecute,
+                ),
+                Err(msg) => return Response::error(request.id, RpcError::new(-32602, msg)),
+            };
             let config = crate::headless::HeadlessConfig {
                 model: params.str_or("model", "sonnet").to_string(),
                 system_prompt: params.str_or("system_prompt", "").to_string(),
@@ -332,7 +352,7 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
                 agent_name: None,
                 settings_path: None,
                 setting_sources: None,
-                auth_provider: crate::auth::AuthProvider::Claude,
+                auth_provider,
                 env: std::collections::BTreeMap::new(),
             };
             super::rpc_headless::handle_headless_execute(request.id, prompt, &config).await
@@ -342,8 +362,12 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
         "coworker.spawn" => {
             let resume = params.bool_or("resume", false);
             let prompt = params.str_param("prompt").map(|s| s.to_string());
-            let provider = match parse_provider_param(params) {
-                Ok(provider) => provider,
+            let provider = match parse_optional_provider_param(params) {
+                Ok(Some(provider)) => provider,
+                Ok(None) => crate::config::get_execution_provider_for_role(
+                    &state.repo_name,
+                    crate::config::ExecutionRole::Coworker,
+                ),
                 Err(msg) => return Response::error(request.id, RpcError::new(-32602, msg)),
             };
             super::rpc_coworker::handle_coworker_spawn(request.id, state, resume, prompt, provider)
@@ -392,8 +416,12 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
 
         // ---- Lead lifecycle ----
         "lead.spawn" => {
-            let provider = match parse_provider_param(params) {
-                Ok(provider) => provider,
+            let provider = match parse_optional_provider_param(params) {
+                Ok(Some(provider)) => provider,
+                Ok(None) => crate::config::get_execution_provider_for_role(
+                    &state.repo_name,
+                    crate::config::ExecutionRole::Lead,
+                ),
                 Err(msg) => return Response::error(request.id, RpcError::new(-32602, msg)),
             };
             super::rpc_coworker::handle_lead_spawn(request.id, state, provider).await
