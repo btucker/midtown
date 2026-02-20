@@ -606,8 +606,14 @@ impl Channel {
     /// This is useful after initial load to ensure subsequent reads
     /// only pick up new messages.
     pub fn set_cursor_to_end(&self, agent: &str) -> Result<()> {
+        // Read the last message ID so that unread-count calculations
+        // (which key off last_message_id) correctly treat the channel as fully read.
+        let last_message_id = self
+            .read_last_n_messages(1)
+            .ok()
+            .and_then(|(msgs, _)| msgs.into_iter().next().map(|m| m.id));
         let mut cursor = Cursor::load_or_create(&self.base_dir, &self.channel_name, agent)?;
-        cursor.update(self.file_size(), None);
+        cursor.update(self.file_size(), last_message_id);
         cursor.save(&self.base_dir, &self.channel_name)?;
         Ok(())
     }
@@ -1336,6 +1342,29 @@ mod tests {
         // Should see message again
         let messages = read_since_cursor_with_retry(&channel, "reader", 5).unwrap();
         assert_eq!(messages.len(), 1);
+    }
+
+    #[test]
+    fn test_set_cursor_to_end_records_last_message_id() {
+        // Regression: set_cursor_to_end was passing None for last_message_id,
+        // causing refresh_unread_counts to treat the channel as fully unread.
+        let temp_dir = TempDir::new().unwrap();
+        let channel = Channel::new(temp_dir.path(), "midtown").unwrap();
+
+        let msg1 = Message::text("alice", "first");
+        let msg2 = Message::text("alice", "second");
+        let last_id = msg2.id.clone();
+        channel.send(&msg1).unwrap();
+        channel.send(&msg2).unwrap();
+
+        channel.set_cursor_to_end("chat-tui").unwrap();
+
+        let cursor = Cursor::load_or_create(temp_dir.path(), "midtown", "chat-tui").unwrap();
+        assert_eq!(
+            cursor.last_message_id,
+            Some(last_id),
+            "set_cursor_to_end must record the last message ID so unread counts reset to 0"
+        );
     }
 
     #[test]
