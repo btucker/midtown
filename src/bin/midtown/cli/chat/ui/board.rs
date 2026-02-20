@@ -39,7 +39,7 @@ pub fn draw_board_panel(f: &mut Frame, app: &mut App, area: Rect) -> (Vec<Hyperl
     let active_coworker_count = app
         .coworkers
         .iter()
-        .filter(|cw| cw.phase.as_deref() != Some("idle") && cw.phase.is_some())
+        .filter(|cw| !matches!(cw.phase.as_deref(), Some("idle") | Some("done")))
         .count();
     let coworker_section_height = if active_coworker_count > 0 {
         active_coworker_count as u16 + 3 // 1 header + N rows + 2 borders
@@ -601,11 +601,11 @@ fn draw_coworker_status(f: &mut Frame, app: &mut App, area: Rect) {
     // Get the spinner character before borrowing app.coworkers
     let spinner = app.spinner_char();
 
-    // Filter out idle coworkers - only show those actively working
+    // Filter out idle/completed coworkers - show active and freshly-spawned (phase=None)
     let active_coworkers: Vec<_> = app
         .coworkers
         .iter()
-        .filter(|cw| cw.phase.as_deref() != Some("idle") && cw.phase.is_some())
+        .filter(|cw| !matches!(cw.phase.as_deref(), Some("idle") | Some("done")))
         .collect();
 
     let active_count = active_coworkers.len();
@@ -1328,7 +1328,7 @@ mod tests {
                 cw
             },
             {
-                // No phase set — also excluded
+                // No phase set — freshly spawned, should still appear
                 let mut cw = make_coworker("park");
                 cw.phase = None;
                 cw
@@ -1340,7 +1340,8 @@ mod tests {
             },
         ];
 
-        // Only "amsterdam" (developing) should appear. This test verifies no panic
+        // "amsterdam" (developing) and "park" (no phase yet) should appear.
+        // "york" (idle) should be excluded. Verifies no panic
         // and renders correctly with a mix of idle/none/active coworkers.
         terminal
             .draw(|f| {
@@ -1403,6 +1404,7 @@ mod tests {
     fn test_draw_board_panel_idle_coworkers_dont_inflate_height() {
         // Regression test: idle coworkers should not inflate the section height.
         // If 2 out of 3 coworkers are idle, only 1 active row should be reserved.
+        // Coworkers with phase=None (freshly spawned) ARE shown.
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
 
@@ -1418,7 +1420,7 @@ mod tests {
             },
             {
                 let mut cw = make_coworker("park");
-                cw.phase = None; // no phase — excluded
+                cw.phase = Some("done".to_string()); // completed — excluded
                 cw
             },
             {
