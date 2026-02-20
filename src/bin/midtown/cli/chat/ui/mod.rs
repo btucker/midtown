@@ -129,9 +129,11 @@ pub fn draw(f: &mut Frame, app: &mut App) -> Vec<Hyperlink> {
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
             .split(horizontal_chunks[1]);
+        app.thread_panel_x = Some(chat_chunks[1].x);
         chat::draw_chat_panel(f, app, chat_chunks[0]);
         thread::draw_thread_panel(f, app, chat_chunks[1]);
     } else {
+        app.thread_panel_x = None;
         chat::draw_chat_panel(f, app, horizontal_chunks[1]);
     }
 

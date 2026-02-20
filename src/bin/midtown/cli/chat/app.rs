@@ -343,10 +343,12 @@ pub struct App {
     /// When true AND at max_scroll, line truncation shows oldest content.
     /// When false, always use normal truncation (LAST N lines) for smooth scrolling.
     intentionally_at_top: bool,
-    /// Accumulator for mouse wheel scroll events (0-7).
+    /// Accumulator for mouse wheel scroll events (-7 to +7).
     /// Mouse wheels send multiple events per physical scroll, so we accumulate
-    /// fractional scrolls: 8 events = 1 line of movement for smoother scrolling.
-    mouse_scroll_accumulator: u8,
+    /// fractional scrolls: 8 events in one direction = 1 scroll step.
+    /// Positive = up credits, negative = down credits.
+    /// Resets to 0 when direction changes to prevent cross-direction bleed.
+    mouse_scroll_accumulator: i8,
     /// Cache for rendered mermaid diagrams (content hash -> PNG image)
     pub mermaid_cache: MermaidCache,
     /// Mermaid diagram sources visible in the current render pass (indexed from 1 in the UI).
@@ -449,6 +451,12 @@ pub struct App {
     pub thread_input_text: String,
     /// Thread input cursor position
     pub thread_input_cursor: usize,
+    /// How many lines the thread messages panel is scrolled up from the bottom.
+    /// 0 = at bottom (newest); increases toward older messages.
+    pub thread_scroll_offset: usize,
+    /// X column where the thread panel starts (set each render pass; None when thread is closed).
+    /// Used to route mouse scroll events to the thread panel vs. main chat.
+    pub thread_panel_x: Option<u16>,
     /// Recent messages from the ops channel (daemon operational messages).
     /// Loaded from the "ops" channel file independently of the selected channel.
     pub ops_messages: VecDeque<Message>,
@@ -630,6 +638,8 @@ impl App {
             thread_messages: Vec::new(),
             thread_input_text: String::new(),
             thread_input_cursor: 0,
+            thread_scroll_offset: 0,
+            thread_panel_x: None,
             ops_messages: VecDeque::new(),
             ops_channel,
             ops_initial_load_done: false,
@@ -1042,8 +1052,12 @@ impl App {
         }
     }
 
-    /// Mouse wheel scroll up (slower than keyboard - 8 events = 1 line)
+    /// Mouse wheel scroll up (slower than keyboard - 8 events = 1 step)
     pub fn mouse_scroll_up(&mut self) {
+        if self.mouse_scroll_accumulator < 0 {
+            // Direction changed; discard down credits and start fresh
+            self.mouse_scroll_accumulator = 0;
+        }
         self.mouse_scroll_accumulator += 1;
         if self.mouse_scroll_accumulator >= 8 {
             self.mouse_scroll_accumulator = 0;
@@ -1051,12 +1065,40 @@ impl App {
         }
     }
 
-    /// Mouse wheel scroll down (slower than keyboard - 8 events = 1 line)
+    /// Mouse wheel scroll down (slower than keyboard - 8 events = 1 step)
     pub fn mouse_scroll_down(&mut self) {
+        if self.mouse_scroll_accumulator > 0 {
+            // Direction changed; discard up credits and start fresh
+            self.mouse_scroll_accumulator = 0;
+        }
+        self.mouse_scroll_accumulator -= 1;
+        if self.mouse_scroll_accumulator <= -8 {
+            self.mouse_scroll_accumulator = 0;
+            self.scroll_down();
+        }
+    }
+
+    /// Mouse wheel scroll up in the thread panel (8 events = 1 step toward older messages)
+    pub fn thread_mouse_scroll_up(&mut self) {
+        if self.mouse_scroll_accumulator < 0 {
+            self.mouse_scroll_accumulator = 0;
+        }
         self.mouse_scroll_accumulator += 1;
         if self.mouse_scroll_accumulator >= 8 {
             self.mouse_scroll_accumulator = 0;
-            self.scroll_down();
+            self.thread_scroll_offset = self.thread_scroll_offset.saturating_add(SCROLL_STEP);
+        }
+    }
+
+    /// Mouse wheel scroll down in the thread panel (8 events = 1 step toward newer messages)
+    pub fn thread_mouse_scroll_down(&mut self) {
+        if self.mouse_scroll_accumulator > 0 {
+            self.mouse_scroll_accumulator = 0;
+        }
+        self.mouse_scroll_accumulator -= 1;
+        if self.mouse_scroll_accumulator <= -8 {
+            self.mouse_scroll_accumulator = 0;
+            self.thread_scroll_offset = self.thread_scroll_offset.saturating_sub(SCROLL_STEP);
         }
     }
 
@@ -1146,6 +1188,7 @@ impl App {
 
         self.thread_input_text.clear();
         self.thread_input_cursor = 0;
+        self.thread_scroll_offset = 0;
         self.focused_pane = FocusedPane::Thread;
     }
 
@@ -1156,6 +1199,8 @@ impl App {
         self.thread_input_text.clear();
         self.thread_input_cursor = 0;
         self.thread_input_area = None;
+        self.thread_scroll_offset = 0;
+        self.thread_panel_x = None;
         self.focused_pane = FocusedPane::InputBar;
     }
 
@@ -3532,6 +3577,8 @@ pub(super) mod tests {
             thread_messages: Vec::new(),
             thread_input_text: String::new(),
             thread_input_cursor: 0,
+            thread_scroll_offset: 0,
+            thread_panel_x: None,
             ops_messages: VecDeque::new(),
             ops_channel: None,
             ops_initial_load_done: true,
@@ -3666,6 +3713,72 @@ pub(super) mod tests {
             app.scroll_offset,
             current_offset - SCROLL_STEP,
             "Scroll down should work after 8 events"
+        );
+    }
+
+    #[test]
+    fn test_mouse_scroll_accumulator_resets_on_direction_change() {
+        // Bug: accumulator was shared between up/down directions.
+        // 4 up events + 4 down events should NOT fire a scroll because
+        // the direction changed — each direction must start fresh.
+        let mut app = test_app();
+        for i in 0..30 {
+            app.messages
+                .push_back(Message::text("test", format!("msg {}", i)));
+        }
+        app.scroll_offset = 10;
+
+        // 4 up events — not enough to trigger (need 8)
+        for _ in 0..4 {
+            app.mouse_scroll_up();
+        }
+        assert_eq!(app.scroll_offset, 10, "4 up events should not scroll yet");
+
+        // 4 down events — direction changed, so accumulator resets to 0 first,
+        // then accumulates to 4. Should still NOT fire scroll.
+        for _ in 0..4 {
+            app.mouse_scroll_down();
+        }
+        assert_eq!(
+            app.scroll_offset, 10,
+            "Direction change must reset accumulator; 4 down after 4 up should not scroll"
+        );
+    }
+
+    #[test]
+    fn test_thread_scroll_up_moves_offset() {
+        // thread_mouse_scroll_up should increase thread_scroll_offset (scroll toward older messages)
+        // and must NOT affect the main scroll_offset.
+        let mut app = test_app();
+        app.scroll_offset = 5;
+        app.thread_scroll_offset = 0;
+
+        // 8 events should move by SCROLL_STEP
+        for _ in 0..8 {
+            app.thread_mouse_scroll_up();
+        }
+        assert_eq!(
+            app.thread_scroll_offset, SCROLL_STEP,
+            "Thread scroll offset should increase after 8 up events"
+        );
+        assert_eq!(
+            app.scroll_offset, 5,
+            "Main scroll_offset must not change when scrolling thread"
+        );
+    }
+
+    #[test]
+    fn test_thread_scroll_down_moves_offset() {
+        // thread_mouse_scroll_down should decrease thread_scroll_offset (back toward newest)
+        let mut app = test_app();
+        app.thread_scroll_offset = SCROLL_STEP;
+
+        for _ in 0..8 {
+            app.thread_mouse_scroll_down();
+        }
+        assert_eq!(
+            app.thread_scroll_offset, 0,
+            "Thread scroll offset should return to 0 after 8 down events"
         );
     }
 
@@ -4134,22 +4247,22 @@ pub(super) mod tests {
         );
 
         // Test mouse wheel scroll down
-        // Accumulator is at 1 from the ninth up event
-        for i in 1..=6 {
+        // The ninth up event left accumulator at 1 (up direction).
+        // First down event resets the accumulator (direction change), so
+        // now 8 full down events are needed to trigger scroll_down.
+        for i in 1..=7 {
             app.mouse_scroll_down();
             assert_eq!(
-                app.scroll_offset,
-                SCROLL_STEP,
-                "Down event {} accumulates (acc={})",
-                i,
-                i + 1
+                app.scroll_offset, SCROLL_STEP,
+                "Down event {} should not scroll yet (direction reset clears up credit)",
+                i
             );
         }
 
         app.mouse_scroll_down();
         assert_eq!(
             app.scroll_offset, 0,
-            "Seventh down event triggers scroll (acc=8)"
+            "Eighth down event triggers scroll after direction reset"
         );
     }
 

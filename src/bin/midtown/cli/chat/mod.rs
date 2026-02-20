@@ -975,11 +975,27 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
         }
         Event::Mouse(mouse) => match mouse.kind {
             MouseEventKind::ScrollUp => {
-                app.mouse_scroll_up();
+                let in_thread = app
+                    .thread_panel_x
+                    .map(|tx| mouse.column >= tx)
+                    .unwrap_or(false);
+                if in_thread {
+                    app.thread_mouse_scroll_up();
+                } else {
+                    app.mouse_scroll_up();
+                }
                 EventResult::Continue
             }
             MouseEventKind::ScrollDown => {
-                app.mouse_scroll_down();
+                let in_thread = app
+                    .thread_panel_x
+                    .map(|tx| mouse.column >= tx)
+                    .unwrap_or(false);
+                if in_thread {
+                    app.thread_mouse_scroll_down();
+                } else {
+                    app.mouse_scroll_down();
+                }
                 EventResult::Continue
             }
             MouseEventKind::Down(crossterm::event::MouseButton::Left) => {

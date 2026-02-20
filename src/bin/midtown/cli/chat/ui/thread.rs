@@ -128,11 +128,14 @@ fn draw_thread_messages(f: &mut Frame, app: &mut App, area: Rect) {
         lines.extend(msg_lines);
     }
 
-    // Show the last N lines that fit (scroll to bottom)
+    // Show N lines based on scroll offset (0 = bottom/newest, higher = older)
     let visible_height = inner.height as usize;
-    if lines.len() > visible_height {
-        let offset = lines.len() - visible_height;
-        lines = lines.split_off(offset);
+    let total = lines.len();
+    if total > visible_height {
+        let max_offset = total - visible_height;
+        let scroll = app.thread_scroll_offset.min(max_offset);
+        let from = max_offset - scroll;
+        lines = lines[from..from + visible_height].to_vec();
     }
 
     let paragraph = Paragraph::new(lines);
