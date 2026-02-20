@@ -1,9 +1,6 @@
 use super::*;
 use tempfile::TempDir;
 
-/// Override the teams dir for testing by working with a temp directory.
-/// We test the internal functions directly by constructing paths manually.
-
 /// Verifies that `clear_inbox` removes an existing inbox so a newly-allocated
 /// name does not inherit the previous session's unread messages.
 #[test]
