@@ -112,7 +112,12 @@ impl WebhookEvent {
     /// }
     /// ```
     pub fn github(content: impl Into<String>) -> Self {
-        Self::new(Message::new("github", content, MessageType::Text))
+        Self::new(Message::for_channel(
+            "ops",
+            "github",
+            content,
+            MessageType::Text,
+        ))
     }
 }
 
@@ -2177,5 +2182,66 @@ mod tests {
         );
         let duration = result.expect("should accept duration just under 24 hours");
         assert_eq!(duration.duration_secs, 86399);
+    }
+
+    // -------------------------------------------------------------------------
+    // GitHub webhook messages route to #ops channel
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_github_message_routes_to_ops_channel() {
+        let event = WebhookEvent::github("some message");
+        assert_eq!(
+            event.message.channel.as_deref(),
+            Some("ops"),
+            "GitHub webhook messages must route to #ops channel"
+        );
+    }
+
+    #[test]
+    fn test_pull_request_event_routes_to_ops_channel() {
+        let payload = r#"{
+            "action": "opened",
+            "number": 42,
+            "pull_request": {
+                "title": "Add feature",
+                "user": {"login": "btucker"},
+                "merged": false,
+                "head": {"ref": "lexington/add-feature"}
+            },
+            "repository": {"full_name": "org/repo"}
+        }"#;
+
+        let event = handle_pull_request(payload.as_bytes()).unwrap().unwrap();
+        assert_eq!(
+            event.message.channel.as_deref(),
+            Some("ops"),
+            "PR webhook messages must route to #ops channel"
+        );
+    }
+
+    #[test]
+    fn test_check_run_event_routes_to_ops_channel() {
+        let payload = r#"{
+            "action": "completed",
+            "check_run": {
+                "name": "build",
+                "status": "completed",
+                "conclusion": "success",
+                "check_suite": {
+                    "head_sha": "abc123",
+                    "head_branch": "main",
+                    "pull_requests": []
+                }
+            },
+            "repository": {"full_name": "org/repo"}
+        }"#;
+
+        let event = handle_check_run(payload.as_bytes()).unwrap().unwrap();
+        assert_eq!(
+            event.message.channel.as_deref(),
+            Some("ops"),
+            "Check run webhook messages must route to #ops channel"
+        );
     }
 }
