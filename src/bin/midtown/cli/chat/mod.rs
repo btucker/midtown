@@ -1059,8 +1059,7 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                         && let Some(owner) = task_owner
                     {
                         // Task has an owner - attach to their session
-                        attach_coworker_split(owner);
-                        return EventResult::Exit;
+                        return EventResult::AttachCoworker(owner.clone());
                     }
 
                     // Click in board area (but not on a task with owner) - focus it
