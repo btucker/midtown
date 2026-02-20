@@ -614,30 +614,18 @@ pub struct RepoStatus {
     pub release_time: Option<String>,
 }
 
-/// Fetch kanban data (PRs + merged PRs + coworkers) from the daemon via RPC.
-///
-/// Connects to the daemon's Unix socket and calls `kanban.data`, which uses
-/// a single batched GraphQL query internally. Returns `None` if the daemon
-/// is unreachable or the response is unexpected.
-fn fetch_kanban_via_rpc(
-    repo: &str,
-) -> Option<(
-    Vec<serde_json::Value>,
-    Vec<serde_json::Value>,
-    Vec<serde_json::Value>,
-)> {
+/// Send a single JSON-RPC request over a Unix socket and return the result value.
+fn rpc_call(socket: &std::path::Path, method: &str, id: u64) -> Option<serde_json::Value> {
     use std::io::{BufRead, BufReader, Write};
     use std::os::unix::net::UnixStream;
 
-    let socket = crate::paths::daemon_socket_for_repo(repo);
-    let mut stream = UnixStream::connect(&socket).ok()?;
-    // Set a timeout so we don't block forever if daemon is busy
+    let mut stream = UnixStream::connect(socket).ok()?;
     stream.set_read_timeout(Some(Duration::from_secs(5))).ok()?;
 
     let request = serde_json::json!({
         "jsonrpc": "2.0",
-        "method": "kanban.data",
-        "id": 1
+        "method": method,
+        "id": id
     });
     writeln!(stream, "{}", request).ok()?;
     stream.flush().ok()?;
@@ -647,15 +635,31 @@ fn fetch_kanban_via_rpc(
     reader.read_line(&mut line).ok()?;
 
     let resp: serde_json::Value = serde_json::from_str(&line).ok()?;
-    let result = resp.get("result")?;
+    resp.get("result").cloned()
+}
 
-    let prs = result.get("prs")?.as_array()?.clone();
-    let merged = result.get("merged_prs")?.as_array()?.clone();
-    let coworkers = result
-        .get("coworkers")
-        .and_then(|v| v.as_array())
-        .cloned()
+/// Fetch kanban data (PRs + merged PRs) from the daemon via the `kanban.data` RPC.
+///
+/// Returns `None` if the daemon is unreachable or the response is unexpected.
+fn fetch_kanban_via_rpc(
+    repo: &str,
+) -> Option<(
+    Vec<serde_json::Value>,
+    Vec<serde_json::Value>,
+    Vec<serde_json::Value>,
+)> {
+    let socket = crate::paths::daemon_socket_for_repo(repo);
+
+    // Fetch PR data from kanban.data (cached, may involve GraphQL)
+    let kanban_result = rpc_call(&socket, "kanban.data", 1)?;
+    let prs = kanban_result.get("prs")?.as_array()?.clone();
+    let merged = kanban_result.get("merged_prs")?.as_array()?.clone();
+
+    // Fetch live coworker data from coworkers.status (no GraphQL, no caching)
+    let coworkers = rpc_call(&socket, "coworkers.status", 2)
+        .and_then(|r| r.get("coworkers").and_then(|v| v.as_array()).cloned())
         .unwrap_or_default();
+
     Some((prs, merged, coworkers))
 }
 

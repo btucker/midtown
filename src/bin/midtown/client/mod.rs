@@ -592,6 +592,14 @@ impl DaemonClient {
         self.send_raw("kanban.data", None)
     }
 
+    /// Fetch live coworker status from the daemon.
+    ///
+    /// This is a lightweight call — no GraphQL, no caching. Returns coworkers,
+    /// max_coworkers, lead_working, tool_activity, and channel_leads.
+    pub fn coworkers_status(&self) -> Result<Value, String> {
+        self.send_raw("coworkers.status", None)
+    }
+
     // Headless execution
 
     /// Execute a headless Claude Code session via the daemon.
