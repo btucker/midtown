@@ -689,7 +689,11 @@ pub(super) fn extract_claimed_task_ids_from_effects(effects: &[Effect]) -> HashS
 
 /// Session-aware dispatch for all in_progress tasks.
 ///
-/// Handles three cases:
+/// Pre-filter: skips tasks owned by empty owners, the Lead, or channel leads
+/// (looked up via `channel_lead_sessions`). These are not managed by the
+/// coworker dispatch loop and must not be recovered as regular coworkers.
+///
+/// For remaining tasks, handles three cases:
 /// 1. Task has running session -> skip (being worked on)
 /// 2. Task has stopped session -> resume via SpawnCoworkerWithCallbacks
 /// 3. Task has no session record -> apply recovery filtering (PR merge checks,

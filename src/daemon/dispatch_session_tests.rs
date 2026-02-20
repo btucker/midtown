@@ -401,7 +401,10 @@ fn make_test_state() -> (
 fn test_session_dispatch_skips_channel_lead_owned_tasks() {
     // Given: a channel lead has an in-progress task with a stopped session.
     // The session recovery loop must NOT resume it as a regular coworker.
-    let session = make_session_record("sess-cl-123", Some("99"), Some("canal-lead"), false);
+    let session = SessionRecord {
+        coworker_type: "channel-lead".to_string(),
+        ..make_session_record("sess-cl-123", Some("99"), Some("canal-lead"), false)
+    };
 
     let snap = snapshot::WorldSnapshot {
         in_progress_tasks: vec![(
