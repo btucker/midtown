@@ -585,6 +585,18 @@ impl Channel {
             .base_dir
             .join("channels")
             .join(format!("{}.archived", &self.channel_name));
+
+        if archived_dir.exists() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                format!(
+                    "An archived version of channel '{}' already exists",
+                    self.channel_name
+                ),
+            )
+            .into());
+        }
+
         fs::rename(&channel_dir, &archived_dir)?;
         Ok(())
     }
