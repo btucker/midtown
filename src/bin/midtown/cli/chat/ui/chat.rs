@@ -488,20 +488,6 @@ fn draw_input_bar(f: &mut Frame, app: &App, area: Rect) {
 
     let prompt = "› ";
     let char_count = app.input_text.chars().count();
-    let text_with_cursor = if is_focused && app.input_cursor == char_count {
-        format!("{}█", app.input_text)
-    } else if is_focused {
-        let byte_idx = app
-            .input_text
-            .char_indices()
-            .nth(app.input_cursor)
-            .map(|(idx, _)| idx)
-            .unwrap_or(app.input_text.len());
-        let (before, after) = app.input_text.split_at(byte_idx);
-        format!("{}█{}", before, after)
-    } else {
-        app.input_text.clone()
-    };
 
     // Build the line with optional pending image indicator
     let mut spans: Vec<Span> = vec![Span::raw(prompt)];
@@ -520,7 +506,26 @@ fn draw_input_bar(f: &mut Frame, app: &App, area: Rect) {
                 .add_modifier(Modifier::DIM),
         ));
     }
-    spans.push(Span::raw(text_with_cursor));
+    let cursor_style = Style::default().fg(palette.bg).bg(palette.fg);
+    if is_focused && app.input_cursor == char_count {
+        spans.push(Span::raw(app.input_text.clone()));
+        spans.push(Span::styled("█", cursor_style));
+    } else if is_focused {
+        let byte_idx = app
+            .input_text
+            .char_indices()
+            .nth(app.input_cursor)
+            .map(|(idx, _)| idx)
+            .unwrap_or(app.input_text.len());
+        let (before, after_str) = app.input_text.split_at(byte_idx);
+        let cursor_char = after_str.chars().next().unwrap_or(' ');
+        let rest = &after_str[cursor_char.len_utf8()..];
+        spans.push(Span::raw(before.to_string()));
+        spans.push(Span::styled(cursor_char.to_string(), cursor_style));
+        spans.push(Span::raw(rest.to_string()));
+    } else {
+        spans.push(Span::raw(app.input_text.clone()));
+    }
 
     let paragraph = Paragraph::new(Line::from(spans)).wrap(Wrap { trim: false });
 

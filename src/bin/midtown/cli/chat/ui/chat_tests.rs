@@ -1,8 +1,102 @@
-//! Tests for `draw_lead_indicator` rendering.
+//! Tests for `draw_lead_indicator` rendering and input bar cursor behavior.
 
 use super::super::super::app::ToolActivityEntry;
 use super::super::super::app::tests::test_app;
 use super::*;
+
+#[test]
+fn test_cursor_renders_over_character_not_before_it() {
+    // When cursor is in the middle of text, it should overlay the character
+    // at the cursor position (with highlighting), not insert '█' before it.
+    // Bug: previously the cursor block was inserted BEFORE the character,
+    // pushing subsequent characters one position to the right.
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use ratatui::layout::Rect;
+    use ratatui::style::Color;
+
+    let backend = TestBackend::new(40, 3);
+    let mut terminal = Terminal::new(backend).unwrap();
+
+    let mut app = test_app();
+    app.focused_pane = FocusedPane::InputBar;
+    app.input_text = "hello".to_string();
+    app.input_cursor = 2; // cursor on second 'l'
+
+    terminal
+        .draw(|f| {
+            let area = Rect {
+                x: 0,
+                y: 0,
+                width: 40,
+                height: 3,
+            };
+            draw_input_bar(f, &app, area);
+        })
+        .unwrap();
+
+    let buffer = terminal.backend().buffer();
+    // Layout: x=1 (left border) + 2 (prompt "› ") = 3 for first char
+    // Cursor at position 2 => column 3 + 2 = 5
+    let cursor_cell = buffer.cell((5, 1)).unwrap();
+
+    assert_eq!(
+        cursor_cell.symbol(),
+        "l",
+        "Cursor position should show 'l' (the character under the cursor), not '█'. Got: {:?}",
+        cursor_cell.symbol()
+    );
+    assert_ne!(
+        cursor_cell.bg,
+        Color::Reset,
+        "Cursor position should have a background color to highlight the cursor"
+    );
+}
+
+#[test]
+fn test_cursor_at_end_renders_block() {
+    // When cursor is at the end of text (past last char), a standalone '█' should appear.
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use ratatui::layout::Rect;
+    use ratatui::style::Color;
+
+    let backend = TestBackend::new(40, 3);
+    let mut terminal = Terminal::new(backend).unwrap();
+
+    let mut app = test_app();
+    app.focused_pane = FocusedPane::InputBar;
+    app.input_text = "hi".to_string();
+    app.input_cursor = 2; // past end of "hi"
+
+    terminal
+        .draw(|f| {
+            let area = Rect {
+                x: 0,
+                y: 0,
+                width: 40,
+                height: 3,
+            };
+            draw_input_bar(f, &app, area);
+        })
+        .unwrap();
+
+    let buffer = terminal.backend().buffer();
+    // "hi" occupies columns 3, 4; cursor block at column 5
+    let cursor_cell = buffer.cell((5, 1)).unwrap();
+
+    assert_eq!(
+        cursor_cell.symbol(),
+        "█",
+        "Cursor at end of text should show '█'. Got: {:?}",
+        cursor_cell.symbol()
+    );
+    assert_ne!(
+        cursor_cell.bg,
+        Color::Reset,
+        "End-of-text cursor block should have a background color"
+    );
+}
 
 fn make_tool_entry(header: &str, completed: bool) -> ToolActivityEntry {
     ToolActivityEntry {
