@@ -77,7 +77,7 @@ fn test_web_update_serialization() {
         timestamp: "2024-01-01T00:00:00Z".to_string(),
         msg_type: "text".to_string(),
         channel: "midtown".to_string(),
-        source_channel: None,
+
         thread_parent_id: None,
         reply_count: None,
         last_reply: None,
@@ -371,63 +371,6 @@ async fn test_error_channel_backpressure() {
     // If we reach here without hanging, backpressure is handled correctly
 }
 
-#[test]
-fn test_channel_message_update_without_source_channel() {
-    let msg = Message::text("lexington", "Hello from main channel");
-    let update = channel_message_update(&msg);
-    match update {
-        WebUpdate::ChannelMessage(data) => {
-            assert_eq!(data.from, "lexington");
-            assert_eq!(data.content, "Hello from main channel");
-            assert_eq!(data.msg_type, "text");
-            assert_eq!(data.channel, "midtown");
-            assert_eq!(data.source_channel, None);
-            // source_channel should be omitted from JSON when None
-            let json = serde_json::to_string(&data).unwrap();
-            assert!(!json.contains("source_channel"));
-        }
-        _ => panic!("Expected ChannelMessage"),
-    }
-}
-
-#[test]
-fn test_channel_message_update_with_source_channel() {
-    let mut msg = Message::insight("architect", "```mermaid\ngraph TD\nA-->B");
-    msg.source_channel = Some("auth-refactor".to_string());
-    let update = channel_message_update(&msg);
-    match update {
-        WebUpdate::ChannelMessage(data) => {
-            assert_eq!(data.from, "architect");
-            assert_eq!(data.msg_type, "insight");
-            assert_eq!(data.source_channel, Some("auth-refactor".to_string()));
-            // source_channel should be present in JSON when Some
-            let json = serde_json::to_string(&data).unwrap();
-            assert!(json.contains("source_channel"));
-            assert!(json.contains("auth-refactor"));
-        }
-        _ => panic!("Expected ChannelMessage"),
-    }
-}
-
-#[test]
-fn test_source_channel_omitted_in_serialization_when_none() {
-    let data = ChannelMessageData {
-        id: "test-id".to_string(),
-        from: "test".to_string(),
-        content: "Hello".to_string(),
-        timestamp: "2024-01-01T00:00:00Z".to_string(),
-        msg_type: "text".to_string(),
-        channel: "midtown".to_string(),
-        source_channel: None,
-        thread_parent_id: None,
-        reply_count: None,
-        last_reply: None,
-    };
-    let json = serde_json::to_string(&data).unwrap();
-    // skip_serializing_if = "Option::is_none" should omit source_channel
-    assert!(!json.contains("source_channel"));
-}
-
 /// Test that verifies backend preconditions for task !1191 requirements:
 /// Web UI channel switching and per-channel WebSocket updates
 ///
@@ -448,7 +391,7 @@ fn test_task_1191_channel_switching_requirements() {
         timestamp: "2024-01-01T00:00:00Z".to_string(),
         msg_type: "text".to_string(),
         channel: "auth-refactor".to_string(),
-        source_channel: None,
+
         thread_parent_id: None,
         reply_count: None,
         last_reply: None,
@@ -467,7 +410,7 @@ fn test_task_1191_channel_switching_requirements() {
         timestamp: "2024-01-01T00:00:00Z".to_string(),
         msg_type: "text".to_string(),
         channel: default_channel(),
-        source_channel: None,
+
         thread_parent_id: None,
         reply_count: None,
         last_reply: None,
@@ -753,7 +696,7 @@ fn test_channel_message_data_with_thread_parent_id() {
         timestamp: "2024-01-01T00:00:00Z".to_string(),
         msg_type: "text".to_string(),
         channel: "midtown".to_string(),
-        source_channel: None,
+
         thread_parent_id: Some("parent-uuid-123".to_string()),
         reply_count: None,
         last_reply: None,
@@ -773,7 +716,7 @@ fn test_channel_message_data_thread_parent_id_omitted_when_none() {
         timestamp: "2024-01-01T00:00:00Z".to_string(),
         msg_type: "text".to_string(),
         channel: "midtown".to_string(),
-        source_channel: None,
+
         thread_parent_id: None,
         reply_count: None,
         last_reply: None,
@@ -791,7 +734,7 @@ fn test_channel_message_data_includes_reply_metadata_when_present() {
         timestamp: "2024-01-01T00:00:00Z".to_string(),
         msg_type: "text".to_string(),
         channel: "midtown".to_string(),
-        source_channel: None,
+
         thread_parent_id: None,
         reply_count: Some(3),
         last_reply: Some(ThreadReplySummary {
@@ -814,7 +757,7 @@ fn test_channel_message_data_reply_metadata_omitted_when_none() {
         timestamp: "2024-01-01T00:00:00Z".to_string(),
         msg_type: "text".to_string(),
         channel: "midtown".to_string(),
-        source_channel: None,
+
         thread_parent_id: None,
         reply_count: None,
         last_reply: None,

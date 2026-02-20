@@ -720,54 +720,6 @@ fn format_cross_post_content_omits_author_from_content() {
 }
 
 // =========================================================================
-// should_cross_post_insight tests
-// =========================================================================
-
-#[test]
-fn should_cross_post_insight_detects_insight_in_topic_channel() {
-    let msg = crate::message::Message::for_channel(
-        "auth-refactor",
-        "park",
-        "💡 The tower::Layer stack composes auth providers independently",
-        crate::message::MessageType::Text,
-    );
-    assert!(should_cross_post_insight(&msg, "midtown"));
-}
-
-#[test]
-fn should_cross_post_insight_ignores_insight_in_main_channel() {
-    let msg = crate::message::Message::for_channel(
-        "midtown",
-        "park",
-        "💡 This insight is already in main channel",
-        crate::message::MessageType::Text,
-    );
-    assert!(!should_cross_post_insight(&msg, "midtown"));
-}
-
-#[test]
-fn should_cross_post_insight_ignores_non_insight_in_topic_channel() {
-    let msg = crate::message::Message::for_channel(
-        "auth-refactor",
-        "park",
-        "Working on the auth module",
-        crate::message::MessageType::Text,
-    );
-    assert!(!should_cross_post_insight(&msg, "midtown"));
-}
-
-#[test]
-fn should_cross_post_insight_ignores_non_insight_in_main_channel() {
-    let msg = crate::message::Message::for_channel(
-        "midtown",
-        "park",
-        "Regular message in main channel",
-        crate::message::MessageType::Text,
-    );
-    assert!(!should_cross_post_insight(&msg, "midtown"));
-}
-
-// =========================================================================
 // extract_task_id tests
 // =========================================================================
 

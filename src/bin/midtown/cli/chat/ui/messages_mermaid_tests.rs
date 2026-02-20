@@ -25,7 +25,6 @@ fn test_message(content: &str) -> Message {
         timestamp: chrono::Utc::now(),
         message_type: MessageType::Text,
         channel: None,
-        source_channel: None,
         session_id: None,
         thread_parent_id: None,
     }
@@ -396,7 +395,6 @@ fn test_action_message_mermaid_placeholder_extra_indent() {
         timestamp: chrono::Utc::now(),
         message_type: MessageType::Action,
         channel: None,
-        source_channel: None,
         session_id: None,
         thread_parent_id: None,
     };
@@ -549,54 +547,6 @@ fn test_narrow_terminal_does_not_panic_on_unicode_ascii_art() {
 
         assert!(!lines.is_empty(), "Should produce lines at width {}", width);
     }
-}
-
-#[test]
-fn test_render_crosspost_with_mermaid() {
-    let source = "graph TD\n  A-->B";
-    let mut msg = test_message("ignored");
-    msg.source_channel = Some("design".to_string());
-
-    let segments = vec![
-        ContentSegment::Text("Architecture insight: ".to_string()),
-        ContentSegment::Mermaid(source.to_string()),
-    ];
-
-    let mut cache = MermaidCache::new();
-    cache.insert_cached(source, dummy_rendered_diagram());
-
-    let current_tasks = HashMap::new();
-
-    let mut lines = Vec::new();
-    let mut diagram_sources = Vec::new();
-    let mut mermaid_to_render = Vec::new();
-
-    render_message_with_mermaid(
-        &msg,
-        &segments,
-        80,
-        None,
-        &current_tasks,
-        None,
-        &[],
-        &cache,
-        &mut lines,
-        &mut diagram_sources,
-        &mut mermaid_to_render,
-    );
-
-    assert!(
-        !lines.is_empty(),
-        "Expected at least some lines for cross-posted mermaid"
-    );
-
-    let has_star = lines
-        .iter()
-        .any(|line| line.spans.iter().any(|s| s.content.contains('★')));
-    assert!(
-        has_star,
-        "Expected to find ★ prefix in cross-posted mermaid message"
-    );
 }
 
 /// When a message's first (and only) segment is a CodeBlock, the top border line
