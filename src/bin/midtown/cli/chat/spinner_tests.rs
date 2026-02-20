@@ -1,5 +1,6 @@
 //! Tests for time-based spinner animation.
 
+use super::CHANNEL_LEAD_THINKING_TIMEOUT;
 use super::CoworkerInfo;
 use super::ToolActivityEntry;
 use super::tests::test_app;
@@ -118,5 +119,32 @@ fn test_any_spinner_visible_true_with_in_progress_tool_entry() {
     assert!(
         app.any_spinner_visible(),
         "Spinner should be visible when there are in-progress tool entries, even if lead_working is false"
+    );
+}
+
+#[test]
+fn test_any_spinner_visible_true_when_channel_thinking() {
+    // When a user submits a message to a topic channel, optimistic thinking state
+    // is set immediately and should make the spinner visible.
+    let mut app = test_app();
+    app.set_channel_lead_thinking("myproject");
+    assert!(
+        app.any_spinner_visible(),
+        "Spinner should be visible when channel_lead_thinking is active"
+    );
+}
+
+#[test]
+fn test_any_spinner_visible_false_when_channel_thinking_expired() {
+    // Thinking state expires after CHANNEL_LEAD_THINKING_TIMEOUT seconds.
+    // An expired entry should not make the spinner visible.
+    let mut app = test_app();
+    let expired =
+        std::time::Instant::now() - CHANNEL_LEAD_THINKING_TIMEOUT - Duration::from_secs(1);
+    app.channel_lead_thinking
+        .insert("myproject".to_string(), expired);
+    assert!(
+        !app.any_spinner_visible(),
+        "Spinner should not be visible when channel_lead_thinking has expired"
     );
 }

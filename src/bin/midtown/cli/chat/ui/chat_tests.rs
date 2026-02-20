@@ -203,3 +203,109 @@ fn test_draw_lead_indicator_spinner_shows_without_lead_working() {
         "Spinner glyph should appear when tool entries are in-progress, even if lead_working=false. Got: {row:?}",
     );
 }
+
+#[test]
+fn test_lead_indicator_height_with_optimistic_thinking() {
+    // When channel_lead_thinking is active but no tool entries exist yet,
+    // lead_indicator_height should return 1 to reserve space for the spinner.
+    let mut app = test_app();
+    app.selected_channel = "myproject".to_string();
+    app.set_channel_lead_thinking("myproject");
+    assert_eq!(
+        lead_indicator_height(&app),
+        1,
+        "Should return 1 when channel is thinking but no tool entries exist"
+    );
+}
+
+#[test]
+fn test_lead_indicator_height_thinking_expired_returns_zero() {
+    // An expired thinking entry should not reserve indicator space.
+    use super::super::super::app::CHANNEL_LEAD_THINKING_TIMEOUT;
+    let mut app = test_app();
+    app.selected_channel = "myproject".to_string();
+    let expired = std::time::Instant::now()
+        - CHANNEL_LEAD_THINKING_TIMEOUT
+        - std::time::Duration::from_secs(1);
+    app.channel_lead_thinking
+        .insert("myproject".to_string(), expired);
+    assert_eq!(
+        lead_indicator_height(&app),
+        0,
+        "Should return 0 when thinking has expired"
+    );
+}
+
+#[test]
+fn test_draw_lead_indicator_shows_agent_name_when_channel_thinking() {
+    // When no tool entries exist but channel_lead_thinking is active,
+    // draw_lead_indicator should show the spinner and agent name.
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use ratatui::layout::Rect;
+
+    let backend = TestBackend::new(80, 1);
+    let mut terminal = Terminal::new(backend).unwrap();
+
+    let mut app = test_app();
+    app.selected_channel = "myproject".to_string();
+    app.set_channel_lead_thinking("myproject");
+
+    terminal
+        .draw(|f| {
+            let area = Rect {
+                x: 0,
+                y: 0,
+                width: 80,
+                height: 1,
+            };
+            draw_lead_indicator(f, &mut app, area);
+        })
+        .unwrap();
+
+    let buffer = terminal.backend().buffer();
+    let row = buffer_row(buffer, 0, 80);
+
+    assert!(
+        row.contains("myproject"),
+        "Agent name 'myproject' should appear when channel is thinking (no tool entries). Got: {row:?}",
+    );
+}
+
+#[test]
+fn test_draw_lead_indicator_shows_spinner_when_channel_thinking() {
+    // The spinner glyph should appear when channel_lead_thinking is active.
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use ratatui::layout::Rect;
+
+    const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+    let backend = TestBackend::new(80, 1);
+    let mut terminal = Terminal::new(backend).unwrap();
+
+    let mut app = test_app();
+    app.selected_channel = "myproject".to_string();
+    app.set_channel_lead_thinking("myproject");
+
+    terminal
+        .draw(|f| {
+            let area = Rect {
+                x: 0,
+                y: 0,
+                width: 80,
+                height: 1,
+            };
+            draw_lead_indicator(f, &mut app, area);
+        })
+        .unwrap();
+
+    let buffer = terminal.backend().buffer();
+    let row = buffer_row(buffer, 0, 80);
+
+    let has_spinner = SPINNER_FRAMES.iter().any(|&frame| row.contains(frame));
+    assert!(
+        has_spinner,
+        "Spinner glyph should appear when channel_lead_thinking is active. Got: {row:?}",
+    );
+}

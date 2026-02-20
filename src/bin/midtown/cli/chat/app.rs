@@ -4913,4 +4913,35 @@ pub(super) mod tests {
         assert_eq!(result[1].header, "\u{2713} call4");
         assert_eq!(result[2].header, "\u{2713} call3");
     }
+
+    #[test]
+    fn test_set_channel_lead_thinking_inserts_entry() {
+        let mut app = test_app();
+        assert!(app.channel_lead_thinking.is_empty());
+        app.set_channel_lead_thinking("myproject");
+        assert!(
+            app.channel_lead_thinking.contains_key("myproject"),
+            "set_channel_lead_thinking should insert an entry for the channel"
+        );
+        let elapsed = app.channel_lead_thinking["myproject"].elapsed();
+        assert!(
+            elapsed < CHANNEL_LEAD_THINKING_TIMEOUT,
+            "The inserted instant should be recent (elapsed={elapsed:?})"
+        );
+    }
+
+    #[test]
+    fn test_message_cache_key_changes_when_channel_thinking_set() {
+        // The render cache key must include channel_lead_thinking state because
+        // it affects lead_indicator_height (0 -> 1), changing the message area layout.
+        let mut app = test_app();
+        app.selected_channel = "myproject".to_string();
+        let key_before = app.message_cache_key(80, 24);
+        app.set_channel_lead_thinking("myproject");
+        let key_after = app.message_cache_key(80, 24);
+        assert_ne!(
+            key_before, key_after,
+            "Cache key should change when channel_lead_thinking is set for the selected channel"
+        );
+    }
 }
