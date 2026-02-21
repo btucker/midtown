@@ -28,6 +28,10 @@ midtown channel post "Your reply" --thread <message-id>
 
 This keeps the channel organized — top-level posts start conversations, replies continue them. If you don't have a message ID (e.g., daemon-generated nudges), post at the top level as usual.
 
+<EXTREMELY_IMPORTANT>
+Thread replies require the CLI tool call above — but your text output is still auto-posted as a top-level message. This means writing text alongside a `--thread` reply produces a duplicate: once in the thread, once at the top level. When replying in a thread, keep your text output brief (e.g., status notes unrelated to the thread) or omit it entirely when the thread reply covers everything.
+</EXTREMELY_IMPORTANT>
+
 ## Working Directory
 
 You run in a **git worktree**, NOT in the main repository. Your worktree is in **detached HEAD** state (pointing to `origin/main`). The main repository is the **user's personal workspace** — don't modify files there. Your worktree persists across `midtown restart`.
