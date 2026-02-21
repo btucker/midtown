@@ -6,6 +6,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use tokio::sync::watch;
 use tracing::{debug, error, info, warn};
@@ -13,7 +14,7 @@ use tracing::{debug, error, info, warn};
 use crate::message::Message;
 
 use super::DaemonState;
-use super::constants::{OPS_CHANNEL, SKIP_SENDERS};
+use super::constants::SKIP_SENDERS;
 use super::helpers::{contains_at_all, extract_mentions};
 
 // Chat Monitor - @mention routing
@@ -61,37 +62,22 @@ pub(super) async fn chat_monitor_loop(
                                 if SKIP_SENDERS.iter().any(|&s| s.eq_ignore_ascii_case(&msg.from))
                                     || state.is_user_sender(&msg.from)
                                 {
-                                    // System/daemon messages may contain @lead or @ops that still
-                                    // need to trigger a nudge (e.g., stuck PR warnings).
-                                    // Route before skipping. Exclude user messages — already
-                                    // handled in handle_channel_post to avoid double-nudging.
-                                    if !state.is_user_sender(&msg.from) {
-                                        let msg_lower = msg.content.to_lowercase();
-                                        let lead_mention = format!("@{}", state.repo_name).to_lowercase();
-                                        if msg_lower.contains("@lead") || msg_lower.contains(&lead_mention) {
-                                            let nudge_text =
-                                                format!("{} ({}): {}", msg.from, msg.id, msg.content);
-                                            state.nudge_lead(&nudge_text).await;
-                                            info!(
-                                                "Nudged lead about @{} mention in {} message",
-                                                state.repo_name,
-                                                msg.from
-                                            );
-                                            state.send_push_notification(
-                                                &format!("@{} from {}", state.repo_name, msg.from),
-                                                &msg.content,
-                                                "mention",
-                                            );
-                                        }
-                                        if msg_lower.contains("@ops") {
-                                            let nudge_text =
-                                                format!("{} ({}): {}", msg.from, msg.id, msg.content);
-                                            state.nudge_ops_channel_lead(&nudge_text).await;
-                                            info!(
-                                                "Nudged ops channel lead about @ops mention in {} message",
-                                                msg.from
-                                            );
-                                        }
+                                    // System/daemon messages may contain @lead that still
+                                    // needs to trigger a nudge (e.g., orphaned worktree
+                                    // warnings). Route @lead before skipping.
+                                    // Exclude user messages — already handled in
+                                    // handle_channel_post to avoid double-nudging.
+                                    if !state.is_user_sender(&msg.from)
+                                        && msg.content.to_lowercase().contains("@lead")
+                                    {
+                                        let nudge_text = format!("{}: {}", msg.from, msg.content);
+                                        state.nudge_lead(&nudge_text).await;
+                                        info!("Nudged lead about @lead mention in {} message", msg.from);
+                                        state.send_push_notification(
+                                            &format!("@lead from {}", msg.from),
+                                            &msg.content,
+                                            "mention",
+                                        );
                                     }
                                     continue;
                                 }
@@ -156,8 +142,29 @@ pub(super) async fn route_mentions(state: &DaemonState, msg: &Message) {
     };
 
     for name in mentions {
+        // Deduplicate: skip if we've already nudged this person for this message
+        let should_nudge = {
+            let cooldowns = state.cooldowns.lock().unwrap();
+            cooldowns.check(
+                &format!("chat_mention_{}", name),
+                &msg.id,
+                Duration::from_secs(3600),
+            )
+        };
+        if !should_nudge {
+            debug!(
+                "Skipping duplicate @mention nudge for {} (msg {})",
+                name, msg.id
+            );
+            continue;
+        }
+        {
+            let mut cooldowns = state.cooldowns.lock().unwrap();
+            cooldowns.record(&format!("chat_mention_{}", name), &msg.id);
+        }
+
         let is_running = state.coworkers.get(&name).is_some();
-        let nudge_text = format!("{} said ({}): {}", msg.from, msg.id, msg.content);
+        let nudge_text = format!("{} said: {}", msg.from, msg.content);
 
         // Decide action using pure decision function
         let action = crate::rules::decide_mention_action(
@@ -178,7 +185,7 @@ pub(super) async fn route_mentions(state: &DaemonState, msg: &Message) {
 async fn route_at_all(state: &DaemonState, msg: &Message) {
     // Only nudge Running coworkers — Stopping/Starting coworkers have no active session.
     let running_coworkers = state.coworkers.list_running();
-    let nudge_text = format!("{} said ({}): {}", msg.from, msg.id, msg.content);
+    let nudge_text = format!("{} said: {}", msg.from, msg.content);
 
     info!(
         "@all broadcast from {} to {} running coworker(s) + lead",
@@ -188,14 +195,45 @@ async fn route_at_all(state: &DaemonState, msg: &Message) {
 
     // Nudge the lead (unless the lead sent the message)
     if !msg.from.eq_ignore_ascii_case(&state.repo_name) {
-        state.nudge_lead(&nudge_text).await;
-        info!("Nudged lead for @all from {}", msg.from);
+        let should_nudge_lead = {
+            let cooldowns = state.cooldowns.lock().unwrap();
+            cooldowns.check("chat_at_all_lead", &msg.id, Duration::from_secs(3600))
+        };
+        if should_nudge_lead {
+            {
+                let mut cooldowns = state.cooldowns.lock().unwrap();
+                cooldowns.record("chat_at_all_lead", &msg.id);
+            }
+            state.nudge_lead(&nudge_text).await;
+            info!("Nudged lead for @all from {}", msg.from);
+        }
     }
 
     // Nudge all running coworkers (except the sender)
     for coworker in &running_coworkers {
         if coworker.name.eq_ignore_ascii_case(&msg.from) {
             continue;
+        }
+
+        // Deduplicate: skip if we've already nudged this coworker for this message
+        let should_nudge = {
+            let cooldowns = state.cooldowns.lock().unwrap();
+            cooldowns.check(
+                &format!("chat_at_all_{}", coworker.name),
+                &msg.id,
+                Duration::from_secs(3600),
+            )
+        };
+        if !should_nudge {
+            debug!(
+                "Skipping duplicate @all nudge for {} (msg {})",
+                coworker.name, msg.id
+            );
+            continue;
+        }
+        {
+            let mut cooldowns = state.cooldowns.lock().unwrap();
+            cooldowns.record(&format!("chat_at_all_{}", coworker.name), &msg.id);
         }
 
         if let Err(e) = state
@@ -237,12 +275,12 @@ fn mention_action_to_effects(
                 on_success: vec![Effect::PostToChannel {
                     sender: "midtown".to_string(),
                     message: format!("Called in {} in response to @mention", name),
-                    channel: Some(OPS_CHANNEL.to_string()),
+                    channel: None,
                 }],
                 on_failure: vec![Effect::PostToChannel {
                     sender: "midtown".to_string(),
                     message: format!("Failed to call in {} for @mention", name),
-                    channel: Some(OPS_CHANNEL.to_string()),
+                    channel: None,
                 }],
             }]
         }
@@ -255,7 +293,7 @@ fn mention_action_to_effects(
                         "Cannot call in {} for @mention: dev coworkers limit reached",
                         coworker_name
                     ),
-                    channel: Some(OPS_CHANNEL.to_string()),
+                    channel: None,
                 }]
             } else {
                 vec![]
