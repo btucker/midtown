@@ -411,7 +411,7 @@ pub struct App {
     pub input_area: Option<ratatui::layout::Rect>,
     /// Last rendered thread input area (for click detection; None when thread is closed)
     pub thread_input_area: Option<ratatui::layout::Rect>,
-    /// Mapping of board panel line numbers to tasks (for click-to-attach)
+    /// Mapping of board panel line numbers to tasks (for click-to-open-detail)
     /// Maps (line_number) -> (task_id, task_owner) where line_number is relative to board content area
     pub task_line_map: HashMap<u16, (String, Option<String>)>,
     /// Mapping of board panel line numbers to channel headers (for click-to-select)
@@ -1224,12 +1224,16 @@ impl App {
         self.thread_input_cursor = 0;
         self.thread_input_area = None;
         self.open_task_id = Some(task_id.to_string());
-        // Keep focused_pane unchanged — task panel is read-only, no new focus target
+        // If thread was focused, reset to InputBar so keystrokes go to the right buffer
+        if self.focused_pane == FocusedPane::Thread {
+            self.focused_pane = FocusedPane::InputBar;
+        }
     }
 
     /// Close the task detail panel.
     pub fn close_task(&mut self) {
         self.open_task_id = None;
+        self.focused_pane = FocusedPane::InputBar;
     }
 
     /// Post a thread reply message to the channel via daemon RPC with fallback.
@@ -1434,6 +1438,7 @@ impl App {
                 self.history_fully_loaded = start_pos == 0;
                 self.scroll_offset = 0;
                 self.thread_scroll_offset = 0;
+                self.open_task_id = None;
 
                 // Update the channel reference for future refresh
                 self.channel = Some(channel);

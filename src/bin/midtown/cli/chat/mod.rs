@@ -636,18 +636,23 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                     } else if app.autocomplete.show {
                         app.dismiss_autocomplete();
                         EventResult::Continue
-                    // Esc closes task detail panel if open
-                    } else if app.open_task_id.is_some() {
-                        app.close_task();
-                        EventResult::Continue
                     } else if app.focused_pane == FocusedPane::Thread {
                         // Esc closes thread when thread pane is focused
                         app.close_thread();
                         EventResult::Continue
-                    } else if app.focused_pane == FocusedPane::InputBar {
-                        // Esc clears input when in InputBar
+                    } else if app.focused_pane == FocusedPane::InputBar
+                        && !app.input_text.is_empty()
+                    {
+                        // Esc clears input when in InputBar (takes priority over task panel close)
                         app.input_text.clear();
                         app.input_cursor = 0;
+                        EventResult::Continue
+                    // Esc closes task detail panel if open
+                    } else if app.open_task_id.is_some() {
+                        app.close_task();
+                        EventResult::Continue
+                    } else if app.focused_pane == FocusedPane::InputBar {
+                        // Esc with empty input: no-op (stay in InputBar)
                         EventResult::Continue
                     } else {
                         // Esc exits when in Board or Chat

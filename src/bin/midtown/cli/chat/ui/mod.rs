@@ -7,7 +7,9 @@
 //! - `messages`: Message rendering (sender headers, timestamps, content layout)
 //! - `messages_mermaid`: Mermaid diagram rendering within messages
 //! - `styles`: Shared color and sender classification helpers
+//! - `task_panel`: Task detail panel (subject, status, description, metadata)
 //! - `text`: Markdown parsing and line wrapping utilities
+//! - `thread`: Thread reply panel
 //! - `usage`: Usage progress bars (session + weekly utilization)
 
 mod board;
@@ -16,7 +18,7 @@ mod highlight;
 pub mod messages;
 pub mod messages_mermaid;
 pub mod styles;
-pub mod task_panel;
+mod task_panel;
 pub mod text;
 mod thread;
 mod usage;

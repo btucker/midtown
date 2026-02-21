@@ -157,12 +157,12 @@ pub fn draw_task_panel(f: &mut Frame, app: &App, area: Rect) {
                 lines.push(Line::from(""));
                 continue;
             }
-            // Simple word-wrap
+            // Simple word-wrap (use char count, not byte length, for Unicode correctness)
             let mut current = String::new();
             for word in raw_line.split_whitespace() {
                 if current.is_empty() {
                     current.push_str(word);
-                } else if current.len() + 1 + word.len() <= width {
+                } else if current.chars().count() + 1 + word.chars().count() <= width {
                     current.push(' ');
                     current.push_str(word);
                 } else {
@@ -182,15 +182,13 @@ pub fn draw_task_panel(f: &mut Frame, app: &App, area: Rect) {
         }
     }
 
-    // Scroll to show last lines if content overflows
-    let visible_height = body_inner.height as usize;
-    let para = if lines.len() > visible_height {
-        let offset = lines.len() - visible_height;
-        Paragraph::new(lines.split_off(offset))
-    } else {
-        Paragraph::new(lines)
-    };
+    // Show from top — metadata is most important and should always be visible
+    let para = Paragraph::new(lines);
 
     f.render_widget(body_block, chunks[1]);
     f.render_widget(para, body_inner);
 }
+
+#[path = "task_panel_tests.rs"]
+#[cfg(test)]
+mod task_panel_tests;
