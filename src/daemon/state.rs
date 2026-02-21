@@ -313,6 +313,20 @@ impl DaemonPersistentState {
         Ok(state)
     }
 
+    /// Update or insert a session record, marking existing stopped sessions as running.
+    ///
+    /// When resuming a stopped session, `entry().or_insert_with()` alone won't update
+    /// `is_running` because the entry already exists. This method uses `and_modify` to
+    /// mark existing sessions as running before falling back to insert for new sessions.
+    pub fn upsert_session_running(&mut self, session_id: String, new_record: SessionRecord) {
+        self.sessions
+            .entry(session_id)
+            .and_modify(|r| {
+                r.is_running = true;
+            })
+            .or_insert(new_record);
+    }
+
     /// Clear reviewer assignment for a coworker and save state.
     ///
     /// Returns true if an assignment was cleared, false if the coworker had no assignment.
