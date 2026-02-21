@@ -24,12 +24,28 @@ pub fn draw_thread_panel(f: &mut Frame, app: &mut App, area: Rect) {
         .find(|m| m.id == *thread_parent_id)
         .map(|m| (m.from.clone(), m.content.clone()));
 
+    // Calculate header height dynamically: full message wrapped + sender prefix + 2 borders.
+    // Use area width minus 2 (borders) to estimate wrap width.
+    let header_content_height = if let Some((from, content)) = &parent_msg_data {
+        let wrap_width = area.width.saturating_sub(2) as usize;
+        let prefix_len = from.chars().count() + 2; // "from: "
+        let full_text_len = prefix_len + content.chars().count();
+        if wrap_width > 0 {
+            ((full_text_len as f64 / wrap_width as f64).ceil() as u16).max(1)
+        } else {
+            1
+        }
+    } else {
+        1
+    };
+    let header_height = header_content_height + 2; // + 2 for borders
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3), // Parent message header
-            Constraint::Min(3),    // Thread replies
-            Constraint::Length(3), // Thread input bar (1 content line + 2 border lines)
+            Constraint::Length(header_height), // Parent message header (dynamic)
+            Constraint::Min(3),                // Thread replies
+            Constraint::Length(3),             // Thread input bar (1 content line + 2 border lines)
         ])
         .split(area);
 
@@ -38,7 +54,7 @@ pub fn draw_thread_panel(f: &mut Frame, app: &mut App, area: Rect) {
     draw_thread_input(f, app, chunks[2]);
 }
 
-/// Draw the thread header showing the parent message (truncated)
+/// Draw the thread header showing the full parent message (wrapped).
 ///
 /// Takes pre-extracted (from, content) to avoid borrow conflicts.
 fn draw_thread_header(f: &mut Frame, parent_msg_data: Option<&(String, String)>, area: Rect) {
@@ -55,14 +71,6 @@ fn draw_thread_header(f: &mut Frame, parent_msg_data: Option<&(String, String)>,
     let inner = block.inner(area);
 
     let line = if let Some((from, content)) = parent_msg_data {
-        let max_len = inner.width as usize;
-        // Use chars().take() for UTF-8 safe truncation
-        let truncated: String = if content.chars().count() > max_len {
-            let taken: String = content.chars().take(max_len.saturating_sub(1)).collect();
-            format!("{}\u{2026}", taken) // ellipsis
-        } else {
-            content.clone()
-        };
         Line::from(vec![
             Span::styled(
                 format!("{}: ", from),
@@ -70,7 +78,7 @@ fn draw_thread_header(f: &mut Frame, parent_msg_data: Option<&(String, String)>,
                     .fg(Color::Yellow)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(truncated, Style::default().fg(Color::White)),
+            Span::styled(content.clone(), Style::default().fg(Color::White)),
         ])
     } else {
         Line::from(Span::styled(
@@ -80,7 +88,7 @@ fn draw_thread_header(f: &mut Frame, parent_msg_data: Option<&(String, String)>,
     };
 
     f.render_widget(block, area);
-    f.render_widget(Paragraph::new(line), inner);
+    f.render_widget(Paragraph::new(line).wrap(Wrap { trim: false }), inner);
 }
 
 /// Draw thread reply messages
@@ -110,6 +118,10 @@ fn draw_thread_messages(f: &mut Frame, app: &mut App, area: Rect) {
     let current_tasks = app.current_tasks().clone();
     let user_display_name = app.user_display_name.clone();
 
+    let lead_names: Vec<String> = std::iter::once(app.project_name.clone())
+        .chain(app.channel_lead_names.iter().cloned())
+        .collect();
+
     let mut lines: Vec<Line> = Vec::new();
     for (idx, msg) in app.thread_messages.iter().enumerate() {
         let prev = if idx > 0 {
@@ -123,7 +135,7 @@ fn draw_thread_messages(f: &mut Frame, app: &mut App, area: Rect) {
             prev,
             &current_tasks,
             user_display_name.as_deref(),
-            &app.channel_lead_names,
+            &lead_names,
         );
         lines.extend(msg_lines);
     }

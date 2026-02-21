@@ -96,6 +96,13 @@ pub enum Effect {
     ClearUsageLimitNudge,
     /// Reset a task back to pending (e.g. when a coworker can't be respawned).
     ResetTaskToPending { task_id: String, repo_name: String },
+    /// Clear a stale session record for a task.
+    ///
+    /// When spawn fails (e.g. missing worktree), the session→task link must be
+    /// broken so dispatch doesn't retry the same dead session every tick.
+    /// Clears `task_id` from the SessionRecord and removes the in-memory
+    /// `task_to_session` entry.
+    ClearSessionForTask { task_id: String },
     /// Spawn a coworker with conditional follow-up effects.
     ///
     /// On success, `on_success` effects are executed. On failure, `on_failure`
@@ -840,6 +847,27 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 }
                 // Clear task assignment tracking (task is no longer assigned)
                 state.clear_task_assignment_by_task(&task_id);
+            }
+            Effect::ClearSessionForTask { task_id } => {
+                // Clear the in-memory task→session reverse map.
+                let removed_session_id = {
+                    let mut t2s = state.task_to_session.lock().unwrap();
+                    t2s.remove(&task_id)
+                };
+                // Clear task_id from the persistent SessionRecord so the snapshot's
+                // session_task_map no longer links this task to the dead session.
+                if let Some(session_id) = removed_session_id {
+                    let mut ps = state.persistent_state.lock().await;
+                    if let Some(record) = ps.sessions.get_mut(&session_id) {
+                        record.task_id = None;
+                    }
+                    if let Err(e) = ps.save_for_repo(&state.repo_name) {
+                        warn!(
+                            "Failed to save state after clearing session for task !{}: {}",
+                            task_id, e
+                        );
+                    }
+                }
             }
             Effect::SpawnCoworkerWithCallbacks {
                 config,

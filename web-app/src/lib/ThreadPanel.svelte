@@ -117,13 +117,13 @@
     <div class="flex items-center justify-between px-[18px] py-4 bg-[#1a1a1a] border-b-2 border-[#2a2a2a] shrink-0">
       <div class="flex-1 min-w-0">
         <h2 class="text-[0.85rem] font-bold text-[#d0d0d0] m-0">Thread</h2>
-        <p class="text-[0.75rem] text-[#808080] m-0 mt-0.5 truncate">
+        <p class="text-[0.75rem] text-[#808080] m-0 mt-0.5 break-words">
           <span style="color: {getSenderColor($threadData.parentMessage.from)}">{$threadData.parentMessage.from}</span>:
-          {$threadData.parentMessage.content?.slice(0, 60)}{$threadData.parentMessage.content?.length > 60 ? '...' : ''}
+          {$threadData.parentMessage.content || ''}
         </p>
       </div>
       <button
-        class="w-8 h-8 flex items-center justify-center bg-transparent border border-[#2a2a2a] rounded-md text-[#808080] text-[1.3rem] cursor-pointer transition-all duration-150 leading-none hover:bg-[#1a1a1a] hover:border-[#af5f5f] hover:text-[#ff5f5f] ml-2 shrink-0"
+        class="w-8 h-8 flex items-center justify-center bg-transparent border border-[#2a2a2a] rounded-md text-[#808080] text-[1.3rem] cursor-pointer transition-all duration-150 leading-none hover:bg-[#1a1a1a] hover:border-[#af5f5f] hover:text-[#ff5f5f] ml-2 shrink-0 self-start mt-1"
         onclick={handleClose}
         aria-label="Close thread"
       >&times;</button>
@@ -131,7 +131,7 @@
 
     <!-- Messages -->
     <div
-      class="flex-1 min-h-0 overflow-y-auto overflow-x-hidden font-[SF_Mono,Menlo,Consolas,Monaco,'Courier_New',monospace] text-[0.82rem] leading-[1.55] px-[14px] pt-[10px] pb-[10px]"
+      class="flex-1 min-h-0 overflow-y-auto overflow-x-hidden font-[SF_Mono,Menlo,Consolas,Monaco,'Courier_New',monospace] text-[1rem] leading-[1.55] px-[14px] pt-[10px] pb-[10px]"
       bind:this={desktopScrollArea}
     >
       <!-- Parent message (highlighted) -->
@@ -145,7 +145,7 @@
 
       <!-- Thread replies -->
       {#if $threadData.messages.length === 0}
-        <div class="text-center text-[#606060] py-4 text-[0.82rem]">No replies yet</div>
+        <div class="text-center text-[#606060] py-4 text-[1rem]">No replies yet</div>
       {:else}
         {#each $threadData.messages as msg, i}
           {#if i === 0 || $threadData.messages[i - 1].from !== msg.from}
@@ -192,16 +192,16 @@
       >&larr;</button>
       <div class="flex-1 min-w-0">
         <h2 class="text-[0.85rem] font-bold text-[#d0d0d0] m-0">Thread</h2>
-        <p class="text-[0.75rem] text-[#808080] m-0 mt-0.5 truncate">
+        <p class="text-[0.75rem] text-[#808080] m-0 mt-0.5 break-words">
           <span style="color: {getSenderColor($threadData.parentMessage.from)}">{$threadData.parentMessage.from}</span>:
-          {$threadData.parentMessage.content?.slice(0, 60)}{$threadData.parentMessage.content?.length > 60 ? '...' : ''}
+          {$threadData.parentMessage.content || ''}
         </p>
       </div>
     </div>
 
     <!-- Mobile messages -->
     <div
-      class="flex-1 min-h-0 overflow-y-auto overflow-x-hidden font-[SF_Mono,Menlo,Consolas,Monaco,'Courier_New',monospace] text-[0.82rem] leading-[1.55] px-[14px] pt-[10px] pb-[10px]"
+      class="flex-1 min-h-0 overflow-y-auto overflow-x-hidden font-[SF_Mono,Menlo,Consolas,Monaco,'Courier_New',monospace] text-[1rem] leading-[1.55] px-[14px] pt-[10px] pb-[10px]"
       bind:this={mobileScrollArea}
     >
       <!-- Parent message -->
@@ -215,7 +215,7 @@
 
       <!-- Replies -->
       {#if $threadData.messages.length === 0}
-        <div class="text-center text-[#606060] py-4 text-[0.82rem]">No replies yet</div>
+        <div class="text-center text-[#606060] py-4 text-[1rem]">No replies yet</div>
       {:else}
         {#each $threadData.messages as msg, i}
           {#if i === 0 || $threadData.messages[i - 1].from !== msg.from}

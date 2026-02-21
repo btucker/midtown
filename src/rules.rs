@@ -328,7 +328,7 @@ pub(crate) struct IdleShutdownContext<'a> {
 /// without performing any side effects or mutations.
 ///
 /// A coworker is protected from break if:
-/// - They are the project lead session (named "lead")
+/// - They are the project lead session (named after the repo)
 /// - They have in-progress tasks (busy)
 /// - They have a pending task assigned to them
 /// - They have open unmerged PRs with CI not yet passed (waiting for CI)
@@ -1535,6 +1535,7 @@ mod tests {
             Self {
                 coworkers: vec![cw(name, 10)],
                 minimum_lifetime: Duration::from_secs(300),
+                repo_name: "test-repo".to_string(),
                 ..Default::default()
             }
         }
@@ -1544,6 +1545,7 @@ mod tests {
             Self {
                 coworkers: vec![cw(name, 2)],
                 minimum_lifetime: Duration::from_secs(300),
+                repo_name: "test-repo".to_string(),
                 ..Default::default()
             }
         }
@@ -1781,10 +1783,11 @@ mod tests {
 
     #[test]
     fn idle_shutdown_never_shuts_down_the_lead() {
-        let decisions = IdleShutdownCtx::one("lead").run();
+        // The lead session name matches the repo name (e.g., "test-repo").
+        let decisions = IdleShutdownCtx::one("test-repo").run();
         assert!(
             decisions.is_empty(),
-            "The lead session should never be idle-shutdown"
+            "The project lead session should never be idle-shutdown"
         );
     }
 
