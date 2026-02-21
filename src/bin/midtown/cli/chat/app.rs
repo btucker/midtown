@@ -343,12 +343,16 @@ pub struct App {
     /// When true AND at max_scroll, line truncation shows oldest content.
     /// When false, always use normal truncation (LAST N lines) for smooth scrolling.
     intentionally_at_top: bool,
-    /// Accumulator for mouse wheel scroll events (-7 to +7).
+    /// Accumulator for mouse wheel scroll events (-7 to +7) in the main chat panel.
     /// Mouse wheels send multiple events per physical scroll, so we accumulate
     /// fractional scrolls: 8 events in one direction = 1 scroll step.
     /// Positive = up credits, negative = down credits.
     /// Resets to 0 when direction changes to prevent cross-direction bleed.
     mouse_scroll_accumulator: i8,
+    /// Separate accumulator for mouse wheel scroll events in the thread panel.
+    /// Kept independent of mouse_scroll_accumulator so partial credits earned
+    /// while scrolling one panel cannot bleed into the other panel's scroll.
+    thread_mouse_scroll_accumulator: i8,
     /// Cache for rendered mermaid diagrams (content hash -> PNG image)
     pub mermaid_cache: MermaidCache,
     /// Mermaid diagram sources visible in the current render pass (indexed from 1 in the UI).
@@ -593,6 +597,7 @@ impl App {
             tasks_cache_hash: 0,
             intentionally_at_top: false,
             mouse_scroll_accumulator: 0,
+            thread_mouse_scroll_accumulator: 0,
             mermaid_cache: MermaidCache::new(),
             diagram_sources: Vec::new(),
             usage_data: Vec::new(),
@@ -1080,24 +1085,24 @@ impl App {
 
     /// Mouse wheel scroll up in the thread panel (8 events = 1 step toward older messages)
     pub fn thread_mouse_scroll_up(&mut self) {
-        if self.mouse_scroll_accumulator < 0 {
-            self.mouse_scroll_accumulator = 0;
+        if self.thread_mouse_scroll_accumulator < 0 {
+            self.thread_mouse_scroll_accumulator = 0;
         }
-        self.mouse_scroll_accumulator += 1;
-        if self.mouse_scroll_accumulator >= 8 {
-            self.mouse_scroll_accumulator = 0;
+        self.thread_mouse_scroll_accumulator += 1;
+        if self.thread_mouse_scroll_accumulator >= 8 {
+            self.thread_mouse_scroll_accumulator = 0;
             self.thread_scroll_offset = self.thread_scroll_offset.saturating_add(SCROLL_STEP);
         }
     }
 
     /// Mouse wheel scroll down in the thread panel (8 events = 1 step toward newer messages)
     pub fn thread_mouse_scroll_down(&mut self) {
-        if self.mouse_scroll_accumulator > 0 {
-            self.mouse_scroll_accumulator = 0;
+        if self.thread_mouse_scroll_accumulator > 0 {
+            self.thread_mouse_scroll_accumulator = 0;
         }
-        self.mouse_scroll_accumulator -= 1;
-        if self.mouse_scroll_accumulator <= -8 {
-            self.mouse_scroll_accumulator = 0;
+        self.thread_mouse_scroll_accumulator -= 1;
+        if self.thread_mouse_scroll_accumulator <= -8 {
+            self.thread_mouse_scroll_accumulator = 0;
             self.thread_scroll_offset = self.thread_scroll_offset.saturating_sub(SCROLL_STEP);
         }
     }
@@ -1405,6 +1410,7 @@ impl App {
                 self.history_start_position = start_pos;
                 self.history_fully_loaded = start_pos == 0;
                 self.scroll_offset = 0;
+                self.thread_scroll_offset = 0;
 
                 // Update the channel reference for future refresh
                 self.channel = Some(channel);
@@ -3447,6 +3453,10 @@ mod autocomplete_tests;
 #[cfg(test)]
 mod spinner_tests;
 
+#[path = "mouse_scroll_tests.rs"]
+#[cfg(test)]
+mod mouse_scroll_tests;
+
 #[cfg(test)]
 pub(super) mod tests {
     use super::*;
@@ -3532,6 +3542,7 @@ pub(super) mod tests {
             tasks_cache_hash: 0,
             intentionally_at_top: false,
             mouse_scroll_accumulator: 0,
+            thread_mouse_scroll_accumulator: 0,
             mermaid_cache: MermaidCache::new(),
             diagram_sources: Vec::new(),
             usage_data: Vec::new(),
@@ -3647,138 +3658,6 @@ pub(super) mod tests {
         assert_ne!(
             key_short, key_tall,
             "message cache key should include chat height"
-        );
-    }
-
-    #[test]
-    fn test_mouse_scroll_accumulator() {
-        // Test that mouse wheel scrolling requires multiple events per line
-        // for smooth scrolling (reduces scroll speed compared to keyboard).
-        // Each 8 mouse events triggers one scroll_up/down which moves by SCROLL_STEP.
-        let mut app = test_app();
-
-        // Add enough messages to make scrolling possible
-        // visible_height = 20, so we need > 20 messages
-        for i in 0..30 {
-            app.messages
-                .push_back(Message::text("test", format!("Test message {}", i)));
-        }
-
-        // Start at the bottom (scroll_offset = 0)
-        app.scroll_offset = 0;
-
-        // Test scroll up: should require 8 events to scroll SCROLL_STEP lines
-        let initial_offset = app.scroll_offset;
-
-        // First 7 events should not scroll
-        for _ in 0..7 {
-            app.mouse_scroll_up();
-        }
-        assert_eq!(
-            app.scroll_offset, initial_offset,
-            "Should not scroll with <8 events"
-        );
-
-        // 8th event should trigger scroll by SCROLL_STEP
-        app.mouse_scroll_up();
-        assert_eq!(
-            app.scroll_offset,
-            initial_offset + SCROLL_STEP,
-            "Should scroll after 8 events"
-        );
-
-        // Accumulator should reset, so another 8 events needed
-        for _ in 0..7 {
-            app.mouse_scroll_up();
-        }
-        assert_eq!(
-            app.scroll_offset,
-            initial_offset + SCROLL_STEP,
-            "Should not scroll with <8 events after reset"
-        );
-
-        app.mouse_scroll_up();
-        assert_eq!(
-            app.scroll_offset,
-            initial_offset + SCROLL_STEP * 2,
-            "Should scroll after another 8 events"
-        );
-
-        // Test scroll down
-        let current_offset = app.scroll_offset;
-        for _ in 0..8 {
-            app.mouse_scroll_down();
-        }
-        assert_eq!(
-            app.scroll_offset,
-            current_offset - SCROLL_STEP,
-            "Scroll down should work after 8 events"
-        );
-    }
-
-    #[test]
-    fn test_mouse_scroll_accumulator_resets_on_direction_change() {
-        // Bug: accumulator was shared between up/down directions.
-        // 4 up events + 4 down events should NOT fire a scroll because
-        // the direction changed — each direction must start fresh.
-        let mut app = test_app();
-        for i in 0..30 {
-            app.messages
-                .push_back(Message::text("test", format!("msg {}", i)));
-        }
-        app.scroll_offset = 10;
-
-        // 4 up events — not enough to trigger (need 8)
-        for _ in 0..4 {
-            app.mouse_scroll_up();
-        }
-        assert_eq!(app.scroll_offset, 10, "4 up events should not scroll yet");
-
-        // 4 down events — direction changed, so accumulator resets to 0 first,
-        // then accumulates to 4. Should still NOT fire scroll.
-        for _ in 0..4 {
-            app.mouse_scroll_down();
-        }
-        assert_eq!(
-            app.scroll_offset, 10,
-            "Direction change must reset accumulator; 4 down after 4 up should not scroll"
-        );
-    }
-
-    #[test]
-    fn test_thread_scroll_up_moves_offset() {
-        // thread_mouse_scroll_up should increase thread_scroll_offset (scroll toward older messages)
-        // and must NOT affect the main scroll_offset.
-        let mut app = test_app();
-        app.scroll_offset = 5;
-        app.thread_scroll_offset = 0;
-
-        // 8 events should move by SCROLL_STEP
-        for _ in 0..8 {
-            app.thread_mouse_scroll_up();
-        }
-        assert_eq!(
-            app.thread_scroll_offset, SCROLL_STEP,
-            "Thread scroll offset should increase after 8 up events"
-        );
-        assert_eq!(
-            app.scroll_offset, 5,
-            "Main scroll_offset must not change when scrolling thread"
-        );
-    }
-
-    #[test]
-    fn test_thread_scroll_down_moves_offset() {
-        // thread_mouse_scroll_down should decrease thread_scroll_offset (back toward newest)
-        let mut app = test_app();
-        app.thread_scroll_offset = SCROLL_STEP;
-
-        for _ in 0..8 {
-            app.thread_mouse_scroll_down();
-        }
-        assert_eq!(
-            app.thread_scroll_offset, 0,
-            "Thread scroll offset should return to 0 after 8 down events"
         );
     }
 
