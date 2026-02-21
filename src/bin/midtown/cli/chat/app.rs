@@ -1415,6 +1415,12 @@ impl App {
         {
             self.load_channel_messages_called = true;
         }
+        // Skip filesystem operations in test mode. The flag above is still set so tests
+        // can verify that load_channel_messages() was called (e.g., on channel switch),
+        // but we avoid writing to the real project directory.
+        if self.test_mode {
+            return;
+        }
         // Defensive: clear coworker line map on channel switch so stale entries
         // from the previous render can't be clicked before the next draw pass.
         self.coworker_line_map.clear();
@@ -1681,6 +1687,15 @@ impl App {
         // Validate channel name to prevent path traversal
         if !Self::is_valid_channel_name(channel_name) {
             return false;
+        }
+
+        // Skip filesystem operations in test mode to avoid polluting the real project directory.
+        // Tests that call create_channel() would otherwise write real channel directories to
+        // ~/.midtown/projects/<repo>/channels/, which the daemon then treats as legitimate topic
+        // channels and spawns channel leads for.
+        if self.test_mode {
+            self.selected_channel = channel_name.to_string();
+            return true;
         }
 
         let channel_repo =

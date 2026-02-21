@@ -801,10 +801,15 @@ pub(crate) async fn recover_channel_lead_sessions_from(
         }
     };
 
-    // Filter to topic channels only (exclude main "midtown" channel)
+    // Filter to topic channels only (exclude main project channel names).
+    // "midtown" is the current main channel name; "main" was the old fallback name
+    // used before the rename. Both are excluded to prevent the daemon from spawning
+    // channel leads for what should be the main lead's channel. This also provides
+    // defense-in-depth against accidentally recreated "main" channel directories
+    // (e.g., from tests or old TUI sessions before the rename).
     let topic_channels: Vec<_> = channels
         .into_iter()
-        .filter(|c| !c.is_archived && c.name != "midtown")
+        .filter(|c| !c.is_archived && c.name != "midtown" && c.name != "main")
         .collect();
 
     if topic_channels.is_empty() {
