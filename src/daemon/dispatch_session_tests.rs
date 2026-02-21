@@ -497,3 +497,77 @@ fn test_session_dispatch_skips_active_reviewer() {
             .collect::<Vec<_>>()
     );
 }
+
+// ======================================================================
+// Recovery loop prevention tests
+// ======================================================================
+
+/// Regression test for task !1693: stale is_running=false causes infinite recovery loop.
+///
+/// After a successful recovery spawn, `spawn_coworker` uses `or_insert_with` which
+/// is a no-op for existing session records — leaving `is_running=false` in persistent
+/// state. The next tick sees the session as stopped and spawns again, ad infinitum.
+///
+/// The fix: `dispatch_via_sessions` must also check `active_session_ids`. If the
+/// session_id is in `active_session_ids`, the coworker is actually running (the
+/// session_manager has a live process for it), so recovery must be skipped even
+/// when `is_running` is stale.
+#[test]
+fn test_session_dispatch_skips_recovery_when_session_is_active_despite_stale_is_running() {
+    // Given: task !1690 has session e2bafbb6 (is_running=false — stale persistent flag)
+    // but the session is in active_session_ids (actually running after a prior recovery spawn).
+    let session = make_session_record(
+        "e2bafbb6-5fe5-4cfb-a98f-94caad0ff834",
+        Some("1690"),
+        Some("riverside"),
+        false, // is_running=false: stale flag not yet updated by spawn_coworker
+    );
+
+    let snap = snapshot::WorldSnapshot {
+        in_progress_tasks: vec![(
+            "1690".to_string(),
+            "Rebase PR #1404, address review feedback, and merge".to_string(),
+            "riverside".to_string(),
+        )],
+        active_names: ["riverside".to_string()].into_iter().collect(),
+        // Session is live in active_session_ids (successful recovery spawn happened)
+        active_session_ids: ["e2bafbb6-5fe5-4cfb-a98f-94caad0ff834".to_string()]
+            .into_iter()
+            .collect(),
+        sessions: [("e2bafbb6-5fe5-4cfb-a98f-94caad0ff834".to_string(), session)]
+            .into_iter()
+            .collect(),
+        session_task_map: [(
+            "1690".to_string(),
+            "e2bafbb6-5fe5-4cfb-a98f-94caad0ff834".to_string(),
+        )]
+        .into_iter()
+        .collect(),
+        ..snapshot::minimal_snapshot_for_test()
+    };
+
+    let effects = dispatch_via_sessions_for_test(&snap, None, |_| None);
+
+    // Then: must NOT emit another recovery spawn — the session is already live.
+    let spawn_effects: Vec<_> = effects
+        .iter()
+        .filter(|e| {
+            matches!(
+                e,
+                Effect::SpawnCoworkerWithCallbacks { .. }
+                    | Effect::SpawnCoworker(_)
+                    | Effect::AssignAndSpawn { .. }
+                    | Effect::ResumeCoworker { .. }
+            )
+        })
+        .collect();
+    assert!(
+        spawn_effects.is_empty(),
+        "Should NOT recover a session that is in active_session_ids (live process), \
+         even when is_running=false is stale. Got effects: {:?}",
+        spawn_effects
+            .iter()
+            .map(|e| format!("{:?}", e))
+            .collect::<Vec<_>>()
+    );
+}
