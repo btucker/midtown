@@ -29,6 +29,7 @@ fn make_session_record(
         is_running,
         created_at: chrono::Utc::now(),
         resume_on_startup: true,
+        bound_thread_id: None,
     }
 }
 

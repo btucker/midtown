@@ -988,3 +988,223 @@ async fn test_user_message_dead_lead_respects_expedite_cooldown() {
         "Lead stop time should remain on second message within 30s cooldown"
     );
 }
+
+// ── Output binding tests (Task 3) ────────────────────────────────────────────
+
+/// Verify that a forked session with a bound thread has its channel posts
+/// automatically tagged with that thread_parent_id (output binding).
+///
+/// This is Task 3: forked topic sessions post into the correct thread without
+/// needing to pass `--thread` on every `midtown channel post` call.
+///
+/// Uses the in-memory `fork_bound_threads` cache (populated by `handle_session_fork`)
+/// rather than looking up `bound_thread_id` via the async persistent_state lock.
+#[tokio::test]
+async fn test_output_binding_auto_tags_forked_session_posts() {
+    let (state, _tmp, _guard) = make_test_state("midtown-test-output-binding-auto");
+    let thread_id = "thread-parent-uuid-xyz";
+    let fork_name = "fork-abcdefgh";
+
+    // Register the fork's bound thread in the in-memory cache
+    state
+        .fork_bound_threads
+        .lock()
+        .unwrap()
+        .insert(fork_name.to_string(), thread_id.to_string());
+
+    // Post a message from the forked session WITHOUT explicit thread_parent_id
+    let response = handle_channel_post(
+        1_i64.into(),
+        fork_name,
+        "Here is my analysis of the thread",
+        None,
+        None, // no explicit thread_parent_id
+        &state,
+    )
+    .await;
+    assert!(response.error.is_none(), "channel.post should succeed");
+
+    // The message should have been auto-tagged with the bound thread_parent_id
+    let channel = state.channel_router.default_channel().unwrap();
+    let messages = channel.read_all().unwrap();
+    assert_eq!(messages.len(), 1);
+    assert_eq!(
+        messages[0].thread_parent_id,
+        Some(thread_id.to_string()),
+        "Forked session post should be auto-tagged with bound_thread_id"
+    );
+}
+
+/// Verify that an explicit thread_parent_id takes priority over the session's
+/// bound thread. The session's binding is a fallback, not an override.
+#[tokio::test]
+async fn test_output_binding_explicit_thread_takes_priority() {
+    let (state, _tmp, _guard) = make_test_state("midtown-test-output-binding-priority");
+    let bound_thread = "bound-thread-id-111";
+    let explicit_thread = "explicit-thread-id-999";
+    let fork_name = "fork-priority";
+
+    // Register the fork's bound thread in the in-memory cache
+    state
+        .fork_bound_threads
+        .lock()
+        .unwrap()
+        .insert(fork_name.to_string(), bound_thread.to_string());
+
+    // Post with an EXPLICIT thread_parent_id (different from the bound one)
+    let response = handle_channel_post(
+        1_i64.into(),
+        fork_name,
+        "Explicit thread reply",
+        None,
+        Some(explicit_thread), // explicit wins
+        &state,
+    )
+    .await;
+    assert!(response.error.is_none(), "channel.post should succeed");
+
+    let channel = state.channel_router.default_channel().unwrap();
+    let messages = channel.read_all().unwrap();
+    assert_eq!(messages.len(), 1);
+    assert_eq!(
+        messages[0].thread_parent_id,
+        Some(explicit_thread.to_string()),
+        "Explicit thread_parent_id should take priority over bound_thread_id"
+    );
+}
+
+/// Verify that sessions without a bound thread do NOT get thread_parent_id
+/// injected into their posts. Only forked sessions with a binding are affected.
+#[tokio::test]
+async fn test_output_binding_no_bound_thread_preserves_none() {
+    let (state, _tmp, _guard) = make_test_state("midtown-test-output-binding-none");
+    let session_name = "park";
+
+    // fork_bound_threads does NOT contain this session — no binding
+
+    let response = handle_channel_post(
+        1_i64.into(),
+        session_name,
+        "Top-level post with no binding",
+        None,
+        None,
+        &state,
+    )
+    .await;
+    assert!(response.error.is_none(), "channel.post should succeed");
+
+    let channel = state.channel_router.default_channel().unwrap();
+    let messages = channel.read_all().unwrap();
+    assert_eq!(messages.len(), 1);
+    assert_eq!(
+        messages[0].thread_parent_id, None,
+        "Unbound session post should not have thread_parent_id set"
+    );
+}
+
+// ── topic_sessions routing tests (Task 2) ────────────────────────────────────
+
+/// Verify that when `topic_sessions` has a mapping for a thread, a user reply
+/// in that thread is routed to the fork session (not the channel lead).
+///
+/// Since `NudgeSession` fails gracefully when no live session exists in test env,
+/// the observable behavior is that the main lead is NOT nudged (the routing took
+/// the fork path, not the fallback NudgeChannelLead path).
+#[tokio::test]
+async fn test_thread_routing_with_topic_session_routes_to_fork() {
+    let (state, _tmp, _guard) = make_test_state("midtown-test-thread-routing-fork");
+    let adapter_id = "test-adapter-fork-routing";
+    state
+        .headed_register(
+            &state.repo_name,
+            adapter_id,
+            crate::auth::AuthProvider::Claude,
+        )
+        .await
+        .expect("register headed adapter");
+
+    let thread_id = "thread-uuid-for-fork-routing";
+    let fork_session_id = "fork-session-routing-xyz";
+
+    // Register a topic session for this thread
+    state
+        .topic_sessions
+        .lock()
+        .unwrap()
+        .insert(thread_id.to_string(), fork_session_id.to_string());
+
+    // User posts a thread reply in the topic channel
+    let response = handle_channel_post(
+        1_i64.into(),
+        "user",
+        "Follow-up question in thread",
+        Some("auth-refactor"), // topic channel
+        Some(thread_id),       // thread_parent_id with registered fork
+        &state,
+    )
+    .await;
+    assert!(response.error.is_none(), "channel.post should succeed");
+
+    // Main lead should NOT be nudged — routing went to the fork session path
+    let (messages, _capture) = state
+        .headed_poll(&state.repo_name, adapter_id, 0, 10)
+        .await
+        .expect("poll headed queue");
+    assert!(
+        messages.is_empty(),
+        "Main lead should not be nudged when routing to a fork session"
+    );
+}
+
+/// Verify that `handle_session_fork` deduplicates: when a topic session already
+/// exists for a thread, the handler returns early with `already_exists: true`
+/// and does not attempt to spawn a second fork.
+#[tokio::test]
+async fn test_topic_sessions_dedup_returns_existing() {
+    let (state, _tmp, _guard) = make_test_state("midtown-test-topic-sessions-dedup");
+
+    let thread_id = "thread-dedup-uuid";
+    let first_fork = "fork-session-first";
+
+    // Pre-populate topic_sessions as if a fork already exists for this thread.
+    state
+        .topic_sessions
+        .lock()
+        .unwrap()
+        .insert(thread_id.to_string(), first_fork.to_string());
+
+    // Call handle_session_fork for the same thread — should hit the guard and
+    // return the existing session without attempting to spawn.
+    let response = super::super::rpc_session::handle_session_fork(
+        1_i64.into(),
+        thread_id,
+        "calling-session-id-xyz",
+        &state,
+    )
+    .await;
+
+    // The guard should return success with already_exists: true
+    assert!(
+        response.error.is_none(),
+        "Dedup guard should return success"
+    );
+    let result = response.result.unwrap();
+    assert_eq!(
+        result["already_exists"].as_bool(),
+        Some(true),
+        "Should indicate the session already exists"
+    );
+    assert_eq!(
+        result["session_id"].as_str(),
+        Some(first_fork),
+        "Should return the existing fork session ID"
+    );
+
+    // topic_sessions should still hold the original mapping (not overwritten)
+    let stored = state.topic_sessions.lock().unwrap().get(thread_id).cloned();
+    assert_eq!(
+        stored,
+        Some(first_fork.to_string()),
+        "Original fork session should be preserved"
+    );
+}

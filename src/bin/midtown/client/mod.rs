@@ -531,6 +531,25 @@ impl DaemonClient {
         )
     }
 
+    /// Fork the calling session to handle a specific thread.
+    ///
+    /// Spawns a new session that inherits the calling session's conversation
+    /// history via `--fork-session`. The fork is bound to `thread_parent_id`
+    /// so its channel posts automatically appear in that thread.
+    pub fn session_fork(
+        &self,
+        thread_parent_id: &str,
+        calling_session_id: &str,
+    ) -> Result<Response, String> {
+        self.send(
+            "session.fork",
+            Some(serde_json::json!({
+                "thread_parent_id": thread_parent_id,
+                "calling_session_id": calling_session_id,
+            })),
+        )
+    }
+
     /// View a session's current output (PTY for headed, JSONL for headless).
     pub fn session_view(&self, target: &str) -> Result<Response, String> {
         let result = self.send_raw(

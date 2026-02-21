@@ -183,6 +183,7 @@ impl MultiTickHarness {
             is_running: true,
             created_at: Utc::now(),
             resume_on_startup: true,
+            bound_thread_id: None,
         };
         self.snapshot
             .sessions
@@ -469,6 +470,7 @@ impl MultiTickHarness {
                             is_running: true,
                             created_at: Utc::now(),
                             resume_on_startup: !is_reviewer,
+                            bound_thread_id: None,
                         };
                         self.snapshot.sessions.insert(session_id.clone(), record);
                     }

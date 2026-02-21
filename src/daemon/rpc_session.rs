@@ -1039,6 +1039,244 @@ pub(super) async fn handle_session_clear(
     }
 }
 
+/// Handle session.fork RPC method.
+///
+/// Forks the calling session into a new independent session bound to a thread.
+/// The fork inherits the parent session's full context (conversation history,
+/// tool access, etc.) but creates a new session ID. Future channel posts from
+/// the forked session are automatically tagged with `thread_parent_id`.
+///
+/// Thread replies in the channel are routed to the forked session (by
+/// `handle_channel_post`) rather than the root channel lead.
+///
+/// Parameters:
+/// - `thread_parent_id`: The message ID of the thread root. Required.
+/// - `calling_session_id`: The session ID of the calling session. Required.
+///   The caller must pass its own session ID (from the `MIDTOWN_SESSION_ID`
+///   env var or the system init event).
+pub(super) async fn handle_session_fork(
+    id: RequestId,
+    thread_parent_id: &str,
+    calling_session_id: &str,
+    state: &DaemonState,
+) -> crate::rpc::Response {
+    // Atomic guard: check-and-reserve the topic_sessions slot in a single lock
+    // acquisition. This prevents the race where two concurrent fork requests for
+    // the same thread_parent_id both pass the guard and spawn duplicate forks.
+    // We insert a sentinel value ("pending") to reserve the slot; on success we
+    // update it with the real session_id, on failure we remove it.
+    {
+        let mut topic = state.topic_sessions.lock().unwrap();
+        if let Some(existing_sid) = topic.get(thread_parent_id) {
+            return crate::rpc::Response::success(
+                id,
+                serde_json::json!({
+                    "session_id": existing_sid,
+                    "already_exists": true,
+                }),
+            );
+        }
+        // Reserve the slot to prevent concurrent forks for the same thread.
+        topic.insert(thread_parent_id.to_string(), "pending".to_string());
+    }
+
+    // Resolve the calling session's name from the reverse map.
+    let caller_name = {
+        let s2n = state.session_to_name.lock().unwrap();
+        s2n.get(calling_session_id).cloned()
+    };
+
+    // Look up the channel lead session info to get working_dir and channel.
+    let (working_dir, channel, auth_provider) = {
+        let ps = state.persistent_state.lock().await;
+        let info = ps.headless_sessions.iter().find_map(|(name, info)| {
+            if info.session_id == calling_session_id
+                || caller_name.as_deref() == Some(name.as_str())
+            {
+                Some(info.clone())
+            } else {
+                None
+            }
+        });
+        match info {
+            Some(i) => (
+                i.working_dir,
+                i.channel.clone(),
+                i.provider.unwrap_or(crate::auth::AuthProvider::Claude),
+            ),
+            None => {
+                warn!(
+                    "session.fork: could not find session info for calling_session_id={}",
+                    calling_session_id
+                );
+                // Fall back to repo root and no channel
+                (None, None, crate::auth::AuthProvider::Claude)
+            }
+        }
+    };
+
+    // Determine channel for the fork — inherit from parent session or derive from
+    // the caller name (channel leads are named after their channel).
+    let fork_channel = channel.or_else(|| caller_name.clone());
+
+    // Build the HeadlessConfig for the fork.
+    // Forks use --resume <parent-id> --fork-session which creates an independent
+    // session with the same conversation history as the parent.
+    let config_dir = crate::auth::current_profile_dir_for(auth_provider);
+    let repo_name = &state.repo_name;
+    let team = crate::mailbox::team_name_for_repo(repo_name);
+
+    // Name the fork after its thread (truncated) for human readability.
+    let fork_name = format!(
+        "fork-{}",
+        thread_parent_id.get(..8).unwrap_or(thread_parent_id)
+    );
+
+    let mut env = crate::launch::build_agent_env_vars(
+        &fork_name,
+        &crate::launch::CoworkerRole::ChannelLead {
+            channel_name: fork_channel.clone().unwrap_or_default(),
+            domain_context: String::new(),
+        },
+        &Some(team.clone()),
+        &fork_channel,
+        auth_provider,
+        &config_dir,
+    );
+    // Tell the fork its bound thread so it can pass --thread in channel posts
+    env.insert(
+        "MIDTOWN_BOUND_THREAD_ID".to_string(),
+        thread_parent_id.to_string(),
+    );
+
+    let headless_config = crate::headless::HeadlessConfig {
+        model: "sonnet".to_string(),
+        system_prompt: String::new(),
+        json_schema: None,
+        cwd: working_dir.clone(),
+        project_name: Some(repo_name.clone()),
+        max_budget_usd: None,
+        allow_tools: true,
+        persist_session: true,
+        resume_session_id: Some(calling_session_id.to_string()),
+        inactivity_timeout: None,
+        team_name: Some(team.clone()),
+        agent_id: Some(crate::mailbox::agent_id(&fork_name, &team)),
+        agent_name: Some(fork_name.clone()),
+        settings_path: None,
+        setting_sources: None,
+        auth_provider,
+        env,
+        fork_session: true,
+    };
+
+    // Spawn the forked session.
+    let fork_session_id = match state
+        .session_manager
+        .spawn_fork(&fork_name, headless_config)
+        .await
+    {
+        Ok(sid) => sid,
+        Err(e) => {
+            // Remove the sentinel — spawn failed, so the slot is available again.
+            state
+                .topic_sessions
+                .lock()
+                .unwrap()
+                .remove(thread_parent_id);
+            warn!("session.fork: failed to spawn fork session: {}", e);
+            return crate::rpc::Response::error(
+                id,
+                crate::rpc::RpcError::new(-32603, format!("Failed to fork session: {}", e)),
+            );
+        }
+    };
+
+    // Update the topic session mapping from sentinel to real session_id.
+    {
+        let mut topic = state.topic_sessions.lock().unwrap();
+        topic.insert(thread_parent_id.to_string(), fork_session_id.clone());
+    }
+
+    // Backfill the data structures that the event loop normally populates from the
+    // init event. spawn_fork consumes the init event to extract the session_id, so
+    // the event loop never sees it. We must create the SessionRecord and populate
+    // the name↔session reverse maps ourselves.
+    {
+        let mut ps = state.persistent_state.lock().await;
+        let hs_info = ps.headless_sessions.iter().find_map(|(_, info)| {
+            if info.session_id == calling_session_id
+                || caller_name
+                    .as_deref()
+                    .map(|n| info.session_id == n)
+                    .unwrap_or(false)
+            {
+                Some(info.clone())
+            } else {
+                None
+            }
+        });
+        ps.sessions.insert(
+            fork_session_id.clone(),
+            crate::daemon::state::SessionRecord {
+                session_id: fork_session_id.clone(),
+                task_id: None,
+                current_name: Some(fork_name.clone()),
+                preferred_name: Some(fork_name.clone()),
+                working_dir: working_dir.clone().unwrap_or_default(),
+                branch: None,
+                pr_number: None,
+                initial_prompt: hs_info.as_ref().and_then(|i| i.initial_prompt.clone()),
+                is_reviewer: false,
+                coworker_type: "channel-lead".to_string(),
+                is_running: true,
+                created_at: chrono::Utc::now(),
+                resume_on_startup: false,
+                bound_thread_id: Some(thread_parent_id.to_string()),
+            },
+        );
+        if let Err(e) = ps.save_for_repo(repo_name) {
+            warn!("session.fork: failed to persist session record: {}", e);
+        }
+    }
+
+    // Populate in-memory reverse maps for the fork session.
+    state
+        .name_to_session
+        .lock()
+        .unwrap()
+        .insert(fork_name.clone(), fork_session_id.clone());
+    state
+        .session_to_name
+        .lock()
+        .unwrap()
+        .insert(fork_session_id.clone(), fork_name.clone());
+
+    // Cache the bound thread mapping for the output binding hot path
+    // (avoids async persistent_state lock in handle_channel_post).
+    state
+        .fork_bound_threads
+        .lock()
+        .unwrap()
+        .insert(fork_name.clone(), thread_parent_id.to_string());
+
+    info!(
+        "session.fork: forked {} (parent={}) → thread={}, new_session={}",
+        calling_session_id,
+        caller_name.as_deref().unwrap_or("?"),
+        thread_parent_id,
+        fork_session_id
+    );
+
+    crate::rpc::Response::success(
+        id,
+        serde_json::json!({
+            "session_id": fork_session_id,
+            "thread_parent_id": thread_parent_id,
+        }),
+    )
+}
+
 // ============================================================================
 // Tests
 // ============================================================================

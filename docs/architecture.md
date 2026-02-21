@@ -190,6 +190,21 @@ Note: `route_mentions()` is intentionally disabled for topic channels — user `
 
 **Coworker guidance:** Coworkers are instructed to `@{channel-name}` (e.g., `@daemon-core`) for domain questions and to reserve `@{project_name}` for coordination, task, and priority questions.
 
+### Forked Sessions (Thread-Specific Channel Leads)
+
+Channel leads can fork themselves into thread-specific sessions via the `session.fork` RPC (`midtown session fork`). A forked session inherits the parent's conversation context (via `--resume <parent-id> --fork-session`) but gets an independent session ID bound to a specific thread.
+
+**Data flow:**
+- `topic_sessions` (in-memory `Mutex<HashMap<String, String>>`) maps `thread_parent_id → fork_session_id`. Used by `handle_channel_post` to route thread replies to the fork instead of the root channel lead.
+- `fork_bound_threads` (in-memory `Mutex<HashMap<String, String>>`) maps `fork_name → thread_parent_id`. Used by the output binding path in `handle_channel_post` to auto-tag forked session posts with their bound thread (avoids the async `persistent_state` lock on the hot path).
+- `SessionRecord.bound_thread_id` (persisted) stores the same binding for restart resilience.
+- `name_to_session` / `session_to_name` reverse maps are backfilled in `handle_session_fork` since `spawn_fork` consumes the init event before the event loop sees it.
+
+**Architectural invariants:**
+- Fork sessions are NOT registered in `CoworkerManager`. They bypass `spawn_coworker()` entirely, which means they are excluded from idle-shutdown evaluation, orphan recovery, and coworker status tracking.
+- The `topic_sessions` guard uses an atomic check-and-reserve pattern (inserting a "pending" sentinel) to prevent duplicate forks for the same thread.
+- Both `topic_sessions` and `fork_bound_threads` are ephemeral — cleared on daemon restart. Forks don't survive restarts.
+
 ## Channel Storage Layout
 
 Each channel is stored as a directory under `~/.midtown/projects/<repo>/channels/`:

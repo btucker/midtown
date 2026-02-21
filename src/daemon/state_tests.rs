@@ -486,6 +486,7 @@ fn make_test_session_record_named(session_id: &str, is_running: bool, name: &str
         is_running,
         created_at: Utc::now(),
         resume_on_startup: false,
+        bound_thread_id: None,
     }
 }
 

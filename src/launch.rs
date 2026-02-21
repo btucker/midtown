@@ -512,6 +512,7 @@ impl LaunchConfig {
             setting_sources: None, // Handled by platform arg builder (always project,local)
             auth_provider: self.auth_provider,
             env,
+            fork_session: false,
         }
     }
 

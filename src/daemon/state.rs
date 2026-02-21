@@ -106,6 +106,13 @@ pub struct SessionRecord {
     pub created_at: DateTime<Utc>,
     /// Whether to resume this session on daemon restart.
     pub resume_on_startup: bool,
+    /// Thread ID this session is bound to for automatic output tagging.
+    ///
+    /// When set (for forked topic sessions), all channel posts from this session
+    /// are automatically tagged with this thread_parent_id so output appears in
+    /// the correct thread without the session needing to pass `--thread` manually.
+    #[serde(default)]
+    pub bound_thread_id: Option<String>,
 }
 
 /// All persistent daemon state in one struct.

@@ -127,6 +127,7 @@ fn test_headless_config() -> HeadlessConfig {
         setting_sources: None, // Will be removed from HeadlessConfig in a later step
         auth_provider: AuthProvider::Claude,
         env: std::collections::BTreeMap::new(),
+        fork_session: false,
     }
 }
 
@@ -456,4 +457,62 @@ fn test_codex_headless_args_is_app_server() {
 fn test_codex_headed_args_has_resume() {
     let args = build_codex_headed_args("thread-123");
     assert_eq!(args, vec!["--resume", "thread-123"]);
+}
+
+// ── Fork session flag ──────────────────────────────────────────────────
+
+/// Verify that `--fork-session` is added when `fork_session: true` in a resume config.
+#[test]
+fn test_claude_headless_args_fork_session_adds_flag() {
+    let config = HeadlessConfig {
+        resume_session_id: Some("session-abc".to_string()),
+        persist_session: true,
+        fork_session: true,
+        ..test_headless_config()
+    };
+    let args = build_claude_headless_args(&config);
+    assert!(
+        args.contains(&"--resume".to_string()),
+        "--resume should be present when resume_session_id is set"
+    );
+    assert!(
+        args.contains(&"--fork-session".to_string()),
+        "--fork-session should be added when fork_session is true"
+    );
+}
+
+/// Verify that `--fork-session` is NOT added when `fork_session: false`.
+#[test]
+fn test_claude_headless_args_no_fork_session_without_flag() {
+    let config = HeadlessConfig {
+        resume_session_id: Some("session-abc".to_string()),
+        persist_session: true,
+        fork_session: false,
+        ..test_headless_config()
+    };
+    let args = build_claude_headless_args(&config);
+    assert!(
+        args.contains(&"--resume".to_string()),
+        "--resume should be present when resume_session_id is set"
+    );
+    assert!(
+        !args.contains(&"--fork-session".to_string()),
+        "--fork-session should NOT be present when fork_session is false"
+    );
+}
+
+/// Verify that `--fork-session` is NOT added for fresh (non-resume) sessions
+/// even if fork_session is true — forking only applies to resumes.
+#[test]
+fn test_claude_headless_args_fork_session_ignored_for_fresh() {
+    let config = HeadlessConfig {
+        resume_session_id: None,
+        fork_session: true, // ignored — no resume session
+        ..test_headless_config()
+    };
+    let args = build_claude_headless_args(&config);
+    assert!(
+        !args.contains(&"--fork-session".to_string()),
+        "--fork-session should not appear for fresh (non-resume) sessions"
+    );
 }

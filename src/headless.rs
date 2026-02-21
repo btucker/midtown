@@ -89,6 +89,13 @@ pub struct HeadlessConfig {
     /// `MIDTOWN_AGENT` and provider config vars (`CLAUDE_CONFIG_DIR`/`CODEX_HOME`).
     #[serde(default)]
     pub env: std::collections::BTreeMap<String, String>,
+    /// Fork the resumed session into a new independent session.
+    ///
+    /// When `true` (and `resume_session_id` is set), adds `--fork-session` to the
+    /// Claude CLI args. The fork inherits the parent session's full context but
+    /// creates a new independent session ID. Used for forked channel lead topic sessions.
+    #[serde(default)]
+    pub fork_session: bool,
 }
 
 /// Custom serde module for `Option<Duration>` as seconds (f64).
@@ -1083,6 +1090,7 @@ mod tests {
             setting_sources: None,
             auth_provider: crate::auth::AuthProvider::Claude,
             env: std::collections::BTreeMap::new(),
+            fork_session: false,
         }
     }
 

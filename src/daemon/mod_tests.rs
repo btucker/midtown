@@ -2291,6 +2291,7 @@ async fn test_cleanup_marks_session_record_stopped_in_persistent_state() {
                 is_running: true,
                 created_at: chrono::Utc::now(),
                 resume_on_startup: true,
+                bound_thread_id: None,
             },
         );
     }
@@ -2365,6 +2366,7 @@ async fn test_cleanup_preserves_other_session_records_in_persistent_state() {
                     is_running: true,
                     created_at: chrono::Utc::now(),
                     resume_on_startup: true,
+                    bound_thread_id: None,
                 },
             );
         }
