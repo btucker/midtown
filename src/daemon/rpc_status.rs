@@ -19,8 +19,7 @@ use crate::rpc::{RequestId, Response, RpcError};
 /// This handler runs blocking operations (gh CLI, file I/O) in spawn_blocking
 /// to avoid blocking the async runtime and causing RPC timeouts.
 pub(super) async fn handle_status(id: RequestId, state: &DaemonState) -> Response {
-    // Build a map of coworker name -> task display string from in_progress tasks
-    // This is the source of truth for what each coworker is working on
+    // Build a map of coworker name -> task display string from in_progress tasks.
     // Format: "!1234 Task subject" (task ID + subject)
     let coworker_tasks: std::collections::HashMap<String, String> =
         crate::tasks::get_in_progress_tasks_with_subjects()
@@ -29,12 +28,53 @@ pub(super) async fn handle_status(id: RequestId, state: &DaemonState) -> Respons
                 if owner.is_empty() {
                     None
                 } else {
-                    // Include both task ID and subject in the display string
                     let task_display = format!("!{} {}", task_id, subject);
                     Some((owner.to_lowercase(), task_display))
                 }
             })
             .collect();
+
+    // Snapshot live workflow state (phase, task_id) from coworker_records.
+    // This reflects what coworkers are *actually* doing, not just task ownership.
+    let coworker_records: std::collections::HashMap<String, crate::rules::CoworkerRecord> = {
+        let records = state.coworker_records.read().await;
+        records.clone()
+    };
+
+    // Build task -> PR number map from task files with explicit PR associations.
+    let task_pr_map: std::collections::HashMap<u32, u64> = crate::tasks::read_tasks()
+        .into_iter()
+        .filter_map(|task| {
+            let task_id: u32 = task.id.parse().ok()?;
+            let pr = task.pr?;
+            Some((task_id, pr))
+        })
+        .collect();
+
+    // Read all persistent state in a single lock: reviewer assignments, worktree PR map,
+    // rate limit, and channel lead names. This avoids acquiring the lock twice.
+    let (reviewer_pr_map, worktree_pr_map, rate_limit, channel_lead_names) = {
+        let ps = state.persistent_state.lock().await;
+        let rev_map: std::collections::HashMap<String, u64> = ps
+            .github
+            .active_assignments()
+            .iter()
+            .map(|(pr_number, assignment)| (assignment.reviewer.clone(), *pr_number))
+            .collect();
+        let wt_map: std::collections::HashMap<String, u64> = ps
+            .worktree_registry
+            .all_assignments()
+            .iter()
+            .filter_map(|(_, assignment)| {
+                let coworker = assignment.current_coworker.as_ref()?;
+                let pr_number = assignment.pr_number?;
+                Some((coworker.clone(), pr_number))
+            })
+            .collect();
+        let channel_leads: std::collections::HashSet<String> =
+            ps.channel_lead_sessions.keys().cloned().collect();
+        (rev_map, wt_map, ps.github.rate_limit.clone(), channel_leads)
+    };
 
     // Get token usage from session manager (keyed by coworker name).
     let token_usage = state.session_manager.get_token_usage().await;
@@ -53,6 +93,15 @@ pub(super) async fn handle_status(id: RequestId, state: &DaemonState) -> Respons
             // Look up token usage from session manager
             let (input_tokens, output_tokens) =
                 token_usage.get(&cw.name).copied().unwrap_or((0, 0));
+            // Get live workflow phase and task_id from coworker_records
+            let record = coworker_records.get(&cw.name);
+            let workflow_phase = record.and_then(|r| r.workflow_phase);
+            let record_task_id = record.and_then(|r| r.task_id);
+            // Find PR number for this coworker (priority: task file > reviewer > worktree)
+            let pr_number = record_task_id
+                .and_then(|tid| task_pr_map.get(&tid).copied())
+                .or_else(|| reviewer_pr_map.get(&cw.name).copied())
+                .or_else(|| worktree_pr_map.get(&cw.name).copied());
             serde_json::json!({
                 "name": cw.name,
                 "status": cw.status.to_string(),
@@ -62,6 +111,8 @@ pub(super) async fn handle_status(id: RequestId, state: &DaemonState) -> Respons
                 "profile": cw.profile,
                 "input_tokens": input_tokens,
                 "output_tokens": output_tokens,
+                "phase": workflow_phase.map(|p| p.abbreviation()),
+                "pr_number": pr_number,
             })
         })
         .collect();
@@ -104,15 +155,6 @@ pub(super) async fn handle_status(id: RequestId, state: &DaemonState) -> Respons
         .iter()
         .filter(|t| t.get("status").and_then(|s| s.as_str()) == Some("pending"))
         .count();
-
-    // Get GitHub API rate limit state and channel lead names together to avoid
-    // locking persistent_state twice.
-    let (rate_limit, channel_lead_names) = {
-        let ps = state.persistent_state.lock().await;
-        let names: std::collections::HashSet<String> =
-            ps.channel_lead_sessions.keys().cloned().collect();
-        (ps.github.rate_limit.clone(), names)
-    };
 
     let (coworkers, active_coworker_count) =
         tag_channel_leads_and_count(coworkers, &channel_lead_names);
