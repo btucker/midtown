@@ -788,8 +788,14 @@ where
             }
         };
 
-        // If the session is running, the task is handled -- skip.
-        if record.is_running {
+        // If the session is running (either by persisted flag or live in active_session_ids),
+        // the task is handled — skip.
+        //
+        // active_session_ids is checked in addition to is_running because spawn_coworker
+        // uses or_insert_with for existing session records, leaving is_running=false even
+        // after a successful resume. The live process check ensures we don't loop on the
+        // same stopped-session record every tick while the coworker is actually running.
+        if record.is_running || snap.active_session_ids.contains(&record.session_id) {
             debug!(
                 "Task !{} has running session {} -- no recovery needed",
                 task_id, record.session_id
