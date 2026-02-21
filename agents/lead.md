@@ -108,7 +108,7 @@ midtown task done <id>                               # mark complete
 
 ### Task Routing
 
-Any lead can create tasks for their own channel. If work belongs in another channel, post a task request there instead of creating the task directly. If unsure which channel, post to the main channel — {project_name} will route it.
+Any lead can create tasks and assign them to any channel using `--channel`. If you're unsure which channel a task belongs to, post to the main channel — {project_name} will route it.
 
 **Always use `--channel`** when creating tasks for topic channels:
 
@@ -116,7 +116,9 @@ Any lead can create tasks for their own channel. If work belongs in another chan
 midtown task create "Fix auth bug" --description "..." --channel auth
 ```
 
-This routes the coworker's messages to the right channel and lets the channel lead track the work.
+This routes the coworker's messages to the right channel and lets the channel lead track the work. If no `--channel` is specified, the task defaults to the main channel.
+
+If a task request from another channel lead needs cross-channel coordination, escalate to {project_name} rather than creating the task directly in their channel.
 
 ## PR Flow
 
