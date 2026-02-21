@@ -746,6 +746,7 @@
            items drive the dots (channel leads don't have a separate lead_working signal). -->
       {#if activeChannelToolItems.length > 0 || channelLeadThinking || ($activeChannel === 'midtown' && !!$daemonStatus?.lead_working)}
         {@const agentName = $activeChannel}
+        {@const stripColor = agentName === 'midtown' ? AVENUE_COLORS.lead : getSenderColor(agentName)}
         {@const isLeadWorking = $activeChannel === 'midtown' ? !!$daemonStatus?.lead_working : false}
         {@const hasInProgressItems = activeChannelToolItems.some((item) => item.status === 'InProgress')}
         {@const showDots = isLeadWorking || hasInProgressItems || channelLeadThinking}
@@ -756,12 +757,12 @@
           <div class="flex items-center gap-[7px] whitespace-nowrap overflow-hidden text-ellipsis">
             {#if showDots}
               <span class="typing-dots flex gap-[3px] items-center">
-                <span class="dot w-[5px] h-[5px] rounded-full" style="background-color: {getSenderColor(agentName)}"></span>
-                <span class="dot w-[5px] h-[5px] rounded-full" style="background-color: {getSenderColor(agentName)}"></span>
-                <span class="dot w-[5px] h-[5px] rounded-full" style="background-color: {getSenderColor(agentName)}"></span>
+                <span class="dot w-[5px] h-[5px] rounded-full" style="background-color: {stripColor}"></span>
+                <span class="dot w-[5px] h-[5px] rounded-full" style="background-color: {stripColor}"></span>
+                <span class="dot w-[5px] h-[5px] rounded-full" style="background-color: {stripColor}"></span>
               </span>
             {/if}
-            <span class="font-bold text-[0.85rem]" style="color: {getSenderColor(agentName)}">{agentName}</span>
+            <span class="font-bold text-[0.85rem]" style="color: {stripColor}">{agentName}</span>
           </div>
         </div>
       {/if}
