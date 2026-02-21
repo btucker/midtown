@@ -164,6 +164,7 @@ fn make_dev_limit_snapshot(
         pr_task_associations: std::collections::HashMap::new(),
         active_reviewers: std::collections::HashSet::new(),
         reviewer_pr_assignments: std::collections::HashMap::new(),
+        reviewer_in_progress_comment_ids: std::collections::HashMap::new(),
         reviewed_prs: std::collections::HashSet::new(),
         prs_needing_review: 0,
         reviewer_restart_counts: std::collections::HashMap::new(),

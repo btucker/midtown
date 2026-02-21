@@ -70,6 +70,7 @@ fn test_usage_limit_nudge_only_targets_running_coworkers() {
         pr_task_associations: HashMap::new(),
         active_reviewers: HashSet::new(),
         reviewer_pr_assignments: HashMap::new(),
+        reviewer_in_progress_comment_ids: HashMap::new(),
         reviewed_prs: HashSet::new(),
         prs_needing_review: 0,
         reviewer_restart_counts: HashMap::new(),
@@ -244,6 +245,7 @@ fn test_check_for_usage_limits_with_reset_time() {
         pr_task_associations: HashMap::new(),
         active_reviewers: HashSet::new(),
         reviewer_pr_assignments: HashMap::new(),
+        reviewer_in_progress_comment_ids: HashMap::new(),
         reviewed_prs: HashSet::new(),
         prs_needing_review: 0,
         reviewer_restart_counts: HashMap::new(),
@@ -338,6 +340,7 @@ fn test_check_for_usage_limits_already_scheduled() {
         pr_task_associations: HashMap::new(),
         active_reviewers: HashSet::new(),
         reviewer_pr_assignments: HashMap::new(),
+        reviewer_in_progress_comment_ids: HashMap::new(),
         reviewed_prs: HashSet::new(),
         prs_needing_review: 0,
         reviewer_restart_counts: HashMap::new(),
@@ -467,6 +470,7 @@ fn empty_snap() -> snapshot::WorldSnapshot {
         pr_task_associations: HashMap::new(),
         active_reviewers: HashSet::new(),
         reviewer_pr_assignments: HashMap::new(),
+        reviewer_in_progress_comment_ids: HashMap::new(),
         reviewed_prs: HashSet::new(),
         prs_needing_review: 0,
         reviewer_restart_counts: HashMap::new(),
@@ -1013,9 +1017,15 @@ fn stuck_reviewer_restart_propagates_session_id() {
         &exemptions,
         snap.now_utc,
         Duration::from_secs(300),
+        Duration::from_secs(120),
         2,
         &snap.name_session_map,
         &snap.coworker_start_times,
+        &snap
+            .reviewer_in_progress_comment_ids
+            .keys()
+            .copied()
+            .collect(),
     );
 
     assert_eq!(restarts.len(), 1);
@@ -1438,9 +1448,15 @@ fn pending_api_call_exempts_reviewer_from_stuck_detection() {
         &exemptions,
         snap.now_utc,
         Duration::from_secs(300),
+        Duration::from_secs(120),
         2,
         &snap.name_session_map,
         &snap.coworker_start_times,
+        &snap
+            .reviewer_in_progress_comment_ids
+            .keys()
+            .copied()
+            .collect(),
     );
 
     assert_eq!(
@@ -1518,6 +1534,7 @@ fn test_idle_shutdown_emits_shutdown_session_when_mapping_exists() {
         pr_task_associations: HashMap::new(),
         active_reviewers: HashSet::new(),
         reviewer_pr_assignments: HashMap::new(),
+        reviewer_in_progress_comment_ids: HashMap::new(),
         reviewed_prs: HashSet::new(),
         prs_needing_review: 0,
         reviewer_restart_counts: HashMap::new(),
@@ -1651,6 +1668,7 @@ fn test_idle_shutdown_falls_back_to_shutdown_coworker_without_mapping() {
         pr_task_associations: HashMap::new(),
         active_reviewers: HashSet::new(),
         reviewer_pr_assignments: HashMap::new(),
+        reviewer_in_progress_comment_ids: HashMap::new(),
         reviewed_prs: HashSet::new(),
         prs_needing_review: 0,
         reviewer_restart_counts: HashMap::new(),
@@ -1870,6 +1888,125 @@ fn test_stuck_reviewer_restart_falls_back_to_shutdown_coworker_without_mapping()
     assert!(
         !has_shutdown_session,
         "Should NOT have ShutdownSession when no session mapping exists, got: {:#?}",
+        effects
+    );
+}
+
+/// Stuck reviewer with a placeholder comment emits `UpdatePrComment` to mark the
+/// placeholder as abandoned when the reviewer is restarted.
+#[test]
+fn stuck_reviewer_with_placeholder_emits_update_pr_comment() {
+    use crate::coworker::{Coworker, CoworkerStatus};
+
+    let now = chrono::Utc::now();
+    let mut snap = empty_snap();
+    snap.now_utc = now;
+
+    // Active reviewer coworker so the function doesn't bail early
+    snap.active_coworkers.push(Coworker {
+        slot_id: uuid::Uuid::new_v4().to_string(),
+        name: "lexington".to_string(),
+        status: CoworkerStatus::Running,
+        working_dir: "/tmp/test".to_string(),
+        started_at: now - chrono::Duration::minutes(30),
+        current_task: None,
+        session_id: None,
+        model: "sonnet".to_string(),
+        provider: crate::auth::AuthProvider::Claude,
+        profile: crate::auth::DEFAULT_PROFILE.to_string(),
+    });
+
+    // Stuck health: no events for well past REVIEWER_STUCK_DURATION (300s)
+    snap.headless_process_health.insert(
+        "lexington".to_string(),
+        snapshot::ProcessHealth {
+            is_alive: true,
+            last_event_at: Some(now - chrono::Duration::minutes(10)),
+            has_usage_limit: false,
+            usage_limit_reset_at: None,
+            has_api_error: false,
+            has_auth_error: false,
+            has_running_subagent: false,
+            has_pending_tool: false,
+            has_tool_name_conflict: false,
+            has_pending_api_call: false,
+            exit_code: None,
+        },
+    );
+
+    // Reviewer assigned to PR 77
+    snap.reviewer_pr_assignments
+        .insert("lexington".to_string(), 77);
+
+    // PR 77 has a placeholder comment with id 555
+    snap.reviewer_in_progress_comment_ids.insert(77, 555);
+
+    // Below max restarts (so it will be restarted, not escalated)
+    snap.reviewer_restart_counts.insert(77, 0);
+
+    let effects = check_and_restart_stuck_reviewers(&snap);
+
+    let has_update_pr_comment = effects.iter().any(|e| {
+        matches!(
+            e,
+            Effect::UpdatePrComment { comment_id, .. } if *comment_id == 555
+        )
+    });
+    assert!(
+        has_update_pr_comment,
+        "Expected UpdatePrComment effect with comment_id 555 for stuck reviewer with placeholder, got: {:#?}",
+        effects
+    );
+}
+
+/// Dead reviewer with a placeholder comment emits `UpdatePrComment` to mark the
+/// placeholder as abandoned when the reviewer is respawned.
+#[test]
+fn dead_reviewer_with_placeholder_emits_update_pr_comment() {
+    let now = chrono::Utc::now();
+    let mut snap = empty_snap();
+    snap.now_utc = now;
+
+    // Dead reviewer health: process exited without posting review
+    snap.headless_process_health.insert(
+        "broadway".to_string(),
+        snapshot::ProcessHealth {
+            is_alive: false,
+            exit_code: Some(1),
+            last_event_at: Some(now - chrono::Duration::seconds(60)),
+            has_usage_limit: false,
+            usage_limit_reset_at: None,
+            has_api_error: false,
+            has_auth_error: false,
+            has_running_subagent: false,
+            has_pending_tool: false,
+            has_tool_name_conflict: false,
+            has_pending_api_call: false,
+        },
+    );
+
+    // Reviewer assigned to PR 88, but review was NOT posted
+    snap.reviewer_pr_assignments
+        .insert("broadway".to_string(), 88);
+    // reviewed_prs does NOT contain 88 (review not posted)
+
+    // PR 88 has a placeholder comment with id 888
+    snap.reviewer_in_progress_comment_ids.insert(88, 888);
+
+    // Below max restarts
+    snap.reviewer_restart_counts.insert(88, 0);
+
+    let effects = check_and_restart_dead_reviewers(&snap);
+
+    let has_update_pr_comment = effects.iter().any(|e| {
+        matches!(
+            e,
+            Effect::UpdatePrComment { comment_id, .. } if *comment_id == 888
+        )
+    });
+    assert!(
+        has_update_pr_comment,
+        "Expected UpdatePrComment effect with comment_id 888 for dead reviewer with placeholder, got: {:#?}",
         effects
     );
 }

@@ -649,6 +649,11 @@ pub(crate) struct DaemonState {
     ///
     /// Short TTL (2 min) ensures we eventually detect the review after it's posted.
     pr_review_negative_cache: std::sync::Mutex<HashMap<u64, std::time::Instant>>,
+    /// Cache for "Review in progress" placeholder comment IDs per PR.
+    /// Maps PR number → (comment_id, checked_at).
+    /// None means "no placeholder found" (negative result).
+    /// Positive results (Some(comment_id)) are kept until the reviewer completes.
+    reviewer_placeholder_cache: std::sync::Mutex<HashMap<u64, (Option<u64>, std::time::Instant)>>,
     /// LRU pool for coworker name allocation.
     ///
     /// Tracks available and allocated names. Names at the front of the queue are
@@ -1050,6 +1055,10 @@ impl DaemonState {
             // Cache positive results permanently (reviews are monotonic — they don't disappear)
             let mut ps = self.persistent_state.lock().await;
             ps.github.mark_reviewed_pr(pr_number);
+            drop(ps);
+            // Clear placeholder cache: review is done, no need to track placeholder anymore
+            let mut placeholder_cache = self.reviewer_placeholder_cache.lock().unwrap();
+            placeholder_cache.remove(&pr_number);
         } else {
             // Cache negative result with TTL to avoid repeated API calls
             let mut neg_cache = self.pr_review_negative_cache.lock().unwrap();
@@ -1185,6 +1194,7 @@ impl DaemonState {
             kanban_cache: rpc_kanban::KanbanCache::new(),
             prs_cache: rpc_prs::PrsCache::new(),
             pr_review_negative_cache: std::sync::Mutex::new(HashMap::new()),
+            reviewer_placeholder_cache: std::sync::Mutex::new(HashMap::new()),
             draining: std::sync::atomic::AtomicBool::new(false),
             restart_requested: std::sync::atomic::AtomicBool::new(false),
             shutdown_tx,
@@ -3227,6 +3237,11 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                     );
                     let mut ps = state.persistent_state.lock().await;
                     ps.github.mark_reviewed_pr(pr_number);
+                    drop(ps);
+                    // Clear placeholder cache: review is done
+                    let mut placeholder_cache =
+                        state.reviewer_placeholder_cache.lock().unwrap();
+                    placeholder_cache.remove(&pr_number);
                 }
 
                 // Record CI check duration for statistics tracking
