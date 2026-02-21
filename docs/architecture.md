@@ -100,7 +100,7 @@ When the daemon starts, it executes a careful cleanup and recovery sequence in `
 
 7. **Stale flag cleanup** — `clear_stale_running_sessions()` clears the `is_running` flag for any session not included in the recovered set. This covers sessions skipped by `recover_from_session_records` for any reason (non-resumable, reviewer without a PR number, or dropped by name deduplication), as well as channel-lead sessions whose channel was archived between daemon runs. Active channel-lead sessions (whose channel is still non-archived) are preserved for the separate channel lead recovery path.
 
-8. **Channel lead recovery** — `recover_channel_lead_sessions()` iterates active (non-archived) topic channels and emits `SpawnCoworker` effects to resume or fresh-start each channel lead session.
+8. **Channel lead recovery** — `recover_channel_lead_sessions()` iterates active (non-archived) topic channels and emits `SpawnCoworker` effects to resume or fresh-start each channel lead session. The main channel names `"midtown"` and `"main"` are always excluded from this step — they belong to the Project Lead, not a channel lead. This guards against accidentally recreated channel directories (e.g., from tests or legacy TUI sessions).
 
 ## Coworkers
 
@@ -155,6 +155,18 @@ The main lead session name equals the repo name (e.g. `"midtown"`), not the hard
 - **Attached key**: `attached_coworkers` entries for the lead are keyed by `repo_name` (lowercase)
 
 Code that previously compared `name == "lead"` now compares `name.eq_ignore_ascii_case(&snap.repo_name)` or checks `coworker_type == Some("lead")` (for attach-path role detection).
+
+## Provider Resolution
+
+Each session role resolves its AI provider via `get_execution_provider_for_role()` in `src/config.rs`. The resolution chains are:
+
+- **Lead**: `execution.project_lead_provider` → `execution.lead_provider` → `Claude` (default)
+- **Channel Lead**: `execution.channel_lead_provider` → `execution.lead_provider` → `Claude` (default)
+- **Coworker**: `execution.coworker_provider` → `Claude` (default)
+- **Reviewer**: `execution.reviewer_provider` → `Claude` (default)
+- **Architect / HeadlessExecute**: role-specific provider → `execution.specialized_provider` → `Claude` (default)
+
+This means `lead_provider` acts as a shared fallback for both the Project Lead and Channel Leads. Setting `project_lead_provider` overrides only the Project Lead's provider without affecting channel leads, and vice versa for `channel_lead_provider`. The resolved provider is stored in `LaunchConfig.auth_provider` and is also used to derive the default model via `default_model_for_provider_role()`.
 
 ## Channel Leads
 

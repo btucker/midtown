@@ -409,14 +409,10 @@ pub(super) async fn handle_auth_switch(
         if !coworker.working_dir.is_empty() {
             config.working_dir = Some(std::path::PathBuf::from(&coworker.working_dir));
         }
-        if config.auth_provider != target_provider {
-            config.auth_provider = target_provider;
-            config.model =
-                super::helpers::default_model_for_provider_role(target_provider, &config.role)
-                    .to_string();
-        } else {
-            config.auth_provider = target_provider;
-        }
+        config.auth_provider = target_provider;
+        config.model =
+            super::helpers::default_model_for_provider_role(target_provider, &config.role)
+                .to_string();
         config.auth_profile_dir = Some(crate::auth::active_profile_dir_for_project_with_provider(
             &state.repo_name,
             target_provider,
