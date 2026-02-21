@@ -565,6 +565,74 @@ impl Channel {
         })
     }
 
+    /// Rename a channel
+    ///
+    /// Renames the channel directory from `channels/<old>/` to `channels/<new>/`.
+    /// This is a static method because the caller may not hold an open Channel instance.
+    ///
+    /// Returns an error if:
+    /// - `old` is "midtown" (the main channel cannot be renamed)
+    /// - `new` is an invalid channel name
+    /// - `old` directory does not exist
+    /// - `new` directory already exists
+    pub fn rename_channel(base_dir: impl Into<PathBuf>, old: &str, new: &str) -> Result<()> {
+        if old == "midtown" {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Cannot rename the 'midtown' channel",
+            )
+            .into());
+        }
+
+        // Validate the old name to prevent path traversal (e.g., "../worktrees").
+        // The new name is validated below, but the old name must also be safe since
+        // it's used in Path::join("channels", old).
+        if !Self::is_valid_channel_name(old) {
+            return Err(crate::Error::InvalidMessage(format!(
+                "Invalid channel name '{}': must be non-empty and contain only alphanumeric characters, hyphens, and underscores",
+                old
+            )));
+        }
+
+        if !Self::is_valid_channel_name(new) {
+            return Err(crate::Error::InvalidMessage(format!(
+                "Invalid channel name '{}': must be non-empty and contain only alphanumeric characters, hyphens, and underscores",
+                new
+            )));
+        }
+
+        // Reject names reserved for coworker sessions to prevent naming collisions.
+        if crate::coworker::AVENUE_NAMES.contains(&new) {
+            return Err(crate::Error::InvalidMessage(format!(
+                "Channel name '{}' is reserved for coworker sessions and cannot be used as a channel name",
+                new
+            )));
+        }
+
+        let base_dir = base_dir.into();
+        let old_dir = base_dir.join("channels").join(old);
+        let new_dir = base_dir.join("channels").join(new);
+
+        if !old_dir.exists() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("Channel '{}' does not exist", old),
+            )
+            .into());
+        }
+
+        if new_dir.exists() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                format!("Channel '{}' already exists", new),
+            )
+            .into());
+        }
+
+        fs::rename(&old_dir, &new_dir)?;
+        Ok(())
+    }
+
     /// Mark a channel as archived
     ///
     /// Renames the channel directory from `channels/<name>/` to `channels/<name>.archived/`.
@@ -1379,6 +1447,15 @@ impl ChannelRouter {
     pub fn open_channels(&self) -> Vec<String> {
         let channels = self.channels.lock().unwrap();
         channels.keys().cloned().collect()
+    }
+
+    /// Remove a channel from the cache by name.
+    ///
+    /// Used after renaming a channel to evict stale cache entries.
+    /// Subsequent sends to the removed channel name will re-open the channel from disk.
+    pub fn remove_channel(&self, channel_name: &str) {
+        let mut channels = self.channels.lock().unwrap();
+        channels.remove(channel_name);
     }
 }
 

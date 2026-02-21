@@ -267,6 +267,13 @@ impl DaemonClient {
         self.send("channel.archive", Some(serde_json::json!({ "name": name })))
     }
 
+    pub fn channel_rename(&self, old: &str, new: &str) -> Result<Response, String> {
+        self.send(
+            "channel.rename",
+            Some(serde_json::json!({ "old": old, "new": new })),
+        )
+    }
+
     /// List all available channels from the daemon.
     ///
     /// This fetches channels from the daemon's HTTP API (same as web UI),

@@ -4,7 +4,7 @@
 //! domain-specific handler modules:
 //!
 //! - `rpc_auth` — authentication switching
-//! - `rpc_channel` — channel post/read/create/archive/list
+//! - `rpc_channel` — channel post/read/create/archive/rename/list
 //! - `rpc_coworker` — coworker lifecycle (spawn, break, list, view, state, nudge)
 //! - `rpc_headless` — headless execution and snapshot
 //! - `rpc_headed` — headed wrapper intercom (register/poll/ack)
@@ -475,6 +475,12 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
         "channel.archive" => {
             let name = require_str!(params, "name", request.id);
             super::rpc_channel::handle_channel_archive(request.id, name, state).await
+        }
+
+        "channel.rename" => {
+            let old = require_str!(params, "old", request.id);
+            let new = require_str!(params, "new", request.id);
+            super::rpc_channel::handle_channel_rename(request.id, old, new, state).await
         }
 
         // ---- Tasks ----

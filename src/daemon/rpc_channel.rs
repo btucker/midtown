@@ -1,8 +1,8 @@
 //! Channel-related RPC handlers.
 //!
 //! Handles `channel.post`, `channel.read`, `channel.create`, `channel.archive`,
-//! and `channel.list` methods, including IRC-style `/me` actions, review note
-//! deduplication, @mention routing, and notification delivery.
+//! `channel.rename`, and `channel.list` methods, including IRC-style `/me`
+//! actions, review note deduplication, @mention routing, and notification delivery.
 
 use std::time::{Duration, Instant};
 
@@ -442,6 +442,111 @@ pub(super) async fn handle_channel_archive(
             Response::error(id, RpcError::new(-32603, e.to_string()))
         }
     }
+}
+
+/// Handle channel.rename RPC method.
+///
+/// Renames a channel by moving its directory from `channels/<old>/` to `channels/<new>/`.
+/// Also updates persistent state:
+/// - `channel_lead_sessions`: renames the key from `old` to `new`
+/// - `task_channel`: updates all values referencing `old` to `new`
+/// - `headless_sessions`: renames the channel-lead session entry
+///
+/// Shuts down the channel lead for the old name (it will be spawned fresh under the
+/// new name when the channel receives activity). Returns an error if the old channel
+/// does not exist, the new name is invalid, or the new channel already exists.
+pub(super) async fn handle_channel_rename(
+    id: RequestId,
+    old: &str,
+    new: &str,
+    state: &DaemonState,
+) -> Response {
+    let base_dir = state.channel_router.base_dir();
+
+    // Check old channel exists before attempting rename.
+    let old_channel_dir = base_dir.join("channels").join(old);
+    if !old_channel_dir.exists() {
+        return Response::error(
+            id,
+            RpcError::new(-32602, format!("Channel '{}' does not exist", old)),
+        );
+    }
+
+    // Check new channel doesn't already exist.
+    let new_channel_dir = base_dir.join("channels").join(new);
+    if new_channel_dir.exists() {
+        return Response::error(
+            id,
+            RpcError::new(-32602, format!("Channel '{}' already exists", new)),
+        );
+    }
+
+    // Rename the directory on disk.
+    if let Err(e) = crate::Channel::rename_channel(base_dir, old, new) {
+        error!("Failed to rename channel '{}' to '{}': {}", old, new, e);
+        return Response::error(id, RpcError::new(-32603, e.to_string()));
+    }
+
+    // Evict stale channel-router cache entry so future sends use the new path.
+    state.channel_router.remove_channel(old);
+
+    // Update persistent state BEFORE shutting down the channel lead. This closes
+    // the race window where the tick loop could observe the stopped lead with the
+    // old name still in channel_lead_sessions and attempt to re-spawn it.
+    let old_lead_session_name = crate::launch::channel_lead_session_name(old);
+    {
+        let mut ps = state.persistent_state.lock().await;
+
+        // Remove (not migrate) the channel_lead_sessions entry. The old session is
+        // being shut down, so migrating the stale session ID would block fresh
+        // spawning — NudgeChannelLead would fail to resume the dead session, the
+        // death handler would clear the value to "", but leave the key present,
+        // and the `contains_key` guard would prevent spawning indefinitely.
+        // A fresh lead will be spawned on-demand when the new channel gets activity.
+        ps.channel_lead_sessions.remove(old);
+
+        // Update all task_channel entries that reference the old channel name.
+        for value in ps.task_channel.values_mut() {
+            if value == old {
+                *value = new.to_string();
+            }
+        }
+
+        // Remove the headless session entry for the old channel lead. Like
+        // channel_lead_sessions, we remove rather than migrate to avoid stale
+        // references to the dead session.
+        ps.headless_sessions.remove(&old_lead_session_name);
+
+        if let Err(e) = ps.save_for_repo(&state.repo_name) {
+            warn!(
+                "Failed to save daemon state after renaming channel '{}' to '{}': {}",
+                old, new, e
+            );
+        }
+    }
+
+    // Shut down the channel lead session for the old name (if running).
+    let goodbye = format!(
+        "Channel '{}' has been renamed to '{}'. Your session is ending.",
+        old, new
+    );
+    super::effects::execute_effects(
+        vec![super::effects::Effect::ShutdownCoworker {
+            name: old_lead_session_name.clone(),
+            message: goodbye,
+        }],
+        state,
+    )
+    .await;
+
+    info!("Channel '{}' renamed to '{}'", old, new);
+    Response::success(
+        id,
+        serde_json::json!({
+            "success": true,
+            "message": format!("Channel '{}' renamed to '{}'", old, new),
+        }),
+    )
 }
 
 /// Handle channel.list RPC method.
