@@ -624,7 +624,7 @@
 
 <div class="flex flex-col h-full min-h-0 overflow-hidden relative">
   <div
-    class="flex-1 min-h-0 overflow-y-auto overflow-x-hidden overscroll-contain font-[SF_Mono,Menlo,Consolas,Monaco,'Courier_New',monospace] text-[0.88rem] leading-[1.55] px-[18px] pt-[14px] pb-[18px]"
+    class="flex-1 min-h-0 overflow-y-auto overflow-x-hidden overscroll-contain font-[SF_Mono,Menlo,Consolas,Monaco,'Courier_New',monospace] text-[0.92rem] leading-[1.55] px-[18px] pt-[14px] pb-[18px]"
     bind:this={scrollAreaViewport}
     onscroll={handleScroll}
   >
@@ -658,7 +658,7 @@
             <div
               class="mt-1 whitespace-nowrap overflow-hidden text-ellipsis flex items-center gap-[7px]"
             >
-              <span class="font-bold" style="color: {getSenderColor(msg.from)}">{msg.from}</span>
+              <span class="font-bold text-[0.82rem]" style="color: {getSenderColor(msg.from)}">{msg.from}</span>
               {#if currentTasks[msg.from.toLowerCase()]}
                 <span class="text-muted-foreground"> - {currentTasks[msg.from.toLowerCase()]}</span>
               {/if}
@@ -668,7 +668,7 @@
           {#if isAction(msg) && !hasMermaid(msg.content)}
             <!-- Action message: HH:MM * content -->
             <div class="flex gap-0 break-words">
-              <span class="text-muted-foreground/60 flex-shrink-0 w-[3.7em] text-right mr-[0.5em] select-none">{formatTime(msg.timestamp)}</span>
+              <span class="text-muted-foreground/60 flex-shrink-0 w-[3.7em] text-right mr-[0.5em] select-none text-[0.78rem]">{formatTime(msg.timestamp)}</span>
               <span class="flex-shrink-0 mr-[0.3em]" style="color: {getSenderColor(msg.from)}">*</span>
               <span class="action-text flex-1 min-w-0" style="color: {getSenderColor(msg.from)}">{@html renderContent(getActionContent(msg))}</span>
             </div>
@@ -682,10 +682,10 @@
               {:else}
                 <div class="flex gap-0 break-words">
                   {#if si === 0}
-                    <span class="text-muted-foreground/60 flex-shrink-0 w-[3.7em] text-right mr-[0.5em] select-none">{formatTime(msg.timestamp)}</span>
+                    <span class="text-muted-foreground/60 flex-shrink-0 w-[3.7em] text-right mr-[0.5em] select-none text-[0.78rem]">{formatTime(msg.timestamp)}</span>
                     <span class="flex-shrink-0 mr-[0.3em]" style="color: {getSenderColor(msg.from)}">*</span>
                   {:else}
-                    <span class="text-muted-foreground/60 flex-shrink-0 w-[3.7em] text-right mr-[0.5em] select-none"></span>
+                    <span class="text-muted-foreground/60 flex-shrink-0 w-[3.7em] text-right mr-[0.5em] select-none text-[0.78rem]"></span>
                     <span class="flex-shrink-0 mr-[0.3em] invisible">*</span>
                   {/if}
                   <span class="action-text flex-1 min-w-0" style="color: {getSenderColor(msg.from)}">{@html renderContent(segment.content)}</span>
@@ -702,9 +702,9 @@
               {:else}
                 <div class="flex gap-0 break-words">
                   {#if si === 0}
-                    <span class="text-muted-foreground/60 flex-shrink-0 w-[3.7em] text-right mr-[0.5em] select-none">{formatTime(msg.timestamp)}</span>
+                    <span class="text-muted-foreground/60 flex-shrink-0 w-[3.7em] text-right mr-[0.5em] select-none text-[0.78rem]">{formatTime(msg.timestamp)}</span>
                   {:else}
-                    <span class="text-muted-foreground/60 flex-shrink-0 w-[3.7em] text-right mr-[0.5em] select-none"></span>
+                    <span class="text-muted-foreground/60 flex-shrink-0 w-[3.7em] text-right mr-[0.5em] select-none text-[0.78rem]"></span>
                   {/if}
                   <span class="message-text flex-1 min-w-0 {isDimSender(msg.from) ? 'text-muted-foreground' : 'text-foreground'}">{@html renderContent(segment.content)}</span>
                 </div>
@@ -713,7 +713,7 @@
           {:else}
             <!-- Regular message: HH:MM content -->
             <div class="flex gap-0 break-words">
-              <span class="text-muted-foreground/60 flex-shrink-0 w-[3.7em] text-right mr-[0.5em] select-none">{formatTime(msg.timestamp)}</span>
+              <span class="text-muted-foreground/60 flex-shrink-0 w-[3.7em] text-right mr-[0.5em] select-none text-[0.78rem]">{formatTime(msg.timestamp)}</span>
               <span class="message-text flex-1 min-w-0 {isDimSender(msg.from) ? 'text-muted-foreground' : 'text-foreground'}">{@html renderContent(msg.content)}</span>
             </div>
           {/if}
