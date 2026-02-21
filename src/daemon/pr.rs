@@ -2385,13 +2385,6 @@ pub(crate) async fn collect_reviewer_effects_with_source(
             continue;
         }
 
-        let title = pr.get("title").and_then(|s| s.as_str()).unwrap_or("");
-        debug!(
-            "Spawning isolated coworker to review PR #{}: {}",
-            pr_number,
-            truncate_str(title, 40)
-        );
-
         // Extract channel lead names for coworker limit check
         let channel_lead_names: std::collections::HashSet<String> = {
             let ps = state.persistent_state.lock().await;
@@ -2443,6 +2436,13 @@ pub(crate) async fn collect_reviewer_effects_with_source(
             );
             continue;
         }
+
+        let title = pr.get("title").and_then(|s| s.as_str()).unwrap_or("");
+        debug!(
+            "Spawning isolated coworker to review PR #{}: {}",
+            pr_number,
+            truncate_str(title, 40)
+        );
 
         // reviewer() now takes the PR number and generates both the system prompt
         // (with merged reviewer.md instructions) and the launch prompt internally.
