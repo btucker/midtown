@@ -240,6 +240,7 @@ Migration runs once per `base_dir` per process (via `OnceLock`) and is idempoten
 - `channel.read` — Read messages from a channel (supports `all`, `last`, `since`, and per-channel filtering)
 - `channel.create` — Create a new channel directory; idempotent (no-op if channel already exists)
 - `channel.archive` — Rename `channels/<name>/` to `channels/<name>.archived/`; returns an error if the channel does not exist or if archiving 'midtown'
+- `channel.rename` — Rename `channels/<old>/` to `channels/<new>/`; updates `task_channel`, `channel_lead_sessions`, and `headless_sessions` in persistent state; shuts down the old channel lead session; returns an error if the old channel does not exist, the new name is invalid/already exists, or if renaming 'midtown'
 - `channel.list` — Return all channels, optionally including archived ones
 
 ## Channel Sync

@@ -1208,3 +1208,167 @@ async fn test_topic_sessions_dedup_returns_existing() {
         "Original fork session should be preserved"
     );
 }
+
+// ============================================================================
+// channel.rename tests
+// ============================================================================
+
+/// Renaming a channel moves its directory and updates persistent state.
+#[tokio::test]
+async fn test_channel_rename_success() {
+    let (state, tmp, _guard) = make_test_state("midtown-test-rename-success");
+    let base_dir = tmp.path();
+
+    // Create the "auth-v1" channel
+    crate::Channel::new(base_dir, "auth-v1").expect("create auth-v1");
+
+    // Seed task_channel so we can verify it gets updated
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.task_channel
+            .insert("42".to_string(), "auth-v1".to_string());
+        ps.task_channel
+            .insert("99".to_string(), "other-channel".to_string());
+    }
+
+    let response = handle_channel_rename(1_i64.into(), "auth-v1", "auth-v2", &state).await;
+    assert!(response.error.is_none(), "rename should succeed");
+    let result = response.result.expect("should have result");
+    assert_eq!(result["success"], true);
+
+    // Old directory gone, new directory present
+    assert!(
+        !base_dir.join("channels").join("auth-v1").exists(),
+        "old channel dir should not exist"
+    );
+    assert!(
+        base_dir.join("channels").join("auth-v2").exists(),
+        "new channel dir should exist"
+    );
+
+    // Verify persistent state was updated
+    let ps = state.persistent_state.lock().await;
+    assert_eq!(
+        ps.task_channel.get("42").map(String::as_str),
+        Some("auth-v2"),
+        "task_channel entry for task 42 should be updated to new name"
+    );
+    assert_eq!(
+        ps.task_channel.get("99").map(String::as_str),
+        Some("other-channel"),
+        "unrelated task_channel entry should be unchanged"
+    );
+}
+
+/// Renaming a non-existent channel returns an error.
+#[tokio::test]
+async fn test_channel_rename_nonexistent_source() {
+    let (state, _tmp, _guard) = make_test_state("midtown-test-rename-nonexistent");
+
+    let response = handle_channel_rename(2_i64.into(), "does-not-exist", "new-name", &state).await;
+    assert!(
+        response.error.is_some(),
+        "should error when old channel does not exist"
+    );
+    let err = response.error.unwrap();
+    assert!(
+        err.message.contains("does not exist"),
+        "error message should mention missing channel, got: {}",
+        err.message
+    );
+}
+
+/// Renaming to an already-existing channel name returns an error.
+#[tokio::test]
+async fn test_channel_rename_target_already_exists() {
+    let (state, tmp, _guard) = make_test_state("midtown-test-rename-target-exists");
+    let base_dir = tmp.path();
+
+    crate::Channel::new(base_dir, "old-name").expect("create old-name");
+    crate::Channel::new(base_dir, "existing-name").expect("create existing-name");
+
+    let response = handle_channel_rename(3_i64.into(), "old-name", "existing-name", &state).await;
+    assert!(
+        response.error.is_some(),
+        "should error when target channel already exists"
+    );
+    let err = response.error.unwrap();
+    assert!(
+        err.message.contains("already exists"),
+        "error message should mention existing channel, got: {}",
+        err.message
+    );
+}
+
+/// Renaming the 'midtown' main channel returns an error.
+#[tokio::test]
+async fn test_channel_rename_midtown_forbidden() {
+    let (state, _tmp, _guard) = make_test_state("midtown-test-rename-midtown-forbidden");
+
+    let response = handle_channel_rename(4_i64.into(), "midtown", "new-name", &state).await;
+    assert!(
+        response.error.is_some(),
+        "should error when renaming the 'midtown' channel"
+    );
+    let err = response.error.unwrap();
+    assert!(
+        err.message.contains("midtown"),
+        "error message should mention the channel restriction, got: {}",
+        err.message
+    );
+}
+
+/// Renaming to an invalid channel name returns an error.
+#[tokio::test]
+async fn test_channel_rename_invalid_new_name() {
+    let (state, tmp, _guard) = make_test_state("midtown-test-rename-invalid-name");
+    let base_dir = tmp.path();
+
+    crate::Channel::new(base_dir, "valid-name").expect("create valid-name");
+
+    let response = handle_channel_rename(5_i64.into(), "valid-name", "invalid name!", &state).await;
+    assert!(
+        response.error.is_some(),
+        "should error when new name is invalid"
+    );
+}
+
+/// Renaming evicts the old channel from the ChannelRouter cache.
+#[tokio::test]
+async fn test_channel_rename_evicts_router_cache() {
+    let (state, tmp, _guard) = make_test_state("midtown-test-rename-evict-cache");
+    let base_dir = tmp.path();
+
+    crate::Channel::new(base_dir, "cached-channel").expect("create cached-channel");
+
+    // Warm up the router cache by sending a message to the channel
+    let msg = crate::message::Message::for_channel(
+        "cached-channel",
+        "test",
+        "hello".to_string(),
+        crate::message::MessageType::Text,
+    );
+    state
+        .channel_router
+        .send(&msg)
+        .expect("send to prime cache");
+    assert!(
+        state
+            .channel_router
+            .open_channels()
+            .contains(&"cached-channel".to_string()),
+        "channel should be in router cache before rename"
+    );
+
+    let response =
+        handle_channel_rename(6_i64.into(), "cached-channel", "renamed-channel", &state).await;
+    assert!(response.error.is_none(), "rename should succeed");
+
+    assert!(
+        !state
+            .channel_router
+            .open_channels()
+            .contains(&"cached-channel".to_string()),
+        "old channel should be evicted from router cache after rename"
+    );
+}

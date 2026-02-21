@@ -444,6 +444,111 @@ pub(super) async fn handle_channel_archive(
     }
 }
 
+/// Handle channel.rename RPC method.
+///
+/// Renames a channel by moving its directory from `channels/<old>/` to `channels/<new>/`.
+/// Also updates persistent state:
+/// - `channel_lead_sessions`: renames the key from `old` to `new`
+/// - `task_channel`: updates all values referencing `old` to `new`
+/// - `headless_sessions`: renames the channel-lead session entry
+///
+/// Shuts down the channel lead for the old name (it will be spawned fresh under the
+/// new name when the channel receives activity). Returns an error if the old channel
+/// does not exist, the new name is invalid, or the new channel already exists.
+pub(super) async fn handle_channel_rename(
+    id: RequestId,
+    old: &str,
+    new: &str,
+    state: &DaemonState,
+) -> Response {
+    let base_dir = state.channel_router.base_dir();
+
+    // Check old channel exists before attempting rename.
+    let old_channel_dir = base_dir.join("channels").join(old);
+    if !old_channel_dir.exists() {
+        return Response::error(
+            id,
+            RpcError::new(-32602, format!("Channel '{}' does not exist", old)),
+        );
+    }
+
+    // Check new channel doesn't already exist.
+    let new_channel_dir = base_dir.join("channels").join(new);
+    if new_channel_dir.exists() {
+        return Response::error(
+            id,
+            RpcError::new(-32602, format!("Channel '{}' already exists", new)),
+        );
+    }
+
+    // Rename the directory on disk.
+    if let Err(e) = crate::Channel::rename_channel(base_dir, old, new) {
+        error!("Failed to rename channel '{}' to '{}': {}", old, new, e);
+        return Response::error(id, RpcError::new(-32603, e.to_string()));
+    }
+
+    // Evict stale channel-router cache entry so future sends use the new path.
+    state.channel_router.remove_channel(old);
+
+    // Shut down the channel lead session for the old name (if running).
+    let old_lead_session_name = crate::launch::channel_lead_session_name(old);
+    let goodbye = format!(
+        "Channel '{}' has been renamed to '{}'. Your session is ending.",
+        old, new
+    );
+    super::effects::execute_effects(
+        vec![super::effects::Effect::ShutdownCoworker {
+            name: old_lead_session_name.clone(),
+            message: goodbye,
+        }],
+        state,
+    )
+    .await;
+
+    // Update persistent state.
+    {
+        let mut ps = state.persistent_state.lock().await;
+
+        // Rename key in channel_lead_sessions (old → new).
+        if let Some(session_id) = ps.channel_lead_sessions.remove(old) {
+            ps.channel_lead_sessions.insert(new.to_string(), session_id);
+        }
+
+        // Update all task_channel entries that reference the old channel name.
+        for value in ps.task_channel.values_mut() {
+            if value == old {
+                *value = new.to_string();
+            }
+        }
+
+        // Rename the headless session entry for the channel lead.
+        let new_lead_session_name = crate::launch::channel_lead_session_name(new);
+        if let Some(mut session_info) = ps.headless_sessions.remove(&old_lead_session_name) {
+            if session_info.channel.as_deref() == Some(old) {
+                session_info.channel = Some(new.to_string());
+            }
+            ps.headless_sessions
+                .insert(new_lead_session_name, session_info);
+        }
+
+        if let Err(e) = ps.save_for_repo(&state.repo_name) {
+            warn!(
+                "Failed to save daemon state after renaming channel '{}' to '{}': {}",
+                old, new, e
+            );
+        }
+    }
+
+    info!("Channel '{}' renamed to '{}'", old, new);
+    Response::success(
+        id,
+        serde_json::json!({
+            "success": true,
+            "message": format!("Channel '{}' renamed to '{}'", old, new),
+        }),
+    )
+}
+
 /// Handle channel.list RPC method.
 ///
 /// Returns the list of available channels, optionally including archived channels.
