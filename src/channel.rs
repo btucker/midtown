@@ -584,9 +584,27 @@ impl Channel {
             .into());
         }
 
+        // Validate the old name to prevent path traversal (e.g., "../worktrees").
+        // The new name is validated below, but the old name must also be safe since
+        // it's used in Path::join("channels", old).
+        if !Self::is_valid_channel_name(old) {
+            return Err(crate::Error::InvalidMessage(format!(
+                "Invalid channel name '{}': must be non-empty and contain only alphanumeric characters, hyphens, and underscores",
+                old
+            )));
+        }
+
         if !Self::is_valid_channel_name(new) {
             return Err(crate::Error::InvalidMessage(format!(
                 "Invalid channel name '{}': must be non-empty and contain only alphanumeric characters, hyphens, and underscores",
+                new
+            )));
+        }
+
+        // Reject names reserved for coworker sessions to prevent naming collisions.
+        if crate::coworker::AVENUE_NAMES.contains(&new) {
+            return Err(crate::Error::InvalidMessage(format!(
+                "Channel name '{}' is reserved for coworker sessions and cannot be used as a channel name",
                 new
             )));
         }
@@ -1433,7 +1451,7 @@ impl ChannelRouter {
 
     /// Remove a channel from the cache by name.
     ///
-    /// Used after renaming or archiving a channel to evict stale cache entries.
+    /// Used after renaming a channel to evict stale cache entries.
     /// Subsequent sends to the removed channel name will re-open the channel from disk.
     pub fn remove_channel(&self, channel_name: &str) {
         let mut channels = self.channels.lock().unwrap();

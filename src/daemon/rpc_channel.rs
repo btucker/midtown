@@ -1,8 +1,8 @@
 //! Channel-related RPC handlers.
 //!
 //! Handles `channel.post`, `channel.read`, `channel.create`, `channel.archive`,
-//! and `channel.list` methods, including IRC-style `/me` actions, review note
-//! deduplication, @mention routing, and notification delivery.
+//! `channel.rename`, and `channel.list` methods, including IRC-style `/me`
+//! actions, review note deduplication, @mention routing, and notification delivery.
 
 use std::time::{Duration, Instant};
 
@@ -490,8 +490,42 @@ pub(super) async fn handle_channel_rename(
     // Evict stale channel-router cache entry so future sends use the new path.
     state.channel_router.remove_channel(old);
 
-    // Shut down the channel lead session for the old name (if running).
+    // Update persistent state BEFORE shutting down the channel lead. This closes
+    // the race window where the tick loop could observe the stopped lead with the
+    // old name still in channel_lead_sessions and attempt to re-spawn it.
     let old_lead_session_name = crate::launch::channel_lead_session_name(old);
+    {
+        let mut ps = state.persistent_state.lock().await;
+
+        // Remove (not migrate) the channel_lead_sessions entry. The old session is
+        // being shut down, so migrating the stale session ID would block fresh
+        // spawning — NudgeChannelLead would fail to resume the dead session, the
+        // death handler would clear the value to "", but leave the key present,
+        // and the `contains_key` guard would prevent spawning indefinitely.
+        // A fresh lead will be spawned on-demand when the new channel gets activity.
+        ps.channel_lead_sessions.remove(old);
+
+        // Update all task_channel entries that reference the old channel name.
+        for value in ps.task_channel.values_mut() {
+            if value == old {
+                *value = new.to_string();
+            }
+        }
+
+        // Remove the headless session entry for the old channel lead. Like
+        // channel_lead_sessions, we remove rather than migrate to avoid stale
+        // references to the dead session.
+        ps.headless_sessions.remove(&old_lead_session_name);
+
+        if let Err(e) = ps.save_for_repo(&state.repo_name) {
+            warn!(
+                "Failed to save daemon state after renaming channel '{}' to '{}': {}",
+                old, new, e
+            );
+        }
+    }
+
+    // Shut down the channel lead session for the old name (if running).
     let goodbye = format!(
         "Channel '{}' has been renamed to '{}'. Your session is ending.",
         old, new
@@ -504,40 +538,6 @@ pub(super) async fn handle_channel_rename(
         state,
     )
     .await;
-
-    // Update persistent state.
-    {
-        let mut ps = state.persistent_state.lock().await;
-
-        // Rename key in channel_lead_sessions (old → new).
-        if let Some(session_id) = ps.channel_lead_sessions.remove(old) {
-            ps.channel_lead_sessions.insert(new.to_string(), session_id);
-        }
-
-        // Update all task_channel entries that reference the old channel name.
-        for value in ps.task_channel.values_mut() {
-            if value == old {
-                *value = new.to_string();
-            }
-        }
-
-        // Rename the headless session entry for the channel lead.
-        let new_lead_session_name = crate::launch::channel_lead_session_name(new);
-        if let Some(mut session_info) = ps.headless_sessions.remove(&old_lead_session_name) {
-            if session_info.channel.as_deref() == Some(old) {
-                session_info.channel = Some(new.to_string());
-            }
-            ps.headless_sessions
-                .insert(new_lead_session_name, session_info);
-        }
-
-        if let Err(e) = ps.save_for_repo(&state.repo_name) {
-            warn!(
-                "Failed to save daemon state after renaming channel '{}' to '{}': {}",
-                old, new, e
-            );
-        }
-    }
 
     info!("Channel '{}' renamed to '{}'", old, new);
     Response::success(

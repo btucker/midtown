@@ -1222,13 +1222,35 @@ async fn test_channel_rename_success() {
     // Create the "auth-v1" channel
     crate::Channel::new(base_dir, "auth-v1").expect("create auth-v1");
 
-    // Seed task_channel so we can verify it gets updated
+    let old_lead_session_name = crate::launch::channel_lead_session_name("auth-v1");
+
+    // Seed persistent state: task_channel, channel_lead_sessions, headless_sessions
     {
         let mut ps = state.persistent_state.lock().await;
         ps.task_channel
             .insert("42".to_string(), "auth-v1".to_string());
         ps.task_channel
             .insert("99".to_string(), "other-channel".to_string());
+        ps.channel_lead_sessions
+            .insert("auth-v1".to_string(), "session-auth-123".to_string());
+        ps.headless_sessions.insert(
+            old_lead_session_name.clone(),
+            crate::daemon::state::HeadlessSessionInfo {
+                session_id: "session-auth-123".to_string(),
+                last_active: chrono::Utc::now(),
+                purpose: "channel lead for auth-v1".to_string(),
+                pid: None,
+                coworker_type: Some("channel-lead".to_string()),
+                task_id: None,
+                pr_number: None,
+                channel: Some("auth-v1".to_string()),
+                working_dir: None,
+                provider: None,
+                profile: None,
+                resume_on_startup: false,
+                initial_prompt: None,
+            },
+        );
     }
 
     let response = handle_channel_rename(1_i64.into(), "auth-v1", "auth-v2", &state).await;
@@ -1257,6 +1279,28 @@ async fn test_channel_rename_success() {
         ps.task_channel.get("99").map(String::as_str),
         Some("other-channel"),
         "unrelated task_channel entry should be unchanged"
+    );
+
+    // Verify channel_lead_sessions is cleaned up (removed, not migrated)
+    // so a fresh lead can be spawned on-demand for the new channel name.
+    assert!(
+        !ps.channel_lead_sessions.contains_key("auth-v1"),
+        "old channel_lead_sessions entry should be removed"
+    );
+    assert!(
+        !ps.channel_lead_sessions.contains_key("auth-v2"),
+        "stale session ID should not be migrated to new name"
+    );
+
+    // Verify headless_sessions is cleaned up
+    assert!(
+        !ps.headless_sessions.contains_key(&old_lead_session_name),
+        "old headless_sessions entry should be removed"
+    );
+    let new_lead_session_name = crate::launch::channel_lead_session_name("auth-v2");
+    assert!(
+        !ps.headless_sessions.contains_key(&new_lead_session_name),
+        "stale headless session should not be migrated to new name"
     );
 }
 
@@ -1370,5 +1414,32 @@ async fn test_channel_rename_evicts_router_cache() {
             .open_channels()
             .contains(&"cached-channel".to_string()),
         "old channel should be evicted from router cache after rename"
+    );
+}
+
+/// Renaming with a path-traversal old name returns an error.
+#[tokio::test]
+async fn test_channel_rename_path_traversal_old_name() {
+    let (state, _tmp, _guard) = make_test_state("midtown-test-rename-path-traversal");
+
+    let response = handle_channel_rename(7_i64.into(), "../escape", "new-name", &state).await;
+    assert!(
+        response.error.is_some(),
+        "path traversal in old name should return an error"
+    );
+}
+
+/// Renaming to a reserved avenue name returns an error.
+#[tokio::test]
+async fn test_channel_rename_reserved_avenue_name() {
+    let (state, tmp, _guard) = make_test_state("midtown-test-rename-avenue-name");
+    let base_dir = tmp.path();
+
+    crate::Channel::new(base_dir, "my-channel").expect("create channel");
+
+    let response = handle_channel_rename(8_i64.into(), "my-channel", "park", &state).await;
+    assert!(
+        response.error.is_some(),
+        "renaming to a reserved avenue name should return an error"
     );
 }
