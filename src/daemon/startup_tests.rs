@@ -928,7 +928,7 @@ async fn test_recovering_coworker_names_multiple_session_records() {
 /// Regression test: recover_from_session_records must use LaunchConfig::lead()
 /// for the lead session, not LaunchConfig::coworker(). Without this fix, the
 /// lead was recovered with model=sonnet and role=Coworker instead of
-/// model=opus and role=Lead.
+/// the role/provider default model and role=Lead.
 #[tokio::test]
 async fn test_recover_from_session_records_uses_lead_config_for_lead() {
     let persistent_state = tokio::sync::Mutex::new(DaemonPersistentState::default());
@@ -944,6 +944,14 @@ async fn test_recover_from_session_records_uses_lead_config_for_lead() {
 
     assert_eq!(effects.len(), 1);
     assert!(recovered_ids.contains("sess-lead"));
+    let expected_provider = crate::config::get_execution_provider_for_role(
+        "test-repo",
+        crate::config::ExecutionRole::Lead,
+    );
+    let expected_model = crate::daemon::helpers::default_model_for_provider_role(
+        expected_provider,
+        &crate::launch::CoworkerRole::Lead,
+    );
 
     match &effects[0] {
         Effect::ResumeCoworker {
@@ -959,8 +967,8 @@ async fn test_recover_from_session_records_uses_lead_config_for_lead() {
                 "Lead should use CoworkerRole::Lead, not Coworker"
             );
             assert_eq!(
-                config.model, "opus",
-                "Lead should use opus model, not sonnet"
+                config.model, expected_model,
+                "Lead should use role/provider default model, not coworker defaults"
             );
         }
         other => panic!("Expected ResumeCoworker, got {:?}", other),

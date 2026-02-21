@@ -181,7 +181,10 @@ pub(super) async fn handle_task_request(
     message: &str,
     state: &DaemonState,
 ) -> Response {
-    let channel_message = format!("@lead [Task Request] from {}: \"{}\"", from, message);
+    let channel_message = format!(
+        "@{} [Task Request] from {}: \"{}\"",
+        state.repo_name, from, message
+    );
 
     let msg = Message::new("midtown", channel_message.clone(), MessageType::Text);
 

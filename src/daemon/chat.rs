@@ -15,7 +15,7 @@ use crate::message::Message;
 
 use super::DaemonState;
 use super::constants::{OPS_CHANNEL, SKIP_SENDERS};
-use super::helpers::{contains_at_all, extract_mentions};
+use super::helpers::{contains_at_all, extract_mentions, extract_task_id};
 
 // Chat Monitor - @mention routing
 // ============================================================================
@@ -127,8 +127,8 @@ pub(super) async fn chat_monitor_loop(
 /// Extract @mentions from message content and route to coworkers.
 ///
 /// For each valid coworker name mentioned:
-/// - If the coworker is not running, spawn them with --resume
-/// - Nudge them with the message context
+/// - If the message contains a task ID (!N), route to the session working on that task
+/// - Otherwise, route to the mentioned coworker by name
 ///
 /// Also supports @all to broadcast to every active coworker and the lead.
 pub(super) async fn route_mentions(state: &DaemonState, msg: &Message) {
@@ -151,17 +151,58 @@ pub(super) async fn route_mentions(state: &DaemonState, msg: &Message) {
         mentions
     );
 
+    // Extract task ID if present (!N pattern) and resolve to the owning coworker.
+    // Coworker.current_task is a display-only field (always None in storage);
+    // the task system is the authoritative source for task-to-owner mapping.
+    let task_owner: Option<String> = extract_task_id(&msg.content).and_then(|tid| {
+        debug!("Found task ID !{} in message", tid);
+        let owner = crate::tasks::get_in_progress_tasks_with_subjects_for_repo(&state.repo_name)
+            .into_iter()
+            .find(|(task_id, _, _)| task_id == &tid)
+            .map(|(_, _, owner)| owner)
+            .filter(|o| !o.is_empty());
+        if owner.is_none() {
+            debug!(
+                "No in-progress task !{} found, falling back to name-based routing",
+                tid
+            );
+        }
+        owner
+    });
+
     let channel_lead_names: std::collections::HashSet<String> = {
         let ps = state.persistent_state.lock().await;
         ps.channel_lead_sessions.keys().cloned().collect()
     };
 
     for name in mentions {
-        // Deduplicate: skip if we've already nudged this person for this message.
-        // Check and record in a single lock scope to avoid TOCTOU races.
+        // If a task owner was resolved, route to their session instead of the @mentioned name.
+        // This ensures nudges reach the correct session even when coworker names are reassigned.
+        // Only reroute if the owner is currently running; otherwise fall back to name routing.
+        let target_name = match &task_owner {
+            Some(owner) if !owner.eq_ignore_ascii_case(&name) => {
+                if state.coworkers.get(owner).is_some() {
+                    info!(
+                        "Task-based routing: @{} routes to {} (working on the task)",
+                        name, owner
+                    );
+                    owner.clone()
+                } else {
+                    debug!(
+                        "Task owner {} is not running, falling back to @{}",
+                        owner, name
+                    );
+                    name
+                }
+            }
+            _ => name,
+        };
+
+        // Deduplicate: skip if we've already nudged the actual target for this message.
+        // Keyed on target_name (the resolved recipient) to correctly handle task-based rerouting.
         let should_nudge = {
             let mut cooldowns = state.cooldowns.lock().unwrap();
-            let key = format!("chat_mention_{}", name);
+            let key = format!("chat_mention_{}", target_name);
             if cooldowns.check(&key, &msg.id, Duration::from_secs(3600)) {
                 cooldowns.record(&key, &msg.id);
                 true
@@ -172,17 +213,17 @@ pub(super) async fn route_mentions(state: &DaemonState, msg: &Message) {
         if !should_nudge {
             debug!(
                 "Skipping duplicate @mention nudge for {} (msg {})",
-                name, msg.id
+                target_name, msg.id
             );
             continue;
         }
 
-        let is_running = state.coworkers.get(&name).is_some();
+        let is_running = state.coworkers.get(&target_name).is_some();
         let nudge_text = format!("{} said ({}): {}", msg.from, msg.id, msg.content);
 
         // Decide action using pure decision function
         let action = crate::rules::decide_mention_action(
-            &name,
+            &target_name,
             &msg.from,
             is_running,
             state.is_at_dev_limit(&channel_lead_names),
@@ -190,7 +231,7 @@ pub(super) async fn route_mentions(state: &DaemonState, msg: &Message) {
         );
 
         // Convert MentionAction → Effects, execute via the standard pipeline.
-        let effects = mention_action_to_effects(action, &name, &state.repo_name);
+        let effects = mention_action_to_effects(action, &target_name, &state.repo_name);
         super::effects::execute_effects(effects, state).await;
     }
 }

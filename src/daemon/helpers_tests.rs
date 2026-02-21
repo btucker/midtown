@@ -1,6 +1,32 @@
 use super::*;
 use serde_json::json;
 
+#[test]
+fn default_model_for_provider_role_uses_codex_model_for_all_roles() {
+    let provider = crate::auth::AuthProvider::Codex;
+    assert_eq!(
+        default_model_for_provider_role(provider, &crate::launch::CoworkerRole::Lead),
+        "gpt-5-codex"
+    );
+    assert_eq!(
+        default_model_for_provider_role(provider, &crate::launch::CoworkerRole::Coworker),
+        "gpt-5-codex"
+    );
+}
+
+#[test]
+fn default_model_for_provider_role_uses_claude_tiers() {
+    let provider = crate::auth::AuthProvider::Claude;
+    assert_eq!(
+        default_model_for_provider_role(provider, &crate::launch::CoworkerRole::Lead),
+        "opus"
+    );
+    assert_eq!(
+        default_model_for_provider_role(provider, &crate::launch::CoworkerRole::Coworker),
+        "sonnet"
+    );
+}
+
 // -------------------------------------------------------------------------
 // truncate_str / truncate_message — UTF-8 safety
 // -------------------------------------------------------------------------
@@ -726,4 +752,22 @@ fn extract_task_id_takes_first_match() {
         extract_task_id("Task !10 blocks task !20"),
         Some("10".to_string())
     );
+}
+
+#[test]
+fn extract_task_id_from_lead_at_mention_pattern() {
+    // The canonical lead message format for task-based routing: "@name !N message"
+    // This is the primary use case for task-based @mention routing in chat.rs.
+    assert_eq!(
+        extract_task_id("@park !42 here's the review feedback"),
+        Some("42".to_string())
+    );
+    assert_eq!(
+        extract_task_id("@lexington !1234 please fix the auth bug"),
+        Some("1234".to_string())
+    );
+    // Works even when @name and !N are the only content
+    assert_eq!(extract_task_id("@amsterdam !7"), Some("7".to_string()));
+    // No task ID in plain @mention
+    assert_eq!(extract_task_id("@park check this out"), None);
 }

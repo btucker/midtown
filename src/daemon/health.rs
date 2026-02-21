@@ -423,6 +423,9 @@ pub fn check_and_restart_stuck_reviewers(snap: &snapshot::WorldSnapshot) -> Vec<
             &snap.repo_name,
             crate::config::ExecutionRole::Reviewer,
         );
+        config.model =
+            super::helpers::default_model_for_provider_role(config.auth_provider, &config.role)
+                .to_string();
         config.working_dir = Some(wt_path.clone());
 
         effects.push(Effect::EnsureWorktree {
@@ -643,6 +646,9 @@ pub fn check_and_restart_dead_reviewers(snap: &snapshot::WorldSnapshot) -> Vec<E
             &snap.repo_name,
             crate::config::ExecutionRole::Reviewer,
         );
+        config.model =
+            super::helpers::default_model_for_provider_role(config.auth_provider, &config.role)
+                .to_string();
         config.working_dir = Some(wt_path.clone());
 
         effects.push(Effect::EnsureWorktree {
@@ -1173,6 +1179,9 @@ pub fn ensure_lead_alive(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
     warn!("Lead session is not running — respawning");
 
     let mut config = crate::launch::LaunchConfig::lead(&snap.repo_name, None);
+    config.model =
+        super::helpers::default_model_for_provider_role(config.auth_provider, &config.role)
+            .to_string();
     let lead_wt = crate::paths::lead_worktree_path(&snap.repo_name);
     if lead_wt.exists() {
         config.working_dir = Some(lead_wt);

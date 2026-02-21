@@ -196,6 +196,16 @@ fn set_and_get_global_execution_provider() {
 }
 
 #[test]
+fn set_and_get_global_project_lead_provider() {
+    let dir = TempDir::new().unwrap();
+    let config_path = temp_global_config(&dir);
+
+    set_global_key("execution.project_lead_provider", "codex", &config_path).unwrap();
+    let value = get_global_key("execution.project_lead_provider", &config_path).unwrap();
+    assert_eq!(value, "codex");
+}
+
+#[test]
 fn set_and_get_project_specialized_override_provider() {
     let dir = TempDir::new().unwrap();
     let config_path = temp_project_config(&dir);
@@ -339,6 +349,10 @@ fn list_global_shows_all_keys() {
     );
     assert!(
         output.contains("execution.lead_provider"),
+        "Missing: {output}"
+    );
+    assert!(
+        output.contains("execution.project_lead_provider"),
         "Missing: {output}"
     );
     assert!(

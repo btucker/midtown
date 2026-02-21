@@ -6,7 +6,7 @@
 //! 3. Embedded defaults (compiled into the binary as fallback)
 //!
 //! Template variables:
-//! - `{name}` — the agent's name (coworker name, channel name, or project name for main lead)
+//! - `{name}` — the agent's name (coworker name, channel name, or project name for Project Lead)
 //! - `{project_name}` — the project name (e.g., "midtown")
 
 use std::path::PathBuf;
@@ -14,8 +14,8 @@ use std::path::PathBuf;
 /// Embedded default for the shared lead coordination prompt.
 const DEFAULT_LEAD_PROMPT: &str = include_str!("../agents/lead.md");
 
-/// Embedded default for the main lead overlay prompt.
-const DEFAULT_MAIN_LEAD_PROMPT: &str = include_str!("../agents/main-lead.md");
+/// Embedded default for the Project Lead overlay prompt.
+const DEFAULT_PROJECT_LEAD_PROMPT: &str = include_str!("../agents/project-lead.md");
 
 /// Embedded default for the coworker system prompt template.
 const DEFAULT_COWORKER_PROMPT: &str = include_str!("../agents/coworker.md");
@@ -90,14 +90,14 @@ fn common_prompt() -> String {
 
 /// Load the main Lead agent's system prompt.
 ///
-/// Assembly: main-lead.md + lead.md + common.md
-/// For the main lead, `{name}` = project_name (e.g., "midtown").
+/// Assembly: project-lead.md + lead.md + common.md
+/// For the Project Lead, `{name}` = project_name (e.g., "midtown").
 pub fn main_lead_system_prompt(project_name: &str) -> String {
-    let main_lead =
-        load_prompt_file("main-lead.md").unwrap_or_else(|| DEFAULT_MAIN_LEAD_PROMPT.to_string());
+    let project_lead = load_prompt_file("project-lead.md")
+        .unwrap_or_else(|| DEFAULT_PROJECT_LEAD_PROMPT.to_string());
     let lead = load_prompt_file("lead.md").unwrap_or_else(|| DEFAULT_LEAD_PROMPT.to_string());
     let common = common_prompt();
-    format!("{main_lead}\n\n{lead}\n\n{common}")
+    format!("{project_lead}\n\n{lead}\n\n{common}")
         .replace("{name}", project_name)
         .replace("{project_name}", project_name)
 }
@@ -183,13 +183,13 @@ pub fn reviewer_resume_prompt(pr_number: u64) -> String {
     template.replace("{pr_number}", &pr_number.to_string())
 }
 
-/// Build the initial prompt for the main lead session.
+/// Build the initial prompt for the Project Lead session.
 ///
 /// Follows a standardized Role/Channel/Mission/First Actions structure
 /// so all initial prompts are consistent and informative.
 pub fn main_lead_initial_prompt(project_name: &str, main_channel: &str) -> String {
     format!(
-        "## Role\nMain lead for {project_name}\n\n\
+        "## Role\nProject Lead for {project_name}\n\n\
          ## Channel\n#{main_channel}\n\n\
          ## Mission\nCoordinate the team, triage incoming work, delegate to coworkers.\n\n\
          ## First Actions\n\

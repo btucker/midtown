@@ -322,7 +322,7 @@ fn test_coworker_prompt_prevents_orphaned_branches() {
 fn test_main_lead_initial_prompt_structure() {
     let prompt = main_lead_initial_prompt("midtown", "main");
     assert!(prompt.contains("## Role"));
-    assert!(prompt.contains("Main lead for midtown"));
+    assert!(prompt.contains("Project Lead for midtown"));
     assert!(prompt.contains("## Channel"));
     assert!(prompt.contains("#main"));
     assert!(prompt.contains("## Mission"));

@@ -554,9 +554,12 @@ impl DaemonSection {
 /// Role-specific execution provider settings.
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct ExecutionSection {
-    /// Provider used for the Lead session.
+    /// Default provider used for all lead roles (project lead and channel leads).
     #[serde(default)]
     pub lead_provider: Option<crate::auth::AuthProvider>,
+    /// Provider override used only for the main project lead session.
+    #[serde(default)]
+    pub project_lead_provider: Option<crate::auth::AuthProvider>,
     /// Provider used for general developer coworkers.
     #[serde(default)]
     pub coworker_provider: Option<crate::auth::AuthProvider>,
@@ -582,6 +585,7 @@ impl ExecutionSection {
     pub fn merge(&self, other: &ExecutionSection) -> ExecutionSection {
         ExecutionSection {
             lead_provider: other.lead_provider.or(self.lead_provider),
+            project_lead_provider: other.project_lead_provider.or(self.project_lead_provider),
             coworker_provider: other.coworker_provider.or(self.coworker_provider),
             reviewer_provider: other.reviewer_provider.or(self.reviewer_provider),
             channel_lead_provider: other.channel_lead_provider.or(self.channel_lead_provider),
@@ -836,13 +840,15 @@ impl GlobalConfig {
 # github_user = ""
 
 [execution]
-# Default provider for the lead session: "claude", "codex", or "zai"
+# Default provider for all lead sessions (project lead + channel leads): "claude", "codex", or "zai"
 # lead_provider = "claude"
+# Optional override for the main project lead only
+# project_lead_provider = "claude"
 # Default provider for developer coworkers
 # coworker_provider = "claude"
 # Default provider for reviewers
 # reviewer_provider = "claude"
-# Default provider for channel leads
+# Optional override for channel leads (defaults to lead_provider when unset)
 # channel_lead_provider = "claude"
 # Default provider for specialized workers (architect/headless.execute)
 # specialized_provider = "claude"
@@ -946,11 +952,18 @@ pub fn get_execution_provider_for_role(
     role: ExecutionRole,
 ) -> crate::auth::AuthProvider {
     let execution = get_project_execution_config(project_name);
+    resolve_execution_provider(&execution, role)
+}
+
+fn resolve_execution_provider(
+    execution: &ExecutionSection,
+    role: ExecutionRole,
+) -> crate::auth::AuthProvider {
     let direct = match role {
-        ExecutionRole::Lead => execution.lead_provider,
+        ExecutionRole::Lead => execution.project_lead_provider.or(execution.lead_provider),
         ExecutionRole::Coworker => execution.coworker_provider,
         ExecutionRole::Reviewer => execution.reviewer_provider,
-        ExecutionRole::ChannelLead => execution.channel_lead_provider,
+        ExecutionRole::ChannelLead => execution.channel_lead_provider.or(execution.lead_provider),
         ExecutionRole::Specialized => execution.specialized_provider,
         ExecutionRole::Architect => execution.architect_provider,
         ExecutionRole::HeadlessExecute => execution.headless_execute_provider,
@@ -2002,6 +2015,7 @@ name = "solo"
         assert!(template.contains("zellij_chat_pane_size"));
         assert!(template.contains("github_user"));
         assert!(template.contains("lead_provider"));
+        assert!(template.contains("project_lead_provider"));
     }
 
     #[test]
@@ -2307,6 +2321,7 @@ webhook_port = 47024
     fn test_execution_section_merge() {
         let global = ExecutionSection {
             lead_provider: Some(crate::auth::AuthProvider::Claude),
+            project_lead_provider: None,
             coworker_provider: Some(crate::auth::AuthProvider::Claude),
             reviewer_provider: None,
             channel_lead_provider: None,
@@ -2317,6 +2332,7 @@ webhook_port = 47024
         };
         let project = ExecutionSection {
             lead_provider: Some(crate::auth::AuthProvider::Codex),
+            project_lead_provider: Some(crate::auth::AuthProvider::Zai),
             coworker_provider: None,
             reviewer_provider: Some(crate::auth::AuthProvider::Codex),
             channel_lead_provider: None,
@@ -2328,6 +2344,10 @@ webhook_port = 47024
 
         let merged = global.merge(&project);
         assert_eq!(merged.lead_provider, Some(crate::auth::AuthProvider::Codex));
+        assert_eq!(
+            merged.project_lead_provider,
+            Some(crate::auth::AuthProvider::Zai)
+        );
         assert_eq!(
             merged.coworker_provider,
             Some(crate::auth::AuthProvider::Claude)
@@ -2343,6 +2363,7 @@ webhook_port = 47024
         let toml = r#"
 [execution]
 lead_provider = "codex"
+project_lead_provider = "zai"
 coworker_provider = "zai"
 reviewer_provider = "claude"
 specialized_provider = "codex"
@@ -2352,6 +2373,10 @@ architect_provider = "zai"
         assert_eq!(
             config.execution.lead_provider,
             Some(crate::auth::AuthProvider::Codex)
+        );
+        assert_eq!(
+            config.execution.project_lead_provider,
+            Some(crate::auth::AuthProvider::Zai)
         );
         assert_eq!(
             config.execution.coworker_provider,
@@ -2375,6 +2400,7 @@ architect_provider = "zai"
     fn test_specialized_override_fallback_order() {
         let execution = ExecutionSection {
             lead_provider: None,
+            project_lead_provider: None,
             coworker_provider: None,
             reviewer_provider: None,
             channel_lead_provider: None,
@@ -2397,6 +2423,59 @@ architect_provider = "zai"
             .or(execution.specialized_provider)
             .unwrap_or(crate::auth::AuthProvider::Claude);
         assert_eq!(headless, crate::auth::AuthProvider::Codex);
+    }
+
+    #[test]
+    fn test_lead_provider_is_default_for_all_leads() {
+        let execution = ExecutionSection {
+            lead_provider: Some(crate::auth::AuthProvider::Codex),
+            ..ExecutionSection::default()
+        };
+
+        assert_eq!(
+            resolve_execution_provider(&execution, ExecutionRole::Lead),
+            crate::auth::AuthProvider::Codex
+        );
+        assert_eq!(
+            resolve_execution_provider(&execution, ExecutionRole::ChannelLead),
+            crate::auth::AuthProvider::Codex
+        );
+    }
+
+    #[test]
+    fn test_project_lead_provider_only_overrides_project_lead() {
+        let execution = ExecutionSection {
+            lead_provider: Some(crate::auth::AuthProvider::Claude),
+            project_lead_provider: Some(crate::auth::AuthProvider::Zai),
+            ..ExecutionSection::default()
+        };
+
+        assert_eq!(
+            resolve_execution_provider(&execution, ExecutionRole::Lead),
+            crate::auth::AuthProvider::Zai
+        );
+        assert_eq!(
+            resolve_execution_provider(&execution, ExecutionRole::ChannelLead),
+            crate::auth::AuthProvider::Claude
+        );
+    }
+
+    #[test]
+    fn test_channel_lead_provider_override_still_wins_for_channel_leads() {
+        let execution = ExecutionSection {
+            lead_provider: Some(crate::auth::AuthProvider::Claude),
+            channel_lead_provider: Some(crate::auth::AuthProvider::Zai),
+            ..ExecutionSection::default()
+        };
+
+        assert_eq!(
+            resolve_execution_provider(&execution, ExecutionRole::Lead),
+            crate::auth::AuthProvider::Claude
+        );
+        assert_eq!(
+            resolve_execution_provider(&execution, ExecutionRole::ChannelLead),
+            crate::auth::AuthProvider::Zai
+        );
     }
 
     #[test]

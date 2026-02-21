@@ -2452,6 +2452,9 @@ pub(crate) async fn collect_reviewer_effects_with_source(
             &state.repo_name,
             crate::config::ExecutionRole::Reviewer,
         );
+        config.model =
+            super::helpers::default_model_for_provider_role(config.auth_provider, &config.role)
+                .to_string();
         config.working_dir = Some(wt_path.clone());
 
         effects.push(Effect::EnsureWorktree {

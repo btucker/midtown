@@ -287,13 +287,13 @@ impl LaunchConfig {
         }
     }
 
-    /// Create a config for the Lead session.
+    /// Create a config for the Project Lead session.
     ///
-    /// When `channel` is None, creates a main lead (uses `main_lead_system_prompt()`).
+    /// When `channel` is None, creates the Project Lead (uses `main_lead_system_prompt()`).
     /// When `channel` is Some, creates a channel lead for that channel
     /// (uses `channel_lead_system_prompt()`).
     ///
-    /// The Lead uses unrestricted setting sources and runs as a headless session
+    /// The Project Lead uses unrestricted setting sources and runs as a headless session
     /// that can be attached/detached like coworkers.
     pub fn lead(repo_name: impl Into<String>, channel: Option<&str>) -> Self {
         let repo = repo_name.into();
@@ -303,7 +303,7 @@ impl LaunchConfig {
             // Channel lead — delegate to channel_lead factory
             LaunchConfig::channel_lead(channel_name, &repo, SessionMode::Fresh, "")
         } else {
-            // Main lead
+            // Project Lead
             let auth_provider = crate::config::get_execution_provider_for_role(
                 &repo,
                 crate::config::ExecutionRole::Lead,

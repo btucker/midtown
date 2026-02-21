@@ -54,6 +54,7 @@ const VALID_KEYS: &[&str] = &[
     "daemon.webhook_restart_interval_secs",
     "daemon.worktree_cleanup_retention_hours",
     "execution.lead_provider",
+    "execution.project_lead_provider",
     "execution.coworker_provider",
     "execution.reviewer_provider",
     "execution.channel_lead_provider",
@@ -287,6 +288,9 @@ fn global_field_value(config: &midtown::config::GlobalConfig, key: &str) -> Stri
             fmt_opt(config.daemon.worktree_cleanup_retention_hours)
         }
         "execution.lead_provider" => fmt_opt(config.execution.lead_provider.map(|p| p.as_str())),
+        "execution.project_lead_provider" => {
+            fmt_opt(config.execution.project_lead_provider.map(|p| p.as_str()))
+        }
         "execution.coworker_provider" => {
             fmt_opt(config.execution.coworker_provider.map(|p| p.as_str()))
         }
@@ -339,6 +343,9 @@ fn project_field_value(config: &midtown::config::FullProjectConfig, key: &str) -
             fmt_opt(config.daemon.worktree_cleanup_retention_hours)
         }
         "execution.lead_provider" => fmt_opt(config.execution.lead_provider.map(|p| p.as_str())),
+        "execution.project_lead_provider" => {
+            fmt_opt(config.execution.project_lead_provider.map(|p| p.as_str()))
+        }
         "execution.coworker_provider" => {
             fmt_opt(config.execution.coworker_provider.map(|p| p.as_str()))
         }
@@ -421,6 +428,9 @@ fn apply_global_key(
         "execution.lead_provider" => {
             config.execution.lead_provider = Some(parse_provider(key, value)?);
         }
+        "execution.project_lead_provider" => {
+            config.execution.project_lead_provider = Some(parse_provider(key, value)?);
+        }
         "execution.coworker_provider" => {
             config.execution.coworker_provider = Some(parse_provider(key, value)?);
         }
@@ -500,6 +510,9 @@ fn apply_project_key(
         }
         "execution.lead_provider" => {
             config.execution.lead_provider = Some(parse_provider(key, value)?);
+        }
+        "execution.project_lead_provider" => {
+            config.execution.project_lead_provider = Some(parse_provider(key, value)?);
         }
         "execution.coworker_provider" => {
             config.execution.coworker_provider = Some(parse_provider(key, value)?);

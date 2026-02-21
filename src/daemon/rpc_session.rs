@@ -665,6 +665,8 @@ pub(super) async fn handle_session_detach(
     }
     if let Some(provider) = session_info.provider {
         config.auth_provider = provider;
+        config.model =
+            super::helpers::default_model_for_provider_role(provider, &config.role).to_string();
     }
     // Don't restore auth_profile_dir from persisted profile name — let
     // spawn_coworker() re-resolve from project config (authoritative source).
@@ -974,6 +976,8 @@ pub(super) async fn handle_session_clear(
     }
     if let Some(provider) = session_info.provider {
         config.auth_provider = provider;
+        config.model =
+            super::helpers::default_model_for_provider_role(provider, &config.role).to_string();
     }
 
     match state.spawn_coworker(&config).await {
