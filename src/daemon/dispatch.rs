@@ -908,6 +908,9 @@ where
             config,
             on_success,
             on_failure: vec![
+                Effect::ClearSessionForTask {
+                    task_id: task_id.clone(),
+                },
                 Effect::RecordCooldown {
                     category: "spawn_failure".to_string(),
                     key: coworker_name.to_string(),

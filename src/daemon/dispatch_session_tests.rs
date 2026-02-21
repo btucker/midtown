@@ -666,3 +666,54 @@ fn test_session_dispatch_skips_recovery_when_session_is_active_despite_stale_is_
             .collect::<Vec<_>>()
     );
 }
+
+/// When a stopped session exists but the spawn will fail (e.g., worktree gone),
+/// dispatch emits ClearSessionForTask in the on_failure effects to break the
+/// retry loop. This test verifies the effect is present in the on_failure list.
+#[test]
+fn test_dispatch_via_sessions_emits_clear_session_on_failure() {
+    let session = make_session_record("sess-stale-123", Some("42"), Some("lexington"), false);
+
+    let task = in_progress_task_for_lookup("42", "Fix stale session bug", "lexington");
+
+    let snap = snapshot::WorldSnapshot {
+        sessions: [("sess-stale-123".to_string(), session)]
+            .into_iter()
+            .collect(),
+        session_task_map: [("42".to_string(), "sess-stale-123".to_string())]
+            .into_iter()
+            .collect(),
+        in_progress_tasks: vec![(
+            "42".to_string(),
+            "Fix stale session bug".to_string(),
+            "lexington".to_string(),
+        )],
+        ..snapshot::minimal_snapshot_for_test()
+    };
+
+    let lookup = |id: &str| -> Option<crate::tasks::Task> {
+        if id == "42" { Some(task.clone()) } else { None }
+    };
+
+    let effects = dispatch_via_sessions_with_task_lookup(&snap, None, lookup);
+
+    // The outermost effect should be SpawnCoworkerWithCallbacks
+    let spawn_effect = effects
+        .iter()
+        .find(|e| matches!(e, Effect::SpawnCoworkerWithCallbacks { .. }));
+    assert!(
+        spawn_effect.is_some(),
+        "Expected SpawnCoworkerWithCallbacks effect"
+    );
+
+    if let Some(Effect::SpawnCoworkerWithCallbacks { on_failure, .. }) = spawn_effect {
+        let has_clear = on_failure
+            .iter()
+            .any(|e| matches!(e, Effect::ClearSessionForTask { task_id } if task_id == "42"));
+        assert!(
+            has_clear,
+            "on_failure should contain ClearSessionForTask for task 42, got: {:?}",
+            on_failure
+        );
+    }
+}
