@@ -276,6 +276,7 @@ impl SpecializedCoworker {
             } else {
                 None
             },
+            session_id: None,
             inactivity_timeout: None,
             team_name: None,
             agent_id: None,

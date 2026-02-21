@@ -146,6 +146,13 @@ pub fn build_claude_headless_args(config: &HeadlessConfig) -> Vec<String> {
             args.push("--json-schema".to_string());
             args.push(schema_str);
         }
+
+        // Pass pre-assigned session ID so the daemon knows the session ID immediately
+        // at spawn time, eliminating the race window before the init event arrives.
+        if let Some(ref sid) = config.session_id {
+            args.push("--session-id".to_string());
+            args.push(sid.clone());
+        }
     }
 
     // Streaming protocol flags

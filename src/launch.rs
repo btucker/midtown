@@ -504,6 +504,7 @@ impl LaunchConfig {
             allow_tools: true, // Coworkers need full tool access
             persist_session,
             resume_session_id,
+            session_id: None, // Set by spawn_coworker for fresh sessions
             inactivity_timeout: None,
             team_name: self.team_name.clone(),
             agent_id,

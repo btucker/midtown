@@ -82,6 +82,17 @@ pub struct HeadlessConfig {
     /// Auth provider backing this session (`claude` or `codex`).
     #[serde(default)]
     pub auth_provider: crate::auth::AuthProvider,
+    /// Pre-assigned session ID for fresh sessions.
+    ///
+    /// When `Some`, the daemon-generated UUID is passed to the CLI as `--session-id <uuid>`
+    /// so the daemon knows the session ID immediately at spawn time, without waiting for
+    /// the init StreamEvent. This eliminates the race window where session-based lookups
+    /// (routing, nudging) fail before the init event arrives.
+    ///
+    /// Only used for fresh sessions (`resume_session_id: None`). Ignored on resume
+    /// sessions since `--resume <id>` already carries the known session ID.
+    #[serde(default)]
+    pub session_id: Option<String>,
     /// Additional environment variables to set on the child process.
     ///
     /// Applied after the default env_remove call (MIDTOWN_AGENT), so values here
@@ -1082,6 +1093,7 @@ mod tests {
             allow_tools: false,
             persist_session: false,
             resume_session_id: None,
+            session_id: None,
             inactivity_timeout: None,
             team_name: None,
             agent_id: None,

@@ -119,6 +119,7 @@ fn test_headless_config() -> HeadlessConfig {
         allow_tools: true,
         persist_session: false,
         resume_session_id: None,
+        session_id: None,
         inactivity_timeout: None,
         team_name: None,
         agent_id: None,

@@ -842,7 +842,7 @@ impl DaemonState {
             );
 
             match self.spawn_coworker(&config).await {
-                Ok(()) => true,
+                Ok(_) => true,
                 Err(e) => {
                     tracing::error!("Failed to spawn ops channel lead: {}", e);
                     false
@@ -1234,7 +1234,9 @@ impl DaemonState {
     /// Uses `CoworkerManager::prepare_spawn` for worktree lifecycle, then
     /// `SessionManager::spawn` for the headless process, and finally
     /// `CoworkerManager::register` to add the coworker to the tracking map.
-    async fn spawn_coworker(&self, config: &crate::launch::LaunchConfig) -> crate::Result<()> {
+    /// Spawn a new headless coworker session. Returns the session ID used (either a
+    /// pre-existing resumed ID, or a freshly generated one for new sessions).
+    async fn spawn_coworker(&self, config: &crate::launch::LaunchConfig) -> crate::Result<String> {
         let name = config.name.clone();
         let slot_id = uuid::Uuid::new_v4().to_string();
 
@@ -1246,7 +1248,15 @@ impl DaemonState {
                 "Coworker {} already has a running session, skipping spawn",
                 name
             );
-            return Ok(());
+            // Return the existing session's ID so callers can update their state.
+            let existing_id = self
+                .name_to_session
+                .lock()
+                .unwrap()
+                .get(&name)
+                .cloned()
+                .unwrap_or_default();
+            return Ok(existing_id);
         }
 
         // Inject project-resolved auth profile if not already set
@@ -1296,14 +1306,24 @@ impl DaemonState {
             }
         }
 
-        // Spawn the headless session (keyed by slot_id)
-        // For resumed sessions, the session_id should be extracted from config.session_mode
-        // and passed to spawn(). For fresh sessions, pass None.
+        // Determine the session ID for this spawn.
+        // For resumed sessions, reuse the existing session ID from config.session_mode.
+        // For fresh sessions, generate a UUID upfront so the daemon controls the session
+        // ID immediately — without waiting for the init StreamEvent (eliminating the race
+        // window where session-based lookups fail before the init event arrives).
         let session_id = match &config.session_mode {
-            crate::launch::SessionMode::ResumeSession(sid) => Some(sid.clone()),
-            _ => None,
+            crate::launch::SessionMode::ResumeSession(sid) => sid.clone(),
+            _ => uuid::Uuid::new_v4().to_string(),
         };
-        let persisted_session_id = session_id.clone().unwrap_or_default();
+        // For fresh sessions, set the pre-generated session ID on the headless config so
+        // it gets passed as --session-id to the Claude CLI.
+        if !matches!(
+            config.session_mode,
+            crate::launch::SessionMode::ResumeSession(_)
+        ) {
+            headless_config.session_id = Some(session_id.clone());
+        }
+        let persisted_session_id = session_id.clone();
         let initial_prompt = launch_config.initial_prompt.as_deref();
         self.session_manager
             .spawn(
@@ -1311,7 +1331,7 @@ impl DaemonState {
                 &slot_id,
                 &headless_config,
                 initial_prompt,
-                session_id,
+                Some(session_id.clone()),
             )
             .await?;
 
@@ -1413,8 +1433,11 @@ impl DaemonState {
                         .or_else(|| config.initial_prompt.clone()),
                 },
             );
-            // Also record in session-centric sessions map for all resumed sessions.
-            // Fresh sessions get their session_id later via init StreamEvent backfill.
+            // Record in session-centric sessions map. All sessions (fresh and resumed)
+            // now have a known session_id at spawn time — fresh sessions use a
+            // daemon-generated UUID passed as --session-id, resumed sessions use the
+            // stored ID from config.session_mode. The init StreamEvent backfill is now
+            // a no-op for fresh sessions since the ID is already populated.
             if !session_id_for_record.is_empty() {
                 let coworker_type_str = match &config.role {
                     crate::launch::CoworkerRole::Reviewer => "reviewer".to_string(),
@@ -1450,7 +1473,9 @@ impl DaemonState {
             }
         }
 
-        // Update session reverse maps for resumed sessions.
+        // Update session reverse maps. All sessions now have a known session_id at
+        // spawn time (fresh sessions use daemon-generated UUIDs, resumed sessions use
+        // stored IDs), so we always populate the reverse maps immediately.
         if !session_id_for_record.is_empty() {
             self.name_to_session
                 .lock()
@@ -1472,7 +1497,7 @@ impl DaemonState {
             let mut stop_times = self.coworker_stop_times.write().unwrap();
             stop_times.remove(&name.to_lowercase());
         }
-        Ok(())
+        Ok(session_id)
     }
 
     /// Check if a sender name represents the user (either "user" or the configured display name).

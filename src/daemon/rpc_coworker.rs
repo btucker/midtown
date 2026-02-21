@@ -87,7 +87,7 @@ pub(super) async fn handle_coworker_spawn(
 
     // Spawn via the headless path (creates worktree + headless session)
     match state.spawn_coworker(&config).await {
-        Ok(()) => {
+        Ok(_) => {
             info!("Spawned coworker: {}", config.name);
             state.broadcast_coworker_update(&config.name, "running", None);
 
@@ -144,7 +144,7 @@ pub(super) async fn handle_lead_spawn(
     }
 
     match state.spawn_coworker(&config).await {
-        Ok(()) => {
+        Ok(_) => {
             info!("Spawned headless lead session");
             Response::success(
                 id,
