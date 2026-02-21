@@ -372,6 +372,21 @@ async fn test_recover_channel_lead_sessions_only_midtown_excluded() {
 }
 
 #[tokio::test]
+async fn test_recover_channel_lead_sessions_only_main_excluded() {
+    // Only a "main" channel directory (legacy name) — should be excluded like "midtown"
+    let (_tmp, base_dir) = create_temp_channels(&["main"]);
+    let persistent_state = tokio::sync::Mutex::new(DaemonPersistentState::default());
+    let effects =
+        recover_channel_lead_sessions_from(&persistent_state, "test-repo", &base_dir).await;
+
+    assert!(
+        effects.is_empty(),
+        "Legacy 'main' channel should produce no effects, got: {:?}",
+        effects
+    );
+}
+
+#[tokio::test]
 async fn test_recover_channel_lead_sessions_archived_excluded() {
     // Only an archived channel → no effects
     let tmp = tempfile::TempDir::new().expect("create temp dir");

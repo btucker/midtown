@@ -2807,3 +2807,7 @@ mod coworker_click_tests;
 #[path = "post_message_tests.rs"]
 #[cfg(test)]
 mod post_message_tests;
+
+#[path = "channel_create_tests.rs"]
+#[cfg(test)]
+mod channel_create_tests;

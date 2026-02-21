@@ -175,17 +175,19 @@ pub(super) async fn route_mentions(state: &DaemonState, msg: &Message) {
         ps.channel_lead_sessions.keys().cloned().collect()
     };
 
+    let mut task_rerouted = false;
     for name in mentions {
         // If a task owner was resolved, route to their session instead of the @mentioned name.
         // This ensures nudges reach the correct session even when coworker names are reassigned.
-        // Only reroute if the owner is currently running; otherwise fall back to name routing.
+        // Only reroute the first mention; secondary mentions (e.g., "cc @other") route normally.
         let target_name = match &task_owner {
-            Some(owner) if !owner.eq_ignore_ascii_case(&name) => {
+            Some(owner) if !task_rerouted && !owner.eq_ignore_ascii_case(&name) => {
                 if state.coworkers.get(owner).is_some() {
                     info!(
                         "Task-based routing: @{} routes to {} (working on the task)",
                         name, owner
                     );
+                    task_rerouted = true;
                     owner.clone()
                 } else {
                     debug!(

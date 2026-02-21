@@ -577,6 +577,20 @@ pub(super) async fn handle_session_attach(
 
 /// Handle session.detach RPC method.
 ///
+/// Maps a `CoworkerRole` to the equivalent `ExecutionRole` for provider lookups.
+fn coworker_role_to_execution_role(
+    role: &crate::launch::CoworkerRole,
+) -> crate::config::ExecutionRole {
+    match role {
+        crate::launch::CoworkerRole::Lead => crate::config::ExecutionRole::Lead,
+        crate::launch::CoworkerRole::Reviewer => crate::config::ExecutionRole::Reviewer,
+        crate::launch::CoworkerRole::ChannelLead { .. } => {
+            crate::config::ExecutionRole::ChannelLead
+        }
+        crate::launch::CoworkerRole::Coworker => crate::config::ExecutionRole::Coworker,
+    }
+}
+
 /// Resumes headless execution for a coworker that was previously attached.
 /// Idempotent: if the coworker is already running (e.g., a previous detach
 /// succeeded), returns success without spawning a duplicate.
@@ -663,7 +677,11 @@ pub(super) async fn handle_session_detach(
     } else if let Some(ref working_dir) = session_info.working_dir {
         config.working_dir = Some(std::path::PathBuf::from(working_dir));
     }
-    if let Some(provider) = session_info.provider {
+    {
+        let execution_role = coworker_role_to_execution_role(&config.role);
+        let provider = session_info.provider.unwrap_or_else(|| {
+            crate::config::get_execution_provider_for_role(&state.repo_name, execution_role)
+        });
         config.auth_provider = provider;
         config.model =
             super::helpers::default_model_for_provider_role(provider, &config.role).to_string();
@@ -974,7 +992,11 @@ pub(super) async fn handle_session_clear(
     } else if let Some(ref working_dir) = session_info.working_dir {
         config.working_dir = Some(std::path::PathBuf::from(working_dir));
     }
-    if let Some(provider) = session_info.provider {
+    {
+        let execution_role = coworker_role_to_execution_role(&config.role);
+        let provider = session_info.provider.unwrap_or_else(|| {
+            crate::config::get_execution_provider_for_role(&state.repo_name, execution_role)
+        });
         config.auth_provider = provider;
         config.model =
             super::helpers::default_model_for_provider_role(provider, &config.role).to_string();
