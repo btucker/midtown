@@ -2031,3 +2031,68 @@ fn dead_reviewer_escalation_not_repeated_after_recorded() {
         effects
     );
 }
+
+/// `check_and_restart_dead_reviewers` must produce both a respawn and an
+/// escalation in the same tick when two dead reviewers are present: one below
+/// max restarts (→ respawn) and one at max restarts (→ escalation).
+///
+/// This covers the combined-effects code path where the early-return guard
+/// checks both respawns and escalations.
+#[test]
+fn check_and_restart_dead_reviewers_emits_respawn_and_escalation_in_same_tick() {
+    let mut snap = empty_snap();
+
+    // Reviewer "riverside" — dead, below max restarts → should be respawned.
+    snap.headless_process_health.insert(
+        "riverside".to_string(),
+        snapshot::ProcessHealth {
+            is_alive: false,
+            exit_code: Some(0),
+            ..Default::default()
+        },
+    );
+    snap.reviewer_pr_assignments
+        .insert("riverside".to_string(), 100u64);
+    // restart_count = 0, below MAX_REVIEWER_RESTARTS
+
+    // Reviewer "broadway" — dead, at max restarts → should be escalated.
+    snap.headless_process_health.insert(
+        "broadway".to_string(),
+        snapshot::ProcessHealth {
+            is_alive: false,
+            exit_code: Some(0),
+            ..Default::default()
+        },
+    );
+    snap.reviewer_pr_assignments
+        .insert("broadway".to_string(), 200u64);
+    snap.reviewer_restart_counts
+        .insert(200u64, MAX_REVIEWER_RESTARTS);
+    // escalation not yet posted for PR 200
+
+    let effects = check_and_restart_dead_reviewers(&snap);
+
+    // Must contain a SpawnCoworkerWithCallbacks for riverside (the respawn).
+    let has_respawn = effects.iter().any(|e| {
+        if let Effect::SpawnCoworkerWithCallbacks { config, .. } = e {
+            config.name == "riverside"
+        } else {
+            false
+        }
+    });
+    assert!(
+        has_respawn,
+        "Expected SpawnCoworkerWithCallbacks for 'riverside' (below max restarts), got: {:#?}",
+        effects
+    );
+
+    // Must contain a RecordReviewerEscalation for broadway's PR (the escalation).
+    let has_escalation = effects
+        .iter()
+        .any(|e| matches!(e, Effect::RecordReviewerEscalation { pr_number } if *pr_number == 200));
+    assert!(
+        has_escalation,
+        "Expected RecordReviewerEscalation for PR 200 ('broadway' at max restarts), got: {:#?}",
+        effects
+    );
+}
