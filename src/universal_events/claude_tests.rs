@@ -373,6 +373,7 @@ fn test_extract_tool_events_non_assistant_non_user_events_skipped() {
             duration_ms: Some(1000),
             total_cost_usd: Some(0.01),
             session_id: Some("sess-1".to_string()),
+            usage: None,
             extra: json!({}),
         },
     ];

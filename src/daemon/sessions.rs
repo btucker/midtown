@@ -164,6 +164,10 @@ pub struct CoworkerSession {
     pub session_id: Option<String>,
     /// Cumulative cost in USD.
     pub cost_usd: f64,
+    /// Cumulative input tokens used this session (from result events).
+    pub input_tokens: u64,
+    /// Cumulative output tokens generated this session (from result events).
+    pub output_tokens: u64,
     /// Last time we received an event from the session.
     pub last_event_at: Option<DateTime<Utc>>,
     /// Whether the session has hit a usage limit.
@@ -235,6 +239,8 @@ impl CoworkerSession {
             started_at: Utc::now(),
             session_id,
             cost_usd: 0.0,
+            input_tokens: 0,
+            output_tokens: 0,
             last_event_at: None,
             has_usage_limit: false,
             usage_limit_reset_at: None,
@@ -680,10 +686,15 @@ impl SessionManager {
                                 is_error,
                                 result,
                                 extra,
+                                usage,
                                 ..
                             } => {
                                 if let Some(cost) = total_cost_usd {
                                     cs.cost_usd = *cost;
+                                }
+                                if let Some(u) = usage {
+                                    cs.input_tokens = u.input_tokens;
+                                    cs.output_tokens = u.output_tokens;
                                 }
                                 if *is_error {
                                     // Check error type in priority order:
@@ -870,6 +881,20 @@ impl SessionManager {
         }
 
         info_map
+    }
+
+    /// Collect token usage for all sessions.
+    ///
+    /// Returns a map of coworker name → (input_tokens, output_tokens).
+    /// Only includes sessions that have received at least one result event
+    /// (i.e., where token tracking has started).
+    pub async fn get_token_usage(&self) -> HashMap<String, (u64, u64)> {
+        let sessions = self.sessions.read().await;
+        sessions
+            .values()
+            .filter(|cs| cs.input_tokens > 0 || cs.output_tokens > 0)
+            .map(|cs| (cs.name.clone(), (cs.input_tokens, cs.output_tokens)))
+            .collect()
     }
 
     /// Collect health data for all sessions.

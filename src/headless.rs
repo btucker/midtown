@@ -115,6 +115,26 @@ mod optional_duration_secs {
     }
 }
 
+/// Token usage breakdown from a Claude Code result event.
+///
+/// Populated from the `usage` field of the `result` stream event, which
+/// mirrors the Anthropic API's usage reporting.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct TokenUsage {
+    /// Input tokens consumed (prompt + prior context).
+    #[serde(default)]
+    pub input_tokens: u64,
+    /// Output tokens generated (response).
+    #[serde(default)]
+    pub output_tokens: u64,
+    /// Prompt cache read tokens (cache hits, billed at reduced rate).
+    #[serde(default)]
+    pub cache_read_input_tokens: u64,
+    /// Prompt cache write tokens (cache misses that created cache entries).
+    #[serde(default)]
+    pub cache_creation_input_tokens: u64,
+}
+
 /// Events emitted by a headless Claude Code session.
 ///
 /// These correspond to the NDJSON lines from `--output-format stream-json`.
@@ -154,6 +174,10 @@ pub enum StreamEvent {
         duration_ms: Option<u64>,
         total_cost_usd: Option<f64>,
         session_id: Option<String>,
+        /// Token usage breakdown (input/output tokens, cache hits).
+        /// Present in Claude Code stream-json result events.
+        #[serde(default)]
+        usage: Option<TokenUsage>,
         #[serde(flatten)]
         extra: serde_json::Value,
     },
@@ -214,6 +238,7 @@ fn codex_translate_event(
                     duration_ms: None,
                     total_cost_usd: None,
                     session_id: session_id.clone(),
+                    usage: None,
                     extra: serde_json::json!({ "provider": "codex", "phase": "thread/start" }),
                 }),
                 CodexPostAction::None,
@@ -345,6 +370,7 @@ fn codex_translate_event(
                     duration_ms: None,
                     total_cost_usd: None,
                     session_id: session_id.clone(),
+                    usage: None,
                     extra: serde_json::json!({ "provider": "codex", "status": status }),
                 }),
                 CodexPostAction::DispatchPendingTurns,
