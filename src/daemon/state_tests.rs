@@ -466,3 +466,92 @@ fn test_channel_lead_session_info_coworker_type_and_channel() {
         "channel name should be persisted and restored"
     );
 }
+
+fn make_test_session_record(session_id: &str, is_running: bool) -> SessionRecord {
+    make_test_session_record_named(session_id, is_running, "riverside")
+}
+
+fn make_test_session_record_named(session_id: &str, is_running: bool, name: &str) -> SessionRecord {
+    SessionRecord {
+        session_id: session_id.to_string(),
+        task_id: Some("1690".to_string()),
+        current_name: Some(name.to_string()),
+        preferred_name: Some(name.to_string()),
+        working_dir: "/tmp/worktree".to_string(),
+        branch: None,
+        pr_number: None,
+        initial_prompt: None,
+        is_reviewer: true,
+        coworker_type: "reviewer".to_string(),
+        is_running,
+        created_at: Utc::now(),
+        resume_on_startup: false,
+    }
+}
+
+#[test]
+fn test_upsert_session_running_inserts_new_session() {
+    let mut state = DaemonPersistentState::default();
+    let record = make_test_session_record("new-session-id", true);
+
+    state.upsert_session_running("new-session-id".to_string(), record);
+
+    let session = state.sessions.get("new-session-id").unwrap();
+    assert!(session.is_running);
+    assert_eq!(session.task_id, Some("1690".to_string()));
+}
+
+#[test]
+fn test_upsert_session_running_marks_stopped_session_as_running() {
+    // Regression: spawn_coworker used or_insert_with which doesn't update existing entries.
+    // A stopped session (is_running=false) must be marked running on resume to prevent
+    // dispatch_via_sessions from triggering recovery on every tick.
+    let mut state = DaemonPersistentState::default();
+
+    // Pre-populate with a stopped session (simulating a session that was stopped)
+    let stopped_record = make_test_session_record("existing-session", false);
+    state
+        .sessions
+        .insert("existing-session".to_string(), stopped_record);
+    assert!(!state.sessions.get("existing-session").unwrap().is_running);
+
+    // Upsert with a new record — the and_modify path should mark existing as running
+    let new_record = make_test_session_record("existing-session", true);
+    state.upsert_session_running("existing-session".to_string(), new_record);
+
+    let session = state.sessions.get("existing-session").unwrap();
+    assert!(
+        session.is_running,
+        "Stopped session must be marked running after upsert"
+    );
+    // Original record fields preserved (and_modify only sets is_running + current_name)
+    assert_eq!(session.task_id, Some("1690".to_string()));
+    assert_eq!(session.current_name, Some("riverside".to_string()));
+}
+
+#[test]
+fn test_upsert_session_running_updates_current_name_on_existing_entry() {
+    // Verify that current_name is refreshed when resuming a stopped session.
+    // A stopped session may have current_name=None (cleared by handle_session_stopped).
+    // On resume, upsert_session_running must restore current_name from the new record.
+    let mut state = DaemonPersistentState::default();
+
+    // Pre-populate with a stopped session whose current_name was cleared on stop
+    let mut stopped_record = make_test_session_record_named("session-xyz", false, "old-name");
+    stopped_record.current_name = None; // cleared when session stopped
+    state
+        .sessions
+        .insert("session-xyz".to_string(), stopped_record);
+
+    // Upsert with a new record carrying the current name
+    let new_record = make_test_session_record_named("session-xyz", true, "new-name");
+    state.upsert_session_running("session-xyz".to_string(), new_record);
+
+    let session = state.sessions.get("session-xyz").unwrap();
+    assert!(session.is_running, "Session must be marked running");
+    assert_eq!(
+        session.current_name,
+        Some("new-name".to_string()),
+        "current_name must be updated from the new record, not left as None"
+    );
+}

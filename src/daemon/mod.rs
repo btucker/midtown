@@ -1402,34 +1402,27 @@ impl DaemonState {
                     _ => "dev".to_string(),
                 };
                 let is_reviewer = matches!(config.role, crate::launch::CoworkerRole::Reviewer);
-                let record = ps
-                    .sessions
-                    .entry(session_id_for_record.clone())
-                    .or_insert_with(|| {
-                        crate::daemon::state::SessionRecord {
-                            session_id: session_id_for_record.clone(),
-                            task_id: None, // Not available at spawn time; set by dispatch
-                            current_name: Some(name.clone()),
-                            preferred_name: Some(name.clone()),
-                            working_dir: working_dir_for_record.clone(),
-                            branch: None,
-                            pr_number: config.pr_number,
-                            initial_prompt: config
-                                .persisted_initial_prompt
-                                .clone()
-                                .or_else(|| config.initial_prompt.clone()),
-                            is_reviewer,
-                            coworker_type: coworker_type_str,
-                            is_running: true,
-                            created_at: chrono::Utc::now(),
-                            resume_on_startup: !is_reviewer,
-                        }
-                    });
-                // or_insert_with is a no-op when the record already exists (resumed sessions).
-                // Explicitly mark as running so dispatch_via_sessions doesn't re-trigger
-                // recovery on the next tick seeing a stale is_running=false.
-                record.is_running = true;
-                record.current_name = Some(name.clone());
+                ps.upsert_session_running(
+                    session_id_for_record.clone(),
+                    crate::daemon::state::SessionRecord {
+                        session_id: session_id_for_record.clone(),
+                        task_id: None, // Not available at spawn time; set by dispatch
+                        current_name: Some(name.clone()),
+                        preferred_name: Some(name.clone()),
+                        working_dir: working_dir_for_record.clone(),
+                        branch: None,
+                        pr_number: config.pr_number,
+                        initial_prompt: config
+                            .persisted_initial_prompt
+                            .clone()
+                            .or_else(|| config.initial_prompt.clone()),
+                        is_reviewer,
+                        coworker_type: coworker_type_str,
+                        is_running: true,
+                        created_at: chrono::Utc::now(),
+                        resume_on_startup: !is_reviewer,
+                    },
+                );
             }
             if let Err(e) = ps.save_for_repo(&self.repo_name) {
                 warn!("Failed to save persistent state after spawn: {}", e);
