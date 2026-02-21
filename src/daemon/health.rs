@@ -24,7 +24,7 @@ use super::{DaemonState, snapshot};
 /// automatically sent on a break.
 ///
 /// IMPORTANT: Coworkers are NEVER sent on a break if any of these apply:
-/// - They are a channel lead (long-lived domain expert session, like "lead")
+/// - They are the project lead session (named "lead")
 /// - They have open unmerged PRs (must stay available for review feedback)
 /// - They have active review assignments
 /// - They have unblocked dependent tasks
@@ -922,7 +922,7 @@ pub(super) fn check_and_handle_auth_errors(
         );
 
         // Nudge the lead so the user sees this immediately
-        effects.push(Effect::nudge_channel_lead(&snap.repo_name, message));
+        effects.push(Effect::nudge_channel_lead(&snap.default_channel, message));
     }
 
     effects
@@ -1311,26 +1311,33 @@ pub(super) async fn check_and_fire_reminders(
 ) -> Vec<Effect> {
     let open_pr_coworkers: Vec<String> = snap.coworkers_with_open_prs.iter().cloned().collect();
     let ps = state.persistent_state.lock().await;
-    build_reminder_effects(&ps.reminders.reminders, &open_pr_coworkers, &snap.repo_name)
+    build_reminder_effects(
+        &ps.reminders.reminders,
+        &open_pr_coworkers,
+        &snap.repo_name,
+        &snap.default_channel,
+    )
 }
 
-/// Pure function: evaluate reminders and build effects (PostToChannel + NudgeLead + MarkFired).
+/// Pure function: evaluate reminders and build effects (PostToChannel + NudgeChannelLead + MarkFired).
 fn build_reminder_effects(
     reminders: &[crate::reminders::Reminder],
     open_pr_coworkers: &[String],
     repo_name: &str,
+    default_channel: &str,
 ) -> Vec<Effect> {
     let fired: Vec<&crate::reminders::Reminder> = reminders
         .iter()
         .filter(|r| !r.fired && crate::reminders::evaluate_trigger(&r.trigger, open_pr_coworkers))
         .collect();
-    effects_for_fired_reminders(&fired, repo_name)
+    effects_for_fired_reminders(&fired, repo_name, default_channel)
 }
 
 /// Build effects for reminders that have already been evaluated as firing.
 fn effects_for_fired_reminders(
     fired: &[&crate::reminders::Reminder],
     repo_name: &str,
+    default_channel: &str,
 ) -> Vec<Effect> {
     let mut effects = Vec::new();
     let mut fired_ids = Vec::new();
@@ -1349,7 +1356,7 @@ fn effects_for_fired_reminders(
             message: message.clone(),
             channel: None,
         });
-        effects.push(Effect::nudge_channel_lead(repo_name, message));
+        effects.push(Effect::nudge_channel_lead(default_channel, message));
         fired_ids.push(reminder.id.clone());
     }
 

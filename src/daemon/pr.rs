@@ -1773,7 +1773,10 @@ async fn collect_comment_notification_effects(
                         "Polling detected new review comments on lead PR #{}, nudging lead",
                         pr_number
                     );
-                    effects.push(Effect::nudge_channel_lead(&snap.repo_name, lead_nudge_msg));
+                    effects.push(Effect::nudge_channel_lead(
+                        &snap.default_channel,
+                        lead_nudge_msg,
+                    ));
                 }
             } else {
                 // No new comments, just update tracker
@@ -1878,7 +1881,10 @@ async fn collect_comment_notification_effects(
                 pr_number,
                 truncate_str(title, 40)
             );
-            effects.push(Effect::nudge_channel_lead(&snap.repo_name, lead_nudge_msg));
+            effects.push(Effect::nudge_channel_lead(
+                &snap.default_channel,
+                lead_nudge_msg,
+            ));
         }
     }
 
@@ -3144,7 +3150,8 @@ pub(super) async fn handle_pr_comment_nudge(
             pr_number
         );
 
-        let effect = Effect::nudge_channel_lead(&state.repo_name, lead_nudge_msg);
+        let effect =
+            Effect::nudge_channel_lead(state.channel_router.default_channel_name(), lead_nudge_msg);
         crate::daemon::effects::execute_effects(vec![effect], state).await;
         return;
     }
@@ -3330,7 +3337,10 @@ pub(super) async fn handle_pr_comment_nudge(
             "Your PR #{} has review feedback from {}. Please address it and merge if appropriate.",
             pr_number, activity.actor
         );
-        effects.push(Effect::nudge_channel_lead(&state.repo_name, lead_nudge_msg));
+        effects.push(Effect::nudge_channel_lead(
+            state.channel_router.default_channel_name(),
+            lead_nudge_msg,
+        ));
     }
 
     super::effects::execute_effects(effects, state).await;

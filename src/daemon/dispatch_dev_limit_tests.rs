@@ -189,6 +189,7 @@ fn make_dev_limit_snapshot(
         worktree_registry: crate::worktree_registry::WorktreeRegistry::default(),
         now_utc: chrono::Utc::now(),
         repo_name: "test-repo".to_string(),
+        default_channel: "test-repo".to_string(),
         repo_owner: None,
         github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
         freshly_fetched_rate_limit: None,

@@ -324,7 +324,7 @@ pub(crate) struct IdleShutdownContext<'a> {
 /// without performing any side effects or mutations.
 ///
 /// A coworker is protected from break if:
-/// - They are a channel lead (long-lived domain expert session, like "lead")
+/// - They are the project lead session (named "lead")
 /// - They have in-progress tasks (busy)
 /// - They have a pending task assigned to them
 /// - They have open unmerged PRs with CI not yet passed (waiting for CI)

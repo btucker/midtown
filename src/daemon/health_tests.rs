@@ -97,13 +97,17 @@ fn test_usage_limit_nudge_only_targets_running_coworkers() {
         is_at_dev_limit: false,
         now_utc: chrono::Utc::now(),
         repo_name: "test-repo".to_string(),
+        default_channel: "test-repo".to_string(),
         repo_owner: None,
         github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
         freshly_fetched_rate_limit: None,
         sessions: HashMap::new(),
         session_task_map: HashMap::new(),
         session_name_map: HashMap::new(),
-        name_session_map: HashMap::new(),
+        name_session_map: HashMap::from([
+            ("lexington".to_string(), "sess-lexington".to_string()),
+            ("park".to_string(), "sess-park".to_string()),
+        ]),
         orphan_spawn_cooldown_active: false,
         session_dispatch_cooldown_active: false,
         spawn_failure_cooldown_names: std::collections::HashSet::new(),
@@ -120,11 +124,11 @@ fn test_usage_limit_nudge_only_targets_running_coworkers() {
         })
         .collect();
 
-    // Only the Running coworker should be nudged (session_id from name_session_map)
-    assert!(
-        nudge_session_ids.len() == 1,
-        "Only 1 coworker should be nudged, got {}",
-        nudge_session_ids.len()
+    // Only the Running coworker should be nudged, not the Stopping one
+    assert_eq!(
+        nudge_session_ids,
+        vec!["sess-lexington"],
+        "Only the Running coworker (lexington) should be nudged"
     );
 }
 
@@ -141,7 +145,7 @@ fn test_fired_reminder_nudges_lead() {
     };
     let fired = vec![&reminder];
 
-    let effects = effects_for_fired_reminders(&fired, "test-repo");
+    let effects = effects_for_fired_reminders(&fired, "test-repo", "test-repo");
 
     // Should have: PostToChannel, NudgeLead, MarkRemindersFired
     assert_eq!(effects.len(), 3, "Expected 3 effects");
@@ -162,7 +166,7 @@ fn test_fired_reminder_nudges_lead() {
 #[test]
 fn test_fired_reminder_no_reminders_produces_no_effects() {
     let fired: Vec<&crate::reminders::Reminder> = vec![];
-    let effects = effects_for_fired_reminders(&fired, "test-repo");
+    let effects = effects_for_fired_reminders(&fired, "test-repo", "test-repo");
     assert!(
         effects.is_empty(),
         "No fired reminders should produce no effects"
@@ -268,6 +272,7 @@ fn test_check_for_usage_limits_with_reset_time() {
         is_at_dev_limit: false,
         now_utc: chrono::Utc::now(),
         repo_name: "test-repo".to_string(),
+        default_channel: "test-repo".to_string(),
         repo_owner: None,
         github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
         freshly_fetched_rate_limit: None,
@@ -363,6 +368,7 @@ fn test_check_for_usage_limits_already_scheduled() {
         is_at_dev_limit: false,
         now_utc: chrono::Utc::now(),
         repo_name: "test-repo".to_string(),
+        default_channel: "test-repo".to_string(),
         repo_owner: None,
         github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
         freshly_fetched_rate_limit: None,
@@ -493,6 +499,7 @@ fn empty_snap() -> snapshot::WorldSnapshot {
         is_at_dev_limit: false,
         now_utc: chrono::Utc::now(),
         repo_name: "test-repo".to_string(),
+        default_channel: "test-repo".to_string(),
         repo_owner: None,
         github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
         freshly_fetched_rate_limit: None,
@@ -1376,6 +1383,7 @@ fn test_idle_shutdown_emits_shutdown_session_when_mapping_exists() {
         is_at_dev_limit: false,
         now_utc: now,
         repo_name: "test-repo".to_string(),
+        default_channel: "test-repo".to_string(),
         repo_owner: None,
         github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
         freshly_fetched_rate_limit: None,
@@ -1510,6 +1518,7 @@ fn test_idle_shutdown_falls_back_to_shutdown_coworker_without_mapping() {
         is_at_dev_limit: false,
         now_utc: now,
         repo_name: "test-repo".to_string(),
+        default_channel: "test-repo".to_string(),
         repo_owner: None,
         github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
         freshly_fetched_rate_limit: None,

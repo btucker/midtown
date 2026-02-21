@@ -472,10 +472,24 @@ fn dedup_nudge_effects(effects: Vec<Effect>) -> Vec<Effect> {
     use std::collections::HashSet;
 
     let mut nudged_sessions: HashSet<String> = HashSet::new();
+    let mut nudged_channels: HashSet<String> = HashSet::new();
     let mut result: Vec<Effect> = Vec::with_capacity(effects.len());
 
     for effect in effects {
         match effect {
+            Effect::NudgeChannelLead {
+                ref channel_name, ..
+            } => {
+                if nudged_channels.contains(channel_name) {
+                    debug!(
+                        "Deduplicating NudgeChannelLead for '{}' (already nudged in this batch)",
+                        channel_name
+                    );
+                    continue;
+                }
+                nudged_channels.insert(channel_name.clone());
+                result.push(effect);
+            }
             Effect::NudgeSession { ref session_id, .. } => {
                 let key = session_id.clone();
                 if nudged_sessions.contains(&key) {
@@ -586,20 +600,6 @@ async fn shutdown_coworker_impl(name: &str, message: &str, state: &DaemonState) 
     Ok(())
 }
 
-/// Execute a list of effects against the daemon state.
-///
-/// This is the imperative shell — the only place where side effects happen.
-/// Each effect variant maps to a call on `DaemonState` or its subsystems.
-///
-/// Before execution, nudge effects targeting the same coworker are deduplicated
-/// to prevent rapid-fire nudges within a single tick (e.g., when CI green,
-/// review complete, and merge conflict each independently nudge the same coworker).
-///
-/// Spawn effects (`AssignAndSpawn`, `SpawnCoworkerWithCallbacks`, `SpawnCoworker`,
-/// `EnsureWorktree`) are parallelized using `tokio::spawn` to avoid sequential
-/// blocking during startup when processing multiple pending tasks. Non-spawn effects
-/// execute sequentially as before. This keeps the daemon responsive to RPC requests
-/// during startup by avoiding long sequential pauses from worktree creation (1-5s each).
 /// Resolve a session ID to its coworker name and deliver a nudge message.
 ///
 /// Shared implementation for `NudgeSession` and `NudgeSessionWithCallbacks`.
@@ -636,6 +636,20 @@ async fn send_session_nudge(
     }
 }
 
+/// Execute a list of effects against the daemon state.
+///
+/// This is the imperative shell — the only place where side effects happen.
+/// Each effect variant maps to a call on `DaemonState` or its subsystems.
+///
+/// Before execution, nudge effects targeting the same coworker are deduplicated
+/// to prevent rapid-fire nudges within a single tick (e.g., when CI green,
+/// review complete, and merge conflict each independently nudge the same coworker).
+///
+/// Spawn effects (`AssignAndSpawn`, `SpawnCoworkerWithCallbacks`, `SpawnCoworker`,
+/// `EnsureWorktree`) are parallelized using `tokio::spawn` to avoid sequential
+/// blocking during startup when processing multiple pending tasks. Non-spawn effects
+/// execute sequentially as before. This keeps the daemon responsive to RPC requests
+/// during startup by avoiding long sequential pauses from worktree creation (1-5s each).
 pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
     let effects = dedup_nudge_effects(effects);
     for effect in effects {
@@ -2065,40 +2079,52 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                                     .send_message(&session_name, &msg)
                                     .await
                                 {
-                                    debug!(
-                                        "Nudge after resume failed for '{}' (may not be ready yet): {}",
+                                    warn!(
+                                        "Nudge after resume failed for '{}' — trigger may be lost: {}",
                                         channel_name, e
                                     );
                                 }
                             }
                             _ => {
-                                // No session ID → spawn fresh with trigger in initial prompt
-                                let mut config = crate::launch::LaunchConfig::channel_lead(
-                                    &channel_name,
-                                    &state.repo_name,
-                                    crate::launch::SessionMode::Fresh,
-                                    "",
-                                );
-                                config.initial_prompt =
-                                    Some(reason.to_initial_prompt(&channel_name));
-                                {
-                                    let mut ps = state.persistent_state.lock().await;
-                                    ps.channel_lead_sessions
-                                        .entry(channel_name.clone())
-                                        .or_insert_with(String::new);
-                                    if let Err(e) = ps.save_for_repo(&state.repo_name) {
+                                // No session ID → spawn fresh with trigger in initial prompt.
+                                // Guard: if channel_lead_sessions already has an entry (even
+                                // empty from a prior in-flight spawn), skip to avoid duplicates.
+                                let already_spawning = {
+                                    let ps = state.persistent_state.lock().await;
+                                    ps.channel_lead_sessions.contains_key(&channel_name)
+                                };
+                                if already_spawning {
+                                    debug!(
+                                        "Channel lead for '{}' already spawning (placeholder exists), skipping duplicate",
+                                        channel_name
+                                    );
+                                } else {
+                                    let mut config = crate::launch::LaunchConfig::channel_lead(
+                                        &channel_name,
+                                        &state.repo_name,
+                                        crate::launch::SessionMode::Fresh,
+                                        "",
+                                    );
+                                    config.initial_prompt =
+                                        Some(reason.to_initial_prompt(&channel_name));
+                                    {
+                                        let mut ps = state.persistent_state.lock().await;
+                                        ps.channel_lead_sessions
+                                            .insert(channel_name.clone(), String::new());
+                                        if let Err(e) = ps.save_for_repo(&state.repo_name) {
+                                            tracing::error!(
+                                                "Failed to save state before spawning channel lead: {}",
+                                                e
+                                            );
+                                        }
+                                    }
+                                    if let Err(e) = state.spawn_coworker(&config).await {
                                         tracing::error!(
-                                            "Failed to save state before spawning channel lead: {}",
+                                            "Failed to spawn channel lead '{}': {}",
+                                            channel_name,
                                             e
                                         );
                                     }
-                                }
-                                if let Err(e) = state.spawn_coworker(&config).await {
-                                    tracing::error!(
-                                        "Failed to spawn channel lead '{}': {}",
-                                        channel_name,
-                                        e
-                                    );
                                 }
                             }
                         }
