@@ -366,11 +366,11 @@
     lead: '#d7d787',        // LightYellow
     github: '#585858',      // DarkGray
     system: '#585858',      // DarkGray
-    midtown: '#585858',     // DarkGray (daemon renamed to midtown)
+    midtown: '#d7d787',     // LightYellow (project lead)
   }
 
   // Senders whose content is rendered in DarkGray (system infrastructure actors)
-  const DIM_SENDERS = new Set(['daemon', 'midtown', 'github', 'system'])
+  const DIM_SENDERS = new Set(['daemon', 'github', 'system'])
 
   function getSenderColor(name) {
     return AVENUE_COLORS[name?.toLowerCase()] || '#d0d0d0'
