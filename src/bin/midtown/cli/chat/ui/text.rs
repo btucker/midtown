@@ -27,6 +27,7 @@ pub fn count_wrapped_lines(content: &str, width: usize) -> usize {
 /// word-wrapped to `width` columns — mirrors the logic in `wrap_line` but
 /// returns only the count with no heap allocation.
 fn count_line_wraps(text: &str, width: usize) -> usize {
+    let width = width.max(1);
     if text.is_empty() {
         return 1;
     }
@@ -175,6 +176,56 @@ mod tests {
         let wrapped = wrap_line("hello", 0);
         // Should produce single-character chunks
         assert_eq!(wrapped, vec!["h", "e", "l", "l", "o"]);
+    }
+
+    #[test]
+    fn test_count_wrapped_lines_matches_wrap_content() {
+        // count_wrapped_lines must return the same count as wrap_content().len()
+        // for all cases — it is a zero-allocation shadow of wrap_content.
+        let cases: &[(&str, usize)] = &[
+            ("", 40),
+            ("hello", 40),
+            ("hello world", 7),
+            ("hello world", 5),
+            ("abcdefghij", 5),
+            ("this is a longer message that needs multiple wraps", 15),
+            ("single line no wrap needed at all", 80),
+            ("a b c d e f g", 3),
+        ];
+        for &(text, width) in cases {
+            let expected = wrap_content(text, width).len();
+            let actual = count_wrapped_lines(text, width);
+            assert_eq!(
+                actual, expected,
+                "count_wrapped_lines({:?}, {}) = {} but wrap_content().len() = {}",
+                text, width, actual, expected
+            );
+        }
+    }
+
+    #[test]
+    fn test_count_wrapped_lines_multiline() {
+        // Newlines in the input create separate paragraphs — each is wrapped independently.
+        let text =
+            "line one is short\nthis is a much longer second line that will need to wrap\nshort";
+        let width = 20;
+        let expected = wrap_content(text, width).len();
+        let actual = count_wrapped_lines(text, width);
+        assert_eq!(
+            actual, expected,
+            "Multiline equivalence failed: expected {}, got {}",
+            expected, actual
+        );
+    }
+
+    #[test]
+    fn test_count_wrapped_lines_zero_width_no_hang() {
+        // width=0 must not hang — it is clamped to 1 inside count_line_wraps.
+        let result = count_wrapped_lines("hello world", 0);
+        assert!(
+            result > 0,
+            "Must return at least 1 line for non-empty input"
+        );
     }
 
     #[test]
