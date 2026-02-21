@@ -330,6 +330,11 @@ pub fn check_and_restart_stuck_reviewers(snap: &snapshot::WorldSnapshot) -> Vec<
         auth_error: &snap.auth_error_coworkers,
         attached: &snap.attached_coworkers,
     };
+    let prs_with_in_progress_comment: std::collections::HashSet<u64> = snap
+        .reviewer_in_progress_comment_ids
+        .keys()
+        .copied()
+        .collect();
     let restarts = crate::rules::decide_stuck_reviewer_restarts(
         &snap.headless_process_health,
         &snap.reviewer_pr_assignments,
@@ -337,9 +342,11 @@ pub fn check_and_restart_stuck_reviewers(snap: &snapshot::WorldSnapshot) -> Vec<
         &exemptions,
         snap.now_utc,
         REVIEWER_STUCK_DURATION,
+        REVIEWER_PLACEHOLDER_STUCK_DURATION,
         MAX_REVIEWER_RESTARTS,
         &snap.name_session_map,
         &snap.coworker_start_times,
+        &prs_with_in_progress_comment,
     );
 
     let mut effects = Vec::new();
@@ -376,8 +383,37 @@ pub fn check_and_restart_stuck_reviewers(snap: &snapshot::WorldSnapshot) -> Vec<
         let worktree_id = crate::worktree_registry::review_slug_for_pr(restart.pr_number);
         let wt_path = crate::paths::worktrees_dir_for_repo(&snap.repo_name).join(&worktree_id);
 
-        let mut config =
-            crate::launch::LaunchConfig::reviewer(restart.name.clone(), restart.pr_number);
+        // If there's a dangling "Review in progress" placeholder, mark it as abandoned.
+        if let Some(&comment_id) = snap
+            .reviewer_in_progress_comment_ids
+            .get(&restart.pr_number)
+        {
+            let repo_full_name = format!(
+                "{}/{}",
+                snap.repo_owner.as_deref().unwrap_or("unknown"),
+                snap.repo_name
+            );
+            let abandoned_body = format!(
+                "<!-- midtown: midtown -->\n\n\
+                 ## Review Status\n\n\
+                 ⚠️ Previous reviewer `{}` timed out without completing the review \
+                 (attempt {}/{}).\n\
+                 A replacement reviewer has been assigned.\n\n\
+                 🌃 Co-built with [Midtown](https://github.com/btucker/midtown)",
+                restart.name, new_restart_count, MAX_REVIEWER_RESTARTS
+            );
+            effects.push(Effect::UpdatePrComment {
+                comment_id,
+                repo_full_name,
+                new_body: abandoned_body,
+            });
+        }
+
+        let mut config = crate::launch::LaunchConfig::reviewer(
+            restart.name.clone(),
+            restart.pr_number,
+            new_restart_count,
+        );
         config.auth_provider = crate::config::get_execution_provider_for_role(
             &snap.repo_name,
             crate::config::ExecutionRole::Reviewer,
@@ -550,8 +586,37 @@ pub fn check_and_restart_dead_reviewers(snap: &snapshot::WorldSnapshot) -> Vec<E
         let worktree_id = crate::worktree_registry::review_slug_for_pr(restart.pr_number);
         let wt_path = crate::paths::worktrees_dir_for_repo(&snap.repo_name).join(&worktree_id);
 
-        let mut config =
-            crate::launch::LaunchConfig::reviewer(restart.name.clone(), restart.pr_number);
+        // If there's a dangling "Review in progress" placeholder, mark it as abandoned.
+        if let Some(&comment_id) = snap
+            .reviewer_in_progress_comment_ids
+            .get(&restart.pr_number)
+        {
+            let repo_full_name = format!(
+                "{}/{}",
+                snap.repo_owner.as_deref().unwrap_or("unknown"),
+                snap.repo_name
+            );
+            let abandoned_body = format!(
+                "<!-- midtown: midtown -->\n\n\
+                 ## Review Status\n\n\
+                 ⚠️ Previous reviewer `{}` exited without completing the review \
+                 (attempt {}/{}).\n\
+                 A replacement reviewer has been assigned.\n\n\
+                 🌃 Co-built with [Midtown](https://github.com/btucker/midtown)",
+                restart.name, new_restart_count, MAX_REVIEWER_RESTARTS
+            );
+            effects.push(Effect::UpdatePrComment {
+                comment_id,
+                repo_full_name,
+                new_body: abandoned_body,
+            });
+        }
+
+        let mut config = crate::launch::LaunchConfig::reviewer(
+            restart.name.clone(),
+            restart.pr_number,
+            new_restart_count,
+        );
         config.auth_provider = crate::config::get_execution_provider_for_role(
             &snap.repo_name,
             crate::config::ExecutionRole::Reviewer,

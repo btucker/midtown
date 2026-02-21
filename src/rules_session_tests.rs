@@ -177,9 +177,11 @@ fn stuck_reviewer_restart_includes_session_id_from_map() {
         &exemptions,
         now,
         Duration::from_secs(300),
+        Duration::from_secs(120),
         2,
         &name_session_map,
         &HashMap::new(),
+        &HashSet::new(),
     );
 
     assert_eq!(restarts.len(), 1);
@@ -211,9 +213,11 @@ fn stuck_reviewer_restart_session_id_none_when_no_mapping() {
         &exemptions,
         now,
         Duration::from_secs(300),
+        Duration::from_secs(120),
         2,
         &HashMap::new(),
         &HashMap::new(),
+        &HashSet::new(),
     );
 
     assert_eq!(restarts.len(), 1);

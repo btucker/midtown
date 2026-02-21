@@ -226,6 +226,11 @@ pub struct WorldSnapshot {
     pub active_reviewers: HashSet<String>,
     /// Reviewer → assigned PR number mapping (from github-state.json).
     pub reviewer_pr_assignments: HashMap<String, u64>,
+    /// Placeholder comment IDs for PRs with an unupdated "Review in progress" comment.
+    /// Maps PR number → GitHub comment database ID.
+    /// Pre-collected during snapshot (cached to minimize API calls).
+    #[serde(default)]
+    pub reviewer_in_progress_comment_ids: HashMap<u64, u64>,
     /// PRs that have been verified as reviewed (Claude review comment exists).
     /// Pre-collected during snapshot so decision logic doesn't need API calls.
     pub reviewed_prs: HashSet<u64>,
@@ -663,6 +668,50 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
         ps.github.reviewed_prs.clone()
     };
 
+    // Collect placeholder comment IDs for assigned PRs that haven't been reviewed yet.
+    // Uses a cache with 120-second TTL for negative results to minimize API calls.
+    // Positive results are kept until the reviewer completes (cache entry removed elsewhere).
+    const PLACEHOLDER_CACHE_TTL_SECS: u64 = 120;
+    let reviewer_in_progress_comment_ids: HashMap<u64, u64> = {
+        let assigned_unreviewed_prs: Vec<u64> = reviewer_pr_assignments
+            .values()
+            .copied()
+            .filter(|pr| !reviewed_prs.contains(pr))
+            .collect();
+
+        let mut result = HashMap::new();
+        for pr_number in assigned_unreviewed_prs {
+            // Check cache first
+            let cached = {
+                let cache = state.reviewer_placeholder_cache.lock().unwrap();
+                cache.get(&pr_number).copied()
+            };
+
+            let comment_id = match cached {
+                Some((id, checked_at))
+                    if id.is_some()
+                        || checked_at.elapsed().as_secs() < PLACEHOLDER_CACHE_TTL_SECS =>
+                {
+                    id // Use cached result (positive always, negative within TTL)
+                }
+                _ => {
+                    // Cache miss or expired: fetch from GitHub
+                    let id = crate::daemon::pr::pr_in_progress_placeholder_comment_id(pr_number);
+                    {
+                        let mut cache = state.reviewer_placeholder_cache.lock().unwrap();
+                        cache.insert(pr_number, (id, std::time::Instant::now()));
+                    }
+                    id
+                }
+            };
+
+            if let Some(id) = comment_id {
+                result.insert(pr_number, id);
+            }
+        }
+        result
+    };
+
     // ── GitHub rate limit ────────────────────────────────────────────────
     let github_rate_limit = {
         let ps = state.persistent_state.lock().await;
@@ -893,6 +942,7 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
         pr_task_associations,
         active_reviewers,
         reviewer_pr_assignments,
+        reviewer_in_progress_comment_ids,
         reviewed_prs,
         prs_needing_review,
         reviewer_restart_counts,
@@ -978,6 +1028,7 @@ pub(super) fn minimal_snapshot_for_test() -> WorldSnapshot {
         pr_task_associations: HashMap::new(),
         active_reviewers: HashSet::new(),
         reviewer_pr_assignments: HashMap::new(),
+        reviewer_in_progress_comment_ids: HashMap::new(),
         reviewed_prs: HashSet::new(),
         prs_needing_review: 0,
         reviewer_restart_counts: HashMap::new(),

@@ -707,6 +707,10 @@ pub(crate) struct StuckReviewerRestart {
 /// by PR number in `GitHubState`. Adds a `max_restarts` limit to prevent
 /// infinite restart loops for the same PR.
 ///
+/// When `prs_with_in_progress_comment` contains the reviewer's PR, a shorter
+/// threshold (`placeholder_stuck_duration`) is used because the reviewer already
+/// posted a placeholder — they committed to the review but may have frozen.
+///
 /// Pure function: takes ProcessHealth data and returns restart decisions.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn decide_stuck_reviewer_restarts(
@@ -716,11 +720,15 @@ pub(crate) fn decide_stuck_reviewer_restarts(
     exemptions: &StuckExemptions<'_>,
     now_utc: DateTime<Utc>,
     stuck_duration: Duration,
+    placeholder_stuck_duration: Duration,
     max_restarts: u32,
     name_session_map: &HashMap<String, String>,
     coworker_start_times: &HashMap<String, DateTime<Utc>>,
+    prs_with_in_progress_comment: &std::collections::HashSet<u64>,
 ) -> Vec<StuckReviewerRestart> {
     let threshold = chrono::Duration::from_std(stuck_duration).unwrap_or_default();
+    let placeholder_threshold =
+        chrono::Duration::from_std(placeholder_stuck_duration).unwrap_or_default();
     let mut restarts = Vec::new();
 
     for (name, health) in process_health {
@@ -729,8 +737,22 @@ pub(crate) fn decide_stuck_reviewer_restarts(
             None => continue,
         };
 
+        // Use shorter threshold if reviewer posted a placeholder (they started but may have frozen)
+        let effective_threshold = if prs_with_in_progress_comment.contains(&pr_number) {
+            placeholder_threshold
+        } else {
+            threshold
+        };
+
         let started_at = coworker_start_times.get(&name.to_lowercase()).copied();
-        if !is_process_stuck(name, health, exemptions, now_utc, threshold, started_at) {
+        if !is_process_stuck(
+            name,
+            health,
+            exemptions,
+            now_utc,
+            effective_threshold,
+            started_at,
+        ) {
             continue;
         }
 
@@ -3537,9 +3559,11 @@ mod tests {
             &exemptions,
             now,
             Duration::from_secs(300),
+            Duration::from_secs(120),
             2,
             &HashMap::new(),
             &HashMap::new(),
+            &HashSet::new(),
         )
     }
 
@@ -3627,9 +3651,11 @@ mod tests {
             &exemptions,
             now,
             Duration::from_secs(300),
+            Duration::from_secs(120),
             2,
             &HashMap::new(),
             &HashMap::new(),
+            &HashSet::new(),
         );
         assert!(
             restarts.is_empty(),
@@ -3668,9 +3694,11 @@ mod tests {
             &exemptions,
             now,
             Duration::from_secs(300), // 5-minute threshold
+            Duration::from_secs(120),
             2,
             &HashMap::new(),
             &start_times,
+            &HashSet::new(),
         );
         assert_eq!(
             restarts.len(),
@@ -3711,13 +3739,109 @@ mod tests {
             &exemptions,
             now,
             Duration::from_secs(300), // 5-minute threshold
+            Duration::from_secs(120),
             2,
             &HashMap::new(),
             &start_times,
+            &HashSet::new(),
         );
         assert!(
             restarts.is_empty(),
             "reviewer with no events but recently started should NOT be stuck yet"
+        );
+    }
+
+    /// A reviewer with a "Review in progress" placeholder comment should be detected as
+    /// stuck at the shorter 120s threshold, not the standard 300s threshold.
+    #[test]
+    fn stuck_reviewer_with_placeholder_uses_shorter_threshold() {
+        let now = Utc::now();
+        // Last event was 130 seconds ago — past the 120s placeholder threshold
+        // but NOT past the standard 300s threshold.
+        let health = crate::daemon::snapshot::ProcessHealth {
+            is_alive: true,
+            last_event_at: Some(now - chrono::Duration::seconds(130)),
+            ..Default::default()
+        };
+        let mut map = HashMap::new();
+        map.insert("lexington".to_string(), health);
+        let mut assignments = HashMap::new();
+        assignments.insert("lexington".to_string(), 77u64);
+        let exemptions = StuckExemptions {
+            usage_limited: &HashSet::new(),
+            api_error: &HashSet::new(),
+            auth_error: &HashSet::new(),
+            attached: &HashMap::new(),
+        };
+        // PR 77 has a placeholder comment
+        let mut prs_with_placeholder = HashSet::new();
+        prs_with_placeholder.insert(77u64);
+
+        let restarts = decide_stuck_reviewer_restarts(
+            &map,
+            &assignments,
+            &HashMap::new(),
+            &exemptions,
+            now,
+            Duration::from_secs(300), // standard threshold
+            Duration::from_secs(120), // placeholder threshold
+            2,
+            &HashMap::new(),
+            &HashMap::new(),
+            &prs_with_placeholder,
+        );
+
+        assert_eq!(
+            restarts.len(),
+            1,
+            "reviewer with placeholder and 130s silence should be detected with 120s threshold"
+        );
+        assert_eq!(restarts[0].name, "lexington");
+        assert_eq!(restarts[0].pr_number, 77);
+    }
+
+    /// A reviewer WITHOUT a placeholder comment should NOT be detected as stuck
+    /// at 130s (below the standard 300s threshold), even if the placeholder
+    /// threshold (120s) has passed.
+    #[test]
+    fn stuck_reviewer_without_placeholder_uses_standard_threshold() {
+        let now = Utc::now();
+        // Last event was 130 seconds ago — NOT past the standard 300s threshold.
+        let health = crate::daemon::snapshot::ProcessHealth {
+            is_alive: true,
+            last_event_at: Some(now - chrono::Duration::seconds(130)),
+            ..Default::default()
+        };
+        let mut map = HashMap::new();
+        map.insert("broadway".to_string(), health);
+        let mut assignments = HashMap::new();
+        assignments.insert("broadway".to_string(), 88u64);
+        let exemptions = StuckExemptions {
+            usage_limited: &HashSet::new(),
+            api_error: &HashSet::new(),
+            auth_error: &HashSet::new(),
+            attached: &HashMap::new(),
+        };
+        // PR 88 does NOT have a placeholder comment (empty set)
+        let no_placeholders: HashSet<u64> = HashSet::new();
+
+        let restarts = decide_stuck_reviewer_restarts(
+            &map,
+            &assignments,
+            &HashMap::new(),
+            &exemptions,
+            now,
+            Duration::from_secs(300), // standard threshold
+            Duration::from_secs(120), // placeholder threshold
+            2,
+            &HashMap::new(),
+            &HashMap::new(),
+            &no_placeholders,
+        );
+
+        assert!(
+            restarts.is_empty(),
+            "reviewer without placeholder at 130s should NOT be stuck (below 300s threshold)"
         );
     }
 

@@ -379,3 +379,43 @@ fn test_coworker_nudge_prompt_is_brief() {
     assert!(prompt.contains("Fix login bug"));
     assert!(prompt.contains("Get started!"));
 }
+
+#[test]
+fn test_reviewer_launch_prompt_first_attempt_is_simple() {
+    // restart_count=0: first attempt — simple "Review PR #N" command, no context
+    let prompt = reviewer_launch_prompt(99, 0);
+    assert!(
+        prompt.contains("/code-review:code-review 99"),
+        "First attempt should include the code-review slash command"
+    );
+    assert!(
+        !prompt.contains("NOTE (Restart"),
+        "First attempt should NOT include restart context"
+    );
+    assert!(
+        !prompt.contains("placeholder"),
+        "First attempt should NOT mention placeholder"
+    );
+}
+
+#[test]
+fn test_reviewer_launch_prompt_restart_includes_context() {
+    // restart_count>0: respawn — should include context about previous attempt
+    let prompt = reviewer_launch_prompt(42, 1);
+    assert!(
+        prompt.contains("/code-review:code-review 42"),
+        "Respawn should still include the code-review slash command"
+    );
+    assert!(
+        prompt.contains("NOTE (Restart #1)"),
+        "Respawn should note the restart number"
+    );
+    assert!(
+        prompt.contains("Review in progress"),
+        "Respawn should mention the placeholder comment"
+    );
+    assert!(
+        prompt.contains("review-pr-42"),
+        "Respawn should mention the review worktree"
+    );
+}

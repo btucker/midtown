@@ -70,6 +70,7 @@ fn test_usage_limit_nudge_only_targets_running_coworkers() {
         pr_task_associations: HashMap::new(),
         active_reviewers: HashSet::new(),
         reviewer_pr_assignments: HashMap::new(),
+        reviewer_in_progress_comment_ids: HashMap::new(),
         reviewed_prs: HashSet::new(),
         prs_needing_review: 0,
         reviewer_restart_counts: HashMap::new(),
@@ -244,6 +245,7 @@ fn test_check_for_usage_limits_with_reset_time() {
         pr_task_associations: HashMap::new(),
         active_reviewers: HashSet::new(),
         reviewer_pr_assignments: HashMap::new(),
+        reviewer_in_progress_comment_ids: HashMap::new(),
         reviewed_prs: HashSet::new(),
         prs_needing_review: 0,
         reviewer_restart_counts: HashMap::new(),
@@ -338,6 +340,7 @@ fn test_check_for_usage_limits_already_scheduled() {
         pr_task_associations: HashMap::new(),
         active_reviewers: HashSet::new(),
         reviewer_pr_assignments: HashMap::new(),
+        reviewer_in_progress_comment_ids: HashMap::new(),
         reviewed_prs: HashSet::new(),
         prs_needing_review: 0,
         reviewer_restart_counts: HashMap::new(),
@@ -467,6 +470,7 @@ fn empty_snap() -> snapshot::WorldSnapshot {
         pr_task_associations: HashMap::new(),
         active_reviewers: HashSet::new(),
         reviewer_pr_assignments: HashMap::new(),
+        reviewer_in_progress_comment_ids: HashMap::new(),
         reviewed_prs: HashSet::new(),
         prs_needing_review: 0,
         reviewer_restart_counts: HashMap::new(),
@@ -1008,9 +1012,15 @@ fn stuck_reviewer_restart_propagates_session_id() {
         &exemptions,
         snap.now_utc,
         Duration::from_secs(300),
+        Duration::from_secs(120),
         2,
         &snap.name_session_map,
         &snap.coworker_start_times,
+        &snap
+            .reviewer_in_progress_comment_ids
+            .keys()
+            .copied()
+            .collect(),
     );
 
     assert_eq!(restarts.len(), 1);
@@ -1409,9 +1419,15 @@ fn pending_api_call_exempts_reviewer_from_stuck_detection() {
         &exemptions,
         snap.now_utc,
         Duration::from_secs(300),
+        Duration::from_secs(120),
         2,
         &snap.name_session_map,
         &snap.coworker_start_times,
+        &snap
+            .reviewer_in_progress_comment_ids
+            .keys()
+            .copied()
+            .collect(),
     );
 
     assert_eq!(
@@ -1489,6 +1505,7 @@ fn test_idle_shutdown_emits_shutdown_session_when_mapping_exists() {
         pr_task_associations: HashMap::new(),
         active_reviewers: HashSet::new(),
         reviewer_pr_assignments: HashMap::new(),
+        reviewer_in_progress_comment_ids: HashMap::new(),
         reviewed_prs: HashSet::new(),
         prs_needing_review: 0,
         reviewer_restart_counts: HashMap::new(),
@@ -1622,6 +1639,7 @@ fn test_idle_shutdown_falls_back_to_shutdown_coworker_without_mapping() {
         pr_task_associations: HashMap::new(),
         active_reviewers: HashSet::new(),
         reviewer_pr_assignments: HashMap::new(),
+        reviewer_in_progress_comment_ids: HashMap::new(),
         reviewed_prs: HashSet::new(),
         prs_needing_review: 0,
         reviewer_restart_counts: HashMap::new(),

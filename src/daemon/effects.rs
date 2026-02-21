@@ -203,6 +203,15 @@ pub enum Effect {
         check_name: String,
         pr_number: u64,
     },
+    /// Update a GitHub PR issue comment (e.g., to mark an abandoned "Review in progress" placeholder).
+    ///
+    /// Uses `gh api --method PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}`.
+    /// The `repo_full_name` is the GitHub owner/repo string (e.g., "btucker/midtown").
+    UpdatePrComment {
+        comment_id: u64,
+        repo_full_name: String,
+        new_body: String,
+    },
     /// Store a PR author's session ID for potential handoff.
     ///
     /// When a coworker opens a PR, we store their session ID so any other
@@ -1067,6 +1076,42 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 pr_number,
             } => {
                 rerun_workflow(state, run_id, &check_name, pr_number).await;
+            }
+            Effect::UpdatePrComment {
+                comment_id,
+                repo_full_name,
+                new_body,
+            } => {
+                let endpoint = format!("/repos/{}/issues/comments/{}", repo_full_name, comment_id);
+                let output = tokio::process::Command::new("gh")
+                    .args([
+                        "api",
+                        "--method",
+                        "PATCH",
+                        &endpoint,
+                        "-f",
+                        &format!("body={}", new_body),
+                    ])
+                    .output()
+                    .await;
+                match output {
+                    Ok(out) if out.status.success() => {
+                        info!(
+                            "Updated placeholder comment {} on {}",
+                            comment_id, repo_full_name
+                        );
+                    }
+                    Ok(out) => {
+                        let stderr = String::from_utf8_lossy(&out.stderr);
+                        warn!("Failed to update comment {}: {}", comment_id, stderr.trim());
+                    }
+                    Err(e) => {
+                        warn!(
+                            "Failed to run gh api for comment update {}: {}",
+                            comment_id, e
+                        );
+                    }
+                }
             }
             Effect::StorePrAuthorSession {
                 pr_number,
