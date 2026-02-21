@@ -131,12 +131,12 @@
 
     <!-- Messages -->
     <div
-      class="flex-1 min-h-0 overflow-y-auto overflow-x-hidden font-[SF_Mono,Menlo,Consolas,Monaco,'Courier_New',monospace] text-[0.82rem] leading-[1.55] px-[14px] pt-[10px] pb-[10px]"
+      class="flex-1 min-h-0 overflow-y-auto overflow-x-hidden font-[SF_Mono,Menlo,Consolas,Monaco,'Courier_New',monospace] text-[0.88rem] leading-[1.55] px-[14px] pt-[10px] pb-[10px]"
       bind:this={desktopScrollArea}
     >
       <!-- Parent message (highlighted) -->
       <div class="pb-2 mb-2 border-b border-[#2a2a2a]">
-        <div class="font-bold text-[0.82rem]" style="color: {getSenderColor($threadData.parentMessage.from)}">
+        <div class="font-bold text-[0.88rem]" style="color: {getSenderColor($threadData.parentMessage.from)}">
           {$threadData.parentMessage.from}
         </div>
         <div class="text-[#d0d0d0] break-words">{@html renderContent($threadData.parentMessage.content || '')}</div>
@@ -145,15 +145,15 @@
 
       <!-- Thread replies -->
       {#if $threadData.messages.length === 0}
-        <div class="text-center text-[#606060] py-4 text-[0.82rem]">No replies yet</div>
+        <div class="text-center text-[#606060] py-4 text-[0.88rem]">No replies yet</div>
       {:else}
         {#each $threadData.messages as msg, i}
           {#if i === 0 || $threadData.messages[i - 1].from !== msg.from}
             {#if i > 0}<div class="h-[0.5em]"></div>{/if}
-            <div class="font-bold text-[0.82rem]" style="color: {getSenderColor(msg.from)}">{msg.from}</div>
+            <div class="font-bold text-[0.88rem]" style="color: {getSenderColor(msg.from)}">{msg.from}</div>
           {/if}
           <div class="flex gap-0 break-words">
-            <span class="text-[#4a4a4a] flex-shrink-0 w-[3.2em] text-right mr-[0.4em] select-none text-[0.78rem]">{formatTime(msg.timestamp)}</span>
+            <span class="text-[#4a4a4a] flex-shrink-0 w-[3.2em] text-right mr-[0.4em] select-none text-[0.82rem]">{formatTime(msg.timestamp)}</span>
             <span class="flex-1 min-w-0 {isDimSender(msg.from) ? 'text-[#606060]' : 'text-[#d0d0d0]'}">{@html renderContent(msg.content || '')}</span>
           </div>
         {/each}
@@ -201,12 +201,12 @@
 
     <!-- Mobile messages -->
     <div
-      class="flex-1 min-h-0 overflow-y-auto overflow-x-hidden font-[SF_Mono,Menlo,Consolas,Monaco,'Courier_New',monospace] text-[0.82rem] leading-[1.55] px-[14px] pt-[10px] pb-[10px]"
+      class="flex-1 min-h-0 overflow-y-auto overflow-x-hidden font-[SF_Mono,Menlo,Consolas,Monaco,'Courier_New',monospace] text-[0.88rem] leading-[1.55] px-[14px] pt-[10px] pb-[10px]"
       bind:this={mobileScrollArea}
     >
       <!-- Parent message -->
       <div class="pb-2 mb-2 border-b border-[#2a2a2a]">
-        <div class="font-bold text-[0.82rem]" style="color: {getSenderColor($threadData.parentMessage.from)}">
+        <div class="font-bold text-[0.88rem]" style="color: {getSenderColor($threadData.parentMessage.from)}">
           {$threadData.parentMessage.from}
         </div>
         <div class="text-[#d0d0d0] break-words">{@html renderContent($threadData.parentMessage.content || '')}</div>
@@ -215,15 +215,15 @@
 
       <!-- Replies -->
       {#if $threadData.messages.length === 0}
-        <div class="text-center text-[#606060] py-4 text-[0.82rem]">No replies yet</div>
+        <div class="text-center text-[#606060] py-4 text-[0.88rem]">No replies yet</div>
       {:else}
         {#each $threadData.messages as msg, i}
           {#if i === 0 || $threadData.messages[i - 1].from !== msg.from}
             {#if i > 0}<div class="h-[0.5em]"></div>{/if}
-            <div class="font-bold text-[0.82rem]" style="color: {getSenderColor(msg.from)}">{msg.from}</div>
+            <div class="font-bold text-[0.88rem]" style="color: {getSenderColor(msg.from)}">{msg.from}</div>
           {/if}
           <div class="flex gap-0 break-words">
-            <span class="text-[#4a4a4a] flex-shrink-0 w-[3.2em] text-right mr-[0.4em] select-none text-[0.78rem]">{formatTime(msg.timestamp)}</span>
+            <span class="text-[#4a4a4a] flex-shrink-0 w-[3.2em] text-right mr-[0.4em] select-none text-[0.82rem]">{formatTime(msg.timestamp)}</span>
             <span class="flex-1 min-w-0 {isDimSender(msg.from) ? 'text-[#606060]' : 'text-[#d0d0d0]'}">{@html renderContent(msg.content || '')}</span>
           </div>
         {/each}
