@@ -109,9 +109,10 @@ fn test_process_lead_output_no_lead_events() {
 
 #[test]
 fn test_process_lead_output_returns_post_effect() {
+    // Use a project-name lead session (not "lead") to verify the parameter is actually used.
     let mut events = HashMap::new();
     events.insert(
-        "lead".to_string(),
+        "myproject".to_string(),
         vec![StreamEvent::Assistant {
             message: json!({
                 "content": [{"type": "text", "text": "Hello from lead"}]
@@ -121,7 +122,7 @@ fn test_process_lead_output_returns_post_effect() {
         }],
     );
 
-    let effects = process_lead_output(&events, &HashMap::new(), "lead");
+    let effects = process_lead_output(&events, &HashMap::new(), "myproject");
     assert_eq!(effects.len(), 1);
 
     match &effects[0] {
@@ -130,7 +131,7 @@ fn test_process_lead_output_returns_post_effect() {
             message,
             channel,
         } => {
-            assert_eq!(sender, "lead");
+            assert_eq!(sender, "myproject");
             assert_eq!(message, "Hello from lead");
             assert!(channel.is_none());
         }

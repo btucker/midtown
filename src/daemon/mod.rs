@@ -626,7 +626,7 @@ pub(crate) struct DaemonState {
     shutdown_tx: broadcast::Sender<()>,
     /// Session-scoped intercom queues for headed adapters (wrapper transport).
     ///
-    /// Each session (e.g., "lead", "park") has an ordered queue and an
+    /// Each session (e.g., "myproject", "park") has an ordered queue and an
     /// exclusive adapter lease. Adapters consume via poll+ack; the daemon
     /// enqueues logical control messages (nudges/keys) without terminal coupling.
     headed_sessions: Mutex<HashMap<String, HeadedSessionState>>,

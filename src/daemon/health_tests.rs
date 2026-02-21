@@ -558,9 +558,10 @@ fn ensure_lead_alive_cooldown_prevents_respawn_loop() {
 #[test]
 fn ensure_lead_alive_respawns_after_cooldown() {
     let mut snap = empty_snap();
-    // Lead stopped 10 minutes ago — past the 5-minute cooldown
+    // Lead stopped 10 minutes ago — past the 5-minute cooldown.
+    // Key is the repo name (lowercase) after the rename; using "lead" would not be found.
     snap.coworker_stop_times.insert(
-        "lead".to_string(),
+        snap.repo_name.to_lowercase(),
         chrono::Utc::now() - chrono::Duration::minutes(10),
     );
     let effects = ensure_lead_alive(&snap);

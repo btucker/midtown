@@ -137,6 +137,19 @@ Prompts are assembled from composable markdown files in `agents/` and loaded at 
 
 **@mention routing:** Agents use `@{project_name}` (e.g., `@midtown`) to mention the lead — not the literal `@lead`. Both `@lead` and `@{project_name}` are recognized by the daemon's nudge routing in `rpc_channel.rs` and `chat.rs`.
 
+## Main Lead Session Identity
+
+The main lead session name equals the repo name (e.g. `"midtown"`), not the hardcoded string `"lead"`. This applies everywhere:
+
+- **Spawn**: `LaunchConfig::lead()` sets `name = repo_name.clone()` (`src/launch.rs`)
+- **Health**: `ensure_lead_alive()` and `maybe_refresh_lead_session()` compare against `snap.repo_name` (`src/daemon/health.rs`)
+- **Dispatch**: coworker-limit checks use `snap.repo_name` (`src/daemon/dispatch.rs`)
+- **Effects**: auto-detach suffix check and skip-filter use `state.repo_name` (`src/daemon/effects.rs`)
+- **Stop-time key**: `coworker_stop_times` entries for the lead are keyed by `repo_name.to_lowercase()`
+- **Attached key**: `attached_coworkers` entries for the lead are keyed by `repo_name` (lowercase)
+
+Code that previously compared `name == "lead"` now compares `name.eq_ignore_ascii_case(&snap.repo_name)` or checks `coworker_type == Some("lead")` (for attach-path role detection).
+
 ## Channel Leads
 
 Channel leads are headless Claude Code sessions attached to individual topic channels. Where coworkers are temporary implementers that come and go with tasks, channel leads are long-lived domain experts that accumulate context across conversations.

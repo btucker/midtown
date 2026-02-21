@@ -46,7 +46,7 @@ pub enum CoworkerRole {
 /// these and pass it to `to_headless_config()` for headless spawn.
 #[derive(Debug, Clone)]
 pub struct LaunchConfig {
-    /// Coworker name (or "lead" for the lead instance).
+    /// Coworker name (or the repo name for the lead instance).
     pub name: String,
     /// How to start or resume the session.
     pub session_mode: SessionMode,

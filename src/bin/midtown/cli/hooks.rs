@@ -386,8 +386,8 @@ fn handle_idle_hook() -> Result<Response, String> {
     let channel = open_channel_for_hook(&repo)?;
 
     // Coworkers have MIDTOWN_AGENT set to their name at spawn time (see launch.rs).
-    // Lead sessions don't have this set, so default to "lead".
-    let agent = std::env::var("MIDTOWN_AGENT").unwrap_or_else(|_| "lead".to_string());
+    // Lead sessions don't have this set, so default to the repo name.
+    let agent = std::env::var("MIDTOWN_AGENT").unwrap_or_else(|_| repo.clone());
 
     hook_log(&repo, &format!("idle: {} posting idle status", agent));
 
@@ -843,8 +843,8 @@ fn handle_ask_hook() -> Result<Response, String> {
 
     // Coworkers have MIDTOWN_AGENT set to their name at spawn time (see launch.rs).
     // Lead sessions don't have this set, so default to the repo name.
-    let agent = std::env::var("MIDTOWN_AGENT")
-        .unwrap_or_else(|_| detect_git_repo().unwrap_or_else(|| "lead".to_string()));
+    let agent =
+        std::env::var("MIDTOWN_AGENT").unwrap_or_else(|_| detect_git_repo().unwrap_or_default());
 
     let tool_input = &context["tool_input"];
     let questions = extract_ask_questions(tool_input);

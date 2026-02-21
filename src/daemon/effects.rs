@@ -742,7 +742,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
 
                 // Clear tool activity for this agent when they post a channel message.
                 // A channel post signals the end of a work phase — the activity strip should reset.
-                // Skip system senders (midtown, lead) and channel leads since they don't have
+                // Skip system senders (midtown) and channel leads since they don't have
                 // coworker-style tool activity that should be cleared on text posts.
                 let skip = matches!(sender.to_lowercase().as_str(), "midtown" | "user")
                     || sender.eq_ignore_ascii_case(&state.repo_name)
