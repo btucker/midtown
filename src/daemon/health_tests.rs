@@ -1863,6 +1863,125 @@ fn test_stuck_reviewer_restart_falls_back_to_shutdown_coworker_without_mapping()
     );
 }
 
+/// Stuck reviewer with a placeholder comment emits `UpdatePrComment` to mark the
+/// placeholder as abandoned when the reviewer is restarted.
+#[test]
+fn stuck_reviewer_with_placeholder_emits_update_pr_comment() {
+    use crate::coworker::{Coworker, CoworkerStatus};
+
+    let now = chrono::Utc::now();
+    let mut snap = empty_snap();
+    snap.now_utc = now;
+
+    // Active reviewer coworker so the function doesn't bail early
+    snap.active_coworkers.push(Coworker {
+        slot_id: uuid::Uuid::new_v4().to_string(),
+        name: "lexington".to_string(),
+        status: CoworkerStatus::Running,
+        working_dir: "/tmp/test".to_string(),
+        started_at: now - chrono::Duration::minutes(30),
+        current_task: None,
+        session_id: None,
+        model: "sonnet".to_string(),
+        provider: crate::auth::AuthProvider::Claude,
+        profile: crate::auth::DEFAULT_PROFILE.to_string(),
+    });
+
+    // Stuck health: no events for well past REVIEWER_STUCK_DURATION (300s)
+    snap.headless_process_health.insert(
+        "lexington".to_string(),
+        snapshot::ProcessHealth {
+            is_alive: true,
+            last_event_at: Some(now - chrono::Duration::minutes(10)),
+            has_usage_limit: false,
+            usage_limit_reset_at: None,
+            has_api_error: false,
+            has_auth_error: false,
+            has_running_subagent: false,
+            has_pending_tool: false,
+            has_tool_name_conflict: false,
+            has_pending_api_call: false,
+            exit_code: None,
+        },
+    );
+
+    // Reviewer assigned to PR 77
+    snap.reviewer_pr_assignments
+        .insert("lexington".to_string(), 77);
+
+    // PR 77 has a placeholder comment with id 555
+    snap.reviewer_in_progress_comment_ids.insert(77, 555);
+
+    // Below max restarts (so it will be restarted, not escalated)
+    snap.reviewer_restart_counts.insert(77, 0);
+
+    let effects = check_and_restart_stuck_reviewers(&snap);
+
+    let has_update_pr_comment = effects.iter().any(|e| {
+        matches!(
+            e,
+            Effect::UpdatePrComment { comment_id, .. } if *comment_id == 555
+        )
+    });
+    assert!(
+        has_update_pr_comment,
+        "Expected UpdatePrComment effect with comment_id 555 for stuck reviewer with placeholder, got: {:#?}",
+        effects
+    );
+}
+
+/// Dead reviewer with a placeholder comment emits `UpdatePrComment` to mark the
+/// placeholder as abandoned when the reviewer is respawned.
+#[test]
+fn dead_reviewer_with_placeholder_emits_update_pr_comment() {
+    let now = chrono::Utc::now();
+    let mut snap = empty_snap();
+    snap.now_utc = now;
+
+    // Dead reviewer health: process exited without posting review
+    snap.headless_process_health.insert(
+        "broadway".to_string(),
+        snapshot::ProcessHealth {
+            is_alive: false,
+            exit_code: Some(1),
+            last_event_at: Some(now - chrono::Duration::seconds(60)),
+            has_usage_limit: false,
+            usage_limit_reset_at: None,
+            has_api_error: false,
+            has_auth_error: false,
+            has_running_subagent: false,
+            has_pending_tool: false,
+            has_tool_name_conflict: false,
+            has_pending_api_call: false,
+        },
+    );
+
+    // Reviewer assigned to PR 88, but review was NOT posted
+    snap.reviewer_pr_assignments
+        .insert("broadway".to_string(), 88);
+    // reviewed_prs does NOT contain 88 (review not posted)
+
+    // PR 88 has a placeholder comment with id 888
+    snap.reviewer_in_progress_comment_ids.insert(88, 888);
+
+    // Below max restarts
+    snap.reviewer_restart_counts.insert(88, 0);
+
+    let effects = check_and_restart_dead_reviewers(&snap);
+
+    let has_update_pr_comment = effects.iter().any(|e| {
+        matches!(
+            e,
+            Effect::UpdatePrComment { comment_id, .. } if *comment_id == 888
+        )
+    });
+    assert!(
+        has_update_pr_comment,
+        "Expected UpdatePrComment effect with comment_id 888 for dead reviewer with placeholder, got: {:#?}",
+        effects
+    );
+}
+
 /// Reviewers that are alive but have never emitted any stream events (`last_event_at: None`)
 /// should be treated as stuck and restarted after `REVIEWER_STUCK_DURATION` elapses from
 /// their start time. This tests the real captured state where `pleasant` and `riverside`

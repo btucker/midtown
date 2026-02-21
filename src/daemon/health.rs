@@ -352,12 +352,17 @@ pub fn check_and_restart_stuck_reviewers(snap: &snapshot::WorldSnapshot) -> Vec<
     let mut effects = Vec::new();
     for restart in restarts {
         let new_restart_count = restart.restart_count + 1;
+        let effective_duration = if prs_with_in_progress_comment.contains(&restart.pr_number) {
+            REVIEWER_PLACEHOLDER_STUCK_DURATION
+        } else {
+            REVIEWER_STUCK_DURATION
+        };
 
         info!(
             "Reviewer {} stuck reviewing PR #{} (no events for {}s, restart {}/{}, session: {:?})",
             restart.name,
             restart.pr_number,
-            REVIEWER_STUCK_DURATION.as_secs(),
+            effective_duration.as_secs(),
             new_restart_count,
             MAX_REVIEWER_RESTARTS,
             restart.session_id,
@@ -465,7 +470,7 @@ pub fn check_and_restart_stuck_reviewers(snap: &snapshot::WorldSnapshot) -> Vec<
                 "🔄 Restarted stuck reviewer {} for PR #{} (no events for {}s, attempt {}/{})",
                 restart.name,
                 restart.pr_number,
-                REVIEWER_STUCK_DURATION.as_secs(),
+                effective_duration.as_secs(),
                 new_restart_count,
                 MAX_REVIEWER_RESTARTS,
             ),
@@ -480,7 +485,6 @@ pub fn check_and_restart_stuck_reviewers(snap: &snapshot::WorldSnapshot) -> Vec<
     //
     // The escalation is only posted once per PR (tracked via reviewer_escalations_posted
     // in WorldSnapshot) to prevent spamming the channel/lead on every tick.
-    let stuck_threshold = chrono::Duration::from_std(REVIEWER_STUCK_DURATION).unwrap_or_default();
     for (name, health) in &snap.headless_process_health {
         if !health.is_alive {
             continue;
@@ -489,6 +493,13 @@ pub fn check_and_restart_stuck_reviewers(snap: &snapshot::WorldSnapshot) -> Vec<
             Some(pr) => *pr,
             None => continue,
         };
+        // Use the shorter threshold for PRs with a placeholder comment (matches detection logic).
+        let effective_duration = if prs_with_in_progress_comment.contains(&pr_number) {
+            REVIEWER_PLACEHOLDER_STUCK_DURATION
+        } else {
+            REVIEWER_STUCK_DURATION
+        };
+        let stuck_threshold = chrono::Duration::from_std(effective_duration).unwrap_or_default();
         // Skip if we've already posted an escalation for this PR
         if snap.reviewer_escalations_posted.contains(&pr_number) {
             continue;

@@ -689,10 +689,9 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
 
             let comment_id = match cached {
                 Some((id, checked_at))
-                    if id.is_some()
-                        || checked_at.elapsed().as_secs() < PLACEHOLDER_CACHE_TTL_SECS =>
+                    if checked_at.elapsed().as_secs() < PLACEHOLDER_CACHE_TTL_SECS =>
                 {
-                    id // Use cached result (positive always, negative within TTL)
+                    id // Use cached result within TTL
                 }
                 _ => {
                     // Cache miss or expired: fetch from GitHub
