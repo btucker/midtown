@@ -1175,21 +1175,14 @@ fn pr_action_to_effects(
 
     match action {
         PrAction::NudgeOwner { owner, message } => {
-            let session_id = state
-                .name_to_session
-                .lock()
-                .unwrap()
-                .get(&owner.to_lowercase())
-                .cloned()
-                .unwrap_or_default();
-            vec![Effect::NudgeSessionWithCallbacks {
-                session_id,
-                reason: super::wake_reason::WakeReason::Nudge { message },
-                on_success: vec![Effect::RecordPrNudge {
+            vec![Effect::nudge_session_with_callbacks(
+                state.session_id_for_name(&owner),
+                message,
+                vec![Effect::RecordPrNudge {
                     pr_number,
                     issue_type,
                 }],
-            }]
+            )]
         }
         PrAction::SpawnOwner { owner, message } => {
             // Pure decision: should we resume with saved session or fresh?
@@ -1570,17 +1563,10 @@ async fn collect_stuck_condition_effects(
                             task_info,
                             STUCK_SILENT_COWORKER_DURATION.as_secs() / 60,
                         );
-                        let session_id = state
-                            .name_to_session
-                            .lock()
-                            .unwrap()
-                            .get(&name.to_lowercase())
-                            .cloned()
-                            .unwrap_or_default();
-                        effects.push(Effect::NudgeSession {
-                            session_id,
-                            reason: super::wake_reason::WakeReason::Nudge { message: nudge_msg },
-                        });
+                        effects.push(Effect::nudge_session(
+                            state.session_id_for_name(name),
+                            nudge_msg,
+                        ));
                         // Post to channel so it's visible
                         effects.push(Effect::PostSystemMessage {
                             message: format!(
@@ -1787,12 +1773,7 @@ async fn collect_comment_notification_effects(
                         "Polling detected new review comments on lead PR #{}, nudging lead",
                         pr_number
                     );
-                    effects.push(Effect::NudgeChannelLead {
-                        channel_name: snap.repo_name.clone(),
-                        reason: super::wake_reason::WakeReason::Nudge {
-                            message: lead_nudge_msg,
-                        },
-                    });
+                    effects.push(Effect::nudge_channel_lead(&snap.repo_name, lead_nudge_msg));
                 }
             } else {
                 // No new comments, just update tracker
@@ -1897,12 +1878,7 @@ async fn collect_comment_notification_effects(
                 pr_number,
                 truncate_str(title, 40)
             );
-            effects.push(Effect::NudgeChannelLead {
-                channel_name: snap.repo_name.clone(),
-                reason: super::wake_reason::WakeReason::Nudge {
-                    message: lead_nudge_msg,
-                },
-            });
+            effects.push(Effect::nudge_channel_lead(&snap.repo_name, lead_nudge_msg));
         }
     }
 
@@ -1928,21 +1904,14 @@ fn comment_action_to_effects(
 
     match action {
         PrAction::NudgeOwner { owner, message } => {
-            let session_id = state
-                .name_to_session
-                .lock()
-                .unwrap()
-                .get(&owner.to_lowercase())
-                .cloned()
-                .unwrap_or_default();
-            vec![Effect::NudgeSessionWithCallbacks {
-                session_id,
-                reason: super::wake_reason::WakeReason::Nudge { message },
-                on_success: vec![Effect::RecordPrNudge {
+            vec![Effect::nudge_session_with_callbacks(
+                state.session_id_for_name(&owner),
+                message,
+                vec![Effect::RecordPrNudge {
                     pr_number,
                     issue_type,
                 }],
-            }]
+            )]
         }
         PrAction::SpawnOwner { owner, message } => {
             // Pure decision: should we resume with saved session or fresh?
@@ -2574,21 +2543,14 @@ fn review_complete_action_to_effects(
 
     match action {
         PrAction::NudgeOwner { owner, message } => {
-            let session_id = state
-                .name_to_session
-                .lock()
-                .unwrap()
-                .get(&owner.to_lowercase())
-                .cloned()
-                .unwrap_or_default();
-            vec![Effect::NudgeSessionWithCallbacks {
-                session_id,
-                reason: super::wake_reason::WakeReason::Nudge { message },
-                on_success: vec![Effect::RecordPrNudge {
+            vec![Effect::nudge_session_with_callbacks(
+                state.session_id_for_name(&owner),
+                message,
+                vec![Effect::RecordPrNudge {
                     pr_number,
                     issue_type,
                 }],
-            }]
+            )]
         }
         PrAction::SpawnOwner { owner, message } => {
             // Pure decision: should we resume with saved session or fresh?
@@ -3182,12 +3144,7 @@ pub(super) async fn handle_pr_comment_nudge(
             pr_number
         );
 
-        let effect = Effect::NudgeChannelLead {
-            channel_name: state.repo_name.clone(),
-            reason: super::wake_reason::WakeReason::Nudge {
-                message: lead_nudge_msg,
-            },
-        };
+        let effect = Effect::nudge_channel_lead(&state.repo_name, lead_nudge_msg);
         crate::daemon::effects::execute_effects(vec![effect], state).await;
         return;
     }
@@ -3281,17 +3238,10 @@ pub(super) async fn handle_pr_comment_nudge(
             .any(|c| c.name == reviewer_name);
 
         let effects = if is_active {
-            let session_id_for_nudge = state
-                .name_to_session
-                .lock()
-                .unwrap()
-                .get(&reviewer_name.to_lowercase())
-                .cloned()
-                .unwrap_or_default();
-            vec![Effect::NudgeSession {
-                session_id: session_id_for_nudge,
-                reason: super::wake_reason::WakeReason::Nudge { message: nudge_msg },
-            }]
+            vec![Effect::nudge_session(
+                state.session_id_for_name(&reviewer_name),
+                nudge_msg,
+            )]
         } else if let Some(session_id) = reviewer_session_id {
             // Reviewer stopped — resume their session with the follow-up context
             let config = crate::launch::LaunchConfig::coworker(
@@ -3380,12 +3330,7 @@ pub(super) async fn handle_pr_comment_nudge(
             "Your PR #{} has review feedback from {}. Please address it and merge if appropriate.",
             pr_number, activity.actor
         );
-        effects.push(Effect::NudgeChannelLead {
-            channel_name: state.repo_name.clone(),
-            reason: super::wake_reason::WakeReason::Nudge {
-                message: lead_nudge_msg,
-            },
-        });
+        effects.push(Effect::nudge_channel_lead(&state.repo_name, lead_nudge_msg));
     }
 
     super::effects::execute_effects(effects, state).await;
@@ -3912,16 +3857,14 @@ pub fn reconcile_orphaned_prs(snap: &WorldSnapshot) -> Vec<Effect> {
         );
 
         // Nudge the lead to decide what to do with this PR
-        effects.push(Effect::NudgeChannelLead {
-            channel_name: snap.repo_name.clone(),
-            reason: super::wake_reason::WakeReason::Nudge {
-                message: format!(
-                    "PR #{} ({}) is reviewed and CI is green, but has no active task. \
-                     Please check the PR and either tell the author to merge it or handle it manually.",
-                    pr_number, title
-                ),
-            },
-        });
+        effects.push(Effect::nudge_channel_lead(
+            &snap.repo_name,
+            format!(
+                "PR #{} ({}) is reviewed and CI is green, but has no active task. \
+                 Please check the PR and either tell the author to merge it or handle it manually.",
+                pr_number, title
+            ),
+        ));
         // Record that we've nudged the lead so we don't repeat on every tick
         effects.push(Effect::RecordOrphanedPrLeadNudge { pr_number });
     }

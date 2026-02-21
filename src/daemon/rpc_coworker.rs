@@ -324,23 +324,14 @@ pub(super) async fn handle_coworker_report_state(
                 "Reviewer {} reported idle but has not posted review for PR #{} — nudging to post first",
                 name, pr_number
             );
-            let session_id = state
-                .name_to_session
-                .lock()
-                .unwrap()
-                .get(&name.to_lowercase())
-                .cloned()
-                .unwrap_or_default();
-            let nudge_effects = vec![effects::Effect::NudgeSession {
-                session_id,
-                reason: super::wake_reason::WakeReason::Nudge {
-                    message: format!(
-                        "You are assigned as reviewer for PR #{pr_number} but have not posted \
-                         your review yet. Please complete and post your review comment on the PR \
-                         before going idle."
-                    ),
-                },
-            }];
+            let nudge_effects = vec![effects::Effect::nudge_session(
+                state.session_id_for_name(name),
+                format!(
+                    "You are assigned as reviewer for PR #{pr_number} but have not posted \
+                     your review yet. Please complete and post your review comment on the PR \
+                     before going idle."
+                ),
+            )];
             effects::execute_effects(nudge_effects, state).await;
             return Response::success(
                 id,
@@ -414,23 +405,14 @@ pub(super) async fn handle_coworker_report_state(
                     "Task !{} reported completed by {} but has no PR — nudging to open PR",
                     tid, name
                 );
-                let session_id_for_nudge = state
-                    .name_to_session
-                    .lock()
-                    .unwrap()
-                    .get(&name.to_lowercase())
-                    .cloned()
-                    .unwrap_or_default();
                 let nudge_effects = vec![
-                    effects::Effect::NudgeSession {
-                        session_id: session_id_for_nudge,
-                        reason: super::wake_reason::WakeReason::Nudge {
-                            message: format!(
-                                "Task !{} has no PR yet. Please open a PR for your changes and then go idle with `midtown state idle`. The daemon will complete the task when the PR merges.",
-                                tid
-                            ),
-                        },
-                    },
+                    effects::Effect::nudge_session(
+                        state.session_id_for_name(name),
+                        format!(
+                            "Task !{} has no PR yet. Please open a PR for your changes and then go idle with `midtown state idle`. The daemon will complete the task when the PR merges.",
+                            tid
+                        ),
+                    ),
                     effects::Effect::PostToChannel {
                         sender: "midtown".to_string(),
                         message: format!(

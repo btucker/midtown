@@ -1245,10 +1245,7 @@ fn decide_discovered_coworker_nudges(
                 .get(&name_lower)
                 .cloned()
                 .unwrap_or_default();
-            effects.push(Effect::NudgeSession {
-                session_id,
-                reason: super::wake_reason::WakeReason::Nudge { message: prompt },
-            });
+            effects.push(Effect::nudge_session(session_id, prompt));
             effects.push(Effect::PostToChannel {
                 sender: "midtown".to_string(),
                 message: format!(
@@ -1269,10 +1266,7 @@ fn decide_discovered_coworker_nudges(
                 .get(&name_lower)
                 .cloned()
                 .unwrap_or_default();
-            effects.push(Effect::NudgeSession {
-                session_id,
-                reason: super::wake_reason::WakeReason::Nudge { message: prompt },
-            });
+            effects.push(Effect::nudge_session(session_id, prompt));
             effects.push(Effect::PostToChannel {
                 sender: "midtown".to_string(),
                 message: format!(
@@ -1941,10 +1935,10 @@ pub(super) fn spawn_for_pending_tasks_excluding(
                     .get(&o.to_lowercase())
                     .cloned()
                     .unwrap_or_default();
-                effects.push(Effect::NudgeSessionWithCallbacks {
+                effects.push(Effect::nudge_session_with_callbacks(
                     session_id,
-                    reason: super::wake_reason::WakeReason::Nudge { message: nudge_msg },
-                    on_success: vec![
+                    nudge_msg,
+                    vec![
                         Effect::RecordCooldown {
                             category: "task_nudge".to_string(),
                             key: task_key.clone(),
@@ -1954,7 +1948,7 @@ pub(super) fn spawn_for_pending_tasks_excluding(
                             task_id: tid.clone(),
                         },
                     ],
-                });
+                ));
             }
             crate::rules::PendingTaskAction::SpawnOwner {
                 owner: ref o,
@@ -2392,10 +2386,10 @@ pub(super) fn spawn_for_pending_tasks_excluding(
                 .get(&coworker_name.to_lowercase())
                 .cloned()
                 .unwrap_or_default();
-            effects.push(Effect::NudgeSessionWithCallbacks {
+            effects.push(Effect::nudge_session_with_callbacks(
                 session_id,
-                reason: super::wake_reason::WakeReason::Nudge { message: prompt },
-                on_success: vec![
+                prompt,
+                vec![
                     Effect::RecordTaskAssignment {
                         coworker: coworker_name.clone(),
                         task_id: task.id.clone(),
@@ -2406,7 +2400,7 @@ pub(super) fn spawn_for_pending_tasks_excluding(
                         channel: Some(OPS_CHANNEL.to_string()),
                     },
                 ],
-            });
+            ));
         } else {
             // Step 2b: Spawn a new coworker — assign ownership atomically with spawn
             let wt = prepare_task_worktree(&task.id, &task.subject, &state.repo_name, snap);

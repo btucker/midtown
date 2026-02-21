@@ -6,7 +6,6 @@
 
 /// Why a session is being woken up.
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // Variants will be used as later tasks wire up trigger points
 pub enum WakeReason {
     // ── Channel lead triggers ──────────────────────────────────────────
     /// A task was created in the channel.
@@ -41,7 +40,6 @@ pub enum WakeReason {
     Nudge { message: String },
 }
 
-#[allow(dead_code)] // Methods will be called from effects.rs once trigger points are wired up
 impl WakeReason {
     /// Format as a nudge message for an already-running session.
     pub fn to_nudge_message(&self) -> String {

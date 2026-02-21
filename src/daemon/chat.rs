@@ -332,10 +332,7 @@ fn mention_action_to_effects(
                 .get(&name.to_lowercase())
                 .cloned()
                 .unwrap_or_default();
-            vec![Effect::NudgeSession {
-                session_id,
-                reason: super::wake_reason::WakeReason::Nudge { message },
-            }]
+            vec![Effect::nudge_session(session_id, message)]
         }
         crate::rules::MentionAction::Spawn { name, message } => {
             let config = crate::launch::LaunchConfig::coworker(

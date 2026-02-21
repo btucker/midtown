@@ -418,6 +418,47 @@ pub enum Effect {
     ReleaseName { name: String },
 }
 
+impl Effect {
+    /// Convenience: nudge a channel lead with a freeform message.
+    ///
+    /// Shorthand for `NudgeChannelLead` with `WakeReason::Nudge`. Use the full
+    /// form when the wake reason carries structured data (e.g., `TaskCreated`,
+    /// `UserMessage`, `InsightPosted`).
+    pub fn nudge_channel_lead(channel_name: impl Into<String>, message: impl Into<String>) -> Self {
+        Self::NudgeChannelLead {
+            channel_name: channel_name.into(),
+            reason: super::wake_reason::WakeReason::Nudge {
+                message: message.into(),
+            },
+        }
+    }
+
+    /// Convenience: nudge a session with a freeform message.
+    pub fn nudge_session(session_id: impl Into<String>, message: impl Into<String>) -> Self {
+        Self::NudgeSession {
+            session_id: session_id.into(),
+            reason: super::wake_reason::WakeReason::Nudge {
+                message: message.into(),
+            },
+        }
+    }
+
+    /// Convenience: nudge a session with callbacks and a freeform message.
+    pub fn nudge_session_with_callbacks(
+        session_id: impl Into<String>,
+        message: impl Into<String>,
+        on_success: Vec<Effect>,
+    ) -> Self {
+        Self::NudgeSessionWithCallbacks {
+            session_id: session_id.into(),
+            reason: super::wake_reason::WakeReason::Nudge {
+                message: message.into(),
+            },
+            on_success,
+        }
+    }
+}
+
 /// Deduplicate nudge effects targeting the same session within a single batch.
 ///
 /// When multiple PR issue types (CI green, review complete, merge conflict)
@@ -559,6 +600,42 @@ async fn shutdown_coworker_impl(name: &str, message: &str, state: &DaemonState) 
 /// blocking during startup when processing multiple pending tasks. Non-spawn effects
 /// execute sequentially as before. This keeps the daemon responsive to RPC requests
 /// during startup by avoiding long sequential pauses from worktree creation (1-5s each).
+/// Resolve a session ID to its coworker name and deliver a nudge message.
+///
+/// Shared implementation for `NudgeSession` and `NudgeSessionWithCallbacks`.
+/// Returns `true` on successful delivery, `false` on failure (name not found
+/// or send error). On success, the nudge is recorded for attribution tracking.
+async fn send_session_nudge(
+    state: &DaemonState,
+    session_id: &str,
+    reason: &super::wake_reason::WakeReason,
+) -> bool {
+    let name = state
+        .session_to_name
+        .lock()
+        .unwrap()
+        .get(session_id)
+        .cloned();
+    let Some(name) = name else {
+        warn!(
+            "NudgeSession: no name found for session {} — cannot deliver",
+            session_id
+        );
+        return false;
+    };
+    let msg = reason.to_nudge_message();
+    match state.session_manager.send_message(&name, &msg).await {
+        Ok(()) => {
+            state.record_pending_nudge(&name, &msg);
+            true
+        }
+        Err(e) => {
+            warn!("Failed to nudge session {}: {}", session_id, e);
+            false
+        }
+    }
+}
+
 pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
     let effects = dedup_nudge_effects(effects);
     for effect in effects {
@@ -956,12 +1033,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 // Ops owns daemon operational alerts (stuck PRs, orphaned worktrees,
                 // coworker health) and escalates to @lead when human judgment is required.
                 if message.to_lowercase().contains("@ops") {
-                    let nudge = Effect::NudgeChannelLead {
-                        channel_name: OPS_CHANNEL.to_string(),
-                        reason: super::wake_reason::WakeReason::Nudge {
-                            message: message.clone(),
-                        },
-                    };
+                    let nudge = Effect::nudge_channel_lead(OPS_CHANNEL, message.clone());
                     Box::pin(execute_effects(vec![nudge], state)).await;
                 }
                 let mut msg = Message::system(message);
@@ -2034,28 +2106,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 }
             }
             Effect::NudgeSession { session_id, reason } => {
-                let name = state
-                    .session_to_name
-                    .lock()
-                    .unwrap()
-                    .get(&session_id)
-                    .cloned();
-                if let Some(name) = name {
-                    let msg = reason.to_nudge_message();
-                    match state.session_manager.send_message(&name, &msg).await {
-                        Ok(()) => {
-                            state.record_pending_nudge(&name, &msg);
-                        }
-                        Err(e) => {
-                            warn!("Failed to nudge session {}: {}", session_id, e);
-                        }
-                    }
-                } else {
-                    warn!(
-                        "NudgeSession: no name found for session {} — cannot deliver",
-                        session_id
-                    );
-                }
+                send_session_nudge(state, &session_id, &reason).await;
             }
             Effect::NudgeSessionWithCallbacks {
                 session_id,
@@ -2075,29 +2126,8 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     })
                     .collect();
 
-                let name = state
-                    .session_to_name
-                    .lock()
-                    .unwrap()
-                    .get(&session_id)
-                    .cloned();
-                if let Some(name) = name {
-                    let msg = reason.to_nudge_message();
-                    match state.session_manager.send_message(&name, &msg).await {
-                        Ok(()) => {
-                            info!("Nudged session {} ({}) successfully", session_id, name);
-                            state.record_pending_nudge(&name, &msg);
-                            Box::pin(execute_effects(on_success, state)).await;
-                        }
-                        Err(e) => {
-                            warn!("Failed to nudge session {}: {}", session_id, e);
-                        }
-                    }
-                } else {
-                    warn!(
-                        "NudgeSessionWithCallbacks: no name found for session {} — cannot deliver",
-                        session_id
-                    );
+                if send_session_nudge(state, &session_id, &reason).await {
+                    Box::pin(execute_effects(on_success, state)).await;
                 }
                 // Clear in-flight markers regardless of success/failure
                 for task_id in &task_ids {

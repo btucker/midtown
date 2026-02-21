@@ -1921,13 +1921,19 @@ impl DaemonState {
         }
     }
 
-    /// Look up the session ID currently holding a given name.
+    /// Look up the session ID currently holding a given coworker name.
     ///
-    /// Infrastructure for the session-centric model — used by effect handlers
-    /// and RPC adapters once the session-centric migration is further along.
-    #[allow(dead_code)] // Used in tests; production callers arrive in later migration tasks
-    pub(crate) fn session_for_name(&self, name: &str) -> Option<String> {
-        self.name_to_session.lock().unwrap().get(name).cloned()
+    /// Case-insensitive: the name is lowercased before lookup (the map uses
+    /// lowercase keys). Returns an empty string if no session is found, which
+    /// matches the convention used by `NudgeSession` / `NudgeSessionWithCallbacks`
+    /// effects (the execution layer warns on empty session IDs).
+    pub(crate) fn session_id_for_name(&self, name: &str) -> String {
+        self.name_to_session
+            .lock()
+            .unwrap()
+            .get(&name.to_lowercase())
+            .cloned()
+            .unwrap_or_default()
     }
 
     /// Look up the name currently assigned to a given session ID.

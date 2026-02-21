@@ -548,15 +548,13 @@ pub fn check_and_restart_stuck_reviewers(snap: &snapshot::WorldSnapshot) -> Vec<
             ),
             channel: Some(OPS_CHANNEL.to_string()),
         });
-        effects.push(Effect::NudgeChannelLead {
-            channel_name: snap.repo_name.clone(),
-            reason: super::wake_reason::WakeReason::Nudge {
-                message: format!(
-                    "Reviewer {} is stuck on PR #{} after {} restarts. Please investigate.",
-                    name, pr_number, restart_count
-                ),
-            },
-        });
+        effects.push(Effect::nudge_channel_lead(
+            &snap.repo_name,
+            format!(
+                "Reviewer {} is stuck on PR #{} after {} restarts. Please investigate.",
+                name, pr_number, restart_count
+            ),
+        ));
         effects.push(Effect::RecordReviewerEscalation { pr_number });
     }
 
@@ -718,16 +716,14 @@ pub fn check_and_restart_dead_reviewers(snap: &snapshot::WorldSnapshot) -> Vec<E
             ),
             channel: Some(OPS_CHANNEL.to_string()),
         });
-        effects.push(Effect::NudgeChannelLead {
-            channel_name: snap.repo_name.clone(),
-            reason: super::wake_reason::WakeReason::Nudge {
-                message: format!(
-                    "Reviewer {} failed to post a review for PR #{} after {} attempts. \
-                     Escalated to ops — please investigate.",
-                    escalation.name, escalation.pr_number, escalation.restart_count,
-                ),
-            },
-        });
+        effects.push(Effect::nudge_channel_lead(
+            &snap.repo_name,
+            format!(
+                "Reviewer {} failed to post a review for PR #{} after {} attempts. \
+                 Escalated to ops — please investigate.",
+                escalation.name, escalation.pr_number, escalation.restart_count,
+            ),
+        ));
         effects.push(Effect::RecordReviewerEscalation {
             pr_number: escalation.pr_number,
         });
@@ -848,12 +844,7 @@ pub fn maybe_nudge_usage_limit_expiry(snap: &snapshot::WorldSnapshot) -> Vec<Eff
             .get(&cw.name.to_lowercase())
             .cloned()
             .unwrap_or_default();
-        effects.push(Effect::NudgeSession {
-            session_id,
-            reason: super::wake_reason::WakeReason::Nudge {
-                message: "continue".to_string(),
-            },
-        });
+        effects.push(Effect::nudge_session(session_id, "continue"));
     }
 
     effects
@@ -931,10 +922,7 @@ pub(super) fn check_and_handle_auth_errors(
         );
 
         // Nudge the lead so the user sees this immediately
-        effects.push(Effect::NudgeChannelLead {
-            channel_name: snap.repo_name.clone(),
-            reason: super::wake_reason::WakeReason::Nudge { message },
-        });
+        effects.push(Effect::nudge_channel_lead(&snap.repo_name, message));
     }
 
     effects
@@ -998,12 +986,10 @@ pub(super) fn check_and_nudge_api_errors(
             .get(&name.to_lowercase())
             .cloned()
             .unwrap_or_default();
-        effects.push(Effect::NudgeSession {
+        effects.push(Effect::nudge_session(
             session_id,
-            reason: super::wake_reason::WakeReason::Nudge {
-                message: "The API error may have cleared. Try continuing your work.".to_string(),
-            },
-        });
+            "The API error may have cleared. Try continuing your work.",
+        ));
         effects.push(Effect::RecordCooldown {
             category: "api_error_nudge".to_string(),
             key: name.clone(),
@@ -1363,10 +1349,7 @@ fn effects_for_fired_reminders(
             message: message.clone(),
             channel: None,
         });
-        effects.push(Effect::NudgeChannelLead {
-            channel_name: repo_name.to_string(),
-            reason: super::wake_reason::WakeReason::Nudge { message },
-        });
+        effects.push(Effect::nudge_channel_lead(repo_name, message));
         fired_ids.push(reminder.id.clone());
     }
 

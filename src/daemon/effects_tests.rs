@@ -1,6 +1,5 @@
 use super::*;
 use crate::daemon::trackers::PrIssueType;
-use crate::daemon::wake_reason::WakeReason;
 
 /// Helper to count NudgeSession effects for a given session_id.
 fn count_nudge_session(effects: &[Effect], sid: &str) -> usize {
@@ -20,24 +19,9 @@ fn count_nudge_with_callbacks(effects: &[Effect], sid: &str) -> usize {
 #[test]
 fn test_dedup_removes_duplicate_nudge_session() {
     let effects = vec![
-        Effect::NudgeSession {
-            session_id: "sess-riverside-1".into(),
-            reason: WakeReason::Nudge {
-                message: "first nudge".into(),
-            },
-        },
-        Effect::NudgeSession {
-            session_id: "sess-riverside-1".into(),
-            reason: WakeReason::Nudge {
-                message: "second nudge".into(),
-            },
-        },
-        Effect::NudgeSession {
-            session_id: "sess-riverside-1".into(),
-            reason: WakeReason::Nudge {
-                message: "third nudge".into(),
-            },
-        },
+        Effect::nudge_session("sess-riverside-1", "first nudge"),
+        Effect::nudge_session("sess-riverside-1", "second nudge"),
+        Effect::nudge_session("sess-riverside-1", "third nudge"),
     ];
 
     let deduped = dedup_nudge_effects(effects);
@@ -53,36 +37,30 @@ fn test_dedup_removes_duplicate_nudge_session() {
 #[test]
 fn test_dedup_removes_duplicate_nudge_with_callbacks() {
     let effects = vec![
-        Effect::NudgeSessionWithCallbacks {
-            session_id: "sess-riverside-1".into(),
-            reason: WakeReason::Nudge {
-                message: "CI green".into(),
-            },
-            on_success: vec![Effect::RecordPrNudge {
+        Effect::nudge_session_with_callbacks(
+            "sess-riverside-1",
+            "CI green",
+            vec![Effect::RecordPrNudge {
                 pr_number: 42,
                 issue_type: PrIssueType::Approved,
             }],
-        },
-        Effect::NudgeSessionWithCallbacks {
-            session_id: "sess-riverside-1".into(),
-            reason: WakeReason::Nudge {
-                message: "review complete".into(),
-            },
-            on_success: vec![Effect::RecordPrNudge {
+        ),
+        Effect::nudge_session_with_callbacks(
+            "sess-riverside-1",
+            "review complete",
+            vec![Effect::RecordPrNudge {
                 pr_number: 42,
                 issue_type: PrIssueType::ReviewComplete,
             }],
-        },
-        Effect::NudgeSessionWithCallbacks {
-            session_id: "sess-riverside-1".into(),
-            reason: WakeReason::Nudge {
-                message: "merge conflict".into(),
-            },
-            on_success: vec![Effect::RecordPrNudge {
+        ),
+        Effect::nudge_session_with_callbacks(
+            "sess-riverside-1",
+            "merge conflict",
+            vec![Effect::RecordPrNudge {
                 pr_number: 42,
                 issue_type: PrIssueType::MergeConflict,
             }],
-        },
+        ),
     ];
 
     let deduped = dedup_nudge_effects(effects);
@@ -110,24 +88,9 @@ fn test_dedup_removes_duplicate_nudge_with_callbacks() {
 #[test]
 fn test_dedup_preserves_different_sessions() {
     let effects = vec![
-        Effect::NudgeSession {
-            session_id: "sess-riverside-1".into(),
-            reason: WakeReason::Nudge {
-                message: "nudge riverside".into(),
-            },
-        },
-        Effect::NudgeSession {
-            session_id: "sess-broadway-2".into(),
-            reason: WakeReason::Nudge {
-                message: "nudge broadway".into(),
-            },
-        },
-        Effect::NudgeSession {
-            session_id: "sess-riverside-1".into(),
-            reason: WakeReason::Nudge {
-                message: "duplicate riverside".into(),
-            },
-        },
+        Effect::nudge_session("sess-riverside-1", "nudge riverside"),
+        Effect::nudge_session("sess-broadway-2", "nudge broadway"),
+        Effect::nudge_session("sess-riverside-1", "duplicate riverside"),
     ];
 
     let deduped = dedup_nudge_effects(effects);
@@ -142,22 +105,15 @@ fn test_dedup_mixed_nudge_types_promotes_callbacks() {
     // is deduped but on_success callbacks are promoted to standalone effects
     // so state tracking (RecordPrNudge) still fires.
     let effects = vec![
-        Effect::NudgeSession {
-            session_id: "sess-riverside-1".into(),
-            reason: WakeReason::Nudge {
-                message: "plain nudge".into(),
-            },
-        },
-        Effect::NudgeSessionWithCallbacks {
-            session_id: "sess-riverside-1".into(),
-            reason: WakeReason::Nudge {
-                message: "callback nudge".into(),
-            },
-            on_success: vec![Effect::RecordPrNudge {
+        Effect::nudge_session("sess-riverside-1", "plain nudge"),
+        Effect::nudge_session_with_callbacks(
+            "sess-riverside-1",
+            "callback nudge",
+            vec![Effect::RecordPrNudge {
                 pr_number: 42,
                 issue_type: PrIssueType::Approved,
             }],
-        },
+        ),
     ];
 
     let deduped = dedup_nudge_effects(effects);
@@ -181,22 +137,12 @@ fn test_dedup_preserves_non_nudge_effects() {
             message: "hello".into(),
             channel: None,
         },
-        Effect::NudgeSession {
-            session_id: "sess-riverside-1".into(),
-            reason: WakeReason::Nudge {
-                message: "nudge 1".into(),
-            },
-        },
+        Effect::nudge_session("sess-riverside-1", "nudge 1"),
         Effect::RecordCooldown {
             category: "test".into(),
             key: "key".into(),
         },
-        Effect::NudgeSession {
-            session_id: "sess-riverside-1".into(),
-            reason: WakeReason::Nudge {
-                message: "nudge 2".into(),
-            },
-        },
+        Effect::nudge_session("sess-riverside-1", "nudge 2"),
         Effect::PostToChannel {
             sender: "midtown".into(),
             message: "world".into(),
@@ -214,18 +160,8 @@ fn test_dedup_preserves_non_nudge_effects() {
 fn test_dedup_session_id_based() {
     // Session IDs are exact match, not case-insensitive
     let effects = vec![
-        Effect::NudgeSession {
-            session_id: "sess-abc-123".into(),
-            reason: WakeReason::Nudge {
-                message: "nudge 1".into(),
-            },
-        },
-        Effect::NudgeSession {
-            session_id: "sess-abc-123".into(),
-            reason: WakeReason::Nudge {
-                message: "nudge 2".into(),
-            },
-        },
+        Effect::nudge_session("sess-abc-123", "nudge 1"),
+        Effect::nudge_session("sess-abc-123", "nudge 2"),
     ];
 
     let deduped = dedup_nudge_effects(effects);
@@ -237,46 +173,38 @@ fn test_dedup_quadruple_nudge_scenario() {
     // Reproduces the exact bug: 4 nudges to same session in 1 second
     // from different PR issue sources.
     let effects = vec![
-        Effect::NudgeSessionWithCallbacks {
-            session_id: "sess-riverside-1".into(),
-            reason: WakeReason::Nudge {
-                message: "PR #181 - CI checks passed".into(),
-            },
-            on_success: vec![Effect::RecordPrNudge {
+        Effect::nudge_session_with_callbacks(
+            "sess-riverside-1",
+            "PR #181 - CI checks passed",
+            vec![Effect::RecordPrNudge {
                 pr_number: 181,
                 issue_type: PrIssueType::Approved,
             }],
-        },
-        Effect::NudgeSessionWithCallbacks {
-            session_id: "sess-riverside-1".into(),
-            reason: WakeReason::Nudge {
-                message: "PR #181 - Review complete".into(),
-            },
-            on_success: vec![Effect::RecordPrNudge {
+        ),
+        Effect::nudge_session_with_callbacks(
+            "sess-riverside-1",
+            "PR #181 - Review complete",
+            vec![Effect::RecordPrNudge {
                 pr_number: 181,
                 issue_type: PrIssueType::ReviewComplete,
             }],
-        },
-        Effect::NudgeSessionWithCallbacks {
-            session_id: "sess-riverside-1".into(),
-            reason: WakeReason::Nudge {
-                message: "PR #181 - Merge conflict".into(),
-            },
-            on_success: vec![Effect::RecordPrNudge {
+        ),
+        Effect::nudge_session_with_callbacks(
+            "sess-riverside-1",
+            "PR #181 - Merge conflict",
+            vec![Effect::RecordPrNudge {
                 pr_number: 181,
                 issue_type: PrIssueType::MergeConflict,
             }],
-        },
-        Effect::NudgeSessionWithCallbacks {
-            session_id: "sess-riverside-1".into(),
-            reason: WakeReason::Nudge {
-                message: "PR #181 - Green with feedback".into(),
-            },
-            on_success: vec![Effect::RecordPrNudge {
+        ),
+        Effect::nudge_session_with_callbacks(
+            "sess-riverside-1",
+            "PR #181 - Green with feedback",
+            vec![Effect::RecordPrNudge {
                 pr_number: 181,
                 issue_type: PrIssueType::GreenWithFeedback,
             }],
-        },
+        ),
     ];
 
     let deduped = dedup_nudge_effects(effects);
