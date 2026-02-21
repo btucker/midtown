@@ -85,9 +85,15 @@ pub(super) async fn chat_monitor_loop(
                                             );
                                         }
                                         if msg_lower.contains("@ops") {
-                                            let nudge_text =
-                                                format!("{} ({}): {}", msg.from, msg.id, msg.content);
-                                            state.nudge_ops_channel_lead(&nudge_text).await;
+                                            let effect = super::effects::Effect::NudgeChannelLead {
+                                                channel_name: OPS_CHANNEL.to_string(),
+                                                reason: super::wake_reason::WakeReason::Mention {
+                                                    from: msg.from.clone(),
+                                                    content: msg.content.clone(),
+                                                    msg_id: msg.id.clone(),
+                                                },
+                                            };
+                                            super::effects::execute_effects(vec![effect], &state).await;
                                             info!(
                                                 "Nudged ops channel lead about @ops mention in {} message",
                                                 msg.from

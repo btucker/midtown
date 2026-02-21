@@ -73,8 +73,8 @@ pub use events::DaemonEvent;
 pub use health::{
     check_and_restart_dead_reviewers, check_and_restart_stuck_reviewers,
     check_and_restart_tool_name_conflicts, check_and_shutdown_idle_coworkers,
-    check_for_usage_limits, detect_stale_attached_sessions, ensure_channel_leads_alive,
-    ensure_lead_alive, maybe_nudge_usage_limit_expiry,
+    check_for_usage_limits, detect_stale_attached_sessions, ensure_lead_alive,
+    maybe_nudge_usage_limit_expiry,
 };
 #[doc(hidden)]
 pub use pr::{collect_merged_pr_cleanup_effects, reconcile_orphaned_prs};
@@ -1891,31 +1891,6 @@ impl DaemonState {
             self.enqueue_headed_nudge(&self.repo_name, message).await;
         }
     }
-
-    /// Nudge the ops channel lead with a message.
-    ///
-    /// The ops channel lead handles daemon operational alerts (stuck PRs, orphaned PRs,
-    /// coworker health) and escalates to @lead when human judgment is required.
-    /// If the ops channel lead is not currently running, the nudge is dropped — the
-    /// message is still posted to the ops channel so the lead can see it on next start.
-    pub(crate) async fn nudge_ops_channel_lead(&self, message: &str) {
-        let session_name = crate::launch::channel_lead_session_name(OPS_CHANNEL);
-        match self
-            .session_manager
-            .send_message(&session_name, message)
-            .await
-        {
-            Ok(()) => {
-                tracing::debug!(
-                    "Nudged ops channel lead: {}",
-                    message.chars().take(60).collect::<String>()
-                );
-            }
-            Err(e) => {
-                tracing::debug!("Failed to nudge ops channel lead: {}", e);
-            }
-        }
-    }
 }
 
 impl DaemonState {
@@ -2895,8 +2870,6 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
     // Sessions with is_running=true but resume_on_startup=false (e.g., reviewers,
     // manually-stopped sessions) are skipped by recover_from_session_records but
     // retain their stale flag — causing dispatch to think they're still active.
-    // Channel-lead sessions for archived channels are also cleared here since
-    // neither this path nor recover_channel_lead_sessions will touch them.
     startup::clear_stale_running_sessions(
         &state.persistent_state,
         &recovered_session_ids,
@@ -2913,15 +2886,16 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
         }
     }
 
-    // Recover channel lead sessions for active (non-archived) topic channels.
-    let channel_lead_effects =
-        startup::recover_channel_lead_sessions(&state.persistent_state, &repo_name).await;
-    if !channel_lead_effects.is_empty() {
-        info!(
-            "Executing {} channel lead recovery effect(s)",
-            channel_lead_effects.len()
-        );
-        effects::execute_effects(channel_lead_effects, &state).await;
+    // Clear stale channel lead sessions from previous daemon run.
+    // Channel leads are on-demand — they'll be spawned by triggers.
+    {
+        let mut ps = state.persistent_state.lock().await;
+        if !ps.channel_lead_sessions.is_empty() {
+            ps.channel_lead_sessions.clear();
+            if let Err(e) = ps.save_for_repo(&repo_name) {
+                warn!("Failed to clear channel_lead_sessions on startup: {}", e);
+            }
+        }
     }
 
     let mut sigterm = signal(SignalKind::terminate())?;

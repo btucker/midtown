@@ -956,7 +956,13 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 // Ops owns daemon operational alerts (stuck PRs, orphaned worktrees,
                 // coworker health) and escalates to @lead when human judgment is required.
                 if message.to_lowercase().contains("@ops") {
-                    state.nudge_ops_channel_lead(&message).await;
+                    let nudge = Effect::NudgeChannelLead {
+                        channel_name: OPS_CHANNEL.to_string(),
+                        reason: super::wake_reason::WakeReason::Nudge {
+                            message: message.clone(),
+                        },
+                    };
+                    Box::pin(execute_effects(vec![nudge], state)).await;
                 }
                 let mut msg = Message::system(message);
                 msg.channel = channel;

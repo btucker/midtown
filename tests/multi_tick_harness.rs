@@ -290,7 +290,6 @@ impl MultiTickHarness {
                 effects.extend(midtown::daemon::check_and_restart_tool_name_conflicts(
                     &self.snapshot,
                 ));
-                effects.extend(midtown::daemon::ensure_channel_leads_alive(&self.snapshot));
                 effects
             }
             DaemonEvent::TaskDispatchTick => {

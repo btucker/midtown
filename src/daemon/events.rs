@@ -72,7 +72,6 @@ pub async fn evaluate_tick(
             effects.extend(super::health::check_and_nudge_api_errors(snap, state));
             effects.extend(super::health::check_and_restart_tool_name_conflicts(snap));
             effects.extend(super::health::maybe_refresh_lead_session(snap));
-            effects.extend(super::health::ensure_channel_leads_alive(snap));
             effects
         }
         DaemonEvent::TaskDispatchTick => {

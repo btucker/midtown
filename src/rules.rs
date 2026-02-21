@@ -314,10 +314,6 @@ pub(crate) struct IdleShutdownContext<'a> {
     pub auth_error_coworkers: &'a HashSet<String>,
     pub pending_task_owners: &'a HashSet<String>,
     pub review_feedback_pr_coworkers: &'a HashSet<String>,
-    /// Names of active channel leads. Channel leads are exempt from idle shutdown
-    /// (like the "lead" session) because they are long-lived domain expert sessions
-    /// with no tasks or PRs — they would otherwise be immediately eligible for shutdown.
-    pub channel_lead_names: &'a HashSet<String>,
     pub now_utc: DateTime<Utc>,
     pub minimum_lifetime: Duration,
 }
@@ -356,18 +352,6 @@ pub(crate) fn decide_idle_shutdowns(ctx: &IdleShutdownContext<'_>) -> Vec<Shutdo
             // The lead session should never be idle-shutdown — it's the
             // human-facing session that must always be running.
             if name.eq_ignore_ascii_case("lead") {
-                return false;
-            }
-
-            // Channel leads are long-lived domain expert sessions with no tasks or PRs.
-            // Without this exemption they would be immediately eligible for idle shutdown
-            // after MINIMUM_COWORKER_LIFETIME, creating a spawn/shutdown loop with
-            // ensure_channel_leads_alive.
-            if ctx
-                .channel_lead_names
-                .iter()
-                .any(|lead| lead.eq_ignore_ascii_case(name))
-            {
                 return false;
             }
 
@@ -1515,7 +1499,6 @@ mod tests {
         auth_error: HashSet<String>,
         pending_tasks: HashSet<String>,
         review_feedback: HashSet<String>,
-        channel_leads: HashSet<String>,
         minimum_lifetime: Duration,
     }
 
@@ -1574,10 +1557,6 @@ mod tests {
             self.review_feedback = set(names);
             self
         }
-        fn channel_leads(mut self, names: &[&str]) -> Self {
-            self.channel_leads = set(names);
-            self
-        }
 
         fn run(&self) -> Vec<ShutdownDecision> {
             let ctx = IdleShutdownContext {
@@ -1592,7 +1571,6 @@ mod tests {
                 auth_error_coworkers: &self.auth_error,
                 pending_task_owners: &self.pending_tasks,
                 review_feedback_pr_coworkers: &self.review_feedback,
-                channel_lead_names: &self.channel_leads,
                 now_utc: Utc::now(),
                 minimum_lifetime: self.minimum_lifetime,
             };
@@ -1777,26 +1755,14 @@ mod tests {
     }
 
     #[test]
-    fn idle_shutdown_never_shuts_down_channel_leads() {
-        // Channel leads have no tasks or PRs so they'd normally be eligible for shutdown.
-        // The channel_lead_names exemption prevents the spawn/shutdown loop with
-        // ensure_channel_leads_alive.
-        let decisions = IdleShutdownCtx::one("ops").channel_leads(&["ops"]).run();
-        assert!(
-            decisions.is_empty(),
-            "Channel leads should never be idle-shutdown"
-        );
-    }
-
-    #[test]
-    fn idle_shutdown_non_channel_lead_with_same_name_pattern_is_not_exempt() {
-        // Verify the exemption is name-based (only names in channel_lead_names are exempt).
-        // A coworker named "ops" that is NOT registered as a channel lead CAN be shut down.
+    fn idle_shutdown_shuts_down_channel_leads() {
+        // Channel leads are on-demand — they should be shut down when idle,
+        // just like any other coworker. No special exemption.
         let decisions = IdleShutdownCtx::one("ops").run();
         assert_eq!(
             decisions.len(),
             1,
-            "A coworker named 'ops' without channel_lead exemption should be shut down"
+            "Channel leads should be idle-shutdown when idle (on-demand)"
         );
     }
 
