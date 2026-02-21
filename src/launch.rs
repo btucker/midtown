@@ -46,7 +46,7 @@ pub enum CoworkerRole {
 /// these and pass it to `to_headless_config()` for headless spawn.
 #[derive(Debug, Clone)]
 pub struct LaunchConfig {
-    /// Coworker name (or "lead" for the lead instance).
+    /// Coworker name (or the repo name for the lead instance).
     pub name: String,
     /// How to start or resume the session.
     pub session_mode: SessionMode,
@@ -302,7 +302,7 @@ impl LaunchConfig {
                 crate::config::ExecutionRole::Lead,
             );
             LaunchConfig {
-                name: "lead".to_string(),
+                name: repo.clone(),
                 session_mode: SessionMode::Fresh,
                 role: CoworkerRole::Lead,
                 initial_prompt: Some(crate::agents::main_lead_initial_prompt(&repo, &repo)),
@@ -1078,7 +1078,10 @@ mod tests {
     #[test]
     fn test_launch_config_lead_factory() {
         let config = LaunchConfig::lead("myrepo", None);
-        assert_eq!(config.name, "lead");
+        assert_eq!(
+            config.name, "myrepo",
+            "Lead session name should be the repo name"
+        );
         assert_eq!(config.role, CoworkerRole::Lead);
         assert!(
             config.initial_prompt.is_some(),
@@ -1095,8 +1098,8 @@ mod tests {
         let headless = config.to_headless_config("midtown");
 
         assert_eq!(headless.team_name, Some("midtown-myrepo".to_string()));
-        assert_eq!(headless.agent_id, Some("lead@midtown-myrepo".to_string()));
-        assert_eq!(headless.agent_name, Some("lead".to_string()));
+        assert_eq!(headless.agent_id, Some("myrepo@midtown-myrepo".to_string()));
+        assert_eq!(headless.agent_name, Some("myrepo".to_string()));
     }
 
     #[test]

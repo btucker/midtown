@@ -187,7 +187,7 @@ async fn route_at_all(state: &DaemonState, msg: &Message) {
     );
 
     // Nudge the lead (unless the lead sent the message)
-    if !msg.from.eq_ignore_ascii_case("lead") && !msg.from.eq_ignore_ascii_case(&state.repo_name) {
+    if !msg.from.eq_ignore_ascii_case(&state.repo_name) {
         state.nudge_lead(&nudge_text).await;
         info!("Nudged lead for @all from {}", msg.from);
     }

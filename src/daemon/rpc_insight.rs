@@ -98,7 +98,7 @@ pub(super) async fn handle_insight_report(
     }
 
     // Determine working directory for the architect session.
-    let cwd = if is_coworker_sender(agent) {
+    let cwd = if is_coworker_sender(agent, &state.repo_name) {
         let worktree = crate::paths::coworkers_dir_for_repo(&state.repo_name).join(agent);
         if worktree.exists() {
             worktree

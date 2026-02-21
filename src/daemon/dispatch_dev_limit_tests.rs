@@ -279,8 +279,9 @@ fn test_lead_does_not_count_against_dev_cap() {
     }
 
     // 7 real coworkers + 1 headless lead = 8 total in running_coworkers
+    // The lead session name is the repo name ("test-repo"), not "lead"
     let running = vec![
-        make_running_coworker("lead"),
+        make_running_coworker("test-repo"),
         make_running_coworker("lexington"),
         make_running_coworker("park"),
         make_running_coworker("madison"),
@@ -405,8 +406,9 @@ fn test_has_available_slot_excludes_channel_leads() {
 fn test_lead_and_channel_leads_both_excluded() {
     let state = make_test_state_with_max(3);
 
-    // 5 running sessions: lead + 2 devs + 2 channel leads
-    for name in &["lead", "lexington", "park", "web", "auth"] {
+    // 5 running sessions: lead (named after repo) + 2 devs + 2 channel leads
+    // The lead session name is the repo name ("test-repo"), not "lead"
+    for name in &["test-repo", "lexington", "park", "web", "auth"] {
         state
             .coworkers
             .insert_for_testing(make_running_coworker(name));

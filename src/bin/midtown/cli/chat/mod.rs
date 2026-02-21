@@ -1237,7 +1237,16 @@ fn attach_session_split(session_name: &str) {
 
     let _ = midtown::platform_launch::run_platform_prelaunch_hook(provider);
 
-    let cwd = match super::session::ensure_attach_worktree(session_name, cwd) {
+    let coworker_type = info
+        .get("coworker_type")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    let cwd = match super::session::ensure_attach_worktree(
+        session_name,
+        cwd,
+        coworker_type.as_deref() == Some("lead"),
+    ) {
         Ok(c) => c,
         Err(_) => {
             let _ = client.session_detach(session_name);
@@ -1245,10 +1254,6 @@ fn attach_session_split(session_name: &str) {
         }
     };
 
-    let coworker_type = info
-        .get("coworker_type")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
     let channel = info
         .get("channel")
         .and_then(|v| v.as_str())

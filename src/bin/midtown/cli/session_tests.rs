@@ -399,7 +399,7 @@ fn test_lead_attach_sets_task_list_id() {
         "lead",
         midtown::auth::AuthProvider::Claude,
         "session-123",
-        None,
+        Some("lead"),
         None,
         true,
     );
@@ -582,7 +582,7 @@ fn test_lead_attach_gets_opus_model() {
         "lead",
         midtown::auth::AuthProvider::Claude,
         "session-123",
-        None,
+        Some("lead"),
         None,
         true,
     );
@@ -946,7 +946,7 @@ fn ensure_attach_worktree_lead_updates_to_head() {
     assert_ne!(initial_head, new_head);
 
     // ensure_attach_worktree for "lead" should update worktree
-    let result = ensure_attach_worktree("lead", &wt.to_string_lossy());
+    let result = ensure_attach_worktree("lead", &wt.to_string_lossy(), true);
     assert!(result.is_ok());
     assert_eq!(
         git_head(&wt),
@@ -958,7 +958,7 @@ fn ensure_attach_worktree_lead_updates_to_head() {
 #[test]
 fn ensure_attach_worktree_coworker_falls_back_to_daemon_cwd() {
     // When repo detection fails (no git repo), should return daemon_cwd
-    let result = ensure_attach_worktree("park", "/tmp/some-cwd");
+    let result = ensure_attach_worktree("park", "/tmp/some-cwd", false);
     assert!(result.is_ok());
     // Should not error — gracefully falls back
     assert_eq!(result.unwrap(), "/tmp/some-cwd");
