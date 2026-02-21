@@ -82,6 +82,12 @@ pub struct CoworkerInfo {
     /// toward the coworker slot limit.
     #[serde(default)]
     pub is_channel_lead: bool,
+    /// Cumulative input tokens used this session (0 if not yet reported).
+    #[serde(default)]
+    pub input_tokens: u64,
+    /// Cumulative output tokens generated this session (0 if not yet reported).
+    #[serde(default)]
+    pub output_tokens: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -118,6 +124,32 @@ pub struct SessionInfo {
     pub last_active: Option<String>,
     #[serde(default)]
     pub task: Option<String>,
+}
+
+/// Format a token count with k/M suffix for compact display.
+///
+/// Examples: 0 → "", 500 → "500", 1500 → "1.5k", 1_200_000 → "1.2M"
+fn format_tokens(n: u64) -> String {
+    if n == 0 {
+        String::new()
+    } else if n < 1_000 {
+        n.to_string()
+    } else if n < 1_000_000 {
+        format!("{:.1}k", n as f64 / 1_000.0)
+    } else {
+        format!("{:.1}M", n as f64 / 1_000_000.0)
+    }
+}
+
+/// Format token usage as a compact "in/out" suffix for status lines.
+///
+/// Returns an empty string if no tokens have been reported yet.
+fn token_suffix(input: u64, output: u64) -> String {
+    if input == 0 && output == 0 {
+        String::new()
+    } else {
+        format!(" [{}/{}]", format_tokens(input), format_tokens(output))
+    }
 }
 
 impl Response {
@@ -166,7 +198,11 @@ impl Response {
                             }
                             _ => String::new(),
                         };
-                        out.push_str(&format!("  {} - {}{}\n", cw.name, task_desc, auth_info));
+                        let tokens = token_suffix(cw.input_tokens, cw.output_tokens);
+                        out.push_str(&format!(
+                            "  {} - {}{}{}\n",
+                            cw.name, task_desc, tokens, auth_info
+                        ));
                     }
 
                     // Lead Sessions section — channel leads are domain experts per channel
@@ -191,7 +227,11 @@ impl Response {
                                 }
                                 _ => String::new(),
                             };
-                            out.push_str(&format!("  {} - {}{}\n", cw.name, task_desc, auth_info));
+                            let tokens = token_suffix(cw.input_tokens, cw.output_tokens);
+                            out.push_str(&format!(
+                                "  {} - {}{}{}\n",
+                                cw.name, task_desc, tokens, auth_info
+                            ));
                         }
                     }
 

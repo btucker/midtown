@@ -167,6 +167,8 @@ fn test_coworkers_response_display_includes_provider_and_profile() {
                 provider: Some("claude".to_string()),
                 profile: Some("ben@quotably.com".to_string()),
                 is_channel_lead: false,
+                input_tokens: 0,
+                output_tokens: 0,
             },
             CoworkerInfo {
                 name: "park".to_string(),
@@ -176,6 +178,8 @@ fn test_coworkers_response_display_includes_provider_and_profile() {
                 provider: Some("zai".to_string()),
                 profile: Some("ben@btucker.net".to_string()),
                 is_channel_lead: false,
+                input_tokens: 0,
+                output_tokens: 0,
             },
         ],
     };
@@ -209,6 +213,8 @@ fn test_status_pretty_excludes_channel_leads_from_count() {
                     provider: None,
                     profile: None,
                     is_channel_lead: false,
+                    input_tokens: 0,
+                    output_tokens: 0,
                 },
                 CoworkerInfo {
                     name: "tui".to_string(),
@@ -218,6 +224,8 @@ fn test_status_pretty_excludes_channel_leads_from_count() {
                     provider: None,
                     profile: None,
                     is_channel_lead: true,
+                    input_tokens: 0,
+                    output_tokens: 0,
                 },
             ],
             tasks: vec![],
@@ -355,6 +363,8 @@ fn test_status_pretty_format() {
                     provider: Some("claude".to_string()),
                     profile: Some("ben@quotably.com".to_string()),
                     is_channel_lead: false,
+                    input_tokens: 0,
+                    output_tokens: 0,
                 },
                 CoworkerInfo {
                     name: "park".to_string(),
@@ -364,6 +374,8 @@ fn test_status_pretty_format() {
                     provider: Some("zai".to_string()),
                     profile: Some("ben@btucker.net".to_string()),
                     is_channel_lead: false,
+                    input_tokens: 0,
+                    output_tokens: 0,
                 },
             ],
             tasks: vec![TaskInfo {
@@ -410,6 +422,8 @@ fn test_coworkers_pretty_excludes_channel_leads() {
                 provider: None,
                 profile: None,
                 is_channel_lead: false,
+                input_tokens: 0,
+                output_tokens: 0,
             },
             CoworkerInfo {
                 name: "tui".to_string(),
@@ -419,6 +433,8 @@ fn test_coworkers_pretty_excludes_channel_leads() {
                 provider: None,
                 profile: None,
                 is_channel_lead: true,
+                input_tokens: 0,
+                output_tokens: 0,
             },
         ],
     };
@@ -458,6 +474,8 @@ fn test_status_pretty_shows_lead_sessions() {
                     provider: Some("claude".to_string()),
                     profile: Some("ben@quotably.com".to_string()),
                     is_channel_lead: false,
+                    input_tokens: 0,
+                    output_tokens: 0,
                 },
                 CoworkerInfo {
                     name: "cli".to_string(),
@@ -467,6 +485,8 @@ fn test_status_pretty_shows_lead_sessions() {
                     provider: Some("claude".to_string()),
                     profile: Some("ben@quotably.com".to_string()),
                     is_channel_lead: true,
+                    input_tokens: 0,
+                    output_tokens: 0,
                 },
             ],
             tasks: vec![],
@@ -514,6 +534,8 @@ fn test_coworkers_pretty_empty_when_only_channel_leads() {
             provider: None,
             profile: None,
             is_channel_lead: true,
+            input_tokens: 0,
+            output_tokens: 0,
         }],
     };
 
@@ -521,6 +543,69 @@ fn test_coworkers_pretty_empty_when_only_channel_leads() {
     assert_eq!(
         pretty, "No active coworkers",
         "Should show 'No active coworkers' when all are channel leads, got: {}",
+        pretty
+    );
+}
+
+#[test]
+fn test_format_tokens() {
+    assert_eq!(format_tokens(0), "");
+    assert_eq!(format_tokens(1), "1");
+    assert_eq!(format_tokens(999), "999");
+    assert_eq!(format_tokens(1_000), "1.0k");
+    assert_eq!(format_tokens(1_500), "1.5k");
+    assert_eq!(format_tokens(12_300), "12.3k");
+    assert_eq!(format_tokens(999_999), "1000.0k");
+    assert_eq!(format_tokens(1_000_000), "1.0M");
+    assert_eq!(format_tokens(1_200_000), "1.2M");
+}
+
+#[test]
+fn test_token_suffix() {
+    // No tokens → empty string
+    assert_eq!(token_suffix(0, 0), "");
+    // Any nonzero count → formatted suffix
+    assert_eq!(token_suffix(500, 100), " [500/100]");
+    assert_eq!(token_suffix(12_300, 4_100), " [12.3k/4.1k]");
+    assert_eq!(token_suffix(1_200_000, 300_000), " [1.2M/300.0k]");
+    // Only output nonzero
+    assert_eq!(token_suffix(0, 50), " [/50]");
+    // Only input nonzero
+    assert_eq!(token_suffix(50, 0), " [50/]");
+}
+
+#[test]
+fn test_token_display_in_status() {
+    let response = Response::Status(StatusResponse {
+        daemon_running: true,
+        active_coworkers: 1,
+        max_coworkers: None,
+        pending_tasks: 0,
+        socket_path: "/tmp/midtown.sock".to_string(),
+        lead_session: None,
+        lead_session_active: None,
+        full_status: Some(FullStatusInfo {
+            coworkers: vec![CoworkerInfo {
+                name: "amsterdam".to_string(),
+                status: "running".to_string(),
+                current_task: Some("!1700".to_string()),
+                started_at: None,
+                provider: None,
+                profile: None,
+                is_channel_lead: false,
+                input_tokens: 12_300,
+                output_tokens: 4_100,
+            }],
+            tasks: vec![],
+            pull_requests: vec![],
+            recent_activity: vec![],
+        }),
+    });
+
+    let pretty = response.to_pretty();
+    assert!(
+        pretty.contains("[12.3k/4.1k]"),
+        "Expected token counts in output, got: {}",
         pretty
     );
 }

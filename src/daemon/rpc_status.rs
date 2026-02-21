@@ -36,6 +36,9 @@ pub(super) async fn handle_status(id: RequestId, state: &DaemonState) -> Respons
             })
             .collect();
 
+    // Get token usage from session manager (keyed by coworker name).
+    let token_usage = state.session_manager.get_token_usage().await;
+
     // Get coworkers with their details, looking up current task from task storage.
     // Exclude the lead session (named after the repo) — it is the project Lead,
     // not a coworker, and must not appear in the coworkers status box.
@@ -47,6 +50,9 @@ pub(super) async fn handle_status(id: RequestId, state: &DaemonState) -> Respons
         .map(|cw| {
             // Look up current task from task storage (case-insensitive)
             let current_task = coworker_tasks.get(&cw.name.to_lowercase()).cloned();
+            // Look up token usage from session manager
+            let (input_tokens, output_tokens) =
+                token_usage.get(&cw.name).copied().unwrap_or((0, 0));
             serde_json::json!({
                 "name": cw.name,
                 "status": cw.status.to_string(),
@@ -54,6 +60,8 @@ pub(super) async fn handle_status(id: RequestId, state: &DaemonState) -> Respons
                 "started_at": cw.started_at.to_rfc3339(),
                 "provider": cw.provider.as_str(),
                 "profile": cw.profile,
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
             })
         })
         .collect();
