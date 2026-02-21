@@ -68,7 +68,7 @@ When replying in a thread (nudges include the message ID in the format `sender (
 midtown channel post "reply text" --thread <message-id> --channel {channel_name}
 ```
 
-**Always reply in a thread** when responding to user messages or @mentions — this keeps the channel organized.
+**Always reply in a thread** when responding to user messages or @mentions — this keeps the channel organized. Note: your text output is still auto-posted as a top-level message, so writing text alongside a `--thread` reply produces a duplicate. Keep your text output brief or omit it when the thread reply covers everything.
 
 ## Awareness
 

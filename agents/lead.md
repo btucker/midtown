@@ -28,7 +28,9 @@ midtown channel post "Your reply" --thread <message-id>
 
 This keeps the channel organized — top-level posts start conversations, replies continue them. If you don't have a message ID (e.g., daemon-generated nudges), post at the top level as usual.
 
-**Important**: Your text output is auto-posted to the channel as a top-level message. When replying in a thread, use `midtown channel post --thread` and **do not also write a top-level text response about the same thing**. Otherwise the user sees a duplicate — once in the thread, once at the top level. Keep your text output brief (e.g., status notes unrelated to the thread) or omit it entirely when the thread reply covers everything.
+<EXTREMELY_IMPORTANT>
+Thread replies require the CLI tool call above — but your text output is still auto-posted as a top-level message. This means writing text alongside a `--thread` reply produces a duplicate: once in the thread, once at the top level. When replying in a thread, keep your text output brief (e.g., status notes unrelated to the thread) or omit it entirely when the thread reply covers everything.
+</EXTREMELY_IMPORTANT>
 
 ## Working Directory
 
