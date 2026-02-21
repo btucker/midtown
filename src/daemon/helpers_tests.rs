@@ -1,6 +1,32 @@
 use super::*;
 use serde_json::json;
 
+#[test]
+fn default_model_for_provider_role_uses_codex_model_for_all_roles() {
+    let provider = crate::auth::AuthProvider::Codex;
+    assert_eq!(
+        default_model_for_provider_role(provider, &crate::launch::CoworkerRole::Lead),
+        "gpt-5-codex"
+    );
+    assert_eq!(
+        default_model_for_provider_role(provider, &crate::launch::CoworkerRole::Coworker),
+        "gpt-5-codex"
+    );
+}
+
+#[test]
+fn default_model_for_provider_role_uses_claude_tiers() {
+    let provider = crate::auth::AuthProvider::Claude;
+    assert_eq!(
+        default_model_for_provider_role(provider, &crate::launch::CoworkerRole::Lead),
+        "opus"
+    );
+    assert_eq!(
+        default_model_for_provider_role(provider, &crate::launch::CoworkerRole::Coworker),
+        "sonnet"
+    );
+}
+
 // -------------------------------------------------------------------------
 // truncate_str / truncate_message — UTF-8 safety
 // -------------------------------------------------------------------------

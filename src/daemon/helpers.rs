@@ -165,6 +165,24 @@ pub fn is_lead_branch(branch: &str) -> bool {
     branch.starts_with("lead/")
 }
 
+/// Default model alias for a coworker role/provider pair.
+///
+/// Claude/z.ai use "sonnet" for coworker/channel-lead and "opus" for lead/reviewer.
+/// Codex uses "gpt-5-codex" for all roles.
+pub fn default_model_for_provider_role(
+    provider: crate::auth::AuthProvider,
+    role: &crate::launch::CoworkerRole,
+) -> &'static str {
+    match provider {
+        crate::auth::AuthProvider::Codex => "gpt-5-codex",
+        crate::auth::AuthProvider::Claude | crate::auth::AuthProvider::Zai => match role {
+            crate::launch::CoworkerRole::Lead | crate::launch::CoworkerRole::Reviewer => "opus",
+            crate::launch::CoworkerRole::Coworker
+            | crate::launch::CoworkerRole::ChannelLead { .. } => "sonnet",
+        },
+    }
+}
+
 /// Check if a PR is authored by the lead (repo owner).
 ///
 /// Pure function: compares the PR's author login against the pre-fetched repo owner

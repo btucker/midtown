@@ -625,7 +625,8 @@ pub async fn recover_from_session_records(
 
         // Build launch config from SessionRecord
         let mut config = if name == "lead" {
-            // Lead session — uses lead system prompt, opus model, unrestricted settings.
+            // Lead session — uses lead system prompt, provider-compatible model,
+            // unrestricted settings.
             // Must match recover_headless_sessions() which also special-cases the lead.
             LaunchConfig::lead(repo_name, None)
         } else if record.is_reviewer {
@@ -663,6 +664,9 @@ pub async fn recover_from_session_records(
                 crate::config::ExecutionRole::Reviewer,
             );
         }
+        config.model =
+            super::helpers::default_model_for_provider_role(config.auth_provider, &config.role)
+                .to_string();
 
         recovered_session_ids.insert(session_id.clone());
         effects.push(Effect::ResumeCoworker {
