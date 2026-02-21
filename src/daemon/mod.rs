@@ -2892,11 +2892,39 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
         effects::execute_effects(session_recovery_effects, &state).await;
     }
 
+    // Collect active (non-archived) topic channel names before clearing stale flags.
+    // Used to distinguish channel-lead sessions for active channels (preserved for
+    // separate recovery) from those for archived channels (stale, must be cleared).
+    let active_channel_names: std::collections::HashSet<String> = {
+        let base_dir = crate::paths::projects_dir_for_repo(&repo_name);
+        match crate::channel::Channel::list(&base_dir, false, None) {
+            Ok(channels) => channels
+                .into_iter()
+                .filter(|c| !c.is_archived && c.name != "midtown")
+                .map(|c| c.name)
+                .collect(),
+            Err(e) => {
+                warn!(
+                    "Failed to list channels for stale session cleanup: {} — treating all channel-lead sessions as needing recovery",
+                    e
+                );
+                std::collections::HashSet::new()
+            }
+        }
+    };
+
     // Clear stale is_running flags for sessions that were not recovered.
     // Sessions with is_running=true but resume_on_startup=false (e.g., reviewers,
     // manually-stopped sessions) are skipped by recover_from_session_records but
     // retain their stale flag — causing dispatch to think they're still active.
-    startup::clear_stale_running_sessions(&state.persistent_state, &recovered_session_ids).await;
+    // Channel-lead sessions for archived channels are also cleared here since
+    // neither this path nor recover_channel_lead_sessions will touch them.
+    startup::clear_stale_running_sessions(
+        &state.persistent_state,
+        &recovered_session_ids,
+        &active_channel_names,
+    )
+    .await;
     {
         let ps = state.persistent_state.lock().await;
         if let Err(e) = ps.save_for_repo(&repo_name) {

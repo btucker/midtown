@@ -679,23 +679,39 @@ pub async fn recover_from_session_records(
 ///
 /// On restart, `recover_from_session_records` resumes sessions where both
 /// `is_running=true` and `resume_on_startup=true`. Sessions that are skipped
-/// (non-resumable or reviewer sessions without PR numbers) retain their stale
-/// `is_running=true` flag, causing dispatch to treat them as still active and
-/// skip pending tasks indefinitely.
+/// for any reason (non-resumable, reviewer sessions without PR numbers, or
+/// dropped by the name-deduplication logic) retain their stale `is_running=true`
+/// flag, causing dispatch to treat them as still active and skip pending tasks
+/// indefinitely.
 ///
 /// This function clears `is_running` to `false` for any session that:
 /// - Has `is_running=true`
 /// - Is NOT in `recovered_session_ids` (was not recovered by `recover_from_session_records`)
-/// - Is NOT a channel lead (those are recovered separately via `recover_channel_lead_sessions`)
+/// - Is NOT a channel lead for an active (non-archived) channel — those are recovered
+///   separately via `recover_channel_lead_sessions`. Channel-lead sessions whose
+///   channel has been archived ARE cleared, since neither recovery path will touch them.
+///
+/// `active_channel_names` is the set of non-archived topic channel names. Pass the
+/// result of listing non-archived channels (excluding "midtown") so this function
+/// can distinguish active channel leads from those for archived channels.
 ///
 /// Call this after `recover_from_session_records` completes, before the event loop starts.
 /// The caller is responsible for saving persistent state after this call.
 pub async fn clear_stale_running_sessions(
     persistent_state: &tokio::sync::Mutex<DaemonPersistentState>,
     recovered_session_ids: &HashSet<String>,
+    active_channel_names: &HashSet<String>,
 ) {
     let mut state = persistent_state.lock().await;
     let mut cleared = 0usize;
+
+    // Build a reverse map: session_id → channel_name from channel_lead_sessions.
+    // Used to identify which channel a channel-lead SessionRecord belongs to.
+    let session_id_to_channel: std::collections::HashMap<String, String> = state
+        .channel_lead_sessions
+        .iter()
+        .map(|(channel, session_id)| (session_id.clone(), channel.clone()))
+        .collect();
 
     for record in state.sessions.values_mut() {
         if !record.is_running {
@@ -704,8 +720,21 @@ pub async fn clear_stale_running_sessions(
         if recovered_session_ids.contains(&record.session_id) {
             continue;
         }
-        // Channel leads are recovered separately — do not clear their flags here.
+        // Channel leads for active (non-archived) channels are recovered separately —
+        // do not clear their flags here. Channel leads for archived channels are not
+        // recovered by either path and must be cleared.
         if record.coworker_type == "channel-lead" {
+            let channel_name = session_id_to_channel.get(&record.session_id);
+            let is_active = channel_name.is_some_and(|ch| active_channel_names.contains(ch));
+            if is_active {
+                continue;
+            }
+            info!(
+                "Clearing stale is_running flag for archived channel-lead session {} (channel={:?})",
+                record.session_id, channel_name,
+            );
+            record.is_running = false;
+            cleared += 1;
             continue;
         }
         info!(
