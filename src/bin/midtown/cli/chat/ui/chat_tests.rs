@@ -134,7 +134,7 @@ fn test_draw_lead_indicator_agent_name_on_last_line() {
     let mut app = test_app();
     // Two entries: older completed, newer in-progress
     app.tool_activity = std::collections::HashMap::from([(
-        "lead".to_string(),
+        "midtown".to_string(),
         vec![
             make_tool_entry("\u{2713} Read foo.rs", true), // older, completed
             make_tool_entry("\u{203a} Write bar.rs", false), // newer, in-progress
@@ -159,12 +159,12 @@ fn test_draw_lead_indicator_agent_name_on_last_line() {
     let row1 = buffer_row(buffer, 1, 20);
 
     assert!(
-        row1.contains("lead"),
-        "Agent name 'lead' should be on the LAST line (row 1), got row1={row1:?} row0={row0:?}",
+        row1.contains("midtown"),
+        "Agent name 'midtown' should be on the LAST line (row 1), got row1={row1:?} row0={row0:?}",
     );
     assert!(
-        !row0.contains("lead"),
-        "Agent name 'lead' should NOT be on the first line (row 0), got row0={row0:?}",
+        !row0.contains("midtown"),
+        "Agent name 'midtown' should NOT be on the first line (row 0), got row0={row0:?}",
     );
 }
 
@@ -181,7 +181,7 @@ fn test_draw_lead_indicator_older_entries_on_top() {
 
     let mut app = test_app();
     app.tool_activity = std::collections::HashMap::from([(
-        "lead".to_string(),
+        "midtown".to_string(),
         vec![
             make_tool_entry("\u{2713} Read foo.rs", true), // older
             make_tool_entry("\u{203a} Write bar.rs", false), // newer
@@ -228,7 +228,7 @@ fn test_draw_lead_indicator_no_ellipsis_truncation() {
 
     let mut app = test_app();
     app.tool_activity = std::collections::HashMap::from([(
-        "lead".to_string(),
+        "midtown".to_string(),
         vec![make_tool_entry("\u{203a} ABCDEFGHIJKLMNOPQRSTUVWXY", false)],
     )]);
     app.lead_working = true;
@@ -272,7 +272,7 @@ fn test_draw_lead_indicator_spinner_shows_without_lead_working() {
     let mut app = test_app();
     app.lead_working = false; // explicitly NOT working
     app.tool_activity = std::collections::HashMap::from([(
-        "lead".to_string(),
+        "midtown".to_string(),
         vec![make_tool_entry("\u{203a} Read foo.rs", false)], // in-progress
     )]);
 
@@ -450,7 +450,7 @@ fn test_draw_lead_indicator_shows_dim_placeholder_when_idle() {
     let row = buffer_row(buffer, 0, 80);
 
     assert!(
-        row.contains("lead"),
-        "Idle indicator should show agent name 'lead' as dim placeholder. Got: {row:?}",
+        row.contains("midtown"),
+        "Idle indicator should show agent name 'midtown' as dim placeholder. Got: {row:?}",
     );
 }
