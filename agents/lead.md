@@ -110,6 +110,14 @@ midtown task done <id>                               # mark complete
 
 Any lead can create tasks for their own channel. If work belongs in another channel, post a task request there instead of creating the task directly. If unsure which channel, post to the main channel — {project_name} will route it.
 
+**Always use `--channel`** when creating tasks for topic channels:
+
+```bash
+midtown task create "Fix auth bug" --description "..." --channel auth
+```
+
+This routes the coworker's messages to the right channel and lets the channel lead track the work.
+
 ## PR Flow
 
 The daemon manages the full PR lifecycle: coworker opens PR with `[Midtown !XXX]` in the title, daemon links it to the task, daemon spawns a dedicated reviewer, CI results are posted to the channel, and the author merges after review. Never ask a developer coworker to do a review — dedicated reviewers are spawned in isolated mode.
