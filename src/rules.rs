@@ -316,8 +316,10 @@ pub(crate) struct IdleShutdownContext<'a> {
     pub review_feedback_pr_coworkers: &'a HashSet<String>,
     pub now_utc: DateTime<Utc>,
     pub minimum_lifetime: Duration,
-    /// The project lead session name (repo name). Protected from idle shutdown.
-    pub lead_session_name: &'a str,
+    /// The project repository name, used to identify the lead session.
+    /// The lead session is named after the repo (e.g., "midtown") and must
+    /// never be idle-shutdown.
+    pub repo_name: &'a str,
 }
 
 /// Decide which coworkers should be shut down due to idleness.
@@ -351,8 +353,12 @@ pub(crate) fn decide_idle_shutdowns(ctx: &IdleShutdownContext<'_>) -> Vec<Shutdo
         .filter(|cw| {
             let name = &cw.name;
 
-            // The project lead session should never be idle-shutdown.
-            if name.eq_ignore_ascii_case(ctx.lead_session_name) {
+            // The lead session should never be idle-shutdown — it's the
+            // human-facing session that must always be running.
+            // The lead is named after the repo (e.g., "midtown"). The legacy
+            // literal "lead" is kept for backward compatibility with any
+            // sessions that may still use that name.
+            if name.eq_ignore_ascii_case("lead") || name.eq_ignore_ascii_case(ctx.repo_name) {
                 return false;
             }
 
@@ -1487,7 +1493,6 @@ mod tests {
     /// Test context builder for `decide_idle_shutdowns`.
     ///
     /// All sets default to empty; callers only set the fields they care about.
-    #[derive(Default)]
     struct IdleShutdownCtx {
         coworkers: Vec<CoworkerSnapshot>,
         busy: HashSet<String>,
@@ -1501,7 +1506,27 @@ mod tests {
         pending_tasks: HashSet<String>,
         review_feedback: HashSet<String>,
         minimum_lifetime: Duration,
-        lead_session_name: String,
+        repo_name: String,
+    }
+
+    impl Default for IdleShutdownCtx {
+        fn default() -> Self {
+            Self {
+                coworkers: vec![],
+                busy: HashSet::new(),
+                open_prs: HashSet::new(),
+                reviewers: HashSet::new(),
+                unblocked_deps: HashSet::new(),
+                ci_passed: HashSet::new(),
+                usage_limited: HashSet::new(),
+                api_error: HashSet::new(),
+                auth_error: HashSet::new(),
+                pending_tasks: HashSet::new(),
+                review_feedback: HashSet::new(),
+                minimum_lifetime: Duration::default(),
+                repo_name: "test-repo".to_string(),
+            }
+        }
     }
 
     impl IdleShutdownCtx {
@@ -1510,7 +1535,7 @@ mod tests {
             Self {
                 coworkers: vec![cw(name, 10)],
                 minimum_lifetime: Duration::from_secs(300),
-                lead_session_name: "test-repo".to_string(),
+                repo_name: "test-repo".to_string(),
                 ..Default::default()
             }
         }
@@ -1520,9 +1545,15 @@ mod tests {
             Self {
                 coworkers: vec![cw(name, 2)],
                 minimum_lifetime: Duration::from_secs(300),
-                lead_session_name: "test-repo".to_string(),
+                repo_name: "test-repo".to_string(),
                 ..Default::default()
             }
+        }
+
+        /// Set a custom repo name (for testing lead filtering by repo name).
+        fn with_repo_name(mut self, repo_name: &str) -> Self {
+            self.repo_name = repo_name.to_string();
+            self
         }
 
         fn busy(mut self, names: &[&str]) -> Self {
@@ -1577,7 +1608,7 @@ mod tests {
                 review_feedback_pr_coworkers: &self.review_feedback,
                 now_utc: Utc::now(),
                 minimum_lifetime: self.minimum_lifetime,
-                lead_session_name: &self.lead_session_name,
+                repo_name: &self.repo_name,
             };
             decide_idle_shutdowns(&ctx)
         }
@@ -1757,6 +1788,19 @@ mod tests {
         assert!(
             decisions.is_empty(),
             "The project lead session should never be idle-shutdown"
+        );
+    }
+
+    #[test]
+    fn idle_shutdown_never_shuts_down_repo_named_lead() {
+        // The lead session is named after the repo (e.g., "midtown"), not "lead".
+        // It must never be idle-shutdown regardless of its name.
+        let decisions = IdleShutdownCtx::one("midtown")
+            .with_repo_name("midtown")
+            .run();
+        assert!(
+            decisions.is_empty(),
+            "The repo-named lead session should never be idle-shutdown"
         );
     }
 
