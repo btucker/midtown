@@ -646,7 +646,6 @@ fn test_fork_bound_threads_only_includes_bound_sessions() {
     );
     assert!(!fork_bound_threads.contains_key("amsterdam"));
 }
-
 /// When a coworker with a bound thread is cleaned up and the name is reused
 /// without a thread binding, the stale entry must not persist.
 /// This verifies the cleanup logic in `cleanup_coworker_state` that removes
