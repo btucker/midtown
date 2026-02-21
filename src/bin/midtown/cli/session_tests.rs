@@ -399,7 +399,7 @@ fn test_lead_attach_sets_task_list_id() {
         "lead",
         midtown::auth::AuthProvider::Claude,
         "session-123",
-        None,
+        Some("lead"),
         None,
         true,
     );
@@ -582,7 +582,7 @@ fn test_lead_attach_gets_opus_model() {
         "lead",
         midtown::auth::AuthProvider::Claude,
         "session-123",
-        None,
+        Some("lead"),
         None,
         true,
     );
