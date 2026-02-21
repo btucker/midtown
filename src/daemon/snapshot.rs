@@ -1019,12 +1019,20 @@ pub(super) fn minimal_snapshot_for_test() -> WorldSnapshot {
 /// are still included in the map. This is required for
 /// `decide_dead_reviewer_respawns` to detect and respawn reviewers that died
 /// before posting their review.
+///
+/// Applies the same `PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS` filter as
+/// `active_reviewers()` to exclude stale assignments and stay consistent with
+/// the rest of the reviewer logic.
 pub(crate) fn build_reviewer_pr_assignments(
     github: &crate::github_state::GitHubState,
 ) -> HashMap<String, u64> {
+    let now = chrono::Utc::now();
+    let timeout =
+        chrono::Duration::seconds(crate::github_state::PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS as i64);
     github
         .pr_reviewers
         .iter()
+        .filter(|(_, assignment)| now.signed_duration_since(assignment.assigned_at) < timeout)
         .map(|(&pr_number, assignment)| (assignment.reviewer.clone(), pr_number))
         .collect()
 }

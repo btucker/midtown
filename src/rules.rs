@@ -615,6 +615,7 @@ pub(crate) fn decide_dead_reviewer_respawns(
     reviewer_restart_counts: &HashMap<u64, u32>,
     max_restarts: u32,
     name_session_map: &HashMap<String, String>,
+    usage_limited_coworkers: &HashSet<String>,
 ) -> Vec<StuckReviewerRestart> {
     let mut respawns = Vec::new();
 
@@ -632,6 +633,12 @@ pub(crate) fn decide_dead_reviewer_respawns(
 
         // Review was already posted — no need to respawn.
         if reviewed_prs.contains(&pr_number) {
+            continue;
+        }
+
+        // Skip rate-limited reviewers — respawning into the same limit would fail
+        // immediately and burn the restart budget.
+        if hashset_contains_icase(usage_limited_coworkers, name) {
             continue;
         }
 
@@ -3469,6 +3476,7 @@ mod tests {
             &HashMap::new(),
             2,
             &HashMap::new(),
+            &HashSet::new(),
         );
 
         assert_eq!(
@@ -3505,6 +3513,7 @@ mod tests {
             &HashMap::new(),
             2,
             &HashMap::new(),
+            &HashSet::new(),
         );
 
         assert!(
@@ -3539,6 +3548,7 @@ mod tests {
             &restart_counts,
             2,
             &HashMap::new(),
+            &HashSet::new(),
         );
 
         assert!(
@@ -3572,11 +3582,49 @@ mod tests {
             &HashMap::new(),
             2,
             &HashMap::new(),
+            &HashSet::new(),
         );
 
         assert!(
             respawns.is_empty(),
             "alive reviewer should not be handled by dead reviewer detection"
+        );
+    }
+
+    #[test]
+    fn dead_reviewer_not_respawned_when_usage_limited() {
+        let now = Utc::now();
+        let mut process_health = HashMap::new();
+        process_health.insert(
+            "riverside".to_string(),
+            crate::daemon::snapshot::ProcessHealth {
+                is_alive: false,
+                exit_code: Some(0),
+                last_event_at: Some(now - chrono::Duration::minutes(5)),
+                ..Default::default()
+            },
+        );
+        let mut reviewer_pr_assignments = HashMap::new();
+        reviewer_pr_assignments.insert("riverside".to_string(), 1352u64);
+        let reviewed_prs: HashSet<u64> = HashSet::new();
+
+        // Riverside is rate-limited — respawning into the same limit would fail.
+        let mut usage_limited = HashSet::new();
+        usage_limited.insert("riverside".to_string());
+
+        let respawns = decide_dead_reviewer_respawns(
+            &process_health,
+            &reviewer_pr_assignments,
+            &reviewed_prs,
+            &HashMap::new(),
+            2,
+            &HashMap::new(),
+            &usage_limited,
+        );
+
+        assert!(
+            respawns.is_empty(),
+            "usage-limited dead reviewer should NOT be respawned"
         );
     }
 
