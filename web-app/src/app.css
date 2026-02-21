@@ -35,12 +35,13 @@
   --sidebar-border: 220 13% 91%;
   --sidebar-ring: 217.2 91.2% 59.8%;
   --insight: 300 50% 35%;
-  /* Semantic link colors for message content — accessible on light backgrounds */
-  --link-default: #1a7a7a;
-  --link-channel: #1a7a7a;
-  --link-task: #8c1a8c;
-  --link-pr: #2a5a8a;
-  --link-coworker: #1a6e6e;
+  /* Semantic link colors for message content — accessible on light backgrounds.
+     Stored as bare HSL channels (h s% l%) for shadcn opacity composition. */
+  --link-default: 180 65% 29%;
+  --link-task: 300 69% 33%;
+  --link-pr: 210 53% 35%;
+  --link-coworker: 180 62% 27%;
+  --link-hover: 180 57% 38%;
 }
 
 .dark {
@@ -72,12 +73,13 @@
   --sidebar-border: 0 0% 16.5%;
   --sidebar-ring: 180 29.4% 52.9%;
   --insight: 300 29.4% 52.9%;
-  /* Semantic link colors for message content — designed for dark backgrounds */
-  --link-default: #5fafaf;
-  --link-channel: #5fafaf;
-  --link-task: #af5faf;
-  --link-pr: #5f87af;
-  --link-coworker: #87d7d7;
+  /* Semantic link colors for message content — designed for dark backgrounds.
+     Stored as bare HSL channels (h s% l%) for shadcn opacity composition. */
+  --link-default: 180 33% 53%;
+  --link-task: 300 33% 53%;
+  --link-pr: 210 33% 53%;
+  --link-coworker: 180 50% 69%;
+  --link-hover: 180 50% 69%;
 }
 
 @theme inline {
@@ -109,6 +111,11 @@
   --color-sidebar-border: hsl(var(--sidebar-border));
   --color-sidebar-ring: hsl(var(--sidebar-ring));
   --color-insight: hsl(var(--insight));
+  --color-link-default: hsl(var(--link-default));
+  --color-link-task: hsl(var(--link-task));
+  --color-link-pr: hsl(var(--link-pr));
+  --color-link-coworker: hsl(var(--link-coworker));
+  --color-link-hover: hsl(var(--link-hover));
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
