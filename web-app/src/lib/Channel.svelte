@@ -745,7 +745,7 @@
            the TUI braille spinner) to drive the dots. In topic channels, InProgress tool
            items drive the dots (channel leads don't have a separate lead_working signal). -->
       {#if activeChannelToolItems.length > 0 || channelLeadThinking || ($activeChannel === 'midtown' && !!$daemonStatus?.lead_working)}
-        {@const agentName = $activeChannel === 'midtown' ? 'lead' : $activeChannel}
+        {@const agentName = $activeChannel}
         {@const isLeadWorking = $activeChannel === 'midtown' ? !!$daemonStatus?.lead_working : false}
         {@const hasInProgressItems = activeChannelToolItems.some((item) => item.status === 'InProgress')}
         {@const showDots = isLeadWorking || hasInProgressItems || channelLeadThinking}
