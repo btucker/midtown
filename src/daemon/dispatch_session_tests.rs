@@ -337,6 +337,101 @@ fn test_no_dual_spawn_for_stopped_session_task() {
     );
 }
 
+/// Regression test: recovery loop when stopped reviewer session is not marked running after spawn.
+///
+/// Bug: `spawn_coworker` used `or_insert_with` to update `persistent_state.sessions`, which
+/// does NOT update an existing entry. A stopped session (is_running=false) remains stopped
+/// after the resume spawn, causing `dispatch_via_sessions` to trigger recovery on every tick.
+///
+/// Captured snapshot: snapshot-session-dispatch-recovered-loop-task-1690-riverside-20260221-020931.json
+/// Task !1690 had stopped reviewer session "e2bafbb6-5fe5-4cfb-a98f-94caad0ff834" (riverside).
+/// Each tick: dispatch found stopped session → spawned new coworker → session stayed stopped →
+/// dispatch triggered again (loop indefinitely).
+///
+/// Fix: `spawn_coworker` must use `and_modify(|r| r.is_running = true)` before `or_insert_with`
+/// so existing stopped session records are marked running immediately on resume. This ensures
+/// the next snapshot sees `is_running=true` and skips recovery.
+#[test]
+fn test_session_dispatch_recovery_loop_stopped_reviewer_session() {
+    // Exact session state from the captured loop snapshot:
+    // Task !1690 owned by "riverside", stopped reviewer session "e2bafbb6".
+    let session = SessionRecord {
+        is_reviewer: true,
+        coworker_type: "reviewer".to_string(),
+        ..make_session_record(
+            "e2bafbb6-5fe5-4cfb-a98f-94caad0ff834",
+            Some("1690"),
+            Some("riverside"),
+            false, // stopped
+        )
+    };
+
+    // Snapshot as seen on every looping tick: stopped session, no cooldown.
+    let snap_with_stopped_session = snapshot::WorldSnapshot {
+        in_progress_tasks: vec![(
+            "1690".to_string(),
+            "Review PR #1378".to_string(),
+            "riverside".to_string(),
+        )],
+        sessions: [(
+            "e2bafbb6-5fe5-4cfb-a98f-94caad0ff834".to_string(),
+            session.clone(),
+        )]
+        .into_iter()
+        .collect(),
+        session_task_map: [(
+            "1690".to_string(),
+            "e2bafbb6-5fe5-4cfb-a98f-94caad0ff834".to_string(),
+        )]
+        .into_iter()
+        .collect(),
+        ..snapshot::minimal_snapshot_for_test()
+    };
+
+    // Tick 1: recovery fires (expected — session is stopped).
+    let effects_tick1 = dispatch_via_sessions_for_test(&snap_with_stopped_session, None, |_| None);
+    assert!(
+        effects_tick1
+            .iter()
+            .any(|e| matches!(e, Effect::SpawnCoworkerWithCallbacks { .. })),
+        "First tick should trigger recovery for stopped session"
+    );
+
+    // After spawn, `spawn_coworker` should mark the session as `is_running = true`.
+    // The next snapshot is built from `persistent_state.sessions`. If the fix is in place,
+    // the session record will have `is_running = true`, and dispatch will skip recovery.
+    //
+    // Simulate the corrected post-spawn state (what spawn_coworker should produce after fix):
+    let session_running = SessionRecord {
+        is_running: true, // Fixed: spawn_coworker marks session running via and_modify
+        ..session.clone()
+    };
+    let snap_after_spawn = snapshot::WorldSnapshot {
+        in_progress_tasks: snap_with_stopped_session.in_progress_tasks.clone(),
+        sessions: [(
+            "e2bafbb6-5fe5-4cfb-a98f-94caad0ff834".to_string(),
+            session_running,
+        )]
+        .into_iter()
+        .collect(),
+        session_task_map: snap_with_stopped_session.session_task_map.clone(),
+        ..snapshot::minimal_snapshot_for_test()
+    };
+
+    // Tick 2: recovery must NOT fire — session is now running.
+    let effects_tick2 = dispatch_via_sessions_for_test(&snap_after_spawn, None, |_| None);
+    assert!(
+        !effects_tick2
+            .iter()
+            .any(|e| matches!(e, Effect::SpawnCoworkerWithCallbacks { .. })),
+        "After spawn, session is running — dispatch must NOT trigger recovery again. Got: {:?}",
+        effects_tick2
+            .iter()
+            .map(|e| format!("{:?}", e))
+            .collect::<Vec<_>>()
+    );
+}
+
 /// Helper to create minimal DaemonState for testing (duplicated from dispatch_tests.rs
 /// because test module boundaries prevent sharing private helpers).
 fn make_test_state() -> (

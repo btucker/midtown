@@ -1405,6 +1405,12 @@ impl DaemonState {
                 let record = ps
                     .sessions
                     .entry(session_id_for_record.clone())
+                    // Mark existing stopped sessions as running immediately.
+                    // Without this, dispatch_via_sessions sees is_running=false on the
+                    // next tick and triggers recovery again, creating an infinite loop.
+                    .and_modify(|r| {
+                        r.is_running = true;
+                    })
                     .or_insert_with(|| {
                         crate::daemon::state::SessionRecord {
                             session_id: session_id_for_record.clone(),
