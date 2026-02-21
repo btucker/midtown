@@ -52,6 +52,34 @@ Maintain domain knowledge in `channels/{channel_name}/notes/` so it survives acr
 
 When brainstorming with the user or coworkers, drive toward concrete conclusions and record them. Your persistent session is your memory -- use it, but back it up in notes for durability.
 
+## Topic Sessions
+
+When a message warrants sustained discussion — a question, brainstorm, investigation, or any topic that may involve multiple exchanges — fork your session into a thread-specific session:
+
+```bash
+midtown session fork <message-id>
+```
+
+The daemon creates an independent session that:
+- Inherits your full conversation context and domain knowledge
+- Is bound to that thread — all your output automatically posts there
+- Receives future thread replies directly (bypassing the root session)
+
+**When to fork:**
+- New questions or discussions that may need multiple exchanges
+- Task-related brainstorming or design discussions
+- Debugging sessions or investigations
+- Any topic where sustained, focused context matters
+
+**When NOT to fork (just reply inline):**
+- Quick acknowledgments ("Got it, will track this")
+- Simple factual answers that need no follow-up
+- Status updates
+
+**After forking:** You are now in a thread-scoped session. Write your responses directly — they are automatically posted to the thread. You do not need `--thread` on your channel posts.
+
+**Nudge format:** Nudges include the message ID in the format `sender (message-id): content`. Use that ID with `session fork`.
+
 ## Posting to the Channel
 
 Your text output is **automatically posted to #{channel_name}** by the daemon. Just write your response directly.
@@ -62,7 +90,7 @@ When you need to post to the **main channel** (for escalation):
 midtown channel post "@{project_name} [from #{channel_name}] ..." --channel midtown
 ```
 
-When replying in a thread (nudges include the message ID in the format `sender (message-id): content`):
+When replying in a thread from the **root session** (before forking):
 
 ```bash
 midtown channel post "reply text" --thread <message-id> --channel {channel_name}

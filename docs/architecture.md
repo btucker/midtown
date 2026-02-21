@@ -192,7 +192,11 @@ Note: `route_mentions()` is intentionally disabled for topic channels — user `
 
 ### Forked Sessions (Thread-Specific Channel Leads)
 
-Channel leads can fork themselves into thread-specific sessions via the `session.fork` RPC (`midtown session fork`). A forked session inherits the parent's conversation context (via `--resume <parent-id> --fork-session`) but gets an independent session ID bound to a specific thread.
+Channel leads can fork themselves into thread-specific sessions via the `session.fork` RPC (`midtown session fork <thread-parent-id>`). A forked session inherits the parent's conversation context (via `--resume <parent-id> --fork-session`) but gets an independent session ID bound to a specific thread.
+
+**Root session as router:** The root session stays lightweight — it handles top-level messages and decides when to fork. Once a fork exists for a thread, subsequent replies in that thread bypass the root session entirely and route directly to the fork.
+
+**Thread routing priority:** When a message arrives with `thread_parent_id` set, `handle_channel_post` checks `topic_sessions[thread_parent_id]` first. If a fork exists, it receives the message. If no fork exists, the root channel lead session receives it (normal on-demand channel lead behavior).
 
 **Data flow:**
 - `topic_sessions` (in-memory `Mutex<HashMap<String, String>>`) maps `thread_parent_id → fork_session_id`. Used by `handle_channel_post` to route thread replies to the fork instead of the root channel lead.

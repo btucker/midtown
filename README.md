@@ -83,7 +83,7 @@ The Project Lead is just a Claude Code session, but it's been booted with a [spe
 | `midtown session attach name/<n>` | Attach to a headless session |
 | `midtown session detach <name>` | Resume headless execution |
 | `midtown session clear <lookup>` | Stop and restart a session fresh (preserves original task prompt) |
-| `midtown session fork --thread <id>` | Fork the calling session into a thread-bound session |
+| `midtown session fork <thread-id>` | Fork the calling session into a thread-bound session |
 | `midtown task create <subject> [...]` | Create a task (see [CLI reference](docs/cli.md) for all options) |
 | `midtown task list` | List tasks |
 | `midtown task view <id>` | View task details |
