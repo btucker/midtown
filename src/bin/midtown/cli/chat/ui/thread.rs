@@ -110,6 +110,10 @@ fn draw_thread_messages(f: &mut Frame, app: &mut App, area: Rect) {
     let current_tasks = app.current_tasks().clone();
     let user_display_name = app.user_display_name.clone();
 
+    let lead_names: Vec<String> = std::iter::once(app.project_name.clone())
+        .chain(app.channel_lead_names.iter().cloned())
+        .collect();
+
     let mut lines: Vec<Line> = Vec::new();
     for (idx, msg) in app.thread_messages.iter().enumerate() {
         let prev = if idx > 0 {
@@ -123,7 +127,7 @@ fn draw_thread_messages(f: &mut Frame, app: &mut App, area: Rect) {
             prev,
             &current_tasks,
             user_display_name.as_deref(),
-            &app.channel_lead_names,
+            &lead_names,
         );
         lines.extend(msg_lines);
     }

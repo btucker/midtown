@@ -402,7 +402,7 @@ pub struct App {
     /// Last time available channels were refreshed
     channels_last_refresh: Instant,
     /// Project/repository name (used for pinning main channel first in sidebar)
-    project_name: String,
+    pub project_name: String,
     /// Last rendered board panel area (for click detection)
     pub board_area: Option<ratatui::layout::Rect>,
     /// Last rendered chat messages area (for click detection)

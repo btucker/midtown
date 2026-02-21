@@ -10,7 +10,7 @@ use ratatui::{
 use midtown::MessageType;
 
 use super::TIMESTAMP_GUTTER_WIDTH;
-use super::styles::{get_sender_color_with_leads, is_dim_sender, is_system_like_sender};
+use super::styles::{get_sender_color_with_leads, is_system_like_sender};
 
 /// Precomputed values shared by message rendering functions.
 ///
@@ -51,7 +51,7 @@ impl MessageRenderContext {
         let content_style = match msg.message_type {
             MessageType::Action => Style::default().fg(color),
             MessageType::System => Style::default().fg(Color::DarkGray),
-            _ if is_dim_sender(&msg.from) => Style::default().fg(Color::DarkGray),
+            _ if color == Color::DarkGray => Style::default().fg(Color::DarkGray),
             _ => Style::default().fg(Color::White),
         };
 
@@ -636,7 +636,7 @@ mod tests {
         // First line is the sender name
         let sender: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(sender, "midtown");
-        assert_eq!(lines[0].spans[0].style.fg, Some(Color::DarkGray));
+        assert_eq!(lines[0].spans[0].style.fg, Some(Color::White));
 
         // Second line has timestamp + content in DarkGray
         let content: String = lines[1].spans.iter().map(|s| s.content.as_ref()).collect();
@@ -933,7 +933,7 @@ mod tests {
         assert!(is_system_like_sender("daemon"));
         assert!(!is_system_like_sender("github"));
         assert!(is_system_like_sender("system"));
-        assert!(is_system_like_sender("midtown"));
+        assert!(!is_system_like_sender("midtown"));
         assert!(is_system_like_sender("DAEMON"));
         assert!(!is_system_like_sender("madison"));
         assert!(!is_system_like_sender("park"));

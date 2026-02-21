@@ -313,6 +313,10 @@ fn draw_chat_messages(f: &mut Frame, app: &mut App, area: Rect) {
 
     app.diagram_sources.clear();
 
+    let lead_names: Vec<String> = std::iter::once(app.project_name.clone())
+        .chain(app.channel_lead_names.iter().cloned())
+        .collect();
+
     for (idx, msg) in visible.iter().enumerate() {
         let segments = mermaid::parse_content_segments(&msg.content);
         let has_special = segments
@@ -333,7 +337,7 @@ fn draw_chat_messages(f: &mut Frame, app: &mut App, area: Rect) {
                 prev,
                 &current_tasks,
                 user_display_name.as_deref(),
-                &app.channel_lead_names,
+                &lead_names,
             );
             lines.extend(msg_lines);
         } else {
@@ -344,7 +348,7 @@ fn draw_chat_messages(f: &mut Frame, app: &mut App, area: Rect) {
                 prev,
                 &current_tasks,
                 user_display_name.as_deref(),
-                &app.channel_lead_names,
+                &lead_names,
                 &app.mermaid_cache,
                 &mut lines,
                 &mut app.diagram_sources,
