@@ -668,3 +668,83 @@ fn test_snapshot_session_health_map_populated() {
     assert!(health.contains_key("sess-123"));
     assert!(!health.contains_key("orphan"));
 }
+
+/// Regression test: reviewer_pr_assignments must include dead reviewers.
+///
+/// Previously, assignments were built by iterating `active_coworkers` and
+/// looking up each in `persistent_state.github.pr_reviewers`. When a reviewer's
+/// process died it was removed from `active_coworkers`, so its entry was dropped
+/// from `reviewer_pr_assignments`. This caused `decide_dead_reviewer_respawns`
+/// to never fire, leaving dead reviewers with unposted reviews undetected.
+///
+/// The fix builds assignments directly from `pr_reviewers`, which persists
+/// across coworker lifecycle changes.
+#[test]
+fn reviewer_pr_assignments_includes_dead_reviewers() {
+    use crate::github_state::{AssignmentSource, GitHubState};
+
+    let mut github = GitHubState::default();
+    // Reviewer "riverside" is assigned to PR 1352 in persistent state.
+    github.assign_reviewer(1352, "riverside", AssignmentSource::PollingFallback);
+
+    // No active_coworkers — riverside has died (its process exited).
+    // The old code filtered through active_coworkers, so riverside was absent.
+    // The new code reads pr_reviewers directly.
+    let assignments = super::build_reviewer_pr_assignments(&github);
+
+    assert!(
+        assignments.contains_key("riverside"),
+        "dead reviewer 'riverside' must appear in reviewer_pr_assignments so \
+         decide_dead_reviewer_respawns can detect and respawn it"
+    );
+    assert_eq!(
+        assignments["riverside"], 1352,
+        "assignment should map reviewer to the correct PR number"
+    );
+}
+
+/// `build_reviewer_pr_assignments` must apply the same timeout filter as
+/// `active_reviewers()` so that stale assignments are excluded from both.
+///
+/// An expired assignment (assigned_at older than PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS)
+/// must NOT appear in the result — consistent with `active_reviewers()` which
+/// also excludes expired entries.
+#[test]
+fn build_reviewer_pr_assignments_excludes_expired_entries() {
+    use crate::github_state::{AssignmentSource, GitHubState, PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS};
+
+    let mut github = GitHubState::default();
+    // Assign reviewer for PR 100 with a fresh timestamp (non-expired).
+    github.assign_reviewer(100, "riverside", AssignmentSource::PollingFallback);
+
+    // Assign reviewer for PR 200 with an expired timestamp.
+    github.assign_reviewer(200, "broadway", AssignmentSource::PollingFallback);
+    // Backdate broadway's assignment past the timeout.
+    if let Some(assignment) = github.pr_reviewers.get_mut(&200) {
+        assignment.assigned_at = chrono::Utc::now()
+            - chrono::Duration::seconds(PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS as i64 + 1);
+    }
+
+    let assignments = super::build_reviewer_pr_assignments(&github);
+    let active = github.active_reviewers();
+
+    // Fresh assignment must appear in both.
+    assert!(
+        assignments.contains_key("riverside"),
+        "non-expired reviewer 'riverside' must appear in build_reviewer_pr_assignments"
+    );
+    assert!(
+        active.contains("riverside"),
+        "non-expired reviewer 'riverside' must appear in active_reviewers"
+    );
+
+    // Expired assignment must be excluded from both (consistent behavior).
+    assert!(
+        !assignments.contains_key("broadway"),
+        "expired reviewer 'broadway' must NOT appear in build_reviewer_pr_assignments"
+    );
+    assert!(
+        !active.contains("broadway"),
+        "expired reviewer 'broadway' must NOT appear in active_reviewers"
+    );
+}

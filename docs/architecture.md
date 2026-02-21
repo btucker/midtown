@@ -96,7 +96,11 @@ When the daemon starts, it executes a careful cleanup and recovery sequence in `
 
 5. **Task assignment restore** — `restore_task_assignments_from_disk()` repopulates the in-memory task→coworker map from disk before any dispatch ticks fire, preventing duplicate coworker spawns.
 
-6. **Session recovery** — `recover_headless_sessions()` generates `ResumeCoworker` effects for each resumable session. The old process is NOT killed here — it dies naturally from the broken pipe when its previous daemon's handles are closed. A fresh `claude --resume <session_id>` process is spawned to continue the session.
+6. **Session recovery** — `recover_from_session_records()` generates `ResumeCoworker` effects for each resumable session (those with `is_running=true` and `resume_on_startup=true`). Channel leads are skipped here and recovered separately in step 8. The old process is NOT killed here — it dies naturally from the broken pipe when its previous daemon's handles are closed. A fresh `claude --resume <session_id>` process is spawned to continue the session.
+
+7. **Stale flag cleanup** — `clear_stale_running_sessions()` clears the `is_running` flag for any session not included in the recovered set. This covers sessions skipped by `recover_from_session_records` for any reason (non-resumable, reviewer without a PR number, or dropped by name deduplication), as well as channel-lead sessions whose channel was archived between daemon runs. Active channel-lead sessions (whose channel is still non-archived) are preserved for the separate channel lead recovery path.
+
+8. **Channel lead recovery** — `recover_channel_lead_sessions()` iterates active (non-archived) topic channels and emits `SpawnCoworker` effects to resume or fresh-start each channel lead session.
 
 ## Coworkers
 

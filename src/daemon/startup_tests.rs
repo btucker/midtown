@@ -1064,3 +1064,212 @@ async fn test_recover_from_session_records_deduplicates_by_name() {
         other => panic!("Expected ResumeCoworker, got {:?}", other),
     }
 }
+
+// ── clear_stale_running_sessions tests ────────────────────────────────
+
+/// On daemon restart, sessions with is_running=True but resume_on_startup=False
+/// are skipped by recover_from_session_records — but their is_running flag was
+/// never cleared, causing dispatch to treat them as active indefinitely.
+///
+/// This test verifies that clear_stale_running_sessions() resets is_running to
+/// false for any session not included in the recovered set (excluding channel leads).
+#[tokio::test]
+async fn test_clear_stale_running_sessions_clears_non_resumed() {
+    let persistent_state = tokio::sync::Mutex::new(DaemonPersistentState::default());
+
+    {
+        let mut state = persistent_state.lock().await;
+        // This session will be recovered (resume_on_startup=true, is_running=true)
+        let active = test_session_record("sess-active", "park", "dev");
+        state.sessions.insert("sess-active".to_string(), active);
+
+        // This session was running before restart but won't be resumed
+        // (resume_on_startup=false). Its is_running flag is stale.
+        let mut stale = test_session_record("sess-stale", "lexington", "dev");
+        stale.resume_on_startup = false;
+        state.sessions.insert("sess-stale".to_string(), stale);
+    }
+
+    // Simulate recovery: only "sess-active" was recovered
+    let mut recovered = std::collections::HashSet::new();
+    recovered.insert("sess-active".to_string());
+
+    let active_channels: std::collections::HashSet<String> = std::collections::HashSet::new();
+    clear_stale_running_sessions(&persistent_state, &recovered, &active_channels).await;
+
+    let state = persistent_state.lock().await;
+    assert!(
+        state.sessions["sess-active"].is_running,
+        "Recovered session should remain is_running=true"
+    );
+    assert!(
+        !state.sessions["sess-stale"].is_running,
+        "Stale session (not recovered) should have is_running cleared to false"
+    );
+}
+
+/// Active channel lead sessions are recovered separately via recover_channel_lead_sessions.
+/// clear_stale_running_sessions must NOT clear their is_running flag when the channel
+/// is still active (non-archived).
+#[tokio::test]
+async fn test_clear_stale_running_sessions_preserves_channel_leads() {
+    let persistent_state = tokio::sync::Mutex::new(DaemonPersistentState::default());
+
+    {
+        let mut state = persistent_state.lock().await;
+        // Channel lead — recovered separately, must not be touched
+        let lead = test_session_record("sess-lead", "payments", "channel-lead");
+        state.sessions.insert("sess-lead".to_string(), lead);
+        // "payments" is an active channel
+        state
+            .channel_lead_sessions
+            .insert("payments".to_string(), "sess-lead".to_string());
+    }
+
+    // Recovered set is empty (channel leads go through a different path)
+    let recovered = std::collections::HashSet::new();
+
+    // "payments" is an active (non-archived) channel
+    let mut active_channels: std::collections::HashSet<String> = std::collections::HashSet::new();
+    active_channels.insert("payments".to_string());
+
+    clear_stale_running_sessions(&persistent_state, &recovered, &active_channels).await;
+
+    let state = persistent_state.lock().await;
+    assert!(
+        state.sessions["sess-lead"].is_running,
+        "Channel lead sessions for active channels must not be cleared by clear_stale_running_sessions"
+    );
+}
+
+/// Reviewer sessions have resume_on_startup=false and are never resumed.
+/// Their stale is_running=true should be cleared.
+#[tokio::test]
+async fn test_clear_stale_running_sessions_clears_stale_reviewers() {
+    let persistent_state = tokio::sync::Mutex::new(DaemonPersistentState::default());
+
+    {
+        let mut state = persistent_state.lock().await;
+        let mut reviewer = test_session_record("sess-reviewer", "amsterdam", "reviewer");
+        reviewer.is_reviewer = true;
+        reviewer.pr_number = Some(42);
+        reviewer.resume_on_startup = false;
+        state.sessions.insert("sess-reviewer".to_string(), reviewer);
+    }
+
+    let recovered = std::collections::HashSet::new();
+    let active_channels: std::collections::HashSet<String> = std::collections::HashSet::new();
+    clear_stale_running_sessions(&persistent_state, &recovered, &active_channels).await;
+
+    let state = persistent_state.lock().await;
+    assert!(
+        !state.sessions["sess-reviewer"].is_running,
+        "Stale reviewer session should have is_running cleared"
+    );
+}
+
+/// When there are no sessions at all, clear_stale_running_sessions is a no-op.
+#[tokio::test]
+async fn test_clear_stale_running_sessions_empty_state() {
+    let persistent_state = tokio::sync::Mutex::new(DaemonPersistentState::default());
+    let recovered = std::collections::HashSet::new();
+    let active_channels: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // Must not panic
+    clear_stale_running_sessions(&persistent_state, &recovered, &active_channels).await;
+    let state = persistent_state.lock().await;
+    assert!(state.sessions.is_empty());
+}
+
+/// Archived channel-lead sessions have is_running=true but their channel no longer exists
+/// as an active channel. clear_stale_running_sessions must clear their flag so dispatch
+/// doesn't treat them as still active.
+///
+/// Regression test for: a topic channel archived between daemon runs causes its
+/// channel-lead SessionRecord to retain is_running=true permanently (neither
+/// clear_stale_running_sessions nor recover_channel_lead_sessions touches it).
+#[tokio::test]
+async fn test_clear_stale_running_sessions_clears_archived_channel_lead() {
+    let persistent_state = tokio::sync::Mutex::new(DaemonPersistentState::default());
+
+    {
+        let mut state = persistent_state.lock().await;
+        // Channel lead session for "old-feature", which has since been archived
+        let lead = test_session_record("sess-archived-lead", "old-feature", "channel-lead");
+        state
+            .sessions
+            .insert("sess-archived-lead".to_string(), lead);
+
+        // channel_lead_sessions does NOT contain "old-feature" because the archive
+        // effect removes the entry. However, the SessionRecord still has is_running=true.
+        // (No entry in channel_lead_sessions for "old-feature")
+    }
+
+    // Active channels: empty (the channel was archived and its entry removed)
+    let active_channels: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let recovered = std::collections::HashSet::new();
+
+    clear_stale_running_sessions(&persistent_state, &recovered, &active_channels).await;
+
+    let state = persistent_state.lock().await;
+    assert!(
+        !state.sessions["sess-archived-lead"].is_running,
+        "Channel-lead session for archived channel must have is_running cleared to false"
+    );
+}
+
+/// Active (non-archived) channel-lead sessions must NOT be cleared by
+/// clear_stale_running_sessions — they are recovered separately.
+#[tokio::test]
+async fn test_clear_stale_running_sessions_preserves_active_channel_lead() {
+    let persistent_state = tokio::sync::Mutex::new(DaemonPersistentState::default());
+
+    {
+        let mut state = persistent_state.lock().await;
+        // Active channel lead — channel is NOT archived
+        let lead = test_session_record("sess-active-lead", "payments", "channel-lead");
+        state.sessions.insert("sess-active-lead".to_string(), lead);
+
+        // payments is an active channel lead session
+        state
+            .channel_lead_sessions
+            .insert("payments".to_string(), "sess-active-lead".to_string());
+    }
+
+    // "payments" is an active channel
+    let mut active_channels: std::collections::HashSet<String> = std::collections::HashSet::new();
+    active_channels.insert("payments".to_string());
+
+    let recovered = std::collections::HashSet::new();
+
+    clear_stale_running_sessions(&persistent_state, &recovered, &active_channels).await;
+
+    let state = persistent_state.lock().await;
+    assert!(
+        state.sessions["sess-active-lead"].is_running,
+        "Channel-lead session for active channel must NOT be cleared"
+    );
+}
+
+/// Sessions already marked is_running=false are not affected.
+#[tokio::test]
+async fn test_clear_stale_running_sessions_skips_already_stopped() {
+    let persistent_state = tokio::sync::Mutex::new(DaemonPersistentState::default());
+
+    {
+        let mut state = persistent_state.lock().await;
+        let mut stopped = test_session_record("sess-stopped", "york", "dev");
+        stopped.is_running = false;
+        stopped.resume_on_startup = false;
+        state.sessions.insert("sess-stopped".to_string(), stopped);
+    }
+
+    let recovered = std::collections::HashSet::new();
+    let active_channels: std::collections::HashSet<String> = std::collections::HashSet::new();
+    clear_stale_running_sessions(&persistent_state, &recovered, &active_channels).await;
+
+    let state = persistent_state.lock().await;
+    assert!(
+        !state.sessions["sess-stopped"].is_running,
+        "Already-stopped session should remain stopped"
+    );
+}

@@ -535,6 +535,7 @@ pub fn check_and_restart_dead_reviewers(snap: &snapshot::WorldSnapshot) -> Vec<E
         &snap.reviewer_restart_counts,
         MAX_REVIEWER_RESTARTS,
         &snap.name_session_map,
+        &snap.usage_limited_coworkers,
     );
 
     let escalations = crate::rules::decide_dead_reviewer_escalations(
