@@ -7,7 +7,9 @@
 //! - `messages`: Message rendering (sender headers, timestamps, content layout)
 //! - `messages_mermaid`: Mermaid diagram rendering within messages
 //! - `styles`: Shared color and sender classification helpers
+//! - `task_panel`: Task detail panel (subject, status, description, metadata)
 //! - `text`: Markdown parsing and line wrapping utilities
+//! - `thread`: Thread reply panel
 //! - `usage`: Usage progress bars (session + weekly utilization)
 
 mod board;
@@ -16,6 +18,7 @@ mod highlight;
 pub mod messages;
 pub mod messages_mermaid;
 pub mod styles;
+mod task_panel;
 pub mod text;
 mod thread;
 mod usage;
@@ -123,8 +126,17 @@ pub fn draw(f: &mut Frame, app: &mut App) -> Vec<Hyperlink> {
     // Store tasks area for click detection (task_line_map line numbers are relative to this area)
     app.board_area = Some(tasks_area);
 
-    // When thread is open, split chat area horizontally: 60% channel, 40% thread
-    if app.thread_parent_id.is_some() {
+    // When task panel is open, split chat area 60/40: channel | task detail
+    // When thread is open, split chat area 60/40: channel | thread
+    // Task panel and thread panel are mutually exclusive.
+    if app.open_task_id.is_some() {
+        let chat_chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
+            .split(horizontal_chunks[1]);
+        chat::draw_chat_panel(f, app, chat_chunks[0]);
+        task_panel::draw_task_panel(f, app, chat_chunks[1]);
+    } else if app.thread_parent_id.is_some() {
         let chat_chunks = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
@@ -150,7 +162,7 @@ pub fn draw(f: &mut Frame, app: &mut App) -> Vec<Hyperlink> {
 }
 
 /// Format relative time (e.g., "3 minutes ago", "2 hours ago", "1 day ago")
-fn format_relative_time(time: DateTime<Utc>) -> String {
+pub(super) fn format_relative_time(time: DateTime<Utc>) -> String {
     let now = Utc::now();
     let duration = now.signed_duration_since(time);
     let minutes = duration.num_minutes();

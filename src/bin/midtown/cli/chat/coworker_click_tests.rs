@@ -33,9 +33,10 @@ fn make_active_coworker(name: &str, phase: &str) -> CoworkerInfo {
     }
 }
 
-/// Clicking on a coworker row within the sidebar x-bounds returns AttachCoworker.
+/// Clicking on a coworker row within the sidebar x-bounds returns Continue
+/// (coworker attach is handled by task !1676, not this PR).
 #[test]
-fn test_click_coworker_row_returns_attach() {
+fn test_click_coworker_row_returns_continue() {
     let backend = TestBackend::new(120, 40);
     let mut terminal = Terminal::new(backend).unwrap();
 
@@ -62,26 +63,24 @@ fn test_click_coworker_row_returns_attach() {
         .expect("board_area should be populated after render");
 
     // Click on the first coworker row at a valid x inside the board area.
-    let (&cw_y, cw_name) = app
+    let (&cw_y, _) = app
         .coworker_line_map
         .iter()
         .find(|(_, name)| name.as_str() == "park")
         .expect("park should be in coworker_line_map");
-    let cw_name = cw_name.clone(); // release borrow before handle_event
 
     let click_x = board_rect.x + 2; // inside the sidebar
     let result = handle_event(&mut app, mouse_click(click_x, cw_y));
     assert!(
-        matches!(result, EventResult::AttachCoworker(ref name) if *name == cw_name),
-        "clicking coworker row should return AttachCoworker"
+        matches!(result, EventResult::Continue),
+        "clicking coworker row should return Continue"
     );
 }
 
 /// Clicking at the same y-coordinate as a coworker row but outside the sidebar
-/// x-bounds must NOT trigger AttachCoworker. This guards against unbounded
-/// click regions that would capture clicks in the chat panel.
+/// x-bounds should also return Continue (falls through to default).
 #[test]
-fn test_click_coworker_y_outside_sidebar_x_does_not_attach() {
+fn test_click_coworker_y_outside_sidebar_x_returns_continue() {
     let backend = TestBackend::new(120, 40);
     let mut terminal = Terminal::new(backend).unwrap();
 
@@ -108,7 +107,7 @@ fn test_click_coworker_y_outside_sidebar_x_does_not_attach() {
     let click_x = board_rect.x + board_rect.width + 10;
     let result = handle_event(&mut app, mouse_click(click_x, cw_y));
     assert!(
-        !matches!(result, EventResult::AttachCoworker(_)),
-        "click outside sidebar x-bounds should NOT trigger AttachCoworker"
+        matches!(result, EventResult::Continue),
+        "click outside sidebar x-bounds should return Continue"
     );
 }

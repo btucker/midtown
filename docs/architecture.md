@@ -249,7 +249,31 @@ The `midtown chat` command opens a split-panel interface with:
 **Layout**:
 - **Board panel** (left 40%): Channel swimlanes showing in-progress (●) and pending (○) tasks per channel
 - **Chat panel** (right 60%): Real-time message display with mermaid diagram rendering
+- **Task detail panel** (replaces chat, 60%): Shown when a task in the board is clicked (Enter/mouse). Displays subject, status, owner, channel, PR link, blocked-by, and description. Dismissed with Esc.
+- **Thread panel** (replaces chat, 60%): Shown when a message line is clicked. Mutually exclusive with the task panel.
 - **Input bar** (bottom): Text input for posting messages (Tab to focus, Enter to send)
+
+**State fields** (`App` in `app.rs`):
+- `open_task_id: Option<String>` — task currently shown in the detail panel; `None` when closed
+- `thread_parent_id: Option<String>` — message whose thread is open; `None` when closed
+- `focused_pane: FocusedPane` — `Board | Chat | InputBar | Thread`; controls keyboard routing
+
+**Task panel behavior**:
+- Click or Enter on a board task → `open_task()` → sets `open_task_id`, clears thread state, resets `focused_pane` to `InputBar` if thread was focused
+- Esc → `close_task()` → clears `open_task_id`, resets `focused_pane` to `InputBar`
+- Channel switch → `load_channel_messages()` → clears `open_task_id` to prevent stale panel
+- Task panel and thread panel are mutually exclusive; opening one closes the other
+- Rendered by `ui/task_panel.rs` (`draw_task_panel`); shows from the top so metadata is always visible
+
+**Esc key priority** (in order):
+1. Clear pending clipboard image
+2. Dismiss channel switcher
+3. Dismiss autocomplete
+4. Close thread (if `focused_pane == Thread`)
+5. Clear InputBar input text (if `focused_pane == InputBar` and input non-empty)
+6. Close task panel (if `open_task_id.is_some()`)
+7. No-op if `focused_pane == InputBar` with empty input
+8. Exit TUI (Board or Chat focus with no active panel)
 
 **Features**:
 - Real-time channel message display

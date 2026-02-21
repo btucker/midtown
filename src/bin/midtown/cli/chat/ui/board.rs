@@ -871,6 +871,7 @@ mod tests {
         KanbanTask {
             id: id.to_string(),
             subject: format!("Task {id}"),
+            description: None,
             owner: None,
             status: TaskStatus::Pending,
             modified_at: None,
@@ -1079,6 +1080,7 @@ mod tests {
                 status: TaskStatus::InProgress,
                 modified_at: None,
                 channel: None,
+                description: None,
                 blocked_by: vec![],
             },
             KanbanTask {
@@ -1088,6 +1090,7 @@ mod tests {
                 status: TaskStatus::Pending,
                 modified_at: None,
                 channel: None,
+                description: None,
                 blocked_by: vec![],
             },
         ];
