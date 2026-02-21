@@ -186,9 +186,6 @@ async fn run_app_async(
                             EventResult::AttachLead => {
                                 attach_lead_split();
                             }
-                            EventResult::AttachCoworker(coworker_name) => {
-                                attach_coworker_split(&coworker_name);
-                            }
                             EventResult::Continue => {}
                         }
 
@@ -212,9 +209,6 @@ async fn run_app_async(
                                 }
                                 EventResult::AttachLead => {
                                     attach_lead_split();
-                                }
-                                EventResult::AttachCoworker(coworker_name) => {
-                                    attach_coworker_split(&coworker_name);
                                 }
                                 EventResult::Continue => {}
                             }
@@ -399,8 +393,6 @@ enum EventResult {
     ToggleArchivedChannels,
     /// Attach to the lead session in a split pane
     AttachLead,
-    /// Attach to a coworker session in a split pane (coworker name)
-    AttachCoworker(String),
 }
 
 /// Handle a terminal event, returns the result.
@@ -648,10 +640,19 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                         // Esc closes thread when thread pane is focused
                         app.close_thread();
                         EventResult::Continue
-                    } else if app.focused_pane == FocusedPane::InputBar {
-                        // Esc clears input when in InputBar
+                    } else if app.focused_pane == FocusedPane::InputBar
+                        && !app.input_text.is_empty()
+                    {
+                        // Esc clears input when in InputBar (takes priority over task panel close)
                         app.input_text.clear();
                         app.input_cursor = 0;
+                        EventResult::Continue
+                    // Esc closes task detail panel if open
+                    } else if app.open_task_id.is_some() {
+                        app.close_task();
+                        EventResult::Continue
+                    } else if app.focused_pane == FocusedPane::InputBar {
+                        // Esc with empty input: no-op (stay in InputBar)
                         EventResult::Continue
                     } else {
                         // Esc exits when in Board or Chat
@@ -769,16 +770,14 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                         }
                         EventResult::Continue
                     } else if app.focused_pane == FocusedPane::Board {
-                        // When board is focused and Enter is pressed, check if a task is selected
+                        // When board is focused and Enter is pressed, open task detail panel
                         if let Some(app::BoardSelection::Task(_channel, task_id)) =
-                            &app.board_selection
-                            && let Some(task) = app.tasks.iter().find(|t| &t.id == task_id)
-                            && let Some(ref owner) = task.owner
+                            app.board_selection.clone()
                         {
-                            // Attach to the coworker owning this task
-                            return EventResult::AttachCoworker(owner.clone());
+                            app.open_task(&task_id);
+                            return EventResult::Continue;
                         }
-                        // If no task selected or task has no owner, focus InputBar
+                        // If no task selected, focus InputBar
                         app.focused_pane = FocusedPane::InputBar;
                         EventResult::Continue
                     } else if app.focused_pane != FocusedPane::InputBar
@@ -975,11 +974,27 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
         }
         Event::Mouse(mouse) => match mouse.kind {
             MouseEventKind::ScrollUp => {
-                app.mouse_scroll_up();
+                let in_thread = app
+                    .thread_panel_x
+                    .map(|tx| mouse.column >= tx)
+                    .unwrap_or(false);
+                if in_thread {
+                    app.thread_mouse_scroll_up();
+                } else {
+                    app.mouse_scroll_up();
+                }
                 EventResult::Continue
             }
             MouseEventKind::ScrollDown => {
-                app.mouse_scroll_down();
+                let in_thread = app
+                    .thread_panel_x
+                    .map(|tx| mouse.column >= tx)
+                    .unwrap_or(false);
+                if in_thread {
+                    app.thread_mouse_scroll_down();
+                } else {
+                    app.mouse_scroll_down();
+                }
                 EventResult::Continue
             }
             MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
@@ -1070,27 +1085,16 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                         return EventResult::Continue;
                     }
 
-                    // Check if click is on a task line (for attach)
-                    if let Some((_task_id, task_owner)) = app.task_line_map.get(&content_y)
-                        && let Some(owner) = task_owner
-                    {
-                        // Task has an owner - attach to their session
-                        return EventResult::AttachCoworker(owner.clone());
+                    // Check if click is on a task line — open task detail panel
+                    if let Some((task_id, _task_owner)) = app.task_line_map.get(&content_y) {
+                        let task_id = task_id.clone();
+                        app.open_task(&task_id);
+                        return EventResult::Continue;
                     }
 
-                    // Click in board area (but not on a task with owner) - focus it
+                    // Click in board area (but not on a task) - focus it
                     app.focused_pane = FocusedPane::Board;
                     return EventResult::Continue;
-                }
-
-                // Check if click is on a coworker row (uses absolute y, not content-relative).
-                // X-guard: coworker section shares x-bounds with the board panel (same sidebar).
-                if let Some(board_rect) = app.board_area
-                    && x >= board_rect.x
-                    && x < board_rect.x + board_rect.width
-                    && let Some(coworker_name) = app.coworker_line_map.get(&y)
-                {
-                    return EventResult::AttachCoworker(coworker_name.clone());
                 }
 
                 EventResult::Continue
@@ -1221,7 +1225,16 @@ fn attach_session_split(session_name: &str) {
 
     let _ = midtown::platform_launch::run_platform_prelaunch_hook(provider);
 
-    let cwd = match super::session::ensure_attach_worktree(session_name, cwd) {
+    let coworker_type = info
+        .get("coworker_type")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    let cwd = match super::session::ensure_attach_worktree(
+        session_name,
+        cwd,
+        coworker_type.as_deref() == Some("lead"),
+    ) {
         Ok(c) => c,
         Err(_) => {
             let _ = client.session_detach(session_name);
@@ -1229,10 +1242,6 @@ fn attach_session_split(session_name: &str) {
         }
     };
 
-    let coworker_type = info
-        .get("coworker_type")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
     let channel = info
         .get("channel")
         .and_then(|v| v.as_str())
@@ -1257,11 +1266,6 @@ fn attach_session_split(session_name: &str) {
     if super::daemon::launch_lead_split(host, &cwd, &shell_command).is_err() {
         let _ = client.session_detach(session_name);
     }
-}
-
-/// Attach to a coworker session in a split pane.
-fn attach_coworker_split(coworker_name: &str) {
-    attach_session_split(coworker_name);
 }
 
 /// Attach to the lead session in a split pane (Ctrl+L handler).
@@ -2259,6 +2263,7 @@ mod tests {
                 status: TaskStatus::Pending,
                 modified_at: None,
                 channel: Some("midtown".to_string()),
+                description: None,
                 blocked_by: vec![],
             },
             KanbanTask {
@@ -2268,6 +2273,7 @@ mod tests {
                 status: TaskStatus::Pending,
                 modified_at: None,
                 channel: Some("feature-x".to_string()),
+                description: None,
                 blocked_by: vec![],
             },
         ];
@@ -2346,6 +2352,7 @@ mod tests {
             status: TaskStatus::Pending,
             modified_at: None,
             channel: Some("midtown".to_string()),
+            description: None,
             blocked_by: vec![],
         }];
         app.selected_channel = "midtown".to_string();
@@ -2578,6 +2585,7 @@ mod tests {
             status: TaskStatus::Pending,
             modified_at: None,
             channel: Some("midtown".to_string()),
+            description: None,
             blocked_by: vec![],
         }];
         app.selected_channel = "midtown".to_string();

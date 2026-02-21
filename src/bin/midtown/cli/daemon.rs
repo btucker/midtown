@@ -1821,7 +1821,7 @@ pub fn handle_view(project: Option<&str>, attach: bool) -> Result<Response, Stri
         // Wait for lead session to become attachable (it may still be initializing).
         let mut attach_info = None;
         for _ in 0..50 {
-            match client.session_attach("name/lead") {
+            match client.session_attach(&format!("name/{}", ctx.project_name)) {
                 Ok(info) => {
                     attach_info = Some(info);
                     break;
@@ -1835,7 +1835,7 @@ pub fn handle_view(project: Option<&str>, attach: bool) -> Result<Response, Stri
                 }
                 Err(e) if e.contains("already attached") => {
                     // Previous view session exited without detaching — clean up and retry
-                    let _ = client.session_detach("lead");
+                    let _ = client.session_detach(&ctx.project_name);
                     std::thread::sleep(std::time::Duration::from_millis(200));
                     continue;
                 }
@@ -1884,9 +1884,14 @@ pub fn handle_view(project: Option<&str>, attach: bool) -> Result<Response, Stri
             );
         }
 
-        let cwd = super::session::ensure_attach_worktree("lead", cwd)?;
+        let cwd = super::session::ensure_attach_worktree(&ctx.project_name, cwd, true)?;
         let lead_shell_command = super::session::build_attach_shell_command(
-            &cwd, "lead", provider, session_id, None, None,
+            &cwd,
+            &ctx.project_name,
+            provider,
+            session_id,
+            Some("lead"),
+            None,
             false, // include_detach: midtown view calls session_detach explicitly on exit
         )?;
 
@@ -1894,7 +1899,7 @@ pub fn handle_view(project: Option<&str>, attach: bool) -> Result<Response, Stri
 
         if let Err(e) = launch_lead_split(host, &cwd, &lead_shell_command) {
             // Detach so the lead resumes headless
-            let _ = client.session_detach("lead");
+            let _ = client.session_detach(&ctx.project_name);
             if let Some(cwd) = original_cwd {
                 let _ = std::env::set_current_dir(cwd);
             }
@@ -1910,7 +1915,7 @@ To open chat without a Lead split, run:\n  midtown view",
         // Always detach on exit so the daemon resumes headless mode.
         // Without this, a normal exit leaves the lead in `attached_coworkers`
         // and subsequent `midtown view --attach` calls fail with "already attached".
-        let _ = client.session_detach("lead");
+        let _ = client.session_detach(&ctx.project_name);
 
         if let Some(cwd) = original_cwd {
             let _ = std::env::set_current_dir(cwd);

@@ -132,8 +132,30 @@ pub fn reviewer_system_prompt(name: &str, project_name: &str) -> String {
 ///
 /// This is just the task description (which PR to review), not the behavioral
 /// instructions. The behavioral instructions are in `reviewer_system_prompt()`.
-pub fn reviewer_launch_prompt(pr_number: u64) -> String {
-    format!("Review PR #{pr_number} using /code-review:code-review {pr_number}")
+///
+/// For respawns (`restart_count > 0`), includes context about the previous attempt
+/// and instructs the reviewer to update an existing placeholder comment rather than
+/// posting a new one.
+pub fn reviewer_launch_prompt(pr_number: u64, restart_count: u32) -> String {
+    if restart_count == 0 {
+        format!("Review PR #{pr_number} using /code-review:code-review {pr_number}")
+    } else {
+        format!(
+            "Review PR #{pr_number} using /code-review:code-review {pr_number}\n\n\
+             **NOTE (Restart #{restart_count})**: A previous reviewer started this review but \
+             did not complete it. Check if there's an existing \"Review in progress\" placeholder \
+             comment on PR #{pr_number} and update it with your final review results instead of \
+             posting a new comment:\n\
+             ```bash\n\
+             # Find the existing placeholder comment ID:\n\
+             COMMENT_ID=$(gh pr view {pr_number} --json comments --jq \
+             '[.comments[] | select(.body | test(\"Review in progress by\")) | \
+             select(.body | test(\"midtown:\") | not)] | last | .url' | grep -o '[0-9]*$')\n\
+             # Then update it instead of posting new\n\
+             ```\n\
+             The review worktree (review-pr-{pr_number}) may already have the PR checked out.",
+        )
+    }
 }
 
 /// Build the reviewer launch prompt for a given PR number (legacy function).

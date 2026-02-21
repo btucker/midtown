@@ -143,6 +143,19 @@ Prompts are assembled from composable markdown files in `agents/` and loaded at 
 
 **Task-based @mention routing:** When a lead @mentions a coworker and includes a task ID (`!N`), the daemon's `route_mentions()` in `chat.rs` resolves the actual session to nudge by looking up the task owner from the task system (`crate::tasks::get_in_progress_tasks_with_subjects_for_repo`). If the resolved owner is running, the nudge is routed to them instead of the @mentioned name — this ensures feedback reaches the correct session even if coworker names have been reassigned. Example: `@park !42 here's your review feedback` routes to whoever is working on task 42. Falls back to name-based routing when the task ID is not found or the owner is not running. **Note:** `Coworker.current_task` is a display-only field (always `None` in storage, populated dynamically for API responses); the task system file store is the authoritative source for task ownership.
 
+## Main Lead Session Identity
+
+The main lead session name equals the repo name (e.g. `"midtown"`), not the hardcoded string `"lead"`. This applies everywhere:
+
+- **Spawn**: `LaunchConfig::lead()` sets `name = repo_name.clone()` (`src/launch.rs`)
+- **Health**: `ensure_lead_alive()` and `maybe_refresh_lead_session()` compare against `snap.repo_name` (`src/daemon/health.rs`)
+- **Dispatch**: coworker-limit checks use `snap.repo_name` (`src/daemon/dispatch.rs`)
+- **Effects**: auto-detach suffix check and skip-filter use `state.repo_name` (`src/daemon/effects.rs`)
+- **Stop-time key**: `coworker_stop_times` entries for the lead are keyed by `repo_name.to_lowercase()`
+- **Attached key**: `attached_coworkers` entries for the lead are keyed by `repo_name` (lowercase)
+
+Code that previously compared `name == "lead"` now compares `name.eq_ignore_ascii_case(&snap.repo_name)` or checks `coworker_type == Some("lead")` (for attach-path role detection).
+
 ## Channel Leads
 
 Channel leads are headless Claude Code sessions attached to individual topic channels. Where coworkers are temporary implementers that come and go with tasks, channel leads are long-lived domain experts that accumulate context across conversations.
@@ -238,7 +251,31 @@ The `midtown chat` command opens a split-panel interface with:
 **Layout**:
 - **Board panel** (left 40%): Channel swimlanes showing in-progress (●) and pending (○) tasks per channel
 - **Chat panel** (right 60%): Real-time message display with mermaid diagram rendering
+- **Task detail panel** (replaces chat, 60%): Shown when a task in the board is clicked (Enter/mouse). Displays subject, status, owner, channel, PR link, blocked-by, and description. Dismissed with Esc.
+- **Thread panel** (replaces chat, 60%): Shown when a message line is clicked. Mutually exclusive with the task panel.
 - **Input bar** (bottom): Text input for posting messages (Tab to focus, Enter to send)
+
+**State fields** (`App` in `app.rs`):
+- `open_task_id: Option<String>` — task currently shown in the detail panel; `None` when closed
+- `thread_parent_id: Option<String>` — message whose thread is open; `None` when closed
+- `focused_pane: FocusedPane` — `Board | Chat | InputBar | Thread`; controls keyboard routing
+
+**Task panel behavior**:
+- Click or Enter on a board task → `open_task()` → sets `open_task_id`, clears thread state, resets `focused_pane` to `InputBar` if thread was focused
+- Esc → `close_task()` → clears `open_task_id`, resets `focused_pane` to `InputBar`
+- Channel switch → `load_channel_messages()` → clears `open_task_id` to prevent stale panel
+- Task panel and thread panel are mutually exclusive; opening one closes the other
+- Rendered by `ui/task_panel.rs` (`draw_task_panel`); shows from the top so metadata is always visible
+
+**Esc key priority** (in order):
+1. Clear pending clipboard image
+2. Dismiss channel switcher
+3. Dismiss autocomplete
+4. Close thread (if `focused_pane == Thread`)
+5. Clear InputBar input text (if `focused_pane == InputBar` and input non-empty)
+6. Close task panel (if `open_task_id.is_some()`)
+7. No-op if `focused_pane == InputBar` with empty input
+8. Exit TUI (Board or Chat focus with no active panel)
 
 **Features**:
 - Real-time channel message display
@@ -334,6 +371,38 @@ Coworkers can ask the Lead questions via the Claude Code `AskUserQuestion` tool.
 **RPC methods:**
 - `coworker.asking` — Store a pending question and notify the Lead
 - `coworker.questions` — Return all pending questions (used by TUI polling and `/api/questions` endpoint)
+
+## Reviewer Health and Stuck Detection
+
+Reviewers are headless Claude Code sessions assigned to specific PRs. The daemon monitors them for stuck conditions (alive but unresponsive) and dead conditions (process exited before posting a review).
+
+### Stuck Detection
+
+`check_and_restart_stuck_reviewers()` in `health.rs` calls `decide_stuck_reviewer_restarts()` (pure, in `rules.rs`) each `SessionMonitorTick`. A reviewer is considered stuck if it is alive but has emitted no stream events for the stuck threshold duration. The threshold varies per PR:
+
+- **Standard threshold** (`REVIEWER_STUCK_DURATION` = 300s): Used when the reviewer has not posted a placeholder comment.
+- **Shorter threshold** (`REVIEWER_PLACEHOLDER_STUCK_DURATION` = 120s): Used when the reviewer has posted a "Review in progress" placeholder comment. Since the placeholder proves the reviewer started the review, a shorter timeout applies to recover faster.
+
+After `MAX_REVIEWER_RESTARTS` attempts per PR, an escalation warning is posted to the ops channel and the lead is nudged. The escalation threshold also uses the per-PR effective duration (shorter for placeholder PRs).
+
+### Dead Reviewer Detection
+
+`check_and_restart_dead_reviewers()` detects reviewers whose process has exited (is_alive = false) without posting a review. This catches natural exits (max turns, context window full) before the review is complete. Dead reviewers are respawned up to `MAX_REVIEWER_RESTARTS` times.
+
+### Placeholder Comment Handling
+
+When a reviewer is restarted (stuck or dead) and had previously posted a "Review in progress" placeholder, the daemon patches the comment via `Effect::UpdatePrComment` to indicate the reviewer timed out and a replacement was assigned. This keeps the PR timeline informative.
+
+**WorldSnapshot fields:**
+- `reviewer_in_progress_comment_ids: HashMap<u64, u64>` — Maps PR number to the GitHub comment ID of a dangling "Review in progress" placeholder comment. Collected during `collect_world_snapshot()` using `reviewer_placeholder_cache` (TTL: 120s for all entries, both positive and negative). Used by `decide_stuck_reviewer_restarts` to select the shorter stuck threshold for placeholder PRs, and by health functions to emit `UpdatePrComment` effects marking abandoned placeholders.
+- `reviewer_restart_counts: HashMap<u64, u32>` — Maps PR number to the number of times a reviewer has been restarted for that PR.
+- `reviewer_escalations_posted: HashSet<u64>` — Tracks PRs for which a max-restart escalation warning has already been posted (prevents repeated spam).
+
+**DaemonState fields:**
+- `reviewer_placeholder_cache: Mutex<HashMap<u64, (Option<u64>, Instant)>>` — Cache for `pr_in_progress_placeholder_comment_id()` lookups. Maps PR number to `(comment_id_or_none, checked_at)`. Both positive and negative entries expire after `PLACEHOLDER_CACHE_TTL_SECS` (120s). Cleared when `mark_reviewed_pr()` is called to ensure freshness after a review is posted.
+
+**Effect:**
+- `Effect::UpdatePrComment { comment_id, repo_full_name, new_body }` — Patches an existing GitHub issue comment via `gh api --method PATCH`. Used to update stale "Review in progress" placeholder comments when a reviewer is restarted due to being stuck or dead.
 
 ## Reminders
 

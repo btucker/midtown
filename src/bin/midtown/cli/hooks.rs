@@ -102,7 +102,7 @@ fn handle_insight_hook() -> Result<Response, String> {
     }
 
     let repo = detect_git_repo().ok_or("Not in a git repository")?;
-    let agent = std::env::var("MIDTOWN_AGENT").unwrap_or_else(|_| "lead".to_string());
+    let agent = std::env::var("MIDTOWN_AGENT").unwrap_or_else(|_| repo.clone());
 
     hook_log(
         &repo,
@@ -386,8 +386,8 @@ fn handle_idle_hook() -> Result<Response, String> {
     let channel = open_channel_for_hook(&repo)?;
 
     // Coworkers have MIDTOWN_AGENT set to their name at spawn time (see launch.rs).
-    // Lead sessions don't have this set, so default to "lead".
-    let agent = std::env::var("MIDTOWN_AGENT").unwrap_or_else(|_| "lead".to_string());
+    // Lead sessions don't have this set, so default to the repo name.
+    let agent = std::env::var("MIDTOWN_AGENT").unwrap_or_else(|_| repo.clone());
 
     hook_log(&repo, &format!("idle: {} posting idle status", agent));
 
@@ -552,11 +552,11 @@ fn handle_task_hook() -> Result<Response, String> {
     let context: serde_json::Value =
         serde_json::from_str(&input).map_err(|e| format!("Failed to parse JSON: {}", e))?;
 
-    // Coworkers have MIDTOWN_AGENT set to their name at spawn time (see launch.rs).
-    // Lead sessions don't have this set, so default to "lead".
-    let agent = std::env::var("MIDTOWN_AGENT").unwrap_or_else(|_| "lead".to_string());
-
     let repo = detect_git_repo().ok_or("Not in a git repository")?;
+
+    // Coworkers have MIDTOWN_AGENT set to their name at spawn time (see launch.rs).
+    // Lead sessions don't have this set, so default to the repo name.
+    let agent = std::env::var("MIDTOWN_AGENT").unwrap_or_else(|_| repo.clone());
     let channel = open_channel_for_hook(&repo)?;
 
     let tool_name = context["tool_name"]
@@ -615,7 +615,7 @@ fn handle_task_hook() -> Result<Response, String> {
     // This is a write-through safety net for the /resume case where Claude Code
     // stores tasks only in-memory. The hook mirrors task data to the shared dir
     // so the daemon can see it.
-    let _remapped_task_id = if agent == "lead" {
+    let _remapped_task_id = if agent.to_lowercase() == repo.to_lowercase() {
         ensure_lead_task_persistence(&repo, tool_name, tool_input, &context)
     } else {
         None
@@ -626,7 +626,7 @@ fn handle_task_hook() -> Result<Response, String> {
         // Safety-net: report structured state for TaskUpdate operations via RPC.
         // The primary mechanism is `midtown state`, but this catches transitions
         // if the coworker forgets to call it explicitly.
-        if tool_name == "TaskUpdate" && agent != "lead" {
+        if tool_name == "TaskUpdate" && agent.to_lowercase() != repo.to_lowercase() {
             let task_id_num = tool_input["taskId"]
                 .as_str()
                 .or_else(|| tool_input["task_id"].as_str())
@@ -842,8 +842,9 @@ fn handle_ask_hook() -> Result<Response, String> {
         serde_json::from_str(&input).map_err(|e| format!("Failed to parse JSON: {}", e))?;
 
     // Coworkers have MIDTOWN_AGENT set to their name at spawn time (see launch.rs).
-    // Lead sessions don't have this set, so default to "lead".
-    let agent = std::env::var("MIDTOWN_AGENT").unwrap_or_else(|_| "lead".to_string());
+    // Lead sessions don't have this set, so default to the repo name.
+    let agent =
+        std::env::var("MIDTOWN_AGENT").unwrap_or_else(|_| detect_git_repo().unwrap_or_default());
 
     let tool_input = &context["tool_input"];
     let questions = extract_ask_questions(tool_input);

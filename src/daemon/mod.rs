@@ -626,7 +626,7 @@ pub(crate) struct DaemonState {
     shutdown_tx: broadcast::Sender<()>,
     /// Session-scoped intercom queues for headed adapters (wrapper transport).
     ///
-    /// Each session (e.g., "lead", "park") has an ordered queue and an
+    /// Each session (e.g., "myproject", "park") has an ordered queue and an
     /// exclusive adapter lease. Adapters consume via poll+ack; the daemon
     /// enqueues logical control messages (nudges/keys) without terminal coupling.
     headed_sessions: Mutex<HashMap<String, HeadedSessionState>>,
@@ -649,6 +649,11 @@ pub(crate) struct DaemonState {
     ///
     /// Short TTL (2 min) ensures we eventually detect the review after it's posted.
     pr_review_negative_cache: std::sync::Mutex<HashMap<u64, std::time::Instant>>,
+    /// Cache for "Review in progress" placeholder comment IDs per PR.
+    /// Maps PR number → (comment_id, checked_at).
+    /// None means "no placeholder found" (negative result).
+    /// Positive results (Some(comment_id)) are kept until the reviewer completes.
+    reviewer_placeholder_cache: std::sync::Mutex<HashMap<u64, (Option<u64>, std::time::Instant)>>,
     /// LRU pool for coworker name allocation.
     ///
     /// Tracks available and allocated names. Names at the front of the queue are
@@ -732,7 +737,7 @@ impl DaemonState {
     /// Called when a user message arrives while the lead is dead.
     pub(crate) fn clear_lead_respawn_cooldown(&self) {
         let mut stop_times = self.coworker_stop_times.write().unwrap();
-        if stop_times.remove("lead").is_some() {
+        if stop_times.remove(&self.repo_name.to_lowercase()).is_some() {
             tracing::info!("Cleared lead respawn cooldown — user message while lead is dead");
         }
     }
@@ -962,7 +967,8 @@ impl DaemonState {
             .list_running()
             .iter()
             .filter(|cw| {
-                !cw.name.eq_ignore_ascii_case("lead") && !channel_lead_names.contains(&cw.name)
+                !cw.name.eq_ignore_ascii_case(&self.repo_name)
+                    && !channel_lead_names.contains(&cw.name)
             })
             .count();
         non_lead_count >= self.max_coworkers + REVIEW_HEADROOM
@@ -982,7 +988,8 @@ impl DaemonState {
             .list_running()
             .iter()
             .filter(|cw| {
-                !cw.name.eq_ignore_ascii_case("lead") && !channel_lead_names.contains(&cw.name)
+                !cw.name.eq_ignore_ascii_case(&self.repo_name)
+                    && !channel_lead_names.contains(&cw.name)
             })
             .count();
         non_lead_count >= self.max_coworkers
@@ -1048,6 +1055,10 @@ impl DaemonState {
             // Cache positive results permanently (reviews are monotonic — they don't disappear)
             let mut ps = self.persistent_state.lock().await;
             ps.github.mark_reviewed_pr(pr_number);
+            drop(ps);
+            // Clear placeholder cache: review is done, no need to track placeholder anymore
+            let mut placeholder_cache = self.reviewer_placeholder_cache.lock().unwrap();
+            placeholder_cache.remove(&pr_number);
         } else {
             // Cache negative result with TTL to avoid repeated API calls
             let mut neg_cache = self.pr_review_negative_cache.lock().unwrap();
@@ -1183,6 +1194,7 @@ impl DaemonState {
             kanban_cache: rpc_kanban::KanbanCache::new(),
             prs_cache: rpc_prs::PrsCache::new(),
             pr_review_negative_cache: std::sync::Mutex::new(HashMap::new()),
+            reviewer_placeholder_cache: std::sync::Mutex::new(HashMap::new()),
             draining: std::sync::atomic::AtomicBool::new(false),
             restart_requested: std::sync::atomic::AtomicBool::new(false),
             shutdown_tx,
@@ -1862,17 +1874,21 @@ impl DaemonState {
     /// First tries the headless session_manager path (lead running headless).
     /// Falls back to the headed intercom queue (lead attached interactively).
     pub(crate) async fn nudge_lead(&self, message: &str) {
-        if self.session_manager.is_alive("lead").await {
-            if let Err(e) = self.session_manager.send_message("lead", message).await {
+        if self.session_manager.is_alive(&self.repo_name).await {
+            if let Err(e) = self
+                .session_manager
+                .send_message(&self.repo_name, message)
+                .await
+            {
                 tracing::debug!(
                     "Failed to nudge lead via session_manager ({}), falling back to headed intercom",
                     e
                 );
-                self.enqueue_headed_nudge("lead", message).await;
+                self.enqueue_headed_nudge(&self.repo_name, message).await;
             }
         } else {
             // Lead is attached interactively — use headed intercom
-            self.enqueue_headed_nudge("lead", message).await;
+            self.enqueue_headed_nudge(&self.repo_name, message).await;
         }
     }
 
@@ -3221,6 +3237,11 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                     );
                     let mut ps = state.persistent_state.lock().await;
                     ps.github.mark_reviewed_pr(pr_number);
+                    drop(ps);
+                    // Clear placeholder cache: review is done
+                    let mut placeholder_cache =
+                        state.reviewer_placeholder_cache.lock().unwrap();
+                    placeholder_cache.remove(&pr_number);
                 }
 
                 // Record CI check duration for statistics tracking
@@ -3384,10 +3405,16 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                 // Both functions need channel_lead_sessions — acquire the lock once.
                 let (lead_effects, universal_effects) = {
                     let ps = state.persistent_state.lock().await;
-                    let lead_effects =
-                        stream::process_lead_output(&events, &ps.channel_lead_sessions);
-                    let universal_effects =
-                        stream::process_universal_events(&events, &ps.channel_lead_sessions);
+                    let lead_effects = stream::process_lead_output(
+                        &events,
+                        &ps.channel_lead_sessions,
+                        &state.repo_name,
+                    );
+                    let universal_effects = stream::process_universal_events(
+                        &events,
+                        &ps.channel_lead_sessions,
+                        &state.repo_name,
+                    );
                     (lead_effects, universal_effects)
                 };
                 effects::execute_effects(lead_effects, &state).await;

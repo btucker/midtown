@@ -2429,9 +2429,25 @@ pub(crate) async fn collect_reviewer_effects_with_source(
         let worktree_id = crate::worktree_registry::review_slug_for_pr(pr_number);
         let wt_path = crate::paths::worktrees_dir_for_repo(&state.repo_name).join(&worktree_id);
 
+        // Collision guard: abort spawn if the worktree is already bound to an active coworker.
+        // The BindCoworkerToWorktree effect has its own collision guard, but by then the
+        // session is already spawned. We must detect this earlier to avoid spawning a
+        // reviewer that will run without a valid worktree binding.
+        if let Some(existing) = worktree_registry.get(&worktree_id)
+            && let Some(ref bound_to) = existing.current_coworker
+            && active_names.contains(bound_to.to_lowercase().as_str())
+        {
+            warn!(
+                "WORKTREE COLLISION: Aborting reviewer spawn for PR #{} — worktree {} already bound to ACTIVE coworker {}",
+                pr_number, worktree_id, bound_to
+            );
+            continue;
+        }
+
         // reviewer() now takes the PR number and generates both the system prompt
-        // (with merged reviewer.md instructions) and the launch prompt internally
-        let mut config = crate::launch::LaunchConfig::reviewer(reviewer_name.clone(), pr_number);
+        // (with merged reviewer.md instructions) and the launch prompt internally.
+        // restart_count=0 for new assignments (not a respawn).
+        let mut config = crate::launch::LaunchConfig::reviewer(reviewer_name.clone(), pr_number, 0);
         config.auth_provider = crate::config::get_execution_provider_for_role(
             &state.repo_name,
             crate::config::ExecutionRole::Reviewer,
@@ -2979,6 +2995,44 @@ pub(super) fn pr_has_claude_review_uncached(pr_number: u64) -> bool {
         }
     }
 }
+/// Check whether a PR has an unupdated "Review in progress" placeholder comment.
+///
+/// Returns the comment database ID if found, or None if no placeholder exists
+/// or if the review has already been completed.
+///
+/// The placeholder is identified by:
+/// - Contains "Review in progress by" (from the reviewer template)
+/// - Does NOT contain "<!-- midtown:" (not yet updated with final review)
+pub(super) fn pr_in_progress_placeholder_comment_id(pr_number: u64) -> Option<u64> {
+    let output = std::process::Command::new("gh")
+        .args(["pr", "view", &pr_number.to_string(), "--json", "comments"])
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(&stdout).ok()?;
+
+    let comments = json.get("comments")?.as_array()?;
+
+    // Find the last placeholder comment: contains "Review in progress by"
+    // but NOT the midtown frontmatter (which marks the review as completed)
+    for comment in comments.iter().rev() {
+        let body = comment.get("body")?.as_str()?;
+        if body.contains("Review in progress by") && !body.contains("<!-- midtown:") {
+            // Extract numeric ID from URL like:
+            // https://github.com/owner/repo/pull/123#issuecomment-456789
+            let url = comment.get("url")?.as_str()?;
+            let id = url.split("issuecomment-").nth(1)?.parse::<u64>().ok()?;
+            return Some(id);
+        }
+    }
+    None
+}
+
 // Auto-nudge helpers for PR activity
 // ============================================================================
 

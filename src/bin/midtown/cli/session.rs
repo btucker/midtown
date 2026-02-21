@@ -317,7 +317,7 @@ fn handle_attach(target: &AttachArgs, client: &DaemonClient) -> Result<Response,
         // Ensure worktree is set up before launching.
         // For the lead, this updates the worktree to the current HEAD.
         // For coworkers, this ensures the worktree directory exists.
-        let cwd = ensure_attach_worktree(name, cwd)?;
+        let cwd = ensure_attach_worktree(name, cwd, coworker_type.as_deref() == Some("lead"))?;
 
         let shell_command = build_attach_shell_command(
             &cwd,
@@ -368,7 +368,11 @@ fn handle_attach(target: &AttachArgs, client: &DaemonClient) -> Result<Response,
 /// needed via the daemon's existing worktree manager).
 ///
 /// Returns the (possibly updated) worktree path to use as the CWD.
-pub(crate) fn ensure_attach_worktree(name: &str, daemon_cwd: &str) -> Result<String, String> {
+pub(crate) fn ensure_attach_worktree(
+    name: &str,
+    daemon_cwd: &str,
+    is_lead: bool,
+) -> Result<String, String> {
     // Resolve the main repo root from daemon_cwd (which may itself be a worktree).
     // git-common-dir gives us the main repo's .git dir; its parent is the repo root.
     let repo_root = std::process::Command::new("git")
@@ -401,7 +405,7 @@ pub(crate) fn ensure_attach_worktree(name: &str, daemon_cwd: &str) -> Result<Str
         }
     };
 
-    if name == "lead" {
+    if is_lead {
         match manager.create_lead_worktree() {
             Ok(path) => return Ok(path.to_string_lossy().to_string()),
             Err(e) => {
@@ -734,7 +738,7 @@ pub(crate) fn build_attach_shell_command(
         midtown::auth::active_profile_dir_for_project_with_provider(&repo_name, provider);
 
     // Determine role from coworker_type (provided by daemon's HeadlessSessionInfo)
-    let role = if name == "lead" {
+    let role = if coworker_type == Some("lead") {
         midtown::launch::CoworkerRole::Lead
     } else if coworker_type == Some("reviewer") {
         midtown::launch::CoworkerRole::Reviewer
@@ -831,7 +835,7 @@ pub(crate) fn build_attach_shell_command(
                 .map_err(|e| format!("Failed to write system prompt to temp file: {}", e))?;
 
             // Write role-appropriate settings file
-            let settings_file = if name == "lead" {
+            let settings_file = if matches!(role, midtown::launch::CoworkerRole::Lead) {
                 midtown::settings::write_lead_settings_file()
                     .map_err(|e| format!("Failed to write lead settings file: {}", e))?
             } else {

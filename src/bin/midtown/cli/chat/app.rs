@@ -162,15 +162,14 @@ pub struct RepoStatus {
 pub struct KanbanTask {
     pub id: String,
     pub subject: String,
+    pub description: Option<String>,
     pub owner: Option<String>,
     pub status: TaskStatus,
     /// When the task file was last modified (used as proxy for status change time)
-    #[allow(dead_code)] // Will be used in future PR detail views
     pub modified_at: Option<DateTime<Utc>>,
     /// Optional channel assignment for routing coworker messages
     pub channel: Option<String>,
     /// Task IDs this task is blocked by
-    #[allow(dead_code)]
     pub blocked_by: Vec<String>,
 }
 
@@ -343,10 +342,16 @@ pub struct App {
     /// When true AND at max_scroll, line truncation shows oldest content.
     /// When false, always use normal truncation (LAST N lines) for smooth scrolling.
     intentionally_at_top: bool,
-    /// Accumulator for mouse wheel scroll events (0-7).
+    /// Accumulator for mouse wheel scroll events (-7 to +7) in the main chat panel.
     /// Mouse wheels send multiple events per physical scroll, so we accumulate
-    /// fractional scrolls: 8 events = 1 line of movement for smoother scrolling.
-    mouse_scroll_accumulator: u8,
+    /// fractional scrolls: 8 events in one direction = 1 scroll step.
+    /// Positive = up credits, negative = down credits.
+    /// Resets to 0 when direction changes to prevent cross-direction bleed.
+    mouse_scroll_accumulator: i8,
+    /// Separate accumulator for mouse wheel scroll events in the thread panel.
+    /// Kept independent of mouse_scroll_accumulator so partial credits earned
+    /// while scrolling one panel cannot bleed into the other panel's scroll.
+    thread_mouse_scroll_accumulator: i8,
     /// Cache for rendered mermaid diagrams (content hash -> PNG image)
     pub mermaid_cache: MermaidCache,
     /// Mermaid diagram sources visible in the current render pass (indexed from 1 in the UI).
@@ -406,7 +411,7 @@ pub struct App {
     pub input_area: Option<ratatui::layout::Rect>,
     /// Last rendered thread input area (for click detection; None when thread is closed)
     pub thread_input_area: Option<ratatui::layout::Rect>,
-    /// Mapping of board panel line numbers to tasks (for click-to-attach)
+    /// Mapping of board panel line numbers to tasks (for click-to-open-detail)
     /// Maps (line_number) -> (task_id, task_owner) where line_number is relative to board content area
     pub task_line_map: HashMap<u16, (String, Option<String>)>,
     /// Mapping of board panel line numbers to channel headers (for click-to-select)
@@ -441,6 +446,8 @@ pub struct App {
     pub kill_ring: Option<String>,
     /// Whether the previous command was a kill — consecutive kills append to the kill ring
     pub last_was_kill: bool,
+    /// Currently open task detail panel task ID (mutually exclusive with thread_parent_id)
+    pub open_task_id: Option<String>,
     /// Currently open thread parent message ID
     pub thread_parent_id: Option<String>,
     /// Thread reply messages (messages with thread_parent_id matching the open thread)
@@ -449,6 +456,12 @@ pub struct App {
     pub thread_input_text: String,
     /// Thread input cursor position
     pub thread_input_cursor: usize,
+    /// How many lines the thread messages panel is scrolled up from the bottom.
+    /// 0 = at bottom (newest); increases toward older messages.
+    pub thread_scroll_offset: usize,
+    /// X column where the thread panel starts (set each render pass; None when thread is closed).
+    /// Used to route mouse scroll events to the thread panel vs. main chat.
+    pub thread_panel_x: Option<u16>,
     /// Recent messages from the ops channel (daemon operational messages).
     /// Loaded from the "ops" channel file independently of the selected channel.
     pub ops_messages: VecDeque<Message>,
@@ -585,6 +598,7 @@ impl App {
             tasks_cache_hash: 0,
             intentionally_at_top: false,
             mouse_scroll_accumulator: 0,
+            thread_mouse_scroll_accumulator: 0,
             mermaid_cache: MermaidCache::new(),
             diagram_sources: Vec::new(),
             usage_data: Vec::new(),
@@ -626,10 +640,13 @@ impl App {
             main_area_bottom: u16::MAX,
             kill_ring: None,
             last_was_kill: false,
+            open_task_id: None,
             thread_parent_id: None,
             thread_messages: Vec::new(),
             thread_input_text: String::new(),
             thread_input_cursor: 0,
+            thread_scroll_offset: 0,
+            thread_panel_x: None,
             ops_messages: VecDeque::new(),
             ops_channel,
             ops_initial_load_done: false,
@@ -1042,8 +1059,12 @@ impl App {
         }
     }
 
-    /// Mouse wheel scroll up (slower than keyboard - 8 events = 1 line)
+    /// Mouse wheel scroll up (slower than keyboard - 8 events = 1 step)
     pub fn mouse_scroll_up(&mut self) {
+        if self.mouse_scroll_accumulator < 0 {
+            // Direction changed; discard down credits and start fresh
+            self.mouse_scroll_accumulator = 0;
+        }
         self.mouse_scroll_accumulator += 1;
         if self.mouse_scroll_accumulator >= 8 {
             self.mouse_scroll_accumulator = 0;
@@ -1051,12 +1072,40 @@ impl App {
         }
     }
 
-    /// Mouse wheel scroll down (slower than keyboard - 8 events = 1 line)
+    /// Mouse wheel scroll down (slower than keyboard - 8 events = 1 step)
     pub fn mouse_scroll_down(&mut self) {
-        self.mouse_scroll_accumulator += 1;
-        if self.mouse_scroll_accumulator >= 8 {
+        if self.mouse_scroll_accumulator > 0 {
+            // Direction changed; discard up credits and start fresh
+            self.mouse_scroll_accumulator = 0;
+        }
+        self.mouse_scroll_accumulator -= 1;
+        if self.mouse_scroll_accumulator <= -8 {
             self.mouse_scroll_accumulator = 0;
             self.scroll_down();
+        }
+    }
+
+    /// Mouse wheel scroll up in the thread panel (8 events = 1 step toward older messages)
+    pub fn thread_mouse_scroll_up(&mut self) {
+        if self.thread_mouse_scroll_accumulator < 0 {
+            self.thread_mouse_scroll_accumulator = 0;
+        }
+        self.thread_mouse_scroll_accumulator += 1;
+        if self.thread_mouse_scroll_accumulator >= 8 {
+            self.thread_mouse_scroll_accumulator = 0;
+            self.thread_scroll_offset = self.thread_scroll_offset.saturating_add(SCROLL_STEP);
+        }
+    }
+
+    /// Mouse wheel scroll down in the thread panel (8 events = 1 step toward newer messages)
+    pub fn thread_mouse_scroll_down(&mut self) {
+        if self.thread_mouse_scroll_accumulator > 0 {
+            self.thread_mouse_scroll_accumulator = 0;
+        }
+        self.thread_mouse_scroll_accumulator -= 1;
+        if self.thread_mouse_scroll_accumulator <= -8 {
+            self.thread_mouse_scroll_accumulator = 0;
+            self.thread_scroll_offset = self.thread_scroll_offset.saturating_sub(SCROLL_STEP);
         }
     }
 
@@ -1134,6 +1183,8 @@ impl App {
             return;
         }
 
+        // Opening thread closes task panel (mutually exclusive)
+        self.open_task_id = None;
         self.thread_parent_id = Some(parent_id.to_string());
 
         // Collect existing thread replies from loaded messages
@@ -1146,6 +1197,7 @@ impl App {
 
         self.thread_input_text.clear();
         self.thread_input_cursor = 0;
+        self.thread_scroll_offset = 0;
         self.focused_pane = FocusedPane::Thread;
     }
 
@@ -1156,6 +1208,31 @@ impl App {
         self.thread_input_text.clear();
         self.thread_input_cursor = 0;
         self.thread_input_area = None;
+        self.thread_scroll_offset = 0;
+        self.thread_panel_x = None;
+        self.focused_pane = FocusedPane::InputBar;
+    }
+
+    /// Open the task detail panel for the given task ID.
+    ///
+    /// The task panel and thread panel are mutually exclusive — opening one closes the other.
+    pub fn open_task(&mut self, task_id: &str) {
+        // Opening task panel closes thread (mutually exclusive)
+        self.thread_parent_id = None;
+        self.thread_messages.clear();
+        self.thread_input_text.clear();
+        self.thread_input_cursor = 0;
+        self.thread_input_area = None;
+        self.open_task_id = Some(task_id.to_string());
+        // If thread was focused, reset to InputBar so keystrokes go to the right buffer
+        if self.focused_pane == FocusedPane::Thread {
+            self.focused_pane = FocusedPane::InputBar;
+        }
+    }
+
+    /// Close the task detail panel.
+    pub fn close_task(&mut self) {
+        self.open_task_id = None;
         self.focused_pane = FocusedPane::InputBar;
     }
 
@@ -1360,6 +1437,8 @@ impl App {
                 self.history_start_position = start_pos;
                 self.history_fully_loaded = start_pos == 0;
                 self.scroll_offset = 0;
+                self.thread_scroll_offset = 0;
+                self.open_task_id = None;
 
                 // Update the channel reference for future refresh
                 self.channel = Some(channel);
@@ -2494,6 +2573,12 @@ fn fetch_tasks() -> Vec<KanbanTask> {
                 .and_then(|v| v.as_str())
                 .map(String::from);
 
+            let description = task_data
+                .get("description")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(String::from);
+
             // Read blocked_by array
             let blocked_by = task_data
                 .get("blockedBy")
@@ -2509,6 +2594,7 @@ fn fetch_tasks() -> Vec<KanbanTask> {
                 tasks.push(KanbanTask {
                     id,
                     subject,
+                    description,
                     owner,
                     status,
                     modified_at,
@@ -3402,6 +3488,10 @@ mod autocomplete_tests;
 #[cfg(test)]
 mod spinner_tests;
 
+#[path = "mouse_scroll_tests.rs"]
+#[cfg(test)]
+mod mouse_scroll_tests;
+
 #[cfg(test)]
 pub(super) mod tests {
     use super::*;
@@ -3487,6 +3577,7 @@ pub(super) mod tests {
             tasks_cache_hash: 0,
             intentionally_at_top: false,
             mouse_scroll_accumulator: 0,
+            thread_mouse_scroll_accumulator: 0,
             mermaid_cache: MermaidCache::new(),
             diagram_sources: Vec::new(),
             usage_data: Vec::new(),
@@ -3528,10 +3619,13 @@ pub(super) mod tests {
             main_area_bottom: u16::MAX,
             kill_ring: None,
             last_was_kill: false,
+            open_task_id: None,
             thread_parent_id: None,
             thread_messages: Vec::new(),
             thread_input_text: String::new(),
             thread_input_cursor: 0,
+            thread_scroll_offset: 0,
+            thread_panel_x: None,
             ops_messages: VecDeque::new(),
             ops_channel: None,
             ops_initial_load_done: true,
@@ -3604,72 +3698,6 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn test_mouse_scroll_accumulator() {
-        // Test that mouse wheel scrolling requires multiple events per line
-        // for smooth scrolling (reduces scroll speed compared to keyboard).
-        // Each 8 mouse events triggers one scroll_up/down which moves by SCROLL_STEP.
-        let mut app = test_app();
-
-        // Add enough messages to make scrolling possible
-        // visible_height = 20, so we need > 20 messages
-        for i in 0..30 {
-            app.messages
-                .push_back(Message::text("test", format!("Test message {}", i)));
-        }
-
-        // Start at the bottom (scroll_offset = 0)
-        app.scroll_offset = 0;
-
-        // Test scroll up: should require 8 events to scroll SCROLL_STEP lines
-        let initial_offset = app.scroll_offset;
-
-        // First 7 events should not scroll
-        for _ in 0..7 {
-            app.mouse_scroll_up();
-        }
-        assert_eq!(
-            app.scroll_offset, initial_offset,
-            "Should not scroll with <8 events"
-        );
-
-        // 8th event should trigger scroll by SCROLL_STEP
-        app.mouse_scroll_up();
-        assert_eq!(
-            app.scroll_offset,
-            initial_offset + SCROLL_STEP,
-            "Should scroll after 8 events"
-        );
-
-        // Accumulator should reset, so another 8 events needed
-        for _ in 0..7 {
-            app.mouse_scroll_up();
-        }
-        assert_eq!(
-            app.scroll_offset,
-            initial_offset + SCROLL_STEP,
-            "Should not scroll with <8 events after reset"
-        );
-
-        app.mouse_scroll_up();
-        assert_eq!(
-            app.scroll_offset,
-            initial_offset + SCROLL_STEP * 2,
-            "Should scroll after another 8 events"
-        );
-
-        // Test scroll down
-        let current_offset = app.scroll_offset;
-        for _ in 0..8 {
-            app.mouse_scroll_down();
-        }
-        assert_eq!(
-            app.scroll_offset,
-            current_offset - SCROLL_STEP,
-            "Scroll down should work after 8 events"
-        );
-    }
-
-    #[test]
     fn test_task_status_from_string() {
         // Test the status parsing logic
         let status_str = "in_progress";
@@ -3706,6 +3734,7 @@ pub(super) mod tests {
             status: TaskStatus::InProgress,
             modified_at: None,
             channel: None,
+            description: None,
             blocked_by: vec![],
         };
         let cloned = task.clone();
@@ -3726,6 +3755,7 @@ pub(super) mod tests {
                     status: TaskStatus::Pending,
                     modified_at: None,
                     channel: None,
+                    description: None,
                     blocked_by: vec![],
                 },
                 KanbanTask {
@@ -3735,6 +3765,7 @@ pub(super) mod tests {
                     status: TaskStatus::InProgress,
                     modified_at: None,
                     channel: None,
+                    description: None,
                     blocked_by: vec![],
                 },
                 KanbanTask {
@@ -3744,6 +3775,7 @@ pub(super) mod tests {
                     status: TaskStatus::Completed,
                     modified_at: None,
                     channel: None,
+                    description: None,
                     blocked_by: vec![],
                 },
             ],
@@ -4134,22 +4166,22 @@ pub(super) mod tests {
         );
 
         // Test mouse wheel scroll down
-        // Accumulator is at 1 from the ninth up event
-        for i in 1..=6 {
+        // The ninth up event left accumulator at 1 (up direction).
+        // First down event resets the accumulator (direction change), so
+        // now 8 full down events are needed to trigger scroll_down.
+        for i in 1..=7 {
             app.mouse_scroll_down();
             assert_eq!(
-                app.scroll_offset,
-                SCROLL_STEP,
-                "Down event {} accumulates (acc={})",
-                i,
-                i + 1
+                app.scroll_offset, SCROLL_STEP,
+                "Down event {} should not scroll yet (direction reset clears up credit)",
+                i
             );
         }
 
         app.mouse_scroll_down();
         assert_eq!(
             app.scroll_offset, 0,
-            "Seventh down event triggers scroll (acc=8)"
+            "Eighth down event triggers scroll after direction reset"
         );
     }
 
@@ -4293,6 +4325,7 @@ pub(super) mod tests {
                     status: TaskStatus::Pending,
                     modified_at: None,
                     channel: Some("midtown".to_string()),
+                    description: None,
                     blocked_by: vec![],
                 },
                 KanbanTask {
@@ -4302,6 +4335,7 @@ pub(super) mod tests {
                     status: TaskStatus::InProgress,
                     modified_at: None,
                     channel: Some("midtown".to_string()),
+                    description: None,
                     blocked_by: vec![],
                 },
                 KanbanTask {
@@ -4311,6 +4345,7 @@ pub(super) mod tests {
                     status: TaskStatus::Pending,
                     modified_at: None,
                     channel: Some("features".to_string()),
+                    description: None,
                     blocked_by: vec![],
                 },
             ],
@@ -4383,6 +4418,7 @@ pub(super) mod tests {
                     status: TaskStatus::Pending,
                     modified_at: None,
                     channel: Some("midtown".to_string()),
+                    description: None,
                     blocked_by: vec![],
                 },
                 KanbanTask {
@@ -4392,6 +4428,7 @@ pub(super) mod tests {
                     status: TaskStatus::Pending,
                     modified_at: None,
                     channel: Some("features".to_string()),
+                    description: None,
                     blocked_by: vec![],
                 },
             ],

@@ -121,7 +121,11 @@ async fn test_user_message_queues_headed_lead_nudge() {
     let (state, _tmp, _guard) = make_test_state("midtown-test-rpc-channel-queue-user");
     let adapter_id = "test-adapter-user";
     state
-        .headed_register("lead", adapter_id, crate::auth::AuthProvider::Claude)
+        .headed_register(
+            &state.repo_name,
+            adapter_id,
+            crate::auth::AuthProvider::Claude,
+        )
         .await
         .expect("register headed adapter");
 
@@ -137,7 +141,7 @@ async fn test_user_message_queues_headed_lead_nudge() {
     assert!(response.error.is_none(), "channel.post should succeed");
 
     let (messages, _capture) = state
-        .headed_poll("lead", adapter_id, 0, 10)
+        .headed_poll(&state.repo_name, adapter_id, 0, 10)
         .await
         .expect("poll headed queue");
     assert_eq!(messages.len(), 1);
@@ -156,7 +160,11 @@ async fn test_coworker_at_lead_queues_headed_lead_nudge() {
     let (state, _tmp, _guard) = make_test_state("midtown-test-rpc-channel-queue-coworker");
     let adapter_id = "test-adapter-coworker";
     state
-        .headed_register("lead", adapter_id, crate::auth::AuthProvider::Claude)
+        .headed_register(
+            &state.repo_name,
+            adapter_id,
+            crate::auth::AuthProvider::Claude,
+        )
         .await
         .expect("register headed adapter");
 
@@ -172,7 +180,7 @@ async fn test_coworker_at_lead_queues_headed_lead_nudge() {
     assert!(response.error.is_none(), "channel.post should succeed");
 
     let (messages, _capture) = state
-        .headed_poll("lead", adapter_id, 0, 10)
+        .headed_poll(&state.repo_name, adapter_id, 0, 10)
         .await
         .expect("poll headed queue");
     assert_eq!(messages.len(), 1);
@@ -230,7 +238,11 @@ async fn test_user_message_to_topic_channel_no_lead_no_main_nudge() {
     let (state, _tmp, _guard) = make_test_state("midtown-test-topic-no-lead");
     let adapter_id = "test-adapter-topic-no-lead";
     state
-        .headed_register("lead", adapter_id, crate::auth::AuthProvider::Claude)
+        .headed_register(
+            &state.repo_name,
+            adapter_id,
+            crate::auth::AuthProvider::Claude,
+        )
         .await
         .expect("register headed adapter");
 
@@ -248,7 +260,7 @@ async fn test_user_message_to_topic_channel_no_lead_no_main_nudge() {
 
     // Main lead should NOT be nudged for topic channel user messages
     let (messages, _capture) = state
-        .headed_poll("lead", adapter_id, 0, 10)
+        .headed_poll(&state.repo_name, adapter_id, 0, 10)
         .await
         .expect("poll headed queue");
     assert!(
@@ -263,7 +275,11 @@ async fn test_user_message_to_main_channel_nudges_lead() {
     let (state, _tmp, _guard) = make_test_state("midtown-test-main-channel-nudge");
     let adapter_id = "test-adapter-main-nudge";
     state
-        .headed_register("lead", adapter_id, crate::auth::AuthProvider::Claude)
+        .headed_register(
+            &state.repo_name,
+            adapter_id,
+            crate::auth::AuthProvider::Claude,
+        )
         .await
         .expect("register headed adapter");
 
@@ -273,7 +289,7 @@ async fn test_user_message_to_main_channel_nudges_lead() {
     assert!(response.error.is_none(), "channel.post should succeed");
 
     let (messages, _capture) = state
-        .headed_poll("lead", adapter_id, 0, 10)
+        .headed_poll(&state.repo_name, adapter_id, 0, 10)
         .await
         .expect("poll headed queue");
     assert_eq!(
@@ -295,7 +311,11 @@ async fn test_user_message_with_coworker_mention_still_nudges_lead() {
     let (state, _tmp, _guard) = make_test_state("midtown-test-lead-nudge-despite-mention");
     let adapter_id = "test-adapter-lead-nudge-mention";
     state
-        .headed_register("lead", adapter_id, crate::auth::AuthProvider::Claude)
+        .headed_register(
+            &state.repo_name,
+            adapter_id,
+            crate::auth::AuthProvider::Claude,
+        )
         .await
         .expect("register headed adapter");
 
@@ -312,7 +332,7 @@ async fn test_user_message_with_coworker_mention_still_nudges_lead() {
     assert!(response.error.is_none(), "channel.post should succeed");
 
     let (messages, _capture) = state
-        .headed_poll("lead", adapter_id, 0, 10)
+        .headed_poll(&state.repo_name, adapter_id, 0, 10)
         .await
         .expect("poll headed queue");
     assert_eq!(
@@ -338,7 +358,11 @@ async fn test_user_message_to_topic_channel_inactive_lead_attempts_resume() {
     let (state, _tmp, _guard) = make_test_state("midtown-test-topic-resume-lead");
     let adapter_id = "test-adapter-topic-resume";
     state
-        .headed_register("lead", adapter_id, crate::auth::AuthProvider::Claude)
+        .headed_register(
+            &state.repo_name,
+            adapter_id,
+            crate::auth::AuthProvider::Claude,
+        )
         .await
         .expect("register headed adapter");
 
@@ -365,7 +389,7 @@ async fn test_user_message_to_topic_channel_inactive_lead_attempts_resume() {
 
     // Main lead should NOT be nudged (topic channel message)
     let (messages, _capture) = state
-        .headed_poll("lead", adapter_id, 0, 10)
+        .headed_poll(&state.repo_name, adapter_id, 0, 10)
         .await
         .expect("poll headed queue");
     assert!(
@@ -572,7 +596,11 @@ async fn test_fresh_spawn_registers_channel_lead_sessions() {
     let (state, _tmp, _guard) = make_test_state("midtown-test-fresh-spawn-register");
     let adapter_id = "test-adapter-fresh-spawn";
     state
-        .headed_register("lead", adapter_id, crate::auth::AuthProvider::Claude)
+        .headed_register(
+            &state.repo_name,
+            adapter_id,
+            crate::auth::AuthProvider::Claude,
+        )
         .await
         .expect("register headed adapter");
 
@@ -621,7 +649,11 @@ async fn test_crash_loop_guard_skips_resume_when_headless_cleared() {
     let (state, _tmp, _guard) = make_test_state("midtown-test-crash-loop-guard");
     let adapter_id = "test-adapter-crash-loop";
     state
-        .headed_register("lead", adapter_id, crate::auth::AuthProvider::Claude)
+        .headed_register(
+            &state.repo_name,
+            adapter_id,
+            crate::auth::AuthProvider::Claude,
+        )
         .await
         .expect("register headed adapter");
 
@@ -669,7 +701,7 @@ async fn test_crash_loop_guard_skips_resume_when_headless_cleared() {
 
     // Main lead should NOT be nudged (topic channel message)
     let (messages, _capture) = state
-        .headed_poll("lead", adapter_id, 0, 10)
+        .headed_poll(&state.repo_name, adapter_id, 0, 10)
         .await
         .expect("poll headed queue");
     assert!(
@@ -684,18 +716,22 @@ async fn test_crash_loop_guard_skips_resume_when_headless_cleared() {
 async fn test_clear_lead_respawn_cooldown_removes_stop_time() {
     let (state, _tmp, _guard) = make_test_state("midtown-test-clear-lead-cooldown");
 
+    // After rename, lead stop times are keyed by repo_name (lowercase), not "lead"
+    let lead_key = state.repo_name.to_lowercase();
+
     // Simulate lead having been stopped (which sets a stop time)
     {
         let mut stop_times = state.coworker_stop_times.write().unwrap();
-        stop_times.insert("lead".to_string(), chrono::Utc::now());
+        stop_times.insert(lead_key.clone(), chrono::Utc::now());
     }
 
     // Precondition: stop time is set
     {
         let stop_times = state.coworker_stop_times.read().unwrap();
         assert!(
-            stop_times.contains_key("lead"),
-            "Precondition: lead stop time should be set"
+            stop_times.contains_key(&lead_key),
+            "Precondition: lead stop time should be set (key: {})",
+            lead_key
         );
     }
 
@@ -706,7 +742,7 @@ async fn test_clear_lead_respawn_cooldown_removes_stop_time() {
     {
         let stop_times = state.coworker_stop_times.read().unwrap();
         assert!(
-            !stop_times.contains_key("lead"),
+            !stop_times.contains_key(&lead_key),
             "Lead stop time should be removed after clear_lead_respawn_cooldown"
         );
     }
@@ -722,9 +758,10 @@ fn test_clear_lead_respawn_cooldown_noop_when_no_stop_time() {
         // No stop time set — clearing should not panic
         state.clear_lead_respawn_cooldown();
 
+        let lead_key = state.repo_name.to_lowercase();
         let stop_times = state.coworker_stop_times.read().unwrap();
         assert!(
-            !stop_times.contains_key("lead"),
+            !stop_times.contains_key(&lead_key),
             "No stop time should exist after no-op clear"
         );
     });
@@ -736,8 +773,13 @@ fn test_clear_lead_respawn_cooldown_noop_when_no_stop_time() {
 async fn test_user_message_with_dead_lead_clears_cooldown() {
     let (state, _tmp, _guard) = make_test_state("midtown-test-dead-lead-clears-cooldown");
     let adapter_id = "test-adapter-dead-lead-cooldown";
+    let lead_key = state.repo_name.to_lowercase();
     state
-        .headed_register("lead", adapter_id, crate::auth::AuthProvider::Claude)
+        .headed_register(
+            &state.repo_name,
+            adapter_id,
+            crate::auth::AuthProvider::Claude,
+        )
         .await
         .expect("register headed adapter");
 
@@ -745,12 +787,12 @@ async fn test_user_message_with_dead_lead_clears_cooldown() {
     {
         let mut stop_times = state.coworker_stop_times.write().unwrap();
         stop_times.insert(
-            "lead".to_string(),
+            lead_key.clone(),
             chrono::Utc::now() - chrono::Duration::minutes(2),
         );
     }
 
-    // Lead is not alive (session_manager has no live session for "lead")
+    // Lead is not alive (session_manager has no live session for repo_name)
     // and not attached — it is dead.
     let response = handle_channel_post(
         1_i64.into(),
@@ -766,7 +808,7 @@ async fn test_user_message_with_dead_lead_clears_cooldown() {
     // The cooldown should have been cleared, allowing immediate respawn on next tick
     let stop_times = state.coworker_stop_times.read().unwrap();
     assert!(
-        !stop_times.contains_key("lead"),
+        !stop_times.contains_key(&lead_key),
         "Lead stop time should be cleared after user message with dead lead"
     );
 }
@@ -904,8 +946,13 @@ async fn test_handle_channel_archive_cleans_up_channel_lead_sessions() {
 async fn test_user_message_dead_lead_respects_expedite_cooldown() {
     let (state, _tmp, _guard) = make_test_state("midtown-test-dead-lead-expedite-cooldown");
     let adapter_id = "test-adapter-dead-lead-expedite";
+    let lead_key = state.repo_name.to_lowercase();
     state
-        .headed_register("lead", adapter_id, crate::auth::AuthProvider::Claude)
+        .headed_register(
+            &state.repo_name,
+            adapter_id,
+            crate::auth::AuthProvider::Claude,
+        )
         .await
         .expect("register headed adapter");
 
@@ -913,7 +960,7 @@ async fn test_user_message_dead_lead_respects_expedite_cooldown() {
     {
         let mut stop_times = state.coworker_stop_times.write().unwrap();
         stop_times.insert(
-            "lead".to_string(),
+            lead_key.clone(),
             chrono::Utc::now() - chrono::Duration::minutes(2),
         );
     }
@@ -925,7 +972,7 @@ async fn test_user_message_dead_lead_respects_expedite_cooldown() {
     {
         let mut stop_times = state.coworker_stop_times.write().unwrap();
         stop_times.insert(
-            "lead".to_string(),
+            lead_key.clone(),
             chrono::Utc::now() - chrono::Duration::minutes(2),
         );
     }
@@ -937,7 +984,7 @@ async fn test_user_message_dead_lead_respects_expedite_cooldown() {
     // meaning the second message did not re-trigger expedite. Stop time was NOT cleared.
     let stop_times = state.coworker_stop_times.read().unwrap();
     assert!(
-        stop_times.contains_key("lead"),
+        stop_times.contains_key(&lead_key),
         "Lead stop time should remain on second message within 30s cooldown"
     );
 }

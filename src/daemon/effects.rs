@@ -203,6 +203,15 @@ pub enum Effect {
         check_name: String,
         pr_number: u64,
     },
+    /// Update a GitHub PR issue comment (e.g., to mark an abandoned "Review in progress" placeholder).
+    ///
+    /// Uses `gh api --method PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}`.
+    /// The `repo_full_name` is the GitHub owner/repo string (e.g., "btucker/midtown").
+    UpdatePrComment {
+        comment_id: u64,
+        repo_full_name: String,
+        new_body: String,
+    },
     /// Store a PR author's session ID for potential handoff.
     ///
     /// When a coworker opens a PR, we store their session ID so any other
@@ -742,9 +751,10 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
 
                 // Clear tool activity for this agent when they post a channel message.
                 // A channel post signals the end of a work phase — the activity strip should reset.
-                // Skip system senders (midtown, lead) and channel leads since they don't have
+                // Skip system senders (midtown) and channel leads since they don't have
                 // coworker-style tool activity that should be cleared on text posts.
-                let skip = matches!(sender.to_lowercase().as_str(), "midtown" | "lead" | "user")
+                let skip = matches!(sender.to_lowercase().as_str(), "midtown" | "user")
+                    || sender.eq_ignore_ascii_case(&state.repo_name)
                     || has_explicit_channel;
                 if !skip {
                     let mut tool_map = state.recent_tool_items.write().unwrap();
@@ -1067,6 +1077,42 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 pr_number,
             } => {
                 rerun_workflow(state, run_id, &check_name, pr_number).await;
+            }
+            Effect::UpdatePrComment {
+                comment_id,
+                repo_full_name,
+                new_body,
+            } => {
+                let endpoint = format!("/repos/{}/issues/comments/{}", repo_full_name, comment_id);
+                let output = tokio::process::Command::new("gh")
+                    .args([
+                        "api",
+                        "--method",
+                        "PATCH",
+                        &endpoint,
+                        "-f",
+                        &format!("body={}", new_body),
+                    ])
+                    .output()
+                    .await;
+                match output {
+                    Ok(out) if out.status.success() => {
+                        info!(
+                            "Updated placeholder comment {} on {}",
+                            comment_id, repo_full_name
+                        );
+                    }
+                    Ok(out) => {
+                        let stderr = String::from_utf8_lossy(&out.stderr);
+                        warn!("Failed to update comment {}: {}", comment_id, stderr.trim());
+                    }
+                    Err(e) => {
+                        warn!(
+                            "Failed to run gh api for comment update {}: {}",
+                            comment_id, e
+                        );
+                    }
+                }
             }
             Effect::StorePrAuthorSession {
                 pr_number,
@@ -2101,7 +2147,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     let ps = state.persistent_state.lock().await;
                     ps.channel_lead_sessions.contains_key(name.as_str())
                 };
-                let suffix = if name == "lead" {
+                let suffix = if name.eq_ignore_ascii_case(&state.repo_name) {
                     " Headless session will respawn on the next tick."
                 } else if is_channel_lead {
                     " Channel lead session will be respawned for its channel."

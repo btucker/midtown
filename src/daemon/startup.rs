@@ -631,7 +631,8 @@ pub async fn recover_from_session_records(
             LaunchConfig::lead(repo_name, None)
         } else if record.is_reviewer {
             if let Some(pr_number) = record.pr_number {
-                LaunchConfig::reviewer(name, pr_number)
+                // restart_count=0: we're recovering a session, not tracking restarts here
+                LaunchConfig::reviewer(name, pr_number, 0)
             } else {
                 warn!("Reviewer session {} has no PR number, skipping", session_id);
                 continue;

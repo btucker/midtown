@@ -400,7 +400,7 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
         "coworker.nudge" => {
             let name = require_str!(params, "name", request.id);
             let message = require_str!(params, "message", request.id);
-            let from = params.str_or("from", "lead");
+            let from: &str = params.str_param("from").unwrap_or(state.repo_name.as_str());
             super::rpc_coworker::handle_coworker_nudge(request.id, from, name, message, state).await
         }
 
@@ -439,7 +439,7 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
         // ---- Channel ----
         "channel.post" => {
             let message = require_str!(params, "message", request.id);
-            let from = params.str_or("from", "lead");
+            let from: &str = params.str_param("from").unwrap_or(state.repo_name.as_str());
             let channel = params.str_param("channel");
             let thread_parent_id = params.str_param("thread_parent_id");
             super::rpc_channel::handle_channel_post(

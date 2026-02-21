@@ -787,6 +787,10 @@ pub(crate) struct StuckReviewerRestart {
 /// by PR number in `GitHubState`. Adds a `max_restarts` limit to prevent
 /// infinite restart loops for the same PR.
 ///
+/// When `prs_with_in_progress_comment` contains the reviewer's PR, a shorter
+/// threshold (`placeholder_stuck_duration`) is used because the reviewer already
+/// posted a placeholder — they committed to the review but may have frozen.
+///
 /// Pure function: takes ProcessHealth data and returns restart decisions.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn decide_stuck_reviewer_restarts(
@@ -796,11 +800,15 @@ pub(crate) fn decide_stuck_reviewer_restarts(
     exemptions: &StuckExemptions<'_>,
     now_utc: DateTime<Utc>,
     stuck_duration: Duration,
+    placeholder_stuck_duration: Duration,
     max_restarts: u32,
     name_session_map: &HashMap<String, String>,
     coworker_start_times: &HashMap<String, DateTime<Utc>>,
+    prs_with_in_progress_comment: &std::collections::HashSet<u64>,
 ) -> Vec<StuckReviewerRestart> {
     let threshold = chrono::Duration::from_std(stuck_duration).unwrap_or_default();
+    let placeholder_threshold =
+        chrono::Duration::from_std(placeholder_stuck_duration).unwrap_or_default();
     let mut restarts = Vec::new();
 
     for (name, health) in process_health {
@@ -809,8 +817,22 @@ pub(crate) fn decide_stuck_reviewer_restarts(
             None => continue,
         };
 
+        // Use shorter threshold if reviewer posted a placeholder (they started but may have frozen)
+        let effective_threshold = if prs_with_in_progress_comment.contains(&pr_number) {
+            placeholder_threshold
+        } else {
+            threshold
+        };
+
         let started_at = coworker_start_times.get(&name.to_lowercase()).copied();
-        if !is_process_stuck(name, health, exemptions, now_utc, threshold, started_at) {
+        if !is_process_stuck(
+            name,
+            health,
+            exemptions,
+            now_utc,
+            effective_threshold,
+            started_at,
+        ) {
             continue;
         }
 
@@ -3829,9 +3851,11 @@ mod tests {
             &exemptions,
             now,
             Duration::from_secs(300),
+            Duration::from_secs(120),
             2,
             &HashMap::new(),
             &HashMap::new(),
+            &HashSet::new(),
         )
     }
 
@@ -3919,9 +3943,11 @@ mod tests {
             &exemptions,
             now,
             Duration::from_secs(300),
+            Duration::from_secs(120),
             2,
             &HashMap::new(),
             &HashMap::new(),
+            &HashSet::new(),
         );
         assert!(
             restarts.is_empty(),
@@ -3960,9 +3986,11 @@ mod tests {
             &exemptions,
             now,
             Duration::from_secs(300), // 5-minute threshold
+            Duration::from_secs(120),
             2,
             &HashMap::new(),
             &start_times,
+            &HashSet::new(),
         );
         assert_eq!(
             restarts.len(),
@@ -4003,9 +4031,11 @@ mod tests {
             &exemptions,
             now,
             Duration::from_secs(300), // 5-minute threshold
+            Duration::from_secs(120),
             2,
             &HashMap::new(),
             &start_times,
+            &HashSet::new(),
         );
         assert!(
             restarts.is_empty(),

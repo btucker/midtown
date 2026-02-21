@@ -46,7 +46,7 @@ pub enum CoworkerRole {
 /// these and pass it to `to_headless_config()` for headless spawn.
 #[derive(Debug, Clone)]
 pub struct LaunchConfig {
-    /// Coworker name (or "lead" for the lead instance).
+    /// Coworker name (or the repo name for the lead instance).
     pub name: String,
     /// How to start or resume the session.
     pub session_mode: SessionMode,
@@ -262,12 +262,19 @@ impl LaunchConfig {
     /// Reviewers get a specialized system prompt that merges coworker.md +
     /// common.md + reviewer.md, ensuring they follow reviewer instructions
     /// as behavioral rules rather than just task descriptions.
-    pub fn reviewer(name: impl Into<String>, pr_number: u64) -> Self {
+    ///
+    /// `restart_count` is 0 for first launch, >0 for respawns. When >0, the
+    /// initial prompt includes context about the previous failed attempt and
+    /// instructs the reviewer to update the existing placeholder comment.
+    pub fn reviewer(name: impl Into<String>, pr_number: u64, restart_count: u32) -> Self {
         LaunchConfig {
             name: name.into(),
             session_mode: SessionMode::Fresh,
             role: CoworkerRole::Reviewer,
-            initial_prompt: Some(crate::agents::reviewer_launch_prompt(pr_number)),
+            initial_prompt: Some(crate::agents::reviewer_launch_prompt(
+                pr_number,
+                restart_count,
+            )),
             additional_dirs: vec![],
             pr_number: Some(pr_number),
             team_name: None, // Reviewers don't need mailbox (short-lived)
@@ -302,7 +309,7 @@ impl LaunchConfig {
                 crate::config::ExecutionRole::Lead,
             );
             LaunchConfig {
-                name: "lead".to_string(),
+                name: repo.clone(),
                 session_mode: SessionMode::Fresh,
                 role: CoworkerRole::Lead,
                 initial_prompt: Some(crate::agents::main_lead_initial_prompt(&repo, &repo)),
@@ -700,7 +707,7 @@ mod tests {
 
     #[test]
     fn test_to_headless_config_reviewer_has_no_teams() {
-        let config = LaunchConfig::reviewer("york", 42);
+        let config = LaunchConfig::reviewer("york", 42, 0);
         let headless = config.to_headless_config("midtown");
 
         assert!(headless.team_name.is_none());
@@ -711,7 +718,7 @@ mod tests {
 
     #[test]
     fn test_to_headless_config_reviewer_has_tools() {
-        let config = LaunchConfig::reviewer("york", 42);
+        let config = LaunchConfig::reviewer("york", 42, 0);
         let headless = config.to_headless_config("midtown");
         assert!(headless.allow_tools);
     }
@@ -727,7 +734,7 @@ mod tests {
             "setting_sources should be None — handled by platform arg builder"
         );
 
-        let config = LaunchConfig::reviewer("york", 42);
+        let config = LaunchConfig::reviewer("york", 42, 0);
         let headless = config.to_headless_config("midtown");
         assert_eq!(
             headless.setting_sources, None,
@@ -761,7 +768,7 @@ mod tests {
 
     #[test]
     fn test_launch_config_reviewer_factory() {
-        let config = LaunchConfig::reviewer("york".to_string(), 42);
+        let config = LaunchConfig::reviewer("york".to_string(), 42, 0);
         assert_eq!(config.name, "york");
         assert_eq!(config.pr_number, Some(42));
         assert_eq!(config.role, CoworkerRole::Reviewer);
@@ -1078,7 +1085,10 @@ mod tests {
     #[test]
     fn test_launch_config_lead_factory() {
         let config = LaunchConfig::lead("myrepo", None);
-        assert_eq!(config.name, "lead");
+        assert_eq!(
+            config.name, "myrepo",
+            "Lead session name should be the repo name"
+        );
         assert_eq!(config.role, CoworkerRole::Lead);
         assert!(
             config.initial_prompt.is_some(),
@@ -1095,8 +1105,8 @@ mod tests {
         let headless = config.to_headless_config("midtown");
 
         assert_eq!(headless.team_name, Some("midtown-myrepo".to_string()));
-        assert_eq!(headless.agent_id, Some("lead@midtown-myrepo".to_string()));
-        assert_eq!(headless.agent_name, Some("lead".to_string()));
+        assert_eq!(headless.agent_id, Some("myrepo@midtown-myrepo".to_string()));
+        assert_eq!(headless.agent_name, Some("myrepo".to_string()));
     }
 
     #[test]

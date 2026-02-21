@@ -129,6 +129,11 @@ pub(super) const COWORKER_STUCK_DURATION: Duration = Duration::from_secs(180);
 /// threshold is longer than COWORKER_STUCK_DURATION.
 pub(super) const REVIEWER_STUCK_DURATION: Duration = Duration::from_secs(300);
 
+/// Stuck duration for reviewers that have posted a "Review in progress" placeholder.
+/// Shorter than REVIEWER_STUCK_DURATION because we know they started the review.
+/// If they die or freeze after posting the placeholder, we recover faster.
+pub(super) const REVIEWER_PLACEHOLDER_STUCK_DURATION: Duration = Duration::from_secs(120);
+
 /// Maximum number of times a stuck reviewer can be restarted for the same PR.
 /// After this many restarts (meaning max_restarts + 1 total attempts), the daemon
 /// stops retrying and posts an escalation warning for the lead to handle.
@@ -207,8 +212,7 @@ pub(super) const OPS_CHANNEL: &str = "ops";
 pub(super) const SKIP_SENDERS: &[&str] = &["midtown", "system", "github", "user", "architect"];
 
 /// Senders that are considered "system" (not coworkers) for channel post handling.
-pub(super) const SYSTEM_SENDERS: &[&str] =
-    &["Lead", "lead", "github", "midtown", "system", "GitHub"];
+pub(super) const SYSTEM_SENDERS: &[&str] = &["github", "midtown", "system", "GitHub"];
 
 /// All valid coworker names for @mention detection.
 pub(super) const COWORKER_NAMES: &[&str] = &[
