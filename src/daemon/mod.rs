@@ -684,6 +684,15 @@ pub(crate) struct DaemonState {
     pub(crate) pending_questions: std::sync::Mutex<Vec<PendingQuestion>>,
     /// Counter for assigning unique IDs to pending questions.
     pending_question_id_counter: std::sync::atomic::AtomicU64,
+    /// Topic session mappings for forked channel leads.
+    ///
+    /// Maps `thread_parent_id → session_id` for forked topic sessions. When a thread
+    /// reply arrives for a channel with a topic session mapping, the reply is routed
+    /// to the forked session instead of the root channel lead.
+    ///
+    /// Ephemeral — cleared on daemon restart. Forks don't survive daemon restarts;
+    /// the on-demand channel lead infrastructure handles respawn when needed.
+    pub(crate) topic_sessions: std::sync::Mutex<HashMap<String, String>>,
 }
 
 impl DaemonState {
@@ -1207,6 +1216,7 @@ impl DaemonState {
             task_to_session: std::sync::Mutex::new(task_to_session),
             pending_questions: std::sync::Mutex::new(Vec::new()),
             pending_question_id_counter: std::sync::atomic::AtomicU64::new(1),
+            topic_sessions: std::sync::Mutex::new(HashMap::new()),
         })
     }
 
@@ -1422,6 +1432,7 @@ impl DaemonState {
                         is_running: true,
                         created_at: chrono::Utc::now(),
                         resume_on_startup: !is_reviewer,
+                        bound_thread_id: None,
                     },
                 );
             }
@@ -3320,6 +3331,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                                     is_running: true,
                                     created_at: chrono::Utc::now(),
                                     resume_on_startup: !is_reviewer_val,
+                                    bound_thread_id: None,
                                 });
                                 needs_persist_save = true;
                             }

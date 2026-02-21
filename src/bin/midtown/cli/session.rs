@@ -36,6 +36,17 @@ pub enum SessionCommand {
         /// Session target (coworker name, task/<id>, pr/<number>, etc.)
         target: String,
     },
+    /// Fork the current session to handle a specific thread.
+    ///
+    /// Creates an independent fork of this session with inherited conversation
+    /// history. The fork becomes the handler for user replies in that thread.
+    Fork {
+        /// The message ID of the thread root to fork for.
+        thread_parent_id: String,
+        /// The session ID of the calling session. Falls back to $MIDTOWN_SESSION_ID.
+        #[arg(long = "session-id")]
+        session_id: Option<String>,
+    },
 }
 
 #[derive(Args, Debug, Clone)]
@@ -245,6 +256,18 @@ pub fn handle(cmd: &SessionCommand, client: &DaemonClient) -> Result<Response, S
         SessionCommand::List => client.session_list(),
         SessionCommand::View { target } => client.session_view(target),
         SessionCommand::Clear { target } => client.session_clear(target),
+        SessionCommand::Fork {
+            thread_parent_id,
+            session_id,
+        } => {
+            let sid = session_id
+                .clone()
+                .or_else(|| std::env::var("MIDTOWN_SESSION_ID").ok())
+                .ok_or_else(|| {
+                    "Missing session ID. Pass --session-id or set $MIDTOWN_SESSION_ID.".to_string()
+                })?;
+            client.session_fork(thread_parent_id, &sid)
+        }
     }
 }
 

@@ -140,6 +140,26 @@ pub(super) async fn handle_channel_post(
 
     // Use provided channel or default to main channel
     let channel_name = channel.unwrap_or_else(|| state.channel_router.default_channel_name());
+
+    // Task 3: Output binding — if the sender is a forked topic session with a bound
+    // thread, auto-apply the bound thread_parent_id so their posts appear in the
+    // correct thread without the session needing to pass it explicitly.
+    let bound_thread: Option<String> = if thread_parent_id.is_none() {
+        let session_id = state.name_to_session.lock().unwrap().get(from).cloned();
+        if let Some(sid) = session_id {
+            let ps = state.persistent_state.lock().await;
+            ps.sessions
+                .get(&sid)
+                .and_then(|r| r.bound_thread_id.clone())
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    // Resolved thread_parent_id: explicit takes priority, then session-bound thread.
+    let thread_parent_id = thread_parent_id.or(bound_thread.as_deref());
+
     let msg = if let Some(parent_id) = thread_parent_id {
         Message::thread_reply(
             channel_name,
@@ -176,18 +196,41 @@ pub(super) async fn handle_channel_post(
         let is_topic_channel = channel_name != default_channel;
 
         if is_topic_channel {
-            // Topic channel: nudge the channel lead via the unified NudgeChannelLead path.
-            // This handles spawn-if-dead, resume-if-idle, and nudge-if-alive.
-            //
-            // Note: @mentions are intentionally NOT routed here. In topic channels,
-            // the channel lead is the single point of entry and owns all routing
-            // decisions within its domain. This avoids competing routing paths.
-            let nudge_effect = crate::daemon::effects::Effect::NudgeChannelLead {
-                channel_name: channel_name.to_string(),
-                reason: crate::daemon::wake_reason::WakeReason::UserMessage {
-                    content: content.clone(),
-                    msg_id: msg.id.clone(),
-                },
+            // Task 2: Thread-aware routing — if there's a forked topic session for
+            // this thread, route directly to it instead of the channel lead.
+            // This lets thread-specific forks handle their own conversation slice
+            // without going through the root channel lead.
+            let topic_session_id = thread_parent_id
+                .and_then(|parent_id| state.topic_sessions.lock().unwrap().get(parent_id).cloned());
+
+            let nudge_effect = if let Some(fork_session_id) = topic_session_id {
+                debug!(
+                    "channel.post: routing thread reply to fork session {} (thread {})",
+                    fork_session_id,
+                    thread_parent_id.unwrap_or("?"),
+                );
+                crate::daemon::effects::Effect::NudgeSession {
+                    session_id: fork_session_id,
+                    reason: crate::daemon::wake_reason::WakeReason::UserMessage {
+                        content: content.clone(),
+                        msg_id: msg.id.clone(),
+                    },
+                }
+            } else {
+                // No forked session for this thread — nudge the channel lead via the
+                // unified NudgeChannelLead path. This handles spawn-if-dead,
+                // resume-if-idle, and nudge-if-alive.
+                //
+                // Note: @mentions are intentionally NOT routed here. In topic channels,
+                // the channel lead is the single point of entry and owns all routing
+                // decisions within its domain. This avoids competing routing paths.
+                crate::daemon::effects::Effect::NudgeChannelLead {
+                    channel_name: channel_name.to_string(),
+                    reason: crate::daemon::wake_reason::WakeReason::UserMessage {
+                        content: content.clone(),
+                        msg_id: msg.id.clone(),
+                    },
+                }
             };
             crate::daemon::effects::execute_effects(vec![nudge_effect], state).await;
         } else {

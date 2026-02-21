@@ -130,6 +130,10 @@ pub fn build_claude_headless_args(config: &HeadlessConfig) -> Vec<String> {
         // Resume mode: --resume <id>, no -p flag, no system prompt/schema
         args.push("--resume".to_string());
         args.push(config.resume_session_id.as_ref().unwrap().clone());
+        // Fork mode: add --fork-session to create an independent fork with inherited context
+        if config.fork_session {
+            args.push("--fork-session".to_string());
+        }
     } else {
         // Fresh mode: -p with system prompt
         args.push("-p".to_string());

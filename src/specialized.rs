@@ -284,6 +284,7 @@ impl SpecializedCoworker {
             setting_sources: None,
             auth_provider,
             env,
+            fork_session: false,
         };
 
         let mut session = if let Some(ref sid) = session_id {

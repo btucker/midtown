@@ -327,6 +327,7 @@ fn test_session_record(
         is_running: true,
         created_at: Utc::now(),
         resume_on_startup: true,
+        bound_thread_id: None,
     }
 }
 

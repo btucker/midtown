@@ -1914,6 +1914,7 @@ fn test_resolve_pr_owner_from_session_prefers_session_over_branch() {
             is_running: true,
             created_at: chrono::Utc::now(),
             resume_on_startup: false,
+            bound_thread_id: None,
         },
     )]
     .into_iter()
@@ -1969,6 +1970,7 @@ fn test_resolve_pr_owner_from_session_uses_preferred_name_for_suspended_session(
             is_running: false,
             created_at: chrono::Utc::now(),
             resume_on_startup: false,
+            bound_thread_id: None,
         },
     )]
     .into_iter()
@@ -2060,6 +2062,7 @@ async fn test_poll_prs_session_based_owner_resolution() {
             is_running: true,
             created_at: chrono::Utc::now(),
             resume_on_startup: false,
+            bound_thread_id: None,
         },
     )]
     .into_iter()
@@ -2155,6 +2158,7 @@ fn test_pr_context_task_session_id_populated() {
             is_running: true,
             created_at: chrono::Utc::now(),
             resume_on_startup: false,
+            bound_thread_id: None,
         },
     );
 
@@ -2247,6 +2251,7 @@ async fn test_resolve_pr_owner_via_session_full_chain() {
                 is_running: true,
                 created_at: chrono::Utc::now(),
                 resume_on_startup: false,
+                bound_thread_id: None,
             },
         );
     }
@@ -2309,6 +2314,7 @@ async fn test_resolve_pr_owner_via_session_preferred_name_fallback() {
                 is_running: false,
                 created_at: chrono::Utc::now(),
                 resume_on_startup: false,
+                bound_thread_id: None,
             },
         );
     }

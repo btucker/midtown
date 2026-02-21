@@ -352,6 +352,83 @@ impl SessionManager {
         Ok(())
     }
 
+    /// Spawn a forked session and wait for its init event to capture the session ID.
+    ///
+    /// Unlike `spawn()`, this method blocks (with a timeout) until the forked Claude
+    /// process emits its `system/init` event. This gives us the new session_id before
+    /// returning — required so `session.fork` can record the `thread_parent_id →
+    /// session_id` mapping immediately in `topic_sessions`.
+    ///
+    /// After the init event, the session is registered in the sessions map and the
+    /// event loop picks it up for normal event processing.
+    pub async fn spawn_fork(
+        &self,
+        name: &str,
+        config: HeadlessConfig,
+    ) -> Result<String, crate::Error> {
+        use tokio::time;
+
+        let slot_id = uuid::Uuid::new_v4().to_string();
+
+        // Spawn the headless process (with fork_session: true in config)
+        let mut session = HeadlessSession::spawn(&config).map_err(|e| crate::Error::Rpc {
+            code: -32603,
+            message: format!("Failed to spawn fork session for '{}': {}", name, e),
+        })?;
+
+        if let Err(e) = session.ensure_ready().await {
+            let _ = session.kill().await;
+            return Err(crate::Error::Rpc {
+                code: -32603,
+                message: format!("Fork session init failed for '{}': {}", name, e),
+            });
+        }
+
+        // Wait up to 30s for the init event to get the session_id
+        let fork_session_id = time::timeout(std::time::Duration::from_secs(30), async {
+            loop {
+                match session.next_event().await {
+                    Some(crate::headless::StreamEvent::System {
+                        ref subtype,
+                        ref session_id,
+                        ..
+                    }) if subtype == "init" => {
+                        return session_id.clone();
+                    }
+                    Some(_) => continue,
+                    None => return None,
+                }
+            }
+        })
+        .await
+        .map_err(|_| crate::Error::Rpc {
+            code: -32603,
+            message: format!("Fork session init timed out for '{}'", name),
+        })?
+        .ok_or_else(|| crate::Error::Rpc {
+            code: -32603,
+            message: format!("Fork session exited before emitting init for '{}'", name),
+        })?;
+
+        // Register in the sessions map so the event loop picks it up
+        let mut sessions = self.sessions.write().await;
+        let cs = CoworkerSession::new(
+            slot_id.clone(),
+            name.to_string(),
+            session,
+            &self.repo_name,
+            Some(fork_session_id.clone()),
+        );
+        sessions.insert(slot_id, cs);
+
+        info!(
+            "Spawned fork session for '{}' (session_id={})",
+            name, fork_session_id
+        );
+
+        Ok(fork_session_id)
+    }
+
     /// Override the stored initial_prompt for a named session.
     ///
     /// Used after spawn when the prompt sent to Claude (e.g., decorated "fresh restart"

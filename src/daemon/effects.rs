@@ -2000,6 +2000,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                                         is_running: true,
                                         created_at: chrono::Utc::now(),
                                         resume_on_startup: !is_reviewer,
+                                        bound_thread_id: None,
                                     }
                                 });
                             record.current_name = Some(name.clone());

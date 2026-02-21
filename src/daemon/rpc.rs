@@ -354,6 +354,7 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
                 setting_sources: None,
                 auth_provider,
                 env: std::collections::BTreeMap::new(),
+                fork_session: false,
             };
             super::rpc_headless::handle_headless_execute(request.id, prompt, &config).await
         }
@@ -620,6 +621,18 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
         "session.clear" => {
             let target = require_str!(params, "target", request.id);
             super::rpc_session::handle_session_clear(request.id, target, state).await
+        }
+
+        "session.fork" => {
+            let thread_parent_id = require_str!(params, "thread_parent_id", request.id);
+            let calling_session_id = require_str!(params, "calling_session_id", request.id);
+            super::rpc_session::handle_session_fork(
+                request.id,
+                thread_parent_id,
+                calling_session_id,
+                state,
+            )
+            .await
         }
 
         // ---- Headed wrapper intercom ----

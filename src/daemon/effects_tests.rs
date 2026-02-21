@@ -392,6 +392,7 @@ fn test_record_session_inserts_into_persistent_state() {
         is_running: true,
         created_at: Utc::now(),
         resume_on_startup: true,
+        bound_thread_id: None,
     };
 
     persistent_state
@@ -425,6 +426,7 @@ fn test_record_session_updates_existing_record() {
         is_running: true,
         created_at: Utc::now(),
         resume_on_startup: true,
+        bound_thread_id: None,
     };
     persistent_state
         .sessions
@@ -486,6 +488,7 @@ fn test_shutdown_session_marks_not_running() {
         is_running: true,
         created_at: Utc::now(),
         resume_on_startup: true,
+        bound_thread_id: None,
     };
     persistent_state
         .sessions
@@ -578,6 +581,7 @@ fn test_coworker_break_updates_session_record() {
         is_running: true,
         created_at: Utc::now(),
         resume_on_startup: true,
+        bound_thread_id: None,
     };
     persistent_state
         .sessions
@@ -625,6 +629,7 @@ fn test_shutdown_coworker_impl_updates_session_via_name_lookup() {
         is_running: true,
         created_at: Utc::now(),
         resume_on_startup: true,
+        bound_thread_id: None,
     };
     persistent_state
         .sessions
@@ -715,6 +720,7 @@ fn test_spawn_session_marks_old_records_with_same_name_as_not_running() {
         is_running: true,
         created_at: Utc::now() - chrono::Duration::hours(1),
         resume_on_startup: true,
+        bound_thread_id: None,
     };
     persistent_state
         .sessions
@@ -734,6 +740,7 @@ fn test_spawn_session_marks_old_records_with_same_name_as_not_running() {
         is_running: true,
         created_at: Utc::now() - chrono::Duration::minutes(30),
         resume_on_startup: false,
+        bound_thread_id: None,
     };
     persistent_state
         .sessions
@@ -753,6 +760,7 @@ fn test_spawn_session_marks_old_records_with_same_name_as_not_running() {
         is_running: true,
         created_at: Utc::now(),
         resume_on_startup: true,
+        bound_thread_id: None,
     };
     persistent_state
         .sessions
@@ -785,6 +793,7 @@ fn test_spawn_session_marks_old_records_with_same_name_as_not_running() {
         is_running: true,
         created_at: Utc::now(),
         resume_on_startup: true,
+        bound_thread_id: None,
     };
     persistent_state
         .sessions
