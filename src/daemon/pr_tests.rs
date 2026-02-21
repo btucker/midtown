@@ -2344,7 +2344,7 @@ async fn test_reviewer_spawn_aborted_on_worktree_collision_with_active_coworker(
     // Use a fake PR number that doesn't exist in the real repo to avoid
     // is_pr_reviewed() calling the real gh CLI and finding an actual review.
     let pr_number = 99991u64;
-    let worktree_id = crate::worktree_registry::review_slug_for_pr(pr_number); // "review-pr-1389"
+    let worktree_id = crate::worktree_registry::review_slug_for_pr(pr_number); // "review-pr-99991"
 
     // PR that needs review (branch owned by "pleasant")
     let pr_json = serde_json::json!({
@@ -2406,6 +2406,161 @@ async fn test_reviewer_spawn_aborted_on_worktree_collision_with_active_coworker(
         "Reviewer spawn must be aborted when review worktree is already bound to active coworker 'vernon'. \
          Before fix: SpawnCoworkerWithCallbacks was emitted anyway, leading to a reviewer running without \
          a valid worktree binding."
+    );
+}
+
+/// Regression test for case-sensitivity: active_names stores lowercase names
+/// (per snapshot.rs), but current_coworker in the worktree registry may have
+/// mixed case. The collision guard must normalize with to_lowercase().
+#[tokio::test]
+async fn test_reviewer_spawn_aborted_on_worktree_collision_mixed_case() {
+    let pr_number = 99993u64;
+    let worktree_id = crate::worktree_registry::review_slug_for_pr(pr_number);
+
+    let pr_json = serde_json::json!({
+        "number": pr_number,
+        "headRefName": "pleasant/fix-auth",
+        "title": "Fix auth regression [Midtown !500]",
+        "mergeable": "MERGEABLE",
+        "statusCheckRollup": null,
+        "reviewDecision": null,
+        "isDraft": false,
+        "createdAt": "2026-01-01T00:00:00Z",
+        "state": "OPEN",
+    });
+
+    // Worktree bound to "Vernon" (mixed case) — active_names has "vernon" (lowercase)
+    let mut registry = crate::worktree_registry::WorktreeRegistry::default();
+    registry
+        .assign_worktree(crate::worktree_registry::WorktreeAssignment {
+            worktree_id: worktree_id.clone(),
+            branch_name: worktree_id.clone(),
+            task_id: None,
+            current_coworker: Some("Vernon".to_string()),
+            pr_number: Some(pr_number),
+            created_at: chrono::Utc::now(),
+            completed_at: None,
+        })
+        .unwrap();
+
+    let mut active_names = std::collections::HashSet::new();
+    active_names.insert("pleasant".to_string());
+    active_names.insert("vernon".to_string()); // lowercase, as snapshot.rs stores it
+
+    let branch_owners: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let (state, _tmp, _guard) = make_test_state("test-repo");
+
+    let effects = collect_reviewer_effects_with_source(
+        Some(&branch_owners),
+        &registry,
+        &active_names,
+        &state,
+        &[pr_json],
+        crate::github_state::AssignmentSource::PollingFallback,
+    )
+    .await;
+
+    let has_spawn = effects
+        .iter()
+        .any(|e| matches!(e, Effect::SpawnCoworkerWithCallbacks { .. }));
+    assert!(
+        !has_spawn,
+        "Collision guard must fire even when current_coworker has mixed case ('Vernon') \
+         and active_names stores lowercase ('vernon'). Without to_lowercase(), this fails."
+    );
+}
+
+/// When active_names is stale (contains a coworker that's actually dead), the early
+/// guard conservatively blocks the spawn. This is correct behavior — the next tick
+/// will have updated active_names and the spawn will proceed. This test documents
+/// the interaction between the snapshot-based early guard and the real-time
+/// is_alive() guard in BindCoworkerToWorktree.
+#[tokio::test]
+async fn test_reviewer_spawn_blocked_by_stale_active_names_retries_next_tick() {
+    let pr_number = 99994u64;
+    let worktree_id = crate::worktree_registry::review_slug_for_pr(pr_number);
+
+    let pr_json = serde_json::json!({
+        "number": pr_number,
+        "headRefName": "pleasant/fix-auth",
+        "title": "Fix auth regression [Midtown !500]",
+        "mergeable": "MERGEABLE",
+        "statusCheckRollup": null,
+        "reviewDecision": null,
+        "isDraft": false,
+        "createdAt": "2026-01-01T00:00:00Z",
+        "state": "OPEN",
+    });
+
+    // Worktree bound to "vernon" — vernon appears in active_names (stale snapshot)
+    // but is actually dead (the real-time is_alive() check would return false).
+    let mut registry = crate::worktree_registry::WorktreeRegistry::default();
+    registry
+        .assign_worktree(crate::worktree_registry::WorktreeAssignment {
+            worktree_id: worktree_id.clone(),
+            branch_name: worktree_id.clone(),
+            task_id: None,
+            current_coworker: Some("vernon".to_string()),
+            pr_number: Some(pr_number),
+            created_at: chrono::Utc::now(),
+            completed_at: None,
+        })
+        .unwrap();
+
+    // Stale snapshot: vernon appears active (but is actually dead)
+    let mut active_names_stale = std::collections::HashSet::new();
+    active_names_stale.insert("pleasant".to_string());
+    active_names_stale.insert("vernon".to_string()); // stale — actually dead
+
+    let branch_owners: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let (state, _tmp, _guard) = make_test_state("test-repo");
+
+    // Tick 1: stale active_names → early guard blocks spawn (conservative)
+    let effects_tick1 = collect_reviewer_effects_with_source(
+        Some(&branch_owners),
+        &registry,
+        &active_names_stale,
+        &state,
+        std::slice::from_ref(&pr_json),
+        crate::github_state::AssignmentSource::PollingFallback,
+    )
+    .await;
+
+    let has_spawn_tick1 = effects_tick1
+        .iter()
+        .any(|e| matches!(e, Effect::SpawnCoworkerWithCallbacks { .. }));
+    assert!(
+        !has_spawn_tick1,
+        "Tick 1: Early guard conservatively blocks spawn when active_names is stale \
+         (vernon appears active but is actually dead). This is expected — the next tick \
+         will refresh active_names."
+    );
+
+    // Tick 2: active_names refreshed, vernon no longer present → spawn proceeds
+    let active_names_fresh = {
+        let mut s = std::collections::HashSet::new();
+        s.insert("pleasant".to_string());
+        // vernon is gone — correctly detected as dead
+        s
+    };
+
+    let effects_tick2 = collect_reviewer_effects_with_source(
+        Some(&branch_owners),
+        &registry,
+        &active_names_fresh,
+        &state,
+        &[pr_json],
+        crate::github_state::AssignmentSource::PollingFallback,
+    )
+    .await;
+
+    let has_spawn_tick2 = effects_tick2
+        .iter()
+        .any(|e| matches!(e, Effect::SpawnCoworkerWithCallbacks { .. }));
+    assert!(
+        has_spawn_tick2,
+        "Tick 2: After active_names is refreshed (vernon gone), the spawn should proceed. \
+         The force-rebind path in BindCoworkerToWorktree handles the dead coworker case."
     );
 }
 

@@ -2378,7 +2378,7 @@ pub(crate) async fn collect_reviewer_effects_with_source(
         // reviewer that will run without a valid worktree binding.
         if let Some(existing) = worktree_registry.get(&worktree_id)
             && let Some(ref bound_to) = existing.current_coworker
-            && active_names.contains(bound_to.as_str())
+            && active_names.contains(bound_to.to_lowercase().as_str())
         {
             warn!(
                 "WORKTREE COLLISION: Aborting reviewer spawn for PR #{} — worktree {} already bound to ACTIVE coworker {}",
