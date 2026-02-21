@@ -233,7 +233,10 @@ pub(super) async fn route_mentions(state: &DaemonState, msg: &Message) {
         );
 
         // Convert MentionAction → Effects, execute via the standard pipeline.
-        let effects = mention_action_to_effects(action, &target_name, &state.repo_name);
+        let name_session_map: std::collections::HashMap<String, String> =
+            state.name_to_session.lock().unwrap().clone();
+        let effects =
+            mention_action_to_effects(action, &target_name, &state.repo_name, &name_session_map);
         super::effects::execute_effects(effects, state).await;
     }
 }
@@ -313,12 +316,20 @@ fn mention_action_to_effects(
     action: crate::rules::MentionAction,
     coworker_name: &str,
     repo_name: &str,
+    name_session_map: &std::collections::HashMap<String, String>,
 ) -> Vec<super::effects::Effect> {
     use super::effects::Effect;
 
     match action {
         crate::rules::MentionAction::Nudge { name, message } => {
-            vec![Effect::NudgeCoworker { name, message }]
+            let session_id = name_session_map
+                .get(&name.to_lowercase())
+                .cloned()
+                .unwrap_or_default();
+            vec![Effect::NudgeSession {
+                session_id,
+                reason: super::wake_reason::WakeReason::Nudge { message },
+            }]
         }
         crate::rules::MentionAction::Spawn { name, message } => {
             let config = crate::launch::LaunchConfig::coworker(

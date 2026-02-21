@@ -306,7 +306,7 @@ fn test_lead_does_not_count_against_dev_cap() {
             e,
             crate::daemon::effects::Effect::AssignAndSpawn { .. }
                 | crate::daemon::effects::Effect::SpawnCoworkerWithCallbacks { .. }
-                | crate::daemon::effects::Effect::NudgeCoworkerWithCallbacks { .. }
+                | crate::daemon::effects::Effect::NudgeSessionWithCallbacks { .. }
         )
     });
     assert!(
@@ -473,7 +473,7 @@ fn test_dev_cap_without_lead_unaffected() {
             e,
             crate::daemon::effects::Effect::AssignAndSpawn { .. }
                 | crate::daemon::effects::Effect::SpawnCoworkerWithCallbacks { .. }
-                | crate::daemon::effects::Effect::NudgeCoworkerWithCallbacks { .. }
+                | crate::daemon::effects::Effect::NudgeSessionWithCallbacks { .. }
         )
     });
     assert!(
@@ -524,7 +524,7 @@ fn test_dispatch_excludes_channel_leads_from_dev_count() {
             e,
             crate::daemon::effects::Effect::AssignAndSpawn { .. }
                 | crate::daemon::effects::Effect::SpawnCoworkerWithCallbacks { .. }
-                | crate::daemon::effects::Effect::NudgeCoworkerWithCallbacks { .. }
+                | crate::daemon::effects::Effect::NudgeSessionWithCallbacks { .. }
         )
     });
     assert!(

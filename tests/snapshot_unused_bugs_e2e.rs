@@ -145,13 +145,13 @@ fn test_lead_nudge_not_working() {
         println!("  Effect: {:?}", effect);
     }
 
-    // Should generate NudgeLead effects or be empty if already handled
+    // Should generate NudgeChannelLead effects or be empty if already handled
     assert!(
         pr_effects.is_empty()
             || pr_effects
                 .iter()
-                .any(|e| matches!(e, Effect::NudgeLead { .. })),
-        "Expected NudgeLead effect or empty if already handled"
+                .any(|e| matches!(e, Effect::NudgeChannelLead { .. })),
+        "Expected NudgeChannelLead effect or empty if already handled"
     );
 }
 

@@ -1932,7 +1932,7 @@ impl DaemonState {
                     self.mark_task_spawn_in_flight(task_id);
                     debug!("Marked task !{} as in-flight spawn", task_id);
                 }
-                effects::Effect::NudgeCoworkerWithCallbacks { on_success, .. }
+                effects::Effect::NudgeSessionWithCallbacks { on_success, .. }
                 | effects::Effect::SpawnCoworkerWithCallbacks { on_success, .. } => {
                     for sub_effect in on_success {
                         if let effects::Effect::RecordTaskAssignment { task_id, .. } = sub_effect {

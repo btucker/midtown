@@ -1225,6 +1225,7 @@ fn decide_discovered_coworker_nudges(
     discovered: &[String],
     owner_tasks: &HashMap<String, (String, String, Option<String>)>,
     reviewer_prs: &HashMap<String, u64>,
+    name_session_map: &HashMap<String, String>,
 ) -> Vec<Effect> {
     let mut effects = Vec::new();
 
@@ -1240,9 +1241,13 @@ fn decide_discovered_coworker_nudges(
                 name, task_id
             );
 
-            effects.push(Effect::NudgeCoworker {
-                name: name.clone(),
-                message: prompt,
+            let session_id = name_session_map
+                .get(&name_lower)
+                .cloned()
+                .unwrap_or_default();
+            effects.push(Effect::NudgeSession {
+                session_id,
+                reason: super::wake_reason::WakeReason::Nudge { message: prompt },
             });
             effects.push(Effect::PostToChannel {
                 sender: "midtown".to_string(),
@@ -1260,9 +1265,13 @@ fn decide_discovered_coworker_nudges(
                 name, pr_number
             );
 
-            effects.push(Effect::NudgeCoworker {
-                name: name.clone(),
-                message: prompt,
+            let session_id = name_session_map
+                .get(&name_lower)
+                .cloned()
+                .unwrap_or_default();
+            effects.push(Effect::NudgeSession {
+                session_id,
+                reason: super::wake_reason::WakeReason::Nudge { message: prompt },
             });
             effects.push(Effect::PostToChannel {
                 sender: "midtown".to_string(),
@@ -1927,9 +1936,14 @@ pub(super) fn spawn_for_pending_tasks_excluding(
                     message: nudge_msg.clone(),
                     summary: Some(format!("Task !{} assignment", tid)),
                 });
-                effects.push(Effect::NudgeCoworkerWithCallbacks {
-                    name: o.clone(),
-                    message: nudge_msg,
+                let session_id = snap
+                    .name_session_map
+                    .get(&o.to_lowercase())
+                    .cloned()
+                    .unwrap_or_default();
+                effects.push(Effect::NudgeSessionWithCallbacks {
+                    session_id,
+                    reason: super::wake_reason::WakeReason::Nudge { message: nudge_msg },
                     on_success: vec![
                         Effect::RecordCooldown {
                             category: "task_nudge".to_string(),
@@ -2373,9 +2387,14 @@ pub(super) fn spawn_for_pending_tasks_excluding(
                 &task.id.to_string(),
                 &task.subject,
             );
-            effects.push(Effect::NudgeCoworkerWithCallbacks {
-                name: coworker_name.clone(),
-                message: prompt,
+            let session_id = snap
+                .name_session_map
+                .get(&coworker_name.to_lowercase())
+                .cloned()
+                .unwrap_or_default();
+            effects.push(Effect::NudgeSessionWithCallbacks {
+                session_id,
+                reason: super::wake_reason::WakeReason::Nudge { message: prompt },
                 on_success: vec![
                     Effect::RecordTaskAssignment {
                         coworker: coworker_name.clone(),

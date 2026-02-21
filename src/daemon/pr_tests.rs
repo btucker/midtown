@@ -1127,7 +1127,7 @@ fn test_reconcile_orphaned_prs_does_not_create_duplicates() {
     // Should nudge the lead (not create a task)
     let nudge_count1 = effects1
         .iter()
-        .filter(|e| matches!(e, Effect::NudgeLead { .. }))
+        .filter(|e| matches!(e, Effect::NudgeChannelLead { .. }))
         .count();
     assert_eq!(nudge_count1, 1, "First tick should nudge the lead once");
 
@@ -1152,7 +1152,7 @@ fn test_reconcile_orphaned_prs_does_not_create_duplicates() {
     // Should NOT nudge the lead again
     let nudge_count2 = effects2
         .iter()
-        .filter(|e| matches!(e, Effect::NudgeLead { .. }))
+        .filter(|e| matches!(e, Effect::NudgeChannelLead { .. }))
         .count();
     assert_eq!(
         nudge_count2, 0,
@@ -1204,7 +1204,7 @@ fn test_reconcile_orphaned_prs_renudges_after_task_disappears() {
     assert!(
         !effects_with_task
             .iter()
-            .any(|e| matches!(e, Effect::NudgeLead { .. })),
+            .any(|e| matches!(e, Effect::NudgeChannelLead { .. })),
         "Should not nudge lead while PR has an active task"
     );
 
@@ -1217,7 +1217,7 @@ fn test_reconcile_orphaned_prs_renudges_after_task_disappears() {
 
     let renudge_count = effects_re_orphaned
         .iter()
-        .filter(|e| matches!(e, Effect::NudgeLead { .. }))
+        .filter(|e| matches!(e, Effect::NudgeChannelLead { .. }))
         .count();
     assert_eq!(
         renudge_count, 1,
@@ -1514,7 +1514,7 @@ fn test_reconcile_orphaned_prs_ignores_prs_with_active_tasks() {
     // Should NOT nudge the lead because the PR has an active task
     let nudge_count = effects
         .iter()
-        .filter(|e| matches!(e, Effect::NudgeLead { .. }))
+        .filter(|e| matches!(e, Effect::NudgeChannelLead { .. }))
         .count();
     assert_eq!(
         nudge_count, 0,
@@ -2085,6 +2085,12 @@ async fn test_poll_prs_session_based_owner_resolution() {
     snap.running_coworkers = snap.active_coworkers.clone();
 
     let (state, _tmp, _guard) = make_test_state("test-repo");
+    // Populate name→session mapping so nudge effects get the correct session_id
+    state
+        .name_to_session
+        .lock()
+        .unwrap()
+        .insert("madison".to_string(), "sess-abc".to_string());
 
     let result = poll_prs_for_issues(&snap, &state).await;
 
@@ -2098,8 +2104,8 @@ async fn test_poll_prs_session_based_owner_resolution() {
     // With session-based resolution, the owner is "madison" (not "lexington").
     // The PR has a merge conflict, so we expect a nudge to "madison".
     let nudges_madison = effects.iter().any(|e| match e {
-        Effect::NudgeCoworkerWithCallbacks { name, .. } => name == "madison",
-        Effect::NudgeCoworker { name, .. } => name == "madison",
+        Effect::NudgeSessionWithCallbacks { session_id, .. } => session_id == "sess-abc",
+        Effect::NudgeSession { session_id, .. } => session_id == "sess-abc",
         _ => false,
     });
 

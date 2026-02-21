@@ -9,13 +9,17 @@ fn mention_nudge_produces_nudge_effect() {
         name: "lexington".to_string(),
         message: "lead said (msg-42): @lexington check this".to_string(),
     };
-    let effects = mention_action_to_effects(action, "lexington", "test-repo");
+    let name_session_map = std::collections::HashMap::from([(
+        "lexington".to_string(),
+        "sess-lexington-1".to_string(),
+    )]);
+    let effects = mention_action_to_effects(action, "lexington", "test-repo", &name_session_map);
 
     assert_eq!(effects.len(), 1);
     assert!(
-        matches!(&effects[0], Effect::NudgeCoworker { name, message }
-            if name == "lexington" && message.contains("msg-42")),
-        "NudgeCoworker message must include the message ID in parentheses"
+        matches!(&effects[0], Effect::NudgeSession { session_id, reason }
+            if session_id == "sess-lexington-1" && reason.to_nudge_message().contains("msg-42")),
+        "NudgeSession message must include the message ID in parentheses"
     );
 }
 
@@ -25,7 +29,9 @@ fn mention_spawn_produces_spawn_with_callbacks() {
         name: "park".to_string(),
         message: "lead said (msg-99): @park fix the bug".to_string(),
     };
-    let effects = mention_action_to_effects(action, "park", "test-repo");
+    let name_session_map =
+        std::collections::HashMap::from([("park".to_string(), "sess-park-1".to_string())]);
+    let effects = mention_action_to_effects(action, "park", "test-repo", &name_session_map);
 
     assert_eq!(effects.len(), 1);
     match &effects[0] {
@@ -58,7 +64,11 @@ fn mention_skip_produces_no_effects() {
     let action = MentionAction::Skip {
         reason: "lexington is already active, no need to spawn".to_string(),
     };
-    let effects = mention_action_to_effects(action, "lexington", "test-repo");
+    let name_session_map = std::collections::HashMap::from([(
+        "lexington".to_string(),
+        "sess-lexington-1".to_string(),
+    )]);
+    let effects = mention_action_to_effects(action, "lexington", "test-repo", &name_session_map);
     assert!(
         effects.is_empty(),
         "Skip (non dev-limit) should produce no effects"
@@ -70,7 +80,11 @@ fn mention_skip_dev_limit_posts_to_ops_channel() {
     let action = MentionAction::Skip {
         reason: "Cannot spawn amsterdam: dev limit reached".to_string(),
     };
-    let effects = mention_action_to_effects(action, "amsterdam", "test-repo");
+    let name_session_map = std::collections::HashMap::from([(
+        "amsterdam".to_string(),
+        "sess-amsterdam-1".to_string(),
+    )]);
+    let effects = mention_action_to_effects(action, "amsterdam", "test-repo", &name_session_map);
 
     assert_eq!(effects.len(), 1);
     match &effects[0] {

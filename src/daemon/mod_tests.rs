@@ -1499,9 +1499,11 @@ fn test_mark_in_flight_spawns_covers_all_effect_variants() {
     // 2. NudgeCoworkerWithCallbacks with RecordTaskAssignment (Case 2 nudges)
     // 3. SpawnCoworkerWithCallbacks with RecordTaskAssignment (Case 1 owned spawns)
     let effects = vec![
-        effects::Effect::NudgeCoworkerWithCallbacks {
-            name: "pleasant".to_string(),
-            message: "task prompt".to_string(),
+        effects::Effect::NudgeSessionWithCallbacks {
+            session_id: "sess-pleasant-1".to_string(),
+            reason: super::super::daemon::wake_reason::WakeReason::Nudge {
+                message: "task prompt".to_string(),
+            },
             on_success: vec![effects::Effect::RecordTaskAssignment {
                 coworker: "pleasant".to_string(),
                 task_id: "873".to_string(),
@@ -1543,7 +1545,7 @@ fn test_mark_in_flight_spawns_covers_all_effect_variants() {
             effects::Effect::AssignAndSpawn { task_id, .. } => {
                 in_flight_tasks.insert(task_id.clone());
             }
-            effects::Effect::NudgeCoworkerWithCallbacks { on_success, .. }
+            effects::Effect::NudgeSessionWithCallbacks { on_success, .. }
             | effects::Effect::SpawnCoworkerWithCallbacks { on_success, .. } => {
                 for sub_effect in on_success {
                     if let effects::Effect::RecordTaskAssignment { task_id, .. } = sub_effect {

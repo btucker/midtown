@@ -184,10 +184,10 @@ fn test_no_duplicate_orphaned_pr_tasks() {
 
     let nudge_count_1 = effects1
         .iter()
-        .filter(|e| matches!(e, Effect::NudgeLead { .. }))
+        .filter(|e| matches!(e, Effect::NudgeChannelLead { .. }))
         .count();
 
-    println!("Tick 1: {} NudgeLead effects", nudge_count_1);
+    println!("Tick 1: {} NudgeChannelLead effects", nudge_count_1);
     assert!(
         nudge_count_1 > 0,
         "Tick 1 should nudge the lead for the orphaned PR"
@@ -204,10 +204,10 @@ fn test_no_duplicate_orphaned_pr_tasks() {
 
     let nudge_count_2 = effects2
         .iter()
-        .filter(|e| matches!(e, Effect::NudgeLead { .. }))
+        .filter(|e| matches!(e, Effect::NudgeChannelLead { .. }))
         .count();
 
-    println!("Tick 2: {} NudgeLead effects", nudge_count_2);
+    println!("Tick 2: {} NudgeChannelLead effects", nudge_count_2);
 
     assert_eq!(
         nudge_count_2, 0,

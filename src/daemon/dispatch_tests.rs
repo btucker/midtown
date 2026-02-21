@@ -994,7 +994,8 @@ fn test_decide_orphan_cleanup_stale_branch_cleanup() {
 
 #[test]
 fn test_discovered_nudges_empty() {
-    let effects = decide_discovered_coworker_nudges(&[], &HashMap::new(), &HashMap::new());
+    let effects =
+        decide_discovered_coworker_nudges(&[], &HashMap::new(), &HashMap::new(), &HashMap::new());
     assert!(effects.is_empty());
 }
 
@@ -1008,22 +1009,29 @@ fn test_discovered_nudges_task_owner() {
     );
     let reviewer_prs = HashMap::new();
 
-    let effects = decide_discovered_coworker_nudges(&discovered, &owner_tasks, &reviewer_prs);
-    // NudgeCoworker + PostToChannel
+    let name_session_map =
+        HashMap::from([("lexington".to_string(), "sess-lexington-1".to_string())]);
+    let effects = decide_discovered_coworker_nudges(
+        &discovered,
+        &owner_tasks,
+        &reviewer_prs,
+        &name_session_map,
+    );
+    // NudgeSession + PostToChannel
     assert_eq!(effects.len(), 2);
     match &effects[0] {
-        Effect::NudgeCoworker { name, message, .. } => {
-            assert_eq!(name, "lexington");
+        Effect::NudgeSession {
+            session_id, reason, ..
+        } => {
+            assert_eq!(session_id, "sess-lexington-1");
+            let msg = reason.to_nudge_message();
+            assert!(msg.contains("task !42"), "nudge should reference task ID");
             assert!(
-                message.contains("task !42"),
-                "nudge should reference task ID"
-            );
-            assert!(
-                message.contains("Fix auth bug"),
+                msg.contains("Fix auth bug"),
                 "nudge should include task subject"
             );
         }
-        _ => panic!("Expected NudgeCoworker"),
+        _ => panic!("Expected NudgeSession"),
     }
     match &effects[1] {
         Effect::PostToChannel {
@@ -1043,15 +1051,21 @@ fn test_discovered_nudges_reviewer() {
     let owner_tasks = HashMap::new();
     let mut reviewer_prs = HashMap::new();
     reviewer_prs.insert("park".to_string(), 99);
+    let name_session_map = HashMap::from([("park".to_string(), "sess-park-1".to_string())]);
 
-    let effects = decide_discovered_coworker_nudges(&discovered, &owner_tasks, &reviewer_prs);
-    // NudgeCoworker + PostToChannel
+    let effects = decide_discovered_coworker_nudges(
+        &discovered,
+        &owner_tasks,
+        &reviewer_prs,
+        &name_session_map,
+    );
+    // NudgeSession + PostToChannel
     assert_eq!(effects.len(), 2);
     match &effects[0] {
-        Effect::NudgeCoworker { name, .. } => {
-            assert_eq!(name, "park");
+        Effect::NudgeSession { session_id, .. } => {
+            assert_eq!(session_id, "sess-park-1");
         }
-        _ => panic!("Expected NudgeCoworker"),
+        _ => panic!("Expected NudgeSession"),
     }
     match &effects[1] {
         Effect::PostToChannel { message, .. } => {
@@ -1067,7 +1081,12 @@ fn test_discovered_nudges_no_assignment() {
     let owner_tasks = HashMap::new();
     let reviewer_prs = HashMap::new();
 
-    let effects = decide_discovered_coworker_nudges(&discovered, &owner_tasks, &reviewer_prs);
+    let effects = decide_discovered_coworker_nudges(
+        &discovered,
+        &owner_tasks,
+        &reviewer_prs,
+        &HashMap::new(),
+    );
     assert!(
         effects.is_empty(),
         "Coworker with no task or review should produce no effects"
@@ -1089,9 +1108,18 @@ fn test_discovered_nudges_mixed() {
     let mut reviewer_prs = HashMap::new();
     reviewer_prs.insert("park".to_string(), 99);
 
-    let effects = decide_discovered_coworker_nudges(&discovered, &owner_tasks, &reviewer_prs);
-    // lexington: NudgeCoworker + PostToChannel = 2
-    // park: NudgeCoworker + PostToChannel = 2
+    let name_session_map = HashMap::from([
+        ("lexington".to_string(), "sess-lexington-1".to_string()),
+        ("park".to_string(), "sess-park-1".to_string()),
+    ]);
+    let effects = decide_discovered_coworker_nudges(
+        &discovered,
+        &owner_tasks,
+        &reviewer_prs,
+        &name_session_map,
+    );
+    // lexington: NudgeSession + PostToChannel = 2
+    // park: NudgeSession + PostToChannel = 2
     // broadway: nothing = 0
     assert_eq!(effects.len(), 4);
 }
@@ -1108,18 +1136,23 @@ fn test_discovered_nudges_task_takes_priority_over_review() {
     );
     let mut reviewer_prs = HashMap::new();
     reviewer_prs.insert("lexington".to_string(), 99);
+    let name_session_map =
+        HashMap::from([("lexington".to_string(), "sess-lexington-1".to_string())]);
 
-    let effects = decide_discovered_coworker_nudges(&discovered, &owner_tasks, &reviewer_prs);
+    let effects = decide_discovered_coworker_nudges(
+        &discovered,
+        &owner_tasks,
+        &reviewer_prs,
+        &name_session_map,
+    );
     assert_eq!(effects.len(), 2);
     // Should nudge about the task, not the review
     match &effects[0] {
-        Effect::NudgeCoworker { message, .. } => {
-            assert!(
-                message.contains("task !42"),
-                "nudge should reference task ID"
-            );
+        Effect::NudgeSession { reason, .. } => {
+            let msg = reason.to_nudge_message();
+            assert!(msg.contains("task !42"), "nudge should reference task ID");
         }
-        _ => panic!("Expected NudgeCoworker"),
+        _ => panic!("Expected NudgeSession"),
     }
 }
 
@@ -1136,8 +1169,15 @@ fn test_discovered_nudges_routes_to_task_channel() {
         ),
     );
     let reviewer_prs = HashMap::new();
+    let name_session_map =
+        HashMap::from([("lexington".to_string(), "sess-lexington-1".to_string())]);
 
-    let effects = decide_discovered_coworker_nudges(&discovered, &owner_tasks, &reviewer_prs);
+    let effects = decide_discovered_coworker_nudges(
+        &discovered,
+        &owner_tasks,
+        &reviewer_prs,
+        &name_session_map,
+    );
     assert_eq!(effects.len(), 2);
     // Discovered coworker nudges are operational — they route to the ops channel
     match &effects[1] {
@@ -1903,7 +1943,9 @@ fn test_cross_case_dedup_prevents_same_coworker_from_case1_and_case2() {
                 config.name.to_lowercase() == "broadway"
             }
             Effect::AssignAndSpawn { owner, .. } => owner.to_lowercase() == "broadway",
-            Effect::NudgeCoworkerWithCallbacks { name, .. } => name.to_lowercase() == "broadway",
+            Effect::NudgeSessionWithCallbacks { session_id, .. } => {
+                session_id.to_lowercase().contains("broadway")
+            }
             _ => false,
         })
         .count();
@@ -2966,7 +3008,7 @@ fn test_grouped_task_skips_if_already_assigned() {
     let effects_tick1 = spawn_for_pending_tasks(&snap, &state);
     let nudge_count_tick1 = effects_tick1
         .iter()
-        .filter(|e| matches!(e, Effect::NudgeCoworkerWithCallbacks { .. }))
+        .filter(|e| matches!(e, Effect::NudgeSessionWithCallbacks { .. }))
         .count();
     assert_eq!(
         nudge_count_tick1, 1,
@@ -2989,7 +3031,7 @@ fn test_grouped_task_skips_if_already_assigned() {
     let effects_tick2 = spawn_for_pending_tasks(&snap_tick2, &state);
     let nudge_count_tick2 = effects_tick2
         .iter()
-        .filter(|e| matches!(e, Effect::NudgeCoworkerWithCallbacks { .. }))
+        .filter(|e| matches!(e, Effect::NudgeSessionWithCallbacks { .. }))
         .count();
     assert_eq!(
         nudge_count_tick2, 0,
@@ -3086,13 +3128,13 @@ fn test_case1_nudge_records_assignment_and_prevents_loop() {
     let effects_tick1 = spawn_for_pending_tasks(&snap, &state);
     let nudge_effects: Vec<_> = effects_tick1
         .iter()
-        .filter(|e| matches!(e, Effect::NudgeCoworkerWithCallbacks { .. }))
+        .filter(|e| matches!(e, Effect::NudgeSessionWithCallbacks { .. }))
         .collect();
     assert_eq!(nudge_effects.len(), 1, "Tick 1 should nudge york");
 
     // Verify RecordTaskAssignment is in on_success
     let has_assignment = nudge_effects.iter().any(|e| {
-        if let Effect::NudgeCoworkerWithCallbacks { on_success, .. } = e {
+        if let Effect::NudgeSessionWithCallbacks { on_success, .. } = e {
             on_success
                 .iter()
                 .any(|e| matches!(e, Effect::RecordTaskAssignment { .. }))
@@ -3121,7 +3163,7 @@ fn test_case1_nudge_records_assignment_and_prevents_loop() {
     let effects_tick2 = spawn_for_pending_tasks(&snap_tick2, &state);
     let nudge_count_tick2 = effects_tick2
         .iter()
-        .filter(|e| matches!(e, Effect::NudgeCoworkerWithCallbacks { .. }))
+        .filter(|e| matches!(e, Effect::NudgeSessionWithCallbacks { .. }))
         .count();
     assert_eq!(
         nudge_count_tick2, 0,

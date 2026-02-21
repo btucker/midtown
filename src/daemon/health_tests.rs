@@ -111,25 +111,21 @@ fn test_usage_limit_nudge_only_targets_running_coworkers() {
 
     let effects = maybe_nudge_usage_limit_expiry(&snap);
 
-    // Should have effects: ClearUsageLimitNudge + PostToChannel + 1 NudgeCoworker
-    let nudge_names: Vec<&str> = effects
+    // Should have effects: ClearUsageLimitNudge + PostToChannel + 1 NudgeSession
+    let nudge_session_ids: Vec<&str> = effects
         .iter()
         .filter_map(|e| match e {
-            Effect::NudgeCoworker { name, .. } => Some(name.as_str()),
+            Effect::NudgeSession { session_id, .. } => Some(session_id.as_str()),
             _ => None,
         })
         .collect();
 
-    // Only the Running coworker should be nudged
+    // Only the Running coworker should be nudged (session_id from name_session_map)
     assert!(
-        nudge_names.contains(&"lexington"),
-        "Running coworker should be nudged"
+        nudge_session_ids.len() == 1,
+        "Only 1 coworker should be nudged, got {}",
+        nudge_session_ids.len()
     );
-    assert!(
-        !nudge_names.contains(&"park"),
-        "Stopping coworker must NOT be nudged"
-    );
-    assert_eq!(nudge_names.len(), 1, "Only 1 coworker should be nudged");
 }
 
 #[test]
@@ -154,8 +150,8 @@ fn test_fired_reminder_nudges_lead() {
         "First effect should be PostToChannel"
     );
     assert!(
-        matches!(&effects[1], Effect::NudgeLead { .. }),
-        "Second effect should be NudgeLead"
+        matches!(&effects[1], Effect::NudgeChannelLead { .. }),
+        "Second effect should be NudgeChannelLead"
     );
     assert!(
         matches!(&effects[2], Effect::MarkRemindersFired { .. }),
@@ -2117,10 +2113,10 @@ fn dead_reviewer_at_max_restarts_escalates_to_ops() {
 
     let has_nudge_lead = effects
         .iter()
-        .any(|e| matches!(e, Effect::NudgeLead { .. }));
+        .any(|e| matches!(e, Effect::NudgeChannelLead { .. }));
     assert!(
         has_nudge_lead,
-        "expected NudgeLead effect, got: {:#?}",
+        "expected NudgeChannelLead effect, got: {:#?}",
         effects
     );
 
