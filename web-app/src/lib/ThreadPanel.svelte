@@ -131,7 +131,7 @@
 
     <!-- Messages -->
     <div
-      class="flex-1 min-h-0 overflow-y-auto overflow-x-hidden font-[SF_Mono,Menlo,Consolas,Monaco,'Courier_New',monospace] text-[0.92rem] leading-[1.55] px-[14px] pt-[10px] pb-[10px]"
+      class="flex-1 min-h-0 overflow-y-auto overflow-x-hidden font-[SF_Mono,Menlo,Consolas,Monaco,'Courier_New',monospace] text-[1rem] leading-[1.55] px-[14px] pt-[10px] pb-[10px]"
       bind:this={desktopScrollArea}
     >
       <!-- Parent message (highlighted) -->
@@ -145,7 +145,7 @@
 
       <!-- Thread replies -->
       {#if $threadData.messages.length === 0}
-        <div class="text-center text-[#606060] py-4 text-[0.92rem]">No replies yet</div>
+        <div class="text-center text-[#606060] py-4 text-[1rem]">No replies yet</div>
       {:else}
         {#each $threadData.messages as msg, i}
           {#if i === 0 || $threadData.messages[i - 1].from !== msg.from}
@@ -201,7 +201,7 @@
 
     <!-- Mobile messages -->
     <div
-      class="flex-1 min-h-0 overflow-y-auto overflow-x-hidden font-[SF_Mono,Menlo,Consolas,Monaco,'Courier_New',monospace] text-[0.92rem] leading-[1.55] px-[14px] pt-[10px] pb-[10px]"
+      class="flex-1 min-h-0 overflow-y-auto overflow-x-hidden font-[SF_Mono,Menlo,Consolas,Monaco,'Courier_New',monospace] text-[1rem] leading-[1.55] px-[14px] pt-[10px] pb-[10px]"
       bind:this={mobileScrollArea}
     >
       <!-- Parent message -->
@@ -215,7 +215,7 @@
 
       <!-- Replies -->
       {#if $threadData.messages.length === 0}
-        <div class="text-center text-[#606060] py-4 text-[0.92rem]">No replies yet</div>
+        <div class="text-center text-[#606060] py-4 text-[1rem]">No replies yet</div>
       {:else}
         {#each $threadData.messages as msg, i}
           {#if i === 0 || $threadData.messages[i - 1].from !== msg.from}

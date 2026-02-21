@@ -624,7 +624,7 @@
 
 <div class="flex flex-col h-full min-h-0 overflow-hidden relative">
   <div
-    class="flex-1 min-h-0 overflow-y-auto overflow-x-hidden overscroll-contain font-[SF_Mono,Menlo,Consolas,Monaco,'Courier_New',monospace] text-[0.92rem] leading-[1.55] px-[18px] pt-[14px] pb-[18px]"
+    class="flex-1 min-h-0 overflow-y-auto overflow-x-hidden overscroll-contain font-[SF_Mono,Menlo,Consolas,Monaco,'Courier_New',monospace] text-[1rem] leading-[1.55] px-[18px] pt-[14px] pb-[18px]"
     bind:this={scrollAreaViewport}
     onscroll={handleScroll}
   >
