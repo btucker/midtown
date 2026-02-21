@@ -299,6 +299,16 @@ pub(super) async fn handle_task_create(
         warn!("Failed to post task creation to channel: {}", e);
     }
 
+    // Nudge channel lead about the new task
+    let nudge_effect = crate::daemon::effects::Effect::NudgeChannelLead {
+        channel_name: task_channel.to_string(),
+        reason: crate::daemon::wake_reason::WakeReason::TaskCreated {
+            task_id: task_id.clone(),
+            subject: subject.to_string(),
+        },
+    };
+    crate::daemon::effects::execute_effects(vec![nudge_effect], state).await;
+
     info!("Created task !{}: {}", task_id, subject);
     Response::success(
         id,

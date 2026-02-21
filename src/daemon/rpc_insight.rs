@@ -66,36 +66,18 @@ pub(super) async fn handle_insight_report(
         agent, channel_name
     );
 
-    // Nudge the channel lead for topic channels so they can reply in-thread with context.
-    // Main channel has no channel lead, so skip nudging there.
-    let default_channel = state.channel_router.default_channel_name();
-    if channel_name != default_channel {
-        let session_name = crate::launch::channel_lead_session_name(channel_name);
-        if state.session_manager.is_alive(&session_name).await {
-            let nudge_msg = format!(
-                "{agent} posted an insight in #{channel_name}:\n\n{insight}\n\nIf you have additional context, reply in the thread:\n  midtown channel post \"...\" --thread {msg_id} --channel {channel_name}",
-                agent = agent,
-                channel_name = channel_name,
-                insight = insight,
-                msg_id = msg.id,
-            );
-            if let Err(e) = state
-                .session_manager
-                .send_message(&session_name, &nudge_msg)
-                .await
-            {
-                warn!(
-                    "insight.report: failed to nudge channel lead '{}': {}",
-                    channel_name, e
-                );
-            } else {
-                info!(
-                    "insight.report: nudged channel lead '{}' about insight from {}",
-                    channel_name, agent
-                );
-            }
-        }
-    }
+    // Nudge channel lead about the insight (works for both topic and main channels).
+    // For topic channels: spawns-if-dead, resumes-if-idle, nudges-if-alive.
+    // For main channel: nudges the project lead.
+    let nudge_effect = crate::daemon::effects::Effect::NudgeChannelLead {
+        channel_name: channel_name.to_string(),
+        reason: crate::daemon::wake_reason::WakeReason::InsightPosted {
+            insight: insight.to_string(),
+            agent: agent.to_string(),
+            msg_id: msg.id.clone(),
+        },
+    };
+    crate::daemon::effects::execute_effects(vec![nudge_effect], state).await;
 
     // Determine working directory for the architect session.
     let cwd = if is_coworker_sender(agent, &state.repo_name) {
