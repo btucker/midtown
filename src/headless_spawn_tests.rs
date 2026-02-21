@@ -214,6 +214,7 @@ fn test_fresh_session_with_preassigned_session_id_includes_session_id_flag() {
         agent_name: None,
         auth_provider: crate::auth::AuthProvider::Claude,
         env: std::collections::BTreeMap::new(),
+        fork_session: false,
     };
 
     let args = extract_spawn_args(&config);
@@ -255,6 +256,7 @@ fn test_fresh_session_without_preassigned_session_id_omits_session_id_flag() {
         agent_name: None,
         auth_provider: crate::auth::AuthProvider::Claude,
         env: std::collections::BTreeMap::new(),
+        fork_session: false,
     };
 
     let args = extract_spawn_args(&config);
@@ -289,6 +291,7 @@ fn test_resume_session_does_not_use_session_id_flag() {
         agent_name: None,
         auth_provider: crate::auth::AuthProvider::Claude,
         env: std::collections::BTreeMap::new(),
+        fork_session: false,
     };
 
     let args = extract_spawn_args(&config);

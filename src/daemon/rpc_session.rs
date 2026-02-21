@@ -1167,6 +1167,7 @@ pub(super) async fn handle_session_fork(
         setting_sources: None,
         auth_provider,
         env,
+        session_id: None,
         fork_session: true,
     };
 
