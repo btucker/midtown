@@ -1484,7 +1484,7 @@ impl DaemonState {
     /// Clear the in-flight marker for a task after its spawn or nudge effect completes.
     ///
     /// Called from `execute_effects` when `AssignAndSpawn` or
-    /// `NudgeCoworkerWithCallbacks` (with `RecordTaskAssignment`) succeeds or fails.
+    /// `NudgeSessionWithCallbacks` (with `RecordTaskAssignment`) succeeds or fails.
     pub(crate) fn clear_task_spawn_in_flight(&self, task_id: &str) {
         self.in_flight_task_spawns.lock().unwrap().remove(task_id);
     }
@@ -1590,8 +1590,8 @@ impl DaemonState {
 
     /// Record a pending nudge sent to a coworker.
     ///
-    /// Called after successfully sending a nudge via `NudgeCoworker` or
-    /// `NudgeCoworkerWithCallbacks`. The pending nudge is used for attribution
+    /// Called after successfully sending a nudge via `NudgeSession` or
+    /// `NudgeSessionWithCallbacks`. The pending nudge is used for attribution
     /// tracking: if queued text matches the pending nudge, we know it's
     /// daemon-sent and can auto-submit with Enter.
     pub(crate) fn record_pending_nudge(&self, name: &str, message: &str) {
@@ -1898,7 +1898,7 @@ impl DaemonState {
     ///
     /// Called after `evaluate_tick` returns effects, before `execute_effects`.
     /// This prevents the next tick from generating duplicate spawns/nudges for the same task.
-    /// Covers `AssignAndSpawn` (fresh spawns), `NudgeCoworkerWithCallbacks`, and
+    /// Covers `AssignAndSpawn` (fresh spawns), `NudgeSessionWithCallbacks`, and
     /// `SpawnCoworkerWithCallbacks` that contain a `RecordTaskAssignment` in on_success.
     pub(crate) fn mark_in_flight_spawns_from_effects(&self, effects: &[effects::Effect]) {
         for effect in effects {
