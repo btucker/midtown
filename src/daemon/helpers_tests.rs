@@ -753,3 +753,21 @@ fn extract_task_id_takes_first_match() {
         Some("10".to_string())
     );
 }
+
+#[test]
+fn extract_task_id_from_lead_at_mention_pattern() {
+    // The canonical lead message format for task-based routing: "@name !N message"
+    // This is the primary use case for task-based @mention routing in chat.rs.
+    assert_eq!(
+        extract_task_id("@park !42 here's the review feedback"),
+        Some("42".to_string())
+    );
+    assert_eq!(
+        extract_task_id("@lexington !1234 please fix the auth bug"),
+        Some("1234".to_string())
+    );
+    // Works even when @name and !N are the only content
+    assert_eq!(extract_task_id("@amsterdam !7"), Some("7".to_string()));
+    // No task ID in plain @mention
+    assert_eq!(extract_task_id("@park check this out"), None);
+}

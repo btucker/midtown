@@ -6,7 +6,7 @@
 //! 3. Embedded defaults (compiled into the binary as fallback)
 //!
 //! Template variables:
-//! - `{name}` — the agent's name (coworker name, channel name, or project name for main lead)
+//! - `{name}` — the agent's name (coworker name, channel name, or project name for Project Lead)
 //! - `{project_name}` — the project name (e.g., "midtown")
 
 use std::path::PathBuf;
@@ -161,13 +161,13 @@ pub fn reviewer_resume_prompt(pr_number: u64) -> String {
     template.replace("{pr_number}", &pr_number.to_string())
 }
 
-/// Build the initial prompt for the main lead session.
+/// Build the initial prompt for the Project Lead session.
 ///
 /// Follows a standardized Role/Channel/Mission/First Actions structure
 /// so all initial prompts are consistent and informative.
 pub fn main_lead_initial_prompt(project_name: &str, main_channel: &str) -> String {
     format!(
-        "## Role\nMain lead for {project_name}\n\n\
+        "## Role\nProject Lead for {project_name}\n\n\
          ## Channel\n#{main_channel}\n\n\
          ## Mission\nCoordinate the team, triage incoming work, delegate to coworkers.\n\n\
          ## First Actions\n\

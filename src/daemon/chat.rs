@@ -150,11 +150,24 @@ pub(super) async fn route_mentions(state: &DaemonState, msg: &Message) {
         mentions
     );
 
-    // Extract task ID if present (!N pattern)
-    let task_id = extract_task_id(&msg.content);
-    if let Some(ref tid) = task_id {
+    // Extract task ID if present (!N pattern) and resolve to the owning coworker.
+    // Coworker.current_task is a display-only field (always None in storage);
+    // the task system is the authoritative source for task-to-owner mapping.
+    let task_owner: Option<String> = extract_task_id(&msg.content).and_then(|tid| {
         debug!("Found task ID !{} in message", tid);
-    }
+        let owner = crate::tasks::get_in_progress_tasks_with_subjects_for_repo(&state.repo_name)
+            .into_iter()
+            .find(|(task_id, _, _)| task_id == &tid)
+            .map(|(_, _, owner)| owner)
+            .filter(|o| !o.is_empty());
+        if owner.is_none() {
+            debug!(
+                "No in-progress task !{} found, falling back to name-based routing",
+                tid
+            );
+        }
+        owner
+    });
 
     let channel_lead_names: std::collections::HashSet<String> = {
         let ps = state.persistent_state.lock().await;
@@ -162,32 +175,26 @@ pub(super) async fn route_mentions(state: &DaemonState, msg: &Message) {
     };
 
     for name in mentions {
-        // If a task ID is present, look up the coworker working on that task
-        // and route to their session. This ensures the nudge goes to the correct
-        // session even if the @mentioned name doesn't match.
-        let target_name = if let Some(ref tid) = task_id {
-            if let Some(coworker) = state.coworkers.get_by_task_id(tid) {
-                if coworker.name != name {
+        // If a task owner was resolved, route to their session instead of the @mentioned name.
+        // This ensures nudges reach the correct session even when coworker names are reassigned.
+        // Only reroute if the owner is currently running; otherwise fall back to name routing.
+        let target_name = match &task_owner {
+            Some(owner) if !owner.eq_ignore_ascii_case(&name) => {
+                if state.coworkers.get(owner).is_some() {
                     info!(
-                        "Task-based routing: @{} with !{} routes to {} (working on this task)",
-                        name, tid, coworker.name
+                        "Task-based routing: @{} routes to {} (working on the task)",
+                        name, owner
                     );
+                    owner.clone()
+                } else {
+                    debug!(
+                        "Task owner {} is not running, falling back to @{}",
+                        owner, name
+                    );
+                    name
                 }
-                Some(coworker.name)
-            } else {
-                // No coworker working on this task - fall back to name-based routing
-                debug!(
-                    "No coworker found working on task !{}, falling back to @{}",
-                    tid, name
-                );
-                Some(name)
             }
-        } else {
-            Some(name)
-        };
-
-        let Some(target_name) = target_name else {
-            continue;
+            _ => name,
         };
 
         let is_running = state.coworkers.get(&target_name).is_some();
