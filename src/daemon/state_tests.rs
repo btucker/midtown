@@ -556,3 +556,93 @@ fn test_upsert_session_running_updates_current_name_on_existing_entry() {
         "current_name must be updated from the new record, not left as None"
     );
 }
+
+// ── fork_bound_threads rebuild tests ─────────────────────────────────────────
+//
+// These tests verify the startup reconstruction of the `fork_bound_threads`
+// in-memory cache (coworker name → thread_id) from persisted `SessionRecord`
+// entries that carry `bound_thread_id`. This ensures that after a daemon
+// restart, coworker channel posts are still auto-tagged with the correct
+// thread_parent_id so they appear in the fork session's thread.
+
+/// Sessions with `bound_thread_id` populate `fork_bound_threads` during the
+/// rebuild loop that runs on `DaemonState::new`.
+#[test]
+fn test_fork_bound_threads_rebuilt_from_session_records_with_bound_thread_id() {
+    use std::collections::HashMap;
+
+    let mut sessions: HashMap<String, SessionRecord> = HashMap::new();
+    let mut bound_record = make_test_session_record_named("sess-bound", true, "riverside");
+    bound_record.bound_thread_id = Some("thread-parent-xyz".to_string());
+    sessions.insert("sess-bound".to_string(), bound_record);
+
+    // Simulate the rebuild loop from DaemonState::new
+    let mut fork_bound_threads: HashMap<String, String> = HashMap::new();
+    for record in sessions.values() {
+        if let (Some(name), Some(tid)) = (&record.current_name, &record.bound_thread_id) {
+            fork_bound_threads.insert(name.clone(), tid.clone());
+        }
+    }
+
+    assert_eq!(
+        fork_bound_threads.get("riverside"),
+        Some(&"thread-parent-xyz".to_string()),
+        "fork_bound_threads should be populated from SessionRecord.bound_thread_id"
+    );
+}
+
+/// Sessions without `bound_thread_id` are not added to `fork_bound_threads`.
+#[test]
+fn test_fork_bound_threads_skips_sessions_without_bound_thread_id() {
+    use std::collections::HashMap;
+
+    let mut sessions: HashMap<String, SessionRecord> = HashMap::new();
+    let unbound_record = make_test_session_record_named("sess-unbound", true, "amsterdam");
+    // bound_thread_id is None (default from make_test_session_record_named)
+    sessions.insert("sess-unbound".to_string(), unbound_record);
+
+    let mut fork_bound_threads: HashMap<String, String> = HashMap::new();
+    for record in sessions.values() {
+        if let (Some(name), Some(tid)) = (&record.current_name, &record.bound_thread_id) {
+            fork_bound_threads.insert(name.clone(), tid.clone());
+        }
+    }
+
+    assert!(
+        fork_bound_threads.is_empty(),
+        "Sessions without bound_thread_id must not appear in fork_bound_threads"
+    );
+}
+
+/// Mixed sessions: only those with `bound_thread_id` appear in `fork_bound_threads`.
+#[test]
+fn test_fork_bound_threads_only_includes_bound_sessions() {
+    use std::collections::HashMap;
+
+    let mut sessions: HashMap<String, SessionRecord> = HashMap::new();
+
+    let mut bound = make_test_session_record_named("sess-a", true, "riverside");
+    bound.bound_thread_id = Some("thread-abc".to_string());
+    sessions.insert("sess-a".to_string(), bound);
+
+    let unbound = make_test_session_record_named("sess-b", true, "amsterdam");
+    sessions.insert("sess-b".to_string(), unbound);
+
+    let mut fork_bound_threads: HashMap<String, String> = HashMap::new();
+    for record in sessions.values() {
+        if let (Some(name), Some(tid)) = (&record.current_name, &record.bound_thread_id) {
+            fork_bound_threads.insert(name.clone(), tid.clone());
+        }
+    }
+
+    assert_eq!(
+        fork_bound_threads.len(),
+        1,
+        "Only the bound session should appear"
+    );
+    assert_eq!(
+        fork_bound_threads.get("riverside"),
+        Some(&"thread-abc".to_string())
+    );
+    assert!(!fork_bound_threads.contains_key("amsterdam"));
+}

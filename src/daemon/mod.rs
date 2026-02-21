@@ -1153,6 +1153,7 @@ impl DaemonState {
         let mut name_to_session: HashMap<String, String> = HashMap::new();
         let mut session_to_name: HashMap<String, String> = HashMap::new();
         let mut task_to_session: HashMap<String, String> = HashMap::new();
+        let mut fork_bound_threads: HashMap<String, String> = HashMap::new();
         {
             let allocated_names: Vec<String> = persistent_state
                 .sessions
@@ -1164,6 +1165,11 @@ impl DaemonState {
                 if let Some(ref name) = record.current_name {
                     name_to_session.insert(name.clone(), session_id.clone());
                     session_to_name.insert(session_id.clone(), name.clone());
+                    // Rebuild thread-binding cache from persisted SessionRecord so
+                    // coworker posts are auto-tagged after a daemon restart.
+                    if let Some(ref tid) = record.bound_thread_id {
+                        fork_bound_threads.insert(name.clone(), tid.clone());
+                    }
                 }
                 if let Some(ref task_id) = record.task_id {
                     task_to_session.insert(task_id.clone(), session_id.clone());
@@ -1225,7 +1231,7 @@ impl DaemonState {
             pending_questions: std::sync::Mutex::new(Vec::new()),
             pending_question_id_counter: std::sync::atomic::AtomicU64::new(1),
             topic_sessions: std::sync::Mutex::new(HashMap::new()),
-            fork_bound_threads: std::sync::Mutex::new(HashMap::new()),
+            fork_bound_threads: std::sync::Mutex::new(fork_bound_threads),
         })
     }
 

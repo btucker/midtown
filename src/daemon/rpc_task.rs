@@ -219,6 +219,7 @@ pub(super) async fn handle_task_create(
     pr: Option<u64>,
     plan: Option<&str>,
     execution_skill: Option<&str>,
+    thread_id: Option<&str>,
     state: &DaemonState,
 ) -> Response {
     let repo_name = state.repo_name.clone();
@@ -274,7 +275,7 @@ pub(super) async fn handle_task_create(
         }
     }
 
-    // Apply plan and execution_skill mappings if provided (stored in daemon state,
+    // Apply plan, execution_skill, and thread_id mappings if provided (stored in daemon state,
     // NOT in task JSON, to keep task JSON compatible with Claude Code's native format)
     {
         let mut ps = state.persistent_state.lock().await;
@@ -288,8 +289,15 @@ pub(super) async fn handle_task_create(
                 .insert(task_id.clone(), skill.to_string());
             changed = true;
         }
+        if let Some(tid) = thread_id {
+            ps.task_thread_id.insert(task_id.clone(), tid.to_string());
+            changed = true;
+        }
         if changed && let Err(e) = ps.save_for_repo(&repo_name) {
-            warn!("Failed to save task plan/execution_skill mapping: {}", e);
+            warn!(
+                "Failed to save task plan/execution_skill/thread_id mapping: {}",
+                e
+            );
         }
     }
 
@@ -747,5 +755,65 @@ mod tests {
         let changed = apply_task_model_mapping(&mut map, "42", None, true).unwrap();
         assert!(!changed);
         assert!(map.is_empty());
+    }
+
+    // ── task_thread_id tests ──────────────────────────────────────────────────
+
+    /// When `thread_id` is provided, it is stored in `task_thread_id`.
+    #[test]
+    fn test_task_thread_id_stored_when_provided() {
+        let mut task_thread_id: HashMap<String, String> = HashMap::new();
+        let thread_id = Some("thread-parent-uuid-abc");
+        if let Some(tid) = thread_id {
+            task_thread_id.insert("42".to_string(), tid.to_string());
+        }
+        assert_eq!(
+            task_thread_id.get("42"),
+            Some(&"thread-parent-uuid-abc".to_string())
+        );
+    }
+
+    /// When `thread_id` is `None`, nothing is stored in `task_thread_id`.
+    #[test]
+    fn test_task_thread_id_not_stored_when_none() {
+        let mut task_thread_id: HashMap<String, String> = HashMap::new();
+        let thread_id: Option<&str> = None;
+        if let Some(tid) = thread_id {
+            task_thread_id.insert("42".to_string(), tid.to_string());
+        }
+        assert!(task_thread_id.is_empty());
+    }
+
+    /// `DaemonPersistentState` with `task_thread_id` survives round-trip JSON
+    /// serialization (backward-compatible with states that lack the field).
+    #[test]
+    fn test_task_thread_id_serialization_roundtrip() {
+        use crate::daemon::state::DaemonPersistentState;
+
+        let mut ps = DaemonPersistentState::default();
+        ps.task_thread_id
+            .insert("99".to_string(), "thread-parent-xyz".to_string());
+
+        let json = serde_json::to_string(&ps).expect("serialize");
+        let parsed: DaemonPersistentState = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(
+            parsed.task_thread_id.get("99"),
+            Some(&"thread-parent-xyz".to_string())
+        );
+    }
+
+    /// Older daemon state JSON (without `task_thread_id`) deserializes with an
+    /// empty map (the `#[serde(default)]` attribute).
+    #[test]
+    fn test_task_thread_id_defaults_to_empty_on_old_state() {
+        use crate::daemon::state::DaemonPersistentState;
+
+        // JSON payload that represents a state without task_thread_id
+        let json = r#"{}"#;
+        let ps: DaemonPersistentState = serde_json::from_str(json).expect("deserialize");
+        assert!(
+            ps.task_thread_id.is_empty(),
+            "task_thread_id should default to empty for old state files"
+        );
     }
 }

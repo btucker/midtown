@@ -390,6 +390,7 @@ impl DaemonClient {
         pr: Option<u64>,
         plan: Option<&str>,
         execution_skill: Option<&str>,
+        thread_id: Option<&str>,
     ) -> Result<Response, String> {
         let mut params = serde_json::json!({
             "subject": subject,
@@ -412,6 +413,9 @@ impl DaemonClient {
         }
         if let Some(skill) = execution_skill {
             params["execution_skill"] = serde_json::json!(skill);
+        }
+        if let Some(tid) = thread_id {
+            params["thread_id"] = serde_json::json!(tid);
         }
         self.send("task.create", Some(params))
     }

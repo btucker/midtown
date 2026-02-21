@@ -31,6 +31,9 @@ pub enum TaskCommand {
         /// Execution skill for the coworker (e.g., subagent-driven-development, executing-plans)
         #[arg(long)]
         execution_skill: Option<String>,
+        /// Thread ID to route coworker updates back to the fork session that created this task
+        #[arg(long)]
+        thread_id: Option<String>,
     },
     /// Claim a task
     Claim {
@@ -107,6 +110,7 @@ pub fn handle(cmd: &TaskCommand, client: &DaemonClient) -> Result<Response, Stri
             pr,
             plan,
             execution_skill,
+            thread_id,
         } => client.task_create(
             subject,
             description,
@@ -116,6 +120,7 @@ pub fn handle(cmd: &TaskCommand, client: &DaemonClient) -> Result<Response, Stri
             *pr,
             plan.as_deref(),
             execution_skill.as_deref(),
+            thread_id.as_deref(),
         ),
         TaskCommand::Update {
             id,
