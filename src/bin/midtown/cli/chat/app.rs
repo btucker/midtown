@@ -462,13 +462,6 @@ pub struct App {
     /// X column where the thread panel starts (set each render pass; None when thread is closed).
     /// Used to route mouse scroll events to the thread panel vs. main chat.
     pub thread_panel_x: Option<u16>,
-    /// Recent messages from the ops channel (daemon operational messages).
-    /// Loaded from the "ops" channel file independently of the selected channel.
-    pub ops_messages: VecDeque<Message>,
-    /// Channel handle for the ops channel (used for cursor-based polling)
-    ops_channel: Option<Channel>,
-    /// Whether ops channel initial load has been done
-    ops_initial_load_done: bool,
 }
 
 /// Autocomplete state for @mentions, #channels, and !task-ids
@@ -551,10 +544,6 @@ impl App {
             midtown::paths::detect_repo_name().unwrap_or_else(|| "default".to_string());
 
         let channel = Channel::for_repo(&channel_repo).ok();
-
-        // Open the ops channel for the board sidebar (daemon operational messages)
-        let base_dir = midtown::paths::projects_dir_for_repo(&channel_repo);
-        let ops_channel = midtown::Channel::new(&base_dir, "ops").ok();
 
         // Get repo name with owner from gh CLI (e.g., "btucker/midtown")
         let repo_name = fetch_repo_name();
@@ -647,9 +636,6 @@ impl App {
             thread_input_cursor: 0,
             thread_scroll_offset: 0,
             thread_panel_x: None,
-            ops_messages: VecDeque::new(),
-            ops_channel,
-            ops_initial_load_done: false,
         };
 
         // Initial load
@@ -899,38 +885,6 @@ impl App {
 
         // Refresh unread counts for channels
         self.refresh_unread_counts();
-
-        // Refresh ops channel messages for the board sidebar
-        self.refresh_ops_messages();
-    }
-
-    /// Refresh messages from the ops channel for the board sidebar mini-channel.
-    ///
-    /// The ops channel contains daemon operational messages (spawns, shutdowns,
-    /// worktree cleanups, stuck detection, etc.) that were previously filtered
-    /// from the main channel using is_ops_message(). Now they route directly to
-    /// ops.jsonl, so the sidebar reads from that file independently.
-    fn refresh_ops_messages(&mut self) {
-        const OPS_MAX: usize = 20;
-        if let Some(ref channel) = self.ops_channel {
-            if !self.ops_initial_load_done {
-                if let Ok((messages, _)) = channel.read_last_n_messages(OPS_MAX) {
-                    self.ops_messages = VecDeque::from(messages);
-                }
-                let _ = channel.set_cursor_to_end("chat-tui-ops", &self.session_id);
-                self.ops_initial_load_done = true;
-                return;
-            }
-            if let Ok(new_msgs) = channel.read_since_cursor("chat-tui-ops", &self.session_id)
-                && !new_msgs.is_empty()
-            {
-                self.ops_messages.extend(new_msgs);
-                // Trim to keep only recent messages
-                while self.ops_messages.len() > OPS_MAX {
-                    self.ops_messages.pop_front();
-                }
-            }
-        }
     }
 
     /// Refresh kanban board data (tasks and PRs via kanban.data RPC).
@@ -3637,9 +3591,6 @@ pub(super) mod tests {
             thread_input_cursor: 0,
             thread_scroll_offset: 0,
             thread_panel_x: None,
-            ops_messages: VecDeque::new(),
-            ops_channel: None,
-            ops_initial_load_done: true,
         }
     }
 
