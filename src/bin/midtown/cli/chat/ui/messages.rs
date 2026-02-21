@@ -615,32 +615,50 @@ mod tests {
     fn test_system_message_format() {
         use chrono::Utc;
 
-        let msg = Message {
+        // Test system sender ("system") renders in DarkGray
+        let system_msg = Message {
             id: "1".to_string(),
-            from: "midtown".to_string(),
+            from: "system".to_string(),
             content: "Session started".to_string(),
             timestamp: Utc::now(),
             message_type: MessageType::System,
             channel: None,
-
             session_id: None,
             thread_parent_id: None,
         };
 
         let current_tasks = HashMap::new();
-
-        // System messages render through standard path: sender line + timestamp line
-        let lines = render_message(&msg, 80, None, &current_tasks, None, &[]);
+        let lines = render_message(&system_msg, 80, None, &current_tasks, None, &[]);
         assert_eq!(lines.len(), 2); // sender line + content line
 
-        // First line is the sender name
         let sender: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
-        assert_eq!(sender, "midtown");
+        assert_eq!(sender, "system");
         assert_eq!(lines[0].spans[0].style.fg, Some(Color::DarkGray));
 
-        // Second line has timestamp + content in DarkGray
         let content: String = lines[1].spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(content.contains("Session started"));
+
+        // Test lead sender ("midtown") renders in LightYellow (not dimmed)
+        let lead_msg = Message {
+            id: "2".to_string(),
+            from: "midtown".to_string(),
+            content: "Working on your request".to_string(),
+            timestamp: Utc::now(),
+            message_type: MessageType::Text,
+            channel: None,
+            session_id: None,
+            thread_parent_id: None,
+        };
+
+        let lead_lines = render_message(&lead_msg, 80, None, &current_tasks, None, &[]);
+        assert_eq!(lead_lines.len(), 2);
+        let lead_sender: String = lead_lines[0]
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert_eq!(lead_sender, "midtown");
+        assert_eq!(lead_lines[0].spans[0].style.fg, Some(Color::LightYellow));
     }
 
     #[test]
@@ -933,7 +951,7 @@ mod tests {
         assert!(is_system_like_sender("daemon"));
         assert!(!is_system_like_sender("github"));
         assert!(is_system_like_sender("system"));
-        assert!(is_system_like_sender("midtown"));
+        assert!(!is_system_like_sender("midtown")); // midtown is now the lead, not a system sender
         assert!(is_system_like_sender("DAEMON"));
         assert!(!is_system_like_sender("madison"));
         assert!(!is_system_like_sender("park"));

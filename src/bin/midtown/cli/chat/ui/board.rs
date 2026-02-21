@@ -602,8 +602,8 @@ fn draw_ops_mini_channel(
 /// Map a sender name to a dim TUI color for the ops mini-channel.
 fn ops_sender_color(name: &str) -> Color {
     match name.to_lowercase().as_str() {
-        "midtown" | "system" | "daemon" | "github" => Color::Rgb(80, 80, 80),
-        "lead" => Color::Rgb(180, 180, 100),
+        "system" | "daemon" | "github" => Color::Rgb(80, 80, 80),
+        "lead" | "midtown" => Color::Rgb(180, 180, 100),
         _ => Color::Rgb(120, 160, 120), // coworker names: muted green
     }
 }

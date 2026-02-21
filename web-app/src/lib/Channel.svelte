@@ -364,13 +364,13 @@
     prince: '#d7afff',      // lavender (Indexed 183)
     mercer: '#ffaf87',      // salmon (Indexed 216)
     lead: '#d7d787',        // LightYellow
+    midtown: '#d7d787',     // LightYellow (project lead posts as project name)
     github: '#585858',      // DarkGray
     system: '#585858',      // DarkGray
-    midtown: '#585858',     // DarkGray (daemon renamed to midtown)
   }
 
   // Senders whose content is rendered in DarkGray (system infrastructure actors)
-  const DIM_SENDERS = new Set(['daemon', 'midtown', 'github', 'system'])
+  const DIM_SENDERS = new Set(['daemon', 'github', 'system'])
 
   function getSenderColor(name) {
     return AVENUE_COLORS[name?.toLowerCase()] || '#d0d0d0'
@@ -745,7 +745,7 @@
            the TUI braille spinner) to drive the dots. In topic channels, InProgress tool
            items drive the dots (channel leads don't have a separate lead_working signal). -->
       {#if activeChannelToolItems.length > 0 || channelLeadThinking || ($activeChannel === 'midtown' && !!$daemonStatus?.lead_working)}
-        {@const agentName = $activeChannel === 'midtown' ? 'lead' : $activeChannel}
+        {@const agentName = $activeChannel}
         {@const isLeadWorking = $activeChannel === 'midtown' ? !!$daemonStatus?.lead_working : false}
         {@const hasInProgressItems = activeChannelToolItems.some((item) => item.status === 'InProgress')}
         {@const showDots = isLeadWorking || hasInProgressItems || channelLeadThinking}
