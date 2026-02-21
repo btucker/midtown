@@ -23,11 +23,12 @@
     prince: '#d7afff',
     mercer: '#ffaf87',
     lead: '#d7d787',
+    midtown: '#d7d787',    // LightYellow (lead now posts as 'midtown')
     github: '#585858',
     system: '#585858',
-    midtown: '#585858',
   }
-  const DIM_SENDERS = new Set(['daemon', 'midtown', 'github', 'system'])
+  // Note: 'midtown' is intentionally excluded — the lead posts under this name
+  const DIM_SENDERS = new Set(['daemon', 'github', 'system'])
 
   function getSenderColor(name) {
     return AVENUE_COLORS[name?.toLowerCase()] || '#d0d0d0'

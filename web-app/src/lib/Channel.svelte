@@ -364,13 +364,14 @@
     prince: '#d7afff',      // lavender (Indexed 183)
     mercer: '#ffaf87',      // salmon (Indexed 216)
     lead: '#d7d787',        // LightYellow
+    midtown: '#d7d787',    // LightYellow (lead now posts as 'midtown')
     github: '#585858',      // DarkGray
     system: '#585858',      // DarkGray
-    midtown: '#585858',     // DarkGray (daemon renamed to midtown)
   }
 
   // Senders whose content is rendered in DarkGray (system infrastructure actors)
-  const DIM_SENDERS = new Set(['daemon', 'midtown', 'github', 'system'])
+  // Note: 'midtown' is intentionally excluded — the lead posts under this name
+  const DIM_SENDERS = new Set(['daemon', 'github', 'system'])
 
   function getSenderColor(name) {
     return AVENUE_COLORS[name?.toLowerCase()] || '#d0d0d0'

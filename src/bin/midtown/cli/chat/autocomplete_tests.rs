@@ -322,6 +322,7 @@ fn test_task_autocomplete_uses_prefix_matching() {
         KanbanTask {
             id: "1224".to_string(),
             subject: "Fix chat TUI autocomplete".to_string(),
+            description: None,
             owner: None,
             status: TaskStatus::InProgress,
             modified_at: None,
@@ -331,6 +332,7 @@ fn test_task_autocomplete_uses_prefix_matching() {
         KanbanTask {
             id: "1234".to_string(),
             subject: "Add new feature".to_string(),
+            description: None,
             owner: None,
             status: TaskStatus::Pending,
             modified_at: None,
@@ -340,6 +342,7 @@ fn test_task_autocomplete_uses_prefix_matching() {
         KanbanTask {
             id: "2245".to_string(),
             subject: "Debug issue".to_string(),
+            description: None,
             owner: None,
             status: TaskStatus::Pending,
             modified_at: None,
@@ -380,6 +383,7 @@ fn test_task_autocomplete_empty_query_shows_in_progress_first() {
         KanbanTask {
             id: "100".to_string(),
             subject: "Pending task A".to_string(),
+            description: None,
             owner: None,
             status: TaskStatus::Pending,
             modified_at: None,
@@ -389,6 +393,7 @@ fn test_task_autocomplete_empty_query_shows_in_progress_first() {
         KanbanTask {
             id: "200".to_string(),
             subject: "In-progress task B".to_string(),
+            description: None,
             owner: Some("park".to_string()),
             status: TaskStatus::InProgress,
             modified_at: None,
@@ -398,6 +403,7 @@ fn test_task_autocomplete_empty_query_shows_in_progress_first() {
         KanbanTask {
             id: "300".to_string(),
             subject: "Pending task C".to_string(),
+            description: None,
             owner: None,
             status: TaskStatus::Pending,
             modified_at: None,
@@ -407,6 +413,7 @@ fn test_task_autocomplete_empty_query_shows_in_progress_first() {
         KanbanTask {
             id: "400".to_string(),
             subject: "In-progress task D".to_string(),
+            description: None,
             owner: Some("madison".to_string()),
             status: TaskStatus::InProgress,
             modified_at: None,

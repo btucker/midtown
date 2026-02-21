@@ -862,6 +862,7 @@ mod tests {
         KanbanTask {
             id: id.to_string(),
             subject: format!("Task {id}"),
+            description: None,
             owner: None,
             status: TaskStatus::Pending,
             modified_at: None,
@@ -1066,6 +1067,7 @@ mod tests {
             KanbanTask {
                 id: "42".to_string(),
                 subject: "First task".to_string(),
+                description: None,
                 owner: Some("york".to_string()),
                 status: TaskStatus::InProgress,
                 modified_at: None,
@@ -1075,6 +1077,7 @@ mod tests {
             KanbanTask {
                 id: "43".to_string(),
                 subject: "Second task".to_string(),
+                description: None,
                 owner: Some("lexington".to_string()),
                 status: TaskStatus::Pending,
                 modified_at: None,

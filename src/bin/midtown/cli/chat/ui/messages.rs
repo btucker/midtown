@@ -634,7 +634,7 @@ mod tests {
 
         let msg = Message {
             id: "1".to_string(),
-            from: "midtown".to_string(),
+            from: "daemon".to_string(),
             content: "Session started".to_string(),
             timestamp: Utc::now(),
             message_type: MessageType::System,
@@ -652,7 +652,7 @@ mod tests {
 
         // First line is the sender name
         let sender: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
-        assert_eq!(sender, "midtown");
+        assert_eq!(sender, "daemon");
         assert_eq!(lines[0].spans[0].style.fg, Some(Color::DarkGray));
 
         // Second line has timestamp + content in DarkGray
@@ -950,7 +950,7 @@ mod tests {
         assert!(is_system_like_sender("daemon"));
         assert!(!is_system_like_sender("github"));
         assert!(is_system_like_sender("system"));
-        assert!(is_system_like_sender("midtown"));
+        assert!(!is_system_like_sender("midtown")); // lead now posts as "midtown"
         assert!(is_system_like_sender("DAEMON"));
         assert!(!is_system_like_sender("madison"));
         assert!(!is_system_like_sender("park"));

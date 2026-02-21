@@ -347,7 +347,7 @@ fn test_build_task_completion_effects_with_task_id() {
         Effect::PostToChannel {
             sender, message, ..
         } => {
-            assert_eq!(sender, "midtown");
+            assert_eq!(sender, "daemon");
             assert!(message.contains("42"));
             assert!(message.contains("123"));
         }
@@ -375,7 +375,7 @@ fn test_build_task_completion_effects_message_says_merged() {
         Effect::PostToChannel {
             sender, message, ..
         } => {
-            assert_eq!(sender, "midtown");
+            assert_eq!(sender, "daemon");
             assert!(
                 message.contains("merged"),
                 "Message should say 'merged', got: {}",
@@ -968,7 +968,7 @@ fn test_decide_orphan_cleanup_gh_cleaned_posts_to_channel() {
     let effects = decide_orphan_cleanup(&data);
     assert_eq!(effects.len(), 2);
     for effect in &effects {
-        assert!(matches!(effect, Effect::PostToChannel { sender, .. } if sender == "midtown"));
+        assert!(matches!(effect, Effect::PostToChannel { sender, .. } if sender == "daemon"));
     }
 }
 
@@ -1029,7 +1029,7 @@ fn test_discovered_nudges_task_owner() {
         Effect::PostToChannel {
             sender, message, ..
         } => {
-            assert_eq!(sender, "midtown");
+            assert_eq!(sender, "daemon");
             assert!(message.contains("lexington"));
             assert!(message.contains("task !42"));
         }

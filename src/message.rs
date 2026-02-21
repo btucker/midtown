@@ -53,7 +53,7 @@ pub enum MessageType {
 ///
 /// // System notification
 /// let sys = Message::system("Build completed");
-/// assert_eq!(sys.from, "midtown");
+/// assert_eq!(sys.from, "daemon");
 /// assert_eq!(sys.message_type, MessageType::System);
 ///
 /// // Status update
@@ -197,7 +197,7 @@ impl Message {
 
     /// Create a system message.
     ///
-    /// System messages automatically use "midtown" as the sender.
+    /// System messages automatically use "daemon" as the sender.
     ///
     /// # Examples
     ///
@@ -205,10 +205,10 @@ impl Message {
     /// use midtown::Message;
     ///
     /// let msg = Message::system("Daemon started");
-    /// assert_eq!(msg.from, "midtown");
+    /// assert_eq!(msg.from, "daemon");
     /// ```
     pub fn system(content: impl Into<String>) -> Self {
-        Self::new("midtown", content, MessageType::System)
+        Self::new("daemon", content, MessageType::System)
     }
 
     /// Create a command message.
@@ -315,7 +315,7 @@ mod tests {
     #[test]
     fn test_system_message() {
         let msg = Message::system("System initialized");
-        assert_eq!(msg.from, "midtown");
+        assert_eq!(msg.from, "daemon");
         assert_eq!(msg.message_type, MessageType::System);
     }
 

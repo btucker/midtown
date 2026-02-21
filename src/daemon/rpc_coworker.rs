@@ -409,7 +409,7 @@ pub(super) async fn handle_coworker_report_state(
                         ),
                     },
                     effects::Effect::PostToChannel {
-                        sender: "midtown".to_string(),
+                        sender: "daemon".to_string(),
                         message: format!(
                             "⚠️ {} reported task !{} completed without a PR — nudged to open PR first",
                             name, tid

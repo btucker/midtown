@@ -148,7 +148,7 @@ fn task_completed_effects(task_id: &str, repo_name: &str, channel_message: Strin
             repo_name: repo_name.to_string(),
         },
         Effect::PostToChannel {
-            sender: "midtown".to_string(),
+            sender: "daemon".to_string(),
             message: channel_message,
             channel: None,
         },
@@ -536,7 +536,7 @@ where
                 key: "global".to_string(),
             },
             Effect::PostToChannel {
-                sender: "midtown".to_string(),
+                sender: "daemon".to_string(),
                 message: format!(
                     "♻️ Resumed session {} for orphaned task !{} (coworker {})",
                     record.session_id, recovery.task_id, recovery.owner
@@ -559,7 +559,7 @@ where
                     repo_name: snap.repo_name.clone(),
                 },
                 Effect::PostToChannel {
-                    sender: "midtown".to_string(),
+                    sender: "daemon".to_string(),
                     message: format!(
                         "🔄 Task !{} reset to pending - session resume for {} failed (backing off for {}s)",
                         recovery.task_id,
@@ -618,7 +618,7 @@ where
             key: "global".to_string(),
         },
         Effect::PostToChannel {
-            sender: "midtown".to_string(),
+            sender: "daemon".to_string(),
             message: format!(
                 "♻️ Recovered coworker {} for orphaned task !{}",
                 recovery.owner, recovery.task_id
@@ -641,7 +641,7 @@ where
                 repo_name: snap.repo_name.clone(),
             },
             Effect::PostToChannel {
-                sender: "midtown".to_string(),
+                sender: "daemon".to_string(),
                 message: format!(
                     "🔄 Task !{} reset to pending - {} could not be respawned (backing off for {}s)",
                     recovery.task_id,
@@ -870,7 +870,7 @@ where
                 key: "global".to_string(),
             },
             Effect::PostToChannel {
-                sender: "midtown".to_string(),
+                sender: "daemon".to_string(),
                 message: format!(
                     "Session dispatch: recovered task !{} via session {} (coworker {})",
                     task_id, record.session_id, coworker_name
@@ -894,7 +894,7 @@ where
                     repo_name: snap.repo_name.clone(),
                 },
                 Effect::PostToChannel {
-                    sender: "midtown".to_string(),
+                    sender: "daemon".to_string(),
                     message: format!(
                         "Task !{} reset to pending - session dispatch for {} failed (backing off for {}s)",
                         task_id,
@@ -1055,7 +1055,7 @@ where
             key: "global".to_string(),
         },
         Effect::PostToChannel {
-            sender: "midtown".to_string(),
+            sender: "daemon".to_string(),
             message: format!(
                 "Session dispatch: fresh spawn for orphaned task !{} (coworker {})",
                 recovery.task_id, recovery.owner
@@ -1078,7 +1078,7 @@ where
                 repo_name: snap.repo_name.clone(),
             },
             Effect::PostToChannel {
-                sender: "midtown".to_string(),
+                sender: "daemon".to_string(),
                 message: format!(
                     "Task !{} reset to pending - {} could not be spawned (backing off for {}s)",
                     recovery.task_id,
@@ -1222,7 +1222,7 @@ fn decide_discovered_coworker_nudges(
                 message: prompt,
             });
             effects.push(Effect::PostToChannel {
-                sender: "midtown".to_string(),
+                sender: "daemon".to_string(),
                 message: format!(
                     "♻️ Nudged discovered coworker {} to resume task !{}",
                     name, task_id
@@ -1242,7 +1242,7 @@ fn decide_discovered_coworker_nudges(
                 message: prompt,
             });
             effects.push(Effect::PostToChannel {
-                sender: "midtown".to_string(),
+                sender: "daemon".to_string(),
                 message: format!(
                     "♻️ Nudged discovered reviewer {} to resume PR #{} review",
                     name, pr_number
@@ -1361,7 +1361,7 @@ pub fn check_for_duplicate_task_workers(snap: &snapshot::WorldSnapshot) -> Vec<e
                 message: String::new(),
             });
             effects.push(Effect::PostToChannel {
-                sender: "midtown".to_string(),
+                sender: "daemon".to_string(),
                 message: format!(
                     "🔪 Killed duplicate worker {} on task !{} ({}) - {} started earlier",
                     duplicate, task_id, task_subject, keeper
@@ -1711,7 +1711,7 @@ pub fn decide_orphan_cleanup(data: &OrphanCleanupData) -> Vec<Effect> {
     // Post channel messages for worktrees auto-cleaned via gh CLI fallback.
     for name in &data.gh_cleaned {
         effects.push(Effect::PostToChannel {
-            sender: "midtown".to_string(),
+            sender: "daemon".to_string(),
             message: format!(
                 "🧹 Auto-cleaned orphaned worktree for {} (PR was merged)",
                 name
@@ -1976,7 +1976,7 @@ pub(super) fn spawn_for_pending_tasks_excluding(
                         current_task: None,
                     },
                     Effect::PostToChannel {
-                        sender: "midtown".to_string(),
+                        sender: "daemon".to_string(),
                         message: daemon_messages::called_in_pending_task(o, &tid.to_string()),
                         channel: Some(OPS_CHANNEL.to_string()),
                     },
@@ -2358,7 +2358,7 @@ pub(super) fn spawn_for_pending_tasks_excluding(
                         task_id: task.id.clone(),
                     },
                     Effect::PostToChannel {
-                        sender: "midtown".to_string(),
+                        sender: "daemon".to_string(),
                         message: channel_msg,
                         channel: Some(OPS_CHANNEL.to_string()),
                     },
@@ -2401,7 +2401,7 @@ pub(super) fn spawn_for_pending_tasks_excluding(
                     current_task: None,
                 },
                 Effect::PostToChannel {
-                    sender: "midtown".to_string(),
+                    sender: "daemon".to_string(),
                     message: channel_msg,
                     channel: Some(OPS_CHANNEL.to_string()),
                 },

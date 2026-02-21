@@ -146,7 +146,7 @@ pub fn check_and_shutdown_idle_coworkers(snap: &snapshot::WorldSnapshot) -> Vec<
                 );
                 // Don't shutdown - post a warning to the ops channel so the team knows
                 effects.push(Effect::PostToChannel {
-                    sender: "midtown".to_string(),
+                    sender: "daemon".to_string(),
                     message: format!(
                         "⚠️ Reviewer {} is idle but hasn't posted review for PR #{} yet",
                         name, pr
@@ -172,7 +172,7 @@ pub fn check_and_shutdown_idle_coworkers(snap: &snapshot::WorldSnapshot) -> Vec<
 
         // Post to ops channel, broadcast status, and shut down
         effects.push(Effect::PostToChannel {
-            sender: "midtown".to_string(),
+            sender: "daemon".to_string(),
             message: shutdown_msg,
             channel: Some(OPS_CHANNEL.to_string()),
         });
@@ -298,7 +298,7 @@ pub(super) async fn check_and_restart_stuck_coworkers(
         }
         effects.push(Effect::SpawnCoworker(config));
         effects.push(Effect::PostToChannel {
-            sender: "midtown".to_string(),
+            sender: "daemon".to_string(),
             message: format!(
                 "🔄 Restarted stuck coworker {} (no events for {}s) — resuming task !{}",
                 restart.name,
@@ -409,7 +409,7 @@ pub fn check_and_restart_stuck_reviewers(snap: &snapshot::WorldSnapshot) -> Vec<
         ];
 
         let on_failure = vec![Effect::PostToChannel {
-            sender: "midtown".to_string(),
+            sender: "daemon".to_string(),
             message: format!(
                 "⚠️ Failed to respawn reviewer {} for PR #{} (attempt {}/{})",
                 restart.name, restart.pr_number, new_restart_count, MAX_REVIEWER_RESTARTS,
@@ -424,7 +424,7 @@ pub fn check_and_restart_stuck_reviewers(snap: &snapshot::WorldSnapshot) -> Vec<
         });
 
         effects.push(Effect::PostToChannel {
-            sender: "midtown".to_string(),
+            sender: "daemon".to_string(),
             message: format!(
                 "🔄 Restarted stuck reviewer {} for PR #{} (no events for {}s, attempt {}/{})",
                 restart.name,
@@ -493,7 +493,7 @@ pub fn check_and_restart_stuck_reviewers(snap: &snapshot::WorldSnapshot) -> Vec<
         );
 
         effects.push(Effect::PostToChannel {
-            sender: "midtown".to_string(),
+            sender: "daemon".to_string(),
             message: format!(
                 "🚨 Reviewer {} is stuck on PR #{} after {} restart attempts. \
                  Manual intervention needed — the reviewer keeps getting stuck on this PR.",
@@ -583,7 +583,7 @@ pub fn check_and_restart_dead_reviewers(snap: &snapshot::WorldSnapshot) -> Vec<E
         ];
 
         let on_failure = vec![Effect::PostToChannel {
-            sender: "midtown".to_string(),
+            sender: "daemon".to_string(),
             message: format!(
                 "⚠️ Failed to respawn reviewer {} for PR #{} (attempt {}/{})",
                 restart.name, restart.pr_number, new_restart_count, MAX_REVIEWER_RESTARTS,
@@ -598,7 +598,7 @@ pub fn check_and_restart_dead_reviewers(snap: &snapshot::WorldSnapshot) -> Vec<E
         });
 
         effects.push(Effect::PostToChannel {
-            sender: "midtown".to_string(),
+            sender: "daemon".to_string(),
             message: format!(
                 "🔄 Respawning reviewer {} for PR #{} — exited without posting review (attempt {}/{})",
                 restart.name,
@@ -678,7 +678,7 @@ pub fn check_for_usage_limits(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
     vec![
         Effect::SetUsageLimitNudge { at: nudge_time },
         Effect::PostToChannel {
-            sender: "midtown".to_string(),
+            sender: "daemon".to_string(),
             message,
             channel: Some(OPS_CHANNEL.to_string()),
         },
@@ -709,7 +709,7 @@ pub fn maybe_nudge_usage_limit_expiry(snap: &snapshot::WorldSnapshot) -> Vec<Eff
     let mut effects = vec![
         Effect::ClearUsageLimitNudge,
         Effect::PostToChannel {
-            sender: "midtown".to_string(),
+            sender: "daemon".to_string(),
             message: format!(
                 "🔔 Usage limit expired — nudging {} coworkers to resume work",
                 snap.running_coworkers.len()
@@ -794,7 +794,7 @@ pub(super) fn check_and_handle_auth_errors(
         effects.insert(
             0,
             Effect::PostToChannel {
-                sender: "midtown".to_string(),
+                sender: "daemon".to_string(),
                 message: message.clone(),
                 channel: Some(OPS_CHANNEL.to_string()),
             },
@@ -882,7 +882,7 @@ pub(super) fn check_and_nudge_api_errors(
         effects.insert(
             0,
             Effect::PostToChannel {
-                sender: "midtown".to_string(),
+                sender: "daemon".to_string(),
                 message: format!(
                     "⚠️ Widespread API errors affecting {} coworkers: {}. Will periodically nudge to retry.",
                     affected_count,
@@ -923,7 +923,7 @@ pub fn check_and_restart_tool_name_conflicts(snap: &snapshot::WorldSnapshot) -> 
             message: String::new(),
         });
         effects.push(Effect::PostToChannel {
-            sender: "midtown".to_string(),
+            sender: "daemon".to_string(),
             message: format!(
                 "🔧 Coworker {} hit 'Tool names must be unique' error — restarting with fresh session",
                 name
@@ -1004,7 +1004,7 @@ pub(super) async fn check_and_respawn_dead_processes(
             key: respawn.name.clone(),
         });
         effects.push(Effect::PostToChannel {
-            sender: "midtown".to_string(),
+            sender: "daemon".to_string(),
             message: format!(
                 "💀 Coworker {} process died (exit {}) — restarting for task !{}",
                 respawn.name, respawn.exit_code, respawn.task_id
@@ -1121,7 +1121,7 @@ pub fn maybe_refresh_lead_session(snap: &snapshot::WorldSnapshot) -> Vec<Effect>
 
     vec![
         Effect::PostToChannel {
-            sender: "midtown".to_string(),
+            sender: "daemon".to_string(),
             message: "Restarting lead session for a fresh context.".to_string(),
             channel: Some(OPS_CHANNEL.to_string()),
         },
@@ -1295,7 +1295,7 @@ fn effects_for_fired_reminders(
             reminder.trigger, reminder.message
         );
         effects.push(Effect::PostToChannel {
-            sender: "midtown".to_string(),
+            sender: "daemon".to_string(),
             message: message.clone(),
             channel: None,
         });

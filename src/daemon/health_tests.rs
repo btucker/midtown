@@ -749,8 +749,8 @@ fn test_maybe_refresh_lead_session_triggers_when_old() {
         "Should produce PostToChannel + ShutdownCoworker when lead is past the interval"
     );
     assert!(
-        matches!(&effects[0], Effect::PostToChannel { sender, .. } if sender == "midtown"),
-        "First effect should be PostToChannel from midtown"
+        matches!(&effects[0], Effect::PostToChannel { sender, .. } if sender == "daemon"),
+        "First effect should be PostToChannel from daemon"
     );
     assert!(
         matches!(&effects[1], Effect::ShutdownCoworker { name, .. } if name == "lead"),
