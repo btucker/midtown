@@ -221,7 +221,8 @@ pub fn draw_board_panel(f: &mut Frame, app: &mut App, area: Rect) -> (Vec<Hyperl
     let block = Block::default()
         .borders(Borders::ALL)
         .title("Board")
-        .border_style(Style::default().fg(border_color));
+        .border_style(Style::default().fg(border_color))
+        .style(Style::default().bg(palette.bg));
 
     let paragraph = Paragraph::new(lines).block(block);
     f.render_widget(paragraph, tasks_area);
@@ -476,7 +477,8 @@ fn draw_ops_mini_channel(
     // Render the bordered container
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(palette.muted));
+        .border_style(Style::default().fg(palette.muted))
+        .style(Style::default().bg(palette.bg));
     f.render_widget(block, area);
 
     // Header: "MIDTOWN OPS" in dim style, inside the border
@@ -742,7 +744,7 @@ fn draw_coworker_status(f: &mut Frame, app: &mut App, area: Rect) {
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .style(Style::default().fg(palette.fg)),
+                .style(Style::default().fg(palette.fg).bg(palette.bg)),
         )
         .column_spacing(1);
 
