@@ -1060,9 +1060,13 @@ pub(super) async fn handle_session_fork(
     calling_session_id: &str,
     state: &DaemonState,
 ) -> crate::rpc::Response {
-    // Guard: don't fork if a topic session already exists for this thread.
+    // Atomic guard: check-and-reserve the topic_sessions slot in a single lock
+    // acquisition. This prevents the race where two concurrent fork requests for
+    // the same thread_parent_id both pass the guard and spawn duplicate forks.
+    // We insert a sentinel value ("pending") to reserve the slot; on success we
+    // update it with the real session_id, on failure we remove it.
     {
-        let topic = state.topic_sessions.lock().unwrap();
+        let mut topic = state.topic_sessions.lock().unwrap();
         if let Some(existing_sid) = topic.get(thread_parent_id) {
             return crate::rpc::Response::success(
                 id,
@@ -1072,6 +1076,8 @@ pub(super) async fn handle_session_fork(
                 }),
             );
         }
+        // Reserve the slot to prevent concurrent forks for the same thread.
+        topic.insert(thread_parent_id.to_string(), "pending".to_string());
     }
 
     // Resolve the calling session's name from the reverse map.
@@ -1172,6 +1178,12 @@ pub(super) async fn handle_session_fork(
     {
         Ok(sid) => sid,
         Err(e) => {
+            // Remove the sentinel — spawn failed, so the slot is available again.
+            state
+                .topic_sessions
+                .lock()
+                .unwrap()
+                .remove(thread_parent_id);
             warn!("session.fork: failed to spawn fork session: {}", e);
             return crate::rpc::Response::error(
                 id,
@@ -1180,22 +1192,73 @@ pub(super) async fn handle_session_fork(
         }
     };
 
-    // Record the topic session mapping.
+    // Update the topic session mapping from sentinel to real session_id.
     {
         let mut topic = state.topic_sessions.lock().unwrap();
         topic.insert(thread_parent_id.to_string(), fork_session_id.clone());
     }
 
-    // Record bound_thread_id on the session record (for output auto-tagging).
+    // Backfill the data structures that the event loop normally populates from the
+    // init event. spawn_fork consumes the init event to extract the session_id, so
+    // the event loop never sees it. We must create the SessionRecord and populate
+    // the name↔session reverse maps ourselves.
     {
         let mut ps = state.persistent_state.lock().await;
-        if let Some(record) = ps.sessions.get_mut(&fork_session_id) {
-            record.bound_thread_id = Some(thread_parent_id.to_string());
-            if let Err(e) = ps.save_for_repo(repo_name) {
-                warn!("session.fork: failed to persist session record: {}", e);
+        let hs_info = ps.headless_sessions.iter().find_map(|(_, info)| {
+            if info.session_id == calling_session_id
+                || caller_name
+                    .as_deref()
+                    .map(|n| info.session_id == n)
+                    .unwrap_or(false)
+            {
+                Some(info.clone())
+            } else {
+                None
             }
+        });
+        ps.sessions.insert(
+            fork_session_id.clone(),
+            crate::daemon::state::SessionRecord {
+                session_id: fork_session_id.clone(),
+                task_id: None,
+                current_name: Some(fork_name.clone()),
+                preferred_name: Some(fork_name.clone()),
+                working_dir: working_dir.clone().unwrap_or_default(),
+                branch: None,
+                pr_number: None,
+                initial_prompt: hs_info.as_ref().and_then(|i| i.initial_prompt.clone()),
+                is_reviewer: false,
+                coworker_type: "channel-lead".to_string(),
+                is_running: true,
+                created_at: chrono::Utc::now(),
+                resume_on_startup: false,
+                bound_thread_id: Some(thread_parent_id.to_string()),
+            },
+        );
+        if let Err(e) = ps.save_for_repo(repo_name) {
+            warn!("session.fork: failed to persist session record: {}", e);
         }
     }
+
+    // Populate in-memory reverse maps for the fork session.
+    state
+        .name_to_session
+        .lock()
+        .unwrap()
+        .insert(fork_name.clone(), fork_session_id.clone());
+    state
+        .session_to_name
+        .lock()
+        .unwrap()
+        .insert(fork_session_id.clone(), fork_name.clone());
+
+    // Cache the bound thread mapping for the output binding hot path
+    // (avoids async persistent_state lock in handle_channel_post).
+    state
+        .fork_bound_threads
+        .lock()
+        .unwrap()
+        .insert(fork_name.clone(), thread_parent_id.to_string());
 
     info!(
         "session.fork: forked {} (parent={}) → thread={}, new_session={}",

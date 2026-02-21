@@ -361,6 +361,17 @@ impl SessionManager {
     ///
     /// After the init event, the session is registered in the sessions map and the
     /// event loop picks it up for normal event processing.
+    ///
+    /// **Important:** This method consumes the init event, so the event loop's normal
+    /// backfill path (which creates `SessionRecord` and populates `name_to_session` /
+    /// `session_to_name`) will NOT fire for fork sessions. The caller
+    /// (`handle_session_fork`) must perform this backfill itself.
+    ///
+    /// **Architectural invariant:** Fork sessions are NOT registered in
+    /// `CoworkerManager`. They bypass `spawn_coworker()` entirely. This means they
+    /// are excluded from idle-shutdown evaluation, orphan recovery, and coworker
+    /// status tracking. Do not register fork sessions in CoworkerManager without
+    /// adding explicit guards to those subsystems.
     pub async fn spawn_fork(
         &self,
         name: &str,

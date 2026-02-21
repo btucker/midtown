@@ -83,6 +83,7 @@ The Project Lead is just a Claude Code session, but it's been booted with a [spe
 | `midtown session attach name/<n>` | Attach to a headless session |
 | `midtown session detach <name>` | Resume headless execution |
 | `midtown session clear <lookup>` | Stop and restart a session fresh (preserves original task prompt) |
+| `midtown session fork --thread <id>` | Fork the calling session into a thread-bound session |
 | `midtown task create <subject> [...]` | Create a task (see [CLI reference](docs/cli.md) for all options) |
 | `midtown task list` | List tasks |
 | `midtown task view <id>` | View task details |
@@ -468,6 +469,8 @@ Each topic channel can have a **channel lead** — a headless Claude Code sessio
 - Receive user messages posted to their topic channel
 
 **What channel leads don't do:** Channel leads don't write code, open PRs, or create tasks. When implementation work is needed, they escalate to @lead.
+
+**Forked sessions:** Channel leads can fork themselves into thread-specific sessions via `midtown session fork --thread <id>`. A forked session inherits the parent's conversation context but gets an independent session ID bound to a specific thread. Thread replies are automatically routed to the fork, and the fork's channel posts are auto-tagged with the bound thread ID.
 
 Coworkers use `@{channel-name}` for domain questions (e.g., `@auth-refactor can you explain the token expiry logic?`) and reserve `@lead` for coordination and priority questions.
 

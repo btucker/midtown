@@ -991,47 +991,26 @@ async fn test_user_message_dead_lead_respects_expedite_cooldown() {
 
 // ── Output binding tests (Task 3) ────────────────────────────────────────────
 
-/// Verify that a forked session with `bound_thread_id` has its channel posts
+/// Verify that a forked session with a bound thread has its channel posts
 /// automatically tagged with that thread_parent_id (output binding).
 ///
 /// This is Task 3: forked topic sessions post into the correct thread without
 /// needing to pass `--thread` on every `midtown channel post` call.
+///
+/// Uses the in-memory `fork_bound_threads` cache (populated by `handle_session_fork`)
+/// rather than looking up `bound_thread_id` via the async persistent_state lock.
 #[tokio::test]
 async fn test_output_binding_auto_tags_forked_session_posts() {
     let (state, _tmp, _guard) = make_test_state("midtown-test-output-binding-auto");
     let thread_id = "thread-parent-uuid-xyz";
-    let fork_session_id = "fork-session-id-abc";
     let fork_name = "fork-abcdefgh";
 
-    // Register the forked session in persistent state with bound_thread_id
-    {
-        let mut ps = state.persistent_state.lock().await;
-        ps.sessions.insert(
-            fork_session_id.to_string(),
-            crate::daemon::state::SessionRecord {
-                session_id: fork_session_id.to_string(),
-                task_id: None,
-                current_name: Some(fork_name.to_string()),
-                preferred_name: Some(fork_name.to_string()),
-                working_dir: "/tmp/test".to_string(),
-                branch: None,
-                pr_number: None,
-                initial_prompt: None,
-                is_reviewer: false,
-                coworker_type: "channel-lead".to_string(),
-                is_running: true,
-                created_at: chrono::Utc::now(),
-                resume_on_startup: false,
-                bound_thread_id: Some(thread_id.to_string()),
-            },
-        );
-    }
-    // Register the session name in the in-memory name_to_session map
+    // Register the fork's bound thread in the in-memory cache
     state
-        .name_to_session
+        .fork_bound_threads
         .lock()
         .unwrap()
-        .insert(fork_name.to_string(), fork_session_id.to_string());
+        .insert(fork_name.to_string(), thread_id.to_string());
 
     // Post a message from the forked session WITHOUT explicit thread_parent_id
     let response = handle_channel_post(
@@ -1057,42 +1036,20 @@ async fn test_output_binding_auto_tags_forked_session_posts() {
 }
 
 /// Verify that an explicit thread_parent_id takes priority over the session's
-/// bound_thread_id. The session's binding is a fallback, not an override.
+/// bound thread. The session's binding is a fallback, not an override.
 #[tokio::test]
 async fn test_output_binding_explicit_thread_takes_priority() {
     let (state, _tmp, _guard) = make_test_state("midtown-test-output-binding-priority");
     let bound_thread = "bound-thread-id-111";
     let explicit_thread = "explicit-thread-id-999";
-    let fork_session_id = "fork-priority-test";
     let fork_name = "fork-priority";
 
-    {
-        let mut ps = state.persistent_state.lock().await;
-        ps.sessions.insert(
-            fork_session_id.to_string(),
-            crate::daemon::state::SessionRecord {
-                session_id: fork_session_id.to_string(),
-                task_id: None,
-                current_name: Some(fork_name.to_string()),
-                preferred_name: Some(fork_name.to_string()),
-                working_dir: "/tmp/test".to_string(),
-                branch: None,
-                pr_number: None,
-                initial_prompt: None,
-                is_reviewer: false,
-                coworker_type: "channel-lead".to_string(),
-                is_running: true,
-                created_at: chrono::Utc::now(),
-                resume_on_startup: false,
-                bound_thread_id: Some(bound_thread.to_string()),
-            },
-        );
-    }
+    // Register the fork's bound thread in the in-memory cache
     state
-        .name_to_session
+        .fork_bound_threads
         .lock()
         .unwrap()
-        .insert(fork_name.to_string(), fork_session_id.to_string());
+        .insert(fork_name.to_string(), bound_thread.to_string());
 
     // Post with an EXPLICIT thread_parent_id (different from the bound one)
     let response = handle_channel_post(
@@ -1116,41 +1073,14 @@ async fn test_output_binding_explicit_thread_takes_priority() {
     );
 }
 
-/// Verify that sessions without a bound_thread_id do NOT get thread_parent_id
+/// Verify that sessions without a bound thread do NOT get thread_parent_id
 /// injected into their posts. Only forked sessions with a binding are affected.
 #[tokio::test]
 async fn test_output_binding_no_bound_thread_preserves_none() {
     let (state, _tmp, _guard) = make_test_state("midtown-test-output-binding-none");
-    let session_id = "unbound-session-xyz";
     let session_name = "park";
 
-    {
-        let mut ps = state.persistent_state.lock().await;
-        ps.sessions.insert(
-            session_id.to_string(),
-            crate::daemon::state::SessionRecord {
-                session_id: session_id.to_string(),
-                task_id: None,
-                current_name: Some(session_name.to_string()),
-                preferred_name: Some(session_name.to_string()),
-                working_dir: "/tmp/test".to_string(),
-                branch: None,
-                pr_number: None,
-                initial_prompt: None,
-                is_reviewer: false,
-                coworker_type: "dev".to_string(),
-                is_running: true,
-                created_at: chrono::Utc::now(),
-                resume_on_startup: true,
-                bound_thread_id: None, // no binding
-            },
-        );
-    }
-    state
-        .name_to_session
-        .lock()
-        .unwrap()
-        .insert(session_name.to_string(), session_id.to_string());
+    // fork_bound_threads does NOT contain this session — no binding
 
     let response = handle_channel_post(
         1_i64.into(),
@@ -1226,43 +1156,55 @@ async fn test_thread_routing_with_topic_session_routes_to_fork() {
     );
 }
 
-/// Verify that `topic_sessions` deduplicates: inserting the same thread twice
-/// returns the existing fork session ID, not a new one.
+/// Verify that `handle_session_fork` deduplicates: when a topic session already
+/// exists for a thread, the handler returns early with `already_exists: true`
+/// and does not attempt to spawn a second fork.
 #[tokio::test]
 async fn test_topic_sessions_dedup_returns_existing() {
     let (state, _tmp, _guard) = make_test_state("midtown-test-topic-sessions-dedup");
 
     let thread_id = "thread-dedup-uuid";
     let first_fork = "fork-session-first";
-    let second_fork = "fork-session-second";
 
-    // Insert the first mapping
+    // Pre-populate topic_sessions as if a fork already exists for this thread.
     state
         .topic_sessions
         .lock()
         .unwrap()
         .insert(thread_id.to_string(), first_fork.to_string());
 
-    // The session.fork handler checks for existing mapping and returns early.
-    // Simulate that by checking the map directly.
+    // Call handle_session_fork for the same thread — should hit the guard and
+    // return the existing session without attempting to spawn.
+    let response = super::super::rpc_session::handle_session_fork(
+        1_i64.into(),
+        thread_id,
+        "calling-session-id-xyz",
+        &state,
+    )
+    .await;
+
+    // The guard should return success with already_exists: true
+    assert!(
+        response.error.is_none(),
+        "Dedup guard should return success"
+    );
+    let result = response.result.unwrap();
+    assert_eq!(
+        result["already_exists"].as_bool(),
+        Some(true),
+        "Should indicate the session already exists"
+    );
+    assert_eq!(
+        result["session_id"].as_str(),
+        Some(first_fork),
+        "Should return the existing fork session ID"
+    );
+
+    // topic_sessions should still hold the original mapping (not overwritten)
     let stored = state.topic_sessions.lock().unwrap().get(thread_id).cloned();
     assert_eq!(
         stored,
         Some(first_fork.to_string()),
-        "First fork session should be stored"
-    );
-
-    // If we insert a second (simulating a race), the map holds the latest value.
-    // The handle_session_fork guard prevents this via early-return before spawning.
-    state
-        .topic_sessions
-        .lock()
-        .unwrap()
-        .insert(thread_id.to_string(), second_fork.to_string());
-    let after = state.topic_sessions.lock().unwrap().get(thread_id).cloned();
-    assert_eq!(
-        after,
-        Some(second_fork.to_string()),
-        "Map holds the most recent insertion (guard prevents this in practice)"
+        "Original fork session should be preserved"
     );
 }

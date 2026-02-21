@@ -693,6 +693,14 @@ pub(crate) struct DaemonState {
     /// Ephemeral — cleared on daemon restart. Forks don't survive daemon restarts;
     /// the on-demand channel lead infrastructure handles respawn when needed.
     pub(crate) topic_sessions: std::sync::Mutex<HashMap<String, String>>,
+
+    /// In-memory cache of bound thread IDs for forked sessions.
+    ///
+    /// Maps `fork_name → thread_parent_id`. Populated in `handle_session_fork` when
+    /// a fork is created. Used by the output binding path in `handle_channel_post`
+    /// to auto-tag forked session posts with their bound thread — avoids acquiring
+    /// the async `persistent_state` lock on the channel post hot path.
+    pub(crate) fork_bound_threads: std::sync::Mutex<HashMap<String, String>>,
 }
 
 impl DaemonState {
@@ -1217,6 +1225,7 @@ impl DaemonState {
             pending_questions: std::sync::Mutex::new(Vec::new()),
             pending_question_id_counter: std::sync::atomic::AtomicU64::new(1),
             topic_sessions: std::sync::Mutex::new(HashMap::new()),
+            fork_bound_threads: std::sync::Mutex::new(HashMap::new()),
         })
     }
 

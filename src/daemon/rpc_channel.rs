@@ -144,16 +144,10 @@ pub(super) async fn handle_channel_post(
     // Task 3: Output binding — if the sender is a forked topic session with a bound
     // thread, auto-apply the bound thread_parent_id so their posts appear in the
     // correct thread without the session needing to pass it explicitly.
+    // Uses the in-memory fork_bound_threads cache (sync Mutex) instead of the async
+    // persistent_state lock — avoids contention on the channel post hot path.
     let bound_thread: Option<String> = if thread_parent_id.is_none() {
-        let session_id = state.name_to_session.lock().unwrap().get(from).cloned();
-        if let Some(sid) = session_id {
-            let ps = state.persistent_state.lock().await;
-            ps.sessions
-                .get(&sid)
-                .and_then(|r| r.bound_thread_id.clone())
-        } else {
-            None
-        }
+        state.fork_bound_threads.lock().unwrap().get(from).cloned()
     } else {
         None
     };
