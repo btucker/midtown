@@ -1781,11 +1781,7 @@ impl App {
         // Hash the indicator height — as completed entries age out, indicator_height changes,
         // which changes the message area size via the layout constraint. Without this,
         // the cache produces stale line counts when the indicator collapses.
-        let agent_key = if self.selected_channel == "main" || self.selected_channel == "midtown" {
-            "lead"
-        } else {
-            self.selected_channel.as_str()
-        };
+        let agent_key = self.selected_channel.as_str();
         self.visible_tool_entries(agent_key).len().hash(&mut hasher);
         // Hash channel_lead_thinking for the current agent — the optimistic thinking state
         // also changes lead_indicator_height (0 -> 1), affecting the message area layout.

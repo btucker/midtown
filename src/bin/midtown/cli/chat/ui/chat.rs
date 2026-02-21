@@ -64,11 +64,7 @@ pub fn draw_chat_panel(f: &mut Frame, app: &mut App, area: Rect) {
 /// never collapses to zero, preventing messages from jumping when activity starts.
 /// Returns 1 when idle (dim placeholder), optimistic thinking, or only one entry.
 fn lead_indicator_height(app: &App) -> u16 {
-    let agent_key = if app.selected_channel == "main" || app.selected_channel == "midtown" {
-        "lead"
-    } else {
-        app.selected_channel.as_str()
-    };
+    let agent_key = app.selected_channel.as_str();
     let entries_len = app.visible_tool_entries(agent_key).len();
     if entries_len > 0 {
         entries_len as u16
@@ -88,11 +84,7 @@ fn draw_lead_indicator(f: &mut Frame, app: &mut App, area: Rect) {
         return;
     }
 
-    let agent_key = if app.selected_channel == "main" || app.selected_channel == "midtown" {
-        "lead"
-    } else {
-        app.selected_channel.as_str()
-    };
+    let agent_key = app.selected_channel.as_str();
 
     let entries = app.visible_tool_entries(agent_key);
 
