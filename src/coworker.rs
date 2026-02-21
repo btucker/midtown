@@ -448,6 +448,18 @@ impl CoworkerManager {
             .cloned()
     }
 
+    /// Get a coworker by task ID.
+    ///
+    /// Searches all tracked coworkers for one with a matching `current_task`.
+    /// Used for task-based routing when @mentions include a task ID (!N).
+    pub fn get_by_task_id(&self, task_id: &str) -> Option<Coworker> {
+        let coworkers = self.coworkers.read().unwrap();
+        coworkers
+            .values()
+            .find(|cw| cw.current_task.as_deref() == Some(task_id))
+            .cloned()
+    }
+
     /// Get the SessionKey for a coworker by name.
     ///
     /// Returns a `SessionKey` combining the coworker's name and session ID.

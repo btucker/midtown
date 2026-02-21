@@ -14,7 +14,7 @@ use crate::message::Message;
 
 use super::DaemonState;
 use super::constants::{OPS_CHANNEL, SKIP_SENDERS};
-use super::helpers::{contains_at_all, extract_mentions};
+use super::helpers::{contains_at_all, extract_mentions, extract_task_id};
 
 // Chat Monitor - @mention routing
 // ============================================================================
@@ -126,8 +126,8 @@ pub(super) async fn chat_monitor_loop(
 /// Extract @mentions from message content and route to coworkers.
 ///
 /// For each valid coworker name mentioned:
-/// - If the coworker is not running, spawn them with --resume
-/// - Nudge them with the message context
+/// - If the message contains a task ID (!N), route to the session working on that task
+/// - Otherwise, route to the mentioned coworker by name
 ///
 /// Also supports @all to broadcast to every active coworker and the lead.
 pub(super) async fn route_mentions(state: &DaemonState, msg: &Message) {
@@ -150,18 +150,52 @@ pub(super) async fn route_mentions(state: &DaemonState, msg: &Message) {
         mentions
     );
 
+    // Extract task ID if present (!N pattern)
+    let task_id = extract_task_id(&msg.content);
+    if let Some(ref tid) = task_id {
+        debug!("Found task ID !{} in message", tid);
+    }
+
     let channel_lead_names: std::collections::HashSet<String> = {
         let ps = state.persistent_state.lock().await;
         ps.channel_lead_sessions.keys().cloned().collect()
     };
 
     for name in mentions {
-        let is_running = state.coworkers.get(&name).is_some();
+        // If a task ID is present, look up the coworker working on that task
+        // and route to their session. This ensures the nudge goes to the correct
+        // session even if the @mentioned name doesn't match.
+        let target_name = if let Some(ref tid) = task_id {
+            if let Some(coworker) = state.coworkers.get_by_task_id(tid) {
+                if coworker.name != name {
+                    info!(
+                        "Task-based routing: @{} with !{} routes to {} (working on this task)",
+                        name, tid, coworker.name
+                    );
+                }
+                Some(coworker.name)
+            } else {
+                // No coworker working on this task - fall back to name-based routing
+                debug!(
+                    "No coworker found working on task !{}, falling back to @{}",
+                    tid, name
+                );
+                Some(name)
+            }
+        } else {
+            Some(name)
+        };
+
+        let Some(target_name) = target_name else {
+            continue;
+        };
+
+        let is_running = state.coworkers.get(&target_name).is_some();
         let nudge_text = format!("{} said ({}): {}", msg.from, msg.id, msg.content);
 
         // Decide action using pure decision function
         let action = crate::rules::decide_mention_action(
-            &name,
+            &target_name,
             &msg.from,
             is_running,
             state.is_at_dev_limit(&channel_lead_names),
@@ -169,7 +203,7 @@ pub(super) async fn route_mentions(state: &DaemonState, msg: &Message) {
         );
 
         // Convert MentionAction → Effects, execute via the standard pipeline.
-        let effects = mention_action_to_effects(action, &name, &state.repo_name);
+        let effects = mention_action_to_effects(action, &target_name, &state.repo_name);
         super::effects::execute_effects(effects, state).await;
     }
 }
