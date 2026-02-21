@@ -78,7 +78,9 @@ The daemon creates an independent session that:
 
 **After forking:** You are now in a thread-scoped session. Write your responses directly — they are automatically posted to the thread. You do not need `--thread` on your channel posts.
 
-**Nudge format:** Nudges include the message ID in the format `sender (message-id): content`. Use that ID with `session fork`.
+**Fork latency:** `session fork` blocks while the daemon spawns the new session (typically a few seconds). For complex questions, post a brief thread acknowledgment first ("Looking into this...") before forking, so the user sees immediate feedback.
+
+**Nudge format:** Nudges include the message ID in the format `sender (message-id): content`. For top-level messages, use that ID directly with `session fork`. For thread replies, the nudge message-id is the reply's own ID — use the thread's root message ID instead (visible in the channel log or via `midtown channel read`).
 
 ## Posting to the Channel
 
@@ -96,7 +98,7 @@ When replying in a thread from the **root session** (before forking):
 midtown channel post "reply text" --thread <message-id> --channel {channel_name}
 ```
 
-**Always reply in a thread** when responding to user messages or @mentions — this keeps the channel organized. Note: your text output is still auto-posted as a top-level message, so writing text alongside a `--thread` reply produces a duplicate. Keep your text output brief or omit it when the thread reply covers everything.
+**In the root session, always reply in a thread** when responding to user messages or @mentions — this keeps the channel organized. Note: your text output is still auto-posted as a top-level message, so writing text alongside a `--thread` reply produces a duplicate. Keep your text output brief or omit it when the thread reply covers everything. (Forked sessions auto-tag posts with their bound thread — no `--thread` needed.)
 
 ## Awareness
 
