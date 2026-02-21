@@ -212,7 +212,7 @@
             {formatChannelName(channel.name)}
           </div>
           <div class="flex items-center gap-1.5">
-            {#if channel.unread > 0}
+            {#if channel.unread > 0 && channel.name !== 'ops'}
               <span class="text-xs px-1.5 py-0.5 rounded-[10px] bg-[#ff6b6b] text-white min-w-[1.5em] text-center font-semibold" title="{channel.unread} unread messages">{channel.unread}</span>
             {/if}
             {#if totalTasks > 0}
