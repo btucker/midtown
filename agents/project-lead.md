@@ -125,6 +125,16 @@ The daemon automatically assigns tasks to idle coworkers or calls in new ones as
 # Create a task — the daemon assigns it automatically
 midtown task create "Subject" --description "Details..."
 
+# Create a task for a specific channel (routes coworker messages there)
+midtown task create "Fix daemon crash" --description "..." --channel daemon
+
 # Manual call-in (rare — only if daemon requests or urgent):
 midtown coworker call-in
 ```
+
+**Always use `--channel`** when the task belongs to a topic channel. This ensures:
+- The coworker's messages go to the right channel
+- The channel lead can track the work
+- Domain context is preserved in the channel history
+
+If no `--channel` is specified, the task defaults to the main channel.
