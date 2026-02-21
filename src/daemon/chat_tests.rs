@@ -7,14 +7,15 @@ use std::time::Duration;
 fn mention_nudge_produces_nudge_effect() {
     let action = MentionAction::Nudge {
         name: "lexington".to_string(),
-        message: "lead said: @lexington check this".to_string(),
+        message: "lead said (msg-42): @lexington check this".to_string(),
     };
     let effects = mention_action_to_effects(action, "lexington", "test-repo");
 
     assert_eq!(effects.len(), 1);
     assert!(
-        matches!(&effects[0], Effect::NudgeCoworker { name, .. } if name == "lexington"),
-        "Expected NudgeCoworker for lexington"
+        matches!(&effects[0], Effect::NudgeCoworker { name, message }
+            if name == "lexington" && message.contains("msg-42")),
+        "NudgeCoworker message must include the message ID in parentheses"
     );
 }
 
@@ -22,7 +23,7 @@ fn mention_nudge_produces_nudge_effect() {
 fn mention_spawn_produces_spawn_with_callbacks() {
     let action = MentionAction::Spawn {
         name: "park".to_string(),
-        message: "lead said: @park fix the bug".to_string(),
+        message: "lead said (msg-99): @park fix the bug".to_string(),
     };
     let effects = mention_action_to_effects(action, "park", "test-repo");
 
@@ -36,11 +37,16 @@ fn mention_spawn_produces_spawn_with_callbacks() {
             assert_eq!(config.name, "park");
             assert!(!on_success.is_empty(), "Should have success callback");
             assert!(!on_failure.is_empty(), "Should have failure callback");
-            // Success callback should post to channel
+            // Success and failure callbacks must post to OPS_CHANNEL (not default channel)
             assert!(
-                matches!(&on_success[0], Effect::PostToChannel { message, .. }
-                    if message.contains("park") && message.contains("@mention")),
-                "Success callback should mention park and @mention"
+                matches!(&on_success[0], Effect::PostToChannel { channel: Some(ch), message, .. }
+                    if ch == OPS_CHANNEL && message.contains("park") && message.contains("@mention")),
+                "Success callback should post to OPS_CHANNEL mentioning park and @mention"
+            );
+            assert!(
+                matches!(&on_failure[0], Effect::PostToChannel { channel: Some(ch), .. }
+                    if ch == OPS_CHANNEL),
+                "Failure callback should post to OPS_CHANNEL"
             );
         }
         _ => panic!("Expected SpawnCoworkerWithCallbacks, got {:?}", effects[0]),
@@ -60,7 +66,7 @@ fn mention_skip_produces_no_effects() {
 }
 
 #[test]
-fn mention_skip_dev_limit_posts_to_channel() {
+fn mention_skip_dev_limit_posts_to_ops_channel() {
     let action = MentionAction::Skip {
         reason: "Cannot spawn amsterdam: dev limit reached".to_string(),
     };
@@ -68,7 +74,14 @@ fn mention_skip_dev_limit_posts_to_channel() {
 
     assert_eq!(effects.len(), 1);
     match &effects[0] {
-        Effect::PostToChannel { message, .. } => {
+        Effect::PostToChannel {
+            channel, message, ..
+        } => {
+            assert_eq!(
+                channel.as_deref(),
+                Some(OPS_CHANNEL),
+                "Dev-limit notice must go to OPS_CHANNEL"
+            );
             assert!(message.contains("amsterdam"), "Should mention the coworker");
             assert!(
                 message.contains("dev coworkers limit"),
@@ -77,6 +90,60 @@ fn mention_skip_dev_limit_posts_to_channel() {
         }
         _ => panic!("Expected PostToChannel for dev limit, got {:?}", effects[0]),
     }
+}
+
+/// The deduplication key `chat_mention_{name}` must block a second nudge for the
+/// same (name, msg_id) pair. This tests the CooldownTracker wiring as used by
+/// `route_mentions`: the combined check+record path inside a single lock scope.
+#[test]
+fn mention_dedup_wiring_blocks_second_nudge_for_same_message() {
+    let mut cooldowns = CooldownTracker::new();
+    let msg_id = "msg-dedupe-001";
+    let key = "chat_mention_amsterdam";
+
+    // Simulate the wiring in route_mentions: check then record in one scope.
+    let first = {
+        if cooldowns.check(key, msg_id, Duration::from_secs(3600)) {
+            cooldowns.record(key, msg_id);
+            true
+        } else {
+            false
+        }
+    };
+    assert!(first, "First call must be allowed");
+
+    // Second call with the same msg_id must be blocked.
+    let second = {
+        if cooldowns.check(key, msg_id, Duration::from_secs(3600)) {
+            cooldowns.record(key, msg_id);
+            true
+        } else {
+            false
+        }
+    };
+    assert!(
+        !second,
+        "Second call with same msg_id must be blocked by deduplication"
+    );
+}
+
+/// Deduplication must be per-recipient: blocking amsterdam for a message must
+/// not block broadway for the same message (separate CooldownTracker keys).
+#[test]
+fn mention_dedup_wiring_is_per_recipient() {
+    let mut cooldowns = CooldownTracker::new();
+    let msg_id = "msg-broadcast-999";
+
+    // Record for amsterdam.
+    cooldowns.record("chat_mention_amsterdam", msg_id);
+
+    // broadway with the same msg_id must still be allowed.
+    let broadway_allowed =
+        cooldowns.check("chat_mention_broadway", msg_id, Duration::from_secs(3600));
+    assert!(
+        broadway_allowed,
+        "Different recipient must not be blocked by another's dedup record"
+    );
 }
 
 // Deduplication tests for the CooldownTracker-based nudge guards added to
