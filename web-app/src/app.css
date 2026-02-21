@@ -35,6 +35,12 @@
   --sidebar-border: 220 13% 91%;
   --sidebar-ring: 217.2 91.2% 59.8%;
   --insight: 300 50% 35%;
+  /* Semantic link colors for message content — accessible on light backgrounds */
+  --link-default: #1a7a7a;
+  --link-channel: #1a7a7a;
+  --link-task: #8c1a8c;
+  --link-pr: #2a5a8a;
+  --link-coworker: #1a6e6e;
 }
 
 .dark {
@@ -66,6 +72,12 @@
   --sidebar-border: 0 0% 16.5%;
   --sidebar-ring: 180 29.4% 52.9%;
   --insight: 300 29.4% 52.9%;
+  /* Semantic link colors for message content — designed for dark backgrounds */
+  --link-default: #5fafaf;
+  --link-channel: #5fafaf;
+  --link-task: #af5faf;
+  --link-pr: #5f87af;
+  --link-coworker: #87d7d7;
 }
 
 @theme inline {

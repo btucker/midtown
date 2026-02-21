@@ -723,7 +723,7 @@
             <div class="flex gap-0">
               <span class="flex-shrink-0 w-[3.7em] mr-[0.5em]"></span>
               <button
-                class="flex items-center gap-1.5 text-[0.75rem] text-[#5fafaf] hover:text-[#87d7d7] cursor-pointer bg-transparent border-none p-0 mt-0.5"
+                class="flex items-center gap-1.5 text-[0.75rem] text-[var(--link-default)] hover:text-[var(--link-coworker)] cursor-pointer bg-transparent border-none p-0 mt-0.5"
                 onclick={() => openThread(msg, $activeChannel)}
               >
                 <span>{msg.reply_count} {msg.reply_count === 1 ? 'reply' : 'replies'}</span>
@@ -875,7 +875,7 @@
   /* Link styles - applied globally within message content */
   :global(.message-text a),
   :global(.action-text a) {
-    color: #5fafaf;
+    color: var(--link-default);
     text-decoration: none;
   }
 
@@ -886,28 +886,28 @@
 
   :global(.message-text a.channel-link),
   :global(.action-text a.channel-link) {
-    color: #5fafaf;
+    color: var(--link-channel);
     font-weight: 600;
     cursor: pointer;
   }
 
   :global(.message-text a.task-link),
   :global(.action-text a.task-link) {
-    color: #af5faf;
+    color: var(--link-task);
     font-weight: 600;
     cursor: pointer;
   }
 
   :global(.message-text a.pr-link),
   :global(.action-text a.pr-link) {
-    color: #5f87af;
+    color: var(--link-pr);
     font-weight: 600;
     cursor: pointer;
   }
 
   :global(.message-text a.coworker-link),
   :global(.action-text a.coworker-link) {
-    color: #87d7d7;
+    color: var(--link-coworker);
     font-weight: 600;
     cursor: pointer;
   }
