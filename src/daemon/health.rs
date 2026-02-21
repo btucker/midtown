@@ -81,6 +81,7 @@ pub fn check_and_shutdown_idle_coworkers(snap: &snapshot::WorldSnapshot) -> Vec<
             review_feedback_pr_coworkers: &snap.review_feedback_pr_coworkers,
             now_utc: snap.now_utc,
             minimum_lifetime: MINIMUM_COWORKER_LIFETIME,
+            repo_name: &snap.repo_name,
         };
         crate::rules::decide_idle_shutdowns(&idle_ctx)
     };

@@ -45,6 +45,7 @@ fn channel_lead_is_idle_shutdown() {
         review_feedback_pr_coworkers: &empty,
         now_utc: Utc::now(),
         minimum_lifetime: Duration::from_secs(300),
+        repo_name: "test-repo",
     };
     let result = decide_idle_shutdowns(&ctx);
     assert_eq!(
