@@ -1,6 +1,6 @@
 //! Tests for status RPC handler.
 
-use super::{filter_lead_session, tag_channel_leads_and_count};
+use super::{filter_lead_session, resolve_pr_number, tag_channel_leads_and_count};
 
 #[test]
 fn test_current_task_includes_id_and_title() {
@@ -179,4 +179,83 @@ fn test_tag_channel_leads_preserves_existing_fields() {
     assert_eq!(tagged[0]["current_task"], "!42 Fix auth bug");
     assert_eq!(tagged[0]["provider"], "claude");
     assert_eq!(tagged[0]["is_channel_lead"], false);
+}
+
+// ─── Tests for resolve_pr_number (PR number resolution priority chain) ───
+
+#[test]
+fn test_resolve_pr_from_task_file() {
+    // Task file PR association takes highest priority
+    let task_pr = [(42u32, 100u64)].into_iter().collect();
+    let reviewer = std::collections::HashMap::new();
+    let worktree = std::collections::HashMap::new();
+
+    assert_eq!(
+        resolve_pr_number(Some(42), "amsterdam", &task_pr, &reviewer, &worktree),
+        Some(100)
+    );
+}
+
+#[test]
+fn test_resolve_pr_from_reviewer_assignment() {
+    // Falls back to reviewer assignment when task has no PR
+    let task_pr = std::collections::HashMap::new();
+    let reviewer = [("amsterdam".to_string(), 200u64)].into_iter().collect();
+    let worktree = std::collections::HashMap::new();
+
+    assert_eq!(
+        resolve_pr_number(Some(42), "amsterdam", &task_pr, &reviewer, &worktree),
+        Some(200)
+    );
+}
+
+#[test]
+fn test_resolve_pr_from_worktree_registry() {
+    // Falls back to worktree registry as last resort
+    let task_pr = std::collections::HashMap::new();
+    let reviewer = std::collections::HashMap::new();
+    let worktree = [("amsterdam".to_string(), 300u64)].into_iter().collect();
+
+    assert_eq!(
+        resolve_pr_number(None, "amsterdam", &task_pr, &reviewer, &worktree),
+        Some(300)
+    );
+}
+
+#[test]
+fn test_resolve_pr_task_takes_priority_over_reviewer() {
+    // When task file and reviewer both have PRs, task file wins
+    let task_pr = [(42u32, 100u64)].into_iter().collect();
+    let reviewer = [("amsterdam".to_string(), 200u64)].into_iter().collect();
+    let worktree = [("amsterdam".to_string(), 300u64)].into_iter().collect();
+
+    assert_eq!(
+        resolve_pr_number(Some(42), "amsterdam", &task_pr, &reviewer, &worktree),
+        Some(100)
+    );
+}
+
+#[test]
+fn test_resolve_pr_none_when_no_sources() {
+    let task_pr = std::collections::HashMap::new();
+    let reviewer = std::collections::HashMap::new();
+    let worktree = std::collections::HashMap::new();
+
+    assert_eq!(
+        resolve_pr_number(None, "amsterdam", &task_pr, &reviewer, &worktree),
+        None
+    );
+}
+
+#[test]
+fn test_resolve_pr_none_when_task_id_has_no_pr() {
+    // Task ID exists but has no PR association, and no other sources
+    let task_pr = std::collections::HashMap::new();
+    let reviewer = std::collections::HashMap::new();
+    let worktree = std::collections::HashMap::new();
+
+    assert_eq!(
+        resolve_pr_number(Some(99), "amsterdam", &task_pr, &reviewer, &worktree),
+        None
+    );
 }

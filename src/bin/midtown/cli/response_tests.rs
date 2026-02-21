@@ -774,3 +774,155 @@ fn test_phase_defaults_to_none_when_absent() {
     assert_eq!(cw.phase, None);
     assert_eq!(cw.pr_number, None);
 }
+
+// ─── Direct unit tests for coworker_activity() ───────────────────────
+// Each branch of the match is tested with a minimal CoworkerInfo struct.
+
+fn make_cw(phase: Option<&str>, pr: Option<u64>, task: Option<&str>) -> CoworkerInfo {
+    CoworkerInfo {
+        name: "test".to_string(),
+        status: "running".to_string(),
+        current_task: task.map(|s| s.to_string()),
+        started_at: None,
+        provider: None,
+        profile: None,
+        is_channel_lead: false,
+        input_tokens: 0,
+        output_tokens: 0,
+        phase: phase.map(|s| s.to_string()),
+        pr_number: pr,
+    }
+}
+
+#[test]
+fn test_activity_review_with_pr() {
+    assert_eq!(
+        coworker_activity(&make_cw(Some("review"), Some(42), None)),
+        "reviewing PR #42"
+    );
+}
+
+#[test]
+fn test_activity_review_without_pr() {
+    assert_eq!(
+        coworker_activity(&make_cw(Some("review"), None, None)),
+        "reviewing"
+    );
+}
+
+#[test]
+fn test_activity_pr_with_pr_number() {
+    assert_eq!(
+        coworker_activity(&make_cw(Some("PR"), Some(99), None)),
+        "PR open #99"
+    );
+}
+
+#[test]
+fn test_activity_pr_without_pr_with_task() {
+    assert_eq!(
+        coworker_activity(&make_cw(Some("PR"), None, Some("!42 Auth fix"))),
+        "opening PR: !42 Auth fix"
+    );
+}
+
+#[test]
+fn test_activity_pr_without_pr_without_task() {
+    assert_eq!(
+        coworker_activity(&make_cw(Some("PR"), None, None)),
+        "opening PR"
+    );
+}
+
+#[test]
+fn test_activity_dev_with_task() {
+    assert_eq!(
+        coworker_activity(&make_cw(Some("dev"), None, Some("!10 Feature"))),
+        "developing: !10 Feature"
+    );
+}
+
+#[test]
+fn test_activity_dev_without_task() {
+    assert_eq!(
+        coworker_activity(&make_cw(Some("dev"), None, None)),
+        "developing"
+    );
+}
+
+#[test]
+fn test_activity_test_with_task() {
+    assert_eq!(
+        coworker_activity(&make_cw(Some("test"), None, Some("!5 Tests"))),
+        "testing: !5 Tests"
+    );
+}
+
+#[test]
+fn test_activity_test_without_task() {
+    assert_eq!(
+        coworker_activity(&make_cw(Some("test"), None, None)),
+        "testing"
+    );
+}
+
+#[test]
+fn test_activity_debug_with_task() {
+    assert_eq!(
+        coworker_activity(&make_cw(Some("debug"), None, Some("!7 Bug"))),
+        "debugging: !7 Bug"
+    );
+}
+
+#[test]
+fn test_activity_debug_without_task() {
+    assert_eq!(
+        coworker_activity(&make_cw(Some("debug"), None, None)),
+        "debugging"
+    );
+}
+
+#[test]
+fn test_activity_claim() {
+    assert_eq!(
+        coworker_activity(&make_cw(Some("claim"), None, Some("!1 Anything"))),
+        "claiming task"
+    );
+}
+
+#[test]
+fn test_activity_idle_with_task() {
+    assert_eq!(
+        coworker_activity(&make_cw(Some("idle"), None, Some("!3 Task"))),
+        "working on: !3 Task"
+    );
+}
+
+#[test]
+fn test_activity_done_without_task() {
+    assert_eq!(
+        coworker_activity(&make_cw(Some("done"), None, None)),
+        "idle"
+    );
+}
+
+#[test]
+fn test_activity_no_phase_no_task() {
+    assert_eq!(coworker_activity(&make_cw(None, None, None)), "idle");
+}
+
+#[test]
+fn test_activity_unknown_phase_with_task() {
+    assert_eq!(
+        coworker_activity(&make_cw(Some("custom"), None, Some("!9 Work"))),
+        "custom: !9 Work"
+    );
+}
+
+#[test]
+fn test_activity_unknown_phase_without_task() {
+    assert_eq!(
+        coworker_activity(&make_cw(Some("custom"), None, None)),
+        "custom"
+    );
+}

@@ -98,10 +98,13 @@ pub(super) async fn handle_status(id: RequestId, state: &DaemonState) -> Respons
             let workflow_phase = record.and_then(|r| r.workflow_phase);
             let record_task_id = record.and_then(|r| r.task_id);
             // Find PR number for this coworker (priority: task file > reviewer > worktree)
-            let pr_number = record_task_id
-                .and_then(|tid| task_pr_map.get(&tid).copied())
-                .or_else(|| reviewer_pr_map.get(&cw.name).copied())
-                .or_else(|| worktree_pr_map.get(&cw.name).copied());
+            let pr_number = resolve_pr_number(
+                record_task_id,
+                &cw.name,
+                &task_pr_map,
+                &reviewer_pr_map,
+                &worktree_pr_map,
+            );
             serde_json::json!({
                 "name": cw.name,
                 "status": cw.status.to_string(),
@@ -198,6 +201,23 @@ pub(super) async fn handle_status(id: RequestId, state: &DaemonState) -> Respons
 // ============================================================================
 // Helper functions
 // ============================================================================
+
+/// Resolve the PR number for a coworker using a priority chain:
+/// 1. Task file PR association (task_id → PR mapping)
+/// 2. Active reviewer assignment (coworker reviewing a PR)
+/// 3. Worktree registry (coworker's worktree has a PR)
+fn resolve_pr_number(
+    task_id: Option<u32>,
+    coworker_name: &str,
+    task_pr_map: &std::collections::HashMap<u32, u64>,
+    reviewer_pr_map: &std::collections::HashMap<String, u64>,
+    worktree_pr_map: &std::collections::HashMap<String, u64>,
+) -> Option<u64> {
+    task_id
+        .and_then(|tid| task_pr_map.get(&tid).copied())
+        .or_else(|| reviewer_pr_map.get(coworker_name).copied())
+        .or_else(|| worktree_pr_map.get(coworker_name).copied())
+}
 
 /// Get all tasks from Claude Code task storage with their status.
 fn get_all_tasks() -> Vec<serde_json::Value> {
