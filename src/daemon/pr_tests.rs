@@ -2329,3 +2329,143 @@ async fn test_reviewer_not_assigned_to_pr_author() {
          After fix: the author's name is excluded from reviewer selection."
     );
 }
+
+/// Bug (task !1686): When a reviewer is spawned for a PR and the review worktree
+/// is already bound to an ACTIVE coworker, the daemon logged
+/// "WORKTREE COLLISION BLOCKED" in the BindCoworkerToWorktree effect handler — but
+/// the spawn had already happened. The new reviewer ran without a valid worktree
+/// binding, leading to review failures.
+///
+/// Fix: Detect the collision BEFORE spawning by checking the worktree registry in
+/// collect_reviewer_effects_with_source. If the target review worktree is already
+/// bound to an active coworker, skip the spawn entirely.
+#[tokio::test]
+async fn test_reviewer_spawn_aborted_on_worktree_collision_with_active_coworker() {
+    // Use a fake PR number that doesn't exist in the real repo to avoid
+    // is_pr_reviewed() calling the real gh CLI and finding an actual review.
+    let pr_number = 99991u64;
+    let worktree_id = crate::worktree_registry::review_slug_for_pr(pr_number); // "review-pr-1389"
+
+    // PR that needs review (branch owned by "pleasant")
+    let pr_json = serde_json::json!({
+        "number": pr_number,
+        "headRefName": "pleasant/fix-auth",
+        "title": "Fix auth regression [Midtown !500]",
+        "mergeable": "MERGEABLE",
+        "statusCheckRollup": null,
+        "reviewDecision": null,
+        "isDraft": false,
+        "createdAt": "2026-01-01T00:00:00Z",
+        "state": "OPEN",
+    });
+
+    // Review worktree already bound to ACTIVE coworker "vernon"
+    let mut registry = crate::worktree_registry::WorktreeRegistry::default();
+    registry
+        .assign_worktree(crate::worktree_registry::WorktreeAssignment {
+            worktree_id: worktree_id.clone(),
+            branch_name: worktree_id.clone(),
+            task_id: None,
+            current_coworker: Some("vernon".to_string()),
+            pr_number: Some(pr_number),
+            created_at: chrono::Utc::now(),
+            completed_at: None,
+        })
+        .unwrap();
+
+    // Both the PR author ("pleasant") and the existing reviewer ("vernon") are active.
+    // pleasant is active → PR is not orphaned (author can address feedback).
+    // vernon is active and bound to the review worktree → spawn should be aborted.
+    let mut active_names = std::collections::HashSet::new();
+    active_names.insert("pleasant".to_string());
+    active_names.insert("vernon".to_string());
+
+    let branch_owners: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let (state, _tmp, _guard) = make_test_state("test-repo");
+
+    let effects = collect_reviewer_effects_with_source(
+        Some(&branch_owners),
+        &registry,
+        &active_names,
+        &state,
+        &[pr_json],
+        crate::github_state::AssignmentSource::PollingFallback,
+    )
+    .await;
+
+    // No spawn should happen — the worktree collision must abort the spawn entirely.
+    // Before fix: SpawnCoworkerWithCallbacks was emitted, causing a second reviewer
+    //             to run without a worktree binding (WORKTREE COLLISION BLOCKED in
+    //             BindCoworkerToWorktree effect, but too late).
+    // After fix: effects are empty because the collision is detected before spawning.
+    let has_spawn = effects
+        .iter()
+        .any(|e| matches!(e, Effect::SpawnCoworkerWithCallbacks { .. }));
+    assert!(
+        !has_spawn,
+        "Reviewer spawn must be aborted when review worktree is already bound to active coworker 'vernon'. \
+         Before fix: SpawnCoworkerWithCallbacks was emitted anyway, leading to a reviewer running without \
+         a valid worktree binding."
+    );
+}
+
+/// Complement to the above: if the review worktree is bound to a DEAD coworker,
+/// the spawn should proceed normally (the force-rebind path handles it).
+#[tokio::test]
+async fn test_reviewer_spawn_proceeds_when_previous_reviewer_is_dead() {
+    // Use a fake PR number that doesn't exist in the real repo.
+    let pr_number = 99992u64;
+    let worktree_id = crate::worktree_registry::review_slug_for_pr(pr_number);
+
+    let pr_json = serde_json::json!({
+        "number": pr_number,
+        "headRefName": "pleasant/fix-auth",
+        "title": "Fix auth regression [Midtown !500]",
+        "mergeable": "MERGEABLE",
+        "statusCheckRollup": null,
+        "reviewDecision": null,
+        "isDraft": false,
+        "createdAt": "2026-01-01T00:00:00Z",
+        "state": "OPEN",
+    });
+
+    // Review worktree bound to "vernon" — but "vernon" is NOT in active_names (dead)
+    let mut registry = crate::worktree_registry::WorktreeRegistry::default();
+    registry
+        .assign_worktree(crate::worktree_registry::WorktreeAssignment {
+            worktree_id: worktree_id.clone(),
+            branch_name: worktree_id.clone(),
+            task_id: None,
+            current_coworker: Some("vernon".to_string()),
+            pr_number: Some(pr_number),
+            created_at: chrono::Utc::now(),
+            completed_at: None,
+        })
+        .unwrap();
+
+    // active_names does NOT contain "vernon" → it's dead
+    let active_names = std::collections::HashSet::new();
+
+    let branch_owners: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let (state, _tmp, _guard) = make_test_state("test-repo");
+
+    let effects = collect_reviewer_effects_with_source(
+        Some(&branch_owners),
+        &registry,
+        &active_names,
+        &state,
+        &[pr_json],
+        crate::github_state::AssignmentSource::PollingFallback,
+    )
+    .await;
+
+    // Spawn SHOULD proceed — the old reviewer is dead so a new one is needed.
+    let has_spawn = effects
+        .iter()
+        .any(|e| matches!(e, Effect::SpawnCoworkerWithCallbacks { .. }));
+    assert!(
+        has_spawn,
+        "Reviewer spawn should proceed when the worktree's previous coworker is dead. \
+         The force-rebind path in BindCoworkerToWorktree handles the dead coworker case."
+    );
+}

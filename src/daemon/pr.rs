@@ -2372,6 +2372,21 @@ pub(crate) async fn collect_reviewer_effects_with_source(
         let worktree_id = crate::worktree_registry::review_slug_for_pr(pr_number);
         let wt_path = crate::paths::worktrees_dir_for_repo(&state.repo_name).join(&worktree_id);
 
+        // Collision guard: abort spawn if the worktree is already bound to an active coworker.
+        // The BindCoworkerToWorktree effect has its own collision guard, but by then the
+        // session is already spawned. We must detect this earlier to avoid spawning a
+        // reviewer that will run without a valid worktree binding.
+        if let Some(existing) = worktree_registry.get(&worktree_id)
+            && let Some(ref bound_to) = existing.current_coworker
+            && active_names.contains(bound_to.as_str())
+        {
+            warn!(
+                "WORKTREE COLLISION: Aborting reviewer spawn for PR #{} — worktree {} already bound to ACTIVE coworker {}",
+                pr_number, worktree_id, bound_to
+            );
+            continue;
+        }
+
         // reviewer() now takes the PR number and generates both the system prompt
         // (with merged reviewer.md instructions) and the launch prompt internally
         let mut config = crate::launch::LaunchConfig::reviewer(reviewer_name.clone(), pr_number);
