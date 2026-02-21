@@ -34,6 +34,7 @@ mod startup;
 pub(crate) mod state;
 mod stream;
 mod trackers;
+pub(crate) mod wake_reason;
 mod webhook_fwd;
 
 use constants::*;
