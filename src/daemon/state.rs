@@ -317,12 +317,15 @@ impl DaemonPersistentState {
     ///
     /// When resuming a stopped session, `entry().or_insert_with()` alone won't update
     /// `is_running` because the entry already exists. This method uses `and_modify` to
-    /// mark existing sessions as running before falling back to insert for new sessions.
+    /// mark existing sessions as running and refresh `current_name` before falling back
+    /// to insert for new sessions.
     pub fn upsert_session_running(&mut self, session_id: String, new_record: SessionRecord) {
+        let current_name = new_record.current_name.clone();
         self.sessions
             .entry(session_id)
             .and_modify(|r| {
                 r.is_running = true;
+                r.current_name = current_name;
             })
             .or_insert(new_record);
     }
