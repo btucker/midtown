@@ -346,20 +346,22 @@ fn test_auto_detach_stale_lead_then_respawn() {
 
     // Set up: lead is attached but stale (15 min ago, past the 10-min ATTACH_TIMEOUT).
     // Also ensure lead is not running so ensure_lead_alive would spawn it once detached.
+    // After the rename, the lead session name equals the repo name (e.g. "midtown").
+    let lead_name = harness.snapshot().repo_name.clone();
     let stale_attach_time = harness.snapshot().now_utc - chrono::Duration::minutes(15);
     harness
         .snapshot_mut()
         .attached_coworkers
-        .insert("lead".to_string(), stale_attach_time);
-    harness.snapshot_mut().active_names.remove("lead");
+        .insert(lead_name.clone(), stale_attach_time);
+    harness.snapshot_mut().active_names.remove(&lead_name);
     harness
         .snapshot_mut()
         .active_coworkers
-        .retain(|c| c.name.to_lowercase() != "lead");
+        .retain(|c| !c.name.eq_ignore_ascii_case(&lead_name));
     harness
         .snapshot_mut()
         .running_coworkers
-        .retain(|c| c.name.to_lowercase() != "lead");
+        .retain(|c| !c.name.eq_ignore_ascii_case(&lead_name));
 
     // Tick 1: detect_stale_attached_sessions emits AutoDetachCoworker;
     //         ensure_lead_alive sees lead as still attached (same snapshot) and does NOT spawn.
@@ -367,11 +369,13 @@ fn test_auto_detach_stale_lead_then_respawn() {
 
     let auto_detach_count = effects1
         .iter()
-        .filter(|e| matches!(e, Effect::AutoDetachCoworker { name } if name == "lead"))
+        .filter(|e| matches!(e, Effect::AutoDetachCoworker { name } if name.eq_ignore_ascii_case(&lead_name)))
         .count();
     let spawn_count_1 = effects1
         .iter()
-        .filter(|e| matches!(e, Effect::SpawnCoworker(c) if c.name.to_lowercase() == "lead"))
+        .filter(
+            |e| matches!(e, Effect::SpawnCoworker(c) if c.name.eq_ignore_ascii_case(&lead_name)),
+        )
         .count();
 
     assert_eq!(
@@ -385,7 +389,10 @@ fn test_auto_detach_stale_lead_then_respawn() {
 
     // After tick 1, harness applied AutoDetachCoworker, so lead is no longer in attached_coworkers.
     assert!(
-        !harness.snapshot().attached_coworkers.contains_key("lead"),
+        !harness
+            .snapshot()
+            .attached_coworkers
+            .contains_key(&lead_name),
         "After tick 1, lead should be removed from attached_coworkers"
     );
 
@@ -394,11 +401,13 @@ fn test_auto_detach_stale_lead_then_respawn() {
 
     let auto_detach_count_2 = effects2
         .iter()
-        .filter(|e| matches!(e, Effect::AutoDetachCoworker { name } if name == "lead"))
+        .filter(|e| matches!(e, Effect::AutoDetachCoworker { name } if name.eq_ignore_ascii_case(&lead_name)))
         .count();
     let spawn_count_2 = effects2
         .iter()
-        .filter(|e| matches!(e, Effect::SpawnCoworker(c) if c.name.to_lowercase() == "lead"))
+        .filter(
+            |e| matches!(e, Effect::SpawnCoworker(c) if c.name.eq_ignore_ascii_case(&lead_name)),
+        )
         .count();
 
     assert_eq!(

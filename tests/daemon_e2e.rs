@@ -344,11 +344,12 @@ fn test_headed_intercom_register_poll_ack() {
     }
 
     let adapter_id = format!("e2e-wrapper-{}", std::process::id());
+    let repo_name = fixture.repo_name.clone();
 
     let register = fixture.rpc_call(
         "headed.register",
         Some(serde_json::json!({
-            "session": "lead",
+            "session": &repo_name,
             "adapter_id": adapter_id,
             "provider": "claude"
         })),
@@ -361,11 +362,10 @@ fn test_headed_intercom_register_poll_ack() {
     );
 
     let unique_tag = format!("headed-intercom-{}", std::process::id());
-    let repo_name = fixture.repo_name.clone();
     let post = fixture.rpc_call(
         "channel.post",
         Some(serde_json::json!({
-            "message": format!("@lead {}", unique_tag),
+            "message": format!("@{} {}", repo_name, unique_tag),
             "from": "park"
         })),
     );
@@ -375,7 +375,7 @@ fn test_headed_intercom_register_poll_ack() {
     let poll = fixture.rpc_call(
         "headed.poll",
         Some(serde_json::json!({
-            "session": "lead",
+            "session": &repo_name,
             "adapter_id": format!("e2e-wrapper-{}", std::process::id()),
             "after_id": 0,
             "limit": 20
@@ -412,7 +412,7 @@ fn test_headed_intercom_register_poll_ack() {
     let ack = fixture.rpc_call(
         "headed.ack",
         Some(serde_json::json!({
-            "session": "lead",
+            "session": &repo_name,
             "adapter_id": format!("e2e-wrapper-{}", std::process::id()),
             "msg_id": msg_id
         })),
@@ -423,7 +423,7 @@ fn test_headed_intercom_register_poll_ack() {
     let poll_after_ack = fixture.rpc_call(
         "headed.poll",
         Some(serde_json::json!({
-            "session": "lead",
+            "session": &repo_name,
             "adapter_id": format!("e2e-wrapper-{}", std::process::id()),
             "after_id": 0,
             "limit": 20
@@ -3344,11 +3344,14 @@ fn test_daemon_rpc_session_list_includes_lead_after_spawn() {
         .as_array()
         .expect("sessions should be an array");
 
-    // Find the lead session
-    let lead_session = sessions.iter().find(|s| s["name"].as_str() == Some("lead"));
+    // Find the lead session (now named after the repo, not hardcoded "lead")
+    let lead_session = sessions
+        .iter()
+        .find(|s| s["name"].as_str() == Some(fixture.repo_name.as_str()));
     assert!(
         lead_session.is_some(),
-        "session.list should include 'lead' after spawn. Got sessions: {:?}",
+        "session.list should include '{}' after spawn. Got sessions: {:?}",
+        fixture.repo_name,
         sessions
     );
 
