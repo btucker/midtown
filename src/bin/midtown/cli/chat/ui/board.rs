@@ -871,11 +871,13 @@ mod tests {
         KanbanTask {
             id: id.to_string(),
             subject: format!("Task {id}"),
+            description: None,
             owner: None,
             status: TaskStatus::Pending,
             modified_at: None,
             channel: None,
             blocked_by: blocked_by.into_iter().map(|s| s.to_string()).collect(),
+            pr_number: None,
         }
     }
 
@@ -1075,20 +1077,24 @@ mod tests {
             KanbanTask {
                 id: "42".to_string(),
                 subject: "First task".to_string(),
+                description: None,
                 owner: Some("york".to_string()),
                 status: TaskStatus::InProgress,
                 modified_at: None,
                 channel: None,
                 blocked_by: vec![],
+                pr_number: None,
             },
             KanbanTask {
                 id: "43".to_string(),
                 subject: "Second task".to_string(),
+                description: None,
                 owner: Some("lexington".to_string()),
                 status: TaskStatus::Pending,
                 modified_at: None,
                 channel: None,
                 blocked_by: vec![],
+                pr_number: None,
             },
         ];
 

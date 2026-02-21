@@ -648,6 +648,10 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                         // Esc closes thread when thread pane is focused
                         app.close_thread();
                         EventResult::Continue
+                    } else if app.focused_pane == FocusedPane::TaskPanel {
+                        // Esc closes task panel
+                        app.close_task_panel();
+                        EventResult::Continue
                     } else if app.focused_pane == FocusedPane::InputBar {
                         // Esc clears input when in InputBar
                         app.input_text.clear();
@@ -686,7 +690,10 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                                 app.board_selection_up();
                                 EventResult::Continue
                             }
-                            FocusedPane::Chat | FocusedPane::InputBar | FocusedPane::Thread => {
+                            FocusedPane::Chat
+                            | FocusedPane::InputBar
+                            | FocusedPane::Thread
+                            | FocusedPane::TaskPanel => {
                                 app.scroll_up();
                                 EventResult::Continue
                             }
@@ -706,7 +713,10 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                                 app.board_selection_down();
                                 EventResult::Continue
                             }
-                            FocusedPane::Chat | FocusedPane::InputBar | FocusedPane::Thread => {
+                            FocusedPane::Chat
+                            | FocusedPane::InputBar
+                            | FocusedPane::Thread
+                            | FocusedPane::TaskPanel => {
                                 app.scroll_down();
                                 EventResult::Continue
                             }
@@ -769,16 +779,14 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                         }
                         EventResult::Continue
                     } else if app.focused_pane == FocusedPane::Board {
-                        // When board is focused and Enter is pressed, check if a task is selected
+                        // When board is focused and Enter is pressed, open task detail panel
                         if let Some(app::BoardSelection::Task(_channel, task_id)) =
-                            &app.board_selection
-                            && let Some(task) = app.tasks.iter().find(|t| &t.id == task_id)
-                            && let Some(ref owner) = task.owner
+                            app.board_selection.clone()
                         {
-                            // Attach to the coworker owning this task
-                            return EventResult::AttachCoworker(owner.clone());
+                            app.open_task_panel(&task_id);
+                            return EventResult::Continue;
                         }
-                        // If no task selected or task has no owner, focus InputBar
+                        // If no task selected, focus InputBar
                         app.focused_pane = FocusedPane::InputBar;
                         EventResult::Continue
                     } else if app.focused_pane != FocusedPane::InputBar
@@ -1086,12 +1094,11 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                         return EventResult::Continue;
                     }
 
-                    // Check if click is on a task line (for attach)
-                    if let Some((_task_id, task_owner)) = app.task_line_map.get(&content_y)
-                        && let Some(owner) = task_owner
-                    {
-                        // Task has an owner - attach to their session
-                        return EventResult::AttachCoworker(owner.clone());
+                    // Check if click is on a task line (open task detail panel)
+                    if let Some((task_id, _task_owner)) = app.task_line_map.get(&content_y) {
+                        let task_id = task_id.clone();
+                        app.open_task_panel(&task_id);
+                        return EventResult::Continue;
                     }
 
                     // Click in board area (but not on a task with owner) - focus it
@@ -2276,20 +2283,24 @@ mod tests {
             KanbanTask {
                 id: "1".to_string(),
                 subject: "Task in midtown".to_string(),
+                description: None,
                 owner: None,
                 status: TaskStatus::Pending,
                 modified_at: None,
                 channel: Some("midtown".to_string()),
                 blocked_by: vec![],
+                pr_number: None,
             },
             KanbanTask {
                 id: "2".to_string(),
                 subject: "Task in feature-x".to_string(),
+                description: None,
                 owner: None,
                 status: TaskStatus::Pending,
                 modified_at: None,
                 channel: Some("feature-x".to_string()),
                 blocked_by: vec![],
+                pr_number: None,
             },
         ];
         app.selected_channel = "midtown".to_string();
@@ -2363,11 +2374,13 @@ mod tests {
         app.tasks = vec![KanbanTask {
             id: "1".to_string(),
             subject: "Task in midtown".to_string(),
+            description: None,
             owner: None,
             status: TaskStatus::Pending,
             modified_at: None,
             channel: Some("midtown".to_string()),
             blocked_by: vec![],
+            pr_number: None,
         }];
         app.selected_channel = "midtown".to_string();
         app.board_selection = Some(BoardSelection::Channel("midtown".to_string()));
@@ -2595,11 +2608,13 @@ mod tests {
         app.tasks = vec![KanbanTask {
             id: "1".to_string(),
             subject: "Task in midtown".to_string(),
+            description: None,
             owner: None,
             status: TaskStatus::Pending,
             modified_at: None,
             channel: Some("midtown".to_string()),
             blocked_by: vec![],
+            pr_number: None,
         }];
         app.selected_channel = "midtown".to_string();
         app.board_selection = None;

@@ -162,16 +162,17 @@ pub struct RepoStatus {
 pub struct KanbanTask {
     pub id: String,
     pub subject: String,
+    pub description: Option<String>,
     pub owner: Option<String>,
     pub status: TaskStatus,
     /// When the task file was last modified (used as proxy for status change time)
-    #[allow(dead_code)] // Will be used in future PR detail views
     pub modified_at: Option<DateTime<Utc>>,
     /// Optional channel assignment for routing coworker messages
     pub channel: Option<String>,
     /// Task IDs this task is blocked by
-    #[allow(dead_code)]
     pub blocked_by: Vec<String>,
+    /// Linked PR number (if any)
+    pub pr_number: Option<u64>,
 }
 
 /// Task status for kanban columns
@@ -237,6 +238,8 @@ pub const CHANNEL_LEAD_THINKING_TIMEOUT: std::time::Duration = std::time::Durati
 pub enum FocusedPane {
     /// Board panel (left) - channel swimlanes with tasks
     Board,
+    /// Task detail panel (right) - shows full task details on click
+    TaskPanel,
     /// Chat panel (right) - message stream for selected channel
     Chat,
     /// Input bar (bottom of chat panel) - text input for posting messages
@@ -461,6 +464,8 @@ pub struct App {
     /// X column where the thread panel starts (set each render pass; None when thread is closed).
     /// Used to route mouse scroll events to the thread panel vs. main chat.
     pub thread_panel_x: Option<u16>,
+    /// Currently open task ID in the detail panel (None when task panel is closed).
+    pub open_task_id: Option<String>,
     /// Recent messages from the ops channel (daemon operational messages).
     /// Loaded from the "ops" channel file independently of the selected channel.
     pub ops_messages: VecDeque<Message>,
@@ -645,6 +650,7 @@ impl App {
             thread_input_cursor: 0,
             thread_scroll_offset: 0,
             thread_panel_x: None,
+            open_task_id: None,
             ops_messages: VecDeque::new(),
             ops_channel,
             ops_initial_load_done: false,
@@ -1158,6 +1164,7 @@ impl App {
         self.focused_pane = match self.focused_pane {
             FocusedPane::Board => FocusedPane::Chat,
             FocusedPane::Chat => FocusedPane::InputBar,
+            FocusedPane::TaskPanel => FocusedPane::InputBar,
             FocusedPane::InputBar => {
                 if self.thread_parent_id.is_some() {
                     FocusedPane::Thread
@@ -1206,6 +1213,29 @@ impl App {
         self.thread_input_area = None;
         self.thread_scroll_offset = 0;
         self.thread_panel_x = None;
+        self.focused_pane = FocusedPane::InputBar;
+    }
+
+    /// Open the task detail panel for the given task ID.
+    ///
+    /// Closes any open thread panel — task and thread panels share the same
+    /// right-side slot (60/40 split).
+    pub fn open_task_panel(&mut self, task_id: &str) {
+        // Verify task exists
+        if !self.tasks.iter().any(|t| t.id == task_id) {
+            return;
+        }
+        // Close thread panel if open — they share the same right-side slot
+        if self.thread_parent_id.is_some() {
+            self.close_thread();
+        }
+        self.open_task_id = Some(task_id.to_string());
+        self.focused_pane = FocusedPane::TaskPanel;
+    }
+
+    /// Close the task detail panel and return focus to the main input bar.
+    pub fn close_task_panel(&mut self) {
+        self.open_task_id = None;
         self.focused_pane = FocusedPane::InputBar;
     }
 
@@ -2556,15 +2586,25 @@ fn fetch_tasks() -> Vec<KanbanTask> {
                 })
                 .unwrap_or_default();
 
+            let description = task_data
+                .get("description")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(String::from);
+
+            let pr_number = task_data.get("prNumber").and_then(|v| v.as_u64());
+
             if !id.is_empty() {
                 tasks.push(KanbanTask {
                     id,
                     subject,
+                    description,
                     owner,
                     status,
                     modified_at,
                     channel,
                     blocked_by,
+                    pr_number,
                 });
             }
         }
@@ -3590,6 +3630,7 @@ pub(super) mod tests {
             thread_input_cursor: 0,
             thread_scroll_offset: 0,
             thread_panel_x: None,
+            open_task_id: None,
             ops_messages: VecDeque::new(),
             ops_channel: None,
             ops_initial_load_done: true,
@@ -3694,11 +3735,13 @@ pub(super) mod tests {
         let task = KanbanTask {
             id: "1".to_string(),
             subject: "Test task".to_string(),
+            description: None,
             owner: Some("park".to_string()),
             status: TaskStatus::InProgress,
             modified_at: None,
             channel: None,
             blocked_by: vec![],
+            pr_number: None,
         };
         let cloned = task.clone();
         assert_eq!(cloned.id, "1");
@@ -3714,29 +3757,35 @@ pub(super) mod tests {
                 KanbanTask {
                     id: "1".to_string(),
                     subject: "Pending task".to_string(),
+                    description: None,
                     owner: None,
                     status: TaskStatus::Pending,
                     modified_at: None,
                     channel: None,
                     blocked_by: vec![],
+                    pr_number: None,
                 },
                 KanbanTask {
                     id: "2".to_string(),
                     subject: "In progress task".to_string(),
+                    description: None,
                     owner: Some("park".to_string()),
                     status: TaskStatus::InProgress,
                     modified_at: None,
                     channel: None,
                     blocked_by: vec![],
+                    pr_number: None,
                 },
                 KanbanTask {
                     id: "3".to_string(),
                     subject: "Completed task".to_string(),
+                    description: None,
                     owner: Some("lexington".to_string()),
                     status: TaskStatus::Completed,
                     modified_at: None,
                     channel: None,
                     blocked_by: vec![],
+                    pr_number: None,
                 },
             ],
             ..test_app()
@@ -4281,29 +4330,35 @@ pub(super) mod tests {
                 KanbanTask {
                     id: "1".to_string(),
                     subject: "Task 1".to_string(),
+                    description: None,
                     owner: None,
                     status: TaskStatus::Pending,
                     modified_at: None,
                     channel: Some("midtown".to_string()),
                     blocked_by: vec![],
+                    pr_number: None,
                 },
                 KanbanTask {
                     id: "2".to_string(),
                     subject: "Task 2".to_string(),
+                    description: None,
                     owner: Some("park".to_string()),
                     status: TaskStatus::InProgress,
                     modified_at: None,
                     channel: Some("midtown".to_string()),
                     blocked_by: vec![],
+                    pr_number: None,
                 },
                 KanbanTask {
                     id: "3".to_string(),
                     subject: "Task 3".to_string(),
+                    description: None,
                     owner: None,
                     status: TaskStatus::Pending,
                     modified_at: None,
                     channel: Some("features".to_string()),
                     blocked_by: vec![],
+                    pr_number: None,
                 },
             ],
             available_channels: vec![
@@ -4371,20 +4426,24 @@ pub(super) mod tests {
                 KanbanTask {
                     id: "1".to_string(),
                     subject: "Task 1".to_string(),
+                    description: None,
                     owner: None,
                     status: TaskStatus::Pending,
                     modified_at: None,
                     channel: Some("midtown".to_string()),
                     blocked_by: vec![],
+                    pr_number: None,
                 },
                 KanbanTask {
                     id: "2".to_string(),
                     subject: "Task 2".to_string(),
+                    description: None,
                     owner: None,
                     status: TaskStatus::Pending,
                     modified_at: None,
                     channel: Some("features".to_string()),
                     blocked_by: vec![],
+                    pr_number: None,
                 },
             ],
             ..test_app()

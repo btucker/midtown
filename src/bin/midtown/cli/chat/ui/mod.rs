@@ -16,6 +16,7 @@ mod highlight;
 pub mod messages;
 pub mod messages_mermaid;
 pub mod styles;
+mod task_panel;
 pub mod text;
 mod thread;
 mod usage;
@@ -132,6 +133,15 @@ pub fn draw(f: &mut Frame, app: &mut App) -> Vec<Hyperlink> {
         app.thread_panel_x = Some(chat_chunks[1].x);
         chat::draw_chat_panel(f, app, chat_chunks[0]);
         thread::draw_thread_panel(f, app, chat_chunks[1]);
+    } else if app.open_task_id.is_some() {
+        // When task panel is open, split chat area horizontally: 60% channel, 40% task detail
+        let chat_chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
+            .split(horizontal_chunks[1]);
+        app.thread_panel_x = None;
+        chat::draw_chat_panel(f, app, chat_chunks[0]);
+        task_panel::draw_task_panel(f, app, chat_chunks[1]);
     } else {
         app.thread_panel_x = None;
         chat::draw_chat_panel(f, app, horizontal_chunks[1]);
