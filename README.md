@@ -458,7 +458,7 @@ Coworkers are named after Manhattan avenues: lexington, park, madison, broadway,
 
 ### Channel Leads
 
-Each topic channel can have a **channel lead** — a headless Claude Code session that acts as a domain expert for that channel. Channel leads accumulate context across conversations and are available to answer domain questions.
+Each topic channel can have a **channel lead** — a headless Claude Code session that acts as a domain expert for that channel. Channel leads are **on-demand**: they spawn when triggered by a user message, task creation, or insight in their channel, and idle-shutdown like regular coworkers when inactive. When woken, they resume their previous session if one exists from the current daemon run, or start fresh with the trigger context baked into their initial prompt.
 
 **What channel leads do:**
 

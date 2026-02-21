@@ -692,54 +692,24 @@ pub async fn recover_from_session_records(
 /// This function clears `is_running` to `false` for any session that:
 /// - Has `is_running=true`
 /// - Is NOT in `recovered_session_ids` (was not recovered by `recover_from_session_records`)
-/// - Is NOT a channel lead for an active (non-archived) channel — those are recovered
-///   separately via `recover_channel_lead_sessions`. Channel-lead sessions whose
-///   channel has been archived ARE cleared, since neither recovery path will touch them.
 ///
-/// `active_channel_names` is the set of non-archived topic channel names. Pass the
-/// result of listing non-archived channels (excluding "midtown") so this function
-/// can distinguish active channel leads from those for archived channels.
+/// Channel lead sessions are included — they are on-demand and not recovered at startup.
+/// Their `channel_lead_sessions` map is cleared separately in `mod.rs`.
 ///
 /// Call this after `recover_from_session_records` completes, before the event loop starts.
 /// The caller is responsible for saving persistent state after this call.
 pub async fn clear_stale_running_sessions(
     persistent_state: &tokio::sync::Mutex<DaemonPersistentState>,
     recovered_session_ids: &HashSet<String>,
-    active_channel_names: &HashSet<String>,
 ) {
     let mut state = persistent_state.lock().await;
     let mut cleared = 0usize;
-
-    // Build a reverse map: session_id → channel_name from channel_lead_sessions.
-    // Used to identify which channel a channel-lead SessionRecord belongs to.
-    let session_id_to_channel: std::collections::HashMap<String, String> = state
-        .channel_lead_sessions
-        .iter()
-        .map(|(channel, session_id)| (session_id.clone(), channel.clone()))
-        .collect();
 
     for record in state.sessions.values_mut() {
         if !record.is_running {
             continue;
         }
         if recovered_session_ids.contains(&record.session_id) {
-            continue;
-        }
-        // Channel leads for active (non-archived) channels are recovered separately —
-        // do not clear their flags here. Channel leads for archived channels are not
-        // recovered by either path and must be cleared.
-        if record.coworker_type == "channel-lead" {
-            let channel_name = session_id_to_channel.get(&record.session_id);
-            let is_active = channel_name.is_some_and(|ch| active_channel_names.contains(ch));
-            if is_active {
-                continue;
-            }
-            info!(
-                "Clearing stale is_running flag for archived channel-lead session {} (channel={:?})",
-                record.session_id, channel_name,
-            );
-            record.is_running = false;
-            cleared += 1;
             continue;
         }
         info!(
@@ -759,132 +729,6 @@ pub async fn clear_stale_running_sessions(
     if cleared > 0 {
         info!("Cleared stale is_running flag for {} session(s)", cleared);
     }
-}
-
-/// Recover channel lead sessions from persisted state after daemon restart.
-///
-/// For each active (non-archived) topic channel:
-/// - If a session ID is persisted in `channel_lead_sessions`, emit a `SpawnCoworker`
-///   with `SessionMode::ResumeSession` to resume it.
-/// - If no session ID is persisted, emit a `SpawnCoworker` with `SessionMode::Fresh`
-///   to start a new channel lead session.
-///
-/// The "midtown" main channel is excluded — it uses the Lead session, not a channel lead.
-pub async fn recover_channel_lead_sessions(
-    persistent_state: &tokio::sync::Mutex<crate::daemon::state::DaemonPersistentState>,
-    repo_name: &str,
-) -> Vec<crate::daemon::effects::Effect> {
-    let base_dir = crate::paths::projects_dir_for_repo(repo_name);
-    recover_channel_lead_sessions_from(persistent_state, repo_name, &base_dir).await
-}
-
-/// Inner implementation for `recover_channel_lead_sessions`, separated for testability.
-///
-/// Takes an explicit `base_dir` to allow tests to use a temporary directory instead
-/// of the real `~/.midtown/projects/<repo>/` path.
-pub(crate) async fn recover_channel_lead_sessions_from(
-    persistent_state: &tokio::sync::Mutex<crate::daemon::state::DaemonPersistentState>,
-    repo_name: &str,
-    base_dir: &std::path::Path,
-) -> Vec<crate::daemon::effects::Effect> {
-    use crate::daemon::effects::Effect;
-    use crate::launch::{LaunchConfig, SessionMode};
-
-    let mut effects = Vec::new();
-
-    // List active (non-archived) channels
-    let channels = match crate::channel::Channel::list(base_dir, false, None) {
-        Ok(channels) => channels,
-        Err(e) => {
-            warn!("Failed to list channels for channel lead recovery: {}", e);
-            return effects;
-        }
-    };
-
-    // Filter to topic channels only (exclude main project channel names).
-    // "midtown" is the current main channel name; "main" was the old fallback name
-    // used before the rename. Both are excluded to prevent the daemon from spawning
-    // channel leads for what should be the main lead's channel. This also provides
-    // defense-in-depth against accidentally recreated "main" channel directories
-    // (e.g., from tests or old TUI sessions before the rename).
-    let topic_channels: Vec<_> = channels
-        .into_iter()
-        .filter(|c| !c.is_archived && c.name != "midtown" && c.name != "main")
-        .collect();
-
-    if topic_channels.is_empty() {
-        return effects;
-    }
-
-    let (channel_lead_sessions, headless_sessions) = {
-        let ps = persistent_state.lock().await;
-        (
-            ps.channel_lead_sessions.clone(),
-            ps.headless_sessions.clone(),
-        )
-    };
-
-    info!(
-        "Recovering {} channel lead session(s): {:?}",
-        topic_channels.len(),
-        topic_channels.iter().map(|c| &c.name).collect::<Vec<_>>()
-    );
-
-    for channel_info in &topic_channels {
-        let channel_name = &channel_info.name;
-
-        // Cross-check headless_sessions: if the death handler cleared headless_sessions[name]
-        // after a failed resume, don't attempt to resume even if channel_lead_sessions still
-        // holds a stale session ID (the death handler fix clears both, but this is defense-in-depth).
-        let headless_session_id_cleared = headless_sessions
-            .get(channel_name.as_str())
-            .is_some_and(|info| info.session_id.is_empty());
-
-        let session_mode = if let Some(session_id) =
-            channel_lead_sessions.get(channel_name.as_str())
-            && !session_id.is_empty()
-            && !headless_session_id_cleared
-        {
-            info!(
-                "Resuming channel lead session for '{}': {}",
-                channel_name, session_id
-            );
-            SessionMode::ResumeSession(session_id.clone())
-        } else {
-            if headless_session_id_cleared {
-                info!(
-                    "Skipping stale session ID for channel lead '{}': headless_sessions entry was cleared after failed resume",
-                    channel_name
-                );
-            } else {
-                info!(
-                    "No saved session for channel lead '{}', spawning fresh",
-                    channel_name
-                );
-            }
-            SessionMode::Fresh
-        };
-
-        let config = LaunchConfig::channel_lead(
-            channel_name.as_str(),
-            repo_name,
-            session_mode,
-            "", // domain_context: empty at startup, accumulates via session persistence
-        );
-
-        effects.push(Effect::SpawnCoworker(config));
-
-        // Register the channel in channel_lead_sessions if not already there
-        // (empty session ID placeholder; backfilled when init event arrives)
-        if !channel_lead_sessions.contains_key(channel_name.as_str()) {
-            effects.push(Effect::SaveChannelLeadSession {
-                channel_name: channel_name.clone(),
-                session_id: String::new(), // placeholder; backfilled on init event
-            });
-        }
-    }
-
-    effects
 }
 
 #[path = "startup_tests.rs"]

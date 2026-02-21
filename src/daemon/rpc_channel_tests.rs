@@ -887,7 +887,7 @@ async fn test_handle_channel_archive_rejects_midtown() {
 /// Verify that channel.archive cleans up channel_lead_sessions and headless_sessions.
 ///
 /// Bug: archiving via CLI (`midtown channel archive`) didn't remove channel lead
-/// session state. The daemon's `ensure_channel_leads_alive` would then respawn the
+/// session state. On-demand triggers (NudgeChannelLead) could then respawn the
 /// lead, which recreated the archived channel directory.
 #[tokio::test]
 async fn test_handle_channel_archive_cleans_up_channel_lead_sessions() {

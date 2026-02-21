@@ -85,9 +85,15 @@ pub(super) async fn chat_monitor_loop(
                                             );
                                         }
                                         if msg_lower.contains("@ops") {
-                                            let nudge_text =
-                                                format!("{} ({}): {}", msg.from, msg.id, msg.content);
-                                            state.nudge_ops_channel_lead(&nudge_text).await;
+                                            let effect = super::effects::Effect::NudgeChannelLead {
+                                                channel_name: OPS_CHANNEL.to_string(),
+                                                reason: super::wake_reason::WakeReason::Mention {
+                                                    from: msg.from.clone(),
+                                                    content: msg.content.clone(),
+                                                    msg_id: msg.id.clone(),
+                                                },
+                                            };
+                                            super::effects::execute_effects(vec![effect], &state).await;
                                             info!(
                                                 "Nudged ops channel lead about @ops mention in {} message",
                                                 msg.from
@@ -233,7 +239,10 @@ pub(super) async fn route_mentions(state: &DaemonState, msg: &Message) {
         );
 
         // Convert MentionAction → Effects, execute via the standard pipeline.
-        let effects = mention_action_to_effects(action, &target_name, &state.repo_name);
+        let name_session_map: std::collections::HashMap<String, String> =
+            state.name_to_session.lock().unwrap().clone();
+        let effects =
+            mention_action_to_effects(action, &target_name, &state.repo_name, &name_session_map);
         super::effects::execute_effects(effects, state).await;
     }
 }
@@ -313,12 +322,17 @@ fn mention_action_to_effects(
     action: crate::rules::MentionAction,
     coworker_name: &str,
     repo_name: &str,
+    name_session_map: &std::collections::HashMap<String, String>,
 ) -> Vec<super::effects::Effect> {
     use super::effects::Effect;
 
     match action {
         crate::rules::MentionAction::Nudge { name, message } => {
-            vec![Effect::NudgeCoworker { name, message }]
+            let session_id = name_session_map
+                .get(&name.to_lowercase())
+                .cloned()
+                .unwrap_or_default();
+            vec![Effect::nudge_session(session_id, message)]
         }
         crate::rules::MentionAction::Spawn { name, message } => {
             let config = crate::launch::LaunchConfig::coworker(

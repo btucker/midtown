@@ -97,13 +97,17 @@ fn test_usage_limit_nudge_only_targets_running_coworkers() {
         is_at_dev_limit: false,
         now_utc: chrono::Utc::now(),
         repo_name: "test-repo".to_string(),
+        default_channel: "test-repo".to_string(),
         repo_owner: None,
         github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
         freshly_fetched_rate_limit: None,
         sessions: HashMap::new(),
         session_task_map: HashMap::new(),
         session_name_map: HashMap::new(),
-        name_session_map: HashMap::new(),
+        name_session_map: HashMap::from([
+            ("lexington".to_string(), "sess-lexington".to_string()),
+            ("park".to_string(), "sess-park".to_string()),
+        ]),
         orphan_spawn_cooldown_active: false,
         session_dispatch_cooldown_active: false,
         spawn_failure_cooldown_names: std::collections::HashSet::new(),
@@ -111,25 +115,21 @@ fn test_usage_limit_nudge_only_targets_running_coworkers() {
 
     let effects = maybe_nudge_usage_limit_expiry(&snap);
 
-    // Should have effects: ClearUsageLimitNudge + PostToChannel + 1 NudgeCoworker
-    let nudge_names: Vec<&str> = effects
+    // Should have effects: ClearUsageLimitNudge + PostToChannel + 1 NudgeSession
+    let nudge_session_ids: Vec<&str> = effects
         .iter()
         .filter_map(|e| match e {
-            Effect::NudgeCoworker { name, .. } => Some(name.as_str()),
+            Effect::NudgeSession { session_id, .. } => Some(session_id.as_str()),
             _ => None,
         })
         .collect();
 
-    // Only the Running coworker should be nudged
-    assert!(
-        nudge_names.contains(&"lexington"),
-        "Running coworker should be nudged"
+    // Only the Running coworker should be nudged, not the Stopping one
+    assert_eq!(
+        nudge_session_ids,
+        vec!["sess-lexington"],
+        "Only the Running coworker (lexington) should be nudged"
     );
-    assert!(
-        !nudge_names.contains(&"park"),
-        "Stopping coworker must NOT be nudged"
-    );
-    assert_eq!(nudge_names.len(), 1, "Only 1 coworker should be nudged");
 }
 
 #[test]
@@ -145,7 +145,7 @@ fn test_fired_reminder_nudges_lead() {
     };
     let fired = vec![&reminder];
 
-    let effects = effects_for_fired_reminders(&fired, "test-repo");
+    let effects = effects_for_fired_reminders(&fired, "test-repo", "test-repo");
 
     // Should have: PostToChannel, NudgeLead, MarkRemindersFired
     assert_eq!(effects.len(), 3, "Expected 3 effects");
@@ -154,8 +154,8 @@ fn test_fired_reminder_nudges_lead() {
         "First effect should be PostToChannel"
     );
     assert!(
-        matches!(&effects[1], Effect::NudgeLead { .. }),
-        "Second effect should be NudgeLead"
+        matches!(&effects[1], Effect::NudgeChannelLead { .. }),
+        "Second effect should be NudgeChannelLead"
     );
     assert!(
         matches!(&effects[2], Effect::MarkRemindersFired { .. }),
@@ -166,7 +166,7 @@ fn test_fired_reminder_nudges_lead() {
 #[test]
 fn test_fired_reminder_no_reminders_produces_no_effects() {
     let fired: Vec<&crate::reminders::Reminder> = vec![];
-    let effects = effects_for_fired_reminders(&fired, "test-repo");
+    let effects = effects_for_fired_reminders(&fired, "test-repo", "test-repo");
     assert!(
         effects.is_empty(),
         "No fired reminders should produce no effects"
@@ -272,6 +272,7 @@ fn test_check_for_usage_limits_with_reset_time() {
         is_at_dev_limit: false,
         now_utc: chrono::Utc::now(),
         repo_name: "test-repo".to_string(),
+        default_channel: "test-repo".to_string(),
         repo_owner: None,
         github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
         freshly_fetched_rate_limit: None,
@@ -367,6 +368,7 @@ fn test_check_for_usage_limits_already_scheduled() {
         is_at_dev_limit: false,
         now_utc: chrono::Utc::now(),
         repo_name: "test-repo".to_string(),
+        default_channel: "test-repo".to_string(),
         repo_owner: None,
         github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
         freshly_fetched_rate_limit: None,
@@ -497,6 +499,7 @@ fn empty_snap() -> snapshot::WorldSnapshot {
         is_at_dev_limit: false,
         now_utc: chrono::Utc::now(),
         repo_name: "test-repo".to_string(),
+        default_channel: "test-repo".to_string(),
         repo_owner: None,
         github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
         freshly_fetched_rate_limit: None,
@@ -1165,186 +1168,6 @@ fn snapshot_lead_not_responding_cooldown_blocks_respawn_until_cleared() {
 }
 
 // -----------------------------------------------------------------------
-// ensure_channel_leads_alive tests
-// -----------------------------------------------------------------------
-
-#[test]
-fn ensure_channel_leads_alive_empty_sessions_no_effects() {
-    // No channel_lead_sessions registered → no effects
-    let snap = empty_snap();
-    let effects = ensure_channel_leads_alive(&snap);
-    assert!(
-        effects.is_empty(),
-        "Empty channel_lead_sessions should produce no effects"
-    );
-}
-
-#[test]
-fn ensure_channel_leads_alive_already_running_no_effects() {
-    use crate::coworker::{Coworker, CoworkerStatus};
-    // Channel lead is already registered as an active coworker → no effects
-    let mut snap = empty_snap();
-    snap.channel_lead_sessions
-        .insert("web".to_string(), "session-web-123".to_string());
-    snap.active_coworkers.push(Coworker {
-        slot_id: uuid::Uuid::new_v4().to_string(),
-        name: "web".to_string(), // channel_lead_session_name("web") == "web"
-        status: CoworkerStatus::Running,
-        working_dir: "/tmp/test".to_string(),
-        started_at: chrono::Utc::now(),
-        current_task: None,
-        session_id: Some("session-web-123".to_string()),
-        model: "sonnet".to_string(),
-        provider: crate::auth::AuthProvider::Claude,
-        profile: crate::auth::DEFAULT_PROFILE.to_string(),
-    });
-    let effects = ensure_channel_leads_alive(&snap);
-    assert!(
-        effects.is_empty(),
-        "Channel lead already running should produce no effects"
-    );
-}
-
-#[test]
-fn ensure_channel_leads_alive_in_flight_spawn_no_effects() {
-    // In-flight spawn: session_id is empty, no previous stop recorded → skip to avoid double-spawning
-    let mut snap = empty_snap();
-    snap.channel_lead_sessions
-        .insert("ops".to_string(), "".to_string());
-    // No entry in coworker_stop_times for "ops"
-    let effects = ensure_channel_leads_alive(&snap);
-    assert!(
-        effects.is_empty(),
-        "In-flight spawn (empty session_id, no previous stop) should produce no effects"
-    );
-}
-
-#[test]
-fn ensure_channel_leads_alive_crash_recovery_after_cooldown_spawns_fresh() {
-    // Crash recovery: empty session_id, stop_time exists, cooldown elapsed → SpawnCoworker(Fresh)
-    let mut snap = empty_snap();
-    snap.channel_lead_sessions
-        .insert("ops".to_string(), "".to_string());
-    // Stop time well beyond the cooldown
-    snap.coworker_stop_times.insert(
-        "ops".to_string(),
-        snap.now_utc - chrono::Duration::minutes(10),
-    );
-    let effects = ensure_channel_leads_alive(&snap);
-    assert_eq!(
-        effects.len(),
-        1,
-        "Crash recovery after cooldown should produce one SpawnCoworker effect"
-    );
-    match &effects[0] {
-        Effect::SpawnCoworker(config) => {
-            assert_eq!(
-                config.name, "ops",
-                "Should spawn a channel lead named 'ops'"
-            );
-            assert!(
-                matches!(config.session_mode, crate::launch::SessionMode::Fresh),
-                "Crash recovery with empty session_id should use Fresh mode"
-            );
-        }
-        other => panic!("Expected SpawnCoworker, got {:?}", other),
-    }
-}
-
-#[test]
-fn ensure_channel_leads_alive_crash_recovery_within_cooldown_no_effects() {
-    // Crash recovery: empty session_id, stop_time exists, still within cooldown → no effects
-    let mut snap = empty_snap();
-    snap.channel_lead_sessions
-        .insert("ops".to_string(), "".to_string());
-    // Stop time within the cooldown window (1 minute ago)
-    snap.coworker_stop_times.insert(
-        "ops".to_string(),
-        snap.now_utc - chrono::Duration::minutes(1),
-    );
-    let effects = ensure_channel_leads_alive(&snap);
-    assert!(
-        effects.is_empty(),
-        "Crash recovery within cooldown should produce no effects"
-    );
-}
-
-#[test]
-fn ensure_channel_leads_alive_normal_recovery_after_cooldown_resumes_session() {
-    // Normal recovery: non-empty session_id, not running, cooldown elapsed → SpawnCoworker(ResumeSession)
-    let mut snap = empty_snap();
-    snap.channel_lead_sessions
-        .insert("ops".to_string(), "session-ops-abc".to_string());
-    // Stop time well beyond the cooldown
-    snap.coworker_stop_times.insert(
-        "ops".to_string(),
-        snap.now_utc - chrono::Duration::minutes(10),
-    );
-    let effects = ensure_channel_leads_alive(&snap);
-    assert_eq!(
-        effects.len(),
-        1,
-        "Normal recovery after cooldown should produce one SpawnCoworker effect"
-    );
-    match &effects[0] {
-        Effect::SpawnCoworker(config) => {
-            assert_eq!(
-                config.name, "ops",
-                "Should spawn a channel lead named 'ops'"
-            );
-            assert!(
-                matches!(
-                    &config.session_mode,
-                    crate::launch::SessionMode::ResumeSession(id) if id == "session-ops-abc"
-                ),
-                "Normal recovery should use ResumeSession with stored session_id"
-            );
-        }
-        other => panic!("Expected SpawnCoworker, got {:?}", other),
-    }
-}
-
-#[test]
-fn ensure_channel_leads_alive_normal_recovery_within_cooldown_no_effects() {
-    // Normal recovery: non-empty session_id, not running, within cooldown → no effects
-    let mut snap = empty_snap();
-    snap.channel_lead_sessions
-        .insert("ops".to_string(), "session-ops-abc".to_string());
-    // Stop time within the cooldown window (1 minute ago)
-    snap.coworker_stop_times.insert(
-        "ops".to_string(),
-        snap.now_utc - chrono::Duration::minutes(1),
-    );
-    let effects = ensure_channel_leads_alive(&snap);
-    assert!(
-        effects.is_empty(),
-        "Normal recovery within cooldown should produce no effects"
-    );
-}
-
-#[test]
-fn ensure_channel_leads_alive_skips_archived_channels() {
-    // Bug: archived channels still had entries in channel_lead_sessions after
-    // archiving via CLI (handle_channel_archive). ensure_channel_leads_alive
-    // would respawn channel leads for archived channels, recreating the
-    // archived channel directories.
-    let mut snap = empty_snap();
-    snap.channel_lead_sessions
-        .insert("old-feature".to_string(), "session-old-123".to_string());
-    snap.archived_channels.insert("old-feature".to_string());
-    // Stop time well beyond cooldown — would normally trigger a respawn
-    snap.coworker_stop_times.insert(
-        "old-feature".to_string(),
-        snap.now_utc - chrono::Duration::minutes(10),
-    );
-    let effects = ensure_channel_leads_alive(&snap);
-    assert!(
-        effects.is_empty(),
-        "Archived channel should not get a channel lead respawned"
-    );
-}
-
-// -----------------------------------------------------------------------
 // has_pending_api_call exemption tests
 // -----------------------------------------------------------------------
 
@@ -1560,6 +1383,7 @@ fn test_idle_shutdown_emits_shutdown_session_when_mapping_exists() {
         is_at_dev_limit: false,
         now_utc: now,
         repo_name: "test-repo".to_string(),
+        default_channel: "test-repo".to_string(),
         repo_owner: None,
         github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
         freshly_fetched_rate_limit: None,
@@ -1694,6 +1518,7 @@ fn test_idle_shutdown_falls_back_to_shutdown_coworker_without_mapping() {
         is_at_dev_limit: false,
         now_utc: now,
         repo_name: "test-repo".to_string(),
+        default_channel: "test-repo".to_string(),
         repo_owner: None,
         github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
         freshly_fetched_rate_limit: None,
@@ -2117,10 +1942,10 @@ fn dead_reviewer_at_max_restarts_escalates_to_ops() {
 
     let has_nudge_lead = effects
         .iter()
-        .any(|e| matches!(e, Effect::NudgeLead { .. }));
+        .any(|e| matches!(e, Effect::NudgeChannelLead { .. }));
     assert!(
         has_nudge_lead,
-        "expected NudgeLead effect, got: {:#?}",
+        "expected NudgeChannelLead effect, got: {:#?}",
         effects
     );
 

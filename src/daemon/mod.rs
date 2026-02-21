@@ -34,6 +34,7 @@ mod startup;
 pub(crate) mod state;
 mod stream;
 mod trackers;
+pub(crate) mod wake_reason;
 mod webhook_fwd;
 
 use constants::*;
@@ -72,8 +73,8 @@ pub use events::DaemonEvent;
 pub use health::{
     check_and_restart_dead_reviewers, check_and_restart_stuck_reviewers,
     check_and_restart_tool_name_conflicts, check_and_shutdown_idle_coworkers,
-    check_for_usage_limits, detect_stale_attached_sessions, ensure_channel_leads_alive,
-    ensure_lead_alive, maybe_nudge_usage_limit_expiry,
+    check_for_usage_limits, detect_stale_attached_sessions, ensure_lead_alive,
+    maybe_nudge_usage_limit_expiry,
 };
 #[doc(hidden)]
 pub use pr::{collect_merged_pr_cleanup_effects, reconcile_orphaned_prs};
@@ -1483,7 +1484,7 @@ impl DaemonState {
     /// Clear the in-flight marker for a task after its spawn or nudge effect completes.
     ///
     /// Called from `execute_effects` when `AssignAndSpawn` or
-    /// `NudgeCoworkerWithCallbacks` (with `RecordTaskAssignment`) succeeds or fails.
+    /// `NudgeSessionWithCallbacks` (with `RecordTaskAssignment`) succeeds or fails.
     pub(crate) fn clear_task_spawn_in_flight(&self, task_id: &str) {
         self.in_flight_task_spawns.lock().unwrap().remove(task_id);
     }
@@ -1589,8 +1590,8 @@ impl DaemonState {
 
     /// Record a pending nudge sent to a coworker.
     ///
-    /// Called after successfully sending a nudge via `NudgeCoworker` or
-    /// `NudgeCoworkerWithCallbacks`. The pending nudge is used for attribution
+    /// Called after successfully sending a nudge via `NudgeSession` or
+    /// `NudgeSessionWithCallbacks`. The pending nudge is used for attribution
     /// tracking: if queued text matches the pending nudge, we know it's
     /// daemon-sent and can auto-submit with Enter.
     pub(crate) fn record_pending_nudge(&self, name: &str, message: &str) {
@@ -1890,31 +1891,6 @@ impl DaemonState {
             self.enqueue_headed_nudge(&self.repo_name, message).await;
         }
     }
-
-    /// Nudge the ops channel lead with a message.
-    ///
-    /// The ops channel lead handles daemon operational alerts (stuck PRs, orphaned PRs,
-    /// coworker health) and escalates to @lead when human judgment is required.
-    /// If the ops channel lead is not currently running, the nudge is dropped — the
-    /// message is still posted to the ops channel so the lead can see it on next start.
-    pub(crate) async fn nudge_ops_channel_lead(&self, message: &str) {
-        let session_name = crate::launch::channel_lead_session_name(OPS_CHANNEL);
-        match self
-            .session_manager
-            .send_message(&session_name, message)
-            .await
-        {
-            Ok(()) => {
-                tracing::debug!(
-                    "Nudged ops channel lead: {}",
-                    message.chars().take(60).collect::<String>()
-                );
-            }
-            Err(e) => {
-                tracing::debug!("Failed to nudge ops channel lead: {}", e);
-            }
-        }
-    }
 }
 
 impl DaemonState {
@@ -1922,7 +1898,7 @@ impl DaemonState {
     ///
     /// Called after `evaluate_tick` returns effects, before `execute_effects`.
     /// This prevents the next tick from generating duplicate spawns/nudges for the same task.
-    /// Covers `AssignAndSpawn` (fresh spawns), `NudgeCoworkerWithCallbacks`, and
+    /// Covers `AssignAndSpawn` (fresh spawns), `NudgeSessionWithCallbacks`, and
     /// `SpawnCoworkerWithCallbacks` that contain a `RecordTaskAssignment` in on_success.
     pub(crate) fn mark_in_flight_spawns_from_effects(&self, effects: &[effects::Effect]) {
         for effect in effects {
@@ -1931,7 +1907,7 @@ impl DaemonState {
                     self.mark_task_spawn_in_flight(task_id);
                     debug!("Marked task !{} as in-flight spawn", task_id);
                 }
-                effects::Effect::NudgeCoworkerWithCallbacks { on_success, .. }
+                effects::Effect::NudgeSessionWithCallbacks { on_success, .. }
                 | effects::Effect::SpawnCoworkerWithCallbacks { on_success, .. } => {
                     for sub_effect in on_success {
                         if let effects::Effect::RecordTaskAssignment { task_id, .. } = sub_effect {
@@ -1945,13 +1921,19 @@ impl DaemonState {
         }
     }
 
-    /// Look up the session ID currently holding a given name.
+    /// Look up the session ID currently holding a given coworker name.
     ///
-    /// Infrastructure for the session-centric model — used by effect handlers
-    /// and RPC adapters once the session-centric migration is further along.
-    #[allow(dead_code)] // Used in tests; production callers arrive in later migration tasks
-    pub(crate) fn session_for_name(&self, name: &str) -> Option<String> {
-        self.name_to_session.lock().unwrap().get(name).cloned()
+    /// Case-insensitive: the name is lowercased before lookup (the map uses
+    /// lowercase keys). Returns an empty string if no session is found, which
+    /// matches the convention used by `NudgeSession` / `NudgeSessionWithCallbacks`
+    /// effects (the execution layer warns on empty session IDs).
+    pub(crate) fn session_id_for_name(&self, name: &str) -> String {
+        self.name_to_session
+            .lock()
+            .unwrap()
+            .get(&name.to_lowercase())
+            .cloned()
+            .unwrap_or_default()
     }
 
     /// Look up the name currently assigned to a given session ID.
@@ -2869,39 +2851,12 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
         effects::execute_effects(session_recovery_effects, &state).await;
     }
 
-    // Collect active (non-archived) topic channel names before clearing stale flags.
-    // Used to distinguish channel-lead sessions for active channels (preserved for
-    // separate recovery) from those for archived channels (stale, must be cleared).
-    let active_channel_names: std::collections::HashSet<String> = {
-        let base_dir = crate::paths::projects_dir_for_repo(&repo_name);
-        match crate::channel::Channel::list(&base_dir, false, None) {
-            Ok(channels) => channels
-                .into_iter()
-                .filter(|c| !c.is_archived && c.name != "midtown")
-                .map(|c| c.name)
-                .collect(),
-            Err(e) => {
-                warn!(
-                    "Failed to list channels for stale session cleanup: {} — treating all channel-lead sessions as needing recovery",
-                    e
-                );
-                std::collections::HashSet::new()
-            }
-        }
-    };
-
     // Clear stale is_running flags for sessions that were not recovered.
     // Sessions with is_running=true but resume_on_startup=false (e.g., reviewers,
     // manually-stopped sessions) are skipped by recover_from_session_records but
     // retain their stale flag — causing dispatch to think they're still active.
-    // Channel-lead sessions for archived channels are also cleared here since
-    // neither this path nor recover_channel_lead_sessions will touch them.
-    startup::clear_stale_running_sessions(
-        &state.persistent_state,
-        &recovered_session_ids,
-        &active_channel_names,
-    )
-    .await;
+    // Channel leads are included — they are on-demand and not recovered at startup.
+    startup::clear_stale_running_sessions(&state.persistent_state, &recovered_session_ids).await;
     {
         let ps = state.persistent_state.lock().await;
         if let Err(e) = ps.save_for_repo(&repo_name) {
@@ -2912,15 +2867,16 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
         }
     }
 
-    // Recover channel lead sessions for active (non-archived) topic channels.
-    let channel_lead_effects =
-        startup::recover_channel_lead_sessions(&state.persistent_state, &repo_name).await;
-    if !channel_lead_effects.is_empty() {
-        info!(
-            "Executing {} channel lead recovery effect(s)",
-            channel_lead_effects.len()
-        );
-        effects::execute_effects(channel_lead_effects, &state).await;
+    // Clear stale channel lead sessions from previous daemon run.
+    // Channel leads are on-demand — they'll be spawned by triggers.
+    {
+        let mut ps = state.persistent_state.lock().await;
+        if !ps.channel_lead_sessions.is_empty() {
+            ps.channel_lead_sessions.clear();
+            if let Err(e) = ps.save_for_repo(&repo_name) {
+                warn!("Failed to clear channel_lead_sessions on startup: {}", e);
+            }
+        }
     }
 
     let mut sigterm = signal(SignalKind::terminate())?;

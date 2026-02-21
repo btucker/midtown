@@ -24,7 +24,7 @@ use super::{DaemonState, snapshot};
 /// automatically sent on a break.
 ///
 /// IMPORTANT: Coworkers are NEVER sent on a break if any of these apply:
-/// - They are a channel lead (long-lived domain expert session, like "lead")
+/// - They are the project lead session (named "lead")
 /// - They have open unmerged PRs (must stay available for review feedback)
 /// - They have active review assignments
 /// - They have unblocked dependent tasks
@@ -67,8 +67,6 @@ pub fn check_and_shutdown_idle_coworkers(snap: &snapshot::WorldSnapshot) -> Vec<
 
     // Pure decision: who should be shut down?
     let to_shutdown = {
-        let channel_lead_names: std::collections::HashSet<String> =
-            snap.channel_lead_sessions.keys().cloned().collect();
         let idle_ctx = crate::rules::IdleShutdownContext {
             coworkers: &snap.coworker_snapshots,
             busy_coworkers: &snap.busy_coworkers,
@@ -81,7 +79,6 @@ pub fn check_and_shutdown_idle_coworkers(snap: &snapshot::WorldSnapshot) -> Vec<
             auth_error_coworkers: &snap.auth_error_coworkers,
             pending_task_owners: &snap.pending_task_owners,
             review_feedback_pr_coworkers: &snap.review_feedback_pr_coworkers,
-            channel_lead_names: &channel_lead_names,
             now_utc: snap.now_utc,
             minimum_lifetime: MINIMUM_COWORKER_LIFETIME,
         };
@@ -551,12 +548,13 @@ pub fn check_and_restart_stuck_reviewers(snap: &snapshot::WorldSnapshot) -> Vec<
             ),
             channel: Some(OPS_CHANNEL.to_string()),
         });
-        effects.push(Effect::NudgeLead {
-            message: format!(
+        effects.push(Effect::nudge_channel_lead(
+            &snap.repo_name,
+            format!(
                 "Reviewer {} is stuck on PR #{} after {} restarts. Please investigate.",
                 name, pr_number, restart_count
             ),
-        });
+        ));
         effects.push(Effect::RecordReviewerEscalation { pr_number });
     }
 
@@ -718,13 +716,14 @@ pub fn check_and_restart_dead_reviewers(snap: &snapshot::WorldSnapshot) -> Vec<E
             ),
             channel: Some(OPS_CHANNEL.to_string()),
         });
-        effects.push(Effect::NudgeLead {
-            message: format!(
+        effects.push(Effect::nudge_channel_lead(
+            &snap.repo_name,
+            format!(
                 "Reviewer {} failed to post a review for PR #{} after {} attempts. \
                  Escalated to ops — please investigate.",
                 escalation.name, escalation.pr_number, escalation.restart_count,
             ),
-        });
+        ));
         effects.push(Effect::RecordReviewerEscalation {
             pr_number: escalation.pr_number,
         });
@@ -840,10 +839,12 @@ pub fn maybe_nudge_usage_limit_expiry(snap: &snapshot::WorldSnapshot) -> Vec<Eff
 
     // Only nudge Running coworkers — Stopping/Starting coworkers have no active session.
     for cw in &snap.running_coworkers {
-        effects.push(Effect::NudgeCoworker {
-            name: cw.name.clone(),
-            message: "continue".to_string(),
-        });
+        let session_id = snap
+            .name_session_map
+            .get(&cw.name.to_lowercase())
+            .cloned()
+            .unwrap_or_default();
+        effects.push(Effect::nudge_session(session_id, "continue"));
     }
 
     effects
@@ -921,7 +922,7 @@ pub(super) fn check_and_handle_auth_errors(
         );
 
         // Nudge the lead so the user sees this immediately
-        effects.push(Effect::NudgeLead { message });
+        effects.push(Effect::nudge_channel_lead(&snap.default_channel, message));
     }
 
     effects
@@ -980,10 +981,15 @@ pub(super) fn check_and_nudge_api_errors(
             API_ERROR_NUDGE_COOLDOWN.as_secs()
         );
 
-        effects.push(Effect::NudgeCoworker {
-            name: name.clone(),
-            message: "The API error may have cleared. Try continuing your work.".to_string(),
-        });
+        let session_id = snap
+            .name_session_map
+            .get(&name.to_lowercase())
+            .cloned()
+            .unwrap_or_default();
+        effects.push(Effect::nudge_session(
+            session_id,
+            "The API error may have cleared. Try continuing your work.",
+        ));
         effects.push(Effect::RecordCooldown {
             category: "api_error_nudge".to_string(),
             key: name.clone(),
@@ -1299,132 +1305,39 @@ pub fn detect_stale_attached_sessions(snap: &snapshot::WorldSnapshot) -> Vec<Eff
         .collect()
 }
 
-/// Ensure all registered channel lead sessions are running.
-///
-/// Channel leads are spawned at startup and on first user message to a channel.
-/// This function closes the gap: if a channel lead crashes mid-session, it won't be
-/// respawned until someone posts to its channel. By running this on every
-/// `SessionMonitorTick`, crashed channel leads are automatically recovered.
-///
-/// Only channels already registered in `channel_lead_sessions` are checked —
-/// new channels are added at startup or on first message (rpc_channel.rs).
-///
-/// Uses `coworker_stop_times` as a cooldown to prevent rapid respawn loops.
-///
-/// Pure function — no I/O, no `.await`, no mutex locks.
-pub fn ensure_channel_leads_alive(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
-    let mut effects = Vec::new();
-
-    for (channel_name, session_id) in &snap.channel_lead_sessions {
-        // Skip archived channels — their leads should not be respawned.
-        // This is defense-in-depth; handle_channel_archive and ArchiveChannel
-        // both clean up channel_lead_sessions, but if a stale entry persists
-        // (e.g., CLI archive without daemon restart), this prevents respawning.
-        if snap.archived_channels.contains(channel_name.as_str()) {
-            debug!(
-                "Channel lead '{}': channel is archived, skipping respawn",
-                channel_name
-            );
-            continue;
-        }
-
-        let session_name = crate::launch::channel_lead_session_name(channel_name);
-
-        // Skip if this channel lead is already registered as an active coworker.
-        let is_registered = snap
-            .active_coworkers
-            .iter()
-            .any(|c| c.name.eq_ignore_ascii_case(&session_name));
-
-        if is_registered {
-            continue;
-        }
-
-        // If session_id is empty, distinguish in-flight spawns from crash recovery:
-        // - In-flight (first spawn, no previous stop): skip to avoid double-spawning.
-        // - Crash recovery (death handler cleared session_id, stop_time exists): fall through.
-        if session_id.is_empty() {
-            let had_previous_stop = snap
-                .coworker_stop_times
-                .contains_key(session_name.to_lowercase().as_str());
-            if !had_previous_stop {
-                debug!(
-                    "Channel lead '{}': in-flight spawn (no previous stop), skipping",
-                    channel_name
-                );
-                continue;
-            }
-        }
-
-        // Apply cooldown to prevent crash loops.
-        if let Some(stop_time) = snap
-            .coworker_stop_times
-            .get(session_name.to_lowercase().as_str())
-        {
-            let since_stop = snap.now_utc.signed_duration_since(*stop_time);
-            if since_stop < chrono::Duration::from_std(LEAD_RESPAWN_COOLDOWN).unwrap_or_default() {
-                debug!(
-                    "Channel lead '{}' respawn cooldown: stopped {}s ago (need {}s)",
-                    channel_name,
-                    since_stop.num_seconds(),
-                    LEAD_RESPAWN_COOLDOWN.as_secs()
-                );
-                continue;
-            }
-        }
-
-        warn!(
-            "Channel lead '{}' is not running — respawning",
-            channel_name
-        );
-
-        // Use the stored session_id if available (resume); fall back to Fresh.
-        // The death handler clears channel_lead_sessions[channel] on crash, so
-        // an empty session_id here typically means a fresh spawn is needed.
-        let session_mode = if !session_id.is_empty() {
-            crate::launch::SessionMode::ResumeSession(session_id.clone())
-        } else {
-            crate::launch::SessionMode::Fresh
-        };
-
-        let config = crate::launch::LaunchConfig::channel_lead(
-            channel_name.clone(),
-            &snap.repo_name,
-            session_mode,
-            "", // domain_context: accumulates via session persistence
-        );
-        effects.push(Effect::SpawnCoworker(config));
-    }
-
-    effects
-}
-
 pub(super) async fn check_and_fire_reminders(
     snap: &snapshot::WorldSnapshot,
     state: &DaemonState,
 ) -> Vec<Effect> {
     let open_pr_coworkers: Vec<String> = snap.coworkers_with_open_prs.iter().cloned().collect();
     let ps = state.persistent_state.lock().await;
-    build_reminder_effects(&ps.reminders.reminders, &open_pr_coworkers, &snap.repo_name)
+    build_reminder_effects(
+        &ps.reminders.reminders,
+        &open_pr_coworkers,
+        &snap.repo_name,
+        &snap.default_channel,
+    )
 }
 
-/// Pure function: evaluate reminders and build effects (PostToChannel + NudgeLead + MarkFired).
+/// Pure function: evaluate reminders and build effects (PostToChannel + NudgeChannelLead + MarkFired).
 fn build_reminder_effects(
     reminders: &[crate::reminders::Reminder],
     open_pr_coworkers: &[String],
     repo_name: &str,
+    default_channel: &str,
 ) -> Vec<Effect> {
     let fired: Vec<&crate::reminders::Reminder> = reminders
         .iter()
         .filter(|r| !r.fired && crate::reminders::evaluate_trigger(&r.trigger, open_pr_coworkers))
         .collect();
-    effects_for_fired_reminders(&fired, repo_name)
+    effects_for_fired_reminders(&fired, repo_name, default_channel)
 }
 
 /// Build effects for reminders that have already been evaluated as firing.
 fn effects_for_fired_reminders(
     fired: &[&crate::reminders::Reminder],
     repo_name: &str,
+    default_channel: &str,
 ) -> Vec<Effect> {
     let mut effects = Vec::new();
     let mut fired_ids = Vec::new();
@@ -1443,7 +1356,7 @@ fn effects_for_fired_reminders(
             message: message.clone(),
             channel: None,
         });
-        effects.push(Effect::NudgeLead { message });
+        effects.push(Effect::nudge_channel_lead(default_channel, message));
         fired_ids.push(reminder.id.clone());
     }
 

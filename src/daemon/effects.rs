@@ -32,17 +32,6 @@ pub enum Effect {
         message: String,
         on_success: Vec<Effect>,
     },
-    /// Nudge a coworker by sending a message to their headless session.
-    NudgeCoworker { name: String, message: String },
-    /// Nudge the Lead by sending a message via headed intercom or session manager.
-    NudgeLead { message: String },
-    /// Nudge a channel lead by task ID.
-    ///
-    /// Looks up the task's channel from `WorldSnapshot::task_channel`, then
-    /// sends `message` to the channel lead session via the session manager.
-    /// Skips silently if the task has no channel mapping, the channel is "midtown",
-    /// or no channel lead session is registered for that channel.
-    NudgeChannelLead { task_id: String, message: String },
     /// Resume a stopped headless coworker session.
     ///
     /// Uses `SessionManager::spawn` with `SessionMode::ResumeSession` to
@@ -116,16 +105,6 @@ pub enum Effect {
         config: crate::launch::LaunchConfig,
         on_success: Vec<Effect>,
         on_failure: Vec<Effect>,
-    },
-    /// Nudge a coworker with conditional follow-up effects on success.
-    ///
-    /// On success, `on_success` effects are executed. On failure, nothing extra
-    /// happens (the nudge failure is logged). This allows decision functions to
-    /// record cooldowns only when nudges succeed.
-    NudgeCoworkerWithCallbacks {
-        name: String,
-        message: String,
-        on_success: Vec<Effect>,
     },
     /// Spawn a coworker for a pending task.
     ///
@@ -379,6 +358,27 @@ pub enum Effect {
     /// 5-minute cooldown that follows a normal stop.
     AutoDetachCoworker { name: String },
 
+    // ── Unified nudge effects (V2) ──────────────────────────────────────
+    /// Nudge a channel lead (by channel name).
+    /// Execution layer resolves channel → session, handles spawn-if-dead,
+    /// resume-if-idle-shutdown, and dual-path routing for the project lead.
+    NudgeChannelLead {
+        channel_name: String,
+        reason: super::wake_reason::WakeReason,
+    },
+    /// Nudge a session (by session ID).
+    /// Resolves session_id → name via session_to_name, sends nudge message.
+    NudgeSession {
+        session_id: String,
+        reason: super::wake_reason::WakeReason,
+    },
+    /// Nudge a session with conditional follow-up effects on success.
+    NudgeSessionWithCallbacks {
+        session_id: String,
+        reason: super::wake_reason::WakeReason,
+        on_success: Vec<Effect>,
+    },
+
     // ── Session-centric effects (new model) ─────────────────────────────
     /// Spawn a new session for a task. Allocates a name from the NamePool.
     ///
@@ -403,16 +403,6 @@ pub enum Effect {
     /// cleanup through `cleanup_coworker_state`.
     ShutdownSession { session_id: String, reason: String },
 
-    /// Nudge a session (deliver a message). If suspended, optionally resume first.
-    ///
-    /// Session-centric counterpart to `NudgeCoworker`. Uses `session_to_name` to
-    /// find the current name and delivers via `SessionManager::send_message`.
-    NudgeSession {
-        session_id: String,
-        message: String,
-        resume_if_suspended: bool,
-    },
-
     /// Record a session record in persistent state.
     ///
     /// Upserts the `SessionRecord` into `DaemonPersistentState::sessions` and
@@ -428,64 +418,115 @@ pub enum Effect {
     ReleaseName { name: String },
 }
 
-/// Deduplicate nudge effects targeting the same coworker within a single batch.
+impl Effect {
+    /// Convenience: nudge a channel lead with a freeform message.
+    ///
+    /// Shorthand for `NudgeChannelLead` with `WakeReason::Nudge`. Use the full
+    /// form when the wake reason carries structured data (e.g., `TaskCreated`,
+    /// `UserMessage`, `InsightPosted`).
+    pub fn nudge_channel_lead(channel_name: impl Into<String>, message: impl Into<String>) -> Self {
+        Self::NudgeChannelLead {
+            channel_name: channel_name.into(),
+            reason: super::wake_reason::WakeReason::Nudge {
+                message: message.into(),
+            },
+        }
+    }
+
+    /// Convenience: nudge a session with a freeform message.
+    pub fn nudge_session(session_id: impl Into<String>, message: impl Into<String>) -> Self {
+        Self::NudgeSession {
+            session_id: session_id.into(),
+            reason: super::wake_reason::WakeReason::Nudge {
+                message: message.into(),
+            },
+        }
+    }
+
+    /// Convenience: nudge a session with callbacks and a freeform message.
+    pub fn nudge_session_with_callbacks(
+        session_id: impl Into<String>,
+        message: impl Into<String>,
+        on_success: Vec<Effect>,
+    ) -> Self {
+        Self::NudgeSessionWithCallbacks {
+            session_id: session_id.into(),
+            reason: super::wake_reason::WakeReason::Nudge {
+                message: message.into(),
+            },
+            on_success,
+        }
+    }
+}
+
+/// Deduplicate nudge effects targeting the same session within a single batch.
 ///
 /// When multiple PR issue types (CI green, review complete, merge conflict)
-/// each generate a nudge for the same coworker in one tick, only the first
-/// nudge is kept. For `NudgeCoworkerWithCallbacks`, subsequent nudges' `on_success`
+/// each generate a nudge for the same session in one tick, only the first
+/// nudge is kept. For `NudgeSessionWithCallbacks`, subsequent nudges' `on_success`
 /// callbacks are merged into the first nudge's callbacks so state recording
 /// (e.g., `RecordPrNudge`, `RecordTaskAssignment`) still happens.
 ///
-/// Plain `NudgeCoworker` effects for already-nudged coworkers are dropped entirely.
+/// Plain `NudgeSession` effects for already-nudged sessions are dropped entirely.
 fn dedup_nudge_effects(effects: Vec<Effect>) -> Vec<Effect> {
     use std::collections::HashSet;
 
-    let mut nudged_coworkers: HashSet<String> = HashSet::new();
+    let mut nudged_sessions: HashSet<String> = HashSet::new();
+    let mut nudged_channels: HashSet<String> = HashSet::new();
     let mut result: Vec<Effect> = Vec::with_capacity(effects.len());
 
     for effect in effects {
         match effect {
-            Effect::NudgeCoworker { ref name, .. } => {
-                let key = name.to_lowercase();
-                if nudged_coworkers.contains(&key) {
+            Effect::NudgeChannelLead {
+                ref channel_name, ..
+            } => {
+                if nudged_channels.contains(channel_name) {
                     debug!(
-                        "Deduplicating NudgeCoworker for {} (already nudged in this batch)",
-                        name
+                        "Deduplicating NudgeChannelLead for '{}' (already nudged in this batch)",
+                        channel_name
                     );
                     continue;
                 }
-                nudged_coworkers.insert(key);
+                nudged_channels.insert(channel_name.clone());
                 result.push(effect);
             }
-            Effect::NudgeCoworkerWithCallbacks {
-                ref name,
-                message,
+            Effect::NudgeSession { ref session_id, .. } => {
+                let key = session_id.clone();
+                if nudged_sessions.contains(&key) {
+                    debug!(
+                        "Deduplicating NudgeSession for {} (already nudged in this batch)",
+                        session_id
+                    );
+                    continue;
+                }
+                nudged_sessions.insert(key);
+                result.push(effect);
+            }
+            Effect::NudgeSessionWithCallbacks {
+                ref session_id,
+                reason,
                 on_success,
             } => {
-                let key = name.to_lowercase();
-                if nudged_coworkers.contains(&key) {
+                let key = session_id.clone();
+                if nudged_sessions.contains(&key) {
                     debug!(
-                        "Deduplicating NudgeCoworkerWithCallbacks for {} — \
+                        "Deduplicating NudgeSessionWithCallbacks for {} — \
                          executing on_success callbacks without re-nudging",
-                        name
+                        session_id
                     );
                     // Merge on_success into the existing nudge's callbacks.
-                    // Find the first NudgeCoworkerWithCallbacks for this coworker
-                    // and append the callbacks there.
                     let remaining = merge_callbacks_into_existing(&mut result, &key, on_success);
                     if let Some(unmerged) = remaining {
-                        // First nudge was a plain NudgeCoworker — promote the
-                        // callbacks to standalone effects. These include state-tracking
-                        // effects like RecordPrNudge that must fire to prevent the
-                        // same nudge from triggering again on the next tick.
+                        // First nudge was a plain NudgeSession — promote the
+                        // callbacks to standalone effects.
                         result.extend(unmerged);
                     }
                     continue;
                 }
-                nudged_coworkers.insert(key);
-                result.push(Effect::NudgeCoworkerWithCallbacks {
-                    name: name.clone(),
-                    message,
+                nudged_sessions.insert(key);
+                result.push(Effect::NudgeSessionWithCallbacks {
+                    session_id: session_id.clone(),
+                    reason,
                     on_success,
                 });
             }
@@ -498,19 +539,21 @@ fn dedup_nudge_effects(effects: Vec<Effect>) -> Vec<Effect> {
     result
 }
 
-/// Merge `on_success` callbacks into an existing `NudgeCoworkerWithCallbacks` effect
-/// for the same coworker. Returns `None` if merged successfully, or `Some(callbacks)`
-/// if no matching effect was found (e.g., first nudge was a plain `NudgeCoworker`).
+/// Merge `on_success` callbacks into an existing `NudgeSessionWithCallbacks` effect
+/// for the same session. Returns `None` if merged successfully, or `Some(callbacks)`
+/// if no matching effect was found (e.g., first nudge was a plain `NudgeSession`).
 fn merge_callbacks_into_existing(
     effects: &mut [Effect],
     target_key: &str,
     additional_callbacks: Vec<Effect>,
 ) -> Option<Vec<Effect>> {
     for effect in effects.iter_mut() {
-        if let Effect::NudgeCoworkerWithCallbacks {
-            name, on_success, ..
+        if let Effect::NudgeSessionWithCallbacks {
+            session_id,
+            on_success,
+            ..
         } = effect
-            && name.to_lowercase() == target_key
+            && session_id == target_key
         {
             on_success.extend(additional_callbacks);
             return None;
@@ -555,6 +598,42 @@ async fn shutdown_coworker_impl(name: &str, message: &str, state: &DaemonState) 
         }
     }
     Ok(())
+}
+
+/// Resolve a session ID to its coworker name and deliver a nudge message.
+///
+/// Shared implementation for `NudgeSession` and `NudgeSessionWithCallbacks`.
+/// Returns `true` on successful delivery, `false` on failure (name not found
+/// or send error). On success, the nudge is recorded for attribution tracking.
+async fn send_session_nudge(
+    state: &DaemonState,
+    session_id: &str,
+    reason: &super::wake_reason::WakeReason,
+) -> bool {
+    let name = state
+        .session_to_name
+        .lock()
+        .unwrap()
+        .get(session_id)
+        .cloned();
+    let Some(name) = name else {
+        warn!(
+            "NudgeSession: no name found for session {} — cannot deliver",
+            session_id
+        );
+        return false;
+    };
+    let msg = reason.to_nudge_message();
+    match state.session_manager.send_message(&name, &msg).await {
+        Ok(()) => {
+            state.record_pending_nudge(&name, &msg);
+            true
+        }
+        Err(e) => {
+            warn!("Failed to nudge session {}: {}", session_id, e);
+            false
+        }
+    }
 }
 
 /// Execute a list of effects against the daemon state.
@@ -612,56 +691,6 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     }
                     Err(()) => {
                         warn!(coworker = %name, "SHUTDOWN_COWORKER_WITH_CALLBACKS: shutdown failed, skipping on_success callbacks");
-                    }
-                }
-            }
-            Effect::NudgeCoworker { name, message, .. } => {
-                match state.session_manager.send_message(&name, &message).await {
-                    Ok(()) => {
-                        // Record pending nudge for attribution tracking
-                        state.record_pending_nudge(&name, &message);
-                    }
-                    Err(e) => {
-                        warn!("Failed to nudge coworker {}: {}", name, e);
-                    }
-                }
-            }
-            Effect::NudgeLead { message } => {
-                state.nudge_lead(&message).await;
-            }
-            Effect::NudgeChannelLead { task_id, message } => {
-                let channel_name = {
-                    let ps = state.persistent_state.lock().await;
-                    let channel = ps.task_channel.get(&task_id).cloned();
-                    let channel_name = channel.as_deref().unwrap_or("midtown");
-                    if channel_name == "midtown"
-                        || !ps.channel_lead_sessions.contains_key(channel_name)
-                    {
-                        None
-                    } else {
-                        Some(channel_name.to_string())
-                    }
-                };
-                if let Some(channel_name) = channel_name {
-                    let session_name = crate::launch::channel_lead_session_name(&channel_name);
-                    match state
-                        .session_manager
-                        .send_message(&session_name, &message)
-                        .await
-                    {
-                        Ok(()) => {
-                            info!(
-                                "Nudged channel lead '{}': {}",
-                                channel_name,
-                                message.chars().take(60).collect::<String>()
-                            );
-                        }
-                        Err(e) => {
-                            debug!(
-                                "Failed to nudge channel lead '{}' for task !{}: {}",
-                                channel_name, task_id, e
-                            );
-                        }
                     }
                 }
             }
@@ -849,42 +878,6 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     state.clear_task_spawn_in_flight(task_id);
                 }
             }
-            Effect::NudgeCoworkerWithCallbacks {
-                name,
-                message,
-                on_success,
-                ..
-            } => {
-                // Extract task IDs from on_success RecordTaskAssignment effects
-                // to clear their in-flight markers after the nudge completes.
-                let task_ids: Vec<String> = on_success
-                    .iter()
-                    .filter_map(|e| {
-                        if let Effect::RecordTaskAssignment { task_id, .. } = e {
-                            Some(task_id.clone())
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
-
-                match state.session_manager.send_message(&name, &message).await {
-                    Ok(()) => {
-                        info!("Nudged coworker {} successfully", name);
-                        // Record pending nudge for attribution tracking
-                        state.record_pending_nudge(&name, &message);
-                        Box::pin(execute_effects(on_success, state)).await;
-                    }
-                    Err(e) => {
-                        warn!("Failed to nudge coworker {}: {}", name, e);
-                    }
-                }
-                // Clear in-flight markers regardless of success/failure,
-                // so these tasks can be retried on the next tick if needed.
-                for task_id in &task_ids {
-                    state.clear_task_spawn_in_flight(task_id);
-                }
-            }
             Effect::AssignAndSpawn {
                 task_id,
                 owner,
@@ -1054,7 +1047,8 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 // Ops owns daemon operational alerts (stuck PRs, orphaned worktrees,
                 // coworker health) and escalates to @lead when human judgment is required.
                 if message.to_lowercase().contains("@ops") {
-                    state.nudge_ops_channel_lead(&message).await;
+                    let nudge = Effect::nudge_channel_lead(OPS_CHANNEL, message.clone());
+                    Box::pin(execute_effects(vec![nudge], state)).await;
                 }
                 let mut msg = Message::system(message);
                 msg.channel = channel;
@@ -2040,45 +2034,130 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 }
             }
 
-            Effect::NudgeSession {
-                session_id,
-                message,
-                resume_if_suspended,
+            // ── Unified nudge effects ─────────────────────────────────────
+            Effect::NudgeChannelLead {
+                channel_name,
+                reason,
             } => {
-                let name = state
-                    .session_to_name
-                    .lock()
-                    .unwrap()
-                    .get(&session_id)
-                    .cloned();
-                if let Some(name) = name {
-                    match state.session_manager.send_message(&name, &message).await {
-                        Ok(()) => {
-                            state.record_pending_nudge(&name, &message);
-                            info!(
-                                "NudgeSession: delivered to {} (session {})",
-                                name, session_id
-                            );
+                let default_channel = state.channel_router.default_channel_name();
+                if channel_name == default_channel {
+                    state.nudge_lead(&reason.to_nudge_message()).await;
+                } else {
+                    let session_name = crate::launch::channel_lead_session_name(&channel_name);
+                    if state.session_manager.is_alive(&session_name).await {
+                        let msg = reason.to_nudge_message();
+                        if let Err(e) = state
+                            .session_manager
+                            .send_message(&session_name, &msg)
+                            .await
+                        {
+                            warn!("Failed to nudge channel lead '{}': {}", channel_name, e);
                         }
-                        Err(e) => {
-                            if resume_if_suspended {
-                                warn!(
-                                    "NudgeSession: session {} not reachable, resume_if_suspended=true but resume not yet implemented — nudge dropped: {}",
-                                    session_id, e
+                    } else {
+                        let session_id = {
+                            let ps = state.persistent_state.lock().await;
+                            ps.channel_lead_sessions.get(&channel_name).cloned()
+                        };
+                        match session_id {
+                            Some(ref id) if !id.is_empty() => {
+                                // Resume existing session from this daemon run
+                                let config = crate::launch::LaunchConfig::channel_lead(
+                                    &channel_name,
+                                    &state.repo_name,
+                                    crate::launch::SessionMode::ResumeSession(id.clone()),
+                                    "",
                                 );
-                            } else {
-                                warn!(
-                                    "NudgeSession: failed to nudge session {}: {}",
-                                    session_id, e
-                                );
+                                if let Err(e) = state.spawn_coworker(&config).await {
+                                    warn!(
+                                        "Failed to resume channel lead '{}': {}",
+                                        channel_name, e
+                                    );
+                                }
+                                let msg = reason.to_nudge_message();
+                                if let Err(e) = state
+                                    .session_manager
+                                    .send_message(&session_name, &msg)
+                                    .await
+                                {
+                                    warn!(
+                                        "Nudge after resume failed for '{}' — trigger may be lost: {}",
+                                        channel_name, e
+                                    );
+                                }
+                            }
+                            _ => {
+                                // No session ID → spawn fresh with trigger in initial prompt.
+                                // Guard: if channel_lead_sessions already has an entry (even
+                                // empty from a prior in-flight spawn), skip to avoid duplicates.
+                                let already_spawning = {
+                                    let ps = state.persistent_state.lock().await;
+                                    ps.channel_lead_sessions.contains_key(&channel_name)
+                                };
+                                if already_spawning {
+                                    debug!(
+                                        "Channel lead for '{}' already spawning (placeholder exists), skipping duplicate",
+                                        channel_name
+                                    );
+                                } else {
+                                    let mut config = crate::launch::LaunchConfig::channel_lead(
+                                        &channel_name,
+                                        &state.repo_name,
+                                        crate::launch::SessionMode::Fresh,
+                                        "",
+                                    );
+                                    config.initial_prompt =
+                                        Some(reason.to_initial_prompt(&channel_name));
+                                    {
+                                        let mut ps = state.persistent_state.lock().await;
+                                        ps.channel_lead_sessions
+                                            .insert(channel_name.clone(), String::new());
+                                        if let Err(e) = ps.save_for_repo(&state.repo_name) {
+                                            tracing::error!(
+                                                "Failed to save state before spawning channel lead: {}",
+                                                e
+                                            );
+                                        }
+                                    }
+                                    if let Err(e) = state.spawn_coworker(&config).await {
+                                        tracing::error!(
+                                            "Failed to spawn channel lead '{}': {}",
+                                            channel_name,
+                                            e
+                                        );
+                                    }
+                                }
                             }
                         }
                     }
-                } else {
-                    warn!(
-                        "NudgeSession: no name found for session {} — cannot deliver",
-                        session_id
-                    );
+                }
+            }
+            Effect::NudgeSession { session_id, reason } => {
+                send_session_nudge(state, &session_id, &reason).await;
+            }
+            Effect::NudgeSessionWithCallbacks {
+                session_id,
+                reason,
+                on_success,
+            } => {
+                // Extract task IDs from on_success RecordTaskAssignment effects
+                // to clear their in-flight markers after the nudge completes.
+                let task_ids: Vec<String> = on_success
+                    .iter()
+                    .filter_map(|e| {
+                        if let Effect::RecordTaskAssignment { task_id, .. } = e {
+                            Some(task_id.clone())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+
+                if send_session_nudge(state, &session_id, &reason).await {
+                    Box::pin(execute_effects(on_success, state)).await;
+                }
+                // Clear in-flight markers regardless of success/failure
+                for task_id in &task_ids {
+                    state.clear_task_spawn_in_flight(task_id);
                 }
             }
 

@@ -176,105 +176,20 @@ pub(super) async fn handle_channel_post(
         let is_topic_channel = channel_name != default_channel;
 
         if is_topic_channel {
-            // Topic channel: nudge the channel lead for this channel.
-            // If the session isn't running, resume it first.
+            // Topic channel: nudge the channel lead via the unified NudgeChannelLead path.
+            // This handles spawn-if-dead, resume-if-idle, and nudge-if-alive.
             //
             // Note: @mentions are intentionally NOT routed here. In topic channels,
             // the channel lead is the single point of entry and owns all routing
             // decisions within its domain. This avoids competing routing paths.
-            let session_name = crate::launch::channel_lead_session_name(channel_name);
-            let session_ready = if state.session_manager.is_alive(&session_name).await {
-                true
-            } else {
-                // Session isn't running — resume it so the user message is handled.
-                let (session_id, headless_session_id_cleared) = {
-                    let ps = state.persistent_state.lock().await;
-                    let sid = ps.channel_lead_sessions.get(channel_name).cloned();
-                    // Cross-check headless_sessions: if the death handler cleared the
-                    // session_id after a failed resume, don't attempt to resume with a
-                    // stale ID (same guard as startup.rs recovery).
-                    let cleared = ps
-                        .headless_sessions
-                        .get(channel_name)
-                        .is_some_and(|info| info.session_id.is_empty());
-                    (sid, cleared)
-                };
-
-                let session_mode = match session_id {
-                    Some(ref id) if !id.is_empty() && !headless_session_id_cleared => {
-                        info!(
-                            "Resuming channel lead session for '{}' (session {}) after user message",
-                            channel_name, id
-                        );
-                        crate::launch::SessionMode::ResumeSession(id.clone())
-                    }
-                    _ => {
-                        if headless_session_id_cleared {
-                            info!(
-                                "Skipping stale session ID for channel lead '{}': headless_sessions entry was cleared after failed resume",
-                                channel_name
-                            );
-                        } else {
-                            info!(
-                                "No saved session for channel lead '{}', spawning fresh after user message",
-                                channel_name
-                            );
-                        }
-                        crate::launch::SessionMode::Fresh
-                    }
-                };
-
-                // Register placeholder in channel_lead_sessions before spawning
-                // so NudgeChannelLead effects aren't silently dropped and daemon
-                // restart recovery can find this channel's session.
-                let is_fresh = matches!(session_mode, crate::launch::SessionMode::Fresh);
-                if is_fresh {
-                    let mut ps = state.persistent_state.lock().await;
-                    ps.channel_lead_sessions
-                        .entry(channel_name.to_string())
-                        .or_insert_with(String::new);
-                    if let Err(e) = ps.save_for_repo(&state.repo_name) {
-                        error!(
-                            "Failed to save daemon state before spawning channel lead: {}",
-                            e
-                        );
-                    }
-                }
-
-                let config = crate::launch::LaunchConfig::channel_lead(
-                    channel_name,
-                    &state.repo_name,
-                    session_mode,
-                    "", // domain_context: accumulates via session persistence
-                );
-
-                match state.spawn_coworker(&config).await {
-                    Ok(()) => true,
-                    Err(e) => {
-                        error!("Failed to spawn channel lead '{}': {}", channel_name, e);
-                        // Keep the placeholder in channel_lead_sessions even on spawn failure.
-                        // An empty-string placeholder is harmless (startup recovery handles it
-                        // with SessionMode::Fresh), and preserving it means the channel is
-                        // registered for restart recovery even if this spawn attempt failed.
-                        false
-                    }
-                }
+            let nudge_effect = crate::daemon::effects::Effect::NudgeChannelLead {
+                channel_name: channel_name.to_string(),
+                reason: crate::daemon::wake_reason::WakeReason::UserMessage {
+                    content: content.clone(),
+                    msg_id: msg.id.clone(),
+                },
             };
-
-            if session_ready {
-                let nudge_msg = format!("user ({}): {}", msg.id, content);
-                info!(
-                    "Nudging channel lead '{}' about user message in #{}",
-                    channel_name, channel_name
-                );
-                if let Err(e) = state
-                    .session_manager
-                    .send_message(&session_name, &nudge_msg)
-                    .await
-                {
-                    error!("Failed to nudge channel lead '{}': {}", channel_name, e);
-                }
-            }
+            crate::daemon::effects::execute_effects(vec![nudge_effect], state).await;
         } else {
             // Main channel: always nudge the lead on user messages.
             // Also route any @mentions directly to the mentioned coworkers.
@@ -313,9 +228,15 @@ pub(super) async fn handle_channel_post(
                 }
             }
 
-            let nudge_msg = format!("user ({}): {}", msg.id, content);
-            info!("Nudging Lead about user message");
-            state.nudge_lead(&nudge_msg).await;
+            // Nudge the project lead via the unified channel lead path
+            let nudge_effect = crate::daemon::effects::Effect::NudgeChannelLead {
+                channel_name: channel_name.to_string(),
+                reason: crate::daemon::wake_reason::WakeReason::UserMessage {
+                    content: content.clone(),
+                    msg_id: msg.id.clone(),
+                },
+            };
+            crate::daemon::effects::execute_effects(vec![nudge_effect], state).await;
         }
     }
 

@@ -305,392 +305,6 @@ fn test_check_sandbox_context_detects_nesting() {
     }
 }
 
-// ── Channel lead session recovery tests ───────────────────────────────
-
-/// Create temporary channel directories for testing.
-///
-/// Creates the per-channel directory layout: `channels/<name>/history/current.jsonl`.
-/// Returns the temp dir (must be kept alive) and the base_dir path.
-fn create_temp_channels(channel_names: &[&str]) -> (tempfile::TempDir, std::path::PathBuf) {
-    let tmp = tempfile::TempDir::new().expect("create temp dir");
-    let base_dir = tmp.path().to_path_buf();
-    let channels_dir = base_dir.join("channels");
-    std::fs::create_dir_all(&channels_dir).expect("create channels dir");
-    for name in channel_names {
-        let history_dir = channels_dir.join(name).join("history");
-        std::fs::create_dir_all(&history_dir).expect("create history dir");
-        std::fs::write(history_dir.join("current.jsonl"), "").expect("create channel file");
-    }
-    (tmp, base_dir)
-}
-
-/// Create an archived channel directory (has `.archived` directory suffix).
-fn create_archived_channel(base_dir: &std::path::Path, channel_name: &str) {
-    let archived_dir = base_dir
-        .join("channels")
-        .join(format!("{}.archived", channel_name));
-    let history_dir = archived_dir.join("history");
-    std::fs::create_dir_all(&history_dir).expect("create archived history dir");
-    std::fs::write(history_dir.join("current.jsonl"), "").expect("create archived channel file");
-}
-
-#[tokio::test]
-async fn test_recover_channel_lead_sessions_empty() {
-    // No channels → no effects
-    let (_tmp, base_dir) = create_temp_channels(&[]);
-    let persistent_state = tokio::sync::Mutex::new(DaemonPersistentState::default());
-
-    let effects =
-        recover_channel_lead_sessions_from(&persistent_state, "test-repo", &base_dir).await;
-
-    assert!(
-        effects.is_empty(),
-        "No channels should produce no effects, got: {:?}",
-        effects
-    );
-}
-
-#[tokio::test]
-async fn test_recover_channel_lead_sessions_only_midtown_excluded() {
-    // Only the main "midtown" channel — no topic channels → no effects
-    let tmp = tempfile::TempDir::new().expect("create temp dir");
-    let base_dir = tmp.path().to_path_buf();
-    // Create midtown channel using the new directory layout
-    let history_dir = base_dir.join("channels").join("midtown").join("history");
-    std::fs::create_dir_all(&history_dir).expect("create history dir");
-    std::fs::write(history_dir.join("current.jsonl"), "").expect("create channel.jsonl");
-
-    let persistent_state = tokio::sync::Mutex::new(DaemonPersistentState::default());
-    let effects =
-        recover_channel_lead_sessions_from(&persistent_state, "test-repo", &base_dir).await;
-
-    assert!(
-        effects.is_empty(),
-        "Only midtown channel should produce no effects, got: {:?}",
-        effects
-    );
-}
-
-#[tokio::test]
-async fn test_recover_channel_lead_sessions_only_main_excluded() {
-    // Only a "main" channel directory (legacy name) — should be excluded like "midtown"
-    let (_tmp, base_dir) = create_temp_channels(&["main"]);
-    let persistent_state = tokio::sync::Mutex::new(DaemonPersistentState::default());
-    let effects =
-        recover_channel_lead_sessions_from(&persistent_state, "test-repo", &base_dir).await;
-
-    assert!(
-        effects.is_empty(),
-        "Legacy 'main' channel should produce no effects, got: {:?}",
-        effects
-    );
-}
-
-#[tokio::test]
-async fn test_recover_channel_lead_sessions_archived_excluded() {
-    // Only an archived channel → no effects
-    let tmp = tempfile::TempDir::new().expect("create temp dir");
-    let base_dir = tmp.path().to_path_buf();
-    create_archived_channel(&base_dir, "old-feature");
-
-    let persistent_state = tokio::sync::Mutex::new(DaemonPersistentState::default());
-    let effects =
-        recover_channel_lead_sessions_from(&persistent_state, "test-repo", &base_dir).await;
-
-    assert!(
-        effects.is_empty(),
-        "Only archived channel should produce no effects, got: {:?}",
-        effects
-    );
-}
-
-#[tokio::test]
-async fn test_recover_channel_lead_sessions_fresh_spawn() {
-    // One active topic channel without a saved session → SpawnCoworker(Fresh) + placeholder
-    let (_tmp, base_dir) = create_temp_channels(&["auth"]);
-    let persistent_state = tokio::sync::Mutex::new(DaemonPersistentState::default());
-
-    let effects =
-        recover_channel_lead_sessions_from(&persistent_state, "test-repo", &base_dir).await;
-
-    // Expect: SpawnCoworker(Fresh) + SaveChannelLeadSession placeholder
-    assert_eq!(effects.len(), 2, "Expected 2 effects, got: {:?}", effects);
-
-    match &effects[0] {
-        Effect::SpawnCoworker(config) => {
-            assert_eq!(config.name, "auth");
-            assert_eq!(config.session_mode, crate::launch::SessionMode::Fresh);
-        }
-        other => panic!("Expected SpawnCoworker, got {:?}", other),
-    }
-
-    match &effects[1] {
-        Effect::SaveChannelLeadSession {
-            channel_name,
-            session_id,
-        } => {
-            assert_eq!(channel_name, "auth");
-            assert!(
-                session_id.is_empty(),
-                "Placeholder should have empty session_id"
-            );
-        }
-        other => panic!("Expected SaveChannelLeadSession, got {:?}", other),
-    }
-}
-
-#[tokio::test]
-async fn test_recover_channel_lead_sessions_resume_with_saved_session() {
-    // One active topic channel with a saved session ID → SpawnCoworker(ResumeSession)
-    let (_tmp, base_dir) = create_temp_channels(&["payments"]);
-
-    let persistent_state = tokio::sync::Mutex::new(DaemonPersistentState::default());
-    {
-        let mut ps = persistent_state.lock().await;
-        ps.channel_lead_sessions
-            .insert("payments".to_string(), "session-abc-123".to_string());
-    }
-
-    let effects =
-        recover_channel_lead_sessions_from(&persistent_state, "test-repo", &base_dir).await;
-
-    // Expect: only SpawnCoworker(ResumeSession) — no SaveChannelLeadSession since entry exists
-    assert_eq!(effects.len(), 1, "Expected 1 effect, got: {:?}", effects);
-
-    match &effects[0] {
-        Effect::SpawnCoworker(config) => {
-            assert_eq!(config.name, "payments");
-            assert_eq!(
-                config.session_mode,
-                crate::launch::SessionMode::ResumeSession("session-abc-123".to_string())
-            );
-        }
-        other => panic!("Expected SpawnCoworker, got {:?}", other),
-    }
-}
-
-#[tokio::test]
-async fn test_recover_channel_lead_sessions_empty_session_id_spawns_fresh() {
-    // Saved session entry exists but with empty string → should spawn fresh
-    let (_tmp, base_dir) = create_temp_channels(&["auth"]);
-
-    let persistent_state = tokio::sync::Mutex::new(DaemonPersistentState::default());
-    {
-        let mut ps = persistent_state.lock().await;
-        // Empty session ID (placeholder set during a previous fresh spawn)
-        ps.channel_lead_sessions
-            .insert("auth".to_string(), String::new());
-    }
-
-    let effects =
-        recover_channel_lead_sessions_from(&persistent_state, "test-repo", &base_dir).await;
-
-    // With an empty session ID, should spawn fresh (not resume)
-    // No SaveChannelLeadSession since entry already exists in the map
-    assert_eq!(effects.len(), 1, "Expected 1 effect, got: {:?}", effects);
-
-    match &effects[0] {
-        Effect::SpawnCoworker(config) => {
-            assert_eq!(config.name, "auth");
-            assert_eq!(config.session_mode, crate::launch::SessionMode::Fresh);
-        }
-        other => panic!("Expected SpawnCoworker(Fresh), got {:?}", other),
-    }
-}
-
-#[tokio::test]
-async fn test_recover_channel_lead_sessions_multiple_channels() {
-    // Two topic channels: one with a saved session, one without
-    let (_tmp, base_dir) = create_temp_channels(&["web-interface", "payments"]);
-
-    let persistent_state = tokio::sync::Mutex::new(DaemonPersistentState::default());
-    {
-        let mut ps = persistent_state.lock().await;
-        ps.channel_lead_sessions
-            .insert("payments".to_string(), "session-pay-456".to_string());
-        // web-interface has no saved session
-    }
-
-    let effects =
-        recover_channel_lead_sessions_from(&persistent_state, "test-repo", &base_dir).await;
-
-    // payments: 1 SpawnCoworker(Resume)
-    // web-interface: 1 SpawnCoworker(Fresh) + 1 SaveChannelLeadSession placeholder
-    assert_eq!(effects.len(), 3, "Expected 3 effects, got: {:?}", effects);
-
-    let spawns: Vec<_> = effects
-        .iter()
-        .filter(|e| matches!(e, Effect::SpawnCoworker(_)))
-        .collect();
-    let saves: Vec<_> = effects
-        .iter()
-        .filter(|e| matches!(e, Effect::SaveChannelLeadSession { .. }))
-        .collect();
-
-    assert_eq!(spawns.len(), 2, "Should have 2 SpawnCoworker effects");
-    assert_eq!(
-        saves.len(),
-        1,
-        "Should have 1 SaveChannelLeadSession effect"
-    );
-
-    // Verify the resume is for payments
-    let resume = spawns.iter().find(|e| {
-        matches!(
-            e,
-            Effect::SpawnCoworker(c) if c.session_mode == crate::launch::SessionMode::ResumeSession("session-pay-456".to_string())
-        )
-    });
-    assert!(resume.is_some(), "Should have a resume for 'payments'");
-
-    // Verify the fresh is for web-interface
-    let fresh = spawns.iter().find(|e| {
-        matches!(
-            e,
-            Effect::SpawnCoworker(c)
-                if c.name == "web-interface" && c.session_mode == crate::launch::SessionMode::Fresh
-        )
-    });
-    assert!(
-        fresh.is_some(),
-        "Should have a fresh spawn for 'web-interface'"
-    );
-
-    // Verify the placeholder save is for web-interface
-    if let Some(Effect::SaveChannelLeadSession {
-        channel_name,
-        session_id,
-    }) = saves.first().copied()
-    {
-        assert_eq!(channel_name, "web-interface");
-        assert!(session_id.is_empty());
-    }
-}
-
-/// Regression test for the stale session ID crash on daemon restart.
-///
-/// Scenario: A channel lead session previously failed to resume (e.g., 'No conversation found').
-/// The death handler cleared `headless_sessions[name].session_id` but did NOT clear
-/// `channel_lead_sessions[channel_name]`. On next daemon restart, the stale ID was used
-/// to attempt another resume — crashing the session again in a loop.
-///
-/// The fix: `recover_channel_lead_sessions_from()` cross-checks `headless_sessions`
-/// before attempting resume. If `headless_sessions[name].session_id` is empty (already
-/// cleared), spawn fresh even if `channel_lead_sessions` still has a stale ID.
-#[tokio::test]
-async fn test_recover_channel_lead_sessions_skips_resume_when_headless_session_id_cleared() {
-    // channel_lead_sessions has a stale session ID (not yet cleared by the death handler fix)
-    // but headless_sessions[name].session_id is empty (was cleared after failed resume)
-    let (_tmp, base_dir) = create_temp_channels(&["auth"]);
-
-    let persistent_state = tokio::sync::Mutex::new(DaemonPersistentState::default());
-    {
-        let mut ps = persistent_state.lock().await;
-        // Stale session ID in channel_lead_sessions — the old bug: not cleared on failed resume
-        ps.channel_lead_sessions
-            .insert("auth".to_string(), "stale-session-id-xyz".to_string());
-        // headless_sessions[name].session_id is empty — cleared by death handler
-        let mut session = test_session_info("auth", None);
-        session.session_id = String::new(); // cleared after failed resume
-        ps.headless_sessions.insert("auth".to_string(), session);
-    }
-
-    let effects =
-        recover_channel_lead_sessions_from(&persistent_state, "test-repo", &base_dir).await;
-
-    // Should spawn Fresh (not ResumeSession with stale ID)
-    assert_eq!(effects.len(), 1, "Expected 1 effect, got: {:?}", effects);
-
-    match &effects[0] {
-        Effect::SpawnCoworker(config) => {
-            assert_eq!(config.name, "auth");
-            assert_eq!(
-                config.session_mode,
-                crate::launch::SessionMode::Fresh,
-                "Should spawn Fresh when headless_sessions session_id is empty, but got Resume with stale ID"
-            );
-        }
-        other => panic!("Expected SpawnCoworker(Fresh), got {:?}", other),
-    }
-}
-
-/// Companion test: when headless_sessions still has a valid (non-empty) session ID,
-/// the stale-session cross-check should NOT interfere — resume should proceed normally.
-#[tokio::test]
-async fn test_recover_channel_lead_sessions_resumes_when_headless_session_id_matches() {
-    let (_tmp, base_dir) = create_temp_channels(&["auth"]);
-
-    let persistent_state = tokio::sync::Mutex::new(DaemonPersistentState::default());
-    {
-        let mut ps = persistent_state.lock().await;
-        ps.channel_lead_sessions
-            .insert("auth".to_string(), "valid-session-abc".to_string());
-        // headless_sessions[name].session_id is non-empty (session was healthy)
-        let session = test_session_info("auth", None); // session_id = "session-auth"
-        ps.headless_sessions.insert("auth".to_string(), session);
-    }
-
-    let effects =
-        recover_channel_lead_sessions_from(&persistent_state, "test-repo", &base_dir).await;
-
-    // Should still resume — don't regress the happy path
-    assert_eq!(effects.len(), 1, "Expected 1 effect, got: {:?}", effects);
-
-    match &effects[0] {
-        Effect::SpawnCoworker(config) => {
-            assert_eq!(config.name, "auth");
-            assert_eq!(
-                config.session_mode,
-                crate::launch::SessionMode::ResumeSession("valid-session-abc".to_string()),
-                "Should resume when headless session is healthy"
-            );
-        }
-        other => panic!("Expected SpawnCoworker(ResumeSession), got {:?}", other),
-    }
-}
-
-#[tokio::test]
-async fn test_recover_channel_lead_sessions_mixed_archived_and_active() {
-    // Mix of active and archived channels — only active topic channels get leads
-    let (_tmp, base_dir) = create_temp_channels(&["auth", "billing"]);
-    create_archived_channel(&base_dir, "old-feature");
-
-    let persistent_state = tokio::sync::Mutex::new(DaemonPersistentState::default());
-
-    let effects =
-        recover_channel_lead_sessions_from(&persistent_state, "test-repo", &base_dir).await;
-
-    // auth + billing → 2 SpawnCoworker(Fresh) + 2 SaveChannelLeadSession placeholders
-    // old-feature (archived) → excluded
-    assert_eq!(effects.len(), 4, "Expected 4 effects, got: {:?}", effects);
-
-    let spawns: Vec<_> = effects
-        .iter()
-        .filter(|e| matches!(e, Effect::SpawnCoworker(_)))
-        .collect();
-    assert_eq!(spawns.len(), 2);
-
-    let channel_names: Vec<_> = spawns
-        .iter()
-        .filter_map(|e| {
-            if let Effect::SpawnCoworker(c) = e {
-                Some(c.name.as_str())
-            } else {
-                None
-            }
-        })
-        .collect();
-    assert!(channel_names.contains(&"auth"), "auth should be spawned");
-    assert!(
-        channel_names.contains(&"billing"),
-        "billing should be spawned"
-    );
-    assert!(
-        !channel_names.contains(&"old-feature"),
-        "old-feature should not be spawned"
-    );
-}
-
 // ── Session record recovery tests ─────────────────────────────────────
 
 /// Helper to create a test SessionRecord with sensible defaults.
@@ -1109,8 +723,7 @@ async fn test_clear_stale_running_sessions_clears_non_resumed() {
     let mut recovered = std::collections::HashSet::new();
     recovered.insert("sess-active".to_string());
 
-    let active_channels: std::collections::HashSet<String> = std::collections::HashSet::new();
-    clear_stale_running_sessions(&persistent_state, &recovered, &active_channels).await;
+    clear_stale_running_sessions(&persistent_state, &recovered).await;
 
     let state = persistent_state.lock().await;
     assert!(
@@ -1123,37 +736,25 @@ async fn test_clear_stale_running_sessions_clears_non_resumed() {
     );
 }
 
-/// Active channel lead sessions are recovered separately via recover_channel_lead_sessions.
-/// clear_stale_running_sessions must NOT clear their is_running flag when the channel
-/// is still active (non-archived).
+/// Channel lead sessions are on-demand and not recovered at startup.
+/// clear_stale_running_sessions must clear their is_running flag.
 #[tokio::test]
-async fn test_clear_stale_running_sessions_preserves_channel_leads() {
+async fn test_clear_stale_running_sessions_clears_channel_leads() {
     let persistent_state = tokio::sync::Mutex::new(DaemonPersistentState::default());
 
     {
         let mut state = persistent_state.lock().await;
-        // Channel lead — recovered separately, must not be touched
         let lead = test_session_record("sess-lead", "payments", "channel-lead");
         state.sessions.insert("sess-lead".to_string(), lead);
-        // "payments" is an active channel
-        state
-            .channel_lead_sessions
-            .insert("payments".to_string(), "sess-lead".to_string());
     }
 
-    // Recovered set is empty (channel leads go through a different path)
     let recovered = std::collections::HashSet::new();
-
-    // "payments" is an active (non-archived) channel
-    let mut active_channels: std::collections::HashSet<String> = std::collections::HashSet::new();
-    active_channels.insert("payments".to_string());
-
-    clear_stale_running_sessions(&persistent_state, &recovered, &active_channels).await;
+    clear_stale_running_sessions(&persistent_state, &recovered).await;
 
     let state = persistent_state.lock().await;
     assert!(
-        state.sessions["sess-lead"].is_running,
-        "Channel lead sessions for active channels must not be cleared by clear_stale_running_sessions"
+        !state.sessions["sess-lead"].is_running,
+        "Channel lead sessions should have is_running cleared (on-demand, not recovered)"
     );
 }
 
@@ -1173,8 +774,7 @@ async fn test_clear_stale_running_sessions_clears_stale_reviewers() {
     }
 
     let recovered = std::collections::HashSet::new();
-    let active_channels: std::collections::HashSet<String> = std::collections::HashSet::new();
-    clear_stale_running_sessions(&persistent_state, &recovered, &active_channels).await;
+    clear_stale_running_sessions(&persistent_state, &recovered).await;
 
     let state = persistent_state.lock().await;
     assert!(
@@ -1188,81 +788,10 @@ async fn test_clear_stale_running_sessions_clears_stale_reviewers() {
 async fn test_clear_stale_running_sessions_empty_state() {
     let persistent_state = tokio::sync::Mutex::new(DaemonPersistentState::default());
     let recovered = std::collections::HashSet::new();
-    let active_channels: std::collections::HashSet<String> = std::collections::HashSet::new();
     // Must not panic
-    clear_stale_running_sessions(&persistent_state, &recovered, &active_channels).await;
+    clear_stale_running_sessions(&persistent_state, &recovered).await;
     let state = persistent_state.lock().await;
     assert!(state.sessions.is_empty());
-}
-
-/// Archived channel-lead sessions have is_running=true but their channel no longer exists
-/// as an active channel. clear_stale_running_sessions must clear their flag so dispatch
-/// doesn't treat them as still active.
-///
-/// Regression test for: a topic channel archived between daemon runs causes its
-/// channel-lead SessionRecord to retain is_running=true permanently (neither
-/// clear_stale_running_sessions nor recover_channel_lead_sessions touches it).
-#[tokio::test]
-async fn test_clear_stale_running_sessions_clears_archived_channel_lead() {
-    let persistent_state = tokio::sync::Mutex::new(DaemonPersistentState::default());
-
-    {
-        let mut state = persistent_state.lock().await;
-        // Channel lead session for "old-feature", which has since been archived
-        let lead = test_session_record("sess-archived-lead", "old-feature", "channel-lead");
-        state
-            .sessions
-            .insert("sess-archived-lead".to_string(), lead);
-
-        // channel_lead_sessions does NOT contain "old-feature" because the archive
-        // effect removes the entry. However, the SessionRecord still has is_running=true.
-        // (No entry in channel_lead_sessions for "old-feature")
-    }
-
-    // Active channels: empty (the channel was archived and its entry removed)
-    let active_channels: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let recovered = std::collections::HashSet::new();
-
-    clear_stale_running_sessions(&persistent_state, &recovered, &active_channels).await;
-
-    let state = persistent_state.lock().await;
-    assert!(
-        !state.sessions["sess-archived-lead"].is_running,
-        "Channel-lead session for archived channel must have is_running cleared to false"
-    );
-}
-
-/// Active (non-archived) channel-lead sessions must NOT be cleared by
-/// clear_stale_running_sessions — they are recovered separately.
-#[tokio::test]
-async fn test_clear_stale_running_sessions_preserves_active_channel_lead() {
-    let persistent_state = tokio::sync::Mutex::new(DaemonPersistentState::default());
-
-    {
-        let mut state = persistent_state.lock().await;
-        // Active channel lead — channel is NOT archived
-        let lead = test_session_record("sess-active-lead", "payments", "channel-lead");
-        state.sessions.insert("sess-active-lead".to_string(), lead);
-
-        // payments is an active channel lead session
-        state
-            .channel_lead_sessions
-            .insert("payments".to_string(), "sess-active-lead".to_string());
-    }
-
-    // "payments" is an active channel
-    let mut active_channels: std::collections::HashSet<String> = std::collections::HashSet::new();
-    active_channels.insert("payments".to_string());
-
-    let recovered = std::collections::HashSet::new();
-
-    clear_stale_running_sessions(&persistent_state, &recovered, &active_channels).await;
-
-    let state = persistent_state.lock().await;
-    assert!(
-        state.sessions["sess-active-lead"].is_running,
-        "Channel-lead session for active channel must NOT be cleared"
-    );
 }
 
 /// Sessions already marked is_running=false are not affected.
@@ -1279,8 +808,7 @@ async fn test_clear_stale_running_sessions_skips_already_stopped() {
     }
 
     let recovered = std::collections::HashSet::new();
-    let active_channels: std::collections::HashSet<String> = std::collections::HashSet::new();
-    clear_stale_running_sessions(&persistent_state, &recovered, &active_channels).await;
+    clear_stale_running_sessions(&persistent_state, &recovered).await;
 
     let state = persistent_state.lock().await;
     assert!(

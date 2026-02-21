@@ -333,6 +333,10 @@ pub struct WorldSnapshot {
     pub now_utc: DateTime<Utc>,
     /// Repository name.
     pub repo_name: String,
+    /// Default channel name (e.g., "midtown"). Used by pure decision functions
+    /// to construct `NudgeChannelLead` effects that route to the project lead.
+    #[serde(default)]
+    pub default_channel: String,
     /// Repository owner (from git remote URL). Used by pure decision functions
     /// to determine if a PR is authored by the lead (repo owner).
     #[serde(default)]
@@ -838,6 +842,7 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
     let is_at_dev_limit = state.is_at_dev_limit(&channel_lead_names);
     let now_utc = Utc::now();
     let repo_name = state.repo_name.clone();
+    let default_channel = state.channel_router.default_channel_name().to_string();
     let repo_owner = state.repo_owner.clone();
 
     // ── Dispatch cooldown state ──────────────────────────────────────────
@@ -965,6 +970,7 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
         is_at_dev_limit,
         now_utc,
         repo_name,
+        default_channel,
         repo_owner,
         sessions,
         session_task_map,
@@ -1049,6 +1055,7 @@ pub(super) fn minimal_snapshot_for_test() -> WorldSnapshot {
         is_at_dev_limit: false,
         now_utc: Utc::now(),
         repo_name: "test-repo".to_string(),
+        default_channel: "test-repo".to_string(),
         repo_owner: None,
         github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
         freshly_fetched_rate_limit: None,

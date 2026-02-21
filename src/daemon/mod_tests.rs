@@ -1499,14 +1499,14 @@ fn test_mark_in_flight_spawns_covers_all_effect_variants() {
     // 2. NudgeCoworkerWithCallbacks with RecordTaskAssignment (Case 2 nudges)
     // 3. SpawnCoworkerWithCallbacks with RecordTaskAssignment (Case 1 owned spawns)
     let effects = vec![
-        effects::Effect::NudgeCoworkerWithCallbacks {
-            name: "pleasant".to_string(),
-            message: "task prompt".to_string(),
-            on_success: vec![effects::Effect::RecordTaskAssignment {
+        effects::Effect::nudge_session_with_callbacks(
+            "sess-pleasant-1",
+            "task prompt",
+            vec![effects::Effect::RecordTaskAssignment {
                 coworker: "pleasant".to_string(),
                 task_id: "873".to_string(),
             }],
-        },
+        ),
         effects::Effect::AssignAndSpawn {
             task_id: "874".to_string(),
             owner: "park".to_string(),
@@ -1543,7 +1543,7 @@ fn test_mark_in_flight_spawns_covers_all_effect_variants() {
             effects::Effect::AssignAndSpawn { task_id, .. } => {
                 in_flight_tasks.insert(task_id.clone());
             }
-            effects::Effect::NudgeCoworkerWithCallbacks { on_success, .. }
+            effects::Effect::NudgeSessionWithCallbacks { on_success, .. }
             | effects::Effect::SpawnCoworkerWithCallbacks { on_success, .. } => {
                 for sub_effect in on_success {
                     if let effects::Effect::RecordTaskAssignment { task_id, .. } = sub_effect {
@@ -1866,9 +1866,9 @@ fn test_daemon_state_initializes_name_pool_with_all_coworker_names() {
 }
 
 #[test]
-fn test_session_for_name_returns_none_when_empty() {
+fn test_session_id_for_name_returns_empty_when_no_session() {
     let (state, _tmp, _guard) = make_cleanup_test_state();
-    assert_eq!(state.session_for_name("park"), None);
+    assert_eq!(state.session_id_for_name("park"), "");
 }
 
 #[test]
@@ -1884,7 +1884,7 @@ fn test_session_for_task_returns_none_when_empty() {
 }
 
 #[test]
-fn test_session_for_name_after_manual_population() {
+fn test_session_id_for_name_after_manual_population() {
     let (state, _tmp, _guard) = make_cleanup_test_state();
     state
         .name_to_session
@@ -1892,11 +1892,8 @@ fn test_session_for_name_after_manual_population() {
         .unwrap()
         .insert("park".to_string(), "sid-park-1".to_string());
 
-    assert_eq!(
-        state.session_for_name("park"),
-        Some("sid-park-1".to_string())
-    );
-    assert_eq!(state.session_for_name("madison"), None);
+    assert_eq!(state.session_id_for_name("park"), "sid-park-1");
+    assert_eq!(state.session_id_for_name("madison"), "");
 }
 
 #[test]
@@ -1943,12 +1940,9 @@ fn test_reverse_maps_bidirectional_consistency() {
     }
 
     // Verify both directions work
-    assert_eq!(state.session_for_name("park"), Some("sid-park".to_string()));
+    assert_eq!(state.session_id_for_name("park"), "sid-park");
     assert_eq!(state.name_for_session("sid-park"), Some("park".to_string()));
-    assert_eq!(
-        state.session_for_name("madison"),
-        Some("sid-madison".to_string())
-    );
+    assert_eq!(state.session_id_for_name("madison"), "sid-madison");
     assert_eq!(
         state.name_for_session("sid-madison"),
         Some("madison".to_string())
@@ -1995,8 +1989,8 @@ async fn test_cleanup_releases_name_from_pool() {
         "name should be released back to pool"
     );
     assert_eq!(
-        state.session_for_name("madison"),
-        None,
+        state.session_id_for_name("madison"),
+        "",
         "name_to_session should be cleared"
     );
     assert_eq!(
@@ -2049,8 +2043,8 @@ async fn test_cleanup_preserves_other_sessions_reverse_maps() {
         "park should still be allocated"
     );
     assert_eq!(
-        state.session_for_name("park"),
-        Some("sid-park".to_string()),
+        state.session_id_for_name("park"),
+        "sid-park",
         "park's name_to_session should be preserved"
     );
     assert_eq!(
@@ -2066,7 +2060,7 @@ async fn test_cleanup_preserves_other_sessions_reverse_maps() {
 
     // Madison's state should be cleared
     assert!(!state.name_pool.lock().unwrap().is_allocated("madison"));
-    assert_eq!(state.session_for_name("madison"), None);
+    assert_eq!(state.session_id_for_name("madison"), "");
     assert_eq!(state.name_for_session("sid-madison"), None);
     assert_eq!(state.session_for_task("42"), None);
 }
@@ -2116,7 +2110,7 @@ async fn test_cleanup_with_no_session_id_is_noop_for_reverse_maps() {
 
     // Verify pool state is correct
     assert!(!state.name_pool.lock().unwrap().is_allocated("madison"));
-    assert_eq!(state.session_for_name("madison"), None);
+    assert_eq!(state.session_id_for_name("madison"), "");
 }
 
 #[tokio::test]
@@ -2218,8 +2212,8 @@ async fn test_repeated_shutdown_spawn_cycles_do_not_exhaust_name_pool() {
             "cycle {cycle}: madison should be released after cleanup"
         );
         assert_eq!(
-            state.session_for_name("madison"),
-            None,
+            state.session_id_for_name("madison"),
+            "",
             "cycle {cycle}: name_to_session should be cleared"
         );
         assert_eq!(

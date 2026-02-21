@@ -1,148 +1,125 @@
 use super::*;
 use crate::daemon::trackers::PrIssueType;
 
-/// Helper to count effects of a specific type.
-fn count_nudge_coworker(effects: &[Effect], name: &str) -> usize {
+/// Helper to count NudgeSession effects for a given session_id.
+fn count_nudge_session(effects: &[Effect], sid: &str) -> usize {
     effects
         .iter()
-        .filter(|e| matches!(e, Effect::NudgeCoworker { name: n, .. } if n == name))
+        .filter(|e| matches!(e, Effect::NudgeSession { session_id, .. } if session_id == sid))
         .count()
 }
 
-fn count_nudge_with_callbacks(effects: &[Effect], name: &str) -> usize {
+fn count_nudge_with_callbacks(effects: &[Effect], sid: &str) -> usize {
     effects
         .iter()
-        .filter(|e| matches!(e, Effect::NudgeCoworkerWithCallbacks { name: n, .. } if n == name))
+        .filter(|e| matches!(e, Effect::NudgeSessionWithCallbacks { session_id, .. } if session_id == sid))
         .count()
 }
 
 #[test]
-fn test_dedup_removes_duplicate_nudge_coworker() {
+fn test_dedup_removes_duplicate_nudge_session() {
     let effects = vec![
-        Effect::NudgeCoworker {
-            name: "riverside".into(),
-            message: "first nudge".into(),
-        },
-        Effect::NudgeCoworker {
-            name: "riverside".into(),
-            message: "second nudge".into(),
-        },
-        Effect::NudgeCoworker {
-            name: "riverside".into(),
-            message: "third nudge".into(),
-        },
+        Effect::nudge_session("sess-riverside-1", "first nudge"),
+        Effect::nudge_session("sess-riverside-1", "second nudge"),
+        Effect::nudge_session("sess-riverside-1", "third nudge"),
     ];
 
     let deduped = dedup_nudge_effects(effects);
-    assert_eq!(count_nudge_coworker(&deduped, "riverside"), 1);
+    assert_eq!(count_nudge_session(&deduped, "sess-riverside-1"), 1);
     // First message wins
-    if let Effect::NudgeCoworker { message, .. } = &deduped[0] {
-        assert_eq!(message, "first nudge");
+    if let Effect::NudgeSession { reason, .. } = &deduped[0] {
+        assert_eq!(reason.to_nudge_message(), "first nudge");
     } else {
-        panic!("Expected NudgeCoworker");
+        panic!("Expected NudgeSession");
     }
 }
 
 #[test]
 fn test_dedup_removes_duplicate_nudge_with_callbacks() {
     let effects = vec![
-        Effect::NudgeCoworkerWithCallbacks {
-            name: "riverside".into(),
-            message: "CI green".into(),
-            on_success: vec![Effect::RecordPrNudge {
+        Effect::nudge_session_with_callbacks(
+            "sess-riverside-1",
+            "CI green",
+            vec![Effect::RecordPrNudge {
                 pr_number: 42,
                 issue_type: PrIssueType::Approved,
             }],
-        },
-        Effect::NudgeCoworkerWithCallbacks {
-            name: "riverside".into(),
-            message: "review complete".into(),
-            on_success: vec![Effect::RecordPrNudge {
+        ),
+        Effect::nudge_session_with_callbacks(
+            "sess-riverside-1",
+            "review complete",
+            vec![Effect::RecordPrNudge {
                 pr_number: 42,
                 issue_type: PrIssueType::ReviewComplete,
             }],
-        },
-        Effect::NudgeCoworkerWithCallbacks {
-            name: "riverside".into(),
-            message: "merge conflict".into(),
-            on_success: vec![Effect::RecordPrNudge {
+        ),
+        Effect::nudge_session_with_callbacks(
+            "sess-riverside-1",
+            "merge conflict",
+            vec![Effect::RecordPrNudge {
                 pr_number: 42,
                 issue_type: PrIssueType::MergeConflict,
             }],
-        },
+        ),
     ];
 
     let deduped = dedup_nudge_effects(effects);
     assert_eq!(
-        count_nudge_with_callbacks(&deduped, "riverside"),
+        count_nudge_with_callbacks(&deduped, "sess-riverside-1"),
         1,
         "Should collapse 3 nudges into 1"
     );
     // First message wins, but all callbacks are merged
-    if let Effect::NudgeCoworkerWithCallbacks {
-        message,
-        on_success,
-        ..
+    if let Effect::NudgeSessionWithCallbacks {
+        reason, on_success, ..
     } = &deduped[0]
     {
-        assert_eq!(message, "CI green");
+        assert_eq!(reason.to_nudge_message(), "CI green");
         assert_eq!(
             on_success.len(),
             3,
             "All three on_success callbacks should be merged"
         );
     } else {
-        panic!("Expected NudgeCoworkerWithCallbacks");
+        panic!("Expected NudgeSessionWithCallbacks");
     }
 }
 
 #[test]
-fn test_dedup_preserves_different_coworkers() {
+fn test_dedup_preserves_different_sessions() {
     let effects = vec![
-        Effect::NudgeCoworker {
-            name: "riverside".into(),
-            message: "nudge riverside".into(),
-        },
-        Effect::NudgeCoworker {
-            name: "broadway".into(),
-            message: "nudge broadway".into(),
-        },
-        Effect::NudgeCoworker {
-            name: "riverside".into(),
-            message: "duplicate riverside".into(),
-        },
+        Effect::nudge_session("sess-riverside-1", "nudge riverside"),
+        Effect::nudge_session("sess-broadway-2", "nudge broadway"),
+        Effect::nudge_session("sess-riverside-1", "duplicate riverside"),
     ];
 
     let deduped = dedup_nudge_effects(effects);
-    assert_eq!(count_nudge_coworker(&deduped, "riverside"), 1);
-    assert_eq!(count_nudge_coworker(&deduped, "broadway"), 1);
+    assert_eq!(count_nudge_session(&deduped, "sess-riverside-1"), 1);
+    assert_eq!(count_nudge_session(&deduped, "sess-broadway-2"), 1);
     assert_eq!(deduped.len(), 2);
 }
 
 #[test]
 fn test_dedup_mixed_nudge_types_promotes_callbacks() {
-    // Plain NudgeCoworker first, then NudgeCoworkerWithCallbacks — the nudge
+    // Plain NudgeSession first, then NudgeSessionWithCallbacks — the nudge
     // is deduped but on_success callbacks are promoted to standalone effects
     // so state tracking (RecordPrNudge) still fires.
     let effects = vec![
-        Effect::NudgeCoworker {
-            name: "riverside".into(),
-            message: "plain nudge".into(),
-        },
-        Effect::NudgeCoworkerWithCallbacks {
-            name: "riverside".into(),
-            message: "callback nudge".into(),
-            on_success: vec![Effect::RecordPrNudge {
+        Effect::nudge_session("sess-riverside-1", "plain nudge"),
+        Effect::nudge_session_with_callbacks(
+            "sess-riverside-1",
+            "callback nudge",
+            vec![Effect::RecordPrNudge {
                 pr_number: 42,
                 issue_type: PrIssueType::Approved,
             }],
-        },
+        ),
     ];
 
     let deduped = dedup_nudge_effects(effects);
-    // 1 NudgeCoworker + 1 promoted RecordPrNudge callback
+    // 1 NudgeSession + 1 promoted RecordPrNudge callback
     assert_eq!(deduped.len(), 2);
-    assert_eq!(count_nudge_coworker(&deduped, "riverside"), 1);
+    assert_eq!(count_nudge_session(&deduped, "sess-riverside-1"), 1);
     // Verify the RecordPrNudge callback was promoted as a standalone effect
     assert!(
         deduped
@@ -160,18 +137,12 @@ fn test_dedup_preserves_non_nudge_effects() {
             message: "hello".into(),
             channel: None,
         },
-        Effect::NudgeCoworker {
-            name: "riverside".into(),
-            message: "nudge 1".into(),
-        },
+        Effect::nudge_session("sess-riverside-1", "nudge 1"),
         Effect::RecordCooldown {
             category: "test".into(),
             key: "key".into(),
         },
-        Effect::NudgeCoworker {
-            name: "riverside".into(),
-            message: "nudge 2".into(),
-        },
+        Effect::nudge_session("sess-riverside-1", "nudge 2"),
         Effect::PostToChannel {
             sender: "midtown".into(),
             message: "world".into(),
@@ -182,20 +153,15 @@ fn test_dedup_preserves_non_nudge_effects() {
     let deduped = dedup_nudge_effects(effects);
     // 1 nudge + 2 PostToChannel + 1 RecordCooldown = 4
     assert_eq!(deduped.len(), 4);
-    assert_eq!(count_nudge_coworker(&deduped, "riverside"), 1);
+    assert_eq!(count_nudge_session(&deduped, "sess-riverside-1"), 1);
 }
 
 #[test]
-fn test_dedup_case_insensitive() {
+fn test_dedup_session_id_based() {
+    // Session IDs are exact match, not case-insensitive
     let effects = vec![
-        Effect::NudgeCoworker {
-            name: "Riverside".into(),
-            message: "nudge 1".into(),
-        },
-        Effect::NudgeCoworker {
-            name: "riverside".into(),
-            message: "nudge 2".into(),
-        },
+        Effect::nudge_session("sess-abc-123", "nudge 1"),
+        Effect::nudge_session("sess-abc-123", "nudge 2"),
     ];
 
     let deduped = dedup_nudge_effects(effects);
@@ -204,63 +170,65 @@ fn test_dedup_case_insensitive() {
 
 #[test]
 fn test_dedup_quadruple_nudge_scenario() {
-    // Reproduces the exact bug: 4 nudges to same coworker in 1 second
+    // Reproduces the exact bug: 4 nudges to same session in 1 second
     // from different PR issue sources.
     let effects = vec![
-        Effect::NudgeCoworkerWithCallbacks {
-            name: "riverside".into(),
-            message: "PR #181 - CI checks passed".into(),
-            on_success: vec![Effect::RecordPrNudge {
+        Effect::nudge_session_with_callbacks(
+            "sess-riverside-1",
+            "PR #181 - CI checks passed",
+            vec![Effect::RecordPrNudge {
                 pr_number: 181,
                 issue_type: PrIssueType::Approved,
             }],
-        },
-        Effect::NudgeCoworkerWithCallbacks {
-            name: "riverside".into(),
-            message: "PR #181 - Review complete".into(),
-            on_success: vec![Effect::RecordPrNudge {
+        ),
+        Effect::nudge_session_with_callbacks(
+            "sess-riverside-1",
+            "PR #181 - Review complete",
+            vec![Effect::RecordPrNudge {
                 pr_number: 181,
                 issue_type: PrIssueType::ReviewComplete,
             }],
-        },
-        Effect::NudgeCoworkerWithCallbacks {
-            name: "riverside".into(),
-            message: "PR #181 - Merge conflict".into(),
-            on_success: vec![Effect::RecordPrNudge {
+        ),
+        Effect::nudge_session_with_callbacks(
+            "sess-riverside-1",
+            "PR #181 - Merge conflict",
+            vec![Effect::RecordPrNudge {
                 pr_number: 181,
                 issue_type: PrIssueType::MergeConflict,
             }],
-        },
-        Effect::NudgeCoworkerWithCallbacks {
-            name: "riverside".into(),
-            message: "PR #181 - Green with feedback".into(),
-            on_success: vec![Effect::RecordPrNudge {
+        ),
+        Effect::nudge_session_with_callbacks(
+            "sess-riverside-1",
+            "PR #181 - Green with feedback",
+            vec![Effect::RecordPrNudge {
                 pr_number: 181,
                 issue_type: PrIssueType::GreenWithFeedback,
             }],
-        },
+        ),
     ];
 
     let deduped = dedup_nudge_effects(effects);
 
     // Should have: 1 nudge (with merged callbacks)
     assert_eq!(
-        count_nudge_with_callbacks(&deduped, "riverside"),
+        count_nudge_with_callbacks(&deduped, "sess-riverside-1"),
         1,
         "4 nudges should collapse into 1"
     );
 
     // The merged nudge should have all 4 on_success callbacks
-    if let Effect::NudgeCoworkerWithCallbacks {
-        on_success,
-        message,
-        ..
+    if let Effect::NudgeSessionWithCallbacks {
+        on_success, reason, ..
     } = &deduped[0]
     {
-        assert_eq!(message, "PR #181 - CI checks passed", "First message wins");
+        assert_eq!(
+            reason.to_nudge_message(),
+            "PR #181 - CI checks passed",
+            "First message wins"
+        );
         assert_eq!(on_success.len(), 4, "All 4 callbacks should be merged");
     } else {
-        panic!("Expected NudgeCoworkerWithCallbacks");
+        panic!("Expected NudgeSessionWithCallbacks");
     }
 }
 
@@ -302,7 +270,7 @@ async fn test_complete_task_cleans_up_pr_author_sessions() {
             branch: "madison/another-task-42".to_string(),
             original_author: "madison".to_string(),
             stored_at: Utc::now(),
-            task_id: Some("42".to_string()), // Same task_id as PR 1001
+            task_id: Some("42".to_string()),
         },
     );
     pr_sessions.insert(
@@ -312,52 +280,42 @@ async fn test_complete_task_cleans_up_pr_author_sessions() {
             branch: "broadway/no-task".to_string(),
             original_author: "broadway".to_string(),
             stored_at: Utc::now(),
-            task_id: None, // No task_id
+            task_id: None,
         },
     );
     persistent_state.github.pr_author_sessions = pr_sessions;
 
-    // Simulate the cleanup logic from Effect::CompleteTask for task "42"
     let completed_task_id = "42";
     persistent_state
         .github
         .pr_author_sessions
         .retain(|_, session| session.task_id.as_deref() != Some(completed_task_id));
 
-    // Verify cleanup results
     assert!(
         !persistent_state
             .github
             .pr_author_sessions
-            .contains_key(&1001),
-        "PR 1001 with task_id=42 should be removed"
+            .contains_key(&1001)
     );
     assert!(
         persistent_state
             .github
             .pr_author_sessions
-            .contains_key(&1002),
-        "PR 1002 with task_id=99 should remain"
+            .contains_key(&1002)
     );
     assert!(
         !persistent_state
             .github
             .pr_author_sessions
-            .contains_key(&1003),
-        "PR 1003 with task_id=42 should be removed"
+            .contains_key(&1003)
     );
     assert!(
         persistent_state
             .github
             .pr_author_sessions
-            .contains_key(&1004),
-        "PR 1004 with no task_id should remain"
+            .contains_key(&1004)
     );
-    assert_eq!(
-        persistent_state.github.pr_author_sessions.len(),
-        2,
-        "Should have exactly 2 remaining entries (1002 and 1004)"
-    );
+    assert_eq!(persistent_state.github.pr_author_sessions.len(), 2);
 }
 
 #[tokio::test]
@@ -368,8 +326,6 @@ async fn test_cleanup_merged_worktree_removes_pr_author_session() {
     use std::collections::HashMap;
 
     let mut persistent_state = DaemonPersistentState::default();
-
-    // Set up pr_author_sessions with entries for different PRs
     let mut pr_sessions = HashMap::new();
     pr_sessions.insert(
         1001,
@@ -393,33 +349,25 @@ async fn test_cleanup_merged_worktree_removes_pr_author_session() {
     );
     persistent_state.github.pr_author_sessions = pr_sessions;
 
-    // Simulate the cleanup logic from Effect::CleanupMergedWorktree for PR 1001
     let merged_pr_number = 1001;
     persistent_state
         .github
         .pr_author_sessions
         .remove(&merged_pr_number);
 
-    // Verify cleanup results
     assert!(
         !persistent_state
             .github
             .pr_author_sessions
-            .contains_key(&1001),
-        "PR 1001 should be removed after worktree cleanup"
+            .contains_key(&1001)
     );
     assert!(
         persistent_state
             .github
             .pr_author_sessions
-            .contains_key(&1002),
-        "PR 1002 should remain"
+            .contains_key(&1002)
     );
-    assert_eq!(
-        persistent_state.github.pr_author_sessions.len(),
-        1,
-        "Should have exactly 1 remaining entry (1002)"
-    );
+    assert_eq!(persistent_state.github.pr_author_sessions.len(), 1);
 }
 
 // ── Session-centric effect tests ──────────────────────────────────────
@@ -446,7 +394,6 @@ fn test_record_session_inserts_into_persistent_state() {
         resume_on_startup: true,
     };
 
-    // Simulate RecordSession effect
     persistent_state
         .sessions
         .insert(record.session_id.clone(), record.clone());
@@ -464,8 +411,6 @@ fn test_record_session_updates_existing_record() {
     use chrono::Utc;
 
     let mut persistent_state = DaemonPersistentState::default();
-
-    // Insert initial record
     let record = SessionRecord {
         session_id: "sess-abc-123".to_string(),
         task_id: Some("42".to_string()),
@@ -485,7 +430,6 @@ fn test_record_session_updates_existing_record() {
         .sessions
         .insert(record.session_id.clone(), record);
 
-    // Simulate update (e.g., session stopped)
     let mut updated = persistent_state
         .sessions
         .get("sess-abc-123")
@@ -500,7 +444,6 @@ fn test_record_session_updates_existing_record() {
     let stored = persistent_state.sessions.get("sess-abc-123").unwrap();
     assert!(!stored.is_running);
     assert!(stored.current_name.is_none());
-    // Preferred name is preserved for future resume
     assert_eq!(stored.preferred_name.as_deref(), Some("lexington"));
 }
 
@@ -509,19 +452,15 @@ fn test_release_name_frees_name_in_pool() {
     use crate::name_pool::NamePool;
 
     let mut pool = NamePool::new(&["lexington", "park", "madison"]);
-
-    // Allocate "lexington"
     let name = pool.allocate(None).unwrap();
     assert_eq!(name, "lexington");
     assert!(pool.is_allocated("lexington"));
     assert_eq!(pool.available_count(), 2);
 
-    // Simulate ReleaseName effect
     pool.release(&name);
     assert!(!pool.is_allocated("lexington"));
     assert_eq!(pool.available_count(), 3);
 
-    // Released name goes to the back of the LRU queue
     assert_eq!(pool.allocate(None).unwrap(), "park");
     assert_eq!(pool.allocate(None).unwrap(), "madison");
     assert_eq!(pool.allocate(None).unwrap(), "lexington");
@@ -552,7 +491,6 @@ fn test_shutdown_session_marks_not_running() {
         .sessions
         .insert(record.session_id.clone(), record);
 
-    // Simulate ShutdownSession effect
     if let Some(record) = persistent_state.sessions.get_mut("sess-abc-123") {
         record.is_running = false;
         record.current_name = None;
@@ -570,12 +508,10 @@ fn test_spawn_session_name_allocation_with_preferred() {
     use std::collections::HashSet;
 
     let mut pool = NamePool::new(&["lexington", "park", "madison"]);
-    // Allocate park (simulating it's in use)
-    pool.allocate(None); // takes lexington
-    pool.allocate(None); // takes park
-    pool.release("lexington"); // lexington returns to pool
+    pool.allocate(None);
+    pool.allocate(None);
+    pool.release("lexington");
 
-    // SpawnSession with preferred_name="lexington" should get lexington
     let excluded: HashSet<String> = HashSet::new();
     let name = pool.allocate_excluding(Some("lexington"), &excluded);
     assert_eq!(name.as_deref(), Some("lexington"));
@@ -587,27 +523,19 @@ fn test_spawn_session_excludes_channel_leads() {
     use std::collections::HashSet;
 
     let mut pool = NamePool::new(&["lexington", "park", "madison"]);
-
-    // Channel leads should be excluded from allocation
     let channel_leads: HashSet<String> = ["lexington"].iter().map(|s| s.to_string()).collect();
     let name = pool.allocate_excluding(None, &channel_leads);
-    assert_eq!(
-        name.as_deref(),
-        Some("park"),
-        "Should skip lexington (channel lead)"
-    );
+    assert_eq!(name.as_deref(), Some("park"));
 }
 
 #[test]
 fn test_reverse_maps_consistency() {
     use std::collections::HashMap;
 
-    // Simulate the reverse map operations from RecordSession
     let mut name_to_session: HashMap<String, String> = HashMap::new();
     let mut session_to_name: HashMap<String, String> = HashMap::new();
     let mut task_to_session: HashMap<String, String> = HashMap::new();
 
-    // RecordSession: insert
     let session_id = "sess-abc-123".to_string();
     let name = "lexington".to_string();
     let task_id = "42".to_string();
@@ -615,12 +543,10 @@ fn test_reverse_maps_consistency() {
     session_to_name.insert(session_id.clone(), name.clone());
     task_to_session.insert(task_id.clone(), session_id.clone());
 
-    // Verify lookups
     assert_eq!(name_to_session.get("lexington"), Some(&session_id));
     assert_eq!(session_to_name.get("sess-abc-123"), Some(&name));
     assert_eq!(task_to_session.get("42"), Some(&session_id));
 
-    // ReleaseName: cleanup
     let removed_session = name_to_session.remove("lexington");
     if let Some(ref sid) = removed_session {
         session_to_name.remove(sid);
@@ -628,7 +554,6 @@ fn test_reverse_maps_consistency() {
 
     assert!(name_to_session.is_empty());
     assert!(session_to_name.is_empty());
-    // task_to_session is NOT cleaned up by ReleaseName (intentional — task mapping persists)
     assert_eq!(task_to_session.get("42"), Some(&session_id));
 }
 
@@ -658,13 +583,10 @@ fn test_coworker_break_updates_session_record() {
         .sessions
         .insert(record.session_id.clone(), record);
 
-    // Simulate what handle_coworker_break should do:
-    // 1. Look up session_id from name
     let mut name_to_session: HashMap<String, String> = HashMap::new();
     name_to_session.insert("lexington".to_string(), "sess-abc-123".to_string());
     let session_id = name_to_session.get("lexington").cloned();
 
-    // 2. Update session record
     if let Some(session_id) = session_id
         && let Some(record) = persistent_state.sessions.get_mut(&session_id)
     {
@@ -679,11 +601,6 @@ fn test_coworker_break_updates_session_record() {
 
 #[test]
 fn test_shutdown_coworker_impl_updates_session_via_name_lookup() {
-    // Verifies that when shutdown_coworker_impl runs for a name that has
-    // an associated session, the SessionRecord gets is_running=false and
-    // current_name=None. This matters because the Idle path in
-    // handle_coworker_report_state flows through ShutdownCoworkerWithCallbacks
-    // → shutdown_coworker_impl, so session cleanup must happen there.
     use crate::daemon::state::{DaemonPersistentState, SessionRecord};
     use crate::name_pool::NamePool;
     use chrono::Utc;
@@ -694,7 +611,6 @@ fn test_shutdown_coworker_impl_updates_session_via_name_lookup() {
     let mut session_to_name: HashMap<String, String> = HashMap::new();
     let mut pool = NamePool::new(&["lexington", "park", "madison"]);
 
-    // Set up: session "sess-123" is running as "lexington"
     let record = SessionRecord {
         session_id: "sess-123".to_string(),
         task_id: Some("42".to_string()),
@@ -715,37 +631,27 @@ fn test_shutdown_coworker_impl_updates_session_via_name_lookup() {
         .insert(record.session_id.clone(), record);
     name_to_session.insert("lexington".to_string(), "sess-123".to_string());
     session_to_name.insert("sess-123".to_string(), "lexington".to_string());
-    pool.allocate(Some("lexington")); // mark as allocated
+    pool.allocate(Some("lexington"));
 
-    // Simulate what shutdown_coworker_impl should do after shutting down "lexington":
-    // 1. Look up session from name
     let session_id = name_to_session.get("lexington").cloned();
-    // 2. Update session record
     if let Some(session_id) = &session_id
         && let Some(sr) = persistent_state.sessions.get_mut(session_id)
     {
         sr.is_running = false;
         sr.current_name = None;
     }
-    // 3. Release name from pool
     pool.release("lexington");
-    // 4. Clean up reverse maps
     name_to_session.remove("lexington");
     if let Some(sid) = session_id {
         session_to_name.remove(&sid);
     }
 
-    // Verify: session record updated
     let stored = persistent_state.sessions.get("sess-123").unwrap();
     assert!(!stored.is_running);
     assert!(stored.current_name.is_none());
     assert_eq!(stored.preferred_name.as_deref(), Some("lexington"));
-
-    // Verify: name released back to pool
     assert!(!pool.is_allocated("lexington"));
     assert_eq!(pool.available_count(), 3);
-
-    // Verify: reverse maps cleaned up
     assert!(name_to_session.is_empty());
     assert!(session_to_name.is_empty());
 }
@@ -758,13 +664,10 @@ async fn test_cleanup_merged_worktree_saves_when_only_pr_session_removed() {
     use std::collections::HashMap;
     use tempfile::tempdir;
 
-    // Create temp dir for persistent state, redirect ~/.midtown to it
     let midtown_dir = tempdir().unwrap();
     let _midtown_guard = crate::paths::set_test_midtown_base_dir(midtown_dir.path().to_path_buf());
     let repo_name = "test-repo";
 
-    // Initial state: pr_author_sessions has a stale entry for PR #2001,
-    // but worktree_registry has NO entry (worktree was already cleaned up somehow)
     let mut persistent_state = DaemonPersistentState::default();
     let mut pr_sessions = HashMap::new();
     pr_sessions.insert(
@@ -778,35 +681,17 @@ async fn test_cleanup_merged_worktree_saves_when_only_pr_session_removed() {
         },
     );
     persistent_state.github.pr_author_sessions = pr_sessions;
-
-    // Save initial state to disk (writes to midtown_dir, not ~/.midtown)
     persistent_state.save_for_repo(repo_name).unwrap();
 
-    // Verify stale entry exists on disk
     let loaded_before = DaemonPersistentState::load_for_repo(repo_name).unwrap();
-    assert!(
-        loaded_before.github.pr_author_sessions.contains_key(&2001),
-        "Stale PR session should exist before cleanup"
-    );
+    assert!(loaded_before.github.pr_author_sessions.contains_key(&2001));
 
-    // Simulate CleanupMergedWorktree cleanup for PR #2001
-    // worktree_registry.cleanup_for_merged_pr returns None (no worktree found)
-    // but pr_author_sessions.remove returns Some (stale entry found)
     let pr_session_removed = persistent_state.github.pr_author_sessions.remove(&2001);
-    assert!(
-        pr_session_removed.is_some(),
-        "Should have removed the stale pr_author_session"
-    );
-
-    // The fix ensures save happens when either worktree OR pr_session is removed
+    assert!(pr_session_removed.is_some());
     persistent_state.save_for_repo(repo_name).unwrap();
 
-    // Verify PR #2001 session is removed from disk (defense-in-depth actually persisted)
     let loaded_after = DaemonPersistentState::load_for_repo(repo_name).unwrap();
-    assert!(
-        !loaded_after.github.pr_author_sessions.contains_key(&2001),
-        "Stale PR session should be removed from disk after cleanup"
-    );
+    assert!(!loaded_after.github.pr_author_sessions.contains_key(&2001));
 }
 
 #[test]
@@ -816,7 +701,6 @@ fn test_spawn_session_marks_old_records_with_same_name_as_not_running() {
 
     let mut persistent_state = DaemonPersistentState::default();
 
-    // Old session record for "riverside" — still marked is_running: true (the bug)
     let old_record = SessionRecord {
         session_id: "sess-old-111".to_string(),
         task_id: Some("42".to_string()),
@@ -836,7 +720,6 @@ fn test_spawn_session_marks_old_records_with_same_name_as_not_running() {
         .sessions
         .insert(old_record.session_id.clone(), old_record);
 
-    // Another old session for "riverside" (reviewer) — also stale is_running: true
     let old_reviewer = SessionRecord {
         session_id: "sess-old-222".to_string(),
         task_id: None,
@@ -856,7 +739,6 @@ fn test_spawn_session_marks_old_records_with_same_name_as_not_running() {
         .sessions
         .insert(old_reviewer.session_id.clone(), old_reviewer);
 
-    // Unrelated session for "amsterdam" — should NOT be touched
     let unrelated = SessionRecord {
         session_id: "sess-amsterdam".to_string(),
         task_id: Some("99".to_string()),
@@ -876,11 +758,9 @@ fn test_spawn_session_marks_old_records_with_same_name_as_not_running() {
         .sessions
         .insert(unrelated.session_id.clone(), unrelated);
 
-    // Simulate: new SpawnSession for "riverside" — should mark old records as not running
     let new_session_id = "sess-new-333";
     let effective_name = "riverside";
 
-    // This is what the fix should do: mark old records with same name as not running
     for record in persistent_state.sessions.values_mut() {
         if record.session_id != new_session_id
             && record.is_running
@@ -891,7 +771,6 @@ fn test_spawn_session_marks_old_records_with_same_name_as_not_running() {
         }
     }
 
-    // Insert the new session record
     let new_record = SessionRecord {
         session_id: new_session_id.to_string(),
         task_id: Some("50".to_string()),
@@ -911,25 +790,8 @@ fn test_spawn_session_marks_old_records_with_same_name_as_not_running() {
         .sessions
         .insert(new_record.session_id.clone(), new_record);
 
-    // Verify: old riverside records should be is_running: false
-    assert!(
-        !persistent_state.sessions["sess-old-111"].is_running,
-        "Old dev session for riverside should be marked not running"
-    );
-    assert!(
-        !persistent_state.sessions["sess-old-222"].is_running,
-        "Old reviewer session for riverside should be marked not running"
-    );
-
-    // Verify: new riverside session should be is_running: true
-    assert!(
-        persistent_state.sessions[new_session_id].is_running,
-        "New session for riverside should be running"
-    );
-
-    // Verify: amsterdam should be untouched
-    assert!(
-        persistent_state.sessions["sess-amsterdam"].is_running,
-        "Unrelated amsterdam session should still be running"
-    );
+    assert!(!persistent_state.sessions["sess-old-111"].is_running);
+    assert!(!persistent_state.sessions["sess-old-222"].is_running);
+    assert!(persistent_state.sessions[new_session_id].is_running);
+    assert!(persistent_state.sessions["sess-amsterdam"].is_running);
 }

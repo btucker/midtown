@@ -1,0 +1,152 @@
+//! Wake reasons for session nudging.
+//!
+//! `WakeReason` captures why a session is being woken — used by the unified
+//! nudge effects (`NudgeChannelLead`, `NudgeSession`) to format messages
+//! for running sessions and initial prompts for fresh spawns.
+
+/// Why a session is being woken up.
+#[derive(Debug, Clone)]
+pub enum WakeReason {
+    // ── Channel lead triggers ──────────────────────────────────────────
+    /// A task was created in the channel.
+    TaskCreated { task_id: String, subject: String },
+    /// A user posted a message in the channel.
+    UserMessage { content: String, msg_id: String },
+    /// An insight was posted in the channel.
+    InsightPosted {
+        insight: String,
+        agent: String,
+        msg_id: String,
+    },
+
+    // ── Coworker triggers ──────────────────────────────────────────────
+    /// A task was assigned to this coworker (fresh spawn).
+    TaskAssigned { task_id: String, subject: String },
+    /// A task was claimed by an already-running coworker.
+    TaskClaimed { task_id: String, subject: String },
+    /// Session recovery after crash/restart.
+    SessionRecovery { task_id: String, subject: String },
+    /// Review assigned.
+    ReviewAssigned { pr_number: u64 },
+
+    // ── Universal ──────────────────────────────────────────────────────
+    /// @mention routing.
+    Mention {
+        from: String,
+        content: String,
+        msg_id: String,
+    },
+    /// Generic nudge (freeform message).
+    Nudge { message: String },
+}
+
+impl WakeReason {
+    /// Format as a nudge message for an already-running session.
+    pub fn to_nudge_message(&self) -> String {
+        match self {
+            Self::TaskCreated { task_id, subject } => {
+                format!(
+                    "A task was created in your channel:\n  Task !{task_id}: {subject}\n\n\
+                     Run `midtown task view {task_id}` for full details."
+                )
+            }
+            Self::UserMessage { content, msg_id } => {
+                format!("user ({msg_id}): {content}")
+            }
+            Self::InsightPosted {
+                insight,
+                agent,
+                msg_id,
+            } => {
+                format!(
+                    "{agent} posted an insight:\n\n{insight}\n\n\
+                     If you have additional context, reply in the thread: \
+                     midtown channel post \"...\" --thread {msg_id}"
+                )
+            }
+            Self::TaskAssigned { task_id, subject } => {
+                format!(
+                    "You've been assigned task !{task_id}: {subject}. Get started!\n\n\
+                     Run `midtown task view {task_id}` for full details."
+                )
+            }
+            Self::TaskClaimed { task_id, subject } => {
+                format!(
+                    "You've been assigned task !{task_id}: {subject}. \
+                     Run `midtown task claim {task_id}` to claim it, then get started!\n\n\
+                     Run `midtown task view {task_id}` for full details."
+                )
+            }
+            Self::SessionRecovery { task_id, subject } => {
+                format!(
+                    "You've been assigned task !{task_id}: {subject}. \
+                     Your previous session was interrupted but your worktree and branch are still intact. \
+                     Check your git status and get started!\n\n\
+                     Run `midtown task view {task_id}` for full details."
+                )
+            }
+            Self::ReviewAssigned { pr_number } => {
+                format!("You've been assigned to review PR #{pr_number}. Get started!")
+            }
+            Self::Mention {
+                from,
+                content,
+                msg_id,
+            } => {
+                format!("{from} mentioned you ({msg_id}): {content}")
+            }
+            Self::Nudge { message } => message.clone(),
+        }
+    }
+
+    /// Format as an initial prompt for a fresh channel lead spawn.
+    pub fn to_initial_prompt(&self, channel_name: &str) -> String {
+        let trigger_section = match self {
+            Self::TaskCreated { task_id, subject } => {
+                format!(
+                    "## Wake trigger\nA task was created in your channel:\n  \
+                     Task !{task_id}: {subject}\n\n\
+                     ## First Actions\n\
+                     1. Read the task details: `midtown task view {task_id}`\n\
+                     2. Check recent messages in #{channel_name} for related context"
+                )
+            }
+            Self::UserMessage { content, .. } => {
+                format!(
+                    "## Wake trigger\nA user posted in your channel:\n  \
+                     {content}\n\n\
+                     ## First Actions\n\
+                     1. Read recent messages in #{channel_name} for context\n\
+                     2. Respond to the user's message"
+                )
+            }
+            Self::InsightPosted { insight, agent, .. } => {
+                format!(
+                    "## Wake trigger\n{agent} posted an insight in your channel:\n  \
+                     {insight}\n\n\
+                     ## First Actions\n\
+                     1. Read recent messages in #{channel_name} for context\n\
+                     2. If you have additional context, reply in the thread"
+                )
+            }
+            _ => {
+                format!(
+                    "## First Actions\n\
+                     1. Read recent messages in #{channel_name} for context"
+                )
+            }
+        };
+
+        format!(
+            "## Role\nChannel lead for #{channel_name}\n\n\
+             ## Channel\n#{channel_name}\n\n\
+             ## Mission\n\
+             Domain expert for this channel. Track active work, brainstorm, surface issues proactively.\n\n\
+             {trigger_section}"
+        )
+    }
+}
+
+#[path = "wake_reason_tests.rs"]
+#[cfg(test)]
+mod tests;

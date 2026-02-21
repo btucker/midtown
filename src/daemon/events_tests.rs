@@ -23,9 +23,7 @@ fn make_spawn(name: &str) -> Effect {
 fn dedup_removes_duplicate_spawn_for_same_coworker() {
     let effects = vec![
         make_spawn("lexington"),
-        Effect::NudgeLead {
-            message: "hello".to_string(),
-        },
+        Effect::nudge_channel_lead("test-repo", "hello"),
         make_spawn("lexington"), // duplicate — should be removed
         make_spawn("park"),      // different coworker — should be kept
     ];
@@ -44,7 +42,7 @@ fn dedup_removes_duplicate_spawn_for_same_coworker() {
         .collect();
 
     assert_eq!(spawn_names, vec!["lexington", "park"]);
-    // NudgeLead preserved
+    // NudgeChannelLead preserved
     assert_eq!(deduped.len(), 3);
 }
 
@@ -53,9 +51,7 @@ fn dedup_preserves_all_when_no_duplicates() {
     let effects = vec![
         make_spawn("lexington"),
         make_spawn("park"),
-        Effect::NudgeLead {
-            message: "hello".to_string(),
-        },
+        Effect::nudge_channel_lead("test-repo", "hello"),
     ];
 
     let deduped = dedup_spawn_effects(effects);

@@ -96,11 +96,11 @@ When the daemon starts, it executes a careful cleanup and recovery sequence in `
 
 5. **Task assignment restore** — `restore_task_assignments_from_disk()` repopulates the in-memory task→coworker map from disk before any dispatch ticks fire, preventing duplicate coworker spawns.
 
-6. **Session recovery** — `recover_from_session_records()` generates `ResumeCoworker` effects for each resumable session (those with `is_running=true` and `resume_on_startup=true`). Channel leads are skipped here and recovered separately in step 8. The old process is NOT killed here — it dies naturally from the broken pipe when its previous daemon's handles are closed. A fresh `claude --resume <session_id>` process is spawned to continue the session.
+6. **Session recovery** — `recover_from_session_records()` generates `ResumeCoworker` effects for each resumable session (those with `is_running=true` and `resume_on_startup=true`). The old process is NOT killed here — it dies naturally from the broken pipe when its previous daemon's handles are closed. A fresh `claude --resume <session_id>` process is spawned to continue the session.
 
-7. **Stale flag cleanup** — `clear_stale_running_sessions()` clears the `is_running` flag for any session not included in the recovered set. This covers sessions skipped by `recover_from_session_records` for any reason (non-resumable, reviewer without a PR number, or dropped by name deduplication), as well as channel-lead sessions whose channel was archived between daemon runs. Active channel-lead sessions (whose channel is still non-archived) are preserved for the separate channel lead recovery path.
+7. **Stale flag cleanup** — `clear_stale_running_sessions()` clears the `is_running` flag for any session not included in the recovered set. This covers sessions skipped by `recover_from_session_records` for any reason (non-resumable, reviewer without a PR number, or dropped by name deduplication).
 
-8. **Channel lead recovery** — `recover_channel_lead_sessions()` iterates active (non-archived) topic channels and emits `SpawnCoworker` effects to resume or fresh-start each channel lead session. The main channel names `"midtown"` and `"main"` are always excluded from this step — they belong to the Project Lead, not a channel lead. This guards against accidentally recreated channel directories (e.g., from tests or legacy TUI sessions).
+8. **Channel lead session cleanup** — `channel_lead_sessions` is cleared on startup. Channel leads are on-demand — they stay dormant until triggered by a user message, task creation, insight, or nudge. No channel lead sessions are spawned at startup.
 
 ## Coworkers
 
@@ -170,11 +170,21 @@ This means `lead_provider` acts as a shared fallback for both the Project Lead a
 
 ## Channel Leads
 
-Channel leads are headless Claude Code sessions attached to individual topic channels. Where coworkers are temporary implementers that come and go with tasks, channel leads are long-lived domain experts that accumulate context across conversations.
+Channel leads are headless Claude Code sessions attached to individual topic channels. They are on-demand domain experts — spawned when triggered, shut down when idle, and resumed within a daemon run.
 
 **Role:** A channel lead brainstorms, maintains living design documents, answers domain questions, and tracks awareness of active tasks and PRs in its channel. It does not write code, open PRs, or create tasks. When implementation work is needed, it escalates to `@{project_name}`.
 
-**Message routing:** When a user posts to a topic channel (any non-main channel), `handle_channel_post` in `src/daemon/rpc_channel.rs` nudges the channel lead for that channel via `SessionManager::send_message`. If no channel lead session is alive for that channel, the message is silently skipped — it remains in the channel log and is available when the channel lead next starts up. Main channel behavior is unchanged. Note: `route_mentions()` is intentionally disabled for topic channels — user `@coworker` and `@all` mentions in topic channels are silently dropped; only the channel lead nudge path is active.
+**Lifecycle:** Channel leads are spawned on-demand by these triggers:
+- **User message** in the channel (via `handle_channel_post`)
+- **Task created** in the channel (via `handle_task_create`)
+- **Insight posted** to the channel (via `handle_insight_report`)
+- **Explicit nudge** (@mention routing, task feedback)
+
+All triggers use the `NudgeChannelLead { channel_name, reason }` effect. The execution layer in `effects.rs` handles the decision: if the session is alive, it sends a nudge message; if dead with a session ID from this daemon run, it resumes; if dead with no session ID, it spawns fresh with the trigger context baked into the initial prompt. The project lead is the channel lead for the main channel — `NudgeChannelLead` routes to the project lead's dual-path nudge (headless session manager or headed intercom) when the channel is the default channel.
+
+Channel leads participate in normal idle shutdown (same timeout as coworkers). The `channel_lead_sessions` map is cleared on daemon startup, so all sessions within a run are fresh. `WakeReason` (in `src/daemon/wake_reason.rs`) captures why a session is being woken and provides formatting for both nudge messages and initial prompts.
+
+Note: `route_mentions()` is intentionally disabled for topic channels — user `@coworker` and `@all` mentions in topic channels are silently dropped; only the channel lead nudge path is active.
 
 **System prompt:** Channel leads use the `agents/channel-lead.md` template, instantiated with `{channel_name}`, `{domain_context}`, and `{project_name}` via `channel_lead_system_prompt()` in `src/agents.rs`.
 

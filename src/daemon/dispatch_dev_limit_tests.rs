@@ -189,6 +189,7 @@ fn make_dev_limit_snapshot(
         worktree_registry: crate::worktree_registry::WorktreeRegistry::default(),
         now_utc: chrono::Utc::now(),
         repo_name: "test-repo".to_string(),
+        default_channel: "test-repo".to_string(),
         repo_owner: None,
         github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
         freshly_fetched_rate_limit: None,
@@ -306,7 +307,7 @@ fn test_lead_does_not_count_against_dev_cap() {
             e,
             crate::daemon::effects::Effect::AssignAndSpawn { .. }
                 | crate::daemon::effects::Effect::SpawnCoworkerWithCallbacks { .. }
-                | crate::daemon::effects::Effect::NudgeCoworkerWithCallbacks { .. }
+                | crate::daemon::effects::Effect::NudgeSessionWithCallbacks { .. }
         )
     });
     assert!(
@@ -473,7 +474,7 @@ fn test_dev_cap_without_lead_unaffected() {
             e,
             crate::daemon::effects::Effect::AssignAndSpawn { .. }
                 | crate::daemon::effects::Effect::SpawnCoworkerWithCallbacks { .. }
-                | crate::daemon::effects::Effect::NudgeCoworkerWithCallbacks { .. }
+                | crate::daemon::effects::Effect::NudgeSessionWithCallbacks { .. }
         )
     });
     assert!(
@@ -524,7 +525,7 @@ fn test_dispatch_excludes_channel_leads_from_dev_count() {
             e,
             crate::daemon::effects::Effect::AssignAndSpawn { .. }
                 | crate::daemon::effects::Effect::SpawnCoworkerWithCallbacks { .. }
-                | crate::daemon::effects::Effect::NudgeCoworkerWithCallbacks { .. }
+                | crate::daemon::effects::Effect::NudgeSessionWithCallbacks { .. }
         )
     });
     assert!(
