@@ -80,6 +80,7 @@ pub fn check_and_shutdown_idle_coworkers(snap: &snapshot::WorldSnapshot) -> Vec<
             auth_error_coworkers: &snap.auth_error_coworkers,
             pending_task_owners: &snap.pending_task_owners,
             review_feedback_pr_coworkers: &snap.review_feedback_pr_coworkers,
+            coworkers_with_active_tools: &snap.coworkers_with_active_tools,
             now_utc: snap.now_utc,
             minimum_lifetime: MINIMUM_COWORKER_LIFETIME,
             repo_name: &snap.repo_name,

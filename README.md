@@ -497,6 +497,8 @@ Each topic channel can have a **channel lead** — a headless Claude Code sessio
 
 **Forked sessions:** Channel leads can fork themselves into thread-specific sessions via `midtown session fork <thread-id>`. A forked session inherits the parent's conversation context but gets an independent session ID bound to a specific thread. Thread replies are automatically routed to the fork, and the fork's channel posts are auto-tagged with the bound thread ID.
 
+When a forked session creates a task, it can pass `--thread-id <message-id>` to `midtown task create` (the CLI automatically uses `$MIDTOWN_BOUND_THREAD_ID` inside forked sessions). The daemon stores that binding with the task so the coworker spawned for it posts updates back into the originating thread, even across restarts or session resumes.
+
 Coworkers use `@{channel-name}` for domain questions (e.g., `@auth-refactor can you explain the token expiry logic?`) and reserve `@lead` for coordination and priority questions.
 
 ### Channel Sync

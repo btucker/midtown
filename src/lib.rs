@@ -220,6 +220,10 @@ pub enum Error {
     /// Invalid message format
     #[error("Invalid message format: {0}")]
     InvalidMessage(String),
+
+    /// Channel exists only in archived form
+    #[error("Channel '{0}' is archived")]
+    ChannelArchived(String),
 }
 
 /// Result type alias for Midtown operations.

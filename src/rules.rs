@@ -314,6 +314,10 @@ pub(crate) struct IdleShutdownContext<'a> {
     pub auth_error_coworkers: &'a HashSet<String>,
     pub pending_task_owners: &'a HashSet<String>,
     pub review_feedback_pr_coworkers: &'a HashSet<String>,
+    /// Coworkers with an actively running tool or subagent (has_pending_tool or
+    /// has_running_subagent from ProcessHealth). These sessions must not be
+    /// idle-shutdown while their tool call is in flight.
+    pub coworkers_with_active_tools: &'a HashSet<String>,
     pub now_utc: DateTime<Utc>,
     pub minimum_lifetime: Duration,
     /// The project repository name, used to identify the lead session.
@@ -335,7 +339,8 @@ pub(crate) struct IdleShutdownContext<'a> {
 /// - They have open PRs with CI passed AND review feedback to address
 /// - They are actively reviewing a PR
 /// - They have unblocked dependent tasks
-/// - They have a subagent (Task tool) currently running
+/// - They have a Task subagent or tool call in flight (has_running_subagent /
+///   has_pending_tool)
 ///
 /// Coworkers with open PRs where CI has passed and NO review feedback CAN go on
 /// break - they're just waiting for human review, and the daemon will respawn
@@ -379,7 +384,8 @@ pub(crate) fn decide_idle_shutdowns(ctx: &IdleShutdownContext<'_>) -> Vec<Shutdo
                 || hashset_contains_icase(ctx.coworkers_with_unblocked_deps, name)
                 || hashset_contains_icase(ctx.usage_limited_coworkers, name)
                 || hashset_contains_icase(ctx.api_error_coworkers, name)
-                || hashset_contains_icase(ctx.auth_error_coworkers, name);
+                || hashset_contains_icase(ctx.auth_error_coworkers, name)
+                || hashset_contains_icase(ctx.coworkers_with_active_tools, name);
 
             !is_protected
         })
@@ -1515,6 +1521,7 @@ mod tests {
         auth_error: HashSet<String>,
         pending_tasks: HashSet<String>,
         review_feedback: HashSet<String>,
+        active_tools: HashSet<String>,
         minimum_lifetime: Duration,
         repo_name: String,
     }
@@ -1533,6 +1540,7 @@ mod tests {
                 auth_error: HashSet::new(),
                 pending_tasks: HashSet::new(),
                 review_feedback: HashSet::new(),
+                active_tools: HashSet::new(),
                 minimum_lifetime: Duration::default(),
                 repo_name: "test-repo".to_string(),
             }
@@ -1540,24 +1548,24 @@ mod tests {
     }
 
     impl IdleShutdownCtx {
-        /// Start with a single coworker (10 min old) and 5 min minimum lifetime.
-        fn one(name: &str) -> Self {
+        /// Base builder that seeds coworker age and minimum lifetime.
+        fn base(name: &str, minutes_old: i64) -> Self {
             Self {
-                coworkers: vec![cw(name, 10)],
+                coworkers: vec![cw(name, minutes_old)],
                 minimum_lifetime: Duration::from_secs(300),
                 repo_name: "test-repo".to_string(),
                 ..Default::default()
             }
         }
 
+        /// Start with a single coworker (10 min old) and 5 min minimum lifetime.
+        fn one(name: &str) -> Self {
+            Self::base(name, 10)
+        }
+
         /// Start with a young coworker (2 min old).
         fn one_young(name: &str) -> Self {
-            Self {
-                coworkers: vec![cw(name, 2)],
-                minimum_lifetime: Duration::from_secs(300),
-                repo_name: "test-repo".to_string(),
-                ..Default::default()
-            }
+            Self::base(name, 2)
         }
 
         /// Set a custom repo name (for testing lead filtering by repo name).
@@ -1602,6 +1610,10 @@ mod tests {
             self.review_feedback = set(names);
             self
         }
+        fn active_tools(mut self, names: &[&str]) -> Self {
+            self.active_tools = set(names);
+            self
+        }
 
         fn run(&self) -> Vec<ShutdownDecision> {
             let ctx = IdleShutdownContext {
@@ -1616,6 +1628,7 @@ mod tests {
                 auth_error_coworkers: &self.auth_error,
                 pending_task_owners: &self.pending_tasks,
                 review_feedback_pr_coworkers: &self.review_feedback,
+                coworkers_with_active_tools: &self.active_tools,
                 now_utc: Utc::now(),
                 minimum_lifetime: self.minimum_lifetime,
                 repo_name: &self.repo_name,
@@ -1684,6 +1697,28 @@ mod tests {
     fn idle_shutdown_skips_young_coworker() {
         let decisions = IdleShutdownCtx::one_young("york").run();
         assert!(decisions.is_empty());
+    }
+
+    /// Regression test: a coworker with a pending tool call must not be shut
+    /// down — killing the session mid-tool would corrupt the tool result.
+    #[test]
+    fn idle_shutdown_skips_coworker_with_pending_tool() {
+        let decisions = IdleShutdownCtx::one("york").active_tools(&["york"]).run();
+        assert!(
+            decisions.is_empty(),
+            "coworker with pending tool should be protected from idle shutdown"
+        );
+    }
+
+    /// Regression test: a coworker with a running subagent (Task tool) must not
+    /// be shut down — the subagent's work would be abandoned mid-flight.
+    #[test]
+    fn idle_shutdown_skips_coworker_with_running_subagent() {
+        let decisions = IdleShutdownCtx::one("york").active_tools(&["york"]).run();
+        assert!(
+            decisions.is_empty(),
+            "coworker with running subagent should be protected from idle shutdown"
+        );
     }
 
     #[test]
