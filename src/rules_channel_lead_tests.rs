@@ -45,6 +45,7 @@ fn channel_lead_is_idle_shutdown() {
         coworkers_with_pending_tools: &empty,
         pending_task_owners: &empty,
         review_feedback_pr_coworkers: &empty,
+        coworkers_with_active_tools: &empty,
         now_utc: Utc::now(),
         minimum_lifetime: Duration::from_secs(300),
         repo_name: "test-repo",

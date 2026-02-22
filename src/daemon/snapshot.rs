@@ -282,6 +282,10 @@ pub struct WorldSnapshot {
     /// These coworkers need a restart to resolve the conflict.
     #[serde(default)]
     pub tool_name_conflict_coworkers: HashSet<String>,
+    /// Coworkers with an active tool call in flight (has_pending_tool or has_running_subagent).
+    /// These sessions are protected from idle shutdown — killing mid-tool would corrupt results.
+    #[serde(default)]
+    pub coworkers_with_active_tools: HashSet<String>,
 
     // ── Channel state ──────────────────────────────────────────────────
     /// Channels that have already been archived (`.archived.jsonl` exists).
@@ -773,6 +777,12 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
         .map(|(name, _)| name.to_lowercase())
         .collect();
 
+    let coworkers_with_active_tools: HashSet<String> = headless_process_health
+        .iter()
+        .filter(|(_, health)| health.has_pending_tool || health.has_running_subagent)
+        .map(|(name, _)| name.to_lowercase())
+        .collect();
+
     // ── Channel state ──────────────────────────────────────────────────
     let archived_channels: HashSet<String> = {
         let base_dir = crate::paths::projects_dir_for_repo(&state.repo_name);
@@ -990,6 +1000,7 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
         api_error_coworkers,
         auth_error_coworkers,
         tool_name_conflict_coworkers,
+        coworkers_with_active_tools,
         archived_channels,
         channel_messages,
         daemon_logs,
@@ -1076,6 +1087,7 @@ pub(super) fn minimal_snapshot_for_test() -> WorldSnapshot {
         api_error_coworkers: HashSet::new(),
         auth_error_coworkers: HashSet::new(),
         tool_name_conflict_coworkers: HashSet::new(),
+        coworkers_with_active_tools: HashSet::new(),
         archived_channels: HashSet::new(),
         channel_messages: vec![],
         daemon_logs: vec![],
