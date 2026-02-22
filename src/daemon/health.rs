@@ -65,19 +65,6 @@ pub fn check_and_shutdown_idle_coworkers(snap: &snapshot::WorldSnapshot) -> Vec<
             .join(", "),
     );
 
-    let coworkers_with_running_subagents: std::collections::HashSet<String> = snap
-        .headless_process_health
-        .iter()
-        .filter(|(_, health)| health.has_running_subagent)
-        .map(|(name, _)| name.to_lowercase())
-        .collect();
-    let coworkers_with_pending_tools: std::collections::HashSet<String> = snap
-        .headless_process_health
-        .iter()
-        .filter(|(_, health)| health.has_pending_tool)
-        .map(|(name, _)| name.to_lowercase())
-        .collect();
-
     // Pure decision: who should be shut down?
     let to_shutdown = {
         let idle_ctx = crate::rules::IdleShutdownContext {
@@ -90,8 +77,6 @@ pub fn check_and_shutdown_idle_coworkers(snap: &snapshot::WorldSnapshot) -> Vec<
             usage_limited_coworkers: &snap.usage_limited_coworkers,
             api_error_coworkers: &snap.api_error_coworkers,
             auth_error_coworkers: &snap.auth_error_coworkers,
-            coworkers_with_running_subagents: &coworkers_with_running_subagents,
-            coworkers_with_pending_tools: &coworkers_with_pending_tools,
             pending_task_owners: &snap.pending_task_owners,
             review_feedback_pr_coworkers: &snap.review_feedback_pr_coworkers,
             coworkers_with_active_tools: &snap.coworkers_with_active_tools,

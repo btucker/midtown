@@ -1509,8 +1509,6 @@ mod tests {
         usage_limited: HashSet<String>,
         api_error: HashSet<String>,
         auth_error: HashSet<String>,
-        running_subagents: HashSet<String>,
-        pending_tools: HashSet<String>,
         pending_tasks: HashSet<String>,
         review_feedback: HashSet<String>,
         active_tools: HashSet<String>,
@@ -1530,8 +1528,6 @@ mod tests {
                 usage_limited: HashSet::new(),
                 api_error: HashSet::new(),
                 auth_error: HashSet::new(),
-                running_subagents: HashSet::new(),
-                pending_tools: HashSet::new(),
                 pending_tasks: HashSet::new(),
                 review_feedback: HashSet::new(),
                 active_tools: HashSet::new(),
@@ -1596,14 +1592,6 @@ mod tests {
             self.api_error = set(names);
             self
         }
-        fn running_subagents(mut self, names: &[&str]) -> Self {
-            self.running_subagents = set(names);
-            self
-        }
-        fn pending_tools(mut self, names: &[&str]) -> Self {
-            self.pending_tools = set(names);
-            self
-        }
         fn pending_tasks(mut self, names: &[&str]) -> Self {
             self.pending_tasks = set(names);
             self
@@ -1628,8 +1616,6 @@ mod tests {
                 usage_limited_coworkers: &self.usage_limited,
                 api_error_coworkers: &self.api_error,
                 auth_error_coworkers: &self.auth_error,
-                coworkers_with_running_subagents: &self.running_subagents,
-                coworkers_with_pending_tools: &self.pending_tools,
                 pending_task_owners: &self.pending_tasks,
                 review_feedback_pr_coworkers: &self.review_feedback,
                 coworkers_with_active_tools: &self.active_tools,
@@ -1787,26 +1773,6 @@ mod tests {
         assert!(
             decisions.is_empty(),
             "API error coworker should be protected from idle shutdown"
-        );
-    }
-
-    #[test]
-    fn idle_shutdown_skips_coworker_with_running_subagent() {
-        let decisions = IdleShutdownCtx::one("york")
-            .running_subagents(&["york"])
-            .run();
-        assert!(
-            decisions.is_empty(),
-            "Coworker with running subagent should be protected from idle shutdown"
-        );
-    }
-
-    #[test]
-    fn idle_shutdown_skips_coworker_waiting_on_tool() {
-        let decisions = IdleShutdownCtx::one("york").pending_tools(&["york"]).run();
-        assert!(
-            decisions.is_empty(),
-            "Coworker waiting on tool result should be protected from idle shutdown"
         );
     }
 
