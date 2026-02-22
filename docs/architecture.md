@@ -127,6 +127,8 @@ The daemon uses a **session-centric model** where Claude Code sessions (keyed by
 
 On daemon startup, the `NamePool` is restored from persisted session records: names with active sessions are marked allocated, the rest are available in LRU order.
 
+**Daemon-controlled session IDs**: `spawn_coworker()` returns `Result<String>` — the session ID used for the spawn. For fresh sessions, a UUID is generated upfront and passed to the CLI via `--session-id`, so the daemon knows the session ID immediately at spawn time. For resumed sessions, the existing session ID from `SessionMode::ResumeSession` is reused. This eliminates the race window where `name_to_session`, `session_to_name`, and `channel_lead_sessions` were empty until the init StreamEvent arrived. All callers of `spawn_coworker` (effects.rs handlers, `expedite_lead_respawn_on_user_message`) capture the returned session ID and update their state eagerly.
+
 ## Prompt Architecture
 
 Prompts are assembled from composable markdown files in `agents/` and loaded at runtime by `src/agents.rs`. The file-based approach allows customization without recompilation: the binary embeds defaults, but `agents/` in the git repo root (or `~/.midtown/agents/`) takes precedence.

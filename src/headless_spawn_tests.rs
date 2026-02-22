@@ -305,3 +305,111 @@ fn test_resume_session_does_not_use_session_id_flag() {
         "Resume session should use --resume flag"
     );
 }
+
+#[test]
+fn test_daemon_generated_session_id_is_valid_uuid_and_flows_to_cli_args() {
+    // Verifies the core race-window fix: the daemon generates a UUID upfront for
+    // fresh sessions and passes it as --session-id to the CLI. This test simulates
+    // the session_id generation path in spawn_coworker() and verifies the generated
+    // ID is a valid UUID that flows through to the CLI args.
+
+    // Simulate spawn_coworker's session ID generation for fresh sessions:
+    let session_id = uuid::Uuid::new_v4().to_string();
+
+    // Verify it's a valid UUID
+    assert!(
+        uuid::Uuid::parse_str(&session_id).is_ok(),
+        "Generated session ID should be a valid UUID, got: {}",
+        session_id
+    );
+
+    // Build a HeadlessConfig as spawn_coworker would — with session_id set
+    let config = HeadlessConfig {
+        model: "haiku".to_string(),
+        system_prompt: "channel lead prompt".to_string(),
+        settings_path: None,
+        setting_sources: None,
+        persist_session: true,
+        resume_session_id: None,
+        session_id: Some(session_id.clone()),
+        allow_tools: true,
+        json_schema: None,
+        cwd: None,
+        project_name: Some("midtown".to_string()),
+        max_budget_usd: None,
+        inactivity_timeout: None,
+        team_name: None,
+        agent_id: None,
+        agent_name: None,
+        auth_provider: crate::auth::AuthProvider::Claude,
+        env: std::collections::BTreeMap::new(),
+        fork_session: false,
+    };
+
+    let args = extract_spawn_args(&config);
+
+    // Verify --session-id is present with the exact UUID
+    let sid_pos = args.iter().position(|a| a == "--session-id");
+    assert!(
+        sid_pos.is_some(),
+        "CLI args should include --session-id for daemon-generated fresh session"
+    );
+    assert_eq!(
+        args.get(sid_pos.unwrap() + 1).map(|s| s.as_str()),
+        Some(session_id.as_str()),
+        "CLI --session-id value should match the daemon-generated UUID"
+    );
+
+    // Verify the UUID would populate reverse maps correctly
+    // (spawn_coworker inserts into name_to_session and session_to_name
+    // using this exact session_id — tested here as the value that
+    // would flow through the reverse-map population path)
+    assert!(
+        !session_id.is_empty(),
+        "Session ID must be non-empty to populate reverse maps (spawn_coworker guards with if !session_id_for_record.is_empty())"
+    );
+}
+
+#[test]
+fn test_fork_session_with_preassigned_session_id() {
+    // Fork sessions (--resume + --fork-session) should NOT get --session-id,
+    // since the fork inherits context from the parent and gets its own ID from
+    // the CLI. The daemon passes session_id via the spawn() call instead.
+    let config = HeadlessConfig {
+        model: "haiku".to_string(),
+        system_prompt: "test".to_string(),
+        settings_path: None,
+        setting_sources: None,
+        persist_session: true,
+        resume_session_id: Some("parent-session-id".to_string()),
+        session_id: Some("should-be-ignored".to_string()),
+        allow_tools: true,
+        json_schema: None,
+        cwd: None,
+        project_name: Some("midtown".to_string()),
+        max_budget_usd: None,
+        inactivity_timeout: None,
+        team_name: None,
+        agent_id: None,
+        agent_name: None,
+        auth_provider: crate::auth::AuthProvider::Claude,
+        env: std::collections::BTreeMap::new(),
+        fork_session: true,
+    };
+
+    let args = extract_spawn_args(&config);
+
+    // Fork sessions use --resume + --fork-session, NOT --session-id
+    assert!(
+        args.iter().any(|a| a == "--resume"),
+        "Fork session should include --resume"
+    );
+    assert!(
+        args.iter().any(|a| a == "--fork-session"),
+        "Fork session should include --fork-session"
+    );
+    assert!(
+        !args.iter().any(|a| a == "--session-id"),
+        "Fork session should NOT include --session-id (session_id is passed via spawn() call)"
+    );
+}

@@ -842,7 +842,21 @@ impl DaemonState {
             );
 
             match self.spawn_coworker(&config).await {
-                Ok(_) => true,
+                Ok(session_id) => {
+                    // Update channel_lead_sessions with the real session ID immediately,
+                    // replacing the empty placeholder inserted above. This eliminates the
+                    // race window before the init StreamEvent arrives.
+                    let mut ps = self.persistent_state.lock().await;
+                    ps.channel_lead_sessions
+                        .insert(ops_channel.to_string(), session_id);
+                    if let Err(e) = ps.save_for_repo(&self.repo_name) {
+                        tracing::error!(
+                            "Failed to save daemon state after ops channel lead spawn: {}",
+                            e
+                        );
+                    }
+                    true
+                }
                 Err(e) => {
                     tracing::error!("Failed to spawn ops channel lead: {}", e);
                     false
@@ -1345,7 +1359,6 @@ impl DaemonState {
         }
 
         // Register in the CoworkerManager tracking map (keyed by slot_id)
-        // session_id is None initially — it arrives later via the init StreamEvent
         // Extract profile name from auth_profile_dir.
         // For Claude, profile_dir_for() returns `<base>/<name>/claude`, so the profile
         // name is the parent's file_name, not the leaf. For other providers, it's the leaf.
@@ -1393,8 +1406,8 @@ impl DaemonState {
 
         // Persist session info immediately so `session.list` and `session.attach`
         // can find the entry without waiting for the shutdown-time save.
-        // For resumed sessions, session_id is known from config; for fresh sessions
-        // it starts empty and gets backfilled when the init StreamEvent arrives.
+        // Both fresh and resumed sessions have a known session_id at spawn time:
+        // fresh sessions use a daemon-generated UUID, resumed sessions use the stored ID.
         let session_id_for_record = persisted_session_id.clone();
         let working_dir_for_record = working_dir_for_persist.clone();
         {

@@ -1953,21 +1953,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                             session_id, name, task_id
                         );
 
-                        // 4. Update reverse maps
-                        {
-                            state
-                                .name_to_session
-                                .lock()
-                                .unwrap()
-                                .insert(name.clone(), session_id.clone());
-                        }
-                        {
-                            state
-                                .session_to_name
-                                .lock()
-                                .unwrap()
-                                .insert(session_id.clone(), name.clone());
-                        }
+                        // 4. Update task_to_session (name↔session maps already set by spawn_coworker)
                         {
                             state
                                 .task_to_session

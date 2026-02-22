@@ -111,7 +111,7 @@ fn build_claude_common_args(
 /// handles sandbox prefix + binary separately.
 ///
 /// Fresh sessions get: `-p`, `--append-system-prompt`, `--json-schema`,
-///   `--settings`, `--setting-sources` (from common).
+///   `--session-id` (when pre-assigned), `--settings`, `--setting-sources` (from common).
 ///
 /// Resume sessions get: `--resume <id>` and skip `--settings`/`--setting-sources`
 ///   to avoid "Tool names must be unique" errors.
