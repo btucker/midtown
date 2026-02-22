@@ -710,6 +710,61 @@ async fn test_crash_loop_guard_skips_resume_when_headless_cleared() {
     );
 }
 
+/// When a user sends a thread reply, the lead nudge must use the PARENT's ID
+/// (thread_parent_id), not the reply's own ID.
+///
+/// Bug: using the reply's own ID caused the lead to reply with `--thread reply_id`,
+/// creating a nested reply that is invisible to the user in both the web UI and TUI.
+/// The user's message appeared to "reply to itself" because the lead echoed the content
+/// with the wrong thread ID, making the response appear in the wrong thread slot.
+///
+/// Fix: pass `thread_parent_id` as `msg_id` in `WakeReason::UserMessage` so the lead
+/// uses `--thread parent_id` and creates a sibling reply in the correct thread.
+#[tokio::test]
+async fn test_user_thread_reply_nudge_uses_parent_id() {
+    let (state, _tmp, _guard) = make_test_state("midtown-test-thread-reply-nudge-parent-id");
+    let adapter_id = "test-adapter-thread-reply-nudge";
+    state
+        .headed_register(
+            &state.repo_name,
+            adapter_id,
+            crate::auth::AuthProvider::Claude,
+        )
+        .await
+        .expect("register headed adapter");
+
+    let parent_id = "parent-message-uuid-456";
+
+    // Post a user thread reply (simulating the user sending a reply from the thread panel)
+    let response = handle_channel_post(
+        1_i64.into(),
+        "user",
+        "this is my thread reply",
+        None,
+        Some(parent_id),
+        &state,
+    )
+    .await;
+    assert!(response.error.is_none(), "channel.post should succeed");
+
+    let (messages, _capture) = state
+        .headed_poll(&state.repo_name, adapter_id, 0, 10)
+        .await
+        .expect("poll headed queue");
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0].kind, "nudge_text");
+
+    // The nudge MUST use the parent's ID so the lead replies with --thread parent_id,
+    // creating a sibling reply in the correct thread. Using the reply's own UUID
+    // would cause the lead to create a nested reply invisible to the user.
+    let expected = format!("user ({}): this is my thread reply", parent_id);
+    assert_eq!(
+        messages[0].text, expected,
+        "nudge for thread reply should use parent_id '{}', not the reply's own UUID",
+        parent_id
+    );
+}
+
 /// Verify that `clear_lead_respawn_cooldown` removes the lead entry from
 /// `coworker_stop_times`, allowing `ensure_lead_alive()` to respawn on the next tick.
 #[tokio::test]
@@ -1154,6 +1209,33 @@ async fn test_thread_routing_with_topic_session_routes_to_fork() {
         messages.is_empty(),
         "Main lead should not be nudged when routing to a fork session"
     );
+
+    // The fork-session nudge must carry the thread_parent_id as msg_id so the fork
+    // posts a sibling reply instead of nesting under the user reply UUID.
+    let effect = super::build_topic_thread_nudge_effect(
+        "auth-refactor",
+        "Follow-up question in thread",
+        thread_id.to_string(),
+        Some(fork_session_id.to_string()),
+    );
+    match effect {
+        crate::daemon::effects::Effect::NudgeSession { session_id, reason } => {
+            assert_eq!(session_id, fork_session_id);
+            match reason {
+                crate::daemon::wake_reason::WakeReason::UserMessage { msg_id, .. } => {
+                    assert_eq!(
+                        msg_id, thread_id,
+                        "Fork session nudge should target the thread parent"
+                    );
+                }
+                other => panic!(
+                    "Expected UserMessage reason for fork nudge, got {:?}",
+                    other
+                ),
+            }
+        }
+        other => panic!("Expected NudgeSession effect, got {:?}", other),
+    }
 }
 
 /// Verify that `handle_session_fork` deduplicates: when a topic session already
