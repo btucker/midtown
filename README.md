@@ -257,6 +257,20 @@ Execution provider resolution is role-based:
   - Architect: `execution.architect_provider` -> `execution.specialized_provider` -> `claude`
   - `headless.execute`: `execution.headless_execute_provider` -> `execution.specialized_provider` -> `claude`
 
+Model aliases are auto-normalized per provider at launch:
+
+- Generic sizes:
+  - Claude: `small` -> `haiku`, `medium` -> `sonnet`, `large` -> `opus`
+  - z.ai: `small` -> `haiku`, `medium` -> `sonnet`, `large` -> `opus`
+  - Codex: `small` -> `gpt-5.1-codex-mini`, `medium`/`large` -> `gpt-5.3-codex`
+- z.ai model aliases are hard-mapped at launch via env vars:
+  - `ANTHROPIC_DEFAULT_HAIKU_MODEL=GLM-4.5-Air`
+  - `ANTHROPIC_DEFAULT_SONNET_MODEL=GLM-4.7`
+  - `ANTHROPIC_DEFAULT_OPUS_MODEL=GLM-5`
+- Cross-provider safety:
+  - `haiku`/`sonnet`/`opus` are normalized to Codex defaults when provider is Codex.
+  - `gpt-5-codex` is normalized to Claude/z.ai role defaults when provider is Claude/z.ai.
+
 ### Managing Config via CLI
 
 You can read and write config settings without editing TOML files directly:

@@ -27,6 +27,99 @@ fn default_model_for_provider_role_uses_claude_tiers() {
     );
 }
 
+#[test]
+fn normalize_model_for_provider_role_rewrites_claude_alias_for_codex() {
+    let normalized = normalize_model_for_provider_role(
+        "sonnet",
+        crate::auth::AuthProvider::Codex,
+        &crate::launch::CoworkerRole::ChannelLead {
+            channel_name: "ops".to_string(),
+            domain_context: String::new(),
+        },
+    );
+    assert_eq!(normalized, "gpt-5-codex");
+}
+
+#[test]
+fn normalize_model_for_provider_role_keeps_codex_alias_for_codex() {
+    let normalized = normalize_model_for_provider_role(
+        "o3",
+        crate::auth::AuthProvider::Codex,
+        &crate::launch::CoworkerRole::Coworker,
+    );
+    assert_eq!(normalized, "o3");
+}
+
+#[test]
+fn normalize_model_for_provider_role_rewrites_codex_alias_for_claude() {
+    let normalized = normalize_model_for_provider_role(
+        "gpt-5.3-codex",
+        crate::auth::AuthProvider::Claude,
+        &crate::launch::CoworkerRole::Lead,
+    );
+    assert_eq!(normalized, "opus");
+}
+
+#[test]
+fn normalize_model_for_provider_role_maps_size_aliases_for_claude() {
+    let small = normalize_model_for_provider_role(
+        "small",
+        crate::auth::AuthProvider::Claude,
+        &crate::launch::CoworkerRole::Coworker,
+    );
+    let medium = normalize_model_for_provider_role(
+        "medium",
+        crate::auth::AuthProvider::Claude,
+        &crate::launch::CoworkerRole::Lead,
+    );
+    assert_eq!(small, "haiku");
+    assert_eq!(medium, "sonnet");
+}
+
+#[test]
+fn normalize_model_for_provider_role_maps_size_aliases_for_zai() {
+    let small = normalize_model_for_provider_role(
+        "small",
+        crate::auth::AuthProvider::Zai,
+        &crate::launch::CoworkerRole::Coworker,
+    );
+    let medium = normalize_model_for_provider_role(
+        "medium",
+        crate::auth::AuthProvider::Zai,
+        &crate::launch::CoworkerRole::Lead,
+    );
+    let large = normalize_model_for_provider_role(
+        "large",
+        crate::auth::AuthProvider::Zai,
+        &crate::launch::CoworkerRole::Reviewer,
+    );
+    assert_eq!(small, "haiku");
+    assert_eq!(medium, "sonnet");
+    assert_eq!(large, "opus");
+}
+
+#[test]
+fn normalize_model_for_provider_role_maps_size_aliases_for_codex() {
+    let small = normalize_model_for_provider_role(
+        "small",
+        crate::auth::AuthProvider::Codex,
+        &crate::launch::CoworkerRole::Coworker,
+    );
+    let medium = normalize_model_for_provider_role(
+        "medium",
+        crate::auth::AuthProvider::Codex,
+        &crate::launch::CoworkerRole::Lead,
+    );
+    let large = normalize_model_for_provider_role(
+        "large",
+        crate::auth::AuthProvider::Codex,
+        &crate::launch::CoworkerRole::Reviewer,
+    );
+    assert_eq!(small, "gpt-5.1-codex-mini");
+    assert_eq!(medium, "gpt-5.3-codex");
+    assert_eq!(large, "gpt-5.3-codex");
+}
+
 // -------------------------------------------------------------------------
 // truncate_str / truncate_message — UTF-8 safety
 // -------------------------------------------------------------------------

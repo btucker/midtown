@@ -183,6 +183,82 @@ pub fn default_model_for_provider_role(
     }
 }
 
+/// Normalize a launch model alias to a provider-compatible value for the role.
+///
+/// This guards against stale model aliases when the provider is switched (for example,
+/// `sonnet` lingering after switching to Codex). Explicit provider-compatible models
+/// are preserved.
+pub fn normalize_model_for_provider_role(
+    model: &str,
+    provider: crate::auth::AuthProvider,
+    role: &crate::launch::CoworkerRole,
+) -> String {
+    let trimmed = model.trim();
+    let default_model = default_model_for_provider_role(provider, role);
+    if trimmed.is_empty() {
+        return default_model.to_string();
+    }
+
+    let lower = trimmed.to_ascii_lowercase();
+    // Provider-level generic size aliases.
+    // "small/medium/large" normalize before cross-provider compatibility checks.
+    if let Some(size_alias) = normalize_size_alias_for_provider(&lower, provider) {
+        return size_alias;
+    }
+
+    match provider {
+        crate::auth::AuthProvider::Codex => {
+            // Claude/z.ai aliases are not valid in Codex.
+            if lower.contains("sonnet") || lower.contains("opus") || lower.contains("haiku") {
+                default_model.to_string()
+            } else {
+                trimmed.to_string()
+            }
+        }
+        crate::auth::AuthProvider::Claude | crate::auth::AuthProvider::Zai => {
+            // Codex aliases are not valid in Claude/z.ai.
+            if lower.contains("codex") {
+                default_model.to_string()
+            } else {
+                trimmed.to_string()
+            }
+        }
+    }
+}
+
+fn normalize_size_alias_for_provider(
+    lower_model: &str,
+    provider: crate::auth::AuthProvider,
+) -> Option<String> {
+    let size = match lower_model {
+        "small" => "small",
+        "medium" => "medium",
+        "large" => "large",
+        _ => return None,
+    };
+
+    let normalized = match provider {
+        crate::auth::AuthProvider::Claude => match size {
+            "small" => "haiku",
+            "medium" => "sonnet",
+            "large" => "opus",
+            _ => unreachable!(),
+        },
+        crate::auth::AuthProvider::Zai => match size {
+            "small" => "haiku",
+            "medium" => "sonnet",
+            "large" => "opus",
+            _ => unreachable!(),
+        },
+        crate::auth::AuthProvider::Codex => match size {
+            "small" => "gpt-5.1-codex-mini",
+            "medium" | "large" => "gpt-5.3-codex",
+            _ => unreachable!(),
+        },
+    };
+    Some(normalized.to_string())
+}
+
 /// Check if a PR is authored by the lead (repo owner).
 ///
 /// Pure function: compares the PR's author login against the pre-fetched repo owner

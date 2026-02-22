@@ -1120,8 +1120,9 @@ pub(super) async fn handle_session_fork(
     let fork_channel = channel.or_else(|| caller_name.clone());
 
     // Build the HeadlessConfig for the fork.
-    // Forks use --resume <parent-id> --fork-session which creates an independent
-    // session with the same conversation history as the parent.
+    // Platform-specific launch paths translate this into a true fork:
+    // - Claude/z.ai: --resume <parent-id> --fork-session
+    // - Codex: thread/fork RPC on the parent thread
     let config_dir = crate::auth::current_profile_dir_for(auth_provider);
     let repo_name = &state.repo_name;
     let team = crate::mailbox::team_name_for_repo(repo_name);

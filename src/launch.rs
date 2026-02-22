@@ -173,6 +173,19 @@ pub fn build_agent_env_vars(
                 Ok((api_key, base_url)) => {
                     env.insert("ANTHROPIC_AUTH_TOKEN".to_string(), api_key);
                     env.insert("ANTHROPIC_BASE_URL".to_string(), base_url);
+                    // Anthropic alias -> GLM mapping for z.ai provider.
+                    env.insert(
+                        "ANTHROPIC_DEFAULT_HAIKU_MODEL".to_string(),
+                        "GLM-4.5-Air".to_string(),
+                    );
+                    env.insert(
+                        "ANTHROPIC_DEFAULT_SONNET_MODEL".to_string(),
+                        "GLM-4.7".to_string(),
+                    );
+                    env.insert(
+                        "ANTHROPIC_DEFAULT_OPUS_MODEL".to_string(),
+                        "GLM-5".to_string(),
+                    );
                 }
                 Err(e) => {
                     eprintln!("Warning: failed to load z.ai credentials: {}", e);
@@ -934,6 +947,38 @@ mod tests {
             !headless.env.contains_key("CLAUDE_CONFIG_DIR"),
             "Codex provider should not inject CLAUDE_CONFIG_DIR"
         );
+    }
+
+    #[test]
+    fn test_to_headless_config_uses_zai_env_model_defaults() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("api_key.txt"), "test-key\n").expect("write api key");
+        std::fs::write(
+            dir.path().join("base_url.txt"),
+            "https://api.z.ai/api/anthropic\n",
+        )
+        .expect("write base url");
+
+        let mut config = LaunchConfig::coworker("park", "myrepo", SessionMode::Fresh, None);
+        config.auth_provider = crate::auth::AuthProvider::Zai;
+        config.auth_profile_dir = Some(dir.path().to_path_buf());
+        config.model = "haiku".to_string();
+
+        let headless = config.to_headless_config("midtown");
+
+        assert_eq!(
+            headless.env.get("ANTHROPIC_DEFAULT_HAIKU_MODEL"),
+            Some(&"GLM-4.5-Air".to_string())
+        );
+        assert_eq!(
+            headless.env.get("ANTHROPIC_DEFAULT_SONNET_MODEL"),
+            Some(&"GLM-4.7".to_string())
+        );
+        assert_eq!(
+            headless.env.get("ANTHROPIC_DEFAULT_OPUS_MODEL"),
+            Some(&"GLM-5".to_string())
+        );
+        assert_eq!(headless.model, "haiku");
     }
 
     // Tests for parse_task_model function

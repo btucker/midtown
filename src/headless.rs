@@ -46,11 +46,22 @@ pub struct HeadlessConfig {
     pub project_name: Option<String>,
     /// Maximum budget in USD. Defaults to no limit.
     pub max_budget_usd: Option<f64>,
-    /// Whether to allow tool use. When false, uses `--tools ""` to disable all tools.
+    /// Whether to allow tool use.
+    ///
+    /// Provider mapping:
+    /// - Claude/z.ai: `--tools ""` disables all tools.
+    /// - Codex: thread initialization uses `approvalPolicy=never` and `sandbox=read-only`.
+    ///
     /// Defaults to false (no tools).
     pub allow_tools: bool,
-    /// Whether to persist the session on disk. When false, passes
-    /// `--no-session-persistence`. Defaults to false (one-shot mode).
+    /// Whether to persist the session on disk.
+    ///
+    /// Provider mapping:
+    /// - Claude/z.ai: when false, passes `--no-session-persistence`.
+    /// - Codex: no explicit non-persistent mode exists today; this setting is currently
+    ///   advisory for Codex.
+    ///
+    /// Defaults to false (one-shot mode).
     #[serde(default)]
     pub persist_session: bool,
     /// Resume a specific saved session instead of starting fresh.
@@ -217,10 +228,24 @@ struct CodexProtocolState {
     pending_messages: VecDeque<String>,
     latest_agent_message: Option<String>,
     resume_thread_id: Option<String>,
+    fork_session: bool,
+    allow_tools: bool,
     model: String,
     cwd: Option<String>,
     system_prompt: String,
     output_schema: Option<serde_json::Value>,
+    start_phase: String,
+}
+
+#[derive(Debug, Clone)]
+struct CodexLaunchPlan {
+    model: String,
+    cwd: Option<String>,
+    system_prompt: String,
+    output_schema: Option<serde_json::Value>,
+    resume_thread_id: Option<String>,
+    fork_session: bool,
+    allow_tools: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -257,7 +282,7 @@ fn codex_translate_event(
                     total_cost_usd: None,
                     session_id: session_id.clone(),
                     usage: None,
-                    extra: serde_json::json!({ "provider": "codex", "phase": "thread/start" }),
+                    extra: serde_json::json!({ "provider": "codex", "phase": state.start_phase }),
                 }),
                 CodexPostAction::None,
             );
@@ -400,6 +425,103 @@ fn codex_translate_event(
     (None, CodexPostAction::None)
 }
 
+fn codex_thread_init_request(
+    resume_thread_id: Option<&str>,
+    fork_session: bool,
+    allow_tools: bool,
+    cwd: Option<&str>,
+    model: &str,
+    system_prompt: &str,
+) -> (&'static str, serde_json::Value) {
+    let developer_instructions = if system_prompt.is_empty() {
+        serde_json::Value::Null
+    } else {
+        serde_json::json!(system_prompt)
+    };
+
+    let (approval_policy, sandbox_mode) = if allow_tools {
+        ("on-request", "workspace-write")
+    } else {
+        ("never", "read-only")
+    };
+
+    let common = |thread_id: Option<&str>| {
+        let mut params = serde_json::json!({
+            "cwd": cwd,
+            "model": model,
+            "approvalPolicy": approval_policy,
+            "sandbox": sandbox_mode,
+            "developerInstructions": developer_instructions,
+        });
+        if let Some(thread_id) = thread_id {
+            params["threadId"] = serde_json::json!(thread_id);
+        }
+        params
+    };
+
+    match (resume_thread_id, fork_session) {
+        (Some(thread_id), true) => ("thread/fork", common(Some(thread_id))),
+        (Some(thread_id), false) => ("thread/resume", common(Some(thread_id))),
+        (None, _) => ("thread/start", common(None)),
+    }
+}
+
+fn codex_launch_plan_from_config(config: &HeadlessConfig) -> Result<CodexLaunchPlan, String> {
+    // Exhaustive destructure so new HeadlessConfig fields force explicit
+    // handling decisions in this platform mapper.
+    let HeadlessConfig {
+        model,
+        system_prompt,
+        json_schema,
+        cwd,
+        project_name: _project_name,
+        max_budget_usd,
+        allow_tools,
+        persist_session: _persist_session,
+        resume_session_id,
+        inactivity_timeout: _inactivity_timeout,
+        team_name: _team_name,
+        agent_id: _agent_id,
+        agent_name: _agent_name,
+        settings_path,
+        setting_sources,
+        auth_provider: _auth_provider,
+        session_id,
+        env: _env,
+        fork_session,
+    } = config;
+
+    let mut unsupported = Vec::new();
+    if max_budget_usd.is_some() {
+        unsupported.push("max_budget_usd");
+    }
+    if settings_path.is_some() {
+        unsupported.push("settings_path");
+    }
+    if setting_sources.is_some() {
+        unsupported.push("setting_sources");
+    }
+    if session_id.is_some() {
+        unsupported.push("session_id");
+    }
+    if !unsupported.is_empty() {
+        return Err(format!(
+            "Codex headless does not support: {}",
+            unsupported.join(", ")
+        ));
+    }
+
+    Ok(CodexLaunchPlan {
+        model: model.clone(),
+        cwd: cwd.clone(),
+        system_prompt: system_prompt.clone(),
+        output_schema: json_schema.clone(),
+        resume_thread_id: resume_session_id.clone(),
+        fork_session: *fork_session,
+        allow_tools: *allow_tools,
+    })
+}
+
 /// A running headless Claude Code session.
 ///
 /// Owns the child process and provides methods to read streaming events
@@ -533,6 +655,8 @@ impl HeadlessSession {
                 SessionProtocol::Claude
             }
             crate::auth::AuthProvider::Codex => {
+                let plan = codex_launch_plan_from_config(config)
+                    .map_err(|msg| std::io::Error::new(std::io::ErrorKind::InvalidInput, msg))?;
                 SessionProtocol::Codex(Box::new(CodexProtocolState {
                     initialized: false,
                     start_request_id: None,
@@ -541,11 +665,14 @@ impl HeadlessSession {
                     next_request_id: 1,
                     pending_messages: VecDeque::new(),
                     latest_agent_message: None,
-                    resume_thread_id: config.resume_session_id.clone(),
-                    model: config.model.clone(),
-                    cwd: config.cwd.clone(),
-                    system_prompt: config.system_prompt.clone(),
-                    output_schema: config.json_schema.clone(),
+                    resume_thread_id: plan.resume_thread_id,
+                    fork_session: plan.fork_session,
+                    allow_tools: plan.allow_tools,
+                    model: plan.model,
+                    cwd: plan.cwd,
+                    system_prompt: plan.system_prompt,
+                    output_schema: plan.output_schema,
+                    start_phase: "thread/start".to_string(),
                 }))
             }
         };
@@ -666,7 +793,7 @@ impl HeadlessSession {
     /// Ensure provider-specific session initialization has started.
     ///
     /// For Claude, this is a no-op. For Codex app-server, this sends
-    /// `initialize` and `thread/start` or `thread/resume`.
+    /// `initialize` and one of `thread/start`, `thread/resume`, or `thread/fork`.
     pub async fn ensure_ready(&mut self) -> std::io::Result<()> {
         let Some(state) = self.codex_state_mut() else {
             return Ok(());
@@ -679,6 +806,8 @@ impl HeadlessSession {
         let cwd = state.cwd.clone();
         let system_prompt = state.system_prompt.clone();
         let resume_thread_id = state.resume_thread_id.clone();
+        let fork_session = state.fork_session;
+        let allow_tools = state.allow_tools;
 
         self.codex_send_request(
             "initialize",
@@ -691,34 +820,20 @@ impl HeadlessSession {
         )
         .await?;
 
-        let (start_method, start_params) = match resume_thread_id {
-            Some(thread_id) => (
-                "thread/resume",
-                serde_json::json!({
-                    "threadId": thread_id,
-                    "cwd": cwd,
-                    "model": model,
-                    "approvalPolicy": "on-request",
-                    "sandbox": "workspace-write",
-                    "developerInstructions": if system_prompt.is_empty() { serde_json::Value::Null } else { serde_json::json!(system_prompt) },
-                }),
-            ),
-            None => (
-                "thread/start",
-                serde_json::json!({
-                    "cwd": cwd,
-                    "model": model,
-                    "approvalPolicy": "on-request",
-                    "sandbox": "workspace-write",
-                    "developerInstructions": if system_prompt.is_empty() { serde_json::Value::Null } else { serde_json::json!(system_prompt) },
-                }),
-            ),
-        };
+        let (start_method, start_params) = codex_thread_init_request(
+            resume_thread_id.as_deref(),
+            fork_session,
+            allow_tools,
+            cwd.as_deref(),
+            &model,
+            &system_prompt,
+        );
 
         let start_id = self.codex_send_request(start_method, start_params).await?;
         if let Some(state) = self.codex_state_mut() {
             state.initialized = true;
             state.start_request_id = Some(start_id);
+            state.start_phase = start_method.to_string();
         }
 
         Ok(())
@@ -1116,11 +1231,58 @@ mod tests {
             pending_messages: VecDeque::new(),
             latest_agent_message: None,
             resume_thread_id: None,
+            fork_session: false,
+            allow_tools: true,
             model: "gpt-5-codex".to_string(),
             cwd: None,
             system_prompt: String::new(),
             output_schema: None,
+            start_phase: "thread/start".to_string(),
         }
+    }
+
+    #[test]
+    fn test_codex_launch_plan_rejects_unsupported_fields() {
+        let config = HeadlessConfig {
+            auth_provider: crate::auth::AuthProvider::Codex,
+            max_budget_usd: Some(1.0),
+            settings_path: Some("/tmp/settings.json".to_string()),
+            setting_sources: Some("project,local".to_string()),
+            session_id: Some("session-123".to_string()),
+            ..test_config()
+        };
+
+        let error = codex_launch_plan_from_config(&config).unwrap_err();
+        assert!(
+            error.contains("max_budget_usd")
+                && error.contains("settings_path")
+                && error.contains("setting_sources")
+                && error.contains("session_id")
+        );
+    }
+
+    #[test]
+    fn test_codex_launch_plan_accepts_supported_fields() {
+        let config = HeadlessConfig {
+            auth_provider: crate::auth::AuthProvider::Codex,
+            model: "gpt-5.3-codex".to_string(),
+            system_prompt: "System".to_string(),
+            json_schema: Some(serde_json::json!({"type":"object"})),
+            cwd: Some("/tmp/project".to_string()),
+            resume_session_id: Some("thread-parent".to_string()),
+            fork_session: true,
+            allow_tools: false,
+            ..test_config()
+        };
+
+        let plan = codex_launch_plan_from_config(&config).unwrap();
+        assert_eq!(plan.model, "gpt-5.3-codex");
+        assert_eq!(plan.system_prompt, "System");
+        assert_eq!(plan.cwd, Some("/tmp/project".to_string()));
+        assert_eq!(plan.resume_thread_id, Some("thread-parent".to_string()));
+        assert!(plan.fork_session);
+        assert!(!plan.allow_tools);
+        assert!(plan.output_schema.is_some());
     }
 
     #[test]
@@ -1434,5 +1596,68 @@ mod tests {
             }
             _ => panic!("Expected result event after turn completion"),
         }
+    }
+
+    #[test]
+    fn test_codex_thread_init_request_selects_fork_for_resume_fork() {
+        let (method, params) = codex_thread_init_request(
+            Some("thread_parent"),
+            true,
+            true,
+            Some("/tmp/project"),
+            "gpt-5.3-codex",
+            "system prompt",
+        );
+
+        assert_eq!(method, "thread/fork");
+        assert_eq!(params["threadId"], "thread_parent");
+        assert_eq!(params["cwd"], "/tmp/project");
+        assert_eq!(params["model"], "gpt-5.3-codex");
+        assert_eq!(params["approvalPolicy"], "on-request");
+        assert_eq!(params["sandbox"], "workspace-write");
+        assert_eq!(params["developerInstructions"], "system prompt");
+    }
+
+    #[test]
+    fn test_codex_thread_init_request_selects_resume_without_fork() {
+        let (method, params) = codex_thread_init_request(
+            Some("thread_parent"),
+            false,
+            true,
+            Some("/tmp/project"),
+            "gpt-5.3-codex",
+            "",
+        );
+
+        assert_eq!(method, "thread/resume");
+        assert_eq!(params["threadId"], "thread_parent");
+        assert_eq!(params["developerInstructions"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn test_codex_thread_init_request_selects_start_when_not_resuming() {
+        let (method, params) =
+            codex_thread_init_request(None, true, true, None, "gpt-5.3-codex", "system prompt");
+
+        assert_eq!(method, "thread/start");
+        assert_eq!(params.get("threadId"), None);
+        assert_eq!(params["cwd"], serde_json::Value::Null);
+        assert_eq!(params["model"], "gpt-5.3-codex");
+    }
+
+    #[test]
+    fn test_codex_thread_init_request_disables_tools_when_allow_tools_false() {
+        let (method, params) = codex_thread_init_request(
+            None,
+            false,
+            false,
+            Some("/tmp/project"),
+            "gpt-5.3-codex",
+            "system prompt",
+        );
+
+        assert_eq!(method, "thread/start");
+        assert_eq!(params["approvalPolicy"], "never");
+        assert_eq!(params["sandbox"], "read-only");
     }
 }
