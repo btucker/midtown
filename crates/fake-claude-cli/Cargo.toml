@@ -1,0 +1,10 @@
+[package]
+name = "fake-claude-cli"
+version = "0.1.0"
+edition = "2024"
+description = "Deterministic Claude CLI simulator for protocol and E2E testing"
+license = "MIT"
+repository = "https://github.com/btucker/midtown"
+
+[dependencies]
+serde_json = "1"

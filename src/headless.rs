@@ -272,6 +272,40 @@ fn codex_heartbeat_event(
     })
 }
 
+fn codex_command_text(item: &serde_json::Value) -> Option<String> {
+    item.get("commandActions")
+        .and_then(|v| v.as_array())
+        .and_then(|arr| arr.first())
+        .and_then(|action| action.get("command"))
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .or_else(|| {
+            item.get("command")
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+        })
+}
+
+fn codex_command_call_id(item: &serde_json::Value) -> Option<String> {
+    item.get("id")
+        .and_then(|v| v.as_str())
+        .filter(|id| !id.is_empty())
+        .map(str::to_string)
+}
+
+fn codex_command_is_error(item: &serde_json::Value) -> bool {
+    if item
+        .get("exitCode")
+        .and_then(|v| v.as_i64())
+        .is_some_and(|code| code != 0)
+    {
+        return true;
+    }
+    item.get("status")
+        .and_then(|v| v.as_str())
+        .is_some_and(|status| !status.eq_ignore_ascii_case("completed"))
+}
+
 fn codex_translate_event(
     parsed: &serde_json::Value,
     state: &mut CodexProtocolState,
@@ -408,7 +442,65 @@ fn codex_translate_event(
                 );
             }
         }
+        "item/started" => {
+            if let Some(item) = params.get("item")
+                && item.get("type").and_then(|t| t.as_str()) == Some("commandExecution")
+                && let Some(call_id) = codex_command_call_id(item)
+            {
+                let command = codex_command_text(item).unwrap_or_default();
+                return (
+                    Some(StreamEvent::Assistant {
+                        message: serde_json::json!({
+                            "role": "assistant",
+                            "content": [{
+                                "type": "tool_use",
+                                "id": call_id,
+                                "name": "Bash",
+                                "input": { "command": command }
+                            }]
+                        }),
+                        session_id: session_id.clone(),
+                        extra: serde_json::json!({
+                            "provider": "codex",
+                            "event": "item/started",
+                            "item_type": "commandExecution"
+                        }),
+                    }),
+                    CodexPostAction::None,
+                );
+            }
+        }
         "item/completed" => {
+            if let Some(item) = params.get("item")
+                && item.get("type").and_then(|t| t.as_str()) == Some("commandExecution")
+                && let Some(call_id) = codex_command_call_id(item)
+            {
+                let output = item
+                    .get("aggregatedOutput")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                return (
+                    Some(StreamEvent::User {
+                        message: serde_json::json!({
+                            "role": "user",
+                            "content": [{
+                                "type": "tool_result",
+                                "tool_use_id": call_id,
+                                "content": output,
+                                "is_error": codex_command_is_error(item)
+                            }]
+                        }),
+                        extra: serde_json::json!({
+                            "provider": "codex",
+                            "event": "item/completed",
+                            "item_type": "commandExecution"
+                        }),
+                    }),
+                    CodexPostAction::None,
+                );
+            }
+
             if let Some(text) = params
                 .get("item")
                 .and_then(|i| i.get("type"))
@@ -1260,6 +1352,10 @@ pub struct HeadlessResult {
 #[cfg(test)]
 mod spawn_tests;
 
+#[path = "headless_fuzz_tests.rs"]
+#[cfg(test)]
+mod fuzz_tests;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1720,6 +1816,100 @@ mod tests {
                 assert_eq!(extra["detail"]["method"], "item/thinking/delta");
             }
             _ => panic!("Expected codex unknown event to emit heartbeat system event"),
+        }
+    }
+
+    #[test]
+    fn test_codex_translate_command_execution_started_emits_tool_use() {
+        let mut state = test_codex_state();
+        let mut session_id = Some("thread_123".to_string());
+        let parsed = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "item/started",
+            "params": {
+                "item": {
+                    "type": "commandExecution",
+                    "id": "call_abc",
+                    "commandActions": [{"type": "unknown", "command": "pwd"}]
+                }
+            }
+        });
+
+        let (event, post_action) = codex_translate_event(&parsed, &mut state, &mut session_id);
+        assert_eq!(post_action, CodexPostAction::None);
+        match event {
+            Some(StreamEvent::Assistant { message, extra, .. }) => {
+                assert_eq!(extra["provider"], "codex");
+                assert_eq!(extra["event"], "item/started");
+                assert_eq!(message["role"], "assistant");
+                assert_eq!(message["content"][0]["type"], "tool_use");
+                assert_eq!(message["content"][0]["id"], "call_abc");
+                assert_eq!(message["content"][0]["name"], "Bash");
+                assert_eq!(message["content"][0]["input"]["command"], "pwd");
+            }
+            _ => panic!("Expected commandExecution start to emit assistant tool_use"),
+        }
+    }
+
+    #[test]
+    fn test_codex_translate_command_execution_completed_emits_tool_result() {
+        let mut state = test_codex_state();
+        let mut session_id = Some("thread_123".to_string());
+        let parsed = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "item/completed",
+            "params": {
+                "item": {
+                    "type": "commandExecution",
+                    "id": "call_abc",
+                    "aggregatedOutput": "/tmp\n",
+                    "exitCode": 0,
+                    "status": "completed"
+                }
+            }
+        });
+
+        let (event, post_action) = codex_translate_event(&parsed, &mut state, &mut session_id);
+        assert_eq!(post_action, CodexPostAction::None);
+        match event {
+            Some(StreamEvent::User { message, extra, .. }) => {
+                assert_eq!(extra["provider"], "codex");
+                assert_eq!(extra["event"], "item/completed");
+                assert_eq!(message["role"], "user");
+                assert_eq!(message["content"][0]["type"], "tool_result");
+                assert_eq!(message["content"][0]["tool_use_id"], "call_abc");
+                assert_eq!(message["content"][0]["content"], "/tmp\n");
+                assert_eq!(message["content"][0]["is_error"], false);
+            }
+            _ => panic!("Expected commandExecution completion to emit user tool_result"),
+        }
+    }
+
+    #[test]
+    fn test_codex_translate_command_execution_failed_sets_tool_result_error() {
+        let mut state = test_codex_state();
+        let mut session_id = Some("thread_123".to_string());
+        let parsed = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "item/completed",
+            "params": {
+                "item": {
+                    "type": "commandExecution",
+                    "id": "call_abc",
+                    "aggregatedOutput": "boom\\n",
+                    "exitCode": 1,
+                    "status": "failed"
+                }
+            }
+        });
+
+        let (event, post_action) = codex_translate_event(&parsed, &mut state, &mut session_id);
+        assert_eq!(post_action, CodexPostAction::None);
+        match event {
+            Some(StreamEvent::User { message, .. }) => {
+                assert_eq!(message["content"][0]["is_error"], true);
+            }
+            _ => panic!("Expected commandExecution failure to emit user tool_result"),
         }
     }
 

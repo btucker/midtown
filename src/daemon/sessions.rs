@@ -383,6 +383,7 @@ impl SessionManager {
         }
 
         let is_resume = config.resume_session_id.is_some();
+        let has_initial_prompt = initial_prompt.is_some();
         let mut sessions = self.sessions.write().await;
         let mut cs = CoworkerSession::new(
             slot_id.to_string(),
@@ -393,6 +394,13 @@ impl SessionManager {
         );
         cs.is_resume = is_resume;
         cs.initial_prompt = initial_prompt.map(|s| s.to_string());
+        if has_initial_prompt {
+            // Freshly spawned sessions with an initial prompt are immediately in an
+            // outbound turn. Mark this so idle/stuck checks don't kill them before
+            // the first assistant/result event arrives.
+            cs.has_pending_api_call = true;
+            cs.last_event_at = Some(Utc::now());
+        }
         sessions.insert(slot_id.to_string(), cs);
 
         if let Some(ref sid) = session_id {

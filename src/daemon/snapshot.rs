@@ -282,8 +282,8 @@ pub struct WorldSnapshot {
     /// These coworkers need a restart to resolve the conflict.
     #[serde(default)]
     pub tool_name_conflict_coworkers: HashSet<String>,
-    /// Coworkers with an active tool call in flight (has_pending_tool or has_running_subagent).
-    /// These sessions are protected from idle shutdown — killing mid-tool would corrupt results.
+    /// Coworkers with active in-flight work (pending tool/subagent or pending API turn).
+    /// These sessions are protected from idle shutdown — killing mid-turn can drop responses.
     #[serde(default)]
     pub coworkers_with_active_tools: HashSet<String>,
 
@@ -743,6 +743,7 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
         let nudge_at = state.usage_limit_nudge_at.lock().await;
         (nudge_at.is_some(), *nudge_at)
     };
+    let now_utc = Utc::now();
 
     // Derive usage limit and API error sets from headless process health.
     // These were previously detected from pane content; now read from structured flags.
@@ -777,9 +778,19 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
         .map(|(name, _)| name.to_lowercase())
         .collect();
 
+    let max_pending_api_call_exemption = chrono::Duration::minutes(20);
     let coworkers_with_active_tools: HashSet<String> = headless_process_health
         .iter()
-        .filter(|(_, health)| health.has_pending_tool || health.has_running_subagent)
+        .filter(|(name, health)| {
+            let pending_api_turn_fresh = health.has_pending_api_call
+                && health
+                    .last_event_at
+                    .or_else(|| coworker_start_times.get(&name.to_lowercase()).copied())
+                    .is_some_and(|t| {
+                        now_utc.signed_duration_since(t) < max_pending_api_call_exemption
+                    });
+            health.has_pending_tool || health.has_running_subagent || pending_api_turn_fresh
+        })
         .map(|(name, _)| name.to_lowercase())
         .collect();
 
@@ -863,7 +874,6 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
         channel_lead_sessions.keys().cloned().collect();
     let is_at_coworker_limit = state.is_at_coworker_limit(&channel_lead_names);
     let is_at_dev_limit = state.is_at_dev_limit(&channel_lead_names);
-    let now_utc = Utc::now();
     let repo_name = state.repo_name.clone();
     let default_channel = state.channel_router.default_channel_name().to_string();
     let repo_owner = state.repo_owner.clone();

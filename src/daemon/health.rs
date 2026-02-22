@@ -113,9 +113,13 @@ pub fn check_and_shutdown_idle_coworkers(snap: &snapshot::WorldSnapshot) -> Vec<
                 .ci_passed_pr_coworkers
                 .iter()
                 .any(|c| c.eq_ignore_ascii_case(name));
+            let has_active_turn = snap
+                .coworkers_with_active_tools
+                .iter()
+                .any(|c| c.eq_ignore_ascii_case(name));
             warn!(
-                "IDLE_SHUTDOWN: {} - is_busy={}, has_open_pr={}, is_reviewing={}, ci_passed={}",
-                name, is_busy, has_open_pr, is_reviewing, ci_passed,
+                "IDLE_SHUTDOWN: {} - is_busy={}, has_open_pr={}, is_reviewing={}, ci_passed={}, has_active_turn={}",
+                name, is_busy, has_open_pr, is_reviewing, ci_passed, has_active_turn,
             );
         }
     }

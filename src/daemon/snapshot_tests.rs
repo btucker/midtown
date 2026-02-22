@@ -313,6 +313,67 @@ fn test_active_names_includes_headless_coworkers() {
     assert_eq!(headless_active_names.len(), 2);
 }
 
+/// Active-turn protection should include pending API calls, not just tools/subagents.
+#[test]
+fn test_active_work_includes_pending_api_calls() {
+    let mut headless_health = HashMap::new();
+    headless_health.insert(
+        "web".to_string(),
+        ProcessHealth {
+            is_alive: true,
+            last_event_at: Some(Utc::now()),
+            has_usage_limit: false,
+            usage_limit_reset_at: None,
+            has_api_error: false,
+            has_auth_error: false,
+            has_running_subagent: false,
+            has_pending_tool: false,
+            has_tool_name_conflict: false,
+            has_pending_api_call: true,
+            exit_code: None,
+        },
+    );
+    headless_health.insert(
+        "stale".to_string(),
+        ProcessHealth {
+            is_alive: true,
+            last_event_at: Some(Utc::now() - chrono::Duration::minutes(30)),
+            has_usage_limit: false,
+            usage_limit_reset_at: None,
+            has_api_error: false,
+            has_auth_error: false,
+            has_running_subagent: false,
+            has_pending_tool: false,
+            has_tool_name_conflict: false,
+            has_pending_api_call: true,
+            exit_code: None,
+        },
+    );
+
+    let now_utc = Utc::now();
+    let max_pending_api_call_exemption = chrono::Duration::minutes(20);
+    let active_work: HashSet<String> = headless_health
+        .iter()
+        .filter(|(_, health)| {
+            let pending_api_turn_fresh = health.has_pending_api_call
+                && health.last_event_at.is_some_and(|t| {
+                    now_utc.signed_duration_since(t) < max_pending_api_call_exemption
+                });
+            health.has_pending_tool || health.has_running_subagent || pending_api_turn_fresh
+        })
+        .map(|(name, _)| name.to_lowercase())
+        .collect();
+
+    assert!(
+        active_work.contains("web"),
+        "pending API turns must protect sessions from idle shutdown"
+    );
+    assert!(
+        !active_work.contains("stale"),
+        "stale pending API turns should not suppress idle shutdown forever"
+    );
+}
+
 /// Test that sessions_for_name returns session IDs for coworkers matching a name.
 #[test]
 fn test_sessions_for_name() {

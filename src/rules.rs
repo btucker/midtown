@@ -314,9 +314,9 @@ pub(crate) struct IdleShutdownContext<'a> {
     pub auth_error_coworkers: &'a HashSet<String>,
     pub pending_task_owners: &'a HashSet<String>,
     pub review_feedback_pr_coworkers: &'a HashSet<String>,
-    /// Coworkers with an actively running tool or subagent (has_pending_tool or
-    /// has_running_subagent from ProcessHealth). These sessions must not be
-    /// idle-shutdown while their tool call is in flight.
+    /// Coworkers with active in-flight work (has_pending_tool,
+    /// has_running_subagent, or has_pending_api_call from ProcessHealth).
+    /// These sessions must not be idle-shutdown while a turn is in flight.
     pub coworkers_with_active_tools: &'a HashSet<String>,
     pub now_utc: DateTime<Utc>,
     pub minimum_lifetime: Duration,
@@ -340,7 +340,7 @@ pub(crate) struct IdleShutdownContext<'a> {
 /// - They are actively reviewing a PR
 /// - They have unblocked dependent tasks
 /// - They have a Task subagent or tool call in flight (has_running_subagent /
-///   has_pending_tool)
+///   has_pending_tool), or an API turn in flight (has_pending_api_call)
 ///
 /// Coworkers with open PRs where CI has passed and NO review feedback CAN go on
 /// break - they're just waiting for human review, and the daemon will respawn
@@ -1718,6 +1718,17 @@ mod tests {
         assert!(
             decisions.is_empty(),
             "coworker with running subagent should be protected from idle shutdown"
+        );
+    }
+
+    /// Regression test: an in-flight API turn (e.g., right after initial prompt
+    /// or a user nudge) must protect a coworker from idle shutdown.
+    #[test]
+    fn idle_shutdown_skips_coworker_with_pending_api_turn() {
+        let decisions = IdleShutdownCtx::one("york").active_tools(&["york"]).run();
+        assert!(
+            decisions.is_empty(),
+            "coworker with pending api turn should be protected from idle shutdown"
         );
     }
 
