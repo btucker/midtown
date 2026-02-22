@@ -156,8 +156,13 @@ pub(super) const MAX_REVIEWER_RESTARTS: u32 = 2;
 
 /// Maximum number of times a stuck task coworker can be restarted.
 /// After this many restarts, the daemon stops retrying and posts an escalation warning.
-#[allow(dead_code)] // Will be used when task-based stuck restart backoff is implemented
 pub(super) const MAX_TASK_RESTARTS: u32 = 3;
+
+/// Rolling time window for task stuck-restart safety cap.
+///
+/// If a task hits `MAX_TASK_RESTARTS` within this window, automatic stuck restarts
+/// are paused and the lead is escalated for manual intervention.
+pub(super) const TASK_RESTART_WINDOW: Duration = Duration::from_secs(15 * 60);
 
 /// Extra buffer added to usage limit expiry times before nudging (30 seconds).
 /// Gives the API a moment to actually reset before we ask coworkers to retry.

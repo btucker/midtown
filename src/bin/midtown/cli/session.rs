@@ -870,11 +870,8 @@ pub(crate) fn build_attach_shell_command(
             cmd_parts.extend(cli_args);
         }
         midtown::auth::AuthProvider::Codex => {
-            cmd_parts.extend(vec![
-                "codex".to_string(),
-                "--resume".to_string(),
-                session_id.to_string(),
-            ]);
+            cmd_parts.push("codex".to_string());
+            cmd_parts.extend(midtown::platform::build_codex_headed_args(session_id));
         }
     }
 

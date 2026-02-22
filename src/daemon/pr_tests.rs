@@ -2712,3 +2712,95 @@ async fn test_reviewer_spawn_proceeds_when_previous_reviewer_is_dead() {
          The force-rebind path in BindCoworkerToWorktree handles the dead coworker case."
     );
 }
+
+#[tokio::test]
+async fn test_review_mode_github_app_disables_local_reviewer_spawn() {
+    let pr_number = 99993u64;
+    let pr_json = serde_json::json!({
+        "number": pr_number,
+        "headRefName": "york/fix-auth",
+        "title": "Fix auth regression [Midtown !777]",
+        "mergeable": "MERGEABLE",
+        "statusCheckRollup": null,
+        "reviewDecision": null,
+        "isDraft": false,
+        "createdAt": "2026-01-01T00:00:00Z",
+        "state": "OPEN",
+    });
+
+    let branch_owners: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let active_names: std::collections::HashSet<String> =
+        std::collections::HashSet::from(["york".to_string()]);
+    let registry = crate::worktree_registry::WorktreeRegistry::default();
+
+    let (state, tmp, _guard) = make_test_state("test-repo");
+
+    let mut config =
+        crate::config::FullProjectConfig::minimal("test-repo", &tmp.path().to_string_lossy());
+    config.execution.review_mode = Some(crate::config::ReviewMode::GithubApp);
+    config.save("test-repo").expect("save test project config");
+
+    let effects = collect_reviewer_effects_with_source(
+        Some(&branch_owners),
+        &registry,
+        &active_names,
+        &state,
+        &[pr_json],
+        crate::github_state::AssignmentSource::PollingFallback,
+    )
+    .await;
+
+    let has_spawn = effects
+        .iter()
+        .any(|e| matches!(e, Effect::SpawnCoworkerWithCallbacks { .. }));
+    assert!(
+        !has_spawn,
+        "execution.review_mode=github_app should skip local reviewer spawn"
+    );
+}
+
+#[tokio::test]
+async fn test_review_mode_both_allows_local_reviewer_spawn() {
+    let pr_number = 99994u64;
+    let pr_json = serde_json::json!({
+        "number": pr_number,
+        "headRefName": "york/fix-auth",
+        "title": "Fix auth regression [Midtown !778]",
+        "mergeable": "MERGEABLE",
+        "statusCheckRollup": null,
+        "reviewDecision": null,
+        "isDraft": false,
+        "createdAt": "2026-01-01T00:00:00Z",
+        "state": "OPEN",
+    });
+
+    let branch_owners: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let active_names: std::collections::HashSet<String> =
+        std::collections::HashSet::from(["york".to_string()]);
+    let registry = crate::worktree_registry::WorktreeRegistry::default();
+
+    let (state, tmp, _guard) = make_test_state("test-repo");
+
+    let mut config =
+        crate::config::FullProjectConfig::minimal("test-repo", &tmp.path().to_string_lossy());
+    config.execution.review_mode = Some(crate::config::ReviewMode::Both);
+    config.save("test-repo").expect("save test project config");
+
+    let effects = collect_reviewer_effects_with_source(
+        Some(&branch_owners),
+        &registry,
+        &active_names,
+        &state,
+        &[pr_json],
+        crate::github_state::AssignmentSource::PollingFallback,
+    )
+    .await;
+
+    let has_spawn = effects
+        .iter()
+        .any(|e| matches!(e, Effect::SpawnCoworkerWithCallbacks { .. }));
+    assert!(
+        has_spawn,
+        "execution.review_mode=both should keep local reviewer spawning enabled"
+    );
+}

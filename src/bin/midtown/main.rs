@@ -888,6 +888,7 @@ fn main() {
                         cmd.env("ANTHROPIC_AUTH_TOKEN", &api_key);
                         cmd.env("ANTHROPIC_BASE_URL", &base_url);
                         // Set default model mappings for z.ai (GLM models)
+                        cmd.env("ANTHROPIC_DEFAULT_HAIKU_MODEL", "GLM-4.5-Air");
                         cmd.env("ANTHROPIC_DEFAULT_OPUS_MODEL", "GLM-5");
                         cmd.env("ANTHROPIC_DEFAULT_SONNET_MODEL", "GLM-4.7");
                     }

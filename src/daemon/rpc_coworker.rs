@@ -121,8 +121,12 @@ pub(super) async fn handle_lead_spawn(
     state: &DaemonState,
     provider: crate::auth::AuthProvider,
 ) -> Response {
-    // Idempotent: if lead is already running, return success
-    if state.session_manager.is_alive("lead").await {
+    // Idempotent: if lead is already running, return success.
+    // Project lead session name is repo-based ("midtown"), with legacy "lead"
+    // retained only for backward compatibility.
+    if state.session_manager.is_alive(&state.repo_name).await
+        || state.session_manager.is_alive("lead").await
+    {
         return Response::success(
             id,
             serde_json::json!({
@@ -312,6 +316,22 @@ pub(super) async fn handle_coworker_report_state(
 
     // For Idle phase, immediately send the coworker on break.
     if phase == crate::coworker_state::WorkflowPhase::Idle && state.coworkers.get(name).is_some() {
+        // Project lead must remain available for user interaction; ignore idle
+        // self-reports instead of sending it on break.
+        if name.eq_ignore_ascii_case(&state.repo_name) || name.eq_ignore_ascii_case("lead") {
+            info!(
+                "Project lead {} reported idle; keeping lead session active",
+                name
+            );
+            return Response::success(
+                id,
+                serde_json::json!({
+                    "success": true,
+                    "message": format!("{} remains active (project lead)", name),
+                }),
+            );
+        }
+
         // Before shutting down, check if this coworker is an active reviewer who hasn't
         // posted their review yet. If so, nudge them to post the review first instead of
         // going idle. This prevents the case where a reviewer calls `midtown state idle`

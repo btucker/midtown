@@ -116,31 +116,55 @@ fn build_claude_common_args(
 /// Resume sessions get: `--resume <id>` and skip `--settings`/`--setting-sources`
 ///   to avoid "Tool names must be unique" errors.
 pub fn build_claude_headless_args(config: &HeadlessConfig) -> Vec<String> {
-    let is_resume = config.resume_session_id.is_some();
+    // Exhaustive destructure so new HeadlessConfig fields force explicit
+    // handling decisions in this platform mapper.
+    let HeadlessConfig {
+        model,
+        system_prompt,
+        json_schema,
+        cwd: _cwd,
+        project_name: _project_name,
+        max_budget_usd,
+        allow_tools,
+        persist_session,
+        resume_session_id,
+        inactivity_timeout: _inactivity_timeout,
+        team_name,
+        agent_id,
+        agent_name,
+        settings_path,
+        setting_sources: _setting_sources,
+        auth_provider: _auth_provider,
+        session_id,
+        env: _env,
+        fork_session,
+    } = config;
+
+    let is_resume = resume_session_id.is_some();
 
     let mut args = build_claude_common_args(
-        &config.model,
-        config.team_name.as_deref(),
-        config.agent_id.as_deref(),
-        config.agent_name.as_deref(),
+        model,
+        team_name.as_deref(),
+        agent_id.as_deref(),
+        agent_name.as_deref(),
         &[], // headless sessions don't use additional_dirs
     );
 
     if is_resume {
         // Resume mode: --resume <id>, no -p flag, no system prompt/schema
         args.push("--resume".to_string());
-        args.push(config.resume_session_id.as_ref().unwrap().clone());
+        args.push(resume_session_id.as_ref().unwrap().clone());
         // Fork mode: add --fork-session to create an independent fork with inherited context
-        if config.fork_session {
+        if *fork_session {
             args.push("--fork-session".to_string());
         }
     } else {
         // Fresh mode: -p with system prompt
         args.push("-p".to_string());
         args.push("--append-system-prompt".to_string());
-        args.push(config.system_prompt.clone());
+        args.push(system_prompt.clone());
 
-        if let Some(ref schema) = config.json_schema
+        if let Some(schema) = json_schema
             && let Ok(schema_str) = serde_json::to_string(schema)
         {
             args.push("--json-schema".to_string());
@@ -149,7 +173,7 @@ pub fn build_claude_headless_args(config: &HeadlessConfig) -> Vec<String> {
 
         // Pass pre-assigned session ID so the daemon knows the session ID immediately
         // at spawn time, eliminating the race window before the init event arrives.
-        if let Some(ref sid) = config.session_id {
+        if let Some(sid) = session_id {
             args.push("--session-id".to_string());
             args.push(sid.clone());
         }
@@ -163,18 +187,18 @@ pub fn build_claude_headless_args(config: &HeadlessConfig) -> Vec<String> {
     args.push("stream-json".to_string());
 
     // Session persistence
-    if !config.persist_session {
+    if !*persist_session {
         args.push("--no-session-persistence".to_string());
     }
 
     // Budget limit (used by specialized coworkers and headless RPC)
-    if let Some(budget) = config.max_budget_usd {
+    if let Some(budget) = max_budget_usd {
         args.push("--max-budget-usd".to_string());
         args.push(budget.to_string());
     }
 
     // Tool access
-    if !config.allow_tools {
+    if !*allow_tools {
         args.push("--tools".to_string());
         args.push(String::new());
     }
@@ -182,7 +206,7 @@ pub fn build_claude_headless_args(config: &HeadlessConfig) -> Vec<String> {
     // Settings file — skip on resume to avoid duplicate tool registrations.
     // Resumed sessions already have their plugins loaded from saved state;
     // passing --settings again causes "Tool names must be unique" API errors.
-    if !is_resume && let Some(ref settings) = config.settings_path {
+    if !is_resume && let Some(settings) = settings_path {
         args.push("--settings".to_string());
         args.push(settings.clone());
     }

@@ -452,6 +452,10 @@ pub(crate) struct StuckExemptions<'a> {
     pub attached: &'a HashMap<String, chrono::DateTime<chrono::Utc>>,
 }
 
+/// Maximum time a pending API call can suppress stuck detection without
+/// any stream heartbeat/event.
+const MAX_PENDING_API_CALL_EXEMPTION: chrono::Duration = chrono::Duration::minutes(20);
+
 /// Check if a process should be considered stuck.
 ///
 /// Returns `true` if the process is alive, not exempt (usage-limited, API error,
@@ -468,10 +472,16 @@ fn is_process_stuck(
     stuck_threshold: chrono::Duration,
     started_at: Option<DateTime<Utc>>,
 ) -> bool {
+    let pending_api_call_exempt = health.has_pending_api_call
+        && health
+            .last_event_at
+            .or(started_at)
+            .is_some_and(|t| now_utc.signed_duration_since(t) < MAX_PENDING_API_CALL_EXEMPTION);
+
     let is_exempt = !health.is_alive
         || health.has_running_subagent
         || health.has_pending_tool
-        || health.has_pending_api_call
+        || pending_api_call_exempt
         || hashset_contains_icase(exemptions.usage_limited, name)
         || hashset_contains_icase(exemptions.api_error, name)
         || hashset_contains_icase(exemptions.auth_error, name)

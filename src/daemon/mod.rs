@@ -420,7 +420,7 @@ struct PrCoworkerCache {
     /// Coworker names whose open PR has CI passed AND has review feedback to address.
     /// Used by snapshot for idle shutdown protection (prevents spawn→idle→break loop).
     review_feedback_pr_owners: HashSet<String>,
-    /// Count of open PRs that need review (not draft, no Claude review, no formal review).
+    /// Count of open PRs that need review (not draft, no completed review).
     /// Updated every PR poll tick. Used to prioritize PR reviews over new task pickup.
     prs_needing_review: usize,
     /// Full open PR data from the last poll, formatted for RPC responses.
@@ -560,6 +560,11 @@ pub(crate) struct DaemonState {
     /// Resets on daemon restart, which is acceptable — at worst the lead gets one
     /// extra nudge after a restart if the PR is still orphaned.
     orphaned_pr_lead_nudges_sent: std::sync::Mutex<HashSet<u64>>,
+    /// Rolling restart history for stuck task workers, keyed by task ID.
+    ///
+    /// Used as a circuit breaker for repeated stuck restarts. We track timestamps
+    /// in a sliding window so runaway restart loops are paused and escalated.
+    stuck_task_restart_history: std::sync::Mutex<HashMap<String, VecDeque<std::time::Instant>>>,
     /// In-memory deduplication for reviewer `[Review Note]` channel messages.
     ///
     /// Tracks (reviewer, PR number) → timestamp of first note. When a reviewer
@@ -756,6 +761,39 @@ impl DaemonState {
     fn record_coworker_stop_time(&self, name: &str) {
         let mut stop_times = self.coworker_stop_times.write().unwrap();
         stop_times.insert(name.to_lowercase(), chrono::Utc::now());
+    }
+
+    /// Record a stuck-restart attempt for a task and enforce a rolling cap.
+    ///
+    /// Returns `(allowed, prior_count_in_window)`.
+    /// - `allowed=true`: caller may proceed with restart; attempt is recorded.
+    /// - `allowed=false`: cap reached; caller should pause auto-restarts and escalate.
+    pub(crate) fn record_stuck_task_restart_attempt(
+        &self,
+        task_id: &str,
+        max_restarts: u32,
+        window: std::time::Duration,
+    ) -> (bool, u32) {
+        let now = std::time::Instant::now();
+        let mut history = self.stuck_task_restart_history.lock().unwrap();
+        history.retain(|_, attempts| {
+            while attempts
+                .front()
+                .is_some_and(|t| now.duration_since(*t) > window)
+            {
+                attempts.pop_front();
+            }
+            !attempts.is_empty()
+        });
+        let attempts = history.entry(task_id.to_string()).or_default();
+
+        let prior_count = attempts.len() as u32;
+        if prior_count >= max_restarts {
+            return (false, prior_count);
+        }
+
+        attempts.push_back(now);
+        (true, prior_count)
     }
 
     /// Clear the lead's stop time so `ensure_lead_alive()` respawns on the next tick.
@@ -1058,7 +1096,7 @@ impl DaemonState {
                 .is_some()
     }
 
-    /// Check if a PR has a review comment from a Claude coworker.
+    /// Check if a PR has at least one completed review.
     ///
     /// Uses the persistent state cache as the single source of truth. First
     /// checks the cache; if not found, makes GitHub API calls and caches
@@ -1069,7 +1107,7 @@ impl DaemonState {
             let ps = self.persistent_state.lock().await;
             if ps.github.has_cached_review(pr_number) {
                 debug!(
-                    "PR #{} has cached Claude review (skipping API call)",
+                    "PR #{} has cached completed review (skipping API call)",
                     pr_number
                 );
                 return true;
@@ -1092,7 +1130,7 @@ impl DaemonState {
         }
 
         // Slow path: check via API calls
-        let has_review = pr::pr_has_claude_review_uncached(pr_number);
+        let has_review = pr::pr_has_completed_review_uncached(pr_number);
 
         if has_review {
             // Cache positive results permanently (reviews are monotonic — they don't disappear)
@@ -1235,6 +1273,7 @@ impl DaemonState {
             insight_hashes: std::sync::Mutex::new(HashSet::new()),
             reviewer_escalations_posted: std::sync::Mutex::new(HashSet::new()),
             orphaned_pr_lead_nudges_sent: std::sync::Mutex::new(HashSet::new()),
+            stuck_task_restart_history: std::sync::Mutex::new(HashMap::new()),
             review_note_tracker: std::sync::Mutex::new(HashMap::new()),
             headless_health: std::sync::RwLock::new(HashMap::new()),
             attached_coworkers: std::sync::Mutex::new(HashMap::new()),
@@ -1291,7 +1330,7 @@ impl DaemonState {
         }
 
         // Inject project-resolved auth profile if not already set
-        let config = if config.auth_profile_dir.is_none() {
+        let mut config = if config.auth_profile_dir.is_none() {
             let mut c = config.clone();
             c.auth_profile_dir = Some(crate::auth::active_profile_dir_for_project_with_provider(
                 &self.repo_name,
@@ -1301,6 +1340,18 @@ impl DaemonState {
         } else {
             config.clone()
         };
+        let normalized_model = helpers::normalize_model_for_provider_role(
+            &config.model,
+            config.auth_provider,
+            &config.role,
+        );
+        if normalized_model != config.model {
+            warn!(
+                "Normalizing model '{}' to '{}' for provider {:?} (name: {})",
+                config.model, normalized_model, config.auth_provider, name
+            );
+            config.model = normalized_model;
+        }
 
         // Prepare worktree and augment config with additional dirs
         // Note: Worktree creation now happens via Effect::EnsureWorktree in the
@@ -1312,13 +1363,18 @@ impl DaemonState {
         let mut headless_config = launch_config.to_headless_config(&self.repo_name);
         headless_config.cwd = Some(working_dir.clone());
 
-        // Write role-appropriate settings file and set the path
-        let settings_file = if config.role == crate::launch::CoworkerRole::Lead {
-            crate::settings::write_lead_settings_file()?
-        } else {
-            crate::settings::write_coworker_settings_file()?
-        };
-        headless_config.settings_path = Some(settings_file.to_string_lossy().to_string());
+        // Write role-appropriate settings file for Claude-platform sessions.
+        // Codex currently has no settings file equivalent.
+        if crate::platform::Platform::from_provider(config.auth_provider)
+            == crate::platform::Platform::Claude
+        {
+            let settings_file = if config.role == crate::launch::CoworkerRole::Lead {
+                crate::settings::write_lead_settings_file()?
+            } else {
+                crate::settings::write_coworker_settings_file()?
+            };
+            headless_config.settings_path = Some(settings_file.to_string_lossy().to_string());
+        }
 
         // Set up agent-teams infrastructure (mailbox) before spawning
         if let Some(ref team_name) = config.team_name {
@@ -1337,24 +1393,31 @@ impl DaemonState {
             }
         }
 
-        // Determine the session ID for this spawn.
-        // For resumed sessions, reuse the existing session ID from config.session_mode.
-        // For fresh sessions, generate a UUID upfront so the daemon controls the session
-        // ID immediately — without waiting for the init StreamEvent (eliminating the race
-        // window where session-based lookups fail before the init event arrives).
+        // Determine whether this spawn has a known session ID before init.
+        //
+        // - ResumeSession(id): known for all platforms.
+        // - Fresh Claude/z.ai: pre-assign UUID and pass --session-id.
+        // - Fresh Codex: unknown until thread/start init response arrives.
+        let platform = crate::platform::Platform::from_provider(config.auth_provider);
         let session_id = match &config.session_mode {
-            crate::launch::SessionMode::ResumeSession(sid) => sid.clone(),
-            _ => uuid::Uuid::new_v4().to_string(),
+            crate::launch::SessionMode::ResumeSession(sid) => Some(sid.clone()),
+            _ if platform == crate::platform::Platform::Claude => {
+                Some(uuid::Uuid::new_v4().to_string())
+            }
+            _ => None,
         };
-        // For fresh sessions, set the pre-generated session ID on the headless config so
-        // it gets passed as --session-id to the Claude CLI.
+        // For fresh Claude-platform sessions, set the pre-generated session ID on the
+        // headless config so it gets passed as --session-id to the CLI.
+        // Codex has no pre-assigned session ID equivalent.
         if !matches!(
             config.session_mode,
             crate::launch::SessionMode::ResumeSession(_)
-        ) {
-            headless_config.session_id = Some(session_id.clone());
+        ) && crate::platform::Platform::from_provider(config.auth_provider)
+            == crate::platform::Platform::Claude
+        {
+            headless_config.session_id = session_id.clone();
         }
-        let persisted_session_id = session_id.clone();
+        let persisted_session_id = session_id.clone().unwrap_or_default();
         let initial_prompt = launch_config.initial_prompt.as_deref();
         self.session_manager
             .spawn(
@@ -1362,7 +1425,7 @@ impl DaemonState {
                 &slot_id,
                 &headless_config,
                 initial_prompt,
-                Some(session_id.clone()),
+                session_id.clone(),
             )
             .await?;
 
@@ -1421,10 +1484,9 @@ impl DaemonState {
             return Err(e);
         }
 
-        // Persist session info immediately so `session.list` and `session.attach`
-        // can find the entry without waiting for the shutdown-time save.
-        // Both fresh and resumed sessions have a known session_id at spawn time:
-        // fresh sessions use a daemon-generated UUID, resumed sessions use the stored ID.
+        // Persist session info immediately so `session.list` can find the entry
+        // without waiting for shutdown-time save. Some platforms (Codex fresh
+        // sessions) don't have a known session_id until init.
         let session_id_for_record = persisted_session_id.clone();
         let working_dir_for_record = working_dir_for_persist.clone();
         {
@@ -1463,11 +1525,7 @@ impl DaemonState {
                         .or_else(|| config.initial_prompt.clone()),
                 },
             );
-            // Record in session-centric sessions map. All sessions (fresh and resumed)
-            // now have a known session_id at spawn time — fresh sessions use a
-            // daemon-generated UUID passed as --session-id, resumed sessions use the
-            // stored ID from config.session_mode. The init StreamEvent backfill is now
-            // a no-op for fresh sessions since the ID is already populated.
+            // Record in session-centric sessions map when a session_id is already known.
             if !session_id_for_record.is_empty() {
                 let coworker_type_str = match &config.role {
                     crate::launch::CoworkerRole::Reviewer => "reviewer".to_string(),
@@ -1503,9 +1561,8 @@ impl DaemonState {
             }
         }
 
-        // Update session reverse maps. All sessions now have a known session_id at
-        // spawn time (fresh sessions use daemon-generated UUIDs, resumed sessions use
-        // stored IDs), so we always populate the reverse maps immediately.
+        // Update session reverse maps only when the session_id is already known.
+        // For Codex fresh sessions, this is backfilled on init.
         if !session_id_for_record.is_empty() {
             self.name_to_session
                 .lock()
@@ -1527,7 +1584,7 @@ impl DaemonState {
             let mut stop_times = self.coworker_stop_times.write().unwrap();
             stop_times.remove(&name.to_lowercase());
         }
-        Ok(session_id)
+        Ok(session_id.unwrap_or_default())
     }
 
     /// Check if a sender name represents the user (either "user" or the configured display name).
@@ -3349,8 +3406,13 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                             && !sid.is_empty()
                         {
                             let mut ps = state.persistent_state.lock().await;
+                            let previous_sid = ps
+                                .headless_sessions
+                                .get(name)
+                                .map(|info| info.session_id.clone())
+                                .unwrap_or_default();
                             if let Some(info) = ps.headless_sessions.get_mut(name)
-                                && (info.session_id.is_empty() || info.session_id != *sid)
+                                && (previous_sid.is_empty() || previous_sid != *sid)
                             {
                                 info!("Backfilling session_id for '{}': {}", name, sid);
                                 info.session_id = sid.clone();
@@ -3370,34 +3432,68 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                                 *stored_id = sid.clone();
                                 needs_persist_save = true;
                             }
+                            // If this session had a provisional ID, migrate persistent/session maps
+                            // to the real ID emitted by init.
+                            let mut migrated_record = None;
+                            if previous_sid != *sid && !previous_sid.is_empty() {
+                                if let Some(old_record) = ps.sessions.remove(&previous_sid) {
+                                    let mut updated = old_record;
+                                    updated.session_id = sid.clone();
+                                    updated.is_running = true;
+                                    migrated_record = Some(updated);
+                                    needs_persist_save = true;
+                                }
+                                state
+                                    .session_to_name
+                                    .lock()
+                                    .unwrap()
+                                    .remove(&previous_sid);
+                            }
                             // Ensure a SessionRecord exists for this session.
                             // For fresh spawns, this is the first time we know the session_id.
                             // For resumed spawns, the record may already exist from spawn_coworker().
-                            let hs_info = ps.headless_sessions.get(name);
-                            let task_id_str = hs_info.and_then(|info| info.task_id.map(|id| id.to_string()));
-                            let working_dir_val = hs_info.and_then(|info| info.working_dir.clone()).unwrap_or_default();
-                            let coworker_type_val = hs_info.and_then(|info| info.coworker_type.clone()).unwrap_or_else(|| "dev".to_string());
-                            let is_reviewer_val = coworker_type_val == "reviewer";
-                            let initial_prompt_val = hs_info.and_then(|info| info.initial_prompt.clone());
-                            let pr_number_val = hs_info.and_then(|info| info.pr_number);
-                            if let std::collections::hash_map::Entry::Vacant(entry) = ps.sessions.entry(sid.clone()) {
-                                entry.insert(crate::daemon::state::SessionRecord {
-                                    session_id: sid.clone(),
-                                    task_id: task_id_str,
-                                    current_name: Some(name.to_string()),
-                                    preferred_name: Some(name.to_string()),
-                                    working_dir: working_dir_val,
-                                    branch: None,
-                                    pr_number: pr_number_val,
-                                    initial_prompt: initial_prompt_val,
-                                    is_reviewer: is_reviewer_val,
-                                    coworker_type: coworker_type_val,
-                                    is_running: true,
-                                    created_at: chrono::Utc::now(),
-                                    resume_on_startup: !is_reviewer_val,
-                                    bound_thread_id: None,
-                                });
-                                needs_persist_save = true;
+                            if let Some(record) = migrated_record {
+                                if let std::collections::hash_map::Entry::Vacant(entry) =
+                                    ps.sessions.entry(sid.clone())
+                                {
+                                    entry.insert(record);
+                                    needs_persist_save = true;
+                                }
+                            } else {
+                                let hs_info = ps.headless_sessions.get(name);
+                                let task_id_str =
+                                    hs_info.and_then(|info| info.task_id.map(|id| id.to_string()));
+                                let working_dir_val = hs_info
+                                    .and_then(|info| info.working_dir.clone())
+                                    .unwrap_or_default();
+                                let coworker_type_val = hs_info
+                                    .and_then(|info| info.coworker_type.clone())
+                                    .unwrap_or_else(|| "dev".to_string());
+                                let is_reviewer_val = coworker_type_val == "reviewer";
+                                let initial_prompt_val =
+                                    hs_info.and_then(|info| info.initial_prompt.clone());
+                                let pr_number_val = hs_info.and_then(|info| info.pr_number);
+                                if let std::collections::hash_map::Entry::Vacant(entry) =
+                                    ps.sessions.entry(sid.clone())
+                                {
+                                    entry.insert(crate::daemon::state::SessionRecord {
+                                        session_id: sid.clone(),
+                                        task_id: task_id_str,
+                                        current_name: Some(name.to_string()),
+                                        preferred_name: Some(name.to_string()),
+                                        working_dir: working_dir_val,
+                                        branch: None,
+                                        pr_number: pr_number_val,
+                                        initial_prompt: initial_prompt_val,
+                                        is_reviewer: is_reviewer_val,
+                                        coworker_type: coworker_type_val,
+                                        is_running: true,
+                                        created_at: chrono::Utc::now(),
+                                        resume_on_startup: !is_reviewer_val,
+                                        bound_thread_id: None,
+                                    });
+                                    needs_persist_save = true;
+                                }
                             }
                             // Update in-memory reverse maps when session gets its ID.
                             if let Some(record) = ps.sessions.get(sid) {
@@ -3506,14 +3602,18 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                         // Channel leads use the channel name as their session name, so
                         // name == channel_name. Without this, the stale ID persists in
                         // channel_lead_sessions and causes a crash loop on daemon restart.
-                        if let Some(stored_id) = ps.channel_lead_sessions.get_mut(name.as_str())
-                            && !stored_id.is_empty()
-                        {
-                            info!(
-                                "Clearing stale channel_lead_sessions entry for '{}' after failed resume (was: {})",
-                                name, stored_id
-                            );
-                            stored_id.clear();
+                        if let Some(stored_id) = ps.channel_lead_sessions.remove(name.as_str()) {
+                            if stored_id.is_empty() {
+                                info!(
+                                    "Removing stale empty channel_lead_sessions entry for '{}' after failed resume",
+                                    name
+                                );
+                            } else {
+                                info!(
+                                    "Removing stale channel_lead_sessions entry for '{}' after failed resume (was: {})",
+                                    name, stored_id
+                                );
+                            }
                         }
                         if let Err(e) = ps.save_for_repo(&state.repo_name) {
                             warn!("Failed to save persistent state after clearing session_id: {}", e);

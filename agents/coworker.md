@@ -388,7 +388,13 @@ gh pr view <number> --comments --json comments --jq '.comments[-2:][] | "\(.auth
 ```
 The user (repo owner) may leave additional requests after the reviewer posts. Merging without addressing these is a process failure.
 
-**Verify a completed review exists** before enabling auto-merge. When the daemon nudges you that a review is ready, confirm the review comment contains the midtown frontmatter (`<!-- midtown: <name> -->`). A reviewer posts a "review in progress" placeholder first, then edits it with their final findings and frontmatter. Do not enable auto-merge based on the placeholder — wait for the final review comment. If the daemon nudges you but the review comment still shows "review in progress," the reviewer may have been interrupted — post to the channel with `@{project_name}` to get a new reviewer assigned.
+**Verify a completed review exists** before enabling auto-merge. Accept either:
+- A formal GitHub review (`reviewDecision` is `APPROVED` or `CHANGES_REQUESTED`)
+- A completed comment-based review (final "Code Review" comment, not a "review in progress" placeholder)
+
+Do not enable auto-merge from a placeholder. If the daemon nudges you but the review still shows "review in progress," post to the channel with `@{project_name}` to get a new reviewer assigned.
+
+**Do not merge while review feedback is unresolved.** If `reviewDecision` is `CHANGES_REQUESTED`, keep working until feedback is addressed and re-reviewed.
 
 **After a completed review exists and all feedback is addressed**, enable auto-merge immediately:
 ```bash
@@ -417,6 +423,7 @@ We share a GitHub API rate limit across the daemon, lead, and all coworkers. **D
 - Don't run `gh pr checks` repeatedly to watch CI — wait for the daemon to notify you
 - Don't run `gh pr list` to check PR status — read the channel instead
 - **NEVER merge before addressing review feedback.** Every review comment must be either addressed in the PR or deferred via `midtown task request` before merging.
+- If `gh pr view <number> --json reviewDecision --jq .reviewDecision` returns `CHANGES_REQUESTED`, do not merge yet.
 - Do NOT enable auto-merge when creating the PR — wait for review first
 - **NEVER enable auto-merge based on a "review in progress" placeholder** — see the verification steps above for how to confirm a review is complete.
 - After a completed review exists and all feedback is addressed/deferred, enable auto-merge: `gh pr merge --auto --squash`

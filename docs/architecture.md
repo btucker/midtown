@@ -168,6 +168,11 @@ Each session role resolves its AI provider via `get_execution_provider_for_role(
 - **Reviewer**: `execution.reviewer_provider` → `Claude` (default)
 - **Architect / HeadlessExecute**: role-specific provider → `execution.specialized_provider` → `Claude` (default)
 
+Review source strategy is controlled separately by `execution.review_mode`:
+- `local`: daemon spawns local reviewer coworkers
+- `github_app`: daemon does not spawn local reviewers, and waits for formal GitHub reviews
+- `both`: local reviewer spawning remains enabled and formal GitHub reviews also count
+
 This means `lead_provider` acts as a shared fallback for both the Project Lead and Channel Leads. Setting `project_lead_provider` overrides only the Project Lead's provider without affecting channel leads, and vice versa for `channel_lead_provider`. The resolved provider is stored in `LaunchConfig.auth_provider` and is also used to derive the default model via `default_model_for_provider_role()`.
 
 ## Channel Leads
@@ -194,7 +199,7 @@ Note: `route_mentions()` is intentionally disabled for topic channels — user `
 
 ### Forked Sessions (Thread-Specific Channel Leads)
 
-Channel leads can fork themselves into thread-specific sessions via the `session.fork` RPC (`midtown session fork <thread-parent-id>`). A forked session inherits the parent's conversation context (via `--resume <parent-id> --fork-session`) but gets an independent session ID bound to a specific thread.
+Channel leads can fork themselves into thread-specific sessions via the `session.fork` RPC (`midtown session fork <thread-parent-id>`). A forked session inherits the parent's conversation context and gets an independent session ID bound to a specific thread (Claude/z.ai use `--resume <parent-id> --fork-session`; Codex uses `thread/fork`).
 
 **Root session as router:** The root session stays lightweight — it handles top-level messages and decides when to fork. Once a fork exists for a thread, subsequent replies in that thread bypass the root session entirely and route directly to the fork.
 

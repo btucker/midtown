@@ -1,12 +1,77 @@
 use super::*;
 use crate::daemon::trackers::PrIssueType;
 
+fn mk_session_record(
+    session_id: &str,
+    task_id: Option<&str>,
+    is_running: bool,
+) -> crate::daemon::state::SessionRecord {
+    crate::daemon::state::SessionRecord {
+        session_id: session_id.to_string(),
+        task_id: task_id.map(ToString::to_string),
+        current_name: Some("lexington".to_string()),
+        preferred_name: Some("lexington".to_string()),
+        working_dir: "/tmp/worktree".to_string(),
+        branch: None,
+        pr_number: None,
+        initial_prompt: None,
+        is_reviewer: false,
+        coworker_type: "dev".to_string(),
+        is_running,
+        created_at: chrono::Utc::now(),
+        resume_on_startup: true,
+        bound_thread_id: None,
+    }
+}
+
 /// Helper to count NudgeSession effects for a given session_id.
 fn count_nudge_session(effects: &[Effect], sid: &str) -> usize {
     effects
         .iter()
         .filter(|e| matches!(e, Effect::NudgeSession { session_id, .. } if session_id == sid))
         .count()
+}
+
+#[test]
+fn clear_task_binding_in_records_clears_only_stale_when_no_expected_session() {
+    use std::collections::HashMap;
+
+    let mut sessions: HashMap<String, crate::daemon::state::SessionRecord> = HashMap::new();
+    sessions.insert(
+        "sid-stale".to_string(),
+        mk_session_record("sid-stale", Some("42"), false),
+    );
+    sessions.insert(
+        "sid-running".to_string(),
+        mk_session_record("sid-running", Some("42"), true),
+    );
+    sessions.insert(
+        "sid-other".to_string(),
+        mk_session_record("sid-other", Some("99"), false),
+    );
+
+    let cleared = clear_task_binding_in_records(&mut sessions, "42", None);
+    assert_eq!(cleared, 1);
+    assert!(sessions["sid-stale"].task_id.is_none());
+    assert_eq!(sessions["sid-running"].task_id.as_deref(), Some("42"));
+    assert_eq!(sessions["sid-other"].task_id.as_deref(), Some("99"));
+}
+
+#[test]
+fn clear_task_binding_in_records_clears_expected_running_session() {
+    use std::collections::HashMap;
+
+    let mut sessions: HashMap<String, crate::daemon::state::SessionRecord> = HashMap::new();
+    sessions.insert(
+        "sid-running".to_string(),
+        mk_session_record("sid-running", Some("42"), true),
+    );
+
+    let cleared = clear_task_binding_in_records(&mut sessions, "42", Some("sid-running"));
+    assert_eq!(cleared, 1);
+    assert!(sessions["sid-running"].task_id.is_none());
+    assert!(!sessions["sid-running"].is_running);
+    assert!(!sessions["sid-running"].resume_on_startup);
 }
 
 fn count_nudge_with_callbacks(effects: &[Effect], sid: &str) -> usize {

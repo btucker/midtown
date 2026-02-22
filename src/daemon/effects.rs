@@ -103,6 +103,11 @@ pub enum Effect {
     /// Clears `task_id` from the SessionRecord and removes the in-memory
     /// `task_to_session` entry.
     ClearSessionForTask { task_id: String },
+    /// Clear persisted session IDs and session-record bindings for a coworker.
+    ///
+    /// Used for unrecoverable resume/session errors (e.g., stale Codex thread IDs).
+    /// This prevents retry loops by ensuring the next spawn is fresh.
+    ClearSavedSessionId { name: String },
     /// Spawn a coworker with conditional follow-up effects.
     ///
     /// On success, `on_success` effects are executed. On failure, `on_failure`
@@ -643,6 +648,71 @@ async fn send_session_nudge(
     }
 }
 
+/// Clear stale task bindings from session records.
+///
+/// Removes `task_id` from matching session records so dispatch no longer
+/// attempts to resume dead sessions for that task.
+fn clear_task_binding_in_records(
+    sessions: &mut std::collections::HashMap<String, crate::daemon::state::SessionRecord>,
+    task_id: &str,
+    expected_session_id: Option<&str>,
+) -> usize {
+    let mut cleared = 0usize;
+    for record in sessions.values_mut() {
+        if record.task_id.as_deref() != Some(task_id) {
+            continue;
+        }
+        let expected_match = expected_session_id
+            .map(|sid| sid == record.session_id)
+            .unwrap_or(false);
+        // Safe cleanup target:
+        // - exact expected session, or
+        // - non-running stale records still pointing at the task.
+        if expected_match || !record.is_running {
+            record.task_id = None;
+            record.resume_on_startup = false;
+            if expected_match {
+                record.is_running = false;
+            }
+            cleared += 1;
+        }
+    }
+    cleared
+}
+
+/// Clear task→session bindings from both in-memory maps and persistent session records.
+async fn clear_stale_task_session_binding(
+    state: &DaemonState,
+    task_id: &str,
+    expected_session_id: Option<&str>,
+) -> usize {
+    {
+        let mut t2s = state.task_to_session.lock().unwrap();
+        let should_remove = t2s
+            .get(task_id)
+            .map(|sid| expected_session_id.map(|exp| exp == sid).unwrap_or(true))
+            .unwrap_or(false);
+        if should_remove {
+            t2s.remove(task_id);
+        }
+    }
+
+    // Remove any in-memory assignment guard so task dispatch can recover cleanly.
+    state.clear_task_assignment_by_task(task_id);
+
+    let mut ps = state.persistent_state.lock().await;
+    let cleared = clear_task_binding_in_records(&mut ps.sessions, task_id, expected_session_id);
+    if cleared > 0
+        && let Err(e) = ps.save_for_repo(&state.repo_name)
+    {
+        warn!(
+            "Failed to save state after clearing stale session binding for task !{}: {}",
+            task_id, e
+        );
+    }
+    cleared
+}
+
 /// Execute a list of effects against the daemon state.
 ///
 /// This is the imperative shell — the only place where side effects happen.
@@ -849,23 +919,106 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 state.clear_task_assignment_by_task(&task_id);
             }
             Effect::ClearSessionForTask { task_id } => {
-                // Clear the in-memory task→session reverse map.
-                let removed_session_id = {
-                    let mut t2s = state.task_to_session.lock().unwrap();
-                    t2s.remove(&task_id)
-                };
-                // Clear task_id from the persistent SessionRecord so the snapshot's
-                // session_task_map no longer links this task to the dead session.
-                if let Some(session_id) = removed_session_id {
-                    let mut ps = state.persistent_state.lock().await;
-                    if let Some(record) = ps.sessions.get_mut(&session_id) {
-                        record.task_id = None;
-                    }
-                    if let Err(e) = ps.save_for_repo(&state.repo_name) {
-                        warn!(
-                            "Failed to save state after clearing session for task !{}: {}",
-                            task_id, e
+                let cleared = clear_stale_task_session_binding(state, &task_id, None).await;
+                if cleared == 0 {
+                    debug!(
+                        "ClearSessionForTask: no stale session binding found for task !{}",
+                        task_id
+                    );
+                }
+            }
+            Effect::ClearSavedSessionId { name } => {
+                // Gather candidate stale session IDs for this coworker from
+                // in-memory maps and persisted headless/channel entries.
+                let mapped_sid = state
+                    .name_to_session
+                    .lock()
+                    .unwrap()
+                    .get(&name)
+                    .cloned()
+                    .unwrap_or_default();
+
+                let mut ps = state.persistent_state.lock().await;
+                let mut candidate_ids: std::collections::HashSet<String> =
+                    std::collections::HashSet::new();
+                if !mapped_sid.is_empty() {
+                    candidate_ids.insert(mapped_sid.clone());
+                }
+                if let Some(info) = ps.headless_sessions.get(&name)
+                    && !info.session_id.is_empty()
+                {
+                    candidate_ids.insert(info.session_id.clone());
+                }
+                if let Some(sid) = ps.channel_lead_sessions.get(&name)
+                    && !sid.is_empty()
+                {
+                    candidate_ids.insert(sid.clone());
+                }
+
+                if let Some(info) = ps.headless_sessions.get_mut(&name)
+                    && !info.session_id.is_empty()
+                {
+                    info!(
+                        "Clearing stale headless session_id for '{}': {}",
+                        name, info.session_id
+                    );
+                    info.session_id.clear();
+                }
+                if let Some(stored_sid) = ps.channel_lead_sessions.remove(name.as_str()) {
+                    if stored_sid.is_empty() {
+                        info!(
+                            "Removing stale empty channel_lead_sessions entry for '{}'",
+                            name
                         );
+                    } else {
+                        info!(
+                            "Removing stale channel_lead_sessions entry for '{}': {}",
+                            name, stored_sid
+                        );
+                    }
+                }
+
+                // Clear task/session bindings for matching session records so dispatch
+                // won't repeatedly attempt to resume stale IDs.
+                let mut cleared_task_ids: Vec<String> = Vec::new();
+                for record in ps.sessions.values_mut() {
+                    let matches_id = candidate_ids.contains(&record.session_id);
+                    let matches_running_name = record.is_running
+                        && (record
+                            .current_name
+                            .as_deref()
+                            .is_some_and(|n| n.eq_ignore_ascii_case(&name))
+                            || record
+                                .preferred_name
+                                .as_deref()
+                                .is_some_and(|n| n.eq_ignore_ascii_case(&name)));
+                    if !(matches_id || matches_running_name) {
+                        continue;
+                    }
+                    if let Some(task_id) = record.task_id.take() {
+                        cleared_task_ids.push(task_id);
+                    }
+                    record.is_running = false;
+                    record.resume_on_startup = false;
+                    record.current_name = None;
+                }
+
+                if let Err(e) = ps.save_for_repo(&state.repo_name) {
+                    warn!(
+                        "Failed to save persistent state after clearing stale session ID for '{}': {}",
+                        name, e
+                    );
+                }
+                drop(ps);
+
+                if !cleared_task_ids.is_empty() {
+                    let mut t2s = state.task_to_session.lock().unwrap();
+                    for task_id in &cleared_task_ids {
+                        t2s.remove(task_id);
+                    }
+                    drop(t2s);
+                    for task_id in &cleared_task_ids {
+                        state.clear_task_assignment_by_task(task_id);
                     }
                 }
             }
@@ -2028,7 +2181,35 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                         state.broadcast_coworker_update(&name, "running", None);
                     }
                     Err(e) => {
-                        warn!("SpawnSession failed for {}: {}", session_id, e);
+                        let err_msg = e.to_string();
+                        warn!("SpawnSession failed for {}: {}", session_id, err_msg);
+                        if err_msg.contains("Specified working_dir does not exist") {
+                            warn!(
+                                "SpawnSession cleanup: clearing stale task/session binding for task !{} (session {}) after missing working_dir",
+                                task_id, session_id
+                            );
+                            let cleared = clear_stale_task_session_binding(
+                                state,
+                                &task_id,
+                                Some(&session_id),
+                            )
+                            .await;
+                            if cleared == 0 {
+                                debug!(
+                                    "SpawnSession cleanup: no matching stale bindings found for task !{}",
+                                    task_id
+                                );
+                            }
+                            if let Err(reset_err) = crate::tasks::reset_task_to_pending_for_repo(
+                                &task_id,
+                                &state.repo_name,
+                            ) {
+                                warn!(
+                                    "SpawnSession cleanup: failed to reset task !{} to pending: {}",
+                                    task_id, reset_err
+                                );
+                            }
+                        }
                         // Release name back since spawn failed
                         {
                             let mut pool = state.name_pool.lock().unwrap();

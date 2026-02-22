@@ -265,7 +265,8 @@ pub(super) async fn handle_channel_post(
     // Nudge the Lead when a coworker explicitly mentions @lead or @{project_name}
     let content_lower = content.to_lowercase();
     let project_mention = format!("@{}", state.repo_name).to_lowercase();
-    if is_coworker_sender(from, &state.repo_name)
+    if !state.is_user_sender(from)
+        && is_coworker_sender(from, &state.repo_name)
         && (content_lower.contains("@lead") || content_lower.contains(&project_mention))
     {
         // Use CooldownTracker to avoid duplicate nudges (expires after 1 hour)

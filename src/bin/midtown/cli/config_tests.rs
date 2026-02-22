@@ -196,6 +196,16 @@ fn set_and_get_global_execution_provider() {
 }
 
 #[test]
+fn set_and_get_global_review_mode() {
+    let dir = TempDir::new().unwrap();
+    let config_path = temp_global_config(&dir);
+
+    set_global_key("execution.review_mode", "both", &config_path).unwrap();
+    let value = get_global_key("execution.review_mode", &config_path).unwrap();
+    assert_eq!(value, "both");
+}
+
+#[test]
 fn set_and_get_global_project_lead_provider() {
     let dir = TempDir::new().unwrap();
     let config_path = temp_global_config(&dir);
@@ -364,6 +374,10 @@ fn list_global_shows_all_keys() {
         "Missing: {output}"
     );
     assert!(
+        output.contains("execution.review_mode"),
+        "Missing: {output}"
+    );
+    assert!(
         output.contains("execution.channel_lead_provider"),
         "Missing: {output}"
     );
@@ -391,6 +405,20 @@ fn list_global_shows_not_set_for_unset_values() {
     assert!(
         output.contains("(not set)"),
         "Expected '(not set)' in: {output}"
+    );
+}
+
+#[test]
+fn invalid_review_mode_returns_error() {
+    let dir = TempDir::new().unwrap();
+    let config_path = temp_global_config(&dir);
+
+    let result = set_global_key("execution.review_mode", "hybrid-ish", &config_path);
+    assert!(result.is_err());
+    let msg = result.unwrap_err();
+    assert!(
+        msg.contains("local") && msg.contains("github_app") && msg.contains("both"),
+        "Expected valid review mode values in: {msg}"
     );
 }
 

@@ -27,7 +27,7 @@ pub struct GitHubState {
     #[serde(default)]
     pub pr_reviewers: HashMap<u64, PrReviewerAssignment>,
 
-    /// Set of PR numbers that have a confirmed Claude review.
+    /// Set of PR numbers that have a confirmed completed review.
     /// Review status is monotonic — once a PR has a review, it never loses it.
     /// This cache eliminates redundant `gh pr view` calls on every poll cycle.
     #[serde(default)]
@@ -480,12 +480,12 @@ impl GitHubState {
         ready.into_iter().map(|p| p.pr_number).collect()
     }
 
-    /// Check if a PR has a cached Claude review result.
+    /// Check if a PR has a cached completed review result.
     pub fn has_cached_review(&self, pr_number: u64) -> bool {
         self.reviewed_prs.contains(&pr_number)
     }
 
-    /// Mark a PR as having a Claude review (cache it permanently).
+    /// Mark a PR as having a completed review (cache it permanently).
     pub fn mark_reviewed_pr(&mut self, pr_number: u64) {
         self.reviewed_prs.insert(pr_number);
     }

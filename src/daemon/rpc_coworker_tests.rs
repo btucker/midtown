@@ -348,3 +348,81 @@ async fn test_coworker_list_tags_channel_leads() {
     // succeeds with an empty list (the tag logic runs without panicking).
     assert_eq!(coworkers.len(), 0, "no tracked coworkers in test state");
 }
+
+// ============================================================================
+// handle_coworker_report_state — idle handling
+// ============================================================================
+
+#[tokio::test]
+async fn test_report_idle_keeps_project_lead_running() {
+    let (state, _tmp, _guard) = make_test_state();
+
+    let inserted = state
+        .coworkers
+        .insert_for_testing(crate::coworker::Coworker {
+            slot_id: uuid::Uuid::new_v4().to_string(),
+            name: "test-repo".to_string(),
+            status: crate::coworker::CoworkerStatus::Running,
+            working_dir: "/tmp".to_string(),
+            started_at: chrono::Utc::now(),
+            current_task: None,
+            session_id: None,
+            model: "gpt-5-codex".to_string(),
+            provider: crate::auth::AuthProvider::Codex,
+            profile: crate::auth::DEFAULT_PROFILE.to_string(),
+        });
+    assert!(inserted, "lead coworker should be inserted for test");
+
+    let response = handle_coworker_report_state(
+        RequestId::Number(1),
+        "test-repo",
+        "idle",
+        None,
+        None,
+        &state,
+    )
+    .await;
+
+    assert!(!response.is_error(), "idle report should succeed");
+    assert!(
+        state.coworkers.get("test-repo").is_some(),
+        "project lead should remain tracked after idle report"
+    );
+}
+
+#[tokio::test]
+async fn test_report_idle_still_breaks_non_lead_coworker() {
+    let (state, _tmp, _guard) = make_test_state();
+
+    let inserted = state
+        .coworkers
+        .insert_for_testing(crate::coworker::Coworker {
+            slot_id: uuid::Uuid::new_v4().to_string(),
+            name: "park".to_string(),
+            status: crate::coworker::CoworkerStatus::Running,
+            working_dir: "/tmp".to_string(),
+            started_at: chrono::Utc::now(),
+            current_task: None,
+            session_id: None,
+            model: "gpt-5-codex".to_string(),
+            provider: crate::auth::AuthProvider::Codex,
+            profile: crate::auth::DEFAULT_PROFILE.to_string(),
+        });
+    assert!(inserted, "coworker should be inserted for test");
+
+    let response =
+        handle_coworker_report_state(RequestId::Number(1), "park", "idle", None, None, &state)
+            .await;
+
+    assert!(!response.is_error(), "idle report should succeed");
+    let message = response
+        .result
+        .as_ref()
+        .and_then(|v| v.get("message"))
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    assert!(
+        message.contains("break (idle)"),
+        "non-lead coworker idle report should still take the break path"
+    );
+}
