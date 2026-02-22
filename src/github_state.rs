@@ -13,9 +13,9 @@ use std::io::{self, ErrorKind};
 use std::path::Path;
 use tracing::{debug, warn};
 
-/// How long a review assignment is valid before it expires (10 minutes).
+/// How long a review assignment is valid before it expires (30 minutes).
 /// Mirrors PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS from the in-memory tracker.
-pub const PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS: u64 = 600;
+pub const PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS: u64 = 1800;
 
 /// Persistent state for GitHub-related data.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

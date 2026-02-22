@@ -41,6 +41,8 @@ fn channel_lead_is_idle_shutdown() {
         usage_limited_coworkers: &empty,
         api_error_coworkers: &empty,
         auth_error_coworkers: &empty,
+        coworkers_with_running_subagents: &empty,
+        coworkers_with_pending_tools: &empty,
         pending_task_owners: &empty,
         review_feedback_pr_coworkers: &empty,
         now_utc: Utc::now(),
