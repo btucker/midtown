@@ -312,6 +312,8 @@ pub(crate) struct IdleShutdownContext<'a> {
     pub usage_limited_coworkers: &'a HashSet<String>,
     pub api_error_coworkers: &'a HashSet<String>,
     pub auth_error_coworkers: &'a HashSet<String>,
+    pub coworkers_with_running_subagents: &'a HashSet<String>,
+    pub coworkers_with_pending_tools: &'a HashSet<String>,
     pub pending_task_owners: &'a HashSet<String>,
     pub review_feedback_pr_coworkers: &'a HashSet<String>,
     pub now_utc: DateTime<Utc>,
@@ -336,6 +338,7 @@ pub(crate) struct IdleShutdownContext<'a> {
 /// - They are actively reviewing a PR
 /// - They have unblocked dependent tasks
 /// - They have a subagent (Task tool) currently running
+/// - They have a pending tool execution waiting on a result
 ///
 /// Coworkers with open PRs where CI has passed and NO review feedback CAN go on
 /// break - they're just waiting for human review, and the daemon will respawn
@@ -379,7 +382,9 @@ pub(crate) fn decide_idle_shutdowns(ctx: &IdleShutdownContext<'_>) -> Vec<Shutdo
                 || hashset_contains_icase(ctx.coworkers_with_unblocked_deps, name)
                 || hashset_contains_icase(ctx.usage_limited_coworkers, name)
                 || hashset_contains_icase(ctx.api_error_coworkers, name)
-                || hashset_contains_icase(ctx.auth_error_coworkers, name);
+                || hashset_contains_icase(ctx.auth_error_coworkers, name)
+                || hashset_contains_icase(ctx.coworkers_with_running_subagents, name)
+                || hashset_contains_icase(ctx.coworkers_with_pending_tools, name);
 
             !is_protected
         })
@@ -1503,6 +1508,8 @@ mod tests {
         usage_limited: HashSet<String>,
         api_error: HashSet<String>,
         auth_error: HashSet<String>,
+        running_subagents: HashSet<String>,
+        pending_tools: HashSet<String>,
         pending_tasks: HashSet<String>,
         review_feedback: HashSet<String>,
         minimum_lifetime: Duration,
@@ -1584,6 +1591,14 @@ mod tests {
             self.api_error = set(names);
             self
         }
+        fn running_subagents(mut self, names: &[&str]) -> Self {
+            self.running_subagents = set(names);
+            self
+        }
+        fn pending_tools(mut self, names: &[&str]) -> Self {
+            self.pending_tools = set(names);
+            self
+        }
         fn pending_tasks(mut self, names: &[&str]) -> Self {
             self.pending_tasks = set(names);
             self
@@ -1604,6 +1619,8 @@ mod tests {
                 usage_limited_coworkers: &self.usage_limited,
                 api_error_coworkers: &self.api_error,
                 auth_error_coworkers: &self.auth_error,
+                coworkers_with_running_subagents: &self.running_subagents,
+                coworkers_with_pending_tools: &self.pending_tools,
                 pending_task_owners: &self.pending_tasks,
                 review_feedback_pr_coworkers: &self.review_feedback,
                 now_utc: Utc::now(),
@@ -1738,6 +1755,26 @@ mod tests {
         assert!(
             decisions.is_empty(),
             "API error coworker should be protected from idle shutdown"
+        );
+    }
+
+    #[test]
+    fn idle_shutdown_skips_coworker_with_running_subagent() {
+        let decisions = IdleShutdownCtx::one("york")
+            .running_subagents(&["york"])
+            .run();
+        assert!(
+            decisions.is_empty(),
+            "Coworker with running subagent should be protected from idle shutdown"
+        );
+    }
+
+    #[test]
+    fn idle_shutdown_skips_coworker_waiting_on_tool() {
+        let decisions = IdleShutdownCtx::one("york").pending_tools(&["york"]).run();
+        assert!(
+            decisions.is_empty(),
+            "Coworker waiting on tool result should be protected from idle shutdown"
         );
     }
 
