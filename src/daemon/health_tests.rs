@@ -231,6 +231,7 @@ fn test_usage_limit_nudge_excludes_leads_and_non_task_workers() {
         api_error_coworkers: HashSet::new(),
         auth_error_coworkers: HashSet::new(),
         tool_name_conflict_coworkers: HashSet::new(),
+        coworkers_with_active_tools: HashSet::new(),
         channel_messages: vec![],
         archived_channels: HashSet::new(),
         daemon_logs: vec![],
