@@ -1538,6 +1538,8 @@ mod tests {
                 usage_limited: HashSet::new(),
                 api_error: HashSet::new(),
                 auth_error: HashSet::new(),
+                running_subagents: HashSet::new(),
+                pending_tools: HashSet::new(),
                 pending_tasks: HashSet::new(),
                 review_feedback: HashSet::new(),
                 active_tools: HashSet::new(),
