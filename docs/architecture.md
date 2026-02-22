@@ -203,7 +203,8 @@ Channel leads can fork themselves into thread-specific sessions via the `session
 **Architectural invariants:**
 - Fork sessions are NOT registered in `CoworkerManager`. They bypass `spawn_coworker()` entirely, which means they are excluded from idle-shutdown evaluation, orphan recovery, and coworker status tracking.
 - The `topic_sessions` guard uses an atomic check-and-reserve pattern (inserting a "pending" sentinel) to prevent duplicate forks for the same thread.
-- Both `topic_sessions` and `fork_bound_threads` are ephemeral — cleared on daemon restart. Forks don't survive restarts.
+- `topic_sessions` is ephemeral — cleared on daemon restart. Forks don't survive restarts.
+- `fork_bound_threads` is rebuilt on daemon startup from persisted `SessionRecord.bound_thread_id` fields, so task-spawned coworkers retain their thread bindings across restarts. Fork-created entries (from `handle_session_fork`) are still ephemeral.
 
 ## Channel Storage Layout
 

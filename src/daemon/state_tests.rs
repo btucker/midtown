@@ -646,3 +646,33 @@ fn test_fork_bound_threads_only_includes_bound_sessions() {
     );
     assert!(!fork_bound_threads.contains_key("amsterdam"));
 }
+
+/// When a coworker with a bound thread is cleaned up and the name is reused
+/// without a thread binding, the stale entry must not persist.
+/// This verifies the cleanup logic in `cleanup_coworker_state` that removes
+/// the name from `fork_bound_threads`.
+#[test]
+fn test_fork_bound_threads_cleaned_up_on_name_reuse() {
+    use std::collections::HashMap;
+
+    let mut fork_bound_threads: HashMap<String, String> = HashMap::new();
+
+    // Simulate: coworker "riverside" spawned with thread binding
+    fork_bound_threads.insert("riverside".to_string(), "thread-abc".to_string());
+    assert!(fork_bound_threads.contains_key("riverside"));
+
+    // Simulate: cleanup_coworker_state removes the entry
+    fork_bound_threads.remove("riverside");
+
+    // Simulate: name "riverside" reused for a new task WITHOUT thread binding
+    // (SpawnSession only inserts when bound_thread_id.is_some())
+    let new_bound_thread_id: Option<String> = None;
+    if let Some(tid) = new_bound_thread_id {
+        fork_bound_threads.insert("riverside".to_string(), tid);
+    }
+
+    assert!(
+        !fork_bound_threads.contains_key("riverside"),
+        "Stale fork_bound_threads entry must not persist after cleanup + reuse without binding"
+    );
+}

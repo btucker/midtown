@@ -696,10 +696,17 @@ pub(crate) struct DaemonState {
 
     /// In-memory cache of bound thread IDs for forked sessions.
     ///
-    /// Maps `fork_name → thread_parent_id`. Populated in `handle_session_fork` when
-    /// a fork is created. Used by the output binding path in `handle_channel_post`
-    /// to auto-tag forked session posts with their bound thread — avoids acquiring
-    /// the async `persistent_state` lock on the channel post hot path.
+    /// Maps `fork_name → thread_parent_id`. Used by the output binding path in
+    /// `handle_channel_post` to auto-tag forked session posts with their bound
+    /// thread — avoids acquiring the async `persistent_state` lock on the channel
+    /// post hot path.
+    ///
+    /// Populated in three places:
+    /// 1. `handle_session_fork` — when a fork is created
+    /// 2. `SpawnSession` effect handler (`effects.rs`) — when a task with `--thread-id` spawns
+    /// 3. Daemon startup rebuild (`mod.rs`) — from persisted `SessionRecord.bound_thread_id`
+    ///
+    /// Cleaned up in `cleanup_coworker_state` when a coworker is shut down.
     pub(crate) fork_bound_threads: std::sync::Mutex<HashMap<String, String>>,
 }
 
@@ -903,6 +910,10 @@ impl DaemonState {
         {
             let mut tool_map = self.recent_tool_items.write().unwrap();
             tool_map.remove(name);
+        }
+        // Clear fork thread binding (prevents stale thread routing on name reuse)
+        {
+            self.fork_bound_threads.lock().unwrap().remove(name);
         }
         // Clear the inbox for this name so the next session that gets
         // allocated this name does not inherit unread messages from this session.
