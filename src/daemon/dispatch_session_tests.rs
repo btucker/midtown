@@ -718,3 +718,146 @@ fn test_dispatch_via_sessions_emits_clear_session_on_failure() {
         );
     }
 }
+
+/// Regression test for task !1709: repeated session recovery log spam.
+///
+/// When a session recovery spawn succeeds but the session then dies quickly
+/// (e.g., stale session_id, process exits within one tick window), the next tick
+/// fires recovery again — causing "Session dispatch: recovered task !{}" to be
+/// posted to the ops channel on every tick instead of once.
+///
+/// The fix: after a successful recovery spawn, record a per-session-id cooldown
+/// ("session_recovered"). On the next tick, if the session_id is in
+/// `recently_recovered_session_ids`, skip recovery even when `is_running=false`
+/// and the session is not in `active_session_ids`.
+#[test]
+fn test_session_dispatch_skips_recovery_for_recently_recovered_session() {
+    // Given: task !1703 has session "7659329f" (is_running=false — session died after recovery)
+    // but the session was recently recovered (recovery cooldown is active).
+    let session = make_session_record(
+        "7659329f-dead-4ead-b00b-cafecafecafe",
+        Some("1703"),
+        None,  // current_name is None — session died, cleanup_coworker_state cleared it
+        false, // is_running=false: session died after previous recovery spawn
+    );
+
+    let snap = snapshot::WorldSnapshot {
+        in_progress_tasks: vec![(
+            "1703".to_string(),
+            "Fix session recovery spam".to_string(),
+            "park".to_string(),
+        )],
+        // Session is stopped (not in active_session_ids or active_names)
+        active_session_ids: HashSet::new(),
+        active_names: HashSet::new(),
+        sessions: [("7659329f-dead-4ead-b00b-cafecafecafe".to_string(), session)]
+            .into_iter()
+            .collect(),
+        session_task_map: [(
+            "1703".to_string(),
+            "7659329f-dead-4ead-b00b-cafecafecafe".to_string(),
+        )]
+        .into_iter()
+        .collect(),
+        // Recovery was recently attempted — cooldown is active for this session_id
+        recently_recovered_session_ids: ["7659329f-dead-4ead-b00b-cafecafecafe".to_string()]
+            .into_iter()
+            .collect(),
+        ..snapshot::minimal_snapshot_for_test()
+    };
+
+    let effects = dispatch_via_sessions_for_test(&snap, None, |_| None);
+
+    // Then: must NOT emit another recovery spawn — the session was recently recovered.
+    // Without the fix, this fires on every tick causing log spam.
+    let spawn_effects: Vec<_> = effects
+        .iter()
+        .filter(|e| {
+            matches!(
+                e,
+                Effect::SpawnCoworkerWithCallbacks { .. }
+                    | Effect::SpawnCoworker(_)
+                    | Effect::AssignAndSpawn { .. }
+                    | Effect::ResumeCoworker { .. }
+            )
+        })
+        .collect();
+    assert!(
+        spawn_effects.is_empty(),
+        "Should NOT re-recover a session that was recently recovered (per-session cooldown). \
+         This fires on every tick causing log spam in task !1703. Got effects: {:?}",
+        spawn_effects
+            .iter()
+            .map(|e| format!("{:?}", e))
+            .collect::<Vec<_>>()
+    );
+}
+
+/// Verify that on_success effects for session recovery include a per-session-id cooldown.
+///
+/// This ensures the `recently_recovered_session_ids` guard in the next tick is populated,
+/// preventing the recovery loop described in task !1709.
+#[test]
+fn test_session_dispatch_on_success_includes_session_recovered_cooldown() {
+    // Given: task !1703 has a stopped session with no recent recovery
+    let session = make_session_record(
+        "7659329f-dead-4ead-b00b-cafecafecafe",
+        Some("1703"),
+        Some("park"),
+        false,
+    );
+
+    let task = in_progress_task_for_lookup("1703", "Fix session recovery spam", "park");
+
+    let snap = snapshot::WorldSnapshot {
+        in_progress_tasks: vec![(
+            "1703".to_string(),
+            "Fix session recovery spam".to_string(),
+            "park".to_string(),
+        )],
+        sessions: [("7659329f-dead-4ead-b00b-cafecafecafe".to_string(), session)]
+            .into_iter()
+            .collect(),
+        session_task_map: [(
+            "1703".to_string(),
+            "7659329f-dead-4ead-b00b-cafecafecafe".to_string(),
+        )]
+        .into_iter()
+        .collect(),
+        // No recent recovery — cooldown is not active
+        recently_recovered_session_ids: HashSet::new(),
+        ..snapshot::minimal_snapshot_for_test()
+    };
+
+    let lookup = |id: &str| -> Option<crate::tasks::Task> {
+        if id == "1703" {
+            Some(task.clone())
+        } else {
+            None
+        }
+    };
+
+    let effects = dispatch_via_sessions_with_task_lookup(&snap, None, lookup);
+
+    // Find the SpawnCoworkerWithCallbacks effect
+    let spawn_effect = effects
+        .iter()
+        .find(|e| matches!(e, Effect::SpawnCoworkerWithCallbacks { .. }));
+    assert!(
+        spawn_effect.is_some(),
+        "Expected SpawnCoworkerWithCallbacks for stopped session"
+    );
+
+    if let Some(Effect::SpawnCoworkerWithCallbacks { on_success, .. }) = spawn_effect {
+        let has_session_recovered_cooldown = on_success.iter().any(|e| {
+            matches!(e, Effect::RecordCooldown { category, key }
+                if category == "session_recovered" && key == "7659329f-dead-4ead-b00b-cafecafecafe")
+        });
+        assert!(
+            has_session_recovered_cooldown,
+            "on_success must contain RecordCooldown(session_recovered, session_id) \
+             to prevent re-recovery spam on the next tick. Got: {:?}",
+            on_success
+        );
+    }
+}

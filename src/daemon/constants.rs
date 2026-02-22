@@ -99,6 +99,21 @@ pub(super) const ORPHAN_SPAWN_COOLDOWN: Duration = Duration::from_secs(2);
 /// that uses session records instead of orphan detection heuristics.
 pub(super) const SESSION_DISPATCH_COOLDOWN: Duration = Duration::from_secs(2);
 
+/// Per-session-id cooldown after a recovery spawn succeeds.
+///
+/// After recovering a session (spawn_coworker returns Ok), this cooldown prevents
+/// re-recovery for the same session_id on the next tick, even if the session dies
+/// quickly. Without this guard, the "Session dispatch: recovered task !{}" channel
+/// message is posted on every 5-second tick as long as the session keeps dying
+/// (the 2s SESSION_DISPATCH_COOLDOWN always expires before the next 5s tick).
+///
+/// 30 seconds is chosen to exceed the ORPHAN_CHECK_INTERVAL_SECS (5s) by a
+/// comfortable margin. Note: `was_failed_resume` also uses a 30s window
+/// (`age < 30s`), so both mechanisms expire at the same boundary. In practice,
+/// the 5-second tick granularity means they never race — the cooldown prevents
+/// re-recovery for several tick cycles regardless.
+pub(super) const SESSION_RECOVERED_COOLDOWN: Duration = Duration::from_secs(30);
+
 /// Grace period after a coworker stops before orphan recovery kicks in (40 seconds).
 /// Tradeoff: Faster recovery of abandoned tasks vs. risk of recovering tasks that are
 /// legitimately completing. Reduced from 60s to 40s (still conservative) to speed up
