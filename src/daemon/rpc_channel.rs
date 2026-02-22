@@ -189,6 +189,8 @@ pub(super) async fn handle_channel_post(
         let default_channel = state.channel_router.default_channel_name();
         let is_topic_channel = channel_name != default_channel;
 
+        let wake_msg_id = thread_parent_id.unwrap_or(&msg.id).to_string();
+
         if is_topic_channel {
             // Task 2: Thread-aware routing — if there's a forked topic session for
             // this thread, route directly to it instead of the channel lead.
@@ -196,36 +198,19 @@ pub(super) async fn handle_channel_post(
             // without going through the root channel lead.
             let topic_session_id = thread_parent_id
                 .and_then(|parent_id| state.topic_sessions.lock().unwrap().get(parent_id).cloned());
-
-            let nudge_effect = if let Some(fork_session_id) = topic_session_id {
+            if let Some(fork_session_id) = topic_session_id.as_deref() {
                 debug!(
                     "channel.post: routing thread reply to fork session {} (thread {})",
                     fork_session_id,
                     thread_parent_id.unwrap_or("?"),
                 );
-                crate::daemon::effects::Effect::NudgeSession {
-                    session_id: fork_session_id,
-                    reason: crate::daemon::wake_reason::WakeReason::UserMessage {
-                        content: content.clone(),
-                        msg_id: msg.id.clone(),
-                    },
-                }
-            } else {
-                // No forked session for this thread — nudge the channel lead via the
-                // unified NudgeChannelLead path. This handles spawn-if-dead,
-                // resume-if-idle, and nudge-if-alive.
-                //
-                // Note: @mentions are intentionally NOT routed here. In topic channels,
-                // the channel lead is the single point of entry and owns all routing
-                // decisions within its domain. This avoids competing routing paths.
-                crate::daemon::effects::Effect::NudgeChannelLead {
-                    channel_name: channel_name.to_string(),
-                    reason: crate::daemon::wake_reason::WakeReason::UserMessage {
-                        content: content.clone(),
-                        msg_id: thread_parent_id.unwrap_or(&msg.id).to_string(),
-                    },
-                }
-            };
+            }
+            let nudge_effect = build_topic_thread_nudge_effect(
+                channel_name,
+                &content,
+                wake_msg_id.clone(),
+                topic_session_id,
+            );
             crate::daemon::effects::execute_effects(vec![nudge_effect], state).await;
         } else {
             // Main channel: always nudge the lead on user messages.
@@ -270,7 +255,7 @@ pub(super) async fn handle_channel_post(
                 channel_name: channel_name.to_string(),
                 reason: crate::daemon::wake_reason::WakeReason::UserMessage {
                     content: content.clone(),
-                    msg_id: thread_parent_id.unwrap_or(&msg.id).to_string(),
+                    msg_id: wake_msg_id,
                 },
             };
             crate::daemon::effects::execute_effects(vec![nudge_effect], state).await;
@@ -703,6 +688,31 @@ pub(super) fn handle_channel_read(
             "messages": messages_json,
         }),
     )
+}
+
+pub(crate) fn build_topic_thread_nudge_effect(
+    channel_name: &str,
+    content: &str,
+    wake_msg_id: String,
+    topic_session_id: Option<String>,
+) -> crate::daemon::effects::Effect {
+    if let Some(fork_session_id) = topic_session_id {
+        crate::daemon::effects::Effect::NudgeSession {
+            session_id: fork_session_id,
+            reason: crate::daemon::wake_reason::WakeReason::UserMessage {
+                content: content.to_string(),
+                msg_id: wake_msg_id,
+            },
+        }
+    } else {
+        crate::daemon::effects::Effect::NudgeChannelLead {
+            channel_name: channel_name.to_string(),
+            reason: crate::daemon::wake_reason::WakeReason::UserMessage {
+                content: content.to_string(),
+                msg_id: wake_msg_id,
+            },
+        }
+    }
 }
 
 #[path = "rpc_channel_tests.rs"]

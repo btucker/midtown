@@ -1209,6 +1209,33 @@ async fn test_thread_routing_with_topic_session_routes_to_fork() {
         messages.is_empty(),
         "Main lead should not be nudged when routing to a fork session"
     );
+
+    // The fork-session nudge must carry the thread_parent_id as msg_id so the fork
+    // posts a sibling reply instead of nesting under the user reply UUID.
+    let effect = super::build_topic_thread_nudge_effect(
+        "auth-refactor",
+        "Follow-up question in thread",
+        thread_id.to_string(),
+        Some(fork_session_id.to_string()),
+    );
+    match effect {
+        crate::daemon::effects::Effect::NudgeSession { session_id, reason } => {
+            assert_eq!(session_id, fork_session_id);
+            match reason {
+                crate::daemon::wake_reason::WakeReason::UserMessage { msg_id, .. } => {
+                    assert_eq!(
+                        msg_id, thread_id,
+                        "Fork session nudge should target the thread parent"
+                    );
+                }
+                other => panic!(
+                    "Expected UserMessage reason for fork nudge, got {:?}",
+                    other
+                ),
+            }
+        }
+        other => panic!("Expected NudgeSession effect, got {:?}", other),
+    }
 }
 
 /// Verify that `handle_session_fork` deduplicates: when a topic session already
