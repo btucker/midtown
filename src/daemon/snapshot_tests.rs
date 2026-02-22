@@ -115,6 +115,7 @@ fn test_world_snapshot_has_coworker_stop_times() {
         orphan_spawn_cooldown_active: false,
         session_dispatch_cooldown_active: false,
         spawn_failure_cooldown_names: std::collections::HashSet::new(),
+        recently_recovered_session_ids: std::collections::HashSet::new(),
     };
 
     assert_eq!(snapshot.coworker_stop_times.len(), 2);
@@ -227,6 +228,7 @@ fn test_snapshot_debug_context_empty_by_default() {
         orphan_spawn_cooldown_active: false,
         session_dispatch_cooldown_active: false,
         spawn_failure_cooldown_names: std::collections::HashSet::new(),
+        recently_recovered_session_ids: std::collections::HashSet::new(),
     };
 
     assert!(snapshot.channel_messages.is_empty());
@@ -422,6 +424,7 @@ fn test_sessions_for_name() {
         orphan_spawn_cooldown_active: false,
         session_dispatch_cooldown_active: false,
         spawn_failure_cooldown_names: std::collections::HashSet::new(),
+        recently_recovered_session_ids: std::collections::HashSet::new(),
     };
 
     // "lexington" has two sessions
@@ -518,6 +521,7 @@ fn test_active_session_ids_in_snapshot() {
         orphan_spawn_cooldown_active: false,
         session_dispatch_cooldown_active: false,
         spawn_failure_cooldown_names: std::collections::HashSet::new(),
+        recently_recovered_session_ids: std::collections::HashSet::new(),
     };
 
     assert_eq!(snapshot.active_session_ids.len(), 2);
@@ -608,6 +612,7 @@ fn test_snapshot_includes_session_fields() {
         orphan_spawn_cooldown_active: false,
         session_dispatch_cooldown_active: false,
         spawn_failure_cooldown_names: std::collections::HashSet::new(),
+        recently_recovered_session_ids: std::collections::HashSet::new(),
     };
 
     assert!(snapshot.sessions.is_empty());

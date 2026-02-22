@@ -355,6 +355,17 @@ pub struct WorldSnapshot {
     /// Pre-evaluated from `state.cooldowns` over all known coworker names.
     #[serde(default)]
     pub spawn_failure_cooldown_names: HashSet<String>,
+    /// Session IDs for which a recovery was recently attempted (and succeeded).
+    ///
+    /// After a recovery spawn, a per-session-id cooldown ("session_recovered") is set.
+    /// This set contains all session_ids whose cooldown is still active, preventing
+    /// re-recovery on the next tick even if the session dies quickly.
+    ///
+    /// Without this guard, the global SESSION_DISPATCH_COOLDOWN (2s) always expires
+    /// before the next 5s tick, causing "Session dispatch: recovered" to be posted
+    /// to the ops channel on every tick (task !1709 regression).
+    #[serde(default)]
+    pub recently_recovered_session_ids: HashSet<String>,
 
     // ── Session-centric fields (new model) ──────────────────────────────
     /// All session records, keyed by session_id.
@@ -908,6 +919,26 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
         )
     };
 
+    // ── Per-session recovery cooldown ────────────────────────────────────
+    // Build the set of session_ids for which a recovery was recently attempted.
+    // Uses the "session_recovered" cooldown category (per-session-id key) set in
+    // on_success of SpawnCoworkerWithCallbacks by dispatch_via_sessions.
+    // This prevents re-recovery spam when a session dies quickly after recovery.
+    let recently_recovered_session_ids: HashSet<String> = {
+        let cooldowns = state.cooldowns.lock().unwrap();
+        sessions
+            .keys()
+            .filter(|sid| {
+                !cooldowns.check(
+                    "session_recovered",
+                    sid,
+                    crate::daemon::constants::SESSION_RECOVERED_COOLDOWN,
+                )
+            })
+            .cloned()
+            .collect()
+    };
+
     let snapshot = WorldSnapshot {
         active_coworkers,
         running_coworkers,
@@ -979,6 +1010,7 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
         orphan_spawn_cooldown_active,
         session_dispatch_cooldown_active,
         spawn_failure_cooldown_names,
+        recently_recovered_session_ids,
     };
 
     // Log full snapshot at trace level for debugging and test case generation
@@ -1066,6 +1098,7 @@ pub(super) fn minimal_snapshot_for_test() -> WorldSnapshot {
         orphan_spawn_cooldown_active: false,
         session_dispatch_cooldown_active: false,
         spawn_failure_cooldown_names: HashSet::new(),
+        recently_recovered_session_ids: HashSet::new(),
     }
 }
 

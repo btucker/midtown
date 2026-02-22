@@ -803,6 +803,27 @@ where
             continue;
         }
 
+        // Skip if a recovery was recently attempted for this session (per-session cooldown).
+        //
+        // Without this guard, when a session dies within a single tick window (5s) after a
+        // successful recovery spawn, the next tick sees is_running=false and active_session_ids
+        // empty — and fires recovery again. The global SESSION_DISPATCH_COOLDOWN (2s) always
+        // expires before the next 5s tick, providing no protection between ticks.
+        //
+        // The "session_recovered" cooldown (SESSION_RECOVERED_COOLDOWN) is set per-session-id
+        // in on_success. If the session_id is in recently_recovered_session_ids, a recovery
+        // was already attempted recently — skip to prevent the log spam described in !1709.
+        if snap
+            .recently_recovered_session_ids
+            .contains(&record.session_id)
+        {
+            debug!(
+                "Task !{} has recently-recovered session {} -- skipping re-recovery (cooldown active)",
+                task_id, record.session_id
+            );
+            continue;
+        }
+
         // Session is stopped -- attempt recovery using session data.
         // Use preferred_name for name continuity.
         let coworker_name = record
@@ -891,6 +912,13 @@ where
             Effect::RecordCooldown {
                 category: "session_dispatch".to_string(),
                 key: "global".to_string(),
+            },
+            // Per-session-id cooldown: prevents re-recovery on the next tick even if the
+            // session dies quickly. The recently_recovered_session_ids snapshot field checks
+            // this cooldown and skips recovery while it's active (see !1709 fix).
+            Effect::RecordCooldown {
+                category: "session_recovered".to_string(),
+                key: record.session_id.clone(),
             },
             Effect::PostToChannel {
                 sender: "midtown".to_string(),
