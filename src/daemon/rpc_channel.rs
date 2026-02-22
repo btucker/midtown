@@ -222,7 +222,7 @@ pub(super) async fn handle_channel_post(
                     channel_name: channel_name.to_string(),
                     reason: crate::daemon::wake_reason::WakeReason::UserMessage {
                         content: content.clone(),
-                        msg_id: msg.id.clone(),
+                        msg_id: thread_parent_id.unwrap_or(&msg.id).to_string(),
                     },
                 }
             };
@@ -270,7 +270,7 @@ pub(super) async fn handle_channel_post(
                 channel_name: channel_name.to_string(),
                 reason: crate::daemon::wake_reason::WakeReason::UserMessage {
                     content: content.clone(),
-                    msg_id: msg.id.clone(),
+                    msg_id: thread_parent_id.unwrap_or(&msg.id).to_string(),
                 },
             };
             crate::daemon::effects::execute_effects(vec![nudge_effect], state).await;
