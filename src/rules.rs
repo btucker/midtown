@@ -1537,24 +1537,24 @@ mod tests {
     }
 
     impl IdleShutdownCtx {
-        /// Start with a single coworker (10 min old) and 5 min minimum lifetime.
-        fn one(name: &str) -> Self {
+        /// Base builder that seeds coworker age and minimum lifetime.
+        fn base(name: &str, minutes_old: i64) -> Self {
             Self {
-                coworkers: vec![cw(name, 10)],
+                coworkers: vec![cw(name, minutes_old)],
                 minimum_lifetime: Duration::from_secs(300),
                 repo_name: "test-repo".to_string(),
                 ..Default::default()
             }
         }
 
+        /// Start with a single coworker (10 min old) and 5 min minimum lifetime.
+        fn one(name: &str) -> Self {
+            Self::base(name, 10)
+        }
+
         /// Start with a young coworker (2 min old).
         fn one_young(name: &str) -> Self {
-            Self {
-                coworkers: vec![cw(name, 2)],
-                minimum_lifetime: Duration::from_secs(300),
-                repo_name: "test-repo".to_string(),
-                ..Default::default()
-            }
+            Self::base(name, 2)
         }
 
         /// Set a custom repo name (for testing lead filtering by repo name).
