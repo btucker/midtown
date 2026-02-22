@@ -87,9 +87,9 @@ jobs:
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
 
-      - name: Install tmux and Zellij
+      - name: Install tmux
         run: |
-          sudo apt-get update && sudo apt-get install -y tmux zellij
+          sudo apt-get update && sudo apt-get install -y tmux
 
       - name: Install WASM target
         run: rustup target add wasm32-wasip1
