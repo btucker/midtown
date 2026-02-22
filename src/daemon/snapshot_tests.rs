@@ -763,3 +763,57 @@ fn build_reviewer_pr_assignments_excludes_expired_entries() {
         "expired reviewer 'broadway' must NOT appear in active_reviewers"
     );
 }
+
+/// Test that recently_recovered_session_ids is correctly populated from CooldownTracker.
+///
+/// The collect_world_snapshot() function builds this set by checking the
+/// "session_recovered" cooldown for each known session ID. This test verifies
+/// the extraction logic: a session with an active cooldown appears in the set,
+/// while a session without a cooldown does not.
+#[test]
+fn test_recently_recovered_session_ids_populated_from_cooldowns() {
+    use crate::rules::CooldownTracker;
+    use std::sync::Mutex;
+
+    let cooldowns = Mutex::new(CooldownTracker::new());
+
+    // Record a "session_recovered" cooldown for session "sess-abc" (simulating
+    // a successful recovery spawn).
+    cooldowns
+        .lock()
+        .unwrap()
+        .record("session_recovered", "sess-abc");
+
+    // Simulate the known session IDs (as collect_world_snapshot iterates sessions.keys())
+    let known_session_ids = [
+        "sess-abc".to_string(), // has active cooldown
+        "sess-xyz".to_string(), // no cooldown recorded
+    ];
+
+    // Replicate the exact extraction logic from collect_world_snapshot():
+    // !cooldowns.check() means "cooldown is NOT expired" → include in the set.
+    let recently_recovered: HashSet<String> = {
+        let cd = cooldowns.lock().unwrap();
+        known_session_ids
+            .iter()
+            .filter(|sid| {
+                !cd.check(
+                    "session_recovered",
+                    sid,
+                    crate::daemon::constants::SESSION_RECOVERED_COOLDOWN,
+                )
+            })
+            .cloned()
+            .collect()
+    };
+
+    assert!(
+        recently_recovered.contains("sess-abc"),
+        "session with active cooldown must appear in recently_recovered_session_ids"
+    );
+    assert!(
+        !recently_recovered.contains("sess-xyz"),
+        "session without cooldown must NOT appear in recently_recovered_session_ids"
+    );
+    assert_eq!(recently_recovered.len(), 1);
+}

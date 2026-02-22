@@ -108,9 +108,10 @@ pub(super) const SESSION_DISPATCH_COOLDOWN: Duration = Duration::from_secs(2);
 /// (the 2s SESSION_DISPATCH_COOLDOWN always expires before the next 5s tick).
 ///
 /// 30 seconds is chosen to exceed the ORPHAN_CHECK_INTERVAL_SECS (5s) by a
-/// comfortable margin while staying within `was_failed_resume`'s 30s window,
-/// allowing failed-resume detection to clear the stale session_id before this
-/// cooldown expires.
+/// comfortable margin. Note: `was_failed_resume` also uses a 30s window
+/// (`age < 30s`), so both mechanisms expire at the same boundary. In practice,
+/// the 5-second tick granularity means they never race — the cooldown prevents
+/// re-recovery for several tick cycles regardless.
 pub(super) const SESSION_RECOVERED_COOLDOWN: Duration = Duration::from_secs(30);
 
 /// Grace period after a coworker stops before orphan recovery kicks in (40 seconds).

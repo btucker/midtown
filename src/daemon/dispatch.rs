@@ -695,7 +695,8 @@ pub(super) fn extract_claimed_task_ids_from_effects(effects: &[Effect]) -> HashS
 /// 1. Task has running session -> skip (being worked on)
 /// 2. Task has stopped session -> resume via SpawnCoworkerWithCallbacks,
 ///    unless the coworker is an active reviewer (skip to avoid interrupting
-///    their review work)
+///    their review work) or the session was recently recovered (per-session
+///    cooldown prevents re-recovery spam when sessions die quickly)
 /// 3. Task has no session record -> apply recovery filtering (PR merge checks,
 ///    dev limit, grace period) and fresh spawn if eligible
 ///

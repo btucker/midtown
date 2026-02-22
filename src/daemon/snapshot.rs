@@ -356,6 +356,8 @@ pub struct WorldSnapshot {
     #[serde(default)]
     pub spawn_failure_cooldown_names: HashSet<String>,
     /// Session IDs for which a recovery was recently attempted (and succeeded).
+    /// Pre-evaluated from `state.cooldowns` (category `"session_recovered"`, keyed
+    /// by session ID) so decision functions stay pure.
     ///
     /// After a recovery spawn, a per-session-id cooldown ("session_recovered") is set.
     /// This set contains all session_ids whose cooldown is still active, preventing
