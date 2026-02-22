@@ -335,7 +335,7 @@ pub(super) async fn handle_auth_switch(
                 configured_lead_provider,
             ));
         match state.spawn_coworker(&lead_config).await {
-            Ok(()) => {
+            Ok(_) => {
                 info!(
                     "Re-launched lead with {} auth profile '{}'",
                     configured_lead_provider, profile
@@ -419,7 +419,7 @@ pub(super) async fn handle_auth_switch(
         ));
 
         match state.spawn_coworker(&config).await {
-            Ok(()) => {
+            Ok(_) => {
                 relaunch_count += 1;
                 if resume_compatible {
                     resumed_count += 1;

@@ -690,7 +690,7 @@ pub(super) async fn handle_session_detach(
     // spawn_coworker() re-resolve from project config (authoritative source).
 
     match state.spawn_coworker(&config).await {
-        Ok(()) => {
+        Ok(_) => {
             info!(
                 "Resumed headless coworker '{}' after detach (session={})",
                 name, session_id
@@ -1003,7 +1003,7 @@ pub(super) async fn handle_session_clear(
     }
 
     match state.spawn_coworker(&config).await {
-        Ok(()) => {
+        Ok(_) => {
             info!("Relaunched fresh session for '{}' after clear", name);
 
             let mut clear_msg = crate::message::Message::system(format!(
@@ -1167,6 +1167,7 @@ pub(super) async fn handle_session_fork(
         setting_sources: None,
         auth_provider,
         env,
+        session_id: None,
         fork_session: true,
     };
 

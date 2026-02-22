@@ -111,7 +111,7 @@ fn build_claude_common_args(
 /// handles sandbox prefix + binary separately.
 ///
 /// Fresh sessions get: `-p`, `--append-system-prompt`, `--json-schema`,
-///   `--settings`, `--setting-sources` (from common).
+///   `--session-id` (when pre-assigned), `--settings`, `--setting-sources` (from common).
 ///
 /// Resume sessions get: `--resume <id>` and skip `--settings`/`--setting-sources`
 ///   to avoid "Tool names must be unique" errors.
@@ -145,6 +145,13 @@ pub fn build_claude_headless_args(config: &HeadlessConfig) -> Vec<String> {
         {
             args.push("--json-schema".to_string());
             args.push(schema_str);
+        }
+
+        // Pass pre-assigned session ID so the daemon knows the session ID immediately
+        // at spawn time, eliminating the race window before the init event arrives.
+        if let Some(ref sid) = config.session_id {
+            args.push("--session-id".to_string());
+            args.push(sid.clone());
         }
     }
 

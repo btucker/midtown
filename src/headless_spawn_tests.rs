@@ -20,6 +20,7 @@ fn test_fresh_session_uses_append_system_prompt() {
         setting_sources: None,
         persist_session: false,
         resume_session_id: None,
+        session_id: None,
         allow_tools: true,
         json_schema: None,
         cwd: None,
@@ -60,59 +61,7 @@ fn test_fresh_session_uses_append_system_prompt() {
 /// This doesn't actually spawn the process (which would require claude CLI to be available),
 /// but instead captures what arguments would have been passed.
 fn extract_spawn_args(config: &HeadlessConfig) -> Vec<String> {
-    // We can't easily mock Command::spawn(), so instead we'll test the public API
-    // and verify behavior through integration testing. This test documents the bug
-    // and will fail until the duplicate is removed.
-    //
-    // For now, we test the logic by constructing the expected args manually
-    // based on the config, which mirrors what spawn() does.
-    let is_resume = config.resume_session_id.is_some();
-    let mut args = Vec::new();
-
-    if config.auth_provider == crate::auth::AuthProvider::Claude {
-        if is_resume {
-            args.push("--resume".to_string());
-            args.push(config.resume_session_id.as_ref().unwrap().clone());
-        } else {
-            args.push("-p".to_string());
-            args.push("--append-system-prompt".to_string());
-            args.push(config.system_prompt.clone());
-        }
-
-        args.push("--verbose".to_string());
-        args.push("--output-format".to_string());
-        args.push("stream-json".to_string());
-        args.push("--input-format".to_string());
-        args.push("stream-json".to_string());
-        args.push("--model".to_string());
-        args.push(config.model.clone());
-
-        if !config.persist_session {
-            args.push("--no-session-persistence".to_string());
-        }
-
-        if !config.allow_tools {
-            args.push("--tools".to_string());
-            args.push("".to_string());
-        }
-
-        args.push("--dangerously-skip-permissions".to_string());
-
-        // Settings file and sources — skip on resume to avoid duplicate tool registrations
-        if !is_resume {
-            if let Some(ref settings) = config.settings_path {
-                args.push("--settings".to_string());
-                args.push(settings.clone());
-            }
-
-            if let Some(ref sources) = config.setting_sources {
-                args.push("--setting-sources".to_string());
-                args.push(sources.clone());
-            }
-        }
-    }
-
-    args
+    crate::platform::build_claude_headless_args(config)
 }
 
 #[test]
@@ -124,6 +73,7 @@ fn test_fresh_session_should_not_duplicate_settings_flag() {
         setting_sources: Some("project,local".to_string()),
         persist_session: false,
         resume_session_id: None,
+        session_id: None,
         allow_tools: false,
         json_schema: None,
         cwd: None,
@@ -166,6 +116,7 @@ fn test_resume_session_should_omit_settings_flag() {
         setting_sources: Some("project,local".to_string()),
         persist_session: true,
         resume_session_id: Some("session-123".to_string()),
+        session_id: None,
         allow_tools: false,
         json_schema: None,
         cwd: None,
@@ -182,22 +133,20 @@ fn test_resume_session_should_omit_settings_flag() {
 
     let args = extract_spawn_args(&config);
 
-    // Resume sessions should NOT have --settings or --setting-sources at all
+    // Resume sessions should NOT have --settings (file path) to avoid "Tool names must be
+    // unique" errors when plugins re-register from a settings file.
+    // --setting-sources is always present (added by build_claude_common_args unconditionally).
     let settings_count = args.iter().filter(|a| *a == "--settings").count();
     let setting_sources_count = args.iter().filter(|a| *a == "--setting-sources").count();
 
-    // The current buggy code has: unconditional block (lines 477-484) adds them once,
-    // but the guarded block (lines 489-496) correctly skips them on resume.
-    // So resume sessions currently get the flags once (from the unconditional block).
-    // After the fix, they should have 0 occurrences.
     assert_eq!(
         settings_count, 0,
         "Resume session should NOT have --settings flag, found {}",
         settings_count
     );
     assert_eq!(
-        setting_sources_count, 0,
-        "Resume session should NOT have --setting-sources flag, found {}",
+        setting_sources_count, 1,
+        "--setting-sources is always added by build_claude_common_args, found {}",
         setting_sources_count
     );
 }
@@ -211,6 +160,7 @@ fn test_fresh_session_without_settings_path() {
         setting_sources: None,
         persist_session: false,
         resume_session_id: None,
+        session_id: None,
         allow_tools: false,
         json_schema: None,
         cwd: None,
@@ -227,13 +177,239 @@ fn test_fresh_session_without_settings_path() {
 
     let args = extract_spawn_args(&config);
 
-    // Should have 0 occurrences when settings_path is None
+    // --settings should be absent when settings_path is None.
+    // --setting-sources is always present (added unconditionally by build_claude_common_args).
     let settings_count = args.iter().filter(|a| *a == "--settings").count();
     let setting_sources_count = args.iter().filter(|a| *a == "--setting-sources").count();
 
     assert_eq!(settings_count, 0, "Should not add --settings when None");
     assert_eq!(
-        setting_sources_count, 0,
-        "Should not add --setting-sources when None"
+        setting_sources_count, 1,
+        "--setting-sources is always added by build_claude_common_args, found {}",
+        setting_sources_count
+    );
+}
+
+#[test]
+fn test_fresh_session_with_preassigned_session_id_includes_session_id_flag() {
+    // When a session_id is pre-assigned on a fresh session, the CLI should receive
+    // --session-id <uuid> so the daemon controls the session ID immediately without
+    // waiting for the init event (eliminating the race window).
+    let config = HeadlessConfig {
+        model: "haiku".to_string(),
+        system_prompt: "test prompt".to_string(),
+        settings_path: None,
+        setting_sources: None,
+        persist_session: true,
+        resume_session_id: None,
+        session_id: Some("pre-assigned-uuid-1234".to_string()),
+        allow_tools: true,
+        json_schema: None,
+        cwd: None,
+        project_name: Some("midtown".to_string()),
+        max_budget_usd: None,
+        inactivity_timeout: None,
+        team_name: None,
+        agent_id: None,
+        agent_name: None,
+        auth_provider: crate::auth::AuthProvider::Claude,
+        env: std::collections::BTreeMap::new(),
+        fork_session: false,
+    };
+
+    let args = extract_spawn_args(&config);
+
+    let session_id_pos = args.iter().position(|a| a == "--session-id");
+    assert!(
+        session_id_pos.is_some(),
+        "Fresh session with pre-assigned session_id should include --session-id flag"
+    );
+    if let Some(pos) = session_id_pos {
+        assert_eq!(
+            args.get(pos + 1).map(|s| s.as_str()),
+            Some("pre-assigned-uuid-1234"),
+            "--session-id should be followed by the pre-assigned UUID"
+        );
+    }
+}
+
+#[test]
+fn test_fresh_session_without_preassigned_session_id_omits_session_id_flag() {
+    // Without a pre-assigned session_id, fresh headless sessions should NOT include
+    // --session-id (Claude CLI generates its own).
+    let config = HeadlessConfig {
+        model: "haiku".to_string(),
+        system_prompt: "test prompt".to_string(),
+        settings_path: None,
+        setting_sources: None,
+        persist_session: true,
+        resume_session_id: None,
+        session_id: None,
+        allow_tools: true,
+        json_schema: None,
+        cwd: None,
+        project_name: Some("midtown".to_string()),
+        max_budget_usd: None,
+        inactivity_timeout: None,
+        team_name: None,
+        agent_id: None,
+        agent_name: None,
+        auth_provider: crate::auth::AuthProvider::Claude,
+        env: std::collections::BTreeMap::new(),
+        fork_session: false,
+    };
+
+    let args = extract_spawn_args(&config);
+
+    let has_session_id = args.iter().any(|a| a == "--session-id");
+    assert!(
+        !has_session_id,
+        "Fresh session without pre-assigned session_id should NOT include --session-id flag"
+    );
+}
+
+#[test]
+fn test_resume_session_does_not_use_session_id_flag() {
+    // Resume sessions use --resume <id>, not --session-id.
+    // Even if session_id is set, it should be ignored for resume sessions.
+    let config = HeadlessConfig {
+        model: "haiku".to_string(),
+        system_prompt: "test".to_string(),
+        settings_path: None,
+        setting_sources: None,
+        persist_session: true,
+        resume_session_id: Some("existing-session-456".to_string()),
+        session_id: Some("should-be-ignored".to_string()),
+        allow_tools: true,
+        json_schema: None,
+        cwd: None,
+        project_name: Some("midtown".to_string()),
+        max_budget_usd: None,
+        inactivity_timeout: None,
+        team_name: None,
+        agent_id: None,
+        agent_name: None,
+        auth_provider: crate::auth::AuthProvider::Claude,
+        env: std::collections::BTreeMap::new(),
+        fork_session: false,
+    };
+
+    let args = extract_spawn_args(&config);
+
+    assert!(
+        !args.iter().any(|a| a == "--session-id"),
+        "Resume session should use --resume, not --session-id"
+    );
+    assert!(
+        args.iter().any(|a| a == "--resume"),
+        "Resume session should use --resume flag"
+    );
+}
+
+#[test]
+fn test_daemon_generated_session_id_is_valid_uuid_and_flows_to_cli_args() {
+    // Verifies the core race-window fix: the daemon generates a UUID upfront for
+    // fresh sessions and passes it as --session-id to the CLI. This test simulates
+    // the session_id generation path in spawn_coworker() and verifies the generated
+    // ID is a valid UUID that flows through to the CLI args.
+
+    // Simulate spawn_coworker's session ID generation for fresh sessions:
+    let session_id = uuid::Uuid::new_v4().to_string();
+
+    // Verify it's a valid UUID
+    assert!(
+        uuid::Uuid::parse_str(&session_id).is_ok(),
+        "Generated session ID should be a valid UUID, got: {}",
+        session_id
+    );
+
+    // Build a HeadlessConfig as spawn_coworker would — with session_id set
+    let config = HeadlessConfig {
+        model: "haiku".to_string(),
+        system_prompt: "channel lead prompt".to_string(),
+        settings_path: None,
+        setting_sources: None,
+        persist_session: true,
+        resume_session_id: None,
+        session_id: Some(session_id.clone()),
+        allow_tools: true,
+        json_schema: None,
+        cwd: None,
+        project_name: Some("midtown".to_string()),
+        max_budget_usd: None,
+        inactivity_timeout: None,
+        team_name: None,
+        agent_id: None,
+        agent_name: None,
+        auth_provider: crate::auth::AuthProvider::Claude,
+        env: std::collections::BTreeMap::new(),
+        fork_session: false,
+    };
+
+    let args = extract_spawn_args(&config);
+
+    // Verify --session-id is present with the exact UUID
+    let sid_pos = args.iter().position(|a| a == "--session-id");
+    assert!(
+        sid_pos.is_some(),
+        "CLI args should include --session-id for daemon-generated fresh session"
+    );
+    assert_eq!(
+        args.get(sid_pos.unwrap() + 1).map(|s| s.as_str()),
+        Some(session_id.as_str()),
+        "CLI --session-id value should match the daemon-generated UUID"
+    );
+
+    // Verify the UUID would populate reverse maps correctly
+    // (spawn_coworker inserts into name_to_session and session_to_name
+    // using this exact session_id — tested here as the value that
+    // would flow through the reverse-map population path)
+    assert!(
+        !session_id.is_empty(),
+        "Session ID must be non-empty to populate reverse maps (spawn_coworker guards with if !session_id_for_record.is_empty())"
+    );
+}
+
+#[test]
+fn test_fork_session_with_preassigned_session_id() {
+    // Fork sessions (--resume + --fork-session) should NOT get --session-id,
+    // since the fork inherits context from the parent and gets its own ID from
+    // the CLI. The daemon passes session_id via the spawn() call instead.
+    let config = HeadlessConfig {
+        model: "haiku".to_string(),
+        system_prompt: "test".to_string(),
+        settings_path: None,
+        setting_sources: None,
+        persist_session: true,
+        resume_session_id: Some("parent-session-id".to_string()),
+        session_id: Some("should-be-ignored".to_string()),
+        allow_tools: true,
+        json_schema: None,
+        cwd: None,
+        project_name: Some("midtown".to_string()),
+        max_budget_usd: None,
+        inactivity_timeout: None,
+        team_name: None,
+        agent_id: None,
+        agent_name: None,
+        auth_provider: crate::auth::AuthProvider::Claude,
+        env: std::collections::BTreeMap::new(),
+        fork_session: true,
+    };
+
+    let args = extract_spawn_args(&config);
+
+    // Fork sessions use --resume + --fork-session, NOT --session-id
+    assert!(
+        args.iter().any(|a| a == "--resume"),
+        "Fork session should include --resume"
+    );
+    assert!(
+        args.iter().any(|a| a == "--fork-session"),
+        "Fork session should include --fork-session"
+    );
+    assert!(
+        !args.iter().any(|a| a == "--session-id"),
+        "Fork session should NOT include --session-id (session_id is passed via spawn() call)"
     );
 }

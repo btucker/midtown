@@ -346,6 +346,7 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
                 project_name: Some(state.repo_name.clone()),
                 persist_session: false,
                 resume_session_id: None,
+                session_id: None,
                 inactivity_timeout: None,
                 team_name: None,
                 agent_id: None,
