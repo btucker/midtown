@@ -34,7 +34,7 @@ pub const PR_NUDGE_COOLDOWN_SECS: u64 = 600;
 /// Hash bucket deduplication prevents duplicate reviewer assignments.
 pub const PR_REVIEW_DELAY_SECS: u64 = 45;
 
-/// How long a review assignment is valid before it can be reassigned (10 minutes).
+/// How long a review assignment is valid before it can be reassigned (30 minutes).
 /// Re-exported from github_state for use by the in-memory tracker.
 pub use crate::github_state::PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS;
 

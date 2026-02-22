@@ -177,6 +177,7 @@ fn make_dev_limit_snapshot(
         api_error_coworkers: std::collections::HashSet::new(),
         auth_error_coworkers: std::collections::HashSet::new(),
         tool_name_conflict_coworkers: std::collections::HashSet::new(),
+        coworkers_with_active_tools: std::collections::HashSet::new(),
         channel_messages: vec![],
         archived_channels: std::collections::HashSet::new(),
         daemon_logs: vec![],
