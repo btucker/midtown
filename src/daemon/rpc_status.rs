@@ -41,16 +41,6 @@ pub(super) async fn handle_status(id: RequestId, state: &DaemonState) -> Respons
         records.clone()
     };
 
-    // Build task -> PR number map from task files with explicit PR associations.
-    let task_pr_map: std::collections::HashMap<u32, u64> = crate::tasks::read_tasks()
-        .into_iter()
-        .filter_map(|task| {
-            let task_id: u32 = task.id.parse().ok()?;
-            let pr = task.pr?;
-            Some((task_id, pr))
-        })
-        .collect();
-
     // Read all persistent state in a single lock: reviewer assignments, worktree PR map,
     // rate limit, and channel lead names. This avoids acquiring the lock twice.
     let (reviewer_pr_map, worktree_pr_map, rate_limit, channel_lead_names) = {
@@ -78,6 +68,54 @@ pub(super) async fn handle_status(id: RequestId, state: &DaemonState) -> Respons
 
     // Get token usage from session manager (keyed by coworker name).
     let token_usage = state.session_manager.get_token_usage().await;
+
+    // Get cached PR data from the daemon's periodic polling (every 30s for open PRs,
+    // every 5 minutes for merged PRs). This avoids synchronous gh CLI calls that can
+    // timeout under GitHub API rate limiting.
+    //
+    // During daemon startup (before the first PR poll completes), return empty arrays
+    // rather than stale data. The first open PR poll completes within ~5 seconds, so
+    // this window is brief.
+    let (pull_requests, merged_prs) = {
+        let cache = state.pr_coworker_cache.read().unwrap();
+        if cache.pr_poll_initialized {
+            (cache.open_prs_data.clone(), cache.merged_prs_data.clone())
+        } else {
+            // PR poll hasn't completed yet - return empty arrays during startup
+            (Vec::new(), Vec::new())
+        }
+    };
+
+    // Run blocking file I/O operations in spawn_blocking.
+    // Note: get_all_tasks and read_tasks read from Claude Code task storage (local
+    // filesystem), not GitHub API, so they're fast and don't cause rate limit timeouts.
+    let (tasks, recent_activity, task_pr_map) = match tokio::task::spawn_blocking(move || {
+        let tasks = get_all_tasks();
+        let recent_activity = get_recent_channel_activity();
+        // Build task -> PR number map from task files with explicit PR associations.
+        let task_pr_map: std::collections::HashMap<u32, u64> = crate::tasks::read_tasks()
+            .into_iter()
+            .filter_map(|task| {
+                let task_id: u32 = task.id.parse().ok()?;
+                let pr = task.pr?;
+                Some((task_id, pr))
+            })
+            .collect();
+        (tasks, recent_activity, task_pr_map)
+    })
+    .await
+    {
+        Ok(result) => result,
+        Err(e) => {
+            error!("spawn_blocking panic in status handler: {}", e);
+            return Response::error(id, RpcError::new(-32603, "Internal error".to_string()));
+        }
+    };
+
+    let pending_count = tasks
+        .iter()
+        .filter(|t| t.get("status").and_then(|s| s.as_str()) == Some("pending"))
+        .count();
 
     // Get coworkers with their details, looking up current task from task storage.
     // Exclude the lead session (named after the repo) — it is the project Lead,
@@ -119,45 +157,6 @@ pub(super) async fn handle_status(id: RequestId, state: &DaemonState) -> Respons
             })
         })
         .collect();
-
-    // Get cached PR data from the daemon's periodic polling (every 30s for open PRs,
-    // every 5 minutes for merged PRs). This avoids synchronous gh CLI calls that can
-    // timeout under GitHub API rate limiting.
-    //
-    // During daemon startup (before the first PR poll completes), return empty arrays
-    // rather than stale data. The first open PR poll completes within ~5 seconds, so
-    // this window is brief.
-    let (pull_requests, merged_prs) = {
-        let cache = state.pr_coworker_cache.read().unwrap();
-        if cache.pr_poll_initialized {
-            (cache.open_prs_data.clone(), cache.merged_prs_data.clone())
-        } else {
-            // PR poll hasn't completed yet - return empty arrays during startup
-            (Vec::new(), Vec::new())
-        }
-    };
-
-    // Run blocking file I/O operations in spawn_blocking.
-    // Note: get_all_tasks reads from Claude Code task storage (local filesystem),
-    // not GitHub API, so it's fast and doesn't cause rate limit timeouts.
-    let (tasks, recent_activity) = match tokio::task::spawn_blocking(move || {
-        let tasks = get_all_tasks();
-        let recent_activity = get_recent_channel_activity();
-        (tasks, recent_activity)
-    })
-    .await
-    {
-        Ok(result) => result,
-        Err(e) => {
-            error!("spawn_blocking panic in status handler: {}", e);
-            return Response::error(id, RpcError::new(-32603, "Internal error".to_string()));
-        }
-    };
-
-    let pending_count = tasks
-        .iter()
-        .filter(|t| t.get("status").and_then(|s| s.as_str()) == Some("pending"))
-        .count();
 
     let (coworkers, active_coworker_count) =
         tag_channel_leads_and_count(coworkers, &channel_lead_names);

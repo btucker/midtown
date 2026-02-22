@@ -89,7 +89,8 @@ pub struct CoworkerInfo {
     #[serde(default)]
     pub output_tokens: u64,
     /// Live workflow phase from coworker_records (e.g., "review", "dev", "PR").
-    /// Takes priority over `current_task` for activity display.
+    /// Takes priority over `current_task` for activity display, except "idle"
+    /// and "done" which always show as idle regardless of `current_task`.
     #[serde(default)]
     pub phase: Option<String>,
     /// PR number currently associated with this coworker's activity.
@@ -189,7 +190,8 @@ fn coworker_activity(cw: &CoworkerInfo) -> String {
             None => "debugging".to_string(),
         },
         Some("claim") => "claiming task".to_string(),
-        Some("idle") | Some("done") | None => match cw.current_task.as_deref() {
+        Some("done") | Some("idle") => "idle".to_string(),
+        None => match cw.current_task.as_deref() {
             Some(task) => format!("working on: {}", task),
             None => "idle".to_string(),
         },

@@ -892,9 +892,10 @@ fn test_activity_claim() {
 
 #[test]
 fn test_activity_idle_with_task() {
+    // "idle" phase always shows idle, even when current_task is set
     assert_eq!(
         coworker_activity(&make_cw(Some("idle"), None, Some("!3 Task"))),
-        "working on: !3 Task"
+        "idle"
     );
 }
 
@@ -902,6 +903,15 @@ fn test_activity_idle_with_task() {
 fn test_activity_done_without_task() {
     assert_eq!(
         coworker_activity(&make_cw(Some("done"), None, None)),
+        "idle"
+    );
+}
+
+#[test]
+fn test_activity_done_with_task() {
+    // "done" phase always shows idle, even when current_task is set
+    assert_eq!(
+        coworker_activity(&make_cw(Some("done"), None, Some("!42 Fix bug"))),
         "idle"
     );
 }
