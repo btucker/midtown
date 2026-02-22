@@ -88,6 +88,14 @@ pub struct CoworkerInfo {
     /// Cumulative output tokens generated this session (0 if not yet reported).
     #[serde(default)]
     pub output_tokens: u64,
+    /// Live workflow phase from coworker_records (e.g., "review", "dev", "PR").
+    /// Takes priority over `current_task` for activity display, except "idle"
+    /// and "done" which always show as idle regardless of `current_task`.
+    #[serde(default)]
+    pub phase: Option<String>,
+    /// PR number currently associated with this coworker's activity.
+    #[serde(default)]
+    pub pr_number: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -152,6 +160,48 @@ fn token_suffix(input: u64, output: u64) -> String {
     }
 }
 
+/// Build a human-readable activity string for a coworker.
+///
+/// Uses the live `phase` field (from coworker_records) when available,
+/// falling back to `current_task` (task file ownership) for backward compat.
+fn coworker_activity(cw: &CoworkerInfo) -> String {
+    match cw.phase.as_deref() {
+        Some("review") => match cw.pr_number {
+            Some(pr) => format!("reviewing PR #{}", pr),
+            None => "reviewing".to_string(),
+        },
+        Some("PR") => match cw.pr_number {
+            Some(pr) => format!("PR open #{}", pr),
+            None => match cw.current_task.as_deref() {
+                Some(task) => format!("opening PR: {}", task),
+                None => "opening PR".to_string(),
+            },
+        },
+        Some("dev") => match cw.current_task.as_deref() {
+            Some(task) => format!("developing: {}", task),
+            None => "developing".to_string(),
+        },
+        Some("test") => match cw.current_task.as_deref() {
+            Some(task) => format!("testing: {}", task),
+            None => "testing".to_string(),
+        },
+        Some("debug") => match cw.current_task.as_deref() {
+            Some(task) => format!("debugging: {}", task),
+            None => "debugging".to_string(),
+        },
+        Some("claim") => "claiming task".to_string(),
+        Some("done") | Some("idle") => "idle".to_string(),
+        None => match cw.current_task.as_deref() {
+            Some(task) => format!("working on: {}", task),
+            None => "idle".to_string(),
+        },
+        Some(other) => match cw.current_task.as_deref() {
+            Some(task) => format!("{}: {}", other, task),
+            None => other.to_string(),
+        },
+    }
+}
+
 impl Response {
     #[allow(dead_code)]
     pub fn message(msg: impl Into<String>) -> Self {
@@ -187,10 +237,7 @@ impl Response {
                     };
                     out.push_str(&coworker_header);
                     for cw in full.coworkers.iter().filter(|cw| !cw.is_channel_lead) {
-                        let task_desc = match &cw.current_task {
-                            Some(task) => format!("working on: {}", task),
-                            None => "idle".to_string(),
-                        };
+                        let task_desc = coworker_activity(cw);
                         // Format provider:profile (e.g., "claude: ben@quotably.com")
                         let auth_info = match (&cw.provider, &cw.profile) {
                             (Some(provider), Some(profile)) => {
@@ -217,10 +264,7 @@ impl Response {
                             lead_sessions.len()
                         ));
                         for cw in &lead_sessions {
-                            let task_desc = match &cw.current_task {
-                                Some(task) => format!("working on: {}", task),
-                                None => "idle".to_string(),
-                            };
+                            let task_desc = coworker_activity(cw);
                             let auth_info = match (&cw.provider, &cw.profile) {
                                 (Some(provider), Some(profile)) => {
                                     format!(" ({}: {})", provider, profile)

@@ -169,6 +169,8 @@ fn test_coworkers_response_display_includes_provider_and_profile() {
                 is_channel_lead: false,
                 input_tokens: 0,
                 output_tokens: 0,
+                phase: None,
+                pr_number: None,
             },
             CoworkerInfo {
                 name: "park".to_string(),
@@ -180,6 +182,8 @@ fn test_coworkers_response_display_includes_provider_and_profile() {
                 is_channel_lead: false,
                 input_tokens: 0,
                 output_tokens: 0,
+                phase: None,
+                pr_number: None,
             },
         ],
     };
@@ -215,6 +219,8 @@ fn test_status_pretty_excludes_channel_leads_from_count() {
                     is_channel_lead: false,
                     input_tokens: 0,
                     output_tokens: 0,
+                    phase: None,
+                    pr_number: None,
                 },
                 CoworkerInfo {
                     name: "tui".to_string(),
@@ -226,6 +232,8 @@ fn test_status_pretty_excludes_channel_leads_from_count() {
                     is_channel_lead: true,
                     input_tokens: 0,
                     output_tokens: 0,
+                    phase: None,
+                    pr_number: None,
                 },
             ],
             tasks: vec![],
@@ -365,6 +373,8 @@ fn test_status_pretty_format() {
                     is_channel_lead: false,
                     input_tokens: 0,
                     output_tokens: 0,
+                    phase: None,
+                    pr_number: None,
                 },
                 CoworkerInfo {
                     name: "park".to_string(),
@@ -376,6 +386,8 @@ fn test_status_pretty_format() {
                     is_channel_lead: false,
                     input_tokens: 0,
                     output_tokens: 0,
+                    phase: None,
+                    pr_number: None,
                 },
             ],
             tasks: vec![TaskInfo {
@@ -424,6 +436,8 @@ fn test_coworkers_pretty_excludes_channel_leads() {
                 is_channel_lead: false,
                 input_tokens: 0,
                 output_tokens: 0,
+                phase: None,
+                pr_number: None,
             },
             CoworkerInfo {
                 name: "tui".to_string(),
@@ -435,6 +449,8 @@ fn test_coworkers_pretty_excludes_channel_leads() {
                 is_channel_lead: true,
                 input_tokens: 0,
                 output_tokens: 0,
+                phase: None,
+                pr_number: None,
             },
         ],
     };
@@ -476,6 +492,8 @@ fn test_status_pretty_shows_lead_sessions() {
                     is_channel_lead: false,
                     input_tokens: 0,
                     output_tokens: 0,
+                    phase: None,
+                    pr_number: None,
                 },
                 CoworkerInfo {
                     name: "cli".to_string(),
@@ -487,6 +505,8 @@ fn test_status_pretty_shows_lead_sessions() {
                     is_channel_lead: true,
                     input_tokens: 0,
                     output_tokens: 0,
+                    phase: None,
+                    pr_number: None,
                 },
             ],
             tasks: vec![],
@@ -536,6 +556,8 @@ fn test_coworkers_pretty_empty_when_only_channel_leads() {
             is_channel_lead: true,
             input_tokens: 0,
             output_tokens: 0,
+            phase: None,
+            pr_number: None,
         }],
     };
 
@@ -595,6 +617,8 @@ fn test_token_display_in_status() {
                 is_channel_lead: false,
                 input_tokens: 12_300,
                 output_tokens: 4_100,
+                phase: None,
+                pr_number: None,
             }],
             tasks: vec![],
             pull_requests: vec![],
@@ -607,5 +631,308 @@ fn test_token_display_in_status() {
         pretty.contains("[12.3k/4.1k]"),
         "Expected token counts in output, got: {}",
         pretty
+    );
+}
+
+// Tests for phase-based activity display (bug: midtown status showed task ownership,
+// not actual live phase — e.g., showed !1701 when coworker was reviewing PR #1421)
+
+#[test]
+fn test_status_shows_reviewing_pr_when_phase_is_review() {
+    let response = Response::Status(StatusResponse {
+        daemon_running: true,
+        active_coworkers: 1,
+        max_coworkers: None,
+        pending_tasks: 0,
+        socket_path: "/tmp/midtown.sock".to_string(),
+        lead_session: None,
+        lead_session_active: None,
+        full_status: Some(FullStatusInfo {
+            coworkers: vec![CoworkerInfo {
+                name: "madison".to_string(),
+                status: "running".to_string(),
+                current_task: Some("!1701 Fix old task".to_string()),
+                started_at: None,
+                provider: None,
+                profile: None,
+                is_channel_lead: false,
+                input_tokens: 0,
+                output_tokens: 0,
+                phase: Some("review".to_string()),
+                pr_number: Some(1421),
+            }],
+            tasks: vec![],
+            pull_requests: vec![],
+            recent_activity: vec![],
+        }),
+    });
+
+    let pretty = response.to_pretty();
+    assert!(
+        pretty.contains("reviewing PR #1421"),
+        "Should show 'reviewing PR #1421' when phase=review and pr_number=1421, got: {}",
+        pretty
+    );
+    assert!(
+        !pretty.contains("working on"),
+        "Should not show 'working on' when phase is set, got: {}",
+        pretty
+    );
+}
+
+#[test]
+fn test_status_shows_phase_without_pr() {
+    let response = Response::Status(StatusResponse {
+        daemon_running: true,
+        active_coworkers: 1,
+        max_coworkers: None,
+        pending_tasks: 0,
+        socket_path: "/tmp/midtown.sock".to_string(),
+        lead_session: None,
+        lead_session_active: None,
+        full_status: Some(FullStatusInfo {
+            coworkers: vec![CoworkerInfo {
+                name: "amsterdam".to_string(),
+                status: "running".to_string(),
+                current_task: Some("!1705 Fix midtown status".to_string()),
+                started_at: None,
+                provider: None,
+                profile: None,
+                is_channel_lead: false,
+                input_tokens: 0,
+                output_tokens: 0,
+                phase: Some("dev".to_string()),
+                pr_number: None,
+            }],
+            tasks: vec![],
+            pull_requests: vec![],
+            recent_activity: vec![],
+        }),
+    });
+
+    let pretty = response.to_pretty();
+    assert!(
+        pretty.contains("developing"),
+        "Should show 'developing' when phase=dev, got: {}",
+        pretty
+    );
+}
+
+#[test]
+fn test_status_falls_back_to_working_on_when_no_phase() {
+    let response = Response::Status(StatusResponse {
+        daemon_running: true,
+        active_coworkers: 1,
+        max_coworkers: None,
+        pending_tasks: 0,
+        socket_path: "/tmp/midtown.sock".to_string(),
+        lead_session: None,
+        lead_session_active: None,
+        full_status: Some(FullStatusInfo {
+            coworkers: vec![CoworkerInfo {
+                name: "amsterdam".to_string(),
+                status: "running".to_string(),
+                current_task: Some("!1705 Fix midtown status".to_string()),
+                started_at: None,
+                provider: None,
+                profile: None,
+                is_channel_lead: false,
+                input_tokens: 0,
+                output_tokens: 0,
+                phase: None,
+                pr_number: None,
+            }],
+            tasks: vec![],
+            pull_requests: vec![],
+            recent_activity: vec![],
+        }),
+    });
+
+    let pretty = response.to_pretty();
+    assert!(
+        pretty.contains("working on: !1705 Fix midtown status"),
+        "Should fall back to 'working on' when no phase, got: {}",
+        pretty
+    );
+}
+
+#[test]
+fn test_phase_display_in_coworker_info_deserialization() {
+    // Ensure new fields deserialize from JSON (daemon RPC response)
+    let json = r#"{"name": "madison", "status": "running", "current_task": "!1701 old", "started_at": null, "phase": "review", "pr_number": 1421}"#;
+    let cw: CoworkerInfo = serde_json::from_str(json).unwrap();
+    assert_eq!(cw.phase, Some("review".to_string()));
+    assert_eq!(cw.pr_number, Some(1421));
+}
+
+#[test]
+fn test_phase_defaults_to_none_when_absent() {
+    // Ensure old JSON without phase/pr_number still parses fine (backward compat)
+    let json =
+        r#"{"name": "madison", "status": "running", "current_task": null, "started_at": null}"#;
+    let cw: CoworkerInfo = serde_json::from_str(json).unwrap();
+    assert_eq!(cw.phase, None);
+    assert_eq!(cw.pr_number, None);
+}
+
+// ─── Direct unit tests for coworker_activity() ───────────────────────
+// Each branch of the match is tested with a minimal CoworkerInfo struct.
+
+fn make_cw(phase: Option<&str>, pr: Option<u64>, task: Option<&str>) -> CoworkerInfo {
+    CoworkerInfo {
+        name: "test".to_string(),
+        status: "running".to_string(),
+        current_task: task.map(|s| s.to_string()),
+        started_at: None,
+        provider: None,
+        profile: None,
+        is_channel_lead: false,
+        input_tokens: 0,
+        output_tokens: 0,
+        phase: phase.map(|s| s.to_string()),
+        pr_number: pr,
+    }
+}
+
+#[test]
+fn test_activity_review_with_pr() {
+    assert_eq!(
+        coworker_activity(&make_cw(Some("review"), Some(42), None)),
+        "reviewing PR #42"
+    );
+}
+
+#[test]
+fn test_activity_review_without_pr() {
+    assert_eq!(
+        coworker_activity(&make_cw(Some("review"), None, None)),
+        "reviewing"
+    );
+}
+
+#[test]
+fn test_activity_pr_with_pr_number() {
+    assert_eq!(
+        coworker_activity(&make_cw(Some("PR"), Some(99), None)),
+        "PR open #99"
+    );
+}
+
+#[test]
+fn test_activity_pr_without_pr_with_task() {
+    assert_eq!(
+        coworker_activity(&make_cw(Some("PR"), None, Some("!42 Auth fix"))),
+        "opening PR: !42 Auth fix"
+    );
+}
+
+#[test]
+fn test_activity_pr_without_pr_without_task() {
+    assert_eq!(
+        coworker_activity(&make_cw(Some("PR"), None, None)),
+        "opening PR"
+    );
+}
+
+#[test]
+fn test_activity_dev_with_task() {
+    assert_eq!(
+        coworker_activity(&make_cw(Some("dev"), None, Some("!10 Feature"))),
+        "developing: !10 Feature"
+    );
+}
+
+#[test]
+fn test_activity_dev_without_task() {
+    assert_eq!(
+        coworker_activity(&make_cw(Some("dev"), None, None)),
+        "developing"
+    );
+}
+
+#[test]
+fn test_activity_test_with_task() {
+    assert_eq!(
+        coworker_activity(&make_cw(Some("test"), None, Some("!5 Tests"))),
+        "testing: !5 Tests"
+    );
+}
+
+#[test]
+fn test_activity_test_without_task() {
+    assert_eq!(
+        coworker_activity(&make_cw(Some("test"), None, None)),
+        "testing"
+    );
+}
+
+#[test]
+fn test_activity_debug_with_task() {
+    assert_eq!(
+        coworker_activity(&make_cw(Some("debug"), None, Some("!7 Bug"))),
+        "debugging: !7 Bug"
+    );
+}
+
+#[test]
+fn test_activity_debug_without_task() {
+    assert_eq!(
+        coworker_activity(&make_cw(Some("debug"), None, None)),
+        "debugging"
+    );
+}
+
+#[test]
+fn test_activity_claim() {
+    assert_eq!(
+        coworker_activity(&make_cw(Some("claim"), None, Some("!1 Anything"))),
+        "claiming task"
+    );
+}
+
+#[test]
+fn test_activity_idle_with_task() {
+    // "idle" phase always shows idle, even when current_task is set
+    assert_eq!(
+        coworker_activity(&make_cw(Some("idle"), None, Some("!3 Task"))),
+        "idle"
+    );
+}
+
+#[test]
+fn test_activity_done_without_task() {
+    assert_eq!(
+        coworker_activity(&make_cw(Some("done"), None, None)),
+        "idle"
+    );
+}
+
+#[test]
+fn test_activity_done_with_task() {
+    // "done" phase always shows idle, even when current_task is set
+    assert_eq!(
+        coworker_activity(&make_cw(Some("done"), None, Some("!42 Fix bug"))),
+        "idle"
+    );
+}
+
+#[test]
+fn test_activity_no_phase_no_task() {
+    assert_eq!(coworker_activity(&make_cw(None, None, None)), "idle");
+}
+
+#[test]
+fn test_activity_unknown_phase_with_task() {
+    assert_eq!(
+        coworker_activity(&make_cw(Some("custom"), None, Some("!9 Work"))),
+        "custom: !9 Work"
+    );
+}
+
+#[test]
+fn test_activity_unknown_phase_without_task() {
+    assert_eq!(
+        coworker_activity(&make_cw(Some("custom"), None, None)),
+        "custom"
     );
 }
