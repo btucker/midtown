@@ -566,6 +566,12 @@ pub struct ExecutionSection {
     /// Provider used for reviewer sessions.
     #[serde(default)]
     pub reviewer_provider: Option<crate::auth::AuthProvider>,
+    /// Review execution mode:
+    /// - local: spawn local reviewer coworkers
+    /// - github_app: rely on GitHub App/formal reviews only (no local reviewer spawns)
+    /// - both: allow both local reviewers and GitHub App/formal reviews
+    #[serde(default)]
+    pub review_mode: Option<ReviewMode>,
     /// Provider used for channel lead sessions.
     #[serde(default)]
     pub channel_lead_provider: Option<crate::auth::AuthProvider>,
@@ -588,6 +594,7 @@ impl ExecutionSection {
             project_lead_provider: other.project_lead_provider.or(self.project_lead_provider),
             coworker_provider: other.coworker_provider.or(self.coworker_provider),
             reviewer_provider: other.reviewer_provider.or(self.reviewer_provider),
+            review_mode: other.review_mode.or(self.review_mode),
             channel_lead_provider: other.channel_lead_provider.or(self.channel_lead_provider),
             specialized_provider: other.specialized_provider.or(self.specialized_provider),
             architect_provider: other.architect_provider.or(self.architect_provider),
@@ -596,6 +603,19 @@ impl ExecutionSection {
                 .or(self.headless_execute_provider),
         }
     }
+}
+
+/// How PR reviews are performed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewMode {
+    /// Spawn local reviewer coworkers.
+    #[default]
+    Local,
+    /// Use GitHub App/formal reviews only.
+    GithubApp,
+    /// Allow both local reviewer coworkers and GitHub App/formal reviews.
+    Both,
 }
 
 /// Runtime role used to resolve the effective execution provider.
@@ -848,6 +868,8 @@ impl GlobalConfig {
 # coworker_provider = "claude"
 # Default provider for reviewers
 # reviewer_provider = "claude"
+# Review execution mode: "local", "github_app", or "both"
+# review_mode = "local"
 # Optional override for channel leads (defaults to lead_provider when unset)
 # channel_lead_provider = "claude"
 # Default provider for specialized workers (architect/headless.execute)
@@ -942,6 +964,15 @@ pub fn get_project_execution_config(project_name: &str) -> ExecutionSection {
         Some(proj) => global.execution.merge(&proj.execution),
         None => global.execution,
     }
+}
+
+/// Get the effective review mode for a project.
+///
+/// Defaults to `ReviewMode::Local` when not configured.
+pub fn get_review_mode_for_repo(project_name: &str) -> ReviewMode {
+    get_project_execution_config(project_name)
+        .review_mode
+        .unwrap_or(ReviewMode::Local)
 }
 
 /// Resolve the effective execution provider for a role in a project.
@@ -2324,6 +2355,7 @@ webhook_port = 47024
             project_lead_provider: None,
             coworker_provider: Some(crate::auth::AuthProvider::Claude),
             reviewer_provider: None,
+            review_mode: Some(ReviewMode::Local),
             channel_lead_provider: None,
             specialized_provider: None,
             architect_provider: None,
@@ -2335,6 +2367,7 @@ webhook_port = 47024
             project_lead_provider: Some(crate::auth::AuthProvider::Zai),
             coworker_provider: None,
             reviewer_provider: Some(crate::auth::AuthProvider::Codex),
+            review_mode: Some(ReviewMode::GithubApp),
             channel_lead_provider: None,
             specialized_provider: None,
             architect_provider: None,
@@ -2356,6 +2389,7 @@ webhook_port = 47024
             merged.reviewer_provider,
             Some(crate::auth::AuthProvider::Codex)
         );
+        assert_eq!(merged.review_mode, Some(ReviewMode::GithubApp));
     }
 
     #[test]
@@ -2366,6 +2400,7 @@ lead_provider = "codex"
 project_lead_provider = "zai"
 coworker_provider = "zai"
 reviewer_provider = "claude"
+review_mode = "both"
 specialized_provider = "codex"
 architect_provider = "zai"
 "#;
@@ -2386,6 +2421,7 @@ architect_provider = "zai"
             config.execution.reviewer_provider,
             Some(crate::auth::AuthProvider::Claude)
         );
+        assert_eq!(config.execution.review_mode, Some(ReviewMode::Both));
         assert_eq!(
             config.execution.specialized_provider,
             Some(crate::auth::AuthProvider::Codex)
@@ -2403,6 +2439,7 @@ architect_provider = "zai"
             project_lead_provider: None,
             coworker_provider: None,
             reviewer_provider: None,
+            review_mode: None,
             channel_lead_provider: None,
             specialized_provider: Some(crate::auth::AuthProvider::Codex),
             architect_provider: Some(crate::auth::AuthProvider::Zai),

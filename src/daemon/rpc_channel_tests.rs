@@ -156,6 +156,41 @@ async fn test_user_message_queues_headed_lead_nudge() {
 }
 
 #[tokio::test]
+async fn test_user_at_project_name_queues_single_nudge() {
+    let (state, _tmp, _guard) = make_test_state("midtown-test-rpc-channel-user-at-project");
+    let adapter_id = "test-adapter-user-at-project";
+    state
+        .headed_register(
+            &state.repo_name,
+            adapter_id,
+            crate::auth::AuthProvider::Claude,
+        )
+        .await
+        .expect("register headed adapter");
+
+    let msg = format!("@{} please ack", state.repo_name);
+    let response = handle_channel_post(1_i64.into(), "user", &msg, None, None, &state).await;
+    assert!(response.error.is_none(), "channel.post should succeed");
+
+    let (messages, _capture) = state
+        .headed_poll(&state.repo_name, adapter_id, 0, 10)
+        .await
+        .expect("poll headed queue");
+
+    assert_eq!(
+        messages.len(),
+        1,
+        "user @project message should nudge lead exactly once"
+    );
+    assert_eq!(messages[0].kind, "nudge_text");
+    assert!(
+        messages[0].text.starts_with("user ("),
+        "expected user-message nudge format, got: {}",
+        messages[0].text
+    );
+}
+
+#[tokio::test]
 async fn test_coworker_at_lead_queues_headed_lead_nudge() {
     let (state, _tmp, _guard) = make_test_state("midtown-test-rpc-channel-queue-coworker");
     let adapter_id = "test-adapter-coworker";

@@ -5,6 +5,7 @@
 //! Health state is read from structured `ProcessHealth` data (populated
 //! by the session management layer from headless stream events).
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -246,6 +247,57 @@ pub(super) async fn check_and_restart_stuck_coworkers(
 
     let mut effects = Vec::new();
     for restart in restarts {
+        let (allowed, prior_restarts) = state.record_stuck_task_restart_attempt(
+            &restart.task_id,
+            MAX_TASK_RESTARTS,
+            TASK_RESTART_WINDOW,
+        );
+        if !allowed {
+            warn!(
+                "Task !{} exceeded stuck restart budget ({}/{}) in {}s window — suppressing auto-restart",
+                restart.task_id,
+                prior_restarts,
+                MAX_TASK_RESTARTS,
+                TASK_RESTART_WINDOW.as_secs()
+            );
+
+            let escalation_key = format!("task:{}", restart.task_id);
+            let should_escalate = {
+                let cooldowns = state.cooldowns.lock().unwrap();
+                cooldowns.check(
+                    "stuck_task_restart_escalation",
+                    &escalation_key,
+                    TASK_RESTART_WINDOW,
+                )
+            };
+            if should_escalate {
+                effects.push(Effect::PostToChannel {
+                    sender: "midtown".to_string(),
+                    message: format!(
+                        "⚠️ Task !{} has been stuck-restarted {} times in {} minutes. Auto-restarts paused; manual intervention required.",
+                        restart.task_id,
+                        MAX_TASK_RESTARTS,
+                        TASK_RESTART_WINDOW.as_secs() / 60
+                    ),
+                    channel: Some(OPS_CHANNEL.to_string()),
+                });
+                effects.push(Effect::nudge_channel_lead(
+                    &snap.repo_name,
+                    format!(
+                        "Task !{} has hit the stuck restart safety cap ({} in {} minutes). Please investigate manually.",
+                        restart.task_id,
+                        MAX_TASK_RESTARTS,
+                        TASK_RESTART_WINDOW.as_secs() / 60
+                    ),
+                ));
+                effects.push(Effect::RecordCooldown {
+                    category: "stuck_task_restart_escalation".to_string(),
+                    key: escalation_key,
+                });
+            }
+            continue;
+        }
+
         info!(
             "Coworker {} no events for {}s — restarting for task !{} (session: {:?})",
             restart.name,
@@ -817,13 +869,25 @@ pub fn maybe_nudge_usage_limit_expiry(snap: &snapshot::WorldSnapshot) -> Vec<Eff
         return vec![];
     }
 
-    if snap.running_coworkers.is_empty() {
-        return vec![];
+    let task_owner_names: HashSet<String> = snap
+        .in_progress_tasks
+        .iter()
+        .map(|(_, _, owner)| owner.to_lowercase())
+        .collect();
+    let eligible_workers: Vec<&crate::coworker::Coworker> = snap
+        .running_coworkers
+        .iter()
+        .filter(|cw| task_owner_names.contains(&cw.name.to_lowercase()))
+        .collect();
+
+    if eligible_workers.is_empty() {
+        info!("Usage limit expired — no running task workers to nudge");
+        return vec![Effect::ClearUsageLimitNudge];
     }
 
     info!(
-        "Usage limit expired — nudging {} running coworkers",
-        snap.running_coworkers.len()
+        "Usage limit expired — nudging {} running task workers",
+        eligible_workers.len()
     );
 
     let mut effects = vec![
@@ -831,15 +895,14 @@ pub fn maybe_nudge_usage_limit_expiry(snap: &snapshot::WorldSnapshot) -> Vec<Eff
         Effect::PostToChannel {
             sender: "midtown".to_string(),
             message: format!(
-                "🔔 Usage limit expired — nudging {} coworkers to resume work",
-                snap.running_coworkers.len()
+                "🔔 Usage limit expired — nudging {} task workers to resume work",
+                eligible_workers.len()
             ),
             channel: Some(OPS_CHANNEL.to_string()),
         },
     ];
 
-    // Only nudge Running coworkers — Stopping/Starting coworkers have no active session.
-    for cw in &snap.running_coworkers {
+    for cw in &eligible_workers {
         let session_id = snap
             .name_session_map
             .get(&cw.name.to_lowercase())
@@ -1023,15 +1086,14 @@ pub(super) fn check_and_nudge_api_errors(
     effects
 }
 
-/// Detect coworkers with tool name conflicts and shut them down for fresh restart.
+/// Detect coworkers with unrecoverable session errors and restart them fresh.
 ///
-/// "Tool names must be unique" is an unrecoverable API error caused by duplicate
-/// tool registrations (e.g., from session resume loading saved tools + plugin
-/// re-registration). The affected session loops on 400 errors indefinitely.
+/// The `has_tool_name_conflict` flag currently covers unrecoverable conditions:
+/// - "Tool names must be unique" registration conflicts.
+/// - Stale Codex resume/session IDs (e.g., "no rollout found for thread id ...").
 ///
-/// The primary fix is in `headless.rs` (skip `--settings` on resume), but this
-/// serves as defense in depth: detect the error via stderr, shut down the session,
-/// and let normal task dispatch respawn it.
+/// Generic API retries cannot fix these. We clear the saved session ID first, then
+/// shut down and restart fresh.
 pub fn check_and_restart_tool_name_conflicts(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
     if snap.tool_name_conflict_coworkers.is_empty() {
         return vec![];
@@ -1041,18 +1103,44 @@ pub fn check_and_restart_tool_name_conflicts(snap: &snapshot::WorldSnapshot) -> 
 
     for name in &snap.tool_name_conflict_coworkers {
         warn!(
-            "Coworker {} has tool name conflict — shutting down for fresh restart",
+            "Coworker {} has unrecoverable session error — restarting with fresh session",
             name
         );
 
-        effects.push(Effect::ShutdownCoworker {
-            name: name.clone(),
-            message: String::new(),
-        });
+        effects.push(Effect::ClearSavedSessionId { name: name.clone() });
+        let session_id = snap
+            .name_session_map
+            .iter()
+            .find(|(n, _)| n.eq_ignore_ascii_case(name))
+            .map(|(_, sid)| sid.clone());
+        if let Some(session_id) = session_id {
+            effects.push(Effect::ShutdownSession {
+                session_id,
+                reason: "unrecoverable session error".to_string(),
+            });
+        } else {
+            effects.push(Effect::ShutdownCoworker {
+                name: name.clone(),
+                message: String::new(),
+            });
+        }
+        // Restart the project lead immediately (don't wait for ensure_lead_alive
+        // cooldown), so the user-facing lead recovers within the same tick.
+        if name.eq_ignore_ascii_case(&snap.repo_name) {
+            let mut config = crate::launch::LaunchConfig::lead(&snap.repo_name, None);
+            config.model =
+                super::helpers::default_model_for_provider_role(config.auth_provider, &config.role)
+                    .to_string();
+            let lead_wt = crate::paths::lead_worktree_path(&snap.repo_name);
+            if lead_wt.exists() {
+                config.working_dir = Some(lead_wt);
+            }
+            effects.push(Effect::SpawnCoworker(config));
+        }
         effects.push(Effect::PostToChannel {
             sender: "midtown".to_string(),
             message: format!(
-                "🔧 Coworker {} hit 'Tool names must be unique' error — restarting with fresh session",
+                "🔧 Coworker {} hit an unrecoverable session error — clearing saved session ID and restarting fresh",
                 name
             ),
             channel: Some(OPS_CHANNEL.to_string()),

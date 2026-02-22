@@ -168,6 +168,11 @@ Each session role resolves its AI provider via `get_execution_provider_for_role(
 - **Reviewer**: `execution.reviewer_provider` → `Claude` (default)
 - **Architect / HeadlessExecute**: role-specific provider → `execution.specialized_provider` → `Claude` (default)
 
+Review source strategy is controlled separately by `execution.review_mode`:
+- `local`: daemon spawns local reviewer coworkers
+- `github_app`: daemon does not spawn local reviewers, and waits for formal GitHub reviews
+- `both`: local reviewer spawning remains enabled and formal GitHub reviews also count
+
 This means `lead_provider` acts as a shared fallback for both the Project Lead and Channel Leads. Setting `project_lead_provider` overrides only the Project Lead's provider without affecting channel leads, and vice versa for `channel_lead_provider`. The resolved provider is stored in `LaunchConfig.auth_provider` and is also used to derive the default model via `default_model_for_provider_role()`.
 
 ## Channel Leads

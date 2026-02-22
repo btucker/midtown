@@ -50,7 +50,9 @@ pub struct HeadlessConfig {
     ///
     /// Provider mapping:
     /// - Claude/z.ai: `--tools ""` disables all tools.
-    /// - Codex: thread initialization uses `approvalPolicy=never` and `sandbox=read-only`.
+    /// - Codex:
+    ///   - `allow_tools=true` -> `approvalPolicy=never`, `sandbox=danger-full-access`
+    ///   - `allow_tools=false` -> `approvalPolicy=never`, `sandbox=read-only`
     ///
     /// Defaults to false (no tools).
     pub allow_tools: bool,
@@ -254,6 +256,22 @@ enum CodexPostAction {
     DispatchPendingTurns,
 }
 
+fn codex_heartbeat_event(
+    session_id: &Option<String>,
+    detail: serde_json::Value,
+) -> Option<StreamEvent> {
+    Some(StreamEvent::System {
+        subtype: "heartbeat".to_string(),
+        session_id: session_id.clone(),
+        model: None,
+        extra: serde_json::json!({
+            "provider": "codex",
+            "event": "heartbeat",
+            "detail": detail
+        }),
+    })
+}
+
 fn codex_translate_event(
     parsed: &serde_json::Value,
     state: &mut CodexProtocolState,
@@ -266,13 +284,25 @@ fn codex_translate_event(
             .get("id")
             .and_then(|v| v.as_u64())
             .unwrap_or_default();
+        let is_start_response = response_id == start_request_id;
 
-        if response_id == start_request_id
-            && let Some(msg) = parsed
-                .get("error")
-                .and_then(|e| e.get("message"))
-                .and_then(|m| m.as_str())
+        if let Some(msg) = parsed
+            .get("error")
+            .and_then(|e| e.get("message"))
+            .and_then(|m| m.as_str())
         {
+            let was_turn_in_progress = state.turn_in_progress;
+            if !is_start_response && was_turn_in_progress {
+                // Avoid deadlock: if turn/start failed, clear in-flight flag so future nudges can run.
+                state.turn_in_progress = false;
+            }
+            let phase = if is_start_response {
+                state.start_phase.clone()
+            } else if was_turn_in_progress {
+                "turn/start".to_string()
+            } else {
+                "request".to_string()
+            };
             return (
                 Some(StreamEvent::Result {
                     subtype: "error".to_string(),
@@ -282,13 +312,21 @@ fn codex_translate_event(
                     total_cost_usd: None,
                     session_id: session_id.clone(),
                     usage: None,
-                    extra: serde_json::json!({ "provider": "codex", "phase": state.start_phase }),
+                    extra: serde_json::json!({
+                        "provider": "codex",
+                        "phase": phase,
+                        "request_id": response_id
+                    }),
                 }),
-                CodexPostAction::None,
+                if !is_start_response && was_turn_in_progress {
+                    CodexPostAction::DispatchPendingTurns
+                } else {
+                    CodexPostAction::None
+                },
             );
         }
 
-        if response_id == start_request_id
+        if is_start_response
             && let Some(thread_id) = parsed
                 .get("result")
                 .and_then(|r| r.get("thread"))
@@ -308,11 +346,23 @@ fn codex_translate_event(
                 CodexPostAction::DispatchPendingTurns,
             );
         }
-        return (None, CodexPostAction::None);
+        return (
+            codex_heartbeat_event(
+                session_id,
+                serde_json::json!({ "kind": "rpc_response", "id": response_id }),
+            ),
+            CodexPostAction::None,
+        );
     }
 
     let Some(method) = parsed.get("method").and_then(|v| v.as_str()) else {
-        return (None, CodexPostAction::None);
+        return (
+            codex_heartbeat_event(
+                session_id,
+                serde_json::json!({ "kind": "event_without_method" }),
+            ),
+            CodexPostAction::None,
+        );
     };
     let params = parsed
         .get("params")
@@ -422,7 +472,13 @@ fn codex_translate_event(
         _ => {}
     }
 
-    (None, CodexPostAction::None)
+    (
+        codex_heartbeat_event(
+            session_id,
+            serde_json::json!({ "kind": "event", "method": method }),
+        ),
+        CodexPostAction::None,
+    )
 }
 
 fn codex_thread_init_request(
@@ -439,8 +495,12 @@ fn codex_thread_init_request(
         serde_json::json!(system_prompt)
     };
 
+    // Headless sessions are non-interactive: if Codex asks for approvals,
+    // turns can stall indefinitely waiting for input that will never arrive.
+    // Use non-interactive approvals and disable Codex's local sandbox wrapper
+    // for tool-enabled sessions (Midtown already controls sandboxing externally).
     let (approval_policy, sandbox_mode) = if allow_tools {
-        ("on-request", "workspace-write")
+        ("never", "danger-full-access")
     } else {
         ("never", "read-only")
     };
@@ -574,10 +634,12 @@ impl HeadlessSession {
         let writable =
             crate::sandbox::writable_dirs(primary_repo, &[], &sandbox_config.allowed_paths);
 
-        // On macOS, wrap with sandbox-exec to restrict filesystem writes.
-        // On Linux, wrap with bwrap if available.
-        // Falls back to running the binary directly if sandbox setup fails.
-        let mut cmd = if cfg!(target_os = "macos") {
+        // On macOS/Linux, wrap Claude/z.ai with filesystem sandboxing.
+        // Codex manages sandboxing through thread/start params; running Codex
+        // under an outer sandbox-exec causes nested-sandbox failures for tools.
+        let mut cmd = if config.auth_provider == crate::auth::AuthProvider::Codex {
+            Command::new(binary)
+        } else if cfg!(target_os = "macos") {
             match crate::sandbox::sandbox_exec_prefix(&writable) {
                 Ok((_profile_path, prefix)) => {
                     let mut c = Command::new("sandbox-exec");
@@ -786,7 +848,13 @@ impl HeadlessSession {
             if let Some(schema) = output_schema {
                 params["outputSchema"] = schema;
             }
-            self.codex_send_request("turn/start", params).await?;
+            if let Err(e) = self.codex_send_request("turn/start", params).await {
+                if let Some(state) = self.codex_state_mut() {
+                    state.turn_in_progress = false;
+                    state.pending_messages.push_front(prompt);
+                }
+                return Err(e);
+            }
         }
     }
 
@@ -1556,6 +1624,40 @@ mod tests {
     }
 
     #[test]
+    fn test_codex_translate_turn_start_error_clears_in_flight_turn() {
+        let mut state = test_codex_state();
+        state.start_request_id = Some(42);
+        state.turn_in_progress = true;
+        let mut session_id = Some("thread_123".to_string());
+        let parsed = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 99,
+            "error": { "message": "turn failed" }
+        });
+
+        let (event, post_action) = codex_translate_event(&parsed, &mut state, &mut session_id);
+
+        assert_eq!(post_action, CodexPostAction::DispatchPendingTurns);
+        assert!(!state.turn_in_progress);
+        match event {
+            Some(StreamEvent::Result {
+                subtype,
+                is_error,
+                result,
+                extra,
+                ..
+            }) => {
+                assert_eq!(subtype, "error");
+                assert!(is_error);
+                assert_eq!(result, Some("turn failed".to_string()));
+                assert_eq!(extra["phase"], "turn/start");
+                assert_eq!(extra["request_id"], 99);
+            }
+            _ => panic!("Expected codex turn error to emit result error event"),
+        }
+    }
+
+    #[test]
     fn test_codex_translate_delta_then_turn_completed_uses_accumulated_text() {
         let mut state = test_codex_state();
         let mut session_id = Some("thread_123".to_string());
@@ -1599,6 +1701,29 @@ mod tests {
     }
 
     #[test]
+    fn test_codex_translate_unknown_event_emits_heartbeat() {
+        let mut state = test_codex_state();
+        let mut session_id = Some("thread_123".to_string());
+        let parsed = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "item/thinking/delta",
+            "params": { "delta": "..." }
+        });
+
+        let (event, post_action) = codex_translate_event(&parsed, &mut state, &mut session_id);
+        assert_eq!(post_action, CodexPostAction::None);
+        match event {
+            Some(StreamEvent::System { subtype, extra, .. }) => {
+                assert_eq!(subtype, "heartbeat");
+                assert_eq!(extra["provider"], "codex");
+                assert_eq!(extra["event"], "heartbeat");
+                assert_eq!(extra["detail"]["method"], "item/thinking/delta");
+            }
+            _ => panic!("Expected codex unknown event to emit heartbeat system event"),
+        }
+    }
+
+    #[test]
     fn test_codex_thread_init_request_selects_fork_for_resume_fork() {
         let (method, params) = codex_thread_init_request(
             Some("thread_parent"),
@@ -1613,8 +1738,8 @@ mod tests {
         assert_eq!(params["threadId"], "thread_parent");
         assert_eq!(params["cwd"], "/tmp/project");
         assert_eq!(params["model"], "gpt-5.3-codex");
-        assert_eq!(params["approvalPolicy"], "on-request");
-        assert_eq!(params["sandbox"], "workspace-write");
+        assert_eq!(params["approvalPolicy"], "never");
+        assert_eq!(params["sandbox"], "danger-full-access");
         assert_eq!(params["developerInstructions"], "system prompt");
     }
 

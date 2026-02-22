@@ -35,6 +35,18 @@ pub(super) fn is_auth_error(error_msg: &str) -> bool {
         || lowercase.contains("not logged in")
 }
 
+/// Check if an error message indicates an unrecoverable stale Codex thread/session.
+///
+/// Codex resume failures can return errors like:
+/// - "no rollout found for thread id <id>"
+///
+/// These do not recover with retries; the saved session/thread ID must be cleared
+/// and a fresh session spawned.
+fn is_stale_codex_session_error(error_msg: &str) -> bool {
+    let lowercase = error_msg.to_lowercase();
+    lowercase.contains("no rollout found for thread id")
+}
+
 /// Parse usage limit messages to extract reset time.
 ///
 /// Claude Code usage limit messages typically contain text like:
@@ -187,7 +199,11 @@ pub struct CoworkerSession {
     /// Set when a tool_result arrives (has_pending_tool cleared), cleared when the next
     /// assistant event arrives. Exempts the session from stuck detection during extended thinking.
     pub has_pending_api_call: bool,
-    /// Whether the session hit "Tool names must be unique" (unrecoverable, needs fresh restart).
+    /// Whether the session hit an unrecoverable session error (needs fresh restart).
+    ///
+    /// Includes:
+    /// - "Tool names must be unique" conflicts.
+    /// - Stale Codex resume/session errors (e.g., "no rollout found for thread id ...").
     pub has_tool_name_conflict: bool,
     /// Whether this session was spawned as a `--resume` (vs fresh).
     /// Used to detect failed resume attempts: if a resume session exits quickly,
@@ -276,6 +292,41 @@ impl SessionManager {
             sessions: RwLock::new(HashMap::new()),
             repo_name,
         }
+    }
+
+    fn is_session_live(cs: &CoworkerSession) -> bool {
+        cs.session.is_some() && cs.status != SessionStatus::Stopped
+    }
+
+    /// Select the best slot for a name.
+    ///
+    /// Prefers live sessions over stopped entries, then most recent activity.
+    fn select_slot_for_name(
+        sessions: &HashMap<String, CoworkerSession>,
+        name: &str,
+        live_only: bool,
+    ) -> Option<String> {
+        let mut best: Option<(String, u8, DateTime<Utc>)> = None;
+        for (slot_id, cs) in sessions {
+            if cs.name != name {
+                continue;
+            }
+            let live_rank = if Self::is_session_live(cs) { 1 } else { 0 };
+            if live_only && live_rank == 0 {
+                continue;
+            }
+            let activity = cs.last_event_at.unwrap_or(cs.started_at);
+            match &best {
+                None => best = Some((slot_id.clone(), live_rank, activity)),
+                Some((_, best_live_rank, best_activity))
+                    if (live_rank, activity) > (*best_live_rank, *best_activity) =>
+                {
+                    best = Some((slot_id.clone(), live_rank, activity));
+                }
+                _ => {}
+            }
+        }
+        best.map(|(slot_id, _, _)| slot_id)
     }
 
     /// Spawn a new headless session for a coworker.
@@ -454,7 +505,11 @@ impl SessionManager {
     /// preventing accumulation of decoration prefixes across restarts.
     pub async fn set_canonical_initial_prompt(&self, name: &str, prompt: Option<String>) {
         let mut sessions = self.sessions.write().await;
-        if let Some(cs) = sessions.values_mut().find(|cs| cs.name == name) {
+        let slot_id = Self::select_slot_for_name(&sessions, name, true)
+            .or_else(|| Self::select_slot_for_name(&sessions, name, false));
+        if let Some(slot_id) = slot_id
+            && let Some(cs) = sessions.get_mut(&slot_id)
+        {
             cs.initial_prompt = prompt;
         }
     }
@@ -462,17 +517,30 @@ impl SessionManager {
     /// Send a message (nudge) to a running coworker session (by name).
     ///
     /// This writes to the session's stdin via the stream-json input protocol.
-    /// Finds the first session matching the name.
+    /// Selects the best live session for the name (ignores stale stopped entries).
     pub async fn send_message(&self, name: &str, message: &str) -> Result<(), crate::Error> {
         let mut sessions = self.sessions.write().await;
+        let live_slot_id = Self::select_slot_for_name(&sessions, name, true);
+        let slot_id = if let Some(slot_id) = live_slot_id {
+            slot_id
+        } else if Self::select_slot_for_name(&sessions, name, false).is_some() {
+            return Err(crate::Error::Rpc {
+                code: -32603,
+                message: format!("Session '{}' has stopped", name),
+            });
+        } else {
+            return Err(crate::Error::Rpc {
+                code: -32602,
+                message: format!("No headless session for '{}'", name),
+            });
+        };
+
         let cs = sessions
-            .values_mut()
-            .find(|cs| cs.name == name)
+            .get_mut(&slot_id)
             .ok_or_else(|| crate::Error::Rpc {
                 code: -32602,
                 message: format!("No headless session for '{}'", name),
             })?;
-
         let session = cs.session.as_mut().ok_or_else(|| crate::Error::Rpc {
             code: -32603,
             message: format!("Session '{}' has stopped", name),
@@ -486,11 +554,16 @@ impl SessionManager {
                 message: format!("Failed to send message to '{}': {}", name, e),
             })?;
 
+        // Track outbound turn start so stuck detection doesn't kill sessions
+        // during long silent model thinking windows.
+        cs.has_pending_api_call = true;
+        cs.last_event_at = Some(Utc::now());
+
         debug!("Sent message to headless session '{}'", name);
         Ok(())
     }
 
-    /// Shut down a coworker session (by name, finds first match).
+    /// Shut down a coworker session (by name, selects a live match).
     ///
     /// Kills the child process immediately via SIGKILL. Use `graceful_shutdown`
     /// when the session needs to persist state before dying (e.g., for attach).
@@ -498,14 +571,19 @@ impl SessionManager {
     /// Returns the session ID (if known) for potential resume.
     pub async fn shutdown(&self, name: &str) -> Result<Option<String>, crate::Error> {
         let mut sessions = self.sessions.write().await;
-        let slot_id = sessions
-            .values()
-            .find(|cs| cs.name == name)
-            .map(|cs| cs.slot_id.clone())
-            .ok_or_else(|| crate::Error::Rpc {
+        let slot_id = if let Some(slot_id) = Self::select_slot_for_name(&sessions, name, true) {
+            slot_id
+        } else if Self::select_slot_for_name(&sessions, name, false).is_some() {
+            return Err(crate::Error::Rpc {
+                code: -32603,
+                message: format!("Session '{}' has stopped", name),
+            });
+        } else {
+            return Err(crate::Error::Rpc {
                 code: -32602,
                 message: format!("No headless session for '{}'", name),
-            })?;
+            });
+        };
         let cs = sessions
             .remove(&slot_id)
             .expect("slot_id found by name must exist in sessions map");
@@ -533,14 +611,19 @@ impl SessionManager {
         timeout: Duration,
     ) -> Result<Option<String>, crate::Error> {
         let mut sessions = self.sessions.write().await;
-        let slot_id = sessions
-            .values()
-            .find(|cs| cs.name == name)
-            .map(|cs| cs.slot_id.clone())
-            .ok_or_else(|| crate::Error::Rpc {
+        let slot_id = if let Some(slot_id) = Self::select_slot_for_name(&sessions, name, true) {
+            slot_id
+        } else if Self::select_slot_for_name(&sessions, name, false).is_some() {
+            return Err(crate::Error::Rpc {
+                code: -32603,
+                message: format!("Session '{}' has stopped", name),
+            });
+        } else {
+            return Err(crate::Error::Rpc {
                 code: -32602,
                 message: format!("No headless session for '{}'", name),
-            })?;
+            });
+        };
         let mut cs = sessions
             .remove(&slot_id)
             .expect("slot_id found by name must exist in sessions map");
@@ -688,8 +771,7 @@ impl SessionManager {
         let sessions = self.sessions.read().await;
         sessions
             .values()
-            .find(|cs| cs.name == name)
-            .is_some_and(|cs| cs.session.is_some() && cs.status != SessionStatus::Stopped)
+            .any(|cs| cs.name == name && Self::is_session_live(cs))
     }
 
     /// Drain events from all sessions and update health state.
@@ -777,6 +859,10 @@ impl SessionManager {
                                 usage,
                                 ..
                             } => {
+                                // A result event means the current API turn has completed
+                                // (success or error), so it's no longer pending.
+                                cs.has_pending_api_call = false;
+
                                 if let Some(cost) = total_cost_usd {
                                     cs.cost_usd = *cost;
                                 }
@@ -788,10 +874,17 @@ impl SessionManager {
                                     // Check error type in priority order:
                                     // 1. Auth errors (require user intervention)
                                     // 2. Usage limits (have a reset time)
-                                    // 3. Generic API errors (transient)
+                                    // 3. Unrecoverable session errors (needs fresh restart)
+                                    // 4. Generic API errors (transient)
                                     let error_msg = result.as_deref().unwrap_or("");
                                     let extra_str = extra.to_string();
                                     let combined = format!("{} {}", error_msg, extra_str);
+
+                                    // Errors are mutually exclusive; always clear stale flags first.
+                                    cs.has_usage_limit = false;
+                                    cs.usage_limit_reset_at = None;
+                                    cs.has_api_error = false;
+                                    cs.has_auth_error = false;
 
                                     if is_auth_error(&combined) {
                                         // OAuth token expired - requires user re-authentication
@@ -809,10 +902,23 @@ impl SessionManager {
                                             "Session '{}' hit usage limit, resets at {}",
                                             name, reset_time
                                         );
+                                    } else if is_stale_codex_session_error(&combined) {
+                                        cs.has_tool_name_conflict = true;
+                                        warn!(
+                                            "Session '{}' hit stale Codex session/thread error — needs fresh restart",
+                                            name
+                                        );
                                     } else {
                                         // Generic API error (not usage limit or auth)
                                         cs.has_api_error = true;
                                     }
+                                } else {
+                                    // Successful result means previous transient session error
+                                    // flags have recovered and must not stay sticky.
+                                    cs.has_usage_limit = false;
+                                    cs.usage_limit_reset_at = None;
+                                    cs.has_api_error = false;
+                                    cs.has_auth_error = false;
                                 }
                             }
                             StreamEvent::Assistant { message, .. } => {
@@ -907,18 +1013,17 @@ impl SessionManager {
     /// Get the session ID for a coworker (if known, by name).
     pub async fn get_session_id(&self, name: &str) -> Option<String> {
         let sessions = self.sessions.read().await;
-        sessions
-            .values()
-            .find(|cs| cs.name == name)
-            .and_then(|cs| cs.session_id.clone())
+        let slot_id = Self::select_slot_for_name(&sessions, name, true)
+            .or_else(|| Self::select_slot_for_name(&sessions, name, false))?;
+        sessions.get(&slot_id).and_then(|cs| cs.session_id.clone())
     }
 
     /// Get the OS process ID for a coworker session (by name, for zombie cleanup).
     pub async fn get_pid(&self, name: &str) -> Option<u32> {
         let sessions = self.sessions.read().await;
+        let slot_id = Self::select_slot_for_name(&sessions, name, true)?;
         sessions
-            .values()
-            .find(|cs| cs.name == name)
+            .get(&slot_id)
             .and_then(|cs| cs.session.as_ref())
             .and_then(|session| session.pid())
     }
@@ -945,6 +1050,7 @@ impl SessionManager {
     pub async fn collect_session_info(&self) -> HashMap<String, HeadlessSessionInfo> {
         let sessions = self.sessions.read().await;
         let mut info_map = HashMap::new();
+        let mut rank_by_name: HashMap<String, (u8, DateTime<Utc>)> = HashMap::new();
 
         for (_slot_id, cs) in sessions.iter() {
             if let Some(session_id) = &cs.session_id {
@@ -964,7 +1070,18 @@ impl SessionManager {
                     resume_on_startup: true,
                     initial_prompt: cs.initial_prompt.clone(),
                 };
-                info_map.insert(cs.name.clone(), info);
+                let rank = (
+                    if Self::is_session_live(cs) { 1 } else { 0 },
+                    cs.last_event_at.unwrap_or(cs.started_at),
+                );
+                let should_replace = match rank_by_name.get(&cs.name) {
+                    None => true,
+                    Some(existing_rank) => rank > *existing_rank,
+                };
+                if should_replace {
+                    rank_by_name.insert(cs.name.clone(), rank);
+                    info_map.insert(cs.name.clone(), info);
+                }
             }
         }
 

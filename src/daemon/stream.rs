@@ -8,6 +8,22 @@ use super::effects::Effect;
 use crate::headless::StreamEvent;
 use std::collections::HashMap;
 
+fn extract_text_blocks(message: &serde_json::Value) -> String {
+    let mut text = String::new();
+    if let Some(content) = message.get("content")
+        && let Some(arr) = content.as_array()
+    {
+        for block in arr {
+            if block.get("type").and_then(|t| t.as_str()) == Some("text")
+                && let Some(chunk) = block.get("text").and_then(|t| t.as_str())
+            {
+                text.push_str(chunk);
+            }
+        }
+    }
+    text
+}
+
 /// Extract and aggregate text content from headless lead `StreamEvent::Assistant` events.
 ///
 /// Collects all text blocks from all Assistant events in a single drain cycle,
@@ -15,20 +31,31 @@ use std::collections::HashMap;
 /// per-token or per-event messages during streaming.
 pub fn extract_lead_text(events: &[StreamEvent]) -> String {
     let mut aggregated = String::new();
+
     for event in events {
-        if let StreamEvent::Assistant { message, .. } = event
-            && let Some(content) = message.get("content")
-            && let Some(arr) = content.as_array()
-        {
-            for block in arr {
-                if block.get("type").and_then(|t| t.as_str()) == Some("text")
-                    && let Some(text) = block.get("text").and_then(|t| t.as_str())
-                {
-                    aggregated.push_str(text);
-                }
+        if let StreamEvent::Assistant { message, extra, .. } = event {
+            let text = extract_text_blocks(message);
+            if text.is_empty() {
+                continue;
+            }
+
+            let is_codex = extra.get("provider").and_then(|v| v.as_str()) == Some("codex");
+            if !is_codex {
+                aggregated.push_str(&text);
+                continue;
+            }
+
+            let is_completed =
+                extra.get("event").and_then(|v| v.as_str()) == Some("item/completed");
+            if is_completed {
+                // Codex emits per-delta assistant chunks and then a full completed
+                // assistant message. For channel posting, emit completed text only
+                // to avoid duplicate posts when delta/completed split across drains.
+                aggregated.push_str(&text);
             }
         }
     }
+
     aggregated
 }
 

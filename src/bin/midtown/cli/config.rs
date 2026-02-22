@@ -57,6 +57,7 @@ const VALID_KEYS: &[&str] = &[
     "execution.project_lead_provider",
     "execution.coworker_provider",
     "execution.reviewer_provider",
+    "execution.review_mode",
     "execution.channel_lead_provider",
     "execution.specialized_provider",
     "execution.architect_provider",
@@ -297,6 +298,7 @@ fn global_field_value(config: &midtown::config::GlobalConfig, key: &str) -> Stri
         "execution.reviewer_provider" => {
             fmt_opt(config.execution.reviewer_provider.map(|p| p.as_str()))
         }
+        "execution.review_mode" => fmt_opt(config.execution.review_mode.map(review_mode_str)),
         "execution.channel_lead_provider" => {
             fmt_opt(config.execution.channel_lead_provider.map(|p| p.as_str()))
         }
@@ -352,6 +354,7 @@ fn project_field_value(config: &midtown::config::FullProjectConfig, key: &str) -
         "execution.reviewer_provider" => {
             fmt_opt(config.execution.reviewer_provider.map(|p| p.as_str()))
         }
+        "execution.review_mode" => fmt_opt(config.execution.review_mode.map(review_mode_str)),
         "execution.channel_lead_provider" => {
             fmt_opt(config.execution.channel_lead_provider.map(|p| p.as_str()))
         }
@@ -437,6 +440,9 @@ fn apply_global_key(
         "execution.reviewer_provider" => {
             config.execution.reviewer_provider = Some(parse_provider(key, value)?);
         }
+        "execution.review_mode" => {
+            config.execution.review_mode = Some(parse_review_mode(key, value)?);
+        }
         "execution.channel_lead_provider" => {
             config.execution.channel_lead_provider = Some(parse_provider(key, value)?);
         }
@@ -520,6 +526,9 @@ fn apply_project_key(
         "execution.reviewer_provider" => {
             config.execution.reviewer_provider = Some(parse_provider(key, value)?);
         }
+        "execution.review_mode" => {
+            config.execution.review_mode = Some(parse_review_mode(key, value)?);
+        }
         "execution.channel_lead_provider" => {
             config.execution.channel_lead_provider = Some(parse_provider(key, value)?);
         }
@@ -578,6 +587,18 @@ fn parse_provider(key: &str, value: &str) -> Result<midtown::auth::AuthProvider,
     })
 }
 
+fn parse_review_mode(key: &str, value: &str) -> Result<midtown::config::ReviewMode, String> {
+    match value {
+        "local" => Ok(midtown::config::ReviewMode::Local),
+        "github_app" => Ok(midtown::config::ReviewMode::GithubApp),
+        "both" => Ok(midtown::config::ReviewMode::Both),
+        _ => Err(format!(
+            "Invalid review mode '{}' for '{}'. Valid values: local, github_app, both.",
+            value, key
+        )),
+    }
+}
+
 fn parse_usize(key: &str, value: &str) -> Result<usize, String> {
     value.parse::<usize>().map_err(|_| {
         format!(
@@ -628,6 +649,14 @@ fn chat_layout_str(layout: midtown::config::ChatLayout) -> &'static str {
         midtown::config::ChatLayout::Auto => "auto",
         midtown::config::ChatLayout::Split => "split",
         midtown::config::ChatLayout::Window => "window",
+    }
+}
+
+fn review_mode_str(mode: midtown::config::ReviewMode) -> &'static str {
+    match mode {
+        midtown::config::ReviewMode::Local => "local",
+        midtown::config::ReviewMode::GithubApp => "github_app",
+        midtown::config::ReviewMode::Both => "both",
     }
 }
 

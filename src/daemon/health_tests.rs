@@ -47,7 +47,11 @@ fn test_usage_limit_nudge_only_targets_running_coworkers() {
         coworker_stop_times: HashMap::new(),
         headless_process_health: HashMap::new(),
         attached_coworkers: HashMap::new(),
-        in_progress_tasks: vec![],
+        in_progress_tasks: vec![(
+            "42".to_string(),
+            "Fix bug".to_string(),
+            "lexington".to_string(),
+        )],
         busy_coworkers: HashSet::new(),
         coworker_task_assignments: HashMap::new(),
         all_tasks: vec![],
@@ -130,6 +134,146 @@ fn test_usage_limit_nudge_only_targets_running_coworkers() {
         nudge_session_ids,
         vec!["sess-lexington"],
         "Only the Running coworker (lexington) should be nudged"
+    );
+}
+
+#[test]
+fn test_usage_limit_nudge_excludes_leads_and_non_task_workers() {
+    use crate::coworker::{Coworker, CoworkerStatus};
+    use std::collections::{HashMap, HashSet};
+
+    let task_worker = Coworker {
+        slot_id: uuid::Uuid::new_v4().to_string(),
+        name: "lexington".to_string(),
+        status: CoworkerStatus::Running,
+        working_dir: "/tmp/test".to_string(),
+        started_at: chrono::Utc::now(),
+        current_task: Some("42".to_string()),
+        session_id: None,
+        model: "sonnet".to_string(),
+        provider: crate::auth::AuthProvider::Claude,
+        profile: crate::auth::DEFAULT_PROFILE.to_string(),
+    };
+    let project_lead = Coworker {
+        slot_id: uuid::Uuid::new_v4().to_string(),
+        name: "test-repo".to_string(),
+        status: CoworkerStatus::Running,
+        working_dir: "/tmp/test".to_string(),
+        started_at: chrono::Utc::now(),
+        current_task: None,
+        session_id: None,
+        model: "sonnet".to_string(),
+        provider: crate::auth::AuthProvider::Codex,
+        profile: crate::auth::DEFAULT_PROFILE.to_string(),
+    };
+    let reviewer = Coworker {
+        slot_id: uuid::Uuid::new_v4().to_string(),
+        name: "amsterdam".to_string(),
+        status: CoworkerStatus::Running,
+        working_dir: "/tmp/test".to_string(),
+        started_at: chrono::Utc::now(),
+        current_task: Some("reviewing PR #99".to_string()),
+        session_id: None,
+        model: "sonnet".to_string(),
+        provider: crate::auth::AuthProvider::Claude,
+        profile: crate::auth::DEFAULT_PROFILE.to_string(),
+    };
+
+    let snap = snapshot::WorldSnapshot {
+        active_coworkers: vec![task_worker.clone(), project_lead.clone(), reviewer.clone()],
+        running_coworkers: vec![task_worker.clone(), project_lead.clone(), reviewer.clone()],
+        coworker_snapshots: vec![],
+        active_names: HashSet::new(),
+        active_session_ids: HashSet::new(),
+        session_name: "midtown-test".to_string(),
+        coworker_start_times: HashMap::new(),
+        coworker_stop_times: HashMap::new(),
+        headless_process_health: HashMap::new(),
+        attached_coworkers: HashMap::new(),
+        in_progress_tasks: vec![(
+            "42".to_string(),
+            "Implement feature".to_string(),
+            "lexington".to_string(),
+        )],
+        busy_coworkers: HashSet::new(),
+        coworker_task_assignments: HashMap::new(),
+        all_tasks: vec![],
+        pending_tasks_with_owners: vec![],
+        pending_tasks_without_owners: vec![],
+        task_channel: HashMap::new(),
+        task_model_map: HashMap::new(),
+        task_plan_map: HashMap::new(),
+        task_execution_skill_map: HashMap::new(),
+        channel_lead_sessions: HashMap::new(),
+        coworkers_with_open_prs: HashSet::new(),
+        coworkers_with_merged_prs: HashSet::new(),
+        merged_pr_numbers: HashSet::new(),
+        ci_passed_pr_coworkers: HashSet::new(),
+        review_feedback_pr_coworkers: HashSet::new(),
+        open_prs_data: vec![],
+        github_open_pr_task_ids: HashMap::new(),
+        pending_task_owners: HashSet::new(),
+        tasks_with_open_prs: HashMap::new(),
+        pr_task_associations: HashMap::new(),
+        active_reviewers: HashSet::new(),
+        reviewer_pr_assignments: HashMap::new(),
+        reviewer_in_progress_comment_ids: HashMap::new(),
+        reviewed_prs: HashSet::new(),
+        prs_needing_review: 0,
+        reviewer_restart_counts: HashMap::new(),
+        reviewer_escalations_posted: HashSet::new(),
+        orphaned_pr_lead_nudges_sent: HashSet::new(),
+        coworkers_with_unblocked_deps: HashSet::new(),
+        usage_limit_nudge_scheduled: true,
+        usage_limit_nudge_at: Some(tokio::time::Instant::now() - Duration::from_secs(10)),
+        usage_limited_coworkers: HashSet::new(),
+        api_error_coworkers: HashSet::new(),
+        auth_error_coworkers: HashSet::new(),
+        tool_name_conflict_coworkers: HashSet::new(),
+        channel_messages: vec![],
+        archived_channels: HashSet::new(),
+        daemon_logs: vec![],
+        tasks_with_worktrees: HashSet::new(),
+        task_worktree_map: HashMap::new(),
+        worktree_branch_owners: HashMap::new(),
+        worktree_registry: crate::worktree_registry::WorktreeRegistry::default(),
+        merged_pr_branches: HashMap::new(),
+        lead_session_refresh_interval_secs: 5400,
+        is_at_coworker_limit: false,
+        is_at_dev_limit: false,
+        now_utc: chrono::Utc::now(),
+        repo_name: "test-repo".to_string(),
+        default_channel: "test-repo".to_string(),
+        repo_owner: None,
+        github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
+        freshly_fetched_rate_limit: None,
+        sessions: HashMap::new(),
+        session_task_map: HashMap::new(),
+        session_name_map: HashMap::new(),
+        name_session_map: HashMap::from([
+            ("lexington".to_string(), "sess-lexington".to_string()),
+            ("test-repo".to_string(), "sess-lead".to_string()),
+            ("amsterdam".to_string(), "sess-reviewer".to_string()),
+        ]),
+        orphan_spawn_cooldown_active: false,
+        session_dispatch_cooldown_active: false,
+        spawn_failure_cooldown_names: std::collections::HashSet::new(),
+        recently_recovered_session_ids: std::collections::HashSet::new(),
+    };
+
+    let effects = maybe_nudge_usage_limit_expiry(&snap);
+    let nudge_session_ids: Vec<&str> = effects
+        .iter()
+        .filter_map(|e| match e {
+            Effect::NudgeSession { session_id, .. } => Some(session_id.as_str()),
+            _ => None,
+        })
+        .collect();
+
+    assert_eq!(
+        nudge_session_ids,
+        vec!["sess-lexington"],
+        "only task workers should be nudged when usage limit expires"
     );
 }
 
@@ -1234,6 +1378,62 @@ fn pending_api_call_exempts_coworker_from_stuck_detection() {
     );
 }
 
+/// Pending API-call exemption is time-bounded: if no events arrive for too long,
+/// the coworker should be considered stuck again and restarted.
+#[test]
+fn stale_pending_api_call_no_heartbeat_is_restarted() {
+    let now = chrono::Utc::now();
+    let mut snap = empty_snap();
+    snap.now_utc = now;
+
+    snap.headless_process_health.insert(
+        "lexington".to_string(),
+        snapshot::ProcessHealth {
+            is_alive: true,
+            // Older than MAX_PENDING_API_CALL_EXEMPTION (20m in rules.rs)
+            last_event_at: Some(now - chrono::Duration::minutes(25)),
+            has_usage_limit: false,
+            usage_limit_reset_at: None,
+            has_api_error: false,
+            has_auth_error: false,
+            has_running_subagent: false,
+            has_pending_tool: false,
+            has_pending_api_call: true,
+            has_tool_name_conflict: false,
+            exit_code: None,
+        },
+    );
+
+    snap.in_progress_tasks.push((
+        "77".to_string(),
+        "Review PR".to_string(),
+        "lexington".to_string(),
+    ));
+
+    let exemptions = crate::rules::StuckExemptions {
+        usage_limited: &snap.usage_limited_coworkers,
+        api_error: &snap.api_error_coworkers,
+        auth_error: &snap.auth_error_coworkers,
+        attached: &snap.attached_coworkers,
+    };
+
+    let restarts = crate::rules::decide_stuck_coworker_restarts(
+        &snap.headless_process_health,
+        &snap.in_progress_tasks,
+        &exemptions,
+        snap.now_utc,
+        Duration::from_secs(180),
+        &snap.name_session_map,
+        &snap.coworker_start_times,
+    );
+
+    assert_eq!(
+        restarts.len(),
+        1,
+        "stale pending API call without heartbeat must be restarted"
+    );
+}
+
 /// Corollary: same scenario for reviewers.
 #[test]
 fn pending_api_call_exempts_reviewer_from_stuck_detection() {
@@ -2068,6 +2268,67 @@ fn check_and_restart_dead_reviewers_emits_respawn_and_escalation_in_same_tick() 
     assert!(
         has_escalation,
         "Expected RecordReviewerEscalation for PR 200 ('broadway' at max restarts), got: {:#?}",
+        effects
+    );
+}
+
+#[test]
+fn unrecoverable_session_error_restarts_project_lead_immediately() {
+    let mut snap = empty_snap();
+    snap.repo_name = "midtown".to_string();
+    snap.default_channel = "midtown".to_string();
+    snap.tool_name_conflict_coworkers
+        .insert("midtown".to_string());
+    snap.name_session_map
+        .insert("midtown".to_string(), "sess-lead-1".to_string());
+
+    let effects = check_and_restart_tool_name_conflicts(&snap);
+
+    assert!(
+        effects
+            .iter()
+            .any(|e| matches!(e, Effect::ClearSavedSessionId { name } if name == "midtown")),
+        "expected ClearSavedSessionId for project lead, got: {:#?}",
+        effects
+    );
+    assert!(
+        effects.iter().any(
+            |e| matches!(e, Effect::ShutdownSession { session_id, .. } if session_id == "sess-lead-1")
+        ),
+        "expected ShutdownSession for project lead, got: {:#?}",
+        effects
+    );
+    assert!(
+        effects.iter().any(|e| {
+            matches!(
+                e,
+                Effect::SpawnCoworker(config)
+                    if config.name == "midtown"
+                        && matches!(config.role, crate::launch::CoworkerRole::Lead)
+                        && matches!(config.session_mode, crate::launch::SessionMode::Fresh)
+            )
+        }),
+        "expected immediate fresh lead spawn, got: {:#?}",
+        effects
+    );
+}
+
+#[test]
+fn unrecoverable_session_error_does_not_force_spawn_for_non_lead() {
+    let mut snap = empty_snap();
+    snap.repo_name = "midtown".to_string();
+    snap.tool_name_conflict_coworkers
+        .insert("lexington".to_string());
+    snap.name_session_map
+        .insert("lexington".to_string(), "sess-lex-1".to_string());
+
+    let effects = check_and_restart_tool_name_conflicts(&snap);
+
+    assert!(
+        !effects
+            .iter()
+            .any(|e| matches!(e, Effect::SpawnCoworker(config) if config.name == "lexington")),
+        "non-lead coworker should not be force-spawned by session-error health check, got: {:#?}",
         effects
     );
 }

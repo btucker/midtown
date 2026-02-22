@@ -36,6 +36,18 @@ fn test_is_auth_error_ignores_generic_api_error() {
     assert!(!is_auth_error(msg));
 }
 
+#[test]
+fn test_is_stale_codex_session_error_detects_rollout_missing() {
+    let msg = "no rollout found for thread id 1234-5678";
+    assert!(is_stale_codex_session_error(msg));
+}
+
+#[test]
+fn test_is_stale_codex_session_error_ignores_generic_errors() {
+    let msg = "request failed with temporary network error";
+    assert!(!is_stale_codex_session_error(msg));
+}
+
 /// Insert a fake session entry for testing (no real process).
 async fn insert_test_session(sm: &SessionManager, name: &str, status: SessionStatus) {
     let mut sessions = sm.sessions.write().await;

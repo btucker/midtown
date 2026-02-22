@@ -90,6 +90,70 @@ fn test_extract_lead_text_non_assistant_events() {
     assert_eq!(extract_lead_text(&events), "");
 }
 
+#[test]
+fn test_extract_lead_text_codex_completed_supersedes_deltas() {
+    let events = vec![
+        StreamEvent::Assistant {
+            message: json!({
+                "content": [{"type": "text", "text": "smoke-"}]
+            }),
+            session_id: None,
+            extra: json!({"provider": "codex"}),
+        },
+        StreamEvent::Assistant {
+            message: json!({
+                "content": [{"type": "text", "text": "ack"}]
+            }),
+            session_id: None,
+            extra: json!({"provider": "codex"}),
+        },
+        StreamEvent::Assistant {
+            message: json!({
+                "content": [{"type": "text", "text": "smoke-ack"}]
+            }),
+            session_id: None,
+            extra: json!({"provider": "codex", "event": "item/completed"}),
+        },
+    ];
+
+    assert_eq!(extract_lead_text(&events), "smoke-ack");
+}
+
+#[test]
+fn test_extract_lead_text_codex_ignores_delta_after_completed() {
+    let events = vec![
+        StreamEvent::Assistant {
+            message: json!({
+                "content": [{"type": "text", "text": "Done"}]
+            }),
+            session_id: None,
+            extra: json!({"provider": "codex", "event": "item/completed"}),
+        },
+        StreamEvent::Assistant {
+            message: json!({
+                "content": [{"type": "text", "text": " Next"}]
+            }),
+            session_id: None,
+            extra: json!({"provider": "codex"}),
+        },
+    ];
+
+    assert_eq!(extract_lead_text(&events), "Done");
+}
+
+#[test]
+fn test_extract_lead_text_codex_delta_only_not_emitted() {
+    let events = vec![StreamEvent::Assistant {
+        message: json!({
+            "content": [{"type": "text", "text": "delta-only"}]
+        }),
+        session_id: None,
+        extra: json!({"provider": "codex"}),
+    }];
+
+    assert_eq!(extract_lead_text(&events), "");
+}
+
 // ── process_lead_output tests ───────────────────────────────────────
 
 #[test]

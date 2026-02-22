@@ -1022,9 +1022,16 @@ pub(super) async fn poll_prs_for_issues(
     );
 
     // Check for stuck conditions and nudge lead if self-healing has failed
+    let review_mode = crate::config::get_review_mode_for_repo(&state.repo_name);
     effects.extend(
-        collect_stuck_condition_effects(state, &prs, &reviewed_prs, &snap.worktree_branch_owners)
-            .await,
+        collect_stuck_condition_effects(
+            state,
+            &prs,
+            &reviewed_prs,
+            &snap.worktree_branch_owners,
+            review_mode,
+        )
+        .await,
     );
 
     // Detect stale CI checks and trigger re-runs
@@ -1321,7 +1328,7 @@ fn pr_action_to_effects(
 /// stuck_tracker to avoid spamming. For stuck conditions that @mention the lead,
 /// the channel's chat monitor handles routing the nudge.
 ///
-/// The `reviewed_prs` parameter contains PR numbers that have Claude reviews
+/// The `reviewed_prs` parameter contains PR numbers that have completed reviews
 /// (comment-based or formal), pre-collected before this function to keep
 /// decision logic free of async API calls.
 ///
@@ -1330,6 +1337,7 @@ async fn collect_stuck_condition_effects(
     prs: &[serde_json::Value],
     reviewed_prs: &HashSet<u64>,
     branch_owners: &HashMap<String, String>,
+    review_mode: crate::config::ReviewMode,
 ) -> Vec<Effect> {
     let mut effects: Vec<Effect> = Vec::new();
     let mut tracker = state.stuck_tracker.lock().await;
@@ -1360,94 +1368,115 @@ async fn collect_stuck_condition_effects(
         let age_secs = get_pr_age_secs(pr).unwrap_or(0);
         let pr_id = pr_number.to_string();
 
-        // Check for comment-based Claude reviews (coworkers can't submit formal reviews
-        // since they share the same GitHub user as the PR author). Uses pre-collected
+        // Check for completed review coverage from pre-collected cache.
+        // This includes comment-based coworker reviews and formal GitHub reviews.
+        // Uses pre-collected
         // data to keep decision logic free of async API calls.
-        let has_claude_review = reviewed_prs.contains(&pr_number);
+        let has_completed_review = reviewed_prs.contains(&pr_number);
 
-        // No review decision at all, no Claude review comment, and PR is old enough
+        // No review decision at all, no completed review yet, and PR is old enough
         if review_decision.is_empty()
-            && !has_claude_review
+            && !has_completed_review
             && age_secs >= STUCK_NO_REVIEW_DURATION.as_secs()
         {
-            // Check if a reviewer is assigned (daemon tried to self-heal)
-            let (is_assigned, channel_lead_names) = {
-                let ps = state.persistent_state.lock().await;
-                let assigned = ps.github.is_assigned(pr_number);
-                let cl_names: std::collections::HashSet<String> =
-                    ps.channel_lead_sessions.keys().cloned().collect();
-                (assigned, cl_names)
-            };
-
             tracker.track(&pr_id, StuckConditionType::NoReview);
             if tracker.should_nudge(&pr_id, StuckConditionType::NoReview) {
                 let prior_nudges = tracker.nudge_count(&pr_id, StuckConditionType::NoReview);
-                let has_available_slots = state.has_available_coworker_slot(&channel_lead_names);
-
-                let nudge = if should_escalate(prior_nudges) {
-                    // Escalation: this has persisted too long, suggest investigation
-                    let context = if is_assigned && has_available_slots {
-                        "A reviewer was assigned but hasn't posted a review, and coworker slots are available. This looks like a daemon bug.".to_string()
-                    } else if !is_assigned && has_available_slots {
-                        "Coworker slots are available but no reviewer was assigned. This looks like a daemon bug.".to_string()
-                    } else if is_assigned {
-                        "A reviewer was assigned but hasn't posted a review.".to_string()
-                    } else {
-                        let head_ref = pr.get("headRefName").and_then(|s| s.as_str()).unwrap_or("");
-                        let pr_author =
-                            coworker_from_branch_with_map(head_ref, Some(branch_owners));
-                        let running = state.coworkers.list_running();
-                        let mut busy: Vec<String> = running
-                            .iter()
-                            .filter(|cw| {
-                                !cw.name.eq_ignore_ascii_case("lead")
-                                    && !channel_lead_names.contains(&cw.name)
-                            })
-                            .map(|cw| cw.name.clone())
-                            .collect();
-                        busy.sort();
+                let nudge = if review_mode == crate::config::ReviewMode::GithubApp {
+                    if should_escalate(prior_nudges) {
                         format!(
-                            "No reviewer could be assigned — {}",
-                            format_no_reviewer_reason(&busy, pr_author.as_deref())
+                            "@ops PR #{} ({}) has been open for {} minutes with no review while execution.review_mode=github_app. Check GitHub App review delivery/config.",
+                            pr_number,
+                            truncate_str(title, 40),
+                            age_secs / 60,
                         )
-                    };
-                    format!(
-                        "@ops PR #{} ({}) has been stuck for {} minutes with no review — {} Consider running `midtown e2e capture` to debug.",
-                        pr_number,
-                        truncate_str(title, 40),
-                        age_secs / 60,
-                        context,
-                    )
+                    } else {
+                        format!(
+                            "@ops PR #{} ({}) has been open for {} minutes and is still waiting for GitHub App review (execution.review_mode=github_app).",
+                            pr_number,
+                            truncate_str(title, 40),
+                            age_secs / 60,
+                        )
+                    }
                 } else {
-                    // Normal warning
-                    let context = if is_assigned {
-                        "I assigned a reviewer but no review has been posted yet".to_string()
-                    } else {
-                        let head_ref = pr.get("headRefName").and_then(|s| s.as_str()).unwrap_or("");
-                        let pr_author =
-                            coworker_from_branch_with_map(head_ref, Some(branch_owners));
-                        let running = state.coworkers.list_running();
-                        let mut busy: Vec<String> = running
-                            .iter()
-                            .filter(|cw| {
-                                !cw.name.eq_ignore_ascii_case("lead")
-                                    && !channel_lead_names.contains(&cw.name)
-                            })
-                            .map(|cw| cw.name.clone())
-                            .collect();
-                        busy.sort();
-                        format!(
-                            "I couldn't assign a reviewer — {}",
-                            format_no_reviewer_reason(&busy, pr_author.as_deref())
-                        )
+                    // Check if a reviewer is assigned (daemon tried to self-heal)
+                    let (is_assigned, channel_lead_names) = {
+                        let ps = state.persistent_state.lock().await;
+                        let assigned = ps.github.is_assigned(pr_number);
+                        let cl_names: std::collections::HashSet<String> =
+                            ps.channel_lead_sessions.keys().cloned().collect();
+                        (assigned, cl_names)
                     };
-                    format!(
-                        "@ops PR #{} ({}) has been open for {} minutes with no review — {}",
-                        pr_number,
-                        truncate_str(title, 40),
-                        age_secs / 60,
-                        context,
-                    )
+                    let has_available_slots =
+                        state.has_available_coworker_slot(&channel_lead_names);
+
+                    if should_escalate(prior_nudges) {
+                        // Escalation: this has persisted too long, suggest investigation
+                        let context = if is_assigned && has_available_slots {
+                            "A reviewer was assigned but hasn't posted a review, and coworker slots are available. This looks like a daemon bug.".to_string()
+                        } else if !is_assigned && has_available_slots {
+                            "Coworker slots are available but no reviewer was assigned. This looks like a daemon bug.".to_string()
+                        } else if is_assigned {
+                            "A reviewer was assigned but hasn't posted a review.".to_string()
+                        } else {
+                            let head_ref =
+                                pr.get("headRefName").and_then(|s| s.as_str()).unwrap_or("");
+                            let pr_author =
+                                coworker_from_branch_with_map(head_ref, Some(branch_owners));
+                            let running = state.coworkers.list_running();
+                            let mut busy: Vec<String> = running
+                                .iter()
+                                .filter(|cw| {
+                                    !cw.name.eq_ignore_ascii_case("lead")
+                                        && !channel_lead_names.contains(&cw.name)
+                                })
+                                .map(|cw| cw.name.clone())
+                                .collect();
+                            busy.sort();
+                            format!(
+                                "No reviewer could be assigned — {}",
+                                format_no_reviewer_reason(&busy, pr_author.as_deref())
+                            )
+                        };
+                        format!(
+                            "@ops PR #{} ({}) has been stuck for {} minutes with no review — {} Consider running `midtown e2e capture` to debug.",
+                            pr_number,
+                            truncate_str(title, 40),
+                            age_secs / 60,
+                            context,
+                        )
+                    } else {
+                        // Normal warning
+                        let context = if is_assigned {
+                            "I assigned a reviewer but no review has been posted yet".to_string()
+                        } else {
+                            let head_ref =
+                                pr.get("headRefName").and_then(|s| s.as_str()).unwrap_or("");
+                            let pr_author =
+                                coworker_from_branch_with_map(head_ref, Some(branch_owners));
+                            let running = state.coworkers.list_running();
+                            let mut busy: Vec<String> = running
+                                .iter()
+                                .filter(|cw| {
+                                    !cw.name.eq_ignore_ascii_case("lead")
+                                        && !channel_lead_names.contains(&cw.name)
+                                })
+                                .map(|cw| cw.name.clone())
+                                .collect();
+                            busy.sort();
+                            format!(
+                                "I couldn't assign a reviewer — {}",
+                                format_no_reviewer_reason(&busy, pr_author.as_deref())
+                            )
+                        };
+                        format!(
+                            "@ops PR #{} ({}) has been open for {} minutes with no review — {}",
+                            pr_number,
+                            truncate_str(title, 40),
+                            age_secs / 60,
+                            context,
+                        )
+                    }
                 };
                 effects.extend(stuck_nudge_effects(&nudge));
                 tracker.record_nudge(&pr_id, StuckConditionType::NoReview);
@@ -2115,7 +2144,7 @@ fn handoff_to_coworker_effects(
 
 /// Collect effects for spawning reviewers for PRs that need code review.
 ///
-/// Identifies PRs that need review (not drafts, old enough, no Claude review,
+/// Identifies PRs that need review (not drafts, old enough, no completed review,
 /// not already assigned) and returns effects to spawn reviewer coworkers.
 /// Uses `SpawnCoworkerWithCallbacks` so that reviewer assignment and channel
 /// messages only happen on successful spawn.
@@ -2144,6 +2173,11 @@ pub(crate) async fn collect_reviewer_effects_with_source(
     source: crate::github_state::AssignmentSource,
 ) -> Vec<Effect> {
     let mut effects: Vec<Effect> = Vec::new();
+    let review_mode = crate::config::get_review_mode_for_repo(&state.repo_name);
+    let spawn_local_reviewers = matches!(
+        review_mode,
+        crate::config::ReviewMode::Local | crate::config::ReviewMode::Both
+    );
 
     for pr in prs {
         let pr_number = pr.get("number").and_then(|n| n.as_u64()).unwrap_or(0);
@@ -2186,9 +2220,9 @@ pub(crate) async fn collect_reviewer_effects_with_source(
             }
         }
 
-        // Check if PR already has a Claude review.
+        // Check if PR already has a completed review.
         if state.is_pr_reviewed(pr_number).await {
-            debug!("PR #{} already has a Claude review", pr_number);
+            debug!("PR #{} already has a completed review", pr_number);
 
             // Clear the reviewer assignment now that the review is complete.
             // This allows the reviewer to be sent on break, freeing up coworker slots.
@@ -2260,6 +2294,14 @@ pub(crate) async fn collect_reviewer_effects_with_source(
                 }
             }
 
+            continue;
+        }
+
+        if !spawn_local_reviewers {
+            debug!(
+                "PR #{} review pending but local reviewer spawn disabled (execution.review_mode={:?})",
+                pr_number, review_mode
+            );
             continue;
         }
 
@@ -2933,10 +2975,14 @@ pub(super) async fn handle_ci_completion_for_review_spawn(
     }
 }
 
-/// Uncached check for Claude review on a PR (makes GitHub API calls).
+/// Uncached check for whether a PR has at least one completed review.
+///
+/// A review can be either:
+/// - A formal GitHub review submission (APPROVED / CHANGES_REQUESTED / COMMENTED / DISMISSED)
+/// - A comment-based coworker review detected via review signature.
 ///
 /// Fetches both reviews and comments in a single API call to reduce GitHub API usage.
-pub(super) fn pr_has_claude_review_uncached(pr_number: u64) -> bool {
+pub(super) fn pr_has_completed_review_uncached(pr_number: u64) -> bool {
     let output = std::process::Command::new("gh")
         .args([
             "pr",
@@ -2958,9 +3004,18 @@ pub(super) fn pr_has_claude_review_uncached(pr_number: u64) -> bool {
                 }
             };
 
-            // Check formal reviews
+            // Check formal reviews first (Codex / GitHub-native review flow).
             if let Some(reviews) = json.get("reviews").and_then(|v| v.as_array()) {
                 for review in reviews {
+                    if let Some(state) = review.get("state").and_then(|s| s.as_str()) {
+                        let state_upper = state.to_ascii_uppercase();
+                        if matches!(
+                            state_upper.as_str(),
+                            "APPROVED" | "CHANGES_REQUESTED" | "COMMENTED" | "DISMISSED"
+                        ) {
+                            return true;
+                        }
+                    }
                     if let Some(body) = review.get("body").and_then(|b| b.as_str())
                         && text_contains_review_signature(body)
                     {
@@ -2969,7 +3024,7 @@ pub(super) fn pr_has_claude_review_uncached(pr_number: u64) -> bool {
                 }
             }
 
-            // Check comments (where coworkers post their reviews)
+            // Check comments (where coworkers post comment-based reviews).
             if let Some(comments) = json.get("comments").and_then(|v| v.as_array()) {
                 for comment in comments {
                     if let Some(body) = comment.get("body").and_then(|b| b.as_str())
@@ -3790,7 +3845,7 @@ fn collect_stale_check_effects_with_time(
 ///
 /// A PR is considered orphaned if:
 /// 1. It has a coworker or task branch prefix (e.g., "lexington/feature" or "task-123-fix")
-/// 2. It has a Claude review comment (in `reviewed_prs`)
+/// 2. It has a completed review (in `reviewed_prs`)
 /// 3. All CI checks are passing (`all_ci_checks_passed`)
 /// 4. There's no in_progress task linked to it (not in `pr_task_associations`)
 /// 5. The lead has not already been nudged about this PR (`orphaned_pr_lead_nudges_sent`)
@@ -3840,7 +3895,7 @@ pub fn reconcile_orphaned_prs(snap: &WorldSnapshot) -> Vec<Effect> {
             continue;
         }
 
-        // Check if PR has been reviewed (Claude review comment exists)
+        // Check if PR has been reviewed
         if !snap.reviewed_prs.contains(&pr_number) {
             continue;
         }

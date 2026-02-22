@@ -54,8 +54,8 @@ pub struct WebhookEvent {
     pub pr_merged_info: Option<PrMergedInfo>,
     /// If set, a CI check failed on the default branch — nudge the lead with this message
     pub ci_failed_on_default_branch: Option<String>,
-    /// PR number that received a Claude review comment (for caching review status).
-    /// Set when an `issue_comment` webhook contains a review signature.
+    /// PR number that received a completed review (formal or comment-based).
+    /// Set when webhook payload confirms a real review completion.
     pub reviewed_pr: Option<u64>,
     /// A formal review state change (approved / changes_requested) — triggers immediate
     /// nudge of the PR owner instead of waiting for the next polling cycle.
@@ -855,6 +855,8 @@ fn handle_pull_request_review(body: &[u8]) -> Result<Option<WebhookEvent>, serde
             }),
             repo_full_name: Some(event.repository.full_name),
         }),
+        // Any submitted formal review counts as a completed review event.
+        reviewed_pr: Some(event.pull_request.number),
         review_state_change,
         ..WebhookEvent::github(content)
     }))
@@ -1151,10 +1153,7 @@ fn compute_check_duration(
 /// This uses the same signatures as `text_contains_review_signature` in
 /// `daemon/helpers.rs` to detect review comments from webhook payloads.
 fn is_review_comment(body: &str) -> bool {
-    body.contains("🤖 Reviewed by")
-        || body.contains("## Code Review by")
-        || body.contains("## No Issues Found")
-        || body.contains("<!-- midtown:")
+    crate::daemon::helpers::text_contains_review_signature(body)
 }
 
 /// Truncate a comment for preview, handling multi-line and unicode safely
@@ -1380,6 +1379,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(event.message.content, "madison approved PR #42");
+        assert_eq!(event.reviewed_pr, Some(42));
         // Should include review node for reactions
         let activity = event.pr_activity.unwrap();
         assert!(matches!(
@@ -1947,6 +1947,8 @@ mod tests {
             .unwrap();
         // "commented" reviews should NOT produce a state change
         assert!(event.review_state_change.is_none());
+        // But it is still a completed formal review submission.
+        assert_eq!(event.reviewed_pr, Some(42));
     }
 
     #[test]
@@ -2041,16 +2043,20 @@ mod tests {
     }
 
     // -------------------------------------------------------------------------
-    // is_review_comment — detects Claude reviews from webhook payloads
+    // is_review_comment — detects completed review comments from webhook payloads
     // -------------------------------------------------------------------------
 
     #[test]
-    fn test_is_review_comment_detects_midtown_marker() {
-        // Coworkers include <!-- midtown: name --> markers in their reviews
+    fn test_is_review_comment_detects_midtown_marker_with_review_header() {
+        // Frontmatter alone is not sufficient; review signature/header is required.
         assert!(is_review_comment(
             "<!-- midtown: park -->\n\n## Code Review"
         ));
-        assert!(is_review_comment(
+    }
+
+    #[test]
+    fn test_is_review_comment_rejects_midtown_marker_only() {
+        assert!(!is_review_comment(
             "<!-- midtown:reviewer=lexington -->\n\nLGTM!"
         ));
     }
@@ -2070,8 +2076,8 @@ mod tests {
     }
 
     #[test]
-    fn test_is_review_comment_detects_no_issues_found() {
-        assert!(is_review_comment("## No Issues Found\n\nCode looks clean."));
+    fn test_is_review_comment_detects_exact_code_review_header() {
+        assert!(is_review_comment("### Code review\n\nNo issues found."));
     }
 
     #[test]

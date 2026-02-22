@@ -103,6 +103,11 @@ pub enum Effect {
     /// Clears `task_id` from the SessionRecord and removes the in-memory
     /// `task_to_session` entry.
     ClearSessionForTask { task_id: String },
+    /// Clear persisted session IDs and session-record bindings for a coworker.
+    ///
+    /// Used for unrecoverable resume/session errors (e.g., stale Codex thread IDs).
+    /// This prevents retry loops by ensuring the next spawn is fresh.
+    ClearSavedSessionId { name: String },
     /// Spawn a coworker with conditional follow-up effects.
     ///
     /// On success, `on_success` effects are executed. On failure, `on_failure`
@@ -920,6 +925,97 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                         "ClearSessionForTask: no stale session binding found for task !{}",
                         task_id
                     );
+                }
+            }
+            Effect::ClearSavedSessionId { name } => {
+                // Gather candidate stale session IDs for this coworker from
+                // in-memory maps and persisted headless/channel entries.
+                let mapped_sid = state
+                    .name_to_session
+                    .lock()
+                    .unwrap()
+                    .get(&name)
+                    .cloned()
+                    .unwrap_or_default();
+
+                let mut ps = state.persistent_state.lock().await;
+                let mut candidate_ids: std::collections::HashSet<String> =
+                    std::collections::HashSet::new();
+                if !mapped_sid.is_empty() {
+                    candidate_ids.insert(mapped_sid.clone());
+                }
+                if let Some(info) = ps.headless_sessions.get(&name)
+                    && !info.session_id.is_empty()
+                {
+                    candidate_ids.insert(info.session_id.clone());
+                }
+                if let Some(sid) = ps.channel_lead_sessions.get(&name)
+                    && !sid.is_empty()
+                {
+                    candidate_ids.insert(sid.clone());
+                }
+
+                if let Some(info) = ps.headless_sessions.get_mut(&name)
+                    && !info.session_id.is_empty()
+                {
+                    info!(
+                        "Clearing stale headless session_id for '{}': {}",
+                        name, info.session_id
+                    );
+                    info.session_id.clear();
+                }
+                if let Some(sid) = ps.channel_lead_sessions.get_mut(name.as_str())
+                    && !sid.is_empty()
+                {
+                    info!(
+                        "Clearing stale channel_lead_sessions entry for '{}': {}",
+                        name, sid
+                    );
+                    sid.clear();
+                }
+
+                // Clear task/session bindings for matching session records so dispatch
+                // won't repeatedly attempt to resume stale IDs.
+                let mut cleared_task_ids: Vec<String> = Vec::new();
+                for record in ps.sessions.values_mut() {
+                    let matches_id = candidate_ids.contains(&record.session_id);
+                    let matches_running_name = record.is_running
+                        && (record
+                            .current_name
+                            .as_deref()
+                            .is_some_and(|n| n.eq_ignore_ascii_case(&name))
+                            || record
+                                .preferred_name
+                                .as_deref()
+                                .is_some_and(|n| n.eq_ignore_ascii_case(&name)));
+                    if !(matches_id || matches_running_name) {
+                        continue;
+                    }
+                    if let Some(task_id) = record.task_id.take() {
+                        cleared_task_ids.push(task_id);
+                    }
+                    record.is_running = false;
+                    record.resume_on_startup = false;
+                    record.current_name = None;
+                }
+
+                if let Err(e) = ps.save_for_repo(&state.repo_name) {
+                    warn!(
+                        "Failed to save persistent state after clearing stale session ID for '{}': {}",
+                        name, e
+                    );
+                }
+                drop(ps);
+
+                if !cleared_task_ids.is_empty() {
+                    let mut t2s = state.task_to_session.lock().unwrap();
+                    for task_id in &cleared_task_ids {
+                        t2s.remove(task_id);
+                    }
+                    drop(t2s);
+                    for task_id in &cleared_task_ids {
+                        state.clear_task_assignment_by_task(task_id);
+                    }
                 }
             }
             Effect::SpawnCoworkerWithCallbacks {

@@ -206,6 +206,7 @@ lead_provider = "claude"              # Default for all leads ("claude", "codex"
 project_lead_provider = "zai"         # Optional override for project/main lead only
 coworker_provider = "codex"           # Default provider for dev coworkers
 reviewer_provider = "claude"          # Independent default for reviewers
+review_mode = "both"                  # "local", "github_app", or "both"
 channel_lead_provider = "codex"       # Optional channel-lead override (falls back to lead_provider)
 specialized_provider = "claude"       # Default for specialized workers
 architect_provider = "zai"            # Optional override (fallback: specialized_provider)
@@ -237,6 +238,7 @@ webhook_port = 47023              # Auto-assigned if not set
 lead_provider = "codex"           # Shared default for project + channel leads in this project
 project_lead_provider = "zai"     # Optional override for project lead only
 reviewer_provider = "claude"      # Keep reviewers independent
+review_mode = "local"             # Force local reviewer coworkers for this project
 ```
 
 The `[project]` section defines:
@@ -256,6 +258,12 @@ Execution provider resolution is role-based:
 - Specialized workers:
   - Architect: `execution.architect_provider` -> `execution.specialized_provider` -> `claude`
   - `headless.execute`: `execution.headless_execute_provider` -> `execution.specialized_provider` -> `claude`
+
+Review execution mode controls how PR reviews are sourced:
+
+- `execution.review_mode = "local"`: daemon spawns local reviewer coworkers
+- `execution.review_mode = "github_app"`: daemon does not spawn local reviewers; waits for formal GitHub App reviews
+- `execution.review_mode = "both"`: local reviewers are enabled and GitHub App/formal reviews also count
 
 Model aliases are auto-normalized per provider at launch:
 
