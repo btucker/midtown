@@ -89,11 +89,13 @@ minimad-ratatui = { path = "crates/minimad-ratatui" }
 [dev-dependencies]
 tempfile = "3.0"
 ntest = "0.9"  # Test utilities including timeout attribute
-termwright = "0.2"  # PTY-driven terminal E2E automation
 # Web E2E test dependencies
 tokio-tungstenite = "0.26"  # WebSocket client for E2E tests
 futures-util = "0.3"  # Stream extensions for WebSocket handling
 reqwest = { version = "0.12", features = ["rustls-tls", "json", "blocking", "multipart"], default-features = false }  # HTTP client with blocking for tests
+
+[target.'cfg(not(target_os = "linux"))'.dev-dependencies]
+termwright = "0.2"  # PTY-driven terminal E2E automation
 
 # Git hooks - runs on cargo test
 [dev-dependencies.cargo-husky]

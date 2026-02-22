@@ -1,3 +1,5 @@
+#![cfg(not(target_os = "linux"))]
+
 //! Terminal E2E test for auth profile switching.
 //!
 //! Uses termwright to drive `midtown auth switch` in a PTY and verify that

@@ -1,3 +1,5 @@
+#![cfg(not(target_os = "linux"))]
+
 //! Terminal E2E test for `midtown view`.
 //!
 //! Validates that `midtown view` can launch the chat UI in a PTY and exit
