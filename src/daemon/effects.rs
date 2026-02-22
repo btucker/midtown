@@ -964,14 +964,18 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     );
                     info.session_id.clear();
                 }
-                if let Some(sid) = ps.channel_lead_sessions.get_mut(name.as_str())
-                    && !sid.is_empty()
-                {
-                    info!(
-                        "Clearing stale channel_lead_sessions entry for '{}': {}",
-                        name, sid
-                    );
-                    sid.clear();
+                if let Some(stored_sid) = ps.channel_lead_sessions.remove(name.as_str()) {
+                    if stored_sid.is_empty() {
+                        info!(
+                            "Removing stale empty channel_lead_sessions entry for '{}'",
+                            name
+                        );
+                    } else {
+                        info!(
+                            "Removing stale channel_lead_sessions entry for '{}': {}",
+                            name, stored_sid
+                        );
+                    }
                 }
 
                 // Clear task/session bindings for matching session records so dispatch

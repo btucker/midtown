@@ -5,7 +5,6 @@
 //! Health state is read from structured `ProcessHealth` data (populated
 //! by the session management layer from headless stream events).
 
-use std::collections::HashSet;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -870,25 +869,25 @@ pub fn maybe_nudge_usage_limit_expiry(snap: &snapshot::WorldSnapshot) -> Vec<Eff
         return vec![];
     }
 
-    let task_owner_names: HashSet<String> = snap
-        .in_progress_tasks
-        .iter()
-        .map(|(_, _, owner)| owner.to_lowercase())
-        .collect();
-    let eligible_workers: Vec<&crate::coworker::Coworker> = snap
+    let eligible_session_ids: Vec<String> = snap
         .running_coworkers
         .iter()
-        .filter(|cw| task_owner_names.contains(&cw.name.to_lowercase()))
+        .filter_map(|cw| {
+            snap.name_session_map
+                .get(&cw.name.to_lowercase())
+                .cloned()
+                .filter(|sid| !sid.is_empty())
+        })
         .collect();
 
-    if eligible_workers.is_empty() {
-        info!("Usage limit expired — no running task workers to nudge");
+    if eligible_session_ids.is_empty() {
+        info!("Usage limit expired — no running sessions to nudge");
         return vec![Effect::ClearUsageLimitNudge];
     }
 
     info!(
-        "Usage limit expired — nudging {} running task workers",
-        eligible_workers.len()
+        "Usage limit expired — nudging {} running sessions",
+        eligible_session_ids.len()
     );
 
     let mut effects = vec![
@@ -896,19 +895,14 @@ pub fn maybe_nudge_usage_limit_expiry(snap: &snapshot::WorldSnapshot) -> Vec<Eff
         Effect::PostToChannel {
             sender: "midtown".to_string(),
             message: format!(
-                "🔔 Usage limit expired — nudging {} task workers to resume work",
-                eligible_workers.len()
+                "🔔 Usage limit expired — nudging {} running sessions to resume work",
+                eligible_session_ids.len()
             ),
             channel: Some(OPS_CHANNEL.to_string()),
         },
     ];
 
-    for cw in &eligible_workers {
-        let session_id = snap
-            .name_session_map
-            .get(&cw.name.to_lowercase())
-            .cloned()
-            .unwrap_or_default();
+    for session_id in eligible_session_ids {
         effects.push(Effect::nudge_session(session_id, "continue"));
     }
 

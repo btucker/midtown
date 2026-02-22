@@ -139,7 +139,7 @@ fn test_usage_limit_nudge_only_targets_running_coworkers() {
 }
 
 #[test]
-fn test_usage_limit_nudge_excludes_leads_and_non_task_workers() {
+fn test_usage_limit_nudge_includes_reviewers_and_leads_with_sessions() {
     use crate::coworker::{Coworker, CoworkerStatus};
     use std::collections::{HashMap, HashSet};
 
@@ -274,8 +274,8 @@ fn test_usage_limit_nudge_excludes_leads_and_non_task_workers() {
 
     assert_eq!(
         nudge_session_ids,
-        vec!["sess-lexington"],
-        "only task workers should be nudged when usage limit expires"
+        vec!["sess-lexington", "sess-lead", "sess-reviewer"],
+        "all running sessions should be nudged when usage limit expires"
     );
 }
 
