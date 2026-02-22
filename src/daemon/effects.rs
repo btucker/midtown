@@ -2184,10 +2184,13 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                                                 channel_name,
                                                 e
                                             );
-                                            // Remove placeholder so the next NudgeChannelLead
-                                            // can retry (not stuck with an empty entry forever).
-                                            let mut ps = state.persistent_state.lock().await;
-                                            ps.channel_lead_sessions.remove(&channel_name);
+                                            // Keep the empty placeholder in channel_lead_sessions
+                                            // even on failure. An empty entry still triggers a
+                                            // fresh spawn on the next NudgeChannelLead (the
+                                            // session_mode matching code falls through to Fresh
+                                            // for empty IDs). More importantly, keeping it
+                                            // preserves daemon restart recovery — the channel is
+                                            // registered even if this spawn attempt failed.
                                         }
                                     }
                                 }
