@@ -844,57 +844,91 @@ fn test_list_skips_invalid_channel_names() {
 }
 
 #[test]
-fn test_both_active_and_archived_files_treats_channel_as_active() {
+fn test_archived_channel_cannot_be_recreated_or_listed_as_active() {
     let temp_dir = TempDir::new().unwrap();
 
     // Create a channel, then archive it
     let channel = Channel::new(temp_dir.path(), "tui").unwrap();
     channel.archive().unwrap();
 
-    // Verify it's archived
-    let channels = Channel::list(temp_dir.path(), true, None).unwrap();
-    let tui = channels.iter().find(|c| c.name == "tui").unwrap();
-    assert!(tui.is_archived, "Should be archived after archive()");
+    // Attempting to create it again should fail with ChannelArchived
+    let err = match Channel::new(temp_dir.path(), "tui") {
+        Ok(_) => panic!("Expected Channel::new to fail for archived channel"),
+        Err(err) => err,
+    };
+    match err {
+        crate::Error::ChannelArchived(name) => {
+            assert_eq!(name, "tui", "ChannelArchived error should include name")
+        }
+        other => panic!("Expected ChannelArchived error, got {other:?}"),
+    }
 
-    // Now also create an active file (simulating a channel that was
-    // re-created while the archived file still exists)
-    Channel::new(temp_dir.path(), "tui").unwrap();
-
-    // Both directories should exist
+    // Simulate a zombie active directory being re-created manually (without Channel::new()).
     let channels_dir = temp_dir.path().join("channels");
-    assert!(
-        channels_dir
-            .join("tui")
-            .join("history")
-            .join("current.jsonl")
-            .exists()
-    );
-    assert!(
-        channels_dir
-            .join("tui.archived")
-            .join("history")
-            .join("current.jsonl")
-            .exists()
-    );
+    let zombie_history = channels_dir.join("tui").join("history");
+    fs::create_dir_all(&zombie_history).unwrap();
+    File::create(zombie_history.join("current.jsonl")).unwrap();
 
-    // Channel::list should treat it as active (not archived)
+    // Channel::list should ignore the zombie active directory and only surface the archived entry.
     let channels = Channel::list(temp_dir.path(), true, None).unwrap();
     let tui_entries: Vec<_> = channels.iter().filter(|c| c.name == "tui").collect();
     assert_eq!(
         tui_entries.len(),
         1,
-        "Should have exactly one entry for 'tui'"
+        "Should have exactly one entry for 'tui' even with a zombie directory"
     );
     assert!(
-        !tui_entries[0].is_archived,
-        "Channel with both active and archived files should be treated as active"
+        tui_entries[0].is_archived,
+        "Archived directory should win when both active and archived exist"
     );
 
-    // Also verify without include_archived — the channel should still appear
+    // Archived channels remain hidden when include_archived = false.
     let channels = Channel::list(temp_dir.path(), false, None).unwrap();
     assert!(
-        channels.iter().any(|c| c.name == "tui"),
-        "Active channel with stale archived file should appear in non-archived list"
+        !channels.iter().any(|c| c.name == "tui"),
+        "Archived channels should not appear without include_archived"
+    );
+}
+
+#[test]
+fn test_channel_list_removes_zombie_active_directory() {
+    let temp_dir = TempDir::new().unwrap();
+
+    // Create and archive a channel.
+    let channel = Channel::new(temp_dir.path(), "frontend").unwrap();
+    channel.archive().unwrap();
+
+    // Recreate a zombie active directory manually.
+    let zombie_history = temp_dir
+        .path()
+        .join("channels")
+        .join("frontend")
+        .join("history");
+    std::fs::create_dir_all(&zombie_history).unwrap();
+    let zombie_file = zombie_history.join("current.jsonl");
+    std::fs::write(&zombie_file, b"ghost\n").unwrap();
+    assert!(
+        zombie_file.exists(),
+        "Precondition: zombie active channel file should exist"
+    );
+
+    // Listing channels should clean up the zombie directory.
+    let channels = Channel::list(temp_dir.path(), true, None).unwrap();
+    assert!(
+        !temp_dir.path().join("channels").join("frontend").exists(),
+        "Channel::list should remove zombie active directories that shadow archived channels"
+    );
+    assert_eq!(
+        1,
+        channels.iter().filter(|c| c.name == "frontend").count(),
+        "Only the archived channel entry should remain"
+    );
+    assert!(
+        channels
+            .iter()
+            .find(|c| c.name == "frontend")
+            .is_some_and(|c| c.is_archived),
+        "The surviving entry should be marked as archived"
     );
 }
 
@@ -909,11 +943,21 @@ fn test_archive_replaces_existing_archived_dir() {
         .unwrap();
     channel.archive().unwrap();
 
-    // Re-create the active channel with a different message
+    let channels_dir = temp_dir.path().join("channels");
+    let archived_dir = channels_dir.join("test-channel.archived");
+    let archived_backup = channels_dir.join("test-channel.archived.saved");
+
+    // Simulate an intentional unarchive: temporarily move the archived directory
+    // out of the way so Channel::new can recreate the active directory.
+    std::fs::rename(&archived_dir, &archived_backup).unwrap();
+
     let channel2 = Channel::new(temp_dir.path(), "test-channel").unwrap();
     channel2
         .send(&Message::text("agent1", "new message"))
         .unwrap();
+
+    // Bring back the original archived directory to simulate a zombie leftover.
+    std::fs::rename(&archived_backup, &archived_dir).unwrap();
 
     // Archiving again should succeed, replacing the old archive
     channel2.archive().unwrap();

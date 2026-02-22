@@ -5,6 +5,7 @@ use crate::cursor::Cursor;
 use crate::message::Message;
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -324,9 +325,15 @@ impl Channel {
         // Run one-time migration from flat JSONL layout to per-channel directories.
         // This is idempotent and only runs once per base_dir per process.
         auto_migrate_channels(&base_dir);
+        cleanup_archived_channel_conflicts(&base_dir);
 
         // New layout: channels/<name>/history/current.jsonl
-        let channel_dir = base_dir.join("channels").join(&channel_name);
+        let channels_dir = base_dir.join("channels");
+        let channel_dir = channels_dir.join(&channel_name);
+        let archived_dir = channels_dir.join(format!("{}.archived", channel_name));
+        if archived_dir.exists() {
+            return Err(crate::Error::ChannelArchived(channel_name.clone()));
+        }
         let history_dir = channel_dir.join("history");
         fs::create_dir_all(&history_dir)?;
         fs::create_dir_all(channel_dir.join("notes"))?;
@@ -411,7 +418,9 @@ impl Channel {
         project_name: Option<&str>,
     ) -> Result<Vec<ChannelInfo>> {
         let base_dir = base_dir.into();
+        cleanup_archived_channel_conflicts(&base_dir);
         let mut channels: Vec<ChannelInfo> = Vec::new();
+        let mut channel_map: HashMap<String, ChannelInfo> = HashMap::new();
 
         let channels_dir = base_dir.join("channels");
         if channels_dir.exists() {
@@ -448,29 +457,33 @@ impl Channel {
                     continue;
                 }
 
+                // If an archived sibling exists (with real history), prefer it over the active dir.
+                if !is_archived {
+                    let archived_dir = channels_dir.join(format!("{}.archived", channel_name));
+                    if archived_dir.join("history").join("current.jsonl").exists() {
+                        // Skip this active entry — the archived directory is the source of truth.
+                        continue;
+                    }
+                }
+
                 // A channel exists only if it has a history/current.jsonl file
                 if !path.join("history").join("current.jsonl").exists() {
                     continue;
                 }
 
-                // If both active and archived directories exist for the same channel,
-                // the active one wins — the channel is not considered archived.
-                if let Some(existing) = channels.iter_mut().find(|c| c.name == channel_name) {
-                    if !is_archived {
-                        // Active directory found, override any previous archived entry
-                        existing.is_archived = false;
-                    }
-                    // Skip duplicate (archived entry when active already exists,
-                    // or second active entry)
-                    continue;
+                let entry = channel_map
+                    .entry(channel_name.clone())
+                    .or_insert(ChannelInfo {
+                        name: channel_name.clone(),
+                        is_archived,
+                    });
+                if is_archived {
+                    entry.is_archived = true;
                 }
-
-                channels.push(ChannelInfo {
-                    name: channel_name,
-                    is_archived,
-                });
             }
         }
+
+        channels.extend(channel_map.into_values());
 
         // Sort with main project channel pinned first, then alphabetically
         channels.sort_by(|a, b| {
@@ -495,6 +508,7 @@ impl Channel {
     /// `history/current.jsonl`.
     pub fn list_archived(base_dir: impl Into<PathBuf>) -> Result<Vec<String>> {
         let base_dir = base_dir.into();
+        cleanup_archived_channel_conflicts(&base_dir);
         let mut archived = Vec::new();
 
         let channels_dir = base_dir.join("channels");
@@ -1466,6 +1480,73 @@ impl Clone for ChannelRouter {
             default_channel_name: self.default_channel_name.clone(),
             // Arc::clone shares the same cache across clones
             channels: std::sync::Arc::clone(&self.channels),
+        }
+    }
+}
+
+/// Remove any active channel directories that have an archived counterpart.
+///
+/// Archived channels should only exist under `<name>.archived/`. A prior bug
+/// recreated `<name>/` when accessing archived channels, causing both directories
+/// to exist. This helper deletes the zombie active directory so the archived
+/// data remains authoritative.
+fn cleanup_archived_channel_conflicts(base_dir: &Path) {
+    let channels_dir = base_dir.join("channels");
+    if !channels_dir.exists() {
+        return;
+    }
+
+    let entries = match fs::read_dir(&channels_dir) {
+        Ok(entries) => entries,
+        Err(err) => {
+            tracing::warn!(
+                "Failed to scan channels directory '{:?}' for archived conflicts: {}",
+                channels_dir,
+                err
+            );
+            return;
+        }
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+
+        let Some(dir_name) = path.file_name().and_then(|s| s.to_str()) else {
+            continue;
+        };
+
+        if !dir_name.ends_with(".archived") {
+            continue;
+        }
+
+        let channel_name = dir_name.trim_end_matches(".archived");
+        if !Channel::is_valid_channel_name(channel_name) {
+            continue;
+        }
+
+        let archived_history = path.join("history").join("current.jsonl");
+        if !archived_history.exists() {
+            continue;
+        }
+
+        let active_dir = channels_dir.join(channel_name);
+        if !active_dir.exists() {
+            continue;
+        }
+
+        match fs::remove_dir_all(&active_dir) {
+            Ok(_) => tracing::info!(
+                "Removed zombie active channel directory '{}' because an archived copy exists",
+                channel_name
+            ),
+            Err(err) => tracing::warn!(
+                "Failed to remove zombie active channel directory '{}': {}",
+                channel_name,
+                err
+            ),
         }
     }
 }
