@@ -398,6 +398,8 @@ When Midtown launches a session, it sets provider-specific env vars:
 - Codex: `CODEX_HOME` to the profile directory
 - z.ai: `ANTHROPIC_AUTH_TOKEN` (API key) and `ANTHROPIC_BASE_URL` (defaults to `https://api.z.ai/api/anthropic`)
 
+Before launching Codex, Midtown also mirrors `~/.codex/skills` into the active profile's `CODEX_HOME/skills` directory (with stale-entry cleanup) so provider profile switches don't lose installed Codex skills.
+
 ### Commands
 
 | Command | Description |
