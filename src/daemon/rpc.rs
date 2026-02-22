@@ -494,6 +494,7 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
             let pr = params.u64_param("pr");
             let plan = params.str_param("plan");
             let execution_skill = params.str_param("execution_skill");
+            let thread_id = params.str_param("thread_id");
             super::rpc_task::handle_task_create(
                 request.id,
                 subject,
@@ -504,6 +505,7 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
                 pr,
                 plan,
                 execution_skill,
+                thread_id,
                 state,
             )
             .await

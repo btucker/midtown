@@ -1978,6 +1978,18 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                                     record.is_running = false;
                                 }
                             }
+                            // Look up task_thread_id so coworker posts route to the
+                            // fork session's thread (if the task was created with --thread-id).
+                            let bound_thread_id = ps.task_thread_id.get(&task_id).cloned();
+                            // Populate in-memory cache so handle_channel_post can auto-tag
+                            // the coworker's posts without touching persistent state.
+                            if let Some(ref tid) = bound_thread_id {
+                                state
+                                    .fork_bound_threads
+                                    .lock()
+                                    .unwrap()
+                                    .insert(name.clone(), tid.clone());
+                            }
                             let record =
                                 ps.sessions.entry(session_id.clone()).or_insert_with(|| {
                                     crate::daemon::state::SessionRecord {
@@ -2000,11 +2012,14 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                                         is_running: true,
                                         created_at: chrono::Utc::now(),
                                         resume_on_startup: !is_reviewer,
-                                        bound_thread_id: None,
+                                        bound_thread_id: bound_thread_id.clone(),
                                     }
                                 });
                             record.current_name = Some(name.clone());
                             record.is_running = true;
+                            if bound_thread_id.is_some() {
+                                record.bound_thread_id = bound_thread_id;
+                            }
                             if let Err(e) = ps.save_for_repo(&state.repo_name) {
                                 warn!("Failed to save persistent state after SpawnSession: {}", e);
                             }

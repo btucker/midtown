@@ -179,6 +179,16 @@ pub struct DaemonPersistentState {
     #[serde(default)]
     pub task_execution_skill: HashMap<String, String>,
 
+    /// Task-to-thread-ID mapping for fork session routing.
+    ///
+    /// Maps task ID → thread_parent_id. When a fork session creates a task with
+    /// `--thread-id`, coworker updates for that task are automatically tagged with
+    /// this thread_parent_id so they appear in the fork session's thread. The daemon
+    /// sets `bound_thread_id` on the spawned coworker's `SessionRecord` using this
+    /// mapping, wiring the coworker's channel output into the correct thread.
+    #[serde(default)]
+    pub task_thread_id: HashMap<String, String>,
+
     /// Channel lead session IDs for resume-on-demand.
     ///
     /// Maps channel name → Claude Code session ID. One channel lead session
@@ -213,7 +223,7 @@ impl DaemonPersistentState {
                 // Rebuild reverse indexes that aren't serialized
                 state.worktree_registry.rebuild_indexes();
                 debug!(
-                    "Loaded daemon state: {} PR reviewers, {} reminders, CI stats: {}, {} worktree assignments, {} task-channel mappings, {} task-model mappings, {} task-plan mappings, {} task-execution-skill mappings, {} channel-lead sessions",
+                    "Loaded daemon state: {} PR reviewers, {} reminders, CI stats: {}, {} worktree assignments, {} task-channel mappings, {} task-model mappings, {} task-plan mappings, {} task-execution-skill mappings, {} task-thread-id mappings, {} channel-lead sessions",
                     state.github.pr_reviewers.len(),
                     state.reminders.reminders.len(),
                     state.ci_stats.summary(),
@@ -222,6 +232,7 @@ impl DaemonPersistentState {
                     state.task_model.len(),
                     state.task_plan.len(),
                     state.task_execution_skill.len(),
+                    state.task_thread_id.len(),
                     state.channel_lead_sessions.len()
                 );
                 Ok(state)
@@ -296,6 +307,7 @@ impl DaemonPersistentState {
             task_model: HashMap::new(),
             task_plan: HashMap::new(),
             task_execution_skill: HashMap::new(),
+            task_thread_id: HashMap::new(),
             channel_lead_sessions: HashMap::new(),
             sessions: HashMap::new(),
         };

@@ -696,10 +696,17 @@ pub(crate) struct DaemonState {
 
     /// In-memory cache of bound thread IDs for forked sessions.
     ///
-    /// Maps `fork_name → thread_parent_id`. Populated in `handle_session_fork` when
-    /// a fork is created. Used by the output binding path in `handle_channel_post`
-    /// to auto-tag forked session posts with their bound thread — avoids acquiring
-    /// the async `persistent_state` lock on the channel post hot path.
+    /// Maps `fork_name → thread_parent_id`. Used by the output binding path in
+    /// `handle_channel_post` to auto-tag forked session posts with their bound
+    /// thread — avoids acquiring the async `persistent_state` lock on the channel
+    /// post hot path.
+    ///
+    /// Populated in three places:
+    /// 1. `handle_session_fork` — when a fork is created
+    /// 2. `SpawnSession` effect handler (`effects.rs`) — when a task with `--thread-id` spawns
+    /// 3. Daemon startup rebuild (`mod.rs`) — from persisted `SessionRecord.bound_thread_id`
+    ///
+    /// Cleaned up in `cleanup_coworker_state` when a coworker is shut down.
     pub(crate) fork_bound_threads: std::sync::Mutex<HashMap<String, String>>,
 }
 
@@ -917,6 +924,10 @@ impl DaemonState {
         {
             let mut tool_map = self.recent_tool_items.write().unwrap();
             tool_map.remove(name);
+        }
+        // Clear fork thread binding (prevents stale thread routing on name reuse)
+        {
+            self.fork_bound_threads.lock().unwrap().remove(name);
         }
         // Clear the inbox for this name so the next session that gets
         // allocated this name does not inherit unread messages from this session.
@@ -1167,6 +1178,7 @@ impl DaemonState {
         let mut name_to_session: HashMap<String, String> = HashMap::new();
         let mut session_to_name: HashMap<String, String> = HashMap::new();
         let mut task_to_session: HashMap<String, String> = HashMap::new();
+        let mut fork_bound_threads: HashMap<String, String> = HashMap::new();
         {
             let allocated_names: Vec<String> = persistent_state
                 .sessions
@@ -1178,6 +1190,11 @@ impl DaemonState {
                 if let Some(ref name) = record.current_name {
                     name_to_session.insert(name.clone(), session_id.clone());
                     session_to_name.insert(session_id.clone(), name.clone());
+                    // Rebuild thread-binding cache from persisted SessionRecord so
+                    // coworker posts are auto-tagged after a daemon restart.
+                    if let Some(ref tid) = record.bound_thread_id {
+                        fork_bound_threads.insert(name.clone(), tid.clone());
+                    }
                 }
                 if let Some(ref task_id) = record.task_id {
                     task_to_session.insert(task_id.clone(), session_id.clone());
@@ -1239,7 +1256,7 @@ impl DaemonState {
             pending_questions: std::sync::Mutex::new(Vec::new()),
             pending_question_id_counter: std::sync::atomic::AtomicU64::new(1),
             topic_sessions: std::sync::Mutex::new(HashMap::new()),
-            fork_bound_threads: std::sync::Mutex::new(HashMap::new()),
+            fork_bound_threads: std::sync::Mutex::new(fork_bound_threads),
         })
     }
 
