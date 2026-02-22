@@ -15,6 +15,9 @@ use tracing::{debug, warn};
 
 /// How long a review assignment is valid before it expires (30 minutes).
 /// Mirrors PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS from the in-memory tracker.
+/// Complex reviews routinely exceed the previous 10 min window, so bumping the
+/// timeout to 1800s prevents reviewers from losing their idle-shutdown
+/// protection mid-review.
 pub const PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS: u64 = 1800;
 
 /// Persistent state for GitHub-related data.
