@@ -111,17 +111,22 @@ pub fn handle(cmd: &TaskCommand, client: &DaemonClient) -> Result<Response, Stri
             plan,
             execution_skill,
             thread_id,
-        } => client.task_create(
-            subject,
-            description,
-            blocked_by.as_deref(),
-            channel.as_deref(),
-            model.as_deref(),
-            *pr,
-            plan.as_deref(),
-            execution_skill.as_deref(),
-            thread_id.as_deref(),
-        ),
+        } => {
+            let env_thread_id = std::env::var("MIDTOWN_BOUND_THREAD_ID").ok();
+            let effective_thread_id =
+                derive_thread_id(thread_id.as_deref(), env_thread_id.as_deref());
+            client.task_create(
+                subject,
+                description,
+                blocked_by.as_deref(),
+                channel.as_deref(),
+                model.as_deref(),
+                *pr,
+                plan.as_deref(),
+                execution_skill.as_deref(),
+                effective_thread_id.as_deref(),
+            )
+        }
         TaskCommand::Update {
             id,
             owner,
@@ -241,3 +246,21 @@ fn handle_view(id: &str) -> Result<Response, String> {
         message: output.trim_end().to_string(),
     })
 }
+
+fn derive_thread_id(cli_value: Option<&str>, env_value: Option<&str>) -> Option<String> {
+    fn non_empty(value: Option<&str>) -> Option<String> {
+        value.and_then(|v| {
+            if v.trim().is_empty() {
+                None
+            } else {
+                Some(v.to_string())
+            }
+        })
+    }
+
+    non_empty(cli_value).or_else(|| non_empty(env_value))
+}
+
+#[path = "task_tests.rs"]
+#[cfg(test)]
+mod tests;

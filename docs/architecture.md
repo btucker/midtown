@@ -203,14 +203,15 @@ Channel leads can fork themselves into thread-specific sessions via the `session
 **Data flow:**
 - `topic_sessions` (in-memory `Mutex<HashMap<String, String>>`) maps `thread_parent_id → fork_session_id`. Used by `handle_channel_post` to route thread replies to the fork instead of the root channel lead.
 - `fork_bound_threads` (in-memory `Mutex<HashMap<String, String>>`) maps `fork_name → thread_parent_id`. Used by the output binding path in `handle_channel_post` to auto-tag forked session posts with their bound thread (avoids the async `persistent_state` lock on the hot path).
-- `SessionRecord.bound_thread_id` (persisted) stores the same binding for restart resilience.
+- `DaemonPersistentState.task_thread_id` maps `task_id → thread_parent_id`. When `midtown task create` is called with `--thread-id` (the CLI defaults to `$MIDTOWN_BOUND_THREAD_ID` inside fork sessions), `handle_task_create` stores the binding so `SpawnSession` can attach future coworkers to the same thread.
+- `SessionRecord.bound_thread_id` (persisted) stores the binding on each session so restarts can rebuild the cache.
 - `name_to_session` / `session_to_name` reverse maps are backfilled in `handle_session_fork` since `spawn_fork` consumes the init event before the event loop sees it.
 
 **Architectural invariants:**
 - Fork sessions are NOT registered in `CoworkerManager`. They bypass `spawn_coworker()` entirely, which means they are excluded from idle-shutdown evaluation, orphan recovery, and coworker status tracking.
 - The `topic_sessions` guard uses an atomic check-and-reserve pattern (inserting a "pending" sentinel) to prevent duplicate forks for the same thread.
-- `topic_sessions` is ephemeral — cleared on daemon restart. Forks don't survive restarts.
-- `fork_bound_threads` is rebuilt on daemon startup from persisted `SessionRecord.bound_thread_id` fields, so task-spawned coworkers retain their thread bindings across restarts. Fork-created entries (from `handle_session_fork`) are still ephemeral.
+- `topic_sessions` is cleared on daemon restart, so fork sessions themselves do not survive across daemon lifetimes.
+- `fork_bound_threads` is rebuilt on startup from persisted `SessionRecord.bound_thread_id` entries, which keeps thread-bound coworkers routed correctly across restarts (including auto-binding spawned tasks via `task_thread_id`). Entries created directly by `handle_session_fork` remain ephemeral.
 
 ## Channel Storage Layout
 

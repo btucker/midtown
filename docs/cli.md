@@ -50,7 +50,7 @@ Attach to a headless coworker's session in an interactive terminal pane for debu
 
 | Command | Description |
 |---------|-------------|
-| `midtown task create <subject> --description <desc> [--blocked-by <ids>] [--channel <name>] [--model <provider/model>] [--plan <path>] [--execution-skill <skill>]` | Create a new task (optionally blocked by task IDs, routed to a channel, assigned a model, given a plan file, or assigned an execution skill) |
+| `midtown task create <subject> --description <desc> [--blocked-by <ids>] [--channel <name>] [--model <provider/model>] [--plan <path>] [--execution-skill <skill>] [--thread-id <message-id>]` | Create a new task (optionally blocked by task IDs, routed to a channel, assigned a model, given a plan file, assigned an execution skill, or bound to a thread). When run inside a forked session, the CLI auto-populates `--thread-id` from `$MIDTOWN_BOUND_THREAD_ID` so spawned coworkers report back to that thread. |
 | `midtown task list [--all]` | List tasks (pending/in-progress by default) |
 | `midtown task view <id>` | View task details |
 | `midtown task update <id> [--owner <name>] [--status <status>] [--channel <name>] [--model <provider/model>]` | Update a task (use `--model ""` to clear) |
