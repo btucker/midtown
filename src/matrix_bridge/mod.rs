@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
@@ -106,6 +107,11 @@ allow_federation = false
 }
 
 fn default_as_registration_config(config: &MatrixBridgeConfig) -> Result<String, String> {
+    let project_name = crate::paths::detect_project_name().unwrap_or_else(|| "midtown".to_string());
+    let user_names = collect_coworker_identities(&project_name);
+    let channel_names = collect_channel_names(&project_name);
+    let user_pattern = regex_pattern(&user_names);
+    let channel_pattern = regex_pattern(&channel_names);
     let as_token = random_token();
     let hs_token = random_token();
 
@@ -118,14 +124,123 @@ sender_localpart: midtown
 namespaces:
   users:
     - exclusive: true
-      regex: "@(lexington|park|madison|...):{}"
+      regex: "@({}):{}"
   rooms: []
   aliases:
     - exclusive: false
-      regex: "#.*:{}"
+      regex: "#({}):{}"
 "##,
-        config.as_port, as_token, hs_token, config.server_name, config.server_name
+        config.as_port,
+        as_token,
+        hs_token,
+        user_pattern,
+        config.server_name,
+        channel_pattern,
+        config.server_name
     ))
+}
+
+fn collect_coworker_identities(project_name: &str) -> Vec<String> {
+    let mut identities = BTreeSet::new();
+
+    if let Ok(state) = crate::daemon::state::DaemonPersistentState::load_for_repo(project_name) {
+        for (name, info) in state.headless_sessions {
+            if info.coworker_type.as_deref() == Some("channel-lead") {
+                continue;
+            }
+            if crate::coworker::is_coworker_name(&name) {
+                identities.insert(name);
+            }
+        }
+        for session in state.sessions.into_values() {
+            if session.coworker_type == "channel-lead" {
+                continue;
+            }
+            if let Some(name) = session.current_name
+                && crate::coworker::is_coworker_name(&name)
+            {
+                identities.insert(name);
+            }
+        }
+    } else {
+        identities.extend(
+            crate::coworker::AVENUE_NAMES
+                .iter()
+                .map(|name| (*name).to_string()),
+        );
+    }
+
+    if let Ok(entries) = std::fs::read_dir(crate::paths::coworkers_dir_for_repo(project_name)) {
+        for entry in entries.flatten() {
+            let is_dir = entry
+                .file_type()
+                .map(|metadata| metadata.is_dir())
+                .unwrap_or(false);
+            if !is_dir {
+                continue;
+            }
+            if let Some(name) = entry.file_name().to_str()
+                && crate::coworker::is_coworker_name(name)
+            {
+                identities.insert(name.to_string());
+            }
+        }
+    }
+
+    identities.insert("midtown".to_string());
+    identities.into_iter().collect()
+}
+
+fn collect_channel_names(project_name: &str) -> Vec<String> {
+    let mut names = BTreeSet::new();
+
+    if let Some(config) = crate::config::load_full_project_config(project_name) {
+        names.extend(config.channels.seed);
+    }
+
+    if let Ok(state) = crate::daemon::state::DaemonPersistentState::load_for_repo(project_name) {
+        names.extend(state.channel_lead_sessions.keys().cloned());
+    }
+
+    let channels_dir = crate::paths::projects_dir_for_repo(project_name).join("channels");
+    if let Ok(entries) = std::fs::read_dir(channels_dir) {
+        for entry in entries.flatten() {
+            let file_name = entry.file_name();
+            let name = match file_name.to_str() {
+                Some(name) => name.to_string(),
+                None => continue,
+            };
+            if is_channel_dir_name(&name) {
+                names.insert(name.trim_end_matches(".archived").to_string());
+            }
+        }
+    }
+
+    names.insert("midtown".to_string());
+    names.into_iter().collect()
+}
+
+fn is_channel_dir_name(name: &str) -> bool {
+    let name = name.trim_end_matches(".archived");
+    if name.is_empty() {
+        return false;
+    }
+    if name.starts_with('.') || name == "notes" || name == "history" || name == "cursors" {
+        return false;
+    }
+    name.chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
+fn regex_pattern(names: &[String]) -> String {
+    let escaped: Vec<String> = names.iter().map(|name| regex::escape(name)).collect();
+    if escaped.is_empty() {
+        ".*".to_string()
+    } else if escaped.len() == 1 {
+        escaped[0].clone()
+    } else {
+        format!("(?:{})", escaped.join("|"))
+    }
 }
 
 fn write_file_if_missing(path: &Path, contents: String) -> Result<(), String> {
