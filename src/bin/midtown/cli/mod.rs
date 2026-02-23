@@ -9,6 +9,7 @@ pub mod e2e;
 mod headed_wrapper;
 mod hooks;
 mod lead;
+mod matrix;
 mod pr;
 mod response;
 mod session;
@@ -72,13 +73,22 @@ pub fn handle_pr(cmd: &PrCommand, client: &DaemonClient) -> Result<Response, Str
 pub fn handle_start(
     project: Option<String>,
     repos: Vec<std::path::PathBuf>,
+    matrix: bool,
 ) -> Result<Response, String> {
-    daemon::handle_start(project, repos)
+    daemon::handle_start(project, repos, matrix)
 }
 
 /// Handle stop command (no daemon required - it stops the daemon)
 pub fn handle_stop(keep_session: bool) -> Result<Response, String> {
     daemon::handle_stop(keep_session)
+}
+
+pub fn handle_matrix_run() -> Result<(), String> {
+    matrix::handle_matrix_run()
+}
+
+pub fn handle_matrix_stop() -> Result<Response, String> {
+    matrix::handle_matrix_stop()
 }
 
 /// Handle restart command (stop + start)

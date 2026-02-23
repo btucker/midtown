@@ -655,7 +655,11 @@ fn ensure_required_plugins() {
 ///
 /// Starts Midtown services for the current project (daemon + shared webserver).
 /// Interactive terminal UX now lives in `midtown view`.
-pub fn handle_start(project: Option<String>, repos: Vec<PathBuf>) -> Result<Response, String> {
+pub fn handle_start(
+    project: Option<String>,
+    repos: Vec<PathBuf>,
+    matrix: bool,
+) -> Result<Response, String> {
     // Validate explicit project name if provided
     if let Some(ref name) = project {
         validate_project_name(name)?;
@@ -759,6 +763,20 @@ pub fn handle_start(project: Option<String>, repos: Vec<PathBuf>) -> Result<Resp
             midtown::webserver::DEFAULT_WEBSERVER_PORT
         ));
         emit_startup_progress(96, "shared webserver already running");
+    }
+
+    // Step 4: Start Matrix bridge if requested
+    if matrix {
+        if !super::matrix::matrix_bridge_is_running() {
+            match super::matrix::launch_matrix_bridge() {
+                Ok(()) => {
+                    messages.push("Matrix bridge running at matrix://midtown.local".to_string())
+                }
+                Err(e) => messages.push(format!("Warning: Failed to start Matrix bridge: {}", e)),
+            }
+        } else {
+            messages.push("Matrix bridge already running".to_string());
+        }
     }
 
     // Build response message
@@ -1029,6 +1047,15 @@ pub fn handle_stop(keep_session: bool) -> Result<Response, String> {
         }
     }
 
+    // Step 6: Stop the matrix bridge
+    if super::matrix::matrix_bridge_is_running() {
+        match super::matrix::stop_matrix_bridge() {
+            Ok(true) => messages.push("Stopped matrix bridge".to_string()),
+            Ok(false) => {}
+            Err(e) => messages.push(format!("Warning: Failed to stop matrix bridge: {}", e)),
+        }
+    }
+
     Ok(Response::Message {
         message: messages.join(". "),
     })
@@ -1270,6 +1297,8 @@ fn wait_for_review_coworkers_to_break(client: &DaemonClient) -> Result<(), Strin
 ///
 /// For a full fresh start, use `midtown stop && midtown start`.
 pub fn handle_restart(force: bool) -> Result<Response, String> {
+    let matrix_was_running = super::matrix::matrix_bridge_is_running();
+
     // Send SIGTERM to all running coworker sessions via daemon RPC.
     // The daemon's graceful_shutdown_all() sends SIGTERM and waits up to 10s,
     // then SIGKILL as fallback.
@@ -1279,7 +1308,7 @@ pub fn handle_restart(force: bool) -> Result<Response, String> {
             // Daemon not running — nothing to signal
             eprintln!("Daemon not running, skipping coworker shutdown.");
             // Fall through to start path below
-            return handle_start(None, vec![]).map(|_| Response::Message {
+            return handle_start(None, vec![], matrix_was_running).map(|_| Response::Message {
                 message: "Daemon was not running; started fresh.".to_string(),
             });
         }
@@ -1321,6 +1350,19 @@ pub fn handle_restart(force: bool) -> Result<Response, String> {
     // Stop the webserver first (it runs independently of the daemon)
     let _ = stop_webserver();
 
+    // Restarting the daemon reexecs the process in-place, so the bridge
+    // should restart too for clean state and config reload.
+    if matrix_was_running {
+        match super::matrix::stop_matrix_bridge() {
+            Ok(true) => eprintln!("Stopped matrix bridge for restart."),
+            Ok(false) => {}
+            Err(e) => eprintln!(
+                "Warning: failed to stop matrix bridge before restart: {}",
+                e
+            ),
+        }
+    }
+
     // Tell the daemon to exec-restart
     if let Err(e) = client.exec_restart() {
         // Fallback: if RPC fails (e.g., old daemon without exec-restart support),
@@ -1339,7 +1381,7 @@ pub fn handle_restart(force: bool) -> Result<Response, String> {
             std::thread::sleep(poll_interval);
         }
 
-        let result = handle_start(None, vec![])?;
+        let result = handle_start(None, vec![], matrix_was_running)?;
         return match result {
             Response::Message { message } => Ok(Response::Message {
                 message: format!("{} (legacy restart). Open view with: midtown view", message),
@@ -1381,6 +1423,13 @@ pub fn handle_restart(force: bool) -> Result<Response, String> {
 
     // Restart the webserver
     launch_webserver().map_err(|e| format!("Failed to restart webserver: {}", e))?;
+
+    if matrix_was_running
+        && !super::matrix::matrix_bridge_is_running()
+        && let Err(e) = super::matrix::launch_matrix_bridge()
+    {
+        eprintln!("Warning: failed to restart matrix bridge: {}", e);
+    }
 
     Ok(Response::Message {
         message: "Daemon exec-restarted. Reopen with: midtown view".to_string(),
@@ -1809,7 +1858,11 @@ pub fn handle_view(project: Option<&str>, attach: bool) -> Result<Response, Stri
 
     // Ensure daemon + lead are running for this project.
     if !daemon_is_running() {
-        handle_start(Some(ctx.project_name.clone()), ctx.additional_repos.clone())?;
+        handle_start(
+            Some(ctx.project_name.clone()),
+            ctx.additional_repos.clone(),
+            false,
+        )?;
         std::thread::sleep(std::time::Duration::from_millis(150));
     }
 

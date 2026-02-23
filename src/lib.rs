@@ -78,6 +78,9 @@ pub mod web;
 // Standalone multi-project webserver
 pub mod webserver;
 
+// Experimental Matrix bridge support (spike)
+pub mod matrix_bridge;
+
 // Project configuration
 pub mod config;
 

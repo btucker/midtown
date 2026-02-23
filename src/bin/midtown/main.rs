@@ -91,6 +91,10 @@ enum Commands {
         /// Additional repository paths to include
         #[arg(long = "add-repo")]
         repos: Vec<std::path::PathBuf>,
+
+        /// Start the Matrix/Conduit bridge alongside daemon + webserver
+        #[arg(long)]
+        matrix: bool,
     },
     /// Stop midtown services
     Stop {
@@ -242,6 +246,12 @@ enum Commands {
         #[command(subcommand)]
         command: WebserverCommand,
     },
+    /// Matrix bridge lifecycle
+    #[command(hide = true)]
+    Matrix {
+        #[command(subcommand)]
+        command: MatrixCommand,
+    },
     /// Run Claude Code using the current midtown auth profile
     #[command(hide = true)]
     Claude {
@@ -300,6 +310,15 @@ enum WebserverCommand {
 }
 
 #[derive(Subcommand, Clone)]
+enum MatrixCommand {
+    /// Run matrix bridge process (internal)
+    #[command(hide = true)]
+    Run,
+    /// Stop matrix bridge process
+    Stop,
+}
+
+#[derive(Subcommand, Clone)]
 enum LeadCommand {
     /// Register this session for task sharing with coworkers
     #[command(hide = true)]
@@ -353,6 +372,7 @@ fn main() {
     let command = cli.command.unwrap_or(Commands::Start {
         project: None,
         repos: vec![],
+        matrix: false,
     });
 
     // Daemon command (runs the daemon server - internal use)
@@ -517,9 +537,34 @@ fn main() {
     }
 
     // Start command (starts daemon, doesn't need existing connection)
-    if let Commands::Start { project, repos } = &command {
-        let result = cli::handle_start(project.clone(), repos.clone());
+    if let Commands::Start {
+        project,
+        repos,
+        matrix,
+    } = &command
+    {
+        let result = cli::handle_start(project.clone(), repos.clone(), *matrix);
         handle_result(format, result);
+        return;
+    }
+
+    // Matrix command (start/stop matrix bridge process)
+    if let Commands::Matrix {
+        command: matrix_cmd,
+    } = &command
+    {
+        match matrix_cmd {
+            MatrixCommand::Run => {
+                if let Err(e) = cli::handle_matrix_run() {
+                    eprintln!("Error: {}", e);
+                    std::process::exit(1);
+                }
+            }
+            MatrixCommand::Stop => {
+                let result = cli::handle_matrix_stop();
+                handle_result(format, result);
+            }
+        }
         return;
     }
 
@@ -977,7 +1022,8 @@ fn main() {
         | Commands::Hook { .. }
         | Commands::Diagram { .. }
         | Commands::Log { .. }
-        | Commands::Webserver { .. } => unreachable!(),
+        | Commands::Webserver { .. }
+        | Commands::Matrix { .. } => unreachable!(),
     };
 
     handle_result(format, result);
