@@ -1287,7 +1287,10 @@ fn decide_discovered_coworker_nudges(
                 channel: Some(OPS_CHANNEL.to_string()),
             });
         } else if let Some(pr_number) = reviewer_prs.get(&name_lower) {
-            let prompt = crate::agents::reviewer_resume_prompt(*pr_number);
+            let prompt = crate::agents::reviewer_resume_prompt(
+                *pr_number,
+                crate::auth::AuthProvider::Claude,
+            );
 
             info!(
                 "Nudging discovered coworker {} to resume review of PR #{}",

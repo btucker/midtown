@@ -10,14 +10,137 @@
 
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
+use std::os::unix::fs::symlink;
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::Duration;
 
 mod common;
 use common::{DaemonHarnessOptions, DaemonTestHarness};
+
+static TEST_ENV_LOCK: Mutex<()> = Mutex::new(());
+static FAKE_WRAPPER_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+struct ScopedEnv {
+    prior: Vec<(String, Option<String>)>,
+}
+
+impl ScopedEnv {
+    fn new() -> Self {
+        Self { prior: Vec::new() }
+    }
+
+    fn set(&mut self, key: &str, value: String) {
+        if !self.prior.iter().any(|(k, _)| k == key) {
+            self.prior.push((key.to_string(), std::env::var(key).ok()));
+        }
+        // SAFETY: Test-scoped env mutation is serialized via TEST_ENV_LOCK.
+        unsafe { std::env::set_var(key, value) };
+    }
+}
+
+impl Drop for ScopedEnv {
+    fn drop(&mut self) {
+        for (key, value) in self.prior.iter().rev() {
+            match value {
+                Some(v) => {
+                    // SAFETY: Restoring process env under the same test lock.
+                    unsafe { std::env::set_var(key, v) };
+                }
+                None => {
+                    // SAFETY: Restoring process env under the same test lock.
+                    unsafe { std::env::remove_var(key) };
+                }
+            }
+        }
+    }
+}
+
+struct FakeCliScope {
+    _env: ScopedEnv,
+    wrapper_dir: PathBuf,
+}
+
+impl Drop for FakeCliScope {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.wrapper_dir);
+    }
+}
+
+fn find_fake_cli_binary(bin: &str) -> Option<PathBuf> {
+    if let Ok(path) = std::env::var(format!("CARGO_BIN_EXE_{bin}")) {
+        let candidate = PathBuf::from(path);
+        if candidate.exists() {
+            return Some(candidate);
+        }
+    }
+
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let candidates = [
+        manifest_dir.join("target/debug").join(bin),
+        manifest_dir.join("target/llvm-cov-target/debug").join(bin),
+        manifest_dir.join("target/release").join(bin),
+    ];
+    candidates.into_iter().find(|p| p.exists())
+}
+
+fn setup_fake_cli_scope(extra_env: &[(&str, &str)]) -> Option<FakeCliScope> {
+    let fake_claude = find_fake_cli_binary("fake-claude-cli")?;
+    let fake_codex = find_fake_cli_binary("fake-codex-cli")?;
+
+    let unique = FAKE_WRAPPER_COUNTER.fetch_add(1, Ordering::SeqCst);
+    let wrapper_dir = std::env::temp_dir().join(format!(
+        "midtown-fake-cli-wrapper-{}-{}",
+        std::process::id(),
+        unique
+    ));
+    fs::create_dir_all(&wrapper_dir).ok()?;
+
+    let claude_link = wrapper_dir.join("claude");
+    let codex_link = wrapper_dir.join("codex");
+    if symlink(&fake_claude, &claude_link).is_err() || symlink(&fake_codex, &codex_link).is_err() {
+        let _ = fs::remove_dir_all(&wrapper_dir);
+        return None;
+    }
+
+    let mut env = ScopedEnv::new();
+    let existing_path = std::env::var("PATH").unwrap_or_default();
+    let new_path = format!("{}:{}", wrapper_dir.display(), existing_path);
+    env.set("PATH", new_path);
+    for (key, value) in extra_env {
+        env.set(key, (*value).to_string());
+    }
+
+    Some(FakeCliScope {
+        _env: env,
+        wrapper_dir,
+    })
+}
+
+fn wait_for_tool_activity(
+    fixture: &DaemonTestHarness,
+    agent_name: &str,
+    timeout_ms: u64,
+) -> Option<Vec<serde_json::Value>> {
+    let key = agent_name.to_lowercase();
+    let start = std::time::Instant::now();
+    while start.elapsed().as_millis() < timeout_ms as u128 {
+        let status = fixture.rpc_call("coworkers.status", None)?;
+        let items = status["result"]["tool_activity"][&key]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        if !items.is_empty() {
+            return Some(items);
+        }
+        thread::sleep(Duration::from_millis(150));
+    }
+    None
+}
 
 fn copy_dir_recursive(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
     fs::create_dir_all(to)?;
@@ -1303,6 +1426,117 @@ fn test_daemon_rpc_auth_switch_codex_relaunches_codex_sessions() {
     );
 
     cleanup_profile_dirs(&cleanup_paths);
+}
+
+fn run_fake_lead_tool_activity_test(
+    provider: &str,
+    fake_env: &[(&str, &str)],
+    reply_snippet: &str,
+) {
+    let _env_lock = TEST_ENV_LOCK.lock().unwrap();
+    let _fake = match setup_fake_cli_scope(fake_env) {
+        Some(scope) => scope,
+        None => {
+            eprintln!("Skipping: fake CLI binaries not available in target/");
+            return;
+        }
+    };
+
+    let mut fixture = match create_daemon_fixture() {
+        Some(f) => f,
+        None => return,
+    };
+    if !fixture.start_daemon() {
+        return;
+    }
+
+    let spawn = fixture.rpc_call(
+        "lead.spawn",
+        Some(serde_json::json!({ "provider": provider })),
+    );
+    assert!(spawn.is_some(), "lead.spawn should respond");
+    let spawn = spawn.unwrap();
+    assert!(
+        spawn["error"].is_null(),
+        "lead.spawn should succeed with fake {} CLI: {:?}",
+        provider,
+        spawn["error"]
+    );
+
+    let post = fixture.rpc_call(
+        "channel.post",
+        Some(serde_json::json!({
+            "from": "user",
+            "message": format!("smoke check for fake {} tool pipeline", provider),
+        })),
+    );
+    assert!(post.is_some(), "channel.post should respond");
+    let post = post.unwrap();
+    assert!(post["error"].is_null(), "channel.post failed: {:?}", post);
+
+    assert!(
+        fixture.wait_for_channel_message(reply_snippet, 30_000),
+        "Lead should respond via channel using fake {} CLI (missing '{}')",
+        provider,
+        reply_snippet
+    );
+
+    let items = wait_for_tool_activity(&fixture, &fixture.repo_name, 30_000).unwrap_or_default();
+    assert!(
+        !items.is_empty(),
+        "coworkers.status.tool_activity should include lead items for fake {} flow",
+        provider
+    );
+    assert!(
+        items
+            .iter()
+            .any(|item| item["content"][0].get("ToolCall").is_some()),
+        "tool_activity should include a ToolCall item for fake {} flow; got: {:#?}",
+        provider,
+        items
+    );
+    assert!(
+        items
+            .iter()
+            .any(|item| item["content"][0].get("ToolResult").is_some()),
+        "tool_activity should include a ToolResult item for fake {} flow; got: {:#?}",
+        provider,
+        items
+    );
+}
+
+/// Regression test: codex lead should surface tool events and channel response.
+///
+/// Uses fake CLIs via PATH wrappers to avoid real auth/network dependencies.
+#[test]
+#[ignore] // Requires built binary + fake CLI binaries
+fn test_lead_codex_fake_cli_emits_tool_activity_and_response() {
+    run_fake_lead_tool_activity_test(
+        "codex",
+        &[
+            ("FAKE_CODEX_MODE", "tool"),
+            ("FAKE_CODEX_DELAY_MS", "20"),
+            ("FAKE_CODEX_RESPONSE_TEXT", "codex tool smoke reply"),
+        ],
+        "codex tool smoke reply",
+    );
+}
+
+/// Regression test: claude lead should surface tool events and channel response.
+///
+/// Uses fake CLIs via PATH wrappers to avoid real auth/network dependencies.
+#[test]
+#[ignore] // Requires built binary + fake CLI binaries
+fn test_lead_claude_fake_cli_emits_tool_activity_and_response() {
+    run_fake_lead_tool_activity_test(
+        "claude",
+        &[
+            ("FAKE_CLAUDE_MODE", "tool"),
+            ("FAKE_CLAUDE_DELAY_MS", "20"),
+            ("FAKE_CLAUDE_RESPONSE_TEXT", "claude tool smoke reply"),
+        ],
+        "claude tool smoke reply",
+    );
 }
 
 // ────────────────────────────────────────────────────────────────────────────

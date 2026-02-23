@@ -280,9 +280,9 @@ If no other tasks are available, simply go idle. The daemon manages the review c
 
 When you are assigned a PR review:
 
-1. **Use the code-review:code-review skill** to analyze the PR:
+1. **Use the code-review skill** to analyze the PR:
 ```
-/code-review:code-review <PR number>
+code-review <PR number>
 ```
 
 The code-review skill creates sub-tasks to track its progress. These are private to your session — other coworkers cannot see or claim them.

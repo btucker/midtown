@@ -468,14 +468,15 @@ pub fn check_and_restart_stuck_reviewers(snap: &snapshot::WorldSnapshot) -> Vec<
             });
         }
 
+        let reviewer_provider = crate::config::get_execution_provider_for_role(
+            &snap.repo_name,
+            crate::config::ExecutionRole::Reviewer,
+        );
         let mut config = crate::launch::LaunchConfig::reviewer(
             restart.name.clone(),
             restart.pr_number,
             new_restart_count,
-        );
-        config.auth_provider = crate::config::get_execution_provider_for_role(
-            &snap.repo_name,
-            crate::config::ExecutionRole::Reviewer,
+            reviewer_provider,
         );
         config.model =
             super::helpers::default_model_for_provider_role(config.auth_provider, &config.role)
@@ -692,14 +693,15 @@ pub fn check_and_restart_dead_reviewers(snap: &snapshot::WorldSnapshot) -> Vec<E
             });
         }
 
+        let reviewer_provider = crate::config::get_execution_provider_for_role(
+            &snap.repo_name,
+            crate::config::ExecutionRole::Reviewer,
+        );
         let mut config = crate::launch::LaunchConfig::reviewer(
             restart.name.clone(),
             restart.pr_number,
             new_restart_count,
-        );
-        config.auth_provider = crate::config::get_execution_provider_for_role(
-            &snap.repo_name,
-            crate::config::ExecutionRole::Reviewer,
+            reviewer_provider,
         );
         config.model =
             super::helpers::default_model_for_provider_role(config.auth_provider, &config.role)

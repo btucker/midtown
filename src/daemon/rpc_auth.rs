@@ -369,7 +369,12 @@ pub(super) async fn handle_auth_switch(
                 if let Some(pr_number) = reviewer_pr_by_name.get(&coworker.name).copied() {
                     let mut reviewer =
                         // restart_count=0: auth rotation is not a restart, fresh context
-                        crate::launch::LaunchConfig::reviewer(coworker.name.clone(), pr_number, 0);
+                        crate::launch::LaunchConfig::reviewer(
+                            coworker.name.clone(),
+                            pr_number,
+                            0,
+                            target_provider,
+                        );
                     reviewer.session_mode = if resume_compatible {
                         crate::launch::SessionMode::Resume
                     } else {

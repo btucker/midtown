@@ -279,7 +279,12 @@ impl LaunchConfig {
     /// `restart_count` is 0 for first launch, >0 for respawns. When >0, the
     /// initial prompt includes context about the previous failed attempt and
     /// instructs the reviewer to update the existing placeholder comment.
-    pub fn reviewer(name: impl Into<String>, pr_number: u64, restart_count: u32) -> Self {
+    pub fn reviewer(
+        name: impl Into<String>,
+        pr_number: u64,
+        restart_count: u32,
+        auth_provider: crate::auth::AuthProvider,
+    ) -> Self {
         LaunchConfig {
             name: name.into(),
             session_mode: SessionMode::Fresh,
@@ -287,6 +292,7 @@ impl LaunchConfig {
             initial_prompt: Some(crate::agents::reviewer_launch_prompt(
                 pr_number,
                 restart_count,
+                auth_provider,
             )),
             additional_dirs: vec![],
             pr_number: Some(pr_number),
@@ -295,7 +301,7 @@ impl LaunchConfig {
             model: "opus".to_string(),
             channel: None,
             auth_profile_dir: None,
-            auth_provider: crate::auth::AuthProvider::Claude,
+            auth_provider,
             persisted_initial_prompt: None,
         }
     }
@@ -450,9 +456,12 @@ impl LaunchConfig {
     /// so it can be re-applied when attaching to the headless session.
     pub fn to_headless_config(&self, project_name: &str) -> HeadlessConfig {
         let system_prompt = match &self.role {
-            CoworkerRole::Reviewer => {
-                crate::agents::reviewer_system_prompt(&self.name, project_name)
-            }
+            CoworkerRole::Reviewer => crate::agents::reviewer_system_prompt(
+                &self.name,
+                project_name,
+                self.auth_provider,
+                self.pr_number,
+            ),
             CoworkerRole::Lead => crate::agents::main_lead_system_prompt(project_name),
             CoworkerRole::Coworker => {
                 crate::agents::coworker_system_prompt(&self.name, project_name)
@@ -692,6 +701,7 @@ fn parse_task_model(full_model: &str) -> Option<(crate::auth::AuthProvider, &str
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::auth::AuthProvider;
 
     #[test]
     fn test_to_headless_config_fresh_coworker() {
@@ -722,7 +732,7 @@ mod tests {
 
     #[test]
     fn test_to_headless_config_reviewer_has_no_teams() {
-        let config = LaunchConfig::reviewer("york", 42, 0);
+        let config = LaunchConfig::reviewer("york", 42, 0, AuthProvider::Claude);
         let headless = config.to_headless_config("midtown");
 
         assert!(headless.team_name.is_none());
@@ -733,7 +743,7 @@ mod tests {
 
     #[test]
     fn test_to_headless_config_reviewer_has_tools() {
-        let config = LaunchConfig::reviewer("york", 42, 0);
+        let config = LaunchConfig::reviewer("york", 42, 0, AuthProvider::Claude);
         let headless = config.to_headless_config("midtown");
         assert!(headless.allow_tools);
     }
@@ -749,7 +759,7 @@ mod tests {
             "setting_sources should be None — handled by platform arg builder"
         );
 
-        let config = LaunchConfig::reviewer("york", 42, 0);
+        let config = LaunchConfig::reviewer("york", 42, 0, AuthProvider::Claude);
         let headless = config.to_headless_config("midtown");
         assert_eq!(
             headless.setting_sources, None,
@@ -783,7 +793,7 @@ mod tests {
 
     #[test]
     fn test_launch_config_reviewer_factory() {
-        let config = LaunchConfig::reviewer("york".to_string(), 42, 0);
+        let config = LaunchConfig::reviewer("york".to_string(), 42, 0, AuthProvider::Claude);
         assert_eq!(config.name, "york");
         assert_eq!(config.pr_number, Some(42));
         assert_eq!(config.role, CoworkerRole::Reviewer);
