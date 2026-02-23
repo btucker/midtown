@@ -27,6 +27,12 @@ pub fn draw_thread_panel(f: &mut Frame, app: &mut App, area: Rect) {
         .iter()
         .find(|m| m.id == *thread_parent_id)
         .map(|m| {
+            // Skip rendering content at zero width: render_content_lines would wrap each
+            // character to its own line, inflating header_height to the 12-line cap and
+            // crowding out thread replies in narrow terminals.
+            if content_width == 0 {
+                return (m.from.clone(), vec![]);
+            }
             let rendered = render_content_lines(&m.content, content_width, content_style);
             let rendered = apply_mention_highlights(rendered);
             (m.from.clone(), rendered)
@@ -158,6 +164,10 @@ fn draw_thread_messages(f: &mut Frame, app: &mut App, area: Rect) {
     f.render_widget(block, area);
     f.render_widget(paragraph, inner);
 }
+
+#[path = "thread_tests.rs"]
+#[cfg(test)]
+mod thread_tests;
 
 /// Draw the thread input bar
 fn draw_thread_input(f: &mut Frame, app: &mut App, area: Rect) {
