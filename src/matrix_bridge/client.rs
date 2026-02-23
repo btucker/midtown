@@ -9,9 +9,16 @@ pub struct MatrixClient {
 }
 
 impl MatrixClient {
-    pub fn new(homeserver_url: impl Into<String>, access_token: impl Into<String>) -> Self {
+    pub fn new(
+        homeserver_url: impl Into<String>,
+        homeserver_domain: impl Into<String>,
+        access_token: impl Into<String>,
+    ) -> Self {
         let homeserver_url = homeserver_url.into().trim_end_matches('/').to_string();
-        let homeserver_domain = infer_homeserver_domain(&homeserver_url);
+        let mut homeserver_domain = homeserver_domain.into();
+        if homeserver_domain.trim().is_empty() {
+            homeserver_domain = infer_homeserver_domain(&homeserver_url);
+        }
         Self {
             homeserver_url,
             homeserver_domain,

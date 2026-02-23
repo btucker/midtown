@@ -70,12 +70,13 @@ pub fn run(config: MatrixBridgeConfig) -> Result<(), String> {
         MatrixBridgeState::default().save(&state_path)?;
     }
 
-    start_conduit(&config)?;
+    let conduit_process = start_conduit(&config)?;
 
     let access_token =
         std::env::var("MIDTOWN_MATRIX_ACCESS_TOKEN").unwrap_or_else(|_| "matrix".to_string());
     let matrix_client = client::MatrixClient::new(
         format!("http://127.0.0.1:{}", config.matrix_port),
+        &config.server_name,
         access_token,
     );
 
@@ -105,12 +106,14 @@ pub fn run(config: MatrixBridgeConfig) -> Result<(), String> {
         })
         .map_err(|e| format!("Failed to spawn outbound sync thread: {e}"))?;
 
-    as_server::run_as_server(
+    let as_server_result = as_server::run_as_server(
         config.as_port,
         &project_name,
         matrix_client.homeserver_domain(),
         &state_path,
-    )
+    );
+    drop(conduit_process);
+    as_server_result
 }
 
 fn sync_identity_users(
@@ -333,7 +336,21 @@ fn write_file_if_missing(path: &Path, contents: String) -> Result<(), String> {
     std::fs::write(path, contents).map_err(|e| format!("Failed to write {}: {e}", path.display()))
 }
 
-fn start_conduit(config: &MatrixBridgeConfig) -> Result<(), String> {
+struct ConduitProcess {
+    child: std::process::Child,
+}
+
+impl Drop for ConduitProcess {
+    fn drop(&mut self) {
+        if self.child.try_wait().is_ok_and(|status| status.is_some()) {
+            return;
+        }
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+fn start_conduit(config: &MatrixBridgeConfig) -> Result<ConduitProcess, String> {
     let exe = std::env::var("MIDTOWN_CONDUIT_BINARY").unwrap_or_else(|_| {
         config
             .matrix_dir
@@ -351,7 +368,7 @@ fn start_conduit(config: &MatrixBridgeConfig) -> Result<(), String> {
         .arg(config.conduit_config_path());
 
     cmd.spawn()
-        .map(|_| ())
+        .map(|child| ConduitProcess { child })
         .map_err(|e| format!("Failed to spawn Conduit '{exe}': {e}"))
 }
 

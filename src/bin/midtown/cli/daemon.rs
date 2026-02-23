@@ -767,12 +767,10 @@ pub fn handle_start(
 
     // Step 4: Start Matrix bridge if requested
     if matrix {
-        if !super::matrix::matrix_bridge_is_running() {
-            match super::matrix::launch_matrix_bridge() {
+        if !super::matrix::matrix_bridge_is_running_for_project(&project_name) {
+            match super::matrix::launch_matrix_bridge_for_project(&project_name) {
                 Ok(()) => {
-                    let matrix_instance = midtown::paths::detect_project_name()
-                        .map(|project_name| format!("midtown-{project_name}"))
-                        .unwrap_or_else(|| "midtown".to_string());
+                    let matrix_instance = format!("midtown-{project_name}");
                     messages.push(format!("Matrix bridge running as {matrix_instance}"))
                 }
                 Err(e) => messages.push(format!("Warning: Failed to start Matrix bridge: {}", e)),
@@ -1051,8 +1049,10 @@ pub fn handle_stop(keep_session: bool) -> Result<Response, String> {
     }
 
     // Step 6: Stop the matrix bridge
-    if super::matrix::matrix_bridge_is_running() {
-        match super::matrix::stop_matrix_bridge() {
+    if let Some(project_name) = resolve_project_name(&None)
+        && super::matrix::matrix_bridge_is_running_for_project(&project_name)
+    {
+        match super::matrix::stop_matrix_bridge_for_project(&project_name) {
             Ok(true) => messages.push("Stopped matrix bridge".to_string()),
             Ok(false) => {}
             Err(e) => messages.push(format!("Warning: Failed to stop matrix bridge: {}", e)),
@@ -1300,7 +1300,10 @@ fn wait_for_review_coworkers_to_break(client: &DaemonClient) -> Result<(), Strin
 ///
 /// For a full fresh start, use `midtown stop && midtown start`.
 pub fn handle_restart(force: bool) -> Result<Response, String> {
-    let matrix_was_running = super::matrix::matrix_bridge_is_running();
+    let matrix_project_name = resolve_project_name(&None);
+    let matrix_was_running = matrix_project_name
+        .as_deref()
+        .is_some_and(super::matrix::matrix_bridge_is_running_for_project);
 
     // Send SIGTERM to all running coworker sessions via daemon RPC.
     // The daemon's graceful_shutdown_all() sends SIGTERM and waits up to 10s,
@@ -1356,7 +1359,10 @@ pub fn handle_restart(force: bool) -> Result<Response, String> {
     // Restarting the daemon reexecs the process in-place, so the bridge
     // should restart too for clean state and config reload.
     if matrix_was_running {
-        match super::matrix::stop_matrix_bridge() {
+        let project_name = matrix_project_name
+            .as_deref()
+            .expect("matrix restart state checked");
+        match super::matrix::stop_matrix_bridge_for_project(project_name) {
             Ok(true) => eprintln!("Stopped matrix bridge for restart."),
             Ok(false) => {}
             Err(e) => eprintln!(
@@ -1428,8 +1434,11 @@ pub fn handle_restart(force: bool) -> Result<Response, String> {
     launch_webserver().map_err(|e| format!("Failed to restart webserver: {}", e))?;
 
     if matrix_was_running
-        && !super::matrix::matrix_bridge_is_running()
-        && let Err(e) = super::matrix::launch_matrix_bridge()
+        && matrix_project_name.as_deref().is_some_and(|project_name| {
+            !super::matrix::matrix_bridge_is_running_for_project(project_name)
+        })
+        && let Some(project_name) = matrix_project_name.as_deref()
+        && let Err(e) = super::matrix::launch_matrix_bridge_for_project(project_name)
     {
         eprintln!("Warning: failed to restart matrix bridge: {}", e);
     }
@@ -1870,8 +1879,8 @@ pub fn handle_view(project: Option<&str>, attach: bool, matrix: bool) -> Result<
             );
         }
 
-        if !super::matrix::matrix_bridge_is_running() {
-            match super::matrix::launch_matrix_bridge() {
+        if !super::matrix::matrix_bridge_is_running_for_project(&ctx.project_name) {
+            match super::matrix::launch_matrix_bridge_for_project(&ctx.project_name) {
                 Ok(()) => {
                     println!("Launched matrix bridge for project '{}'.", ctx.project_name);
                 }
