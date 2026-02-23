@@ -15,6 +15,10 @@
 | `midtown chat` | Open the IRC-style chat TUI |
 | `midtown log [--hooks] [--path] [-f] [-n <lines>]` | View daemon or hook logs |
 
+`midtown view --matrix` downloads and runs the latest Cinny release from GitHub, connects it to the local Matrix bridge on port 6167, and starts a local Cinny server. It waits up to 6 seconds for the matrix bridge to start.
+
+Required tools for `midtown view --matrix`: `curl`, `tar`, `npm`.
+
 ## Channel
 
 | Command | Description |

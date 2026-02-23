@@ -98,6 +98,8 @@ The Project Lead is just a Claude Code session, but it's been booted with a [spe
 
 See the [full CLI reference](docs/cli.md) for all flags and options.
 
+`midtown view --matrix` requires `curl`, `tar`, and `npm` on PATH. It downloads and runs the latest Cinny tarball, connects it to the local Matrix bridge on port `6167`, and waits up to 6 seconds for bridge startup.
+
 > **Note:** `midtown view` also accepts `midtown chat` and `midtown attach` as aliases.
 
 ## Documentation
