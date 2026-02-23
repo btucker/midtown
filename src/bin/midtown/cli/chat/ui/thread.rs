@@ -9,7 +9,7 @@ use ratatui::{
 };
 
 use super::super::app::{App, FocusedPane};
-use super::messages::render_message;
+use super::messages::{apply_mention_highlights, render_content_lines, render_message};
 
 /// Draw the thread panel showing a parent message's thread replies.
 pub fn draw_thread_panel(f: &mut Frame, app: &mut App, area: Rect) {
@@ -17,28 +17,33 @@ pub fn draw_thread_panel(f: &mut Frame, app: &mut App, area: Rect) {
         return;
     };
 
-    // Clone parent message data upfront to avoid borrow conflicts with &mut App
-    let parent_msg_data: Option<(String, String)> = app
+    // Pre-render parent message content upfront to get actual line count and avoid
+    // borrow conflicts with &mut App. Content width is area width minus 2 (for borders).
+    let content_width = area.width.saturating_sub(2) as usize;
+    let content_style = Style::default().fg(Color::White);
+
+    let parent_msg_data: Option<(String, Vec<Line<'static>>)> = app
         .messages
         .iter()
         .find(|m| m.id == *thread_parent_id)
-        .map(|m| (m.from.clone(), m.content.clone()));
+        .map(|m| {
+            // Skip rendering content at zero width: render_content_lines would wrap each
+            // character to its own line, inflating header_height to the 12-line cap and
+            // crowding out thread replies in narrow terminals.
+            if content_width == 0 {
+                return (m.from.clone(), vec![]);
+            }
+            let rendered = render_content_lines(&m.content, content_width, content_style);
+            let rendered = apply_mention_highlights(rendered);
+            (m.from.clone(), rendered)
+        });
 
-    // Calculate header height dynamically: full message wrapped + sender prefix + 2 borders.
-    // Use area width minus 2 (borders) to estimate wrap width.
-    let header_content_height = if let Some((from, content)) = &parent_msg_data {
-        let wrap_width = area.width.saturating_sub(2) as usize;
-        let prefix_len = from.chars().count() + 2; // "from: "
-        let full_text_len = prefix_len + content.chars().count();
-        if wrap_width > 0 {
-            ((full_text_len as f64 / wrap_width as f64).ceil() as u16).max(1)
-        } else {
-            1
-        }
+    // Header height: 2 borders + 1 sender line + rendered content line count, capped at 12.
+    let header_height = if let Some((_, ref lines)) = parent_msg_data {
+        (lines.len() as u16 + 3).clamp(4, 12)
     } else {
-        1
+        4
     };
-    let header_height = header_content_height + 2; // + 2 for borders
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -49,15 +54,21 @@ pub fn draw_thread_panel(f: &mut Frame, app: &mut App, area: Rect) {
         ])
         .split(area);
 
-    draw_thread_header(f, parent_msg_data.as_ref(), chunks[0]);
+    draw_thread_header(f, parent_msg_data, chunks[0]);
     draw_thread_messages(f, app, chunks[1]);
     draw_thread_input(f, app, chunks[2]);
 }
 
-/// Draw the thread header showing the full parent message (wrapped).
+/// Draw the thread header showing the full parent message with markdown formatting.
 ///
-/// Takes pre-extracted (from, content) to avoid borrow conflicts.
-fn draw_thread_header(f: &mut Frame, parent_msg_data: Option<&(String, String)>, area: Rect) {
+/// Takes pre-rendered content lines (from `render_content_lines` + `apply_mention_highlights`)
+/// to match the markdown styling of regular chat messages. The sender name is shown
+/// on its own bold-yellow line above the content, matching the main chat layout.
+fn draw_thread_header(
+    f: &mut Frame,
+    parent_msg_data: Option<(String, Vec<Line<'static>>)>,
+    area: Rect,
+) {
     let block = Block::default()
         .title(" Thread ")
         .title_style(
@@ -70,25 +81,24 @@ fn draw_thread_header(f: &mut Frame, parent_msg_data: Option<&(String, String)>,
 
     let inner = block.inner(area);
 
-    let line = if let Some((from, content)) = parent_msg_data {
-        Line::from(vec![
-            Span::styled(
-                format!("{}: ", from),
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(content.clone(), Style::default().fg(Color::White)),
-        ])
+    let lines: Vec<Line<'static>> = if let Some((from, content_lines)) = parent_msg_data {
+        let mut lines = vec![Line::from(Span::styled(
+            from,
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ))];
+        lines.extend(content_lines);
+        lines
     } else {
-        Line::from(Span::styled(
+        vec![Line::from(Span::styled(
             "Thread (parent not found)",
             Style::default().fg(Color::DarkGray),
-        ))
+        ))]
     };
 
     f.render_widget(block, area);
-    f.render_widget(Paragraph::new(line).wrap(Wrap { trim: false }), inner);
+    f.render_widget(Paragraph::new(lines), inner);
 }
 
 /// Draw thread reply messages
@@ -154,6 +164,10 @@ fn draw_thread_messages(f: &mut Frame, app: &mut App, area: Rect) {
     f.render_widget(block, area);
     f.render_widget(paragraph, inner);
 }
+
+#[path = "thread_tests.rs"]
+#[cfg(test)]
+mod thread_tests;
 
 /// Draw the thread input bar
 fn draw_thread_input(f: &mut Frame, app: &mut App, area: Rect) {
