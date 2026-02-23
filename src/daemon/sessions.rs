@@ -1179,13 +1179,12 @@ impl SessionManager {
             .collect()
     }
 
-    /// Check all tracked sessions for process liveness using `try_wait()`.
+    /// Check all tracked sessions for process liveness.
     ///
-    /// This is a defense-in-depth backstop for `drain_events()`. If a child
-    /// process exits but stdout doesn't close cleanly (pipe buffering, timing
-    /// race, etc.), `drain_events` may not detect the exit. This method uses
-    /// the kernel's `waitpid(WNOHANG)` to definitively check if each process
-    /// is still alive, and force-marks dead sessions as Stopped.
+    /// This is a defense-in-depth backstop for `drain_events()`. For Claude
+    /// sessions, uses `waitpid(WNOHANG)` via `try_wait()` to check if the
+    /// process is still alive. For Codex sessions (which share a single
+    /// app-server process), checks whether the event channel is still open.
     ///
     /// Returns the names of sessions that were discovered to be dead.
     pub async fn reconcile_process_health(&self) -> Vec<String> {
@@ -1213,29 +1212,42 @@ impl SessionManager {
                 }
             };
 
-            match session.try_wait() {
-                Ok(Some(exit_status)) => {
-                    // Process has exited but drain_events didn't catch it
+            if session.is_codex_session() {
+                // Codex sessions share a process — liveness is detected via channel closure.
+                if !session.is_codex_channel_alive() {
                     warn!(
-                        "Session '{}' process exited (status={}) but was still tracked as {:?} — forcing cleanup",
-                        name, exit_status, cs.status
+                        "Codex session '{}' event channel closed — marking as stopped",
+                        name
                     );
                     cs.status = SessionStatus::Stopped;
                     cs.session = None;
                     newly_stopped.push(name.clone());
                 }
-                Ok(None) => {
-                    // Process is still running — all good
-                }
-                Err(e) => {
-                    // Error checking process status — treat as dead
-                    warn!(
-                        "Failed to check process liveness for session '{}': {} — marking as stopped",
-                        name, e
-                    );
-                    cs.status = SessionStatus::Stopped;
-                    cs.session = None;
-                    newly_stopped.push(name.clone());
+            } else {
+                match session.try_wait() {
+                    Ok(Some(exit_status)) => {
+                        // Process has exited but drain_events didn't catch it
+                        warn!(
+                            "Session '{}' process exited (status={}) but was still tracked as {:?} — forcing cleanup",
+                            name, exit_status, cs.status
+                        );
+                        cs.status = SessionStatus::Stopped;
+                        cs.session = None;
+                        newly_stopped.push(name.clone());
+                    }
+                    Ok(None) => {
+                        // Process is still running — all good
+                    }
+                    Err(e) => {
+                        // Error checking process status — treat as dead
+                        warn!(
+                            "Failed to check process liveness for session '{}': {} — marking as stopped",
+                            name, e
+                        );
+                        cs.status = SessionStatus::Stopped;
+                        cs.session = None;
+                        newly_stopped.push(name.clone());
+                    }
                 }
             }
         }
