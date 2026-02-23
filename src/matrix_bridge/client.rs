@@ -3,13 +3,17 @@ use serde_json::Value;
 #[derive(Debug, Clone)]
 pub struct MatrixClient {
     pub homeserver_url: String,
+    homeserver_domain: String,
     pub access_token: String,
 }
 
 impl MatrixClient {
     pub fn new(homeserver_url: impl Into<String>, access_token: impl Into<String>) -> Self {
+        let homeserver_url = homeserver_url.into();
+        let homeserver_domain = infer_homeserver_domain(&homeserver_url);
         Self {
-            homeserver_url: homeserver_url.into(),
+            homeserver_url,
+            homeserver_domain,
             access_token: access_token.into(),
         }
     }
@@ -25,7 +29,7 @@ impl MatrixClient {
         if channel_name.trim().is_empty() {
             return Err("channel name cannot be empty".to_string());
         }
-        Ok(format!("#{}:midtown.local", channel_name))
+        Ok(format!("#{}:{}", channel_name, self.homeserver_domain))
     }
 
     pub fn send_message(
@@ -51,5 +55,19 @@ impl MatrixClient {
             return Err("payload cannot be null".to_string());
         }
         Ok(())
+    }
+}
+
+fn infer_homeserver_domain(homeserver_url: &str) -> String {
+    let without_path = homeserver_url.trim_end_matches('/')
+        .trim_start_matches("http://")
+        .trim_start_matches("https://")
+        .split('/')
+        .next()
+        .unwrap_or("matrix.local");
+    if without_path.is_empty() {
+        "matrix.local".to_string()
+    } else {
+        without_path.to_string()
     }
 }

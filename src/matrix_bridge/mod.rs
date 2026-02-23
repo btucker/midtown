@@ -23,7 +23,7 @@ impl MatrixBridgeConfig {
     pub fn new(matrix_dir: PathBuf) -> Self {
         Self {
             matrix_dir,
-            server_name: "midtown.local".to_string(),
+            server_name: "matrix.local".to_string(),
             matrix_port: 6167,
             as_port: 47025,
         }
@@ -34,7 +34,7 @@ impl Default for MatrixBridgeConfig {
     fn default() -> Self {
         Self {
             matrix_dir: crate::paths::midtown_base_dir().join("matrix"),
-            server_name: "midtown.local".to_string(),
+            server_name: "matrix.local".to_string(),
             matrix_port: 6167,
             as_port: 47025,
         }
@@ -43,6 +43,12 @@ impl Default for MatrixBridgeConfig {
 
 /// Launch the matrix bridge runtime.
 pub fn run(config: MatrixBridgeConfig) -> Result<(), String> {
+    let project_name = crate::paths::detect_project_name()
+        .ok_or_else(|| "Cannot determine project name for matrix bridge startup".to_string())?;
+    let config = MatrixBridgeConfig {
+        server_name: format!("{project_name}.local"),
+        ..config
+    };
     std::fs::create_dir_all(&config.matrix_dir).map_err(|e| {
         format!(
             "Failed to create matrix directory {}: {e}",
@@ -56,7 +62,7 @@ pub fn run(config: MatrixBridgeConfig) -> Result<(), String> {
     )?;
     write_file_if_missing(
         &config.as_registration_path(),
-        default_as_registration_config(&config)?,
+        default_as_registration_config(&config, &project_name)?,
     )?;
 
     let state_path = config.state_path();
@@ -106,23 +112,24 @@ allow_federation = false
     ))
 }
 
-fn default_as_registration_config(config: &MatrixBridgeConfig) -> Result<String, String> {
-    let project_name = crate::paths::detect_project_name().ok_or_else(|| {
-        "Cannot determine project name for matrix namespace generation".to_string()
-    })?;
+fn default_as_registration_config(
+    config: &MatrixBridgeConfig,
+    project_name: &str,
+) -> Result<String, String> {
     let user_names = collect_coworker_identities(&project_name);
     let channel_names = collect_channel_names(&project_name);
     let user_pattern = regex_pattern(&user_names);
     let channel_pattern = regex_pattern(&channel_names);
     let as_token = random_token();
     let hs_token = random_token();
+    let bridge_id = format!("midtown-bridge-{project_name}");
 
     Ok(format!(
-        r##"id: midtown-bridge
+        r##"id: {}
 url: http://localhost:{}
 as_token: {}
 hs_token: {}
-sender_localpart: midtown
+sender_localpart: {}
 namespaces:
   users:
     - exclusive: true
@@ -132,9 +139,11 @@ namespaces:
     - exclusive: false
       regex: "#({}):{}"
 "##,
+        bridge_id,
         config.as_port,
         as_token,
         hs_token,
+        project_name,
         user_pattern,
         config.server_name,
         channel_pattern,
