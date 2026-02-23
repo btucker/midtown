@@ -770,10 +770,10 @@ pub fn handle_start(
         if !super::matrix::matrix_bridge_is_running() {
             match super::matrix::launch_matrix_bridge() {
                 Ok(()) => {
-                    let matrix_home = midtown::paths::detect_project_name()
-                        .map(|project_name| format!("matrix://{project_name}.local"))
-                        .unwrap_or_else(|| "matrix://matrix.local".to_string());
-                    messages.push(format!("Matrix bridge running at {matrix_home}"))
+                    let matrix_instance = midtown::paths::detect_project_name()
+                        .map(|project_name| format!("midtown-{project_name}"))
+                        .unwrap_or_else(|| "midtown".to_string());
+                    messages.push(format!("Matrix bridge running as {matrix_instance}"))
                 }
                 Err(e) => messages.push(format!("Warning: Failed to start Matrix bridge: {}", e)),
             }
