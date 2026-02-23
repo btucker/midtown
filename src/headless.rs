@@ -217,6 +217,9 @@ pub enum StreamEvent {
         #[serde(flatten)]
         extra: serde_json::Value,
     },
+    /// Catch-all for event types added by newer CLI versions (e.g. rate_limit_event).
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Debug, Clone)]
@@ -584,17 +587,6 @@ impl CodexSharedRuntime {
         process.child.wait().await
     }
 
-    async fn try_wait(&self) -> std::io::Result<Option<std::process::ExitStatus>> {
-        let mut process = self.process.lock().await;
-        process.child.try_wait()
-    }
-
-    async fn pid(&self) -> Option<u32> {
-        let process = self.process.lock().await;
-        process.child.id()
-    }
-
-    #[allow(dead_code)]
     async fn shutdown(&self) {
         let mut process = self.process.lock().await;
         let _ = process.child.start_kill();
@@ -1207,22 +1199,19 @@ impl HeadlessSessionBackend {
                     .ok_or_else(|| std::io::Error::other("no child process"))?;
                 child.try_wait()
             }
-            Self::Codex => {
-                if let Some(context) = session.codex_session() {
-                    futures::executor::block_on(context.runtime.try_wait())
-                } else {
-                    Err(std::io::Error::other("missing codex runtime"))
-                }
-            }
+            // Codex sessions share one long-lived app-server process managed by
+            // CodexSharedRuntime. Individual sessions cannot reap or poll it;
+            // liveness is detected when the event channel closes.
+            Self::Codex => Ok(None),
         }
     }
 
     fn pid(self, session: &HeadlessSession) -> Option<u32> {
         match self {
             Self::Claude => session.child.as_ref().and_then(|child| child.id()),
-            Self::Codex => session
-                .codex_session()
-                .and_then(|context| futures::executor::block_on(context.runtime.pid())),
+            // Codex sessions don't own individual processes — the shared
+            // app-server PID is managed by CodexSharedRuntime.
+            Self::Codex => None,
         }
     }
 
@@ -1657,6 +1646,10 @@ impl HeadlessSession {
                         continue;
                     }
                     match serde_json::from_str::<StreamEvent>(trimmed) {
+                        Ok(StreamEvent::Unknown) => {
+                            debug!("Skipping unknown headless event type: {}", trimmed);
+                            continue;
+                        }
                         Ok(event) => {
                             // Track session_id from init event
                             if let StreamEvent::System {
@@ -2030,10 +2023,8 @@ mod tests {
             session.wait().await.err().unwrap().to_string(),
             "missing codex runtime".to_string()
         );
-        assert_eq!(
-            session.try_wait().err().unwrap().to_string(),
-            "missing codex runtime".to_string()
-        );
+        // Codex try_wait returns Ok(None) — sessions don't own a process.
+        assert_eq!(session.try_wait().unwrap(), None);
         assert_eq!(
             session
                 .send_message("hello")
@@ -2046,6 +2037,16 @@ mod tests {
 
         session.close_stdin();
         assert!(session.stdin.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_codex_try_wait_and_pid_do_not_block_in_async() {
+        // Regression: block_on inside a Tokio runtime panics with "Cannot start
+        // a runtime from within a runtime". Codex try_wait/pid must not use block_on.
+        let mut session = test_codex_session();
+        // These must not panic even though we're inside a tokio runtime.
+        let _ = session.try_wait();
+        let _ = session.pid();
     }
 
     #[tokio::test]
@@ -2290,6 +2291,19 @@ mod tests {
             }
             _ => panic!("Expected Assistant event"),
         }
+    }
+
+    #[test]
+    fn test_stream_event_parsing_unknown_type_is_not_error() {
+        // Regression: Claude CLI added `rate_limit_event` which caused 17k+ parse
+        // failures because StreamEvent only recognized system/assistant/user/result.
+        // Unknown event types should deserialize successfully and be skippable.
+        let json = r#"{"type":"rate_limit_event","rate_limit_info":{"status":"allowed_warning","resetsAt":1771941600,"rateLimitType":"seven_day","utilization":0.8},"uuid":"12767dec","session_id":"968bb2ee"}"#;
+        let result = serde_json::from_str::<StreamEvent>(json);
+        assert!(
+            result.is_ok(),
+            "Unknown event types must not fail deserialization: {result:?}"
+        );
     }
 
     #[test]
