@@ -300,12 +300,15 @@ pub(super) async fn handle_coworker_view(
 /// Stores the coworker's workflow phase and progress in daemon memory and updates the
 /// web UI status. When a coworker reports `Idle`, they are immediately
 /// sent on break. When they report `Completed`, task cleanup is handled.
+/// When `pr_number` is provided, writes it to `task.pr` so the daemon can
+/// auto-complete the task when the PR merges.
 pub(super) async fn handle_coworker_report_state(
     id: RequestId,
     name: &str,
     phase_str: &str,
     task_id: Option<u32>,
     progress: Option<u8>,
+    pr_number: Option<u64>,
     state: &DaemonState,
 ) -> Response {
     // Parse the phase string via FromStr (implemented in coworker_state.rs)
@@ -313,6 +316,42 @@ pub(super) async fn handle_coworker_report_state(
         Ok(p) => p,
         Err(e) => return Response::error(id, RpcError::new(-32602, e)),
     };
+
+    // If --pr was provided, write it to task.pr so the daemon can auto-complete
+    // the task when the PR merges (the merge handler checks task.pr against merged PR numbers).
+    if let Some(pr_num) = pr_number {
+        let effective_task_id: Option<String> = task_id.map(|id| id.to_string()).or_else(|| {
+            let assignments = state.coworker_task_assignments.lock().unwrap();
+            assignments
+                .get(&name.to_lowercase())
+                .map(|a| a.task_id.clone())
+        });
+
+        if let Some(ref tid) = effective_task_id {
+            if let Err(e) = crate::tasks::update_task_fields_for_repo(
+                tid,
+                &state.repo_name,
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some(pr_num),
+            ) {
+                warn!(
+                    "Failed to write pr_number {} to task {}: {}",
+                    pr_num, tid, e
+                );
+            } else {
+                info!("Set task !{} pr={} (reported by {})", tid, pr_num, name);
+            }
+        } else {
+            warn!(
+                "Coworker {} reported pr_number {} but has no task assignment to update",
+                name, pr_num
+            );
+        }
+    }
 
     // For Idle phase, immediately send the coworker on break.
     if phase == crate::coworker_state::WorkflowPhase::Idle && state.coworkers.get(name).is_some() {

@@ -379,6 +379,7 @@ async fn test_report_idle_keeps_project_lead_running() {
         "idle",
         None,
         None,
+        None,
         &state,
     )
     .await;
@@ -410,9 +411,16 @@ async fn test_report_idle_still_breaks_non_lead_coworker() {
         });
     assert!(inserted, "coworker should be inserted for test");
 
-    let response =
-        handle_coworker_report_state(RequestId::Number(1), "park", "idle", None, None, &state)
-            .await;
+    let response = handle_coworker_report_state(
+        RequestId::Number(1),
+        "park",
+        "idle",
+        None,
+        None,
+        None,
+        &state,
+    )
+    .await;
 
     assert!(!response.is_error(), "idle report should succeed");
     let message = response
@@ -424,5 +432,104 @@ async fn test_report_idle_still_breaks_non_lead_coworker() {
     assert!(
         message.contains("break (idle)"),
         "non-lead coworker idle report should still take the break path"
+    );
+}
+
+// ============================================================================
+// handle_coworker_report_state — pr_number wiring
+// ============================================================================
+
+#[tokio::test]
+async fn test_report_state_pr_number_writes_task_pr() {
+    let (state, _tmp, _guard) = make_test_state();
+
+    // Create the task file on disk so update_task_fields_for_repo can write to it.
+    let home = dirs::home_dir().expect("home dir");
+    let task_list_id = crate::paths::task_list_id_for_repo(&state.repo_name);
+    let tasks_dir = home.join(".claude").join("tasks").join(&task_list_id);
+    std::fs::create_dir_all(&tasks_dir).expect("create tasks dir");
+    let task_id = "9901"; // unique ID unlikely to conflict with real tasks
+    let task_file = tasks_dir.join(format!("{}.json", task_id));
+    std::fs::write(
+        &task_file,
+        serde_json::to_string(&serde_json::json!({
+            "id": task_id,
+            "subject": "Test PR wiring",
+            "status": "in_progress",
+            "owner": "park"
+        }))
+        .unwrap(),
+    )
+    .expect("write task file");
+
+    // Call with task_id and pr_number
+    let response = handle_coworker_report_state(
+        RequestId::Number(1),
+        "park",
+        "pull_request",
+        Some(9901u32),
+        Some(90),
+        Some(456u64),
+        &state,
+    )
+    .await;
+
+    assert!(!response.is_error(), "report state should succeed");
+
+    // Verify task.pr was written to the file
+    let content = std::fs::read_to_string(&task_file).expect("read task file");
+    let parsed: serde_json::Value = serde_json::from_str(&content).expect("parse task json");
+    assert_eq!(
+        parsed["pr"],
+        serde_json::json!(456u64),
+        "task.pr should be set to the reported PR number"
+    );
+
+    // Cleanup
+    let _ = std::fs::remove_file(&task_file);
+}
+
+#[tokio::test]
+async fn test_report_state_pr_number_no_task_assignment_succeeds() {
+    let (state, _tmp, _guard) = make_test_state();
+
+    // No task assignment set up — handler should log a warning but still succeed
+    let response = handle_coworker_report_state(
+        RequestId::Number(1),
+        "park",
+        "pull_request",
+        None, // no task_id
+        Some(90),
+        Some(789u64),
+        &state,
+    )
+    .await;
+
+    // Should still succeed even when no task can be found to update
+    assert!(
+        !response.is_error(),
+        "report state with unresolvable task should still succeed"
+    );
+}
+
+#[tokio::test]
+async fn test_report_state_without_pr_number_succeeds() {
+    let (state, _tmp, _guard) = make_test_state();
+
+    // pr_number = None should behave identically to pre-feature behavior
+    let response = handle_coworker_report_state(
+        RequestId::Number(1),
+        "park",
+        "pull_request",
+        None,
+        Some(90),
+        None,
+        &state,
+    )
+    .await;
+
+    assert!(
+        !response.is_error(),
+        "report state without pr_number should succeed"
     );
 }

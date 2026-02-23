@@ -366,6 +366,7 @@ impl DaemonClient {
         phase: &str,
         task_id: Option<u32>,
         progress: Option<u8>,
+        pr_number: Option<u64>,
     ) -> Result<Response, String> {
         let mut params = serde_json::json!({ "name": name, "phase": phase });
         if let Some(id) = task_id {
@@ -373,6 +374,9 @@ impl DaemonClient {
         }
         if let Some(p) = progress {
             params["progress"] = serde_json::json!(p);
+        }
+        if let Some(pr) = pr_number {
+            params["pr_number"] = serde_json::json!(pr);
         }
         self.send("coworker.report-state", Some(params))
     }
