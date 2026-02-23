@@ -189,7 +189,7 @@ pub(super) async fn handle_channel_post(
         let default_channel = state.channel_router.default_channel_name();
         let is_topic_channel = channel_name != default_channel;
 
-        let wake_msg_id = thread_parent_id.unwrap_or(&msg.id).to_string();
+        let wake_msg_id = msg.thread_anchor_id().to_string();
 
         if is_topic_channel {
             // Task 2: Thread-aware routing — if there's a forked topic session for
@@ -286,7 +286,10 @@ pub(super) async fn handle_channel_post(
 
             let nudge_msg = format!(
                 "{} mentioned @{} ({}): {}",
-                from, state.repo_name, msg.id, summary
+                from,
+                state.repo_name,
+                msg.thread_anchor_id(),
+                summary
             );
             info!(
                 "Nudging Lead about @{} mention from {}",

@@ -171,6 +171,15 @@ impl Message {
         msg
     }
 
+    /// Returns the thread anchor ID for replies (parent ID when present).
+    ///
+    /// Thread replies must carry their parent's ID when nudging coworkers so
+    /// responses appear as siblings in the original thread rather than nesting
+    /// under the reply itself. Top-level messages return their own ID.
+    pub fn thread_anchor_id(&self) -> &str {
+        self.thread_parent_id.as_deref().unwrap_or(self.id.as_str())
+    }
+
     /// Get the channel name (defaults to "midtown" if not set).
     pub fn channel_name(&self) -> &str {
         self.channel.as_deref().unwrap_or("midtown")
@@ -404,6 +413,27 @@ mod tests {
         assert_eq!(msg.thread_parent_id, None);
         let json = serde_json::to_string(&msg).unwrap();
         assert!(!json.contains("thread_parent_id")); // skip_serializing_if = None
+    }
+
+    #[test]
+    fn test_thread_anchor_id_defaults_to_self_id() {
+        let msg = Message::text("agent1", "Top-level message");
+        assert_eq!(msg.thread_parent_id, None);
+        assert_eq!(msg.thread_anchor_id(), msg.id);
+    }
+
+    #[test]
+    fn test_thread_anchor_id_prefers_parent_id() {
+        let parent_id = "parent-uuid-123";
+        let msg = Message::thread_reply(
+            "midtown",
+            "agent1",
+            "Thread reply",
+            parent_id,
+            MessageType::Text,
+        );
+        assert_eq!(msg.thread_parent_id.as_deref(), Some(parent_id));
+        assert_eq!(msg.thread_anchor_id(), parent_id);
     }
 
     #[test]
