@@ -64,7 +64,6 @@ use midtown::tasks::{Task, TaskStatus};
 /// - Skipped (needs DaemonState): `check_and_recover_orphans`,
 ///   `spawn_for_pending_tasks`, `check_and_respawn_dead_processes`,
 ///   `check_and_fire_reminders`
-/// - Skipped (takes individual fields): `collect_auto_archive_effects`
 ///
 /// ### PrPollTick
 /// - Called: `collect_merged_pr_cleanup_effects`, `reconcile_orphaned_prs`,
@@ -308,7 +307,6 @@ impl MultiTickHarness {
                 // Skipped (needs DaemonState): spawn_for_pending_tasks,
                 // check_and_respawn_dead_processes,
                 // check_and_fire_reminders
-                // Skipped (takes individual fields): collect_auto_archive_effects
                 effects
             }
             DaemonEvent::PrPollTick => {

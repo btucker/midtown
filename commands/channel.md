@@ -31,11 +31,35 @@ midtown channel read --all
 midtown channel post "Your message here"
 ```
 
+### Create a channel
+```bash
+midtown channel create <name>
+```
+
+### Archive a channel
+```bash
+midtown channel archive <name>
+```
+
+### Unarchive a channel
+```bash
+midtown channel unarchive <name>
+```
+
+### Rename a channel
+```bash
+midtown channel rename <old-name> <new-name>
+```
+
 ## Behavior
 
 - **read**: Shows messages since your last read, advances cursor
 - **read-all**: Shows full channel history
 - **post**: Sends a message to the channel
+- **create**: Makes a new topic channel directory + history log
+- **archive**: Moves an active channel to `<name>.archived/`
+- **unarchive**: Restores an archived channel back to active status
+- **rename**: Renames the channel directory and updates daemon metadata
 
 If called without arguments, defaults to reading new messages.
 

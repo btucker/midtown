@@ -41,6 +41,11 @@ pub enum ChannelCommand {
         /// Name of the channel to archive
         name: String,
     },
+    /// Unarchive a channel
+    Unarchive {
+        /// Name of the channel to restore
+        name: String,
+    },
     /// Rename a channel
     Rename {
         /// Current channel name
@@ -70,6 +75,7 @@ pub fn handle(cmd: &ChannelCommand, client: &DaemonClient) -> Result<Response, S
         } => client.channel_read(*all, last.as_ref(), since.as_deref(), channel.as_deref()),
         ChannelCommand::Create { name } => client.channel_create(name),
         ChannelCommand::Archive { name } => client.channel_archive(name),
+        ChannelCommand::Unarchive { name } => client.channel_unarchive(name),
         ChannelCommand::Rename { old, new } => client.channel_rename(old, new),
     }
 }

@@ -1030,6 +1030,59 @@ async fn test_handle_channel_archive_cleans_up_channel_lead_sessions() {
     }
 }
 
+#[tokio::test]
+async fn test_handle_channel_unarchive_restores_channel() {
+    let (state, tmp, _guard) = make_test_state("midtown-test-channel-unarchive");
+
+    // Create and archive channel
+    let create_resp = super::handle_channel_create(1_i64.into(), "feature-x", &state);
+    assert!(create_resp.error.is_none(), "create should succeed");
+    let archive_resp = super::handle_channel_archive(2_i64.into(), "feature-x", &state).await;
+    assert!(archive_resp.error.is_none(), "archive should succeed");
+
+    // Unarchive
+    let response = super::handle_channel_unarchive(3_i64.into(), "feature-x", &state);
+    assert!(response.error.is_none(), "channel.unarchive should succeed");
+    let result = response.result.unwrap();
+    assert_eq!(result["success"].as_bool(), Some(true));
+
+    // Verify directory moved back to active path
+    let active_dir = tmp
+        .path()
+        .join("channels")
+        .join("feature-x")
+        .join("history")
+        .join("current.jsonl");
+    assert!(
+        active_dir.exists(),
+        "active channel history should exist after unarchive"
+    );
+    let archived_dir = tmp.path().join("channels").join("feature-x.archived");
+    assert!(
+        !archived_dir.exists(),
+        "archived directory should be removed after unarchive"
+    );
+}
+
+#[tokio::test]
+async fn test_handle_channel_unarchive_requires_archived_channel() {
+    let (state, _tmp, _guard) = make_test_state("midtown-test-channel-unarchive-error");
+
+    // No archive yet
+    let create_resp = super::handle_channel_create(1_i64.into(), "tui", &state);
+    assert!(create_resp.error.is_none(), "create should succeed");
+
+    let response = super::handle_channel_unarchive(2_i64.into(), "tui", &state);
+    assert!(response.error.is_some(), "unarchive should fail");
+    assert!(
+        response
+            .error
+            .as_ref()
+            .is_some_and(|err| err.message.contains("not archived")),
+        "error should mention channel is not archived"
+    );
+}
+
 /// Verify that a second rapid user message within 30s does NOT trigger expedite again
 /// (cooldown dedup prevents spam).
 #[tokio::test]

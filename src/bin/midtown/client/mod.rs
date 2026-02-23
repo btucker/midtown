@@ -267,6 +267,13 @@ impl DaemonClient {
         self.send("channel.archive", Some(serde_json::json!({ "name": name })))
     }
 
+    pub fn channel_unarchive(&self, name: &str) -> Result<Response, String> {
+        self.send(
+            "channel.unarchive",
+            Some(serde_json::json!({ "name": name })),
+        )
+    }
+
     pub fn channel_rename(&self, old: &str, new: &str) -> Result<Response, String> {
         self.send(
             "channel.rename",

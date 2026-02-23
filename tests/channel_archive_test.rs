@@ -92,10 +92,6 @@ fn test_cannot_archive_midtown_channel() {
     assert!(result.is_err(), "Archiving the midtown channel should fail");
 }
 
-// Note: test_auto_archive_effects_integration removed because daemon::auto_archive
-// and daemon::effects are private modules. The functionality is tested via unit tests
-// in src/daemon/auto_archive.rs
-
 #[test]
 fn test_list_archived_channels() {
     // Setup: Create a temporary directory
@@ -126,6 +122,60 @@ fn test_list_archived_channels() {
     assert!(!active.iter().any(|c| c.name == "test1"));
     assert!(!active.iter().any(|c| c.name == "test2"));
     assert!(active.iter().any(|c| c.name == "test3"));
+}
+
+#[test]
+fn test_unarchive_channel_restores_history() {
+    let temp_dir = TempDir::new().unwrap();
+    let base_dir = temp_dir.path();
+
+    let channel = Channel::new(base_dir, "tui").unwrap();
+    channel
+        .send(&Message::text("agent", "hello archived"))
+        .unwrap();
+    channel.archive().unwrap();
+
+    let archived_history = base_dir
+        .join("channels")
+        .join("tui.archived")
+        .join("history")
+        .join("current.jsonl");
+    assert!(
+        archived_history.exists(),
+        "Archived history file should exist before restoring"
+    );
+
+    Channel::unarchive_channel(base_dir, "tui").unwrap();
+
+    let active_history = base_dir
+        .join("channels")
+        .join("tui")
+        .join("history")
+        .join("current.jsonl");
+    assert!(
+        active_history.exists(),
+        "Active history file should exist after unarchive"
+    );
+    assert!(
+        !archived_history.parent().unwrap().exists(),
+        "Archived directory should be removed after unarchive"
+    );
+
+    let content = std::fs::read_to_string(active_history).unwrap();
+    assert!(
+        content.contains("hello archived"),
+        "History should be preserved after unarchive"
+    );
+}
+
+#[test]
+fn test_unarchive_non_archived_channel_errors() {
+    let temp_dir = TempDir::new().unwrap();
+    let base_dir = temp_dir.path();
+
+    Channel::new(base_dir, "tui").unwrap();
+    let result = Channel::unarchive_channel(base_dir, "tui");
+    assert!(result.is_err(), "Unarchiving an active channel should fail");
 }
 
 #[test]

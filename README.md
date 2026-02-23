@@ -79,6 +79,7 @@ The Project Lead is just a Claude Code session, but it's been booted with a [spe
 | `midtown channel post <msg>` | Post to the team channel |
 | `midtown channel read` | Read recent messages |
 | `midtown channel create <name>` | Create a new topic channel |
+| `midtown channel unarchive <name>` | Restore an archived channel |
 | `midtown channel rename <old> <new>` | Rename a channel |
 | `midtown channel archive <name>` | Archive a channel |
 | `midtown session attach name/<n>` | Attach to a headless session |

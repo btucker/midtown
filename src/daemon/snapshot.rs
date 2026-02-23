@@ -289,8 +289,8 @@ pub struct WorldSnapshot {
 
     // ── Channel state ──────────────────────────────────────────────────
     /// Channels that have already been archived (`.archived.jsonl` exists).
-    /// Used by auto-archive to skip channels that are already archived,
-    /// preventing redundant `ArchiveChannel` effects on every tick.
+    /// Used by the UI + command handlers to keep archived channels hidden by default
+    /// and to prevent duplicate channel-lead recovery for archived topics.
     #[serde(default)]
     pub archived_channels: HashSet<String>,
     /// Recent channel messages for debugging context.

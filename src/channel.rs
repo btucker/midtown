@@ -647,6 +647,39 @@ impl Channel {
         Ok(())
     }
 
+    /// Restore an archived channel by renaming `<name>.archived/` back to `<name>/`.
+    pub fn unarchive_channel(base_dir: impl Into<PathBuf>, name: &str) -> Result<()> {
+        if !Self::is_valid_channel_name(name) {
+            return Err(crate::Error::InvalidMessage(format!(
+                "Invalid channel name '{}': must be non-empty and contain only alphanumeric characters, hyphens, and underscores",
+                name
+            )));
+        }
+
+        let base_dir = base_dir.into();
+        let channels_dir = base_dir.join("channels");
+        let archived_dir = channels_dir.join(format!("{}.archived", name));
+        if !archived_dir.exists() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("Channel '{}' is not archived", name),
+            )
+            .into());
+        }
+
+        let active_dir = channels_dir.join(name);
+        if active_dir.exists() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                format!("Channel '{}' already exists", name),
+            )
+            .into());
+        }
+
+        fs::rename(&archived_dir, &active_dir)?;
+        Ok(())
+    }
+
     /// Mark a channel as archived
     ///
     /// Renames the channel directory from `channels/<name>/` to `channels/<name>.archived/`.
