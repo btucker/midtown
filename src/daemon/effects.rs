@@ -857,11 +857,17 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
 
                 // Clear tool activity for this agent when they post a channel message.
                 // A channel post signals the end of a work phase — the activity strip should reset.
-                // Skip system senders (midtown) and channel leads since they don't have
-                // coworker-style tool activity that should be cleared on text posts.
-                let skip = matches!(sender.to_lowercase().as_str(), "midtown" | "user")
-                    || sender.eq_ignore_ascii_case(&state.repo_name)
-                    || has_explicit_channel;
+                // Skip system senders (midtown) and non-fork explicit-channel posts.
+                // Forked sessions should still clear tool activity when they post to
+                // their inherited thread channel.
+                let is_system_sender = matches!(sender.to_lowercase().as_str(), "midtown" | "user")
+                    || sender.eq_ignore_ascii_case(&state.repo_name);
+                let has_fork_channel_binding = state
+                    .fork_bound_channels
+                    .lock()
+                    .unwrap()
+                    .contains_key(&sender);
+                let skip = is_system_sender || (has_explicit_channel && !has_fork_channel_binding);
                 if !skip {
                     let mut tool_map = state.recent_tool_items.write().unwrap();
                     tool_map.remove(&sender.to_lowercase());

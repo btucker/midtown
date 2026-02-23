@@ -73,6 +73,7 @@ pub fn process_lead_output(
     events: &HashMap<String, Vec<StreamEvent>>,
     channel_lead_sessions: &HashMap<String, String>,
     main_lead_session_name: &str,
+    fork_bound_channels: &HashMap<String, String>,
 ) -> Vec<Effect> {
     let mut effects = Vec::new();
 
@@ -102,6 +103,20 @@ pub fn process_lead_output(
         }
     }
 
+    // Forked channel leads → posts to the channel they were inherited from.
+    for (fork_name, channel_name) in fork_bound_channels {
+        if let Some(fork_events) = events.get(fork_name.as_str()) {
+            let trimmed = extract_lead_text(fork_events).trim().to_string();
+            if !trimmed.is_empty() {
+                effects.push(Effect::PostToChannel {
+                    sender: fork_name.clone(),
+                    message: trimmed,
+                    channel: Some(channel_name.clone()),
+                });
+            }
+        }
+    }
+
     effects
 }
 
@@ -116,6 +131,7 @@ pub fn process_universal_events(
     events: &HashMap<String, Vec<StreamEvent>>,
     channel_lead_sessions: &HashMap<String, String>,
     main_lead_session_name: &str,
+    fork_bound_channels: &HashMap<String, String>,
 ) -> Vec<Effect> {
     let timestamp = chrono::Utc::now();
     let mut effects = Vec::new();
@@ -140,6 +156,21 @@ pub fn process_universal_events(
             if !items.is_empty() {
                 effects.push(Effect::BroadcastUniversalItems {
                     agent_name: channel_name.clone(),
+                    channel: Some(channel_name.clone()),
+                    items,
+                });
+            }
+        }
+    }
+
+    // Forked lead tool calls should be visible to only the fork's target channel.
+    for (fork_name, channel_name) in fork_bound_channels {
+        if let Some(fork_events) = events.get(fork_name.as_str()) {
+            let items =
+                crate::universal_events::claude::extract_tool_events(fork_events, timestamp);
+            if !items.is_empty() {
+                effects.push(Effect::BroadcastUniversalItems {
+                    agent_name: fork_name.clone(),
                     channel: Some(channel_name.clone()),
                     items,
                 });

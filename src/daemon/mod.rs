@@ -712,6 +712,11 @@ pub(crate) struct DaemonState {
     ///
     /// Cleaned up in `cleanup_coworker_state` when a coworker is shut down.
     pub(crate) fork_bound_threads: std::sync::Mutex<HashMap<String, String>>,
+    /// In-memory cache of inherited channel names for forked sessions.
+    ///
+    /// Maps `fork_name → channel_name`. Used by stream processing so forked
+    /// output is routed to the thread's topic channel.
+    pub(crate) fork_bound_channels: std::sync::Mutex<HashMap<String, String>>,
 }
 
 impl DaemonState {
@@ -966,6 +971,10 @@ impl DaemonState {
         {
             self.fork_bound_threads.lock().unwrap().remove(name);
         }
+        // Clear fork channel binding (prevents stale channel routing on name reuse)
+        {
+            self.fork_bound_channels.lock().unwrap().remove(name);
+        }
         // Clear the inbox for this name so the next session that gets
         // allocated this name does not inherit unread messages from this session.
         {
@@ -1216,6 +1225,7 @@ impl DaemonState {
         let mut session_to_name: HashMap<String, String> = HashMap::new();
         let mut task_to_session: HashMap<String, String> = HashMap::new();
         let mut fork_bound_threads: HashMap<String, String> = HashMap::new();
+        let mut fork_bound_channels: HashMap<String, String> = HashMap::new();
         {
             let allocated_names: Vec<String> = persistent_state
                 .sessions
@@ -1231,6 +1241,18 @@ impl DaemonState {
                     // coworker posts are auto-tagged after a daemon restart.
                     if let Some(ref tid) = record.bound_thread_id {
                         fork_bound_threads.insert(name.clone(), tid.clone());
+                        // Rebuild inherited channel map from persisted headless session info
+                        // when available (used by stream-level channel routing).
+                        if let Some(channel) = persistent_state
+                            .headless_sessions
+                            .values()
+                            .find_map(|info| {
+                                (info.session_id == *session_id).then_some(info.channel.clone())
+                            })
+                            .flatten()
+                        {
+                            fork_bound_channels.insert(name.clone(), channel);
+                        }
                     }
                 }
                 if let Some(ref task_id) = record.task_id {
@@ -1295,6 +1317,7 @@ impl DaemonState {
             pending_question_id_counter: std::sync::atomic::AtomicU64::new(1),
             topic_sessions: std::sync::Mutex::new(HashMap::new()),
             fork_bound_threads: std::sync::Mutex::new(fork_bound_threads),
+            fork_bound_channels: std::sync::Mutex::new(fork_bound_channels),
         })
     }
 
@@ -3531,15 +3554,18 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                 // Both functions need channel_lead_sessions — acquire the lock once.
                 let (lead_effects, universal_effects) = {
                     let ps = state.persistent_state.lock().await;
+                    let fork_bound_channels = state.fork_bound_channels.lock().unwrap();
                     let lead_effects = stream::process_lead_output(
                         &events,
                         &ps.channel_lead_sessions,
                         &state.repo_name,
+                        &fork_bound_channels,
                     );
                     let universal_effects = stream::process_universal_events(
                         &events,
                         &ps.channel_lead_sessions,
                         &state.repo_name,
+                        &fork_bound_channels,
                     );
                     (lead_effects, universal_effects)
                 };

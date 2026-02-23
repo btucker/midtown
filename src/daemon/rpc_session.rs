@@ -1261,6 +1261,13 @@ pub(super) async fn handle_session_fork(
         .lock()
         .unwrap()
         .insert(fork_name.clone(), thread_parent_id.to_string());
+    if let Some(fork_channel) = fork_channel {
+        state
+            .fork_bound_channels
+            .lock()
+            .unwrap()
+            .insert(fork_name.clone(), fork_channel);
+    }
 
     info!(
         "session.fork: forked {} (parent={}) → thread={}, new_session={}",
