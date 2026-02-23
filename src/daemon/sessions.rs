@@ -1311,20 +1311,22 @@ impl SessionManager {
     pub async fn get_output(&self, name: &str) -> Option<String> {
         self.get_output_with_path(name)
             .await
-            .map(|(output, _)| output)
+            .map(|(output, _, _)| output)
     }
 
-    /// Get recent output for a coworker alongside the log file path.
+    /// Get recent output for a coworker alongside the log file path and byte offset.
     ///
     /// Returns a rich formatted string that includes:
     /// - Text from Assistant events (as markdown prose)
     /// - Tool calls from Assistant events (as labeled code fences)
     /// - Tool results from User events (as labeled code fences)
     ///
-    /// Also returns the path to the JSONL log file for use in `--watch` mode.
+    /// Also returns the path to the JSONL log file and the byte offset at which
+    /// the daemon stopped reading. The caller should start tailing from that
+    /// offset to avoid missing events appended after this snapshot was taken.
     ///
     /// Returns `None` if no session or log file exists for the coworker.
-    pub async fn get_output_with_path(&self, name: &str) -> Option<(String, PathBuf)> {
+    pub async fn get_output_with_path(&self, name: &str) -> Option<(String, PathBuf, u64)> {
         // Get the log path: try active sessions first, fall back to the
         // deterministic path for paused/attached/historical sessions.
         let log_path = {
@@ -1345,8 +1347,12 @@ impl SessionManager {
             .ok()?
             .ok()?;
 
+        // Record how many bytes we consumed. The CLI watch mode starts tailing
+        // from this offset so events appended after this snapshot are not missed.
+        let bytes_read = content.len() as u64;
+
         if content.is_empty() {
-            return Some((String::from("(no output yet)"), log_path_for_return));
+            return Some((String::from("(no output yet)"), log_path_for_return, 0));
         }
 
         // Collect last 200 lines
@@ -1360,7 +1366,7 @@ impl SessionManager {
         // Parse JSONL events and format as rich text with tool calls as code fences
         let output = format_events_as_rich_text(lines.iter().rev().map(|s| s.as_str()));
 
-        Some((output, log_path_for_return))
+        Some((output, log_path_for_return, bytes_read))
     }
 }
 

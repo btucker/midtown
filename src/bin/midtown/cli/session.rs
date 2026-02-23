@@ -1071,6 +1071,11 @@ fn handle_view(target: &str, watch: bool, client: &DaemonClient) -> Result<Respo
         .get("log_path")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
+    // Byte offset at which the daemon stopped reading the log file.
+    // Used as the starting tail position to avoid missing events that
+    // were appended after the snapshot was taken but before we query
+    // metadata.len() ourselves.
+    let snapshot_log_offset = raw.get("log_offset").and_then(|v| v.as_u64()).unwrap_or(0);
 
     // Render the initial snapshot
     let rendered = session_render::render_ansi(&output);
@@ -1096,8 +1101,10 @@ fn handle_view(target: &str, watch: bool, client: &DaemonClient) -> Result<Respo
         return Err(format!("Log file not found: {log_path}"));
     }
 
-    // Get current file size to tail from the end
-    let mut file_offset = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+    // Start tailing from where the daemon stopped reading the file.
+    // Using the daemon's snapshot boundary (not a fresh metadata.len() call)
+    // ensures we don't skip events appended between the daemon's read and now.
+    let mut file_offset = snapshot_log_offset;
 
     eprintln!(
         "\x1b[2m── watching {} (Ctrl-C to stop) ──\x1b[0m",
@@ -1130,15 +1137,28 @@ fn handle_view(target: &str, watch: bool, client: &DaemonClient) -> Result<Respo
             continue;
         }
 
+        // Read lines with read_line() (not .lines()) to keep the reader
+        // alive so we can call stream_position() afterward.
         let mut new_lines: Vec<String> = Vec::new();
-        for line_result in reader.lines() {
-            match line_result {
-                Ok(line) if !line.is_empty() => new_lines.push(line),
-                _ => {}
+        loop {
+            let mut buf = String::new();
+            match reader.read_line(&mut buf) {
+                Ok(0) => break, // EOF
+                Ok(_) => {
+                    let line = buf.trim_end_matches('\n').trim_end_matches('\r');
+                    if !line.is_empty() {
+                        new_lines.push(line.to_string());
+                    }
+                }
+                Err(_) => break,
             }
         }
 
-        file_offset = current_size;
+        // Use the actual reader position after consuming lines, not the
+        // pre-read metadata size. New bytes appended between the metadata
+        // call and the file read would otherwise cause duplication on the
+        // next poll because current_size would rewind our offset.
+        file_offset = reader.stream_position().unwrap_or(current_size);
 
         for line in &new_lines {
             if let Some(rendered) = session_render::render_event_line(line) {
