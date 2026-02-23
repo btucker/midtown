@@ -22,14 +22,8 @@ fn make_session_record(
         preferred_name: current_name.map(|s| s.to_string()),
         working_dir: "/tmp/test-worktree".to_string(),
         branch: Some("main".to_string()),
-        pr_number: None,
-        initial_prompt: None,
-        is_reviewer: false,
-        coworker_type: "dev".to_string(),
         is_running,
-        created_at: chrono::Utc::now(),
-        resume_on_startup: true,
-        bound_thread_id: None,
+        ..Default::default()
     }
 }
 
@@ -787,6 +781,114 @@ fn test_session_dispatch_skips_recovery_for_recently_recovered_session() {
         "Should NOT re-recover a session that was recently recovered (per-session cooldown). \
          This fires on every tick causing log spam in task !1703. Got effects: {:?}",
         spawn_effects
+            .iter()
+            .map(|e| format!("{:?}", e))
+            .collect::<Vec<_>>()
+    );
+}
+
+// ======================================================================
+// Pending task resume with cooldown tests
+// ======================================================================
+
+/// When a pending task has a stopped session AND the session is in
+/// `recently_recovered_session_ids`, the pending task resume path
+/// (in `spawn_for_pending_tasks_excluding`) must skip it. Without this,
+/// a failed-resume session triggers an infinite spawn loop: each tick
+/// sees the stopped session and re-attempts resume with no delay.
+#[test]
+fn test_pending_task_with_cooldown_active_skips_resume() {
+    use crate::tasks::{Task, TaskStatus};
+
+    let session = make_session_record("sess-loop-123", Some("77"), Some("park"), false);
+
+    let snap = snapshot::WorldSnapshot {
+        // Task appears as pending without owner (task was reset after failed resume)
+        pending_tasks_without_owners: vec![Task {
+            id: "77".to_string(),
+            subject: "Fix auth bug".to_string(),
+            status: TaskStatus::Pending,
+            owner: None,
+            description: None,
+            blocked_by: vec![],
+            channel: None,
+            pr: None,
+            created_at: None,
+        }],
+        sessions: [("sess-loop-123".to_string(), session)]
+            .into_iter()
+            .collect(),
+        session_task_map: [("77".to_string(), "sess-loop-123".to_string())]
+            .into_iter()
+            .collect(),
+        // Cooldown is active for this session
+        recently_recovered_session_ids: ["sess-loop-123".to_string()].into_iter().collect(),
+        ..snapshot::minimal_snapshot_for_test()
+    };
+
+    let (state, _tmp, _guard) = make_test_state();
+    let effects =
+        spawn_for_pending_tasks_excluding(&snap, &state, &std::collections::HashSet::new());
+
+    // The pending task resume path should skip sess-loop-123 due to cooldown.
+    // It may fall through to the fresh-spawn path, but it must NOT emit
+    // SpawnSession with resume=true for the cooldown-active session.
+    let has_session_resume = effects.iter().any(|e| {
+        matches!(e, Effect::SpawnSession { session_id, resume: true, .. } if session_id == "sess-loop-123")
+    });
+    assert!(
+        !has_session_resume,
+        "Should NOT resume session sess-loop-123 when cooldown is active, got effects: {:?}",
+        effects
+            .iter()
+            .map(|e| format!("{:?}", e))
+            .collect::<Vec<_>>()
+    );
+}
+
+/// Positive case: when a pending task has a stopped session and NO cooldown,
+/// the pending task resume path should emit a SpawnSession with resume=true.
+#[test]
+fn test_pending_task_stopped_session_resumes_when_no_cooldown() {
+    use crate::tasks::{Task, TaskStatus};
+
+    let session = make_session_record("sess-resume-456", Some("88"), Some("broadway"), false);
+
+    let snap = snapshot::WorldSnapshot {
+        pending_tasks_without_owners: vec![Task {
+            id: "88".to_string(),
+            subject: "Add logging feature".to_string(),
+            status: TaskStatus::Pending,
+            owner: None,
+            description: None,
+            blocked_by: vec![],
+            channel: None,
+            pr: None,
+            created_at: None,
+        }],
+        sessions: [("sess-resume-456".to_string(), session)]
+            .into_iter()
+            .collect(),
+        session_task_map: [("88".to_string(), "sess-resume-456".to_string())]
+            .into_iter()
+            .collect(),
+        // No cooldown — recovery should proceed
+        recently_recovered_session_ids: HashSet::new(),
+        ..snapshot::minimal_snapshot_for_test()
+    };
+
+    let (state, _tmp, _guard) = make_test_state();
+    let effects =
+        spawn_for_pending_tasks_excluding(&snap, &state, &std::collections::HashSet::new());
+
+    // Should emit SpawnSession with resume=true for the stopped session
+    let has_resume_spawn = effects.iter().any(|e| {
+        matches!(e, Effect::SpawnSession { session_id, resume: true, .. } if session_id == "sess-resume-456")
+    });
+    assert!(
+        has_resume_spawn,
+        "Should emit SpawnSession(resume=true) for stopped session when no cooldown, got effects: {:?}",
+        effects
             .iter()
             .map(|e| format!("{:?}", e))
             .collect::<Vec<_>>()

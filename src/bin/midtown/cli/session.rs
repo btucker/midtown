@@ -760,7 +760,7 @@ pub(crate) fn build_attach_shell_command(
     let profile_dir =
         midtown::auth::active_profile_dir_for_project_with_provider(&repo_name, provider);
 
-    // Determine role from coworker_type (provided by daemon's HeadlessSessionInfo)
+    // Determine role from coworker_type (provided by daemon's SessionRecord)
     let role = if coworker_type == Some("lead") {
         midtown::launch::CoworkerRole::Lead
     } else if coworker_type == Some("reviewer") {

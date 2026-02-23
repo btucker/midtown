@@ -2308,15 +2308,8 @@ async fn test_cleanup_marks_session_record_stopped_in_persistent_state() {
                 current_name: Some("madison".to_string()),
                 preferred_name: Some("madison".to_string()),
                 working_dir: "/tmp/worktree".to_string(),
-                branch: None,
-                pr_number: None,
-                initial_prompt: None,
-                is_reviewer: false,
-                coworker_type: "dev".to_string(),
                 is_running: true,
-                created_at: chrono::Utc::now(),
-                resume_on_startup: true,
-                bound_thread_id: None,
+                ..Default::default()
             },
         );
     }
@@ -2383,15 +2376,8 @@ async fn test_cleanup_preserves_other_session_records_in_persistent_state() {
                     current_name: Some(name.to_string()),
                     preferred_name: Some(name.to_string()),
                     working_dir: "/tmp/worktree".to_string(),
-                    branch: None,
-                    pr_number: None,
-                    initial_prompt: None,
-                    is_reviewer: false,
-                    coworker_type: "dev".to_string(),
                     is_running: true,
-                    created_at: chrono::Utc::now(),
-                    resume_on_startup: true,
-                    bound_thread_id: None,
+                    ..Default::default()
                 },
             );
         }

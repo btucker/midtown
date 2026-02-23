@@ -358,7 +358,7 @@ pub(super) fn handle_channel_create(id: RequestId, name: &str, state: &DaemonSta
 ///
 /// Archives a channel by renaming its directory from `<name>/` to `<name>.archived/`.
 /// Also cleans up any running channel lead session for the archived channel by
-/// removing it from `channel_lead_sessions` and `headless_sessions` in persistent state.
+/// removing it from `channel_lead_sessions` and marking its `SessionRecord` as stopped.
 /// Returns an error if the channel does not exist or if trying to archive 'midtown'.
 pub(super) async fn handle_channel_archive(
     id: RequestId,
@@ -402,12 +402,25 @@ pub(super) async fn handle_channel_archive(
             )
             .await;
 
-            // Remove from channel_lead_sessions and headless_sessions
+            // Remove from channel_lead_sessions and mark session records
             {
                 let mut ps = state.persistent_state.lock().await;
                 let removed_lead = ps.channel_lead_sessions.remove(name).is_some();
-                let removed_headless = ps.headless_sessions.remove(&lead_session_name).is_some();
-                if removed_lead || removed_headless {
+                // Mark any SessionRecord with this name as no longer running
+                let mut removed_session = false;
+                for record in ps.sessions.values_mut() {
+                    if record
+                        .current_name
+                        .as_deref()
+                        .is_some_and(|n| n == lead_session_name)
+                    {
+                        record.is_running = false;
+                        record.current_name = None;
+                        record.resume_on_startup = false;
+                        removed_session = true;
+                    }
+                }
+                if removed_lead || removed_session {
                     debug!(
                         "Removed channel lead session for archived channel '{}'",
                         name
@@ -480,7 +493,7 @@ pub(super) fn handle_channel_unarchive(id: RequestId, name: &str, state: &Daemon
 /// Also updates persistent state:
 /// - `channel_lead_sessions`: renames the key from `old` to `new`
 /// - `task_channel`: updates all values referencing `old` to `new`
-/// - `headless_sessions`: renames the channel-lead session entry
+/// - `sessions`: marks the old channel-lead's SessionRecord as stopped
 ///
 /// Shuts down the channel lead for the old name (it will be spawned fresh under the
 /// new name when the channel receives activity). Returns an error if the old channel
@@ -542,10 +555,20 @@ pub(super) async fn handle_channel_rename(
             }
         }
 
-        // Remove the headless session entry for the old channel lead. Like
-        // channel_lead_sessions, we remove rather than migrate to avoid stale
+        // Mark any SessionRecord for the old channel lead as no longer running.
+        // Like channel_lead_sessions, we clear rather than migrate to avoid stale
         // references to the dead session.
-        ps.headless_sessions.remove(&old_lead_session_name);
+        for record in ps.sessions.values_mut() {
+            if record
+                .current_name
+                .as_deref()
+                .is_some_and(|n| n == old_lead_session_name)
+            {
+                record.is_running = false;
+                record.current_name = None;
+                record.resume_on_startup = false;
+            }
+        }
 
         if let Err(e) = ps.save_for_repo(&state.repo_name) {
             warn!(

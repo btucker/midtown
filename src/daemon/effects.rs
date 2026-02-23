@@ -950,10 +950,15 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 if !mapped_sid.is_empty() {
                     candidate_ids.insert(mapped_sid.clone());
                 }
-                if let Some(info) = ps.headless_sessions.get(&name)
-                    && !info.session_id.is_empty()
-                {
-                    candidate_ids.insert(info.session_id.clone());
+                // Also check ps.sessions for a record matching this name
+                // (covers sessions that may have been persisted under a
+                // different session_id than name_to_session currently maps).
+                for record in ps.sessions.values() {
+                    if record.current_name.as_deref().is_some_and(|n| n == name)
+                        && !record.session_id.is_empty()
+                    {
+                        candidate_ids.insert(record.session_id.clone());
+                    }
                 }
                 if let Some(sid) = ps.channel_lead_sessions.get(&name)
                     && !sid.is_empty()
@@ -961,14 +966,20 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     candidate_ids.insert(sid.clone());
                 }
 
-                if let Some(info) = ps.headless_sessions.get_mut(&name)
-                    && !info.session_id.is_empty()
-                {
-                    info!(
-                        "Clearing stale headless session_id for '{}': {}",
-                        name, info.session_id
-                    );
-                    info.session_id.clear();
+                // Mark any SessionRecord currently allocated to this name as
+                // stale so the session won't be auto-resumed under this name.
+                for record in ps.sessions.values_mut() {
+                    if record.current_name.as_deref().is_some_and(|n| n == name)
+                        && record.is_running
+                    {
+                        info!(
+                            "Clearing stale session record for '{}': {}",
+                            name, record.session_id
+                        );
+                        record.is_running = false;
+                        record.resume_on_startup = false;
+                        record.current_name = None;
+                    }
                 }
                 if let Some(stored_sid) = ps.channel_lead_sessions.remove(name.as_str()) {
                     if stored_sid.is_empty() {
@@ -1831,13 +1842,25 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                             );
                             let _ =
                                 shutdown_coworker_impl(&lead_session_name, &goodbye, state).await;
-                            // Remove from channel_lead_sessions and headless_sessions
+                            // Remove from channel_lead_sessions and mark session records
                             {
                                 let mut ps = state.persistent_state.lock().await;
                                 let removed_lead = ps.channel_lead_sessions.remove(&name).is_some();
-                                let removed_headless =
-                                    ps.headless_sessions.remove(&lead_session_name).is_some();
-                                if removed_lead || removed_headless {
+                                // Mark any SessionRecord with this name as no longer running
+                                let mut removed_session = false;
+                                for record in ps.sessions.values_mut() {
+                                    if record
+                                        .current_name
+                                        .as_deref()
+                                        .is_some_and(|n| n == lead_session_name)
+                                    {
+                                        record.is_running = false;
+                                        record.current_name = None;
+                                        record.resume_on_startup = false;
+                                        removed_session = true;
+                                    }
+                                }
+                                if removed_lead || removed_session {
                                     debug!(
                                         "Removed channel lead session for archived channel '{}'",
                                         name
@@ -2172,6 +2195,18 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                                         created_at: chrono::Utc::now(),
                                         resume_on_startup: !is_reviewer,
                                         bound_thread_id: bound_thread_id.clone(),
+                                        last_active: chrono::Utc::now(),
+                                        purpose: initial_prompt
+                                            .chars()
+                                            .take(120)
+                                            .collect::<String>(),
+                                        pid: None,
+                                        channel: config.channel.clone(),
+                                        provider: Some(config.auth_provider),
+                                        platform: Some(crate::platform::Platform::from_provider(
+                                            config.auth_provider,
+                                        )),
+                                        profile: None, // Resolved at spawn time, not available here
                                     }
                                 });
                             record.current_name = Some(name.clone());

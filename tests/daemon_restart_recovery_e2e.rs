@@ -3,7 +3,7 @@
 //! These tests verify that DaemonPersistentState correctly preserves:
 //! 1. Reviewer assignments (github.pr_reviewers)
 //! 2. PR author sessions (github.pr_author_sessions)
-//! 3. Headless session info (headless_sessions)
+//! 3. Session records (sessions)
 //!
 //! The tests use actual daemon types to verify that state correctly round-trips
 //! through JSON serialization/deserialization, including serde attributes like
@@ -13,7 +13,7 @@
 //! task_assignment_persistence_test.rs using a captured snapshot.
 
 use chrono::Utc;
-use midtown::daemon::{DaemonPersistentState, HeadlessSessionInfo};
+use midtown::daemon::{DaemonPersistentState, SessionRecord};
 use midtown::github_state::{AssignmentSource, GitHubState, PrAuthorSession, PrReviewerAssignment};
 use std::collections::HashMap;
 use std::fs;
@@ -98,59 +98,57 @@ fn test_reviewer_assignments_preserved_after_restart() {
     assert_eq!(pr42_assignment.restart_count, 0);
 }
 
-/// Test that headless session info is preserved across daemon restarts.
+/// Test that session records are preserved across daemon restarts.
 ///
-/// Headless sessions are stored in daemon-state.json (headless_sessions)
-/// and must survive restarts to enable session recovery (--resume <session_id>).
+/// Session records are stored in daemon-state.json (sessions) and must survive
+/// restarts to enable session recovery (--resume <session_id>).
 #[test]
-fn test_headless_sessions_preserved_after_restart() {
+fn test_sessions_preserved_after_restart() {
     // Create temporary test environment
     let temp_dir = TempDir::new().unwrap();
     let state_dir = temp_dir.path();
     fs::create_dir_all(state_dir).unwrap();
 
-    // Create DaemonPersistentState with headless sessions using actual types
-    let now = Utc::now();
-    let mut headless_sessions = HashMap::new();
-    headless_sessions.insert(
-        "amsterdam".to_string(),
-        HeadlessSessionInfo {
+    // Create DaemonPersistentState with session records using actual types
+    let mut sessions = HashMap::new();
+    sessions.insert(
+        "session-amsterdam-123".to_string(),
+        SessionRecord {
             session_id: "session-amsterdam-123".to_string(),
-            last_active: now,
+            current_name: Some("amsterdam".to_string()),
+            preferred_name: Some("amsterdam".to_string()),
+            working_dir: "/path/to/worktree".to_string(),
+            coworker_type: "dev".to_string(),
+            task_id: Some("1385".to_string()),
             purpose: "task !1385: E2E decision functions".to_string(),
             pid: Some(12345),
-            coworker_type: Some("dev".to_string()),
-            task_id: Some(1385),
-            pr_number: None,
-            channel: None,
-            working_dir: Some("/path/to/worktree".to_string()),
-            provider: None,
             profile: Some("test@example.com".to_string()),
             resume_on_startup: true,
-            initial_prompt: None,
+            is_running: true,
+            ..Default::default()
         },
     );
-    headless_sessions.insert(
-        "park".to_string(),
-        HeadlessSessionInfo {
+    sessions.insert(
+        "session-park-456".to_string(),
+        SessionRecord {
             session_id: "session-park-456".to_string(),
-            last_active: now,
+            current_name: Some("park".to_string()),
+            preferred_name: Some("park".to_string()),
+            working_dir: "/path/to/main".to_string(),
+            coworker_type: "reviewer".to_string(),
+            is_reviewer: true,
+            pr_number: Some(42),
             purpose: "reviewer for PR #42".to_string(),
             pid: Some(12346),
-            coworker_type: Some("reviewer".to_string()),
-            task_id: None,
-            pr_number: Some(42),
-            channel: None,
-            working_dir: Some("/path/to/main".to_string()),
-            provider: None,
             profile: Some("test@example.com".to_string()),
             resume_on_startup: true,
-            initial_prompt: None,
+            is_running: true,
+            ..Default::default()
         },
     );
 
     let state = DaemonPersistentState {
-        headless_sessions,
+        sessions,
         ..Default::default()
     };
 
@@ -162,22 +160,20 @@ fn test_headless_sessions_preserved_after_restart() {
     let loaded_state_json = fs::read_to_string(&state_file).unwrap();
     let loaded_state: DaemonPersistentState = serde_json::from_str(&loaded_state_json).unwrap();
 
-    // Verify headless sessions are preserved with type-safe access
+    // Verify session records are preserved with type-safe access
     assert_eq!(
-        loaded_state.headless_sessions.len(),
+        loaded_state.sessions.len(),
         2,
-        "Should preserve 2 headless sessions"
+        "Should preserve 2 session records"
     );
 
-    let amsterdam = loaded_state.headless_sessions.get("amsterdam").unwrap();
-    assert_eq!(amsterdam.session_id, "session-amsterdam-123");
-    assert_eq!(amsterdam.coworker_type, Some("dev".to_string()));
-    assert_eq!(amsterdam.task_id, Some(1385));
+    let amsterdam = loaded_state.sessions.get("session-amsterdam-123").unwrap();
+    assert_eq!(amsterdam.coworker_type, "dev");
+    assert_eq!(amsterdam.task_id, Some("1385".to_string()));
     assert!(amsterdam.resume_on_startup);
 
-    let park = loaded_state.headless_sessions.get("park").unwrap();
-    assert_eq!(park.session_id, "session-park-456");
-    assert_eq!(park.coworker_type, Some("reviewer".to_string()));
+    let park = loaded_state.sessions.get("session-park-456").unwrap();
+    assert_eq!(park.coworker_type, "reviewer");
     assert_eq!(park.pr_number, Some(42));
     assert!(park.resume_on_startup);
 
@@ -256,12 +252,9 @@ fn test_pr_author_sessions_preserved_after_restart() {
 
 /// Test that persistent state correctly deserializes and can be used to prevent duplicate spawns.
 ///
-/// Regression test for the bug captured in:
-/// - snapshot-duplicate-work-after-restart-20260212-231938.json
-///
 /// After restart, the daemon should recognize:
 /// - Reviewers in pr_reviewers → no spawn needed
-/// - Sessions in headless_sessions → resume, not spawn fresh
+/// - Sessions in sessions → resume, not spawn fresh
 ///
 /// This test verifies DaemonPersistentState correctly round-trips through disk
 /// and that the data structures are populated for dispatch logic to use.
@@ -272,7 +265,7 @@ fn test_persistent_state_prevents_duplicate_spawns() {
     let state_dir = temp_dir.path();
     fs::create_dir_all(state_dir).unwrap();
 
-    // Create DaemonPersistentState with reviewer assignments and headless sessions
+    // Create DaemonPersistentState with reviewer assignments and session records
     let now = Utc::now();
     let mut github_state = GitHubState::default();
     github_state.pr_reviewers.insert(
@@ -300,47 +293,44 @@ fn test_persistent_state_prevents_duplicate_spawns() {
         },
     );
 
-    let mut headless_sessions = HashMap::new();
-    headless_sessions.insert(
-        "amsterdam".to_string(),
-        HeadlessSessionInfo {
+    let mut sessions = HashMap::new();
+    sessions.insert(
+        "session-amsterdam-123".to_string(),
+        SessionRecord {
             session_id: "session-amsterdam-123".to_string(),
-            last_active: now,
+            current_name: Some("amsterdam".to_string()),
+            preferred_name: Some("amsterdam".to_string()),
+            coworker_type: "dev".to_string(),
+            task_id: Some("1385".to_string()),
             purpose: "task !1385".to_string(),
             pid: Some(12345),
-            coworker_type: Some("dev".to_string()),
-            task_id: Some(1385),
-            pr_number: None,
-            channel: None,
-            working_dir: None,
-            provider: None,
             profile: Some("test@example.com".to_string()),
             resume_on_startup: true,
-            initial_prompt: None,
+            is_running: true,
+            ..Default::default()
         },
     );
-    headless_sessions.insert(
-        "park".to_string(),
-        HeadlessSessionInfo {
+    sessions.insert(
+        "session-park-456".to_string(),
+        SessionRecord {
             session_id: "session-park-456".to_string(),
-            last_active: now,
+            current_name: Some("park".to_string()),
+            preferred_name: Some("park".to_string()),
+            coworker_type: "reviewer".to_string(),
+            is_reviewer: true,
+            pr_number: Some(42),
             purpose: "reviewer for PR #42".to_string(),
             pid: Some(12346),
-            coworker_type: Some("reviewer".to_string()),
-            task_id: None,
-            pr_number: Some(42),
-            channel: None,
-            working_dir: None,
-            provider: None,
             profile: Some("test@example.com".to_string()),
             resume_on_startup: true,
-            initial_prompt: None,
+            is_running: true,
+            ..Default::default()
         },
     );
 
     let state = DaemonPersistentState {
         github: github_state,
-        headless_sessions,
+        sessions,
         ..Default::default()
     };
 
@@ -361,19 +351,19 @@ fn test_persistent_state_prevents_duplicate_spawns() {
     assert_eq!(loaded_state.github.get_reviewer(42), Some("park"));
     assert_eq!(loaded_state.github.get_reviewer(43), Some("madison"));
 
-    // Verify headless sessions are available for recovery
+    // Verify session records are available for recovery
     assert_eq!(
-        loaded_state.headless_sessions.len(),
+        loaded_state.sessions.len(),
         2,
-        "Should have 2 headless sessions"
+        "Should have 2 session records"
     );
 
     // Identify sessions marked for auto-resume
-    let recovering_names: Vec<&String> = loaded_state
-        .headless_sessions
-        .iter()
-        .filter(|(_, info)| info.resume_on_startup)
-        .map(|(name, _)| name)
+    let recovering_names: Vec<String> = loaded_state
+        .sessions
+        .values()
+        .filter(|r| r.resume_on_startup)
+        .filter_map(|r| r.current_name.clone())
         .collect();
 
     assert_eq!(
@@ -381,12 +371,6 @@ fn test_persistent_state_prevents_duplicate_spawns() {
         2,
         "Should identify 2 sessions to auto-resume"
     );
-    assert!(recovering_names.contains(&&"amsterdam".to_string()));
-    assert!(recovering_names.contains(&&"park".to_string()));
-
-    // Verify dispatch logic can use this data to prevent duplicate spawns:
-    // - PR #42 has reviewer "park" → spawn_reviewer_if_needed should skip
-    // - PR #43 has reviewer "madison" → spawn_reviewer_if_needed should skip
-    // - Coworkers amsterdam and park are in headless_sessions with resume_on_startup=true
-    //   → they should be excluded from available coworkers until resumed
+    assert!(recovering_names.contains(&"amsterdam".to_string()));
+    assert!(recovering_names.contains(&"park".to_string()));
 }

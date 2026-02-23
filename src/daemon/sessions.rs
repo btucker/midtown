@@ -15,8 +15,29 @@ use chrono::{DateTime, Datelike, TimeZone, Utc};
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
-use crate::daemon::state::HeadlessSessionInfo;
 use crate::headless::{HeadlessConfig, HeadlessSession, StreamEvent, shutdown_codex_runtime};
+
+/// Runtime snapshot of a running session, collected at persist time.
+///
+/// Contains only fields that the `SessionManager` directly knows about (pid,
+/// last_active, initial_prompt). The caller enriches with task/PR/purpose info
+/// from `CoworkerManager` and GitHub state before writing to `SessionRecord`.
+pub struct RuntimeSessionSnapshot {
+    pub last_active: DateTime<Utc>,
+    pub pid: Option<u32>,
+    pub initial_prompt: Option<String>,
+    pub working_dir: Option<String>,
+    pub provider: Option<crate::auth::AuthProvider>,
+    pub profile: Option<String>,
+    /// Coworker type — set by the enrichment caller, not by `collect_session_info`.
+    pub coworker_type: Option<String>,
+    /// Task ID — set by the enrichment caller.
+    pub task_id: Option<u64>,
+    /// PR number — set by the enrichment caller.
+    pub pr_number: Option<u64>,
+    /// Human-readable purpose — set by the enrichment caller.
+    pub purpose: String,
+}
 
 /// Check if an error message indicates an OAuth token expiry.
 ///
@@ -1069,33 +1090,30 @@ impl SessionManager {
         }
     }
 
-    /// Collect HeadlessSessionInfo for all running sessions to persist before shutdown.
+    /// Collect runtime snapshots for all running sessions to persist before shutdown.
     ///
-    /// Returns a HashMap keyed by coworker name, ready to be saved to persistent state.
-    /// The caller should supplement with task/PR/purpose info from CoworkerManager and
-    /// GitHub state, then save via `persistent_state.save_for_repo()`.
-    pub async fn collect_session_info(&self) -> HashMap<String, HeadlessSessionInfo> {
+    /// Returns a HashMap keyed by coworker name. The caller enriches with
+    /// task/PR/purpose info from CoworkerManager and GitHub state, then writes
+    /// to `SessionRecord` via `persistent_state.save_for_repo()`.
+    pub async fn collect_session_info(&self) -> HashMap<String, RuntimeSessionSnapshot> {
         let sessions = self.sessions.read().await;
         let mut info_map = HashMap::new();
         let mut rank_by_name: HashMap<String, (u8, DateTime<Utc>)> = HashMap::new();
 
         for (_slot_id, cs) in sessions.iter() {
-            if let Some(session_id) = &cs.session_id {
+            if let Some(_session_id) = &cs.session_id {
                 let pid = cs.session.as_ref().and_then(|s| s.pid());
-                let info = HeadlessSessionInfo {
-                    session_id: session_id.clone(),
+                let info = RuntimeSessionSnapshot {
                     last_active: cs.last_event_at.unwrap_or(cs.started_at),
-                    purpose: String::new(), // To be filled by caller
                     pid,
-                    coworker_type: None, // To be filled by caller
-                    task_id: None,       // To be filled by caller
-                    pr_number: None,     // To be filled by caller
-                    channel: None,       // To be filled by caller
-                    working_dir: None,   // To be filled by caller
-                    provider: None,      // To be filled by caller
-                    profile: None,       // To be filled by caller
-                    resume_on_startup: true,
                     initial_prompt: cs.initial_prompt.clone(),
+                    working_dir: None,      // Filled by caller
+                    provider: None,         // Filled by caller
+                    profile: None,          // Filled by caller
+                    coworker_type: None,    // Filled by caller
+                    task_id: None,          // Filled by caller
+                    pr_number: None,        // Filled by caller
+                    purpose: String::new(), // Filled by caller
                 };
                 let rank = (
                     if Self::is_session_live(cs) { 1 } else { 0 },

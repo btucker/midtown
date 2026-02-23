@@ -220,7 +220,10 @@ async fn insert_test_session(state: &DaemonState, name: &str, initial_prompt: Op
     insert_test_session_with_metadata(state, name, initial_prompt, "dev", None, None).await;
 }
 
-/// Insert a headless session with explicit metadata (coworker type, PR number, channel).
+/// Insert a session with explicit metadata (coworker type, PR number, channel).
+///
+/// Populates both `sessions` (SessionRecord) and `name_to_session` so that
+/// migrated handlers can look up sessions via name → session_id → SessionRecord.
 async fn insert_test_session_with_metadata(
     state: &DaemonState,
     name: &str,
@@ -229,25 +232,31 @@ async fn insert_test_session_with_metadata(
     pr_number: Option<u64>,
     channel: Option<String>,
 ) {
-    let mut ps = state.persistent_state.lock().await;
-    ps.headless_sessions.insert(
-        name.to_string(),
-        crate::daemon::state::HeadlessSessionInfo {
-            session_id: format!("test-session-{}", name),
-            last_active: chrono::Utc::now(),
-            purpose: "test".to_string(),
-            pid: None,
-            coworker_type: Some(coworker_type.to_string()),
-            task_id: Some(42),
-            pr_number,
-            channel,
-            working_dir: Some("/tmp/test-worktree".to_string()),
-            provider: None,
-            profile: None,
-            resume_on_startup: true,
-            initial_prompt,
-        },
-    );
+    let session_id = format!("test-session-{}", name);
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.sessions.insert(
+            session_id.clone(),
+            crate::daemon::state::SessionRecord {
+                session_id: session_id.clone(),
+                current_name: Some(name.to_string()),
+                preferred_name: Some(name.to_string()),
+                working_dir: "/tmp/test-worktree".to_string(),
+                coworker_type: coworker_type.to_string(),
+                task_id: Some("42".to_string()),
+                pr_number,
+                channel,
+                initial_prompt,
+                resume_on_startup: true,
+                ..Default::default()
+            },
+        );
+    }
+    state
+        .name_to_session
+        .lock()
+        .unwrap()
+        .insert(name.to_string(), session_id);
 }
 
 #[tokio::test]

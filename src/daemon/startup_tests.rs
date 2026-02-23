@@ -2,27 +2,23 @@ use super::*;
 
 use crate::daemon::effects::Effect;
 use crate::daemon::state::DaemonPersistentState;
-use chrono::Utc;
-
-/// Create a test HeadlessSessionInfo.
-fn test_session_info(
+/// Create a test SessionRecord for recoverable session PID tests.
+fn make_recoverable_session(
     name: &str,
     task_id: Option<u64>,
-) -> crate::daemon::state::HeadlessSessionInfo {
-    crate::daemon::state::HeadlessSessionInfo {
+) -> crate::daemon::state::SessionRecord {
+    crate::daemon::state::SessionRecord {
         session_id: format!("session-{}", name),
-        last_active: Utc::now(),
+        current_name: Some(name.to_string()),
+        preferred_name: Some(name.to_string()),
+        working_dir: "/tmp/test".to_string(),
+        coworker_type: "dev".to_string(),
+        task_id: task_id.map(|id| id.to_string()),
         purpose: format!("test session for {}", name),
         pid: Some(99999), // Non-existent PID
-        coworker_type: Some("dev".to_string()),
-        task_id,
-        pr_number: None,
-        channel: None,
-        working_dir: Some("/tmp/test".to_string()),
-        provider: None,
-        profile: None,
         resume_on_startup: true,
-        initial_prompt: None,
+        is_running: true,
+        ..Default::default()
     }
 }
 
@@ -153,17 +149,13 @@ async fn test_recoverable_session_pids_returns_resumable_pids() {
 
     {
         let mut state = persistent_state.lock().await;
-        let mut session = test_session_info("amsterdam", Some(42));
+        let mut session = make_recoverable_session("amsterdam", Some(42));
         session.pid = Some(12345);
-        state
-            .headless_sessions
-            .insert("amsterdam".to_string(), session);
+        state.sessions.insert(session.session_id.clone(), session);
 
-        let mut session2 = test_session_info("columbus", Some(43));
+        let mut session2 = make_recoverable_session("columbus", Some(43));
         session2.pid = Some(67890);
-        state
-            .headless_sessions
-            .insert("columbus".to_string(), session2);
+        state.sessions.insert(session2.session_id.clone(), session2);
     }
 
     let pids = recoverable_session_pids(&persistent_state).await;
@@ -178,18 +170,18 @@ async fn test_recoverable_session_pids_excludes_non_resumable() {
 
     {
         let mut state = persistent_state.lock().await;
-        let mut resumable = test_session_info("amsterdam", Some(42));
+        let mut resumable = make_recoverable_session("amsterdam", Some(42));
         resumable.pid = Some(11111);
         state
-            .headless_sessions
-            .insert("amsterdam".to_string(), resumable);
+            .sessions
+            .insert(resumable.session_id.clone(), resumable);
 
-        let mut historical = test_session_info("columbus", Some(43));
+        let mut historical = make_recoverable_session("columbus", Some(43));
         historical.pid = Some(22222);
         historical.resume_on_startup = false;
         state
-            .headless_sessions
-            .insert("columbus".to_string(), historical);
+            .sessions
+            .insert(historical.session_id.clone(), historical);
     }
 
     let pids = recoverable_session_pids(&persistent_state).await;
@@ -204,11 +196,11 @@ async fn test_recoverable_session_pids_skips_sessions_without_pid() {
 
     {
         let mut state = persistent_state.lock().await;
-        let mut no_pid_session = test_session_info("amsterdam", Some(42));
+        let mut no_pid_session = make_recoverable_session("amsterdam", Some(42));
         no_pid_session.pid = None;
         state
-            .headless_sessions
-            .insert("amsterdam".to_string(), no_pid_session);
+            .sessions
+            .insert(no_pid_session.session_id.clone(), no_pid_session);
     }
 
     let pids = recoverable_session_pids(&persistent_state).await;
@@ -315,19 +307,11 @@ fn test_session_record(
 ) -> crate::daemon::state::SessionRecord {
     crate::daemon::state::SessionRecord {
         session_id: session_id.to_string(),
-        task_id: None,
         current_name: Some(name.to_string()),
         preferred_name: Some(name.to_string()),
-        working_dir: "/tmp/worktree".to_string(),
-        branch: None,
-        pr_number: None,
-        initial_prompt: None,
-        is_reviewer: false,
         coworker_type: coworker_type.to_string(),
         is_running: true,
-        created_at: Utc::now(),
-        resume_on_startup: true,
-        bound_thread_id: None,
+        ..Default::default()
     }
 }
 

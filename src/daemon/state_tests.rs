@@ -86,35 +86,33 @@ fn test_headless_session_info_roundtrip() {
 }
 
 #[test]
-fn test_headless_sessions_in_persistent_state() {
+fn test_sessions_in_persistent_state() {
     let mut state = DaemonPersistentState::default();
-    state.headless_sessions.insert(
-        "park".to_string(),
-        HeadlessSessionInfo {
+    state.sessions.insert(
+        "session-42".to_string(),
+        SessionRecord {
             session_id: "session-42".to_string(),
-            last_active: Utc::now(),
+            current_name: Some("park".to_string()),
+            working_dir: "/path/to/park-worktree".to_string(),
+            coworker_type: "dev".to_string(),
+            task_id: Some("3".to_string()),
             purpose: "task !3: Fix login bug".to_string(),
             pid: Some(9999),
-            coworker_type: Some("dev".to_string()),
-            task_id: Some(3),
-            pr_number: None,
-            channel: None,
-            working_dir: Some("/path/to/park-worktree".to_string()),
             provider: Some(crate::auth::AuthProvider::Claude),
             profile: Some("test-profile".to_string()),
             resume_on_startup: true,
-            initial_prompt: None,
+            ..Default::default()
         },
     );
 
     let json = serde_json::to_string_pretty(&state).unwrap();
     let loaded: DaemonPersistentState = serde_json::from_str(&json).unwrap();
-    assert_eq!(loaded.headless_sessions.len(), 1);
-    let park = loaded.headless_sessions.get("park").unwrap();
+    assert_eq!(loaded.sessions.len(), 1);
+    let park = loaded.sessions.get("session-42").unwrap();
     assert_eq!(park.session_id, "session-42");
     assert_eq!(park.purpose, "task !3: Fix login bug");
     assert_eq!(park.pid, Some(9999));
-    assert_eq!(park.task_id, Some(3));
+    assert_eq!(park.task_id, Some("3".to_string()));
 }
 
 #[test]
@@ -146,29 +144,27 @@ fn test_headless_session_info_backward_compat() {
 }
 
 #[test]
-fn test_headless_session_provider_persistence() {
+fn test_session_record_provider_persistence() {
     // Test that provider field is persisted and restored correctly
     // Reproduces the bug: when a Codex coworker is running and the daemon
     // restarts, the provider defaults to Claude if not persisted.
     let mut state = DaemonPersistentState::default();
 
     // Add a Codex session
-    state.headless_sessions.insert(
-        "madison".to_string(),
-        HeadlessSessionInfo {
+    state.sessions.insert(
+        "codex-session-123".to_string(),
+        SessionRecord {
             session_id: "codex-session-123".to_string(),
-            last_active: Utc::now(),
+            current_name: Some("madison".to_string()),
+            working_dir: "/path/to/madison-worktree".to_string(),
+            coworker_type: "dev".to_string(),
+            task_id: Some("42".to_string()),
             purpose: "task !42: Add feature".to_string(),
             pid: Some(5555),
-            coworker_type: Some("dev".to_string()),
-            task_id: Some(42),
-            pr_number: None,
-            channel: None,
-            working_dir: Some("/path/to/madison-worktree".to_string()),
             provider: Some(crate::auth::AuthProvider::Codex),
             profile: Some("test-profile".to_string()),
             resume_on_startup: true,
-            initial_prompt: None,
+            ..Default::default()
         },
     );
 
@@ -179,7 +175,7 @@ fn test_headless_session_provider_persistence() {
     let loaded: DaemonPersistentState = serde_json::from_str(&json).unwrap();
 
     // Verify the provider was restored correctly
-    let madison = loaded.headless_sessions.get("madison").unwrap();
+    let madison = loaded.sessions.get("codex-session-123").unwrap();
     assert_eq!(
         madison.provider,
         Some(crate::auth::AuthProvider::Codex),
@@ -428,40 +424,36 @@ fn test_task_model_overwrite_and_remove() {
 }
 
 #[test]
-fn test_channel_lead_session_info_coworker_type_and_channel() {
-    // Bug 1: HeadlessSessionInfo for a channel lead must persist coworker_type="channel-lead"
+fn test_channel_lead_session_record_coworker_type_and_channel() {
+    // SessionRecord for a channel lead must persist coworker_type="channel-lead"
     // and the channel name, so the attach path can reconstruct the correct role.
     let mut state = DaemonPersistentState::default();
-    state.headless_sessions.insert(
-        "amsterdam".to_string(),
-        HeadlessSessionInfo {
+    state.sessions.insert(
+        "session-ch-123".to_string(),
+        SessionRecord {
             session_id: "session-ch-123".to_string(),
-            last_active: Utc::now(),
+            current_name: Some("amsterdam".to_string()),
+            coworker_type: "channel-lead".to_string(),
+            channel: Some("daemon-architecture".to_string()),
             purpose: "channel lead for daemon-architecture".to_string(),
             pid: Some(42),
-            coworker_type: Some("channel-lead".to_string()),
-            task_id: None,
-            pr_number: None,
-            channel: Some("daemon-architecture".to_string()),
-            working_dir: None,
             provider: Some(crate::auth::AuthProvider::Claude),
-            profile: None,
             resume_on_startup: true,
-            initial_prompt: None,
+            ..Default::default()
         },
     );
 
     let json = serde_json::to_string(&state).unwrap();
     let loaded: DaemonPersistentState = serde_json::from_str(&json).unwrap();
 
-    let info = loaded.headless_sessions.get("amsterdam").unwrap();
+    let record = loaded.sessions.get("session-ch-123").unwrap();
     assert_eq!(
-        info.coworker_type.as_deref(),
-        Some("channel-lead"),
+        record.coworker_type.as_str(),
+        "channel-lead",
         "coworker_type should be 'channel-lead', not 'dev'"
     );
     assert_eq!(
-        info.channel.as_deref(),
+        record.channel.as_deref(),
         Some("daemon-architecture"),
         "channel name should be persisted and restored"
     );
@@ -477,16 +469,11 @@ fn make_test_session_record_named(session_id: &str, is_running: bool, name: &str
         task_id: Some("1690".to_string()),
         current_name: Some(name.to_string()),
         preferred_name: Some(name.to_string()),
-        working_dir: "/tmp/worktree".to_string(),
-        branch: None,
-        pr_number: None,
-        initial_prompt: None,
         is_reviewer: true,
         coworker_type: "reviewer".to_string(),
         is_running,
-        created_at: Utc::now(),
         resume_on_startup: false,
-        bound_thread_id: None,
+        ..Default::default()
     }
 }
 

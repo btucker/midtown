@@ -20,7 +20,7 @@ use crate::launch::{LaunchConfig, SessionMode};
 /// Separate from `AuthProvider` (which handles authentication). Multiple auth
 /// providers can map to the same platform (e.g., both `Claude` and `Zai`
 /// providers use the `Claude` platform's `claude` binary).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Platform {
     /// Claude Code CLI (`claude`).
     Claude,

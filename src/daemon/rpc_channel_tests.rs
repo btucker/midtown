@@ -992,22 +992,16 @@ async fn test_handle_channel_archive_cleans_up_channel_lead_sessions() {
         let mut ps = state.persistent_state.lock().await;
         ps.channel_lead_sessions
             .insert("feature-x".to_string(), "session-fx-123".to_string());
-        ps.headless_sessions.insert(
-            "feature-x".to_string(),
-            crate::daemon::state::HeadlessSessionInfo {
+        ps.sessions.insert(
+            "session-fx-123".to_string(),
+            crate::daemon::state::SessionRecord {
                 session_id: "session-fx-123".to_string(),
-                last_active: chrono::Utc::now(),
-                purpose: "channel lead for feature-x".to_string(),
-                pid: None,
-                coworker_type: Some("channel-lead".to_string()),
-                task_id: None,
-                pr_number: None,
+                current_name: Some("feature-x".to_string()),
+                coworker_type: "channel-lead".to_string(),
                 channel: Some("feature-x".to_string()),
-                working_dir: None,
-                provider: None,
-                profile: None,
+                is_running: true,
                 resume_on_startup: false,
-                initial_prompt: None,
+                ..Default::default()
             },
         );
     }
@@ -1016,17 +1010,24 @@ async fn test_handle_channel_archive_cleans_up_channel_lead_sessions() {
     let response = super::handle_channel_archive(2_i64.into(), "feature-x", &state).await;
     assert!(response.error.is_none(), "channel.archive should succeed");
 
-    // Verify channel_lead_sessions and headless_sessions are cleaned up
+    // Verify channel_lead_sessions is cleaned up and session is marked stopped
     {
         let ps = state.persistent_state.lock().await;
         assert!(
             !ps.channel_lead_sessions.contains_key("feature-x"),
             "channel_lead_sessions should be cleaned up after archive"
         );
-        assert!(
-            !ps.headless_sessions.contains_key("feature-x"),
-            "headless_sessions should be cleaned up after archive"
-        );
+        // Session record should be marked as not running (not removed entirely)
+        if let Some(record) = ps.sessions.get("session-fx-123") {
+            assert!(
+                !record.is_running,
+                "session should be marked as stopped after archive"
+            );
+            assert!(
+                !record.resume_on_startup,
+                "session should not resume after archive"
+            );
+        }
     }
 }
 
@@ -1394,7 +1395,7 @@ async fn test_channel_rename_success() {
 
     let old_lead_session_name = crate::launch::channel_lead_session_name("auth-v1");
 
-    // Seed persistent state: task_channel, channel_lead_sessions, headless_sessions
+    // Seed persistent state: task_channel, channel_lead_sessions, sessions
     {
         let mut ps = state.persistent_state.lock().await;
         ps.task_channel
@@ -1403,22 +1404,16 @@ async fn test_channel_rename_success() {
             .insert("99".to_string(), "other-channel".to_string());
         ps.channel_lead_sessions
             .insert("auth-v1".to_string(), "session-auth-123".to_string());
-        ps.headless_sessions.insert(
-            old_lead_session_name.clone(),
-            crate::daemon::state::HeadlessSessionInfo {
+        ps.sessions.insert(
+            "session-auth-123".to_string(),
+            crate::daemon::state::SessionRecord {
                 session_id: "session-auth-123".to_string(),
-                last_active: chrono::Utc::now(),
-                purpose: "channel lead for auth-v1".to_string(),
-                pid: None,
-                coworker_type: Some("channel-lead".to_string()),
-                task_id: None,
-                pr_number: None,
+                current_name: Some(old_lead_session_name.clone()),
+                coworker_type: "channel-lead".to_string(),
                 channel: Some("auth-v1".to_string()),
-                working_dir: None,
-                provider: None,
-                profile: None,
+                is_running: true,
                 resume_on_startup: false,
-                initial_prompt: None,
+                ..Default::default()
             },
         );
     }
@@ -1462,16 +1457,17 @@ async fn test_channel_rename_success() {
         "stale session ID should not be migrated to new name"
     );
 
-    // Verify headless_sessions is cleaned up
-    assert!(
-        !ps.headless_sessions.contains_key(&old_lead_session_name),
-        "old headless_sessions entry should be removed"
-    );
-    let new_lead_session_name = crate::launch::channel_lead_session_name("auth-v2");
-    assert!(
-        !ps.headless_sessions.contains_key(&new_lead_session_name),
-        "stale headless session should not be migrated to new name"
-    );
+    // Verify session record is marked as stopped (not running, not resume_on_startup)
+    if let Some(record) = ps.sessions.get("session-auth-123") {
+        assert!(
+            !record.is_running,
+            "old session should be marked as stopped after rename"
+        );
+        assert!(
+            !record.resume_on_startup,
+            "old session should not resume after rename"
+        );
+    }
 }
 
 /// Renaming a non-existent channel returns an error.

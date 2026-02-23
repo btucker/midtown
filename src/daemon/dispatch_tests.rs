@@ -4815,15 +4815,8 @@ fn make_test_session_record(
         current_name: preferred_name.map(|s| s.to_string()),
         preferred_name: preferred_name.map(|s| s.to_string()),
         working_dir: working_dir.to_string(),
-        branch: None,
-        pr_number: None,
-        initial_prompt: None,
-        is_reviewer: false,
-        coworker_type: "dev".to_string(),
         is_running,
-        created_at: chrono::Utc::now(),
-        resume_on_startup: true,
-        bound_thread_id: None,
+        ..Default::default()
     }
 }
 

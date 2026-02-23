@@ -167,18 +167,13 @@ async fn resolve_attach_target_candidates(
             };
 
             let persistent = state.persistent_state.lock().await;
-            matches.extend(
-                persistent
-                    .headless_sessions
-                    .iter()
-                    .filter_map(|(name, info)| {
-                        if info.task_id == Some(u64::from(id)) {
-                            Some(name.to_lowercase())
-                        } else {
-                            None
-                        }
-                    }),
-            );
+            matches.extend(persistent.sessions.values().filter_map(|record| {
+                if record.task_id.as_deref() == Some(id_str.as_str()) {
+                    record.current_name.as_ref().map(|n| n.to_lowercase())
+                } else {
+                    None
+                }
+            }));
 
             if matches.is_empty() {
                 return Err(format!("No coworker is assigned to task !{}", id));
@@ -192,18 +187,13 @@ async fn resolve_attach_target_candidates(
             if let Some(reviewer) = persistent.github.get_reviewer(pr_num) {
                 matches.push(reviewer.to_lowercase());
             }
-            matches.extend(
-                persistent
-                    .headless_sessions
-                    .iter()
-                    .filter_map(|(name, info)| {
-                        if info.pr_number == Some(pr_num) {
-                            Some(name.to_lowercase())
-                        } else {
-                            None
-                        }
-                    }),
-            );
+            matches.extend(persistent.sessions.values().filter_map(|record| {
+                if record.pr_number == Some(pr_num) {
+                    record.current_name.as_ref().map(|n| n.to_lowercase())
+                } else {
+                    None
+                }
+            }));
             drop(persistent);
             // Fall back to branch-name-based mapping via coworker list
             let coworkers = state.coworkers.list();
@@ -224,11 +214,11 @@ async fn resolve_attach_target_candidates(
         AttachTarget::Platform(platform) => {
             let persistent = state.persistent_state.lock().await;
             let matches: Vec<String> = persistent
-                .headless_sessions
-                .iter()
-                .filter_map(|(name, info)| {
-                    if platform_for_provider(info.provider) == platform {
-                        Some(name.to_lowercase())
+                .sessions
+                .values()
+                .filter_map(|record| {
+                    if platform_for_provider(record.provider) == platform {
+                        record.current_name.as_ref().map(|n| n.to_lowercase())
                     } else {
                         None
                     }
@@ -248,15 +238,15 @@ async fn resolve_attach_target_candidates(
         } => {
             let persistent = state.persistent_state.lock().await;
             let matches: Vec<String> = persistent
-                .headless_sessions
-                .iter()
-                .filter_map(|(name, info)| {
-                    if info.session_id != session_id {
+                .sessions
+                .values()
+                .filter_map(|record| {
+                    if record.session_id != session_id {
                         return None;
                     }
 
-                    if platform_for_provider(info.provider) == platform {
-                        Some(name.to_lowercase())
+                    if platform_for_provider(record.provider) == platform {
+                        record.current_name.as_ref().map(|n| n.to_lowercase())
                     } else {
                         None
                     }
@@ -326,6 +316,7 @@ pub(super) async fn handle_session_resolve(
     let persistent = state.persistent_state.lock().await;
     let now = chrono::Utc::now();
     let attached = state.attached_coworkers.lock().unwrap().clone();
+    let name_to_session = state.name_to_session.lock().unwrap().clone();
     let running_coworkers: std::collections::HashMap<String, crate::coworker::Coworker> = state
         .coworkers
         .list()
@@ -335,15 +326,23 @@ pub(super) async fn handle_session_resolve(
     let mut candidates: Vec<serde_json::Value> = names
         .into_iter()
         .filter_map(|name| {
-            let info = persistent.headless_sessions.get(&name)?;
+            let session_id = name_to_session.get(&name)?;
+            let record = persistent.sessions.get(session_id)?;
             let coworker = running_coworkers.get(&name);
-            let provider = info.provider.unwrap_or(crate::auth::AuthProvider::Claude);
-            let platform = platform_for_provider(info.provider);
+            let provider = record.provider.unwrap_or(crate::auth::AuthProvider::Claude);
+            let platform = platform_for_provider(record.provider);
             let attached_now = attached.contains_key(&name);
             let running = coworker.is_some();
             let cwd = coworker
                 .map(|cw| cw.working_dir.clone())
-                .or_else(|| info.working_dir.clone())
+                .or_else(|| {
+                    let wd = &record.working_dir;
+                    if wd.is_empty() {
+                        None
+                    } else {
+                        Some(wd.clone())
+                    }
+                })
                 .unwrap_or_else(|| {
                     state
                         .all_repo_paths
@@ -352,18 +351,18 @@ pub(super) async fn handle_session_resolve(
                         .unwrap_or_default()
                 });
             let last_active_age_ms = now
-                .signed_duration_since(info.last_active)
+                .signed_duration_since(record.last_active)
                 .num_milliseconds()
                 .max(0) as u64;
             Some(serde_json::json!({
                 "name": name,
-                "session_id": info.session_id,
+                "session_id": record.session_id,
                 "provider": provider.as_str(),
                 "platform": platform.as_str(),
                 "cwd": cwd,
                 "running": running,
                 "attached": attached_now,
-                "last_active": info.last_active.to_rfc3339(),
+                "last_active": record.last_active.to_rfc3339(),
                 "last_active_age_ms": last_active_age_ms,
             }))
         })
@@ -436,16 +435,17 @@ pub(super) async fn handle_session_attach(
     // Get session details from persistent state (eagerly persisted at spawn time).
     // If session_id is empty (race between spawn and init event), backfill from
     // session_manager which may have received the init event by now.
-    let info = {
+    let record = {
         let persistent = state.persistent_state.lock().await;
-        match persistent.headless_sessions.get(&name).cloned() {
-            Some(mut info) => {
-                if info.session_id.is_empty()
+        let session_id = state.name_to_session.lock().unwrap().get(&name).cloned();
+        match session_id.and_then(|sid| persistent.sessions.get(&sid).cloned()) {
+            Some(mut record) => {
+                if record.session_id.is_empty()
                     && let Some(sid) = state.session_manager.get_session_id(&name).await
                 {
-                    info.session_id = sid;
+                    record.session_id = sid;
                 }
-                info
+                record
             }
             None => {
                 return Response::error(
@@ -465,7 +465,7 @@ pub(super) async fn handle_session_attach(
 
     // If session_id is still empty after backfill, the session hasn't initialized yet.
     // Return a retryable error so callers (e.g. `midtown view`) can wait and retry.
-    if info.session_id.is_empty() {
+    if record.session_id.is_empty() {
         return Response::error(
             id,
             RpcError::new(
@@ -480,8 +480,8 @@ pub(super) async fn handle_session_attach(
 
     // Check if session is currently running headless
     let running = state.session_manager.is_alive(&name).await;
-    let provider = info.provider.unwrap_or(crate::auth::AuthProvider::Claude);
-    let session_id = info.session_id.clone();
+    let provider = record.provider.unwrap_or(crate::auth::AuthProvider::Claude);
+    let session_id = record.session_id.clone();
     let cwd = if name == "lead" {
         // Lead attaches in the lead worktree (where the headless session runs),
         // so `claude --resume` finds the session data (stored per-CWD).
@@ -500,7 +500,14 @@ pub(super) async fn handle_session_attach(
             .coworkers
             .get(&name)
             .map(|cw| cw.working_dir.clone())
-            .or(info.working_dir.clone())
+            .or_else(|| {
+                let wd = &record.working_dir;
+                if wd.is_empty() {
+                    None
+                } else {
+                    Some(wd.clone())
+                }
+            })
             .unwrap_or_else(|| {
                 state
                     .all_repo_paths
@@ -569,8 +576,8 @@ pub(super) async fn handle_session_attach(
             "cwd": cwd,
             "name": name,
             "provider": provider.as_str(),
-            "coworker_type": info.coworker_type,
-            "channel": info.channel,
+            "coworker_type": record.coworker_type,
+            "channel": record.channel,
         }),
     )
 }
@@ -626,11 +633,12 @@ pub(super) async fn handle_session_detach(
     // Get session details from persistent state
     let session_info = {
         let persistent = state.persistent_state.lock().await;
-        persistent.headless_sessions.get(&name).cloned()
+        let session_id = state.name_to_session.lock().unwrap().get(&name).cloned();
+        session_id.and_then(|sid| persistent.sessions.get(&sid).cloned())
     };
 
     let session_info = match session_info {
-        Some(info) => info,
+        Some(record) => record,
         None => {
             return Response::error(
                 id,
@@ -674,8 +682,8 @@ pub(super) async fn handle_session_detach(
         if lead_wt.exists() {
             config.working_dir = Some(lead_wt);
         }
-    } else if let Some(ref working_dir) = session_info.working_dir {
-        config.working_dir = Some(std::path::PathBuf::from(working_dir));
+    } else if !session_info.working_dir.is_empty() {
+        config.working_dir = Some(std::path::PathBuf::from(&session_info.working_dir));
     }
     {
         let execution_role = coworker_role_to_execution_role(&config.role);
@@ -740,9 +748,10 @@ pub(super) async fn handle_session_list(id: RequestId, state: &DaemonState) -> R
     let attached = state.attached_coworkers.lock().unwrap().clone();
 
     let mut sessions: Vec<serde_json::Value> = persistent
-        .headless_sessions
-        .iter()
-        .map(|(name, info)| {
+        .sessions
+        .values()
+        .filter_map(|record| {
+            let name = record.current_name.as_ref()?;
             let status = if attached.contains_key(&name.to_lowercase()) {
                 "attached"
             } else if running_coworkers.contains(&name.to_lowercase()) {
@@ -757,14 +766,14 @@ pub(super) async fn handle_session_list(id: RequestId, state: &DaemonState) -> R
                 assignments.get(name).map(|a| a.task_id.clone())
             };
 
-            serde_json::json!({
+            Some(serde_json::json!({
                 "name": name,
-                "session_id": info.session_id,
+                "session_id": record.session_id,
                 "status": status,
-                "purpose": info.purpose,
-                "last_active": info.last_active.to_rfc3339(),
+                "purpose": record.purpose,
+                "last_active": record.last_active.to_rfc3339(),
                 "task": task,
-            })
+            }))
         })
         .collect();
 
@@ -882,11 +891,12 @@ pub(super) async fn handle_session_clear(
     // Get session info from persistent state
     let session_info = {
         let persistent = state.persistent_state.lock().await;
-        persistent.headless_sessions.get(&name).cloned()
+        let session_id = state.name_to_session.lock().unwrap().get(&name).cloned();
+        session_id.and_then(|sid| persistent.sessions.get(&sid).cloned())
     };
 
     let session_info = match session_info {
-        Some(info) => info,
+        Some(record) => record,
         None => {
             return Response::error(
                 id,
@@ -966,8 +976,8 @@ pub(super) async fn handle_session_clear(
         // Persist the original prompt, not the decorated "fresh restart" wrapper.
         c.persisted_initial_prompt = session_info.initial_prompt.clone();
         // Restore role-specific metadata so reviewer/channel-lead context survives the clear.
-        if let Some(ref coworker_type) = session_info.coworker_type {
-            match coworker_type.as_str() {
+        {
+            match session_info.coworker_type.as_str() {
                 "reviewer" => c.role = crate::launch::CoworkerRole::Reviewer,
                 "channel-lead" => {
                     c.role = crate::launch::CoworkerRole::ChannelLead {
@@ -989,8 +999,8 @@ pub(super) async fn handle_session_clear(
         if lead_wt.exists() {
             config.working_dir = Some(lead_wt);
         }
-    } else if let Some(ref working_dir) = session_info.working_dir {
-        config.working_dir = Some(std::path::PathBuf::from(working_dir));
+    } else if !session_info.working_dir.is_empty() {
+        config.working_dir = Some(std::path::PathBuf::from(&session_info.working_dir));
     }
     {
         let execution_role = coworker_role_to_execution_role(&config.role);
@@ -1089,21 +1099,26 @@ pub(super) async fn handle_session_fork(
     // Look up the channel lead session info to get working_dir and channel.
     let (working_dir, channel, auth_provider) = {
         let ps = state.persistent_state.lock().await;
-        let info = ps.headless_sessions.iter().find_map(|(name, info)| {
-            if info.session_id == calling_session_id
-                || caller_name.as_deref() == Some(name.as_str())
-            {
-                Some(info.clone())
-            } else {
-                None
-            }
+        // Try direct session_id lookup first, then fall back to name-based lookup.
+        let record = ps.sessions.get(calling_session_id).or_else(|| {
+            caller_name
+                .as_ref()
+                .and_then(|n| state.name_to_session.lock().unwrap().get(n).cloned())
+                .and_then(|sid| ps.sessions.get(&sid))
         });
-        match info {
-            Some(i) => (
-                i.working_dir,
-                i.channel.clone(),
-                i.provider.unwrap_or(crate::auth::AuthProvider::Claude),
-            ),
+        match record {
+            Some(r) => {
+                let wd = if r.working_dir.is_empty() {
+                    None
+                } else {
+                    Some(r.working_dir.clone())
+                };
+                (
+                    wd,
+                    r.channel.clone(),
+                    r.provider.unwrap_or(crate::auth::AuthProvider::Claude),
+                )
+            }
             None => {
                 warn!(
                     "session.fork: could not find session info for calling_session_id={}",
@@ -1206,18 +1221,18 @@ pub(super) async fn handle_session_fork(
     // the name↔session reverse maps ourselves.
     {
         let mut ps = state.persistent_state.lock().await;
-        let hs_info = ps.headless_sessions.iter().find_map(|(_, info)| {
-            if info.session_id == calling_session_id
-                || caller_name
-                    .as_deref()
-                    .map(|n| info.session_id == n)
-                    .unwrap_or(false)
-            {
-                Some(info.clone())
-            } else {
-                None
-            }
-        });
+        // Look up the parent session record for backfilling fork metadata.
+        // Clone the needed fields before the mutable borrow for insert.
+        let parent_record = ps
+            .sessions
+            .get(calling_session_id)
+            .or_else(|| {
+                caller_name
+                    .as_ref()
+                    .and_then(|n| state.name_to_session.lock().unwrap().get(n).cloned())
+                    .and_then(|sid| ps.sessions.get(&sid))
+            })
+            .cloned();
         ps.sessions.insert(
             fork_session_id.clone(),
             crate::daemon::state::SessionRecord {
@@ -1228,13 +1243,29 @@ pub(super) async fn handle_session_fork(
                 working_dir: working_dir.clone().unwrap_or_default(),
                 branch: None,
                 pr_number: None,
-                initial_prompt: hs_info.as_ref().and_then(|i| i.initial_prompt.clone()),
+                initial_prompt: parent_record
+                    .as_ref()
+                    .and_then(|r| r.initial_prompt.clone()),
                 is_reviewer: false,
                 coworker_type: "channel-lead".to_string(),
                 is_running: true,
                 created_at: chrono::Utc::now(),
                 resume_on_startup: false,
                 bound_thread_id: Some(thread_parent_id.to_string()),
+                last_active: chrono::Utc::now(),
+                purpose: format!(
+                    "fork of {} in thread {}",
+                    fork_channel.as_deref().unwrap_or("unknown"),
+                    thread_parent_id
+                ),
+                pid: None,
+                channel: fork_channel.clone(),
+                provider: parent_record.as_ref().and_then(|r| r.provider),
+                platform: parent_record
+                    .as_ref()
+                    .and_then(|r| r.provider)
+                    .map(crate::platform::Platform::from_provider),
+                profile: parent_record.as_ref().and_then(|r| r.profile.clone()),
             },
         );
         if let Err(e) = ps.save_for_repo(repo_name) {

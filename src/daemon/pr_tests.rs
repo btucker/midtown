@@ -1904,17 +1904,12 @@ fn test_resolve_pr_owner_from_session_prefers_session_over_branch() {
             session_id: "sess-abc".to_string(),
             task_id: Some("123".to_string()),
             current_name: Some("madison".to_string()),
-            preferred_name: None,
             working_dir: "/tmp/test".to_string(),
             branch: Some("lexington/fix-auth".to_string()),
             pr_number: Some(42),
-            initial_prompt: None,
-            is_reviewer: false,
-            coworker_type: "dev".to_string(),
             is_running: true,
-            created_at: chrono::Utc::now(),
             resume_on_startup: false,
-            bound_thread_id: None,
+            ..Default::default()
         },
     )]
     .into_iter()
@@ -1959,18 +1954,12 @@ fn test_resolve_pr_owner_from_session_uses_preferred_name_for_suspended_session(
         crate::daemon::state::SessionRecord {
             session_id: "sess-abc".to_string(),
             task_id: Some("123".to_string()),
-            current_name: None, // suspended — no name allocated
             preferred_name: Some("lexington".to_string()),
             working_dir: "/tmp/test".to_string(),
             branch: Some("lexington/fix-auth".to_string()),
             pr_number: Some(42),
-            initial_prompt: None,
-            is_reviewer: false,
-            coworker_type: "dev".to_string(),
-            is_running: false,
-            created_at: chrono::Utc::now(),
             resume_on_startup: false,
-            bound_thread_id: None,
+            ..Default::default()
         },
     )]
     .into_iter()
@@ -2052,17 +2041,12 @@ async fn test_poll_prs_session_based_owner_resolution() {
             session_id: "sess-abc".to_string(),
             task_id: Some("123".to_string()),
             current_name: Some("madison".to_string()),
-            preferred_name: None,
             working_dir: "/tmp/test".to_string(),
             branch: Some("lexington/fix-auth".to_string()),
             pr_number: Some(42),
-            initial_prompt: None,
-            is_reviewer: false,
-            coworker_type: "dev".to_string(),
             is_running: true,
-            created_at: chrono::Utc::now(),
             resume_on_startup: false,
-            bound_thread_id: None,
+            ..Default::default()
         },
     )]
     .into_iter()
@@ -2152,13 +2136,9 @@ fn test_pr_context_task_session_id_populated() {
             working_dir: "/tmp/test".to_string(),
             branch: Some("lexington/fix-auth".to_string()),
             pr_number: Some(42),
-            initial_prompt: None,
-            is_reviewer: false,
-            coworker_type: "dev".to_string(),
             is_running: true,
-            created_at: chrono::Utc::now(),
             resume_on_startup: false,
-            bound_thread_id: None,
+            ..Default::default()
         },
     );
 
@@ -2245,13 +2225,9 @@ async fn test_resolve_pr_owner_via_session_full_chain() {
                 working_dir: "/tmp/test".to_string(),
                 branch: Some("lexington/fix-auth".to_string()),
                 pr_number: Some(42),
-                initial_prompt: None,
-                is_reviewer: false,
-                coworker_type: "dev".to_string(),
                 is_running: true,
-                created_at: chrono::Utc::now(),
                 resume_on_startup: false,
-                bound_thread_id: None,
+                ..Default::default()
             },
         );
     }
@@ -2303,18 +2279,12 @@ async fn test_resolve_pr_owner_via_session_preferred_name_fallback() {
             crate::daemon::state::SessionRecord {
                 session_id: "sess-abc".to_string(),
                 task_id: Some("100".to_string()),
-                current_name: None,
                 preferred_name: Some("park".to_string()),
                 working_dir: "/tmp/test".to_string(),
                 branch: Some("lexington/fix-auth".to_string()),
                 pr_number: Some(42),
-                initial_prompt: None,
-                is_reviewer: false,
-                coworker_type: "dev".to_string(),
-                is_running: false,
-                created_at: chrono::Utc::now(),
                 resume_on_startup: false,
-                bound_thread_id: None,
+                ..Default::default()
             },
         );
     }
