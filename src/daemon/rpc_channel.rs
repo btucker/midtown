@@ -337,13 +337,16 @@ pub(super) async fn handle_channel_post(
 pub(super) fn handle_channel_create(id: RequestId, name: &str, state: &DaemonState) -> Response {
     let base_dir = state.channel_router.base_dir();
     match crate::Channel::create(base_dir, name) {
-        Ok(_) => Response::success(
-            id,
-            serde_json::json!({
-                "success": true,
-                "message": format!("Channel '{}' created", name),
-            }),
-        ),
+        Ok(_) => {
+            state.broadcast_web_update(crate::web::channel_list_changed("created", name));
+            Response::success(
+                id,
+                serde_json::json!({
+                    "success": true,
+                    "message": format!("Channel '{}' created", name),
+                }),
+            )
+        }
         Err(e) => {
             error!("Failed to create channel '{}': {}", name, e);
             Response::error(id, RpcError::new(-32603, e.to_string()))
@@ -418,6 +421,8 @@ pub(super) async fn handle_channel_archive(
                 }
             }
 
+            state.broadcast_web_update(crate::web::channel_list_changed("archived", name));
+
             Response::success(
                 id,
                 serde_json::json!({
@@ -453,6 +458,7 @@ pub(super) fn handle_channel_unarchive(id: RequestId, name: &str, state: &Daemon
     match crate::Channel::unarchive_channel(base_dir, name) {
         Ok(()) => {
             state.channel_router.remove_channel(name);
+            state.broadcast_web_update(crate::web::channel_list_changed("unarchived", name));
             Response::success(
                 id,
                 serde_json::json!({
@@ -562,6 +568,8 @@ pub(super) async fn handle_channel_rename(
         state,
     )
     .await;
+
+    state.broadcast_web_update(crate::web::channel_list_changed("renamed", new));
 
     info!("Channel '{}' renamed to '{}'", old, new);
     Response::success(

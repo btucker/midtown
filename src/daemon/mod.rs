@@ -2115,7 +2115,7 @@ impl DaemonState {
     }
 
     /// Send a WebUpdate to all connected WebSocket clients (no-op if web is disabled).
-    fn broadcast_web_update(&self, update: WebUpdate) {
+    pub(crate) fn broadcast_web_update(&self, update: WebUpdate) {
         if let Some(ref tx) = self.web_updates_tx {
             let _ = tx.send(update);
         }

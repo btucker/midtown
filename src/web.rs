@@ -221,6 +221,9 @@ pub enum WebUpdate {
     /// A coworker is waiting for user input (AskUserQuestion tool call)
     #[serde(rename = "coworker_question")]
     CoworkerQuestion(CoworkerQuestionData),
+    /// Channel list changed (create, archive, unarchive, rename)
+    #[serde(rename = "channel_list_changed")]
+    ChannelListChanged(ChannelListChangedData),
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -313,6 +316,14 @@ pub struct CoworkerQuestionData {
     pub coworker_name: String,
     pub question: String,
     pub timestamp: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ChannelListChangedData {
+    /// What happened: "created", "archived", "unarchived", "renamed"
+    pub action: String,
+    /// Channel name affected
+    pub channel: String,
 }
 
 /// WebSocket message from client
@@ -473,6 +484,9 @@ async fn api_channels_create(
     })?;
 
     info!("Created channel '{}'", channel_name);
+    let _ = state
+        .updates_tx
+        .send(channel_list_changed("created", channel_name));
     Ok((
         StatusCode::CREATED,
         axum::Json(serde_json::json!({ "name": channel_name })),
@@ -1924,6 +1938,14 @@ pub fn channel_message_update(message: &Message) -> WebUpdate {
 /// Broadcast a new channel message to all WebSocket clients
 pub fn broadcast_channel_message(tx: &broadcast::Sender<WebUpdate>, message: &Message) {
     let _ = tx.send(channel_message_update(message));
+}
+
+/// Build a `WebUpdate` for a channel list change (create, archive, unarchive, rename).
+pub fn channel_list_changed(action: &str, channel: &str) -> WebUpdate {
+    WebUpdate::ChannelListChanged(ChannelListChangedData {
+        action: action.to_string(),
+        channel: channel.to_string(),
+    })
 }
 
 #[path = "web_tests.rs"]

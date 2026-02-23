@@ -22,6 +22,7 @@ import {
   pendingQuestions,
   detailPanelData,
   threadData,
+  showArchivedChannels,
 } from './store.js'
 
 // Maximum number of tool call items retained per agent in the activity store.
@@ -534,6 +535,10 @@ function handleUpdate(update) {
         const filtered = qs.filter((q) => q.coworker_name !== update.data.coworker_name)
         return [...filtered, update.data]
       })
+      break
+    case 'channel_list_changed':
+      // Re-fetch full channel list from server to get accurate state
+      fetchChannels(get(showArchivedChannels))
       break
     case 'error':
       // Invoke all registered error callbacks and then clear them

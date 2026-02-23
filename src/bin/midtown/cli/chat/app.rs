@@ -1670,6 +1670,7 @@ impl App {
                 // Switch to the newly created channel and load its messages
                 self.selected_channel = channel_name.to_string();
                 self.load_channel_messages();
+                self.refresh_available_channels();
                 true
             }
             Err(_) => false,
