@@ -45,8 +45,24 @@ pub(super) async fn handle_insight_report(
         }
     }
 
+    // Resolve channel: explicit > coworker's task channel > main.
+    // When a coworker reports an insight without --channel, auto-route to their
+    // assigned task's channel so insights don't flood the main channel.
+    let resolved_channel: Option<String> = if channel.is_none() {
+        let ps = state.persistent_state.lock().await;
+        ps.headless_sessions
+            .get(agent)
+            .and_then(|s| s.task_id)
+            .map(|tid| tid.to_string())
+            .and_then(|tid| ps.task_channel.get(&tid).cloned())
+    } else {
+        None
+    };
+
     // Post insight to specified channel (or main if None)
-    let channel_name = channel.unwrap_or_else(|| state.channel_router.default_channel_name());
+    let channel_name: &str = channel
+        .or(resolved_channel.as_deref())
+        .unwrap_or_else(|| state.channel_router.default_channel_name());
     let msg = crate::message::Message::for_channel(
         channel_name,
         agent,
@@ -102,7 +118,7 @@ pub(super) async fn handle_insight_report(
     // Spawn the architect task asynchronously
     let repo_name = state.repo_name.clone();
     let insight_owned = insight.to_string();
-    let channel_owned = channel.map(|s| s.to_string());
+    let channel_owned = Some(channel_name.to_string());
     tokio::spawn(async move {
         super::architect::generate_insight_diagram(
             insight_owned,
