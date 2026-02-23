@@ -214,7 +214,7 @@ pub fn render_message(
 /// Scans each span's text for `@word` patterns and splits them into separate spans
 /// with a background highlight. Bare `@` not followed by word characters is left as-is.
 /// The base style of the original span is preserved for non-mention segments.
-fn apply_mention_highlights(lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
+pub fn apply_mention_highlights(lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
     // Fast path: skip processing if no @ signs exist in any span
     let has_mention = lines
         .iter()
@@ -298,7 +298,7 @@ fn split_span_at_mentions(span: Span<'static>, mention_style: Style) -> Vec<Span
 /// Content is split into table blocks (lines starting with `|`) and text segments.
 /// Table blocks are parsed by `minimad_ratatui::from_str` to get aligned columns.
 /// Text segments are word-wrapped to `content_width` then parsed inline.
-fn render_content_lines(
+pub fn render_content_lines(
     content: &str,
     content_width: usize,
     style: ratatui::style::Style,
@@ -1422,6 +1422,49 @@ mod tests {
         assert!(
             !has_highlighted_bare_at,
             "A bare '@' not followed by a word should not be highlighted"
+        );
+    }
+
+    #[test]
+    fn test_render_content_lines_processes_markdown() {
+        // Verifies that render_content_lines applies markdown formatting rather than
+        // passing raw syntax through — this is what the thread header now uses.
+        let style = Style::default().fg(Color::White);
+
+        // Bold: "**text**" should produce spans without literal "**"
+        let bold_lines = render_content_lines("**bold text** and more", 80, style);
+        let bold_text: String = bold_lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(
+            !bold_text.contains("**"),
+            "render_content_lines should process ** as markdown bold, not literal stars, got: {:?}",
+            bold_text
+        );
+        assert!(
+            bold_text.contains("bold text"),
+            "Bold text content should be preserved, got: {:?}",
+            bold_text
+        );
+
+        // Inline code: backticks should be consumed
+        let code_lines = render_content_lines("use `inline_code` here", 80, style);
+        let code_text: String = code_lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(
+            !code_text.contains('`'),
+            "render_content_lines should process backticks as inline code, got: {:?}",
+            code_text
+        );
+        assert!(
+            code_text.contains("inline_code"),
+            "Code content should be preserved, got: {:?}",
+            code_text
         );
     }
 }
