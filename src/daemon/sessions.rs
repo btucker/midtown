@@ -16,7 +16,7 @@ use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
 use crate::daemon::state::HeadlessSessionInfo;
-use crate::headless::{HeadlessConfig, HeadlessSession, StreamEvent};
+use crate::headless::{HeadlessConfig, HeadlessSession, StreamEvent, shutdown_codex_runtime};
 
 /// Check if an error message indicates an OAuth token expiry.
 ///
@@ -348,10 +348,12 @@ impl SessionManager {
         // Multiple sessions with the same name are now allowed (keyed by slot_id).
 
         // Spawn the headless process
-        let mut session = HeadlessSession::spawn(config).map_err(|e| crate::Error::Rpc {
-            code: -32603,
-            message: format!("Failed to spawn headless session for '{}': {}", name, e),
-        })?;
+        let mut session = HeadlessSession::spawn(config)
+            .await
+            .map_err(|e| crate::Error::Rpc {
+                code: -32603,
+                message: format!("Failed to spawn headless session for '{}': {}", name, e),
+            })?;
 
         // Start provider-specific handshake eagerly so sessions with no initial
         // prompt still initialize and expose a session_id to the daemon.
@@ -447,10 +449,12 @@ impl SessionManager {
         let slot_id = uuid::Uuid::new_v4().to_string();
 
         // Spawn the headless process (with fork_session: true in config)
-        let mut session = HeadlessSession::spawn(&config).map_err(|e| crate::Error::Rpc {
-            code: -32603,
-            message: format!("Failed to spawn fork session for '{}': {}", name, e),
-        })?;
+        let mut session = HeadlessSession::spawn(&config)
+            .await
+            .map_err(|e| crate::Error::Rpc {
+                code: -32603,
+                message: format!("Failed to spawn fork session for '{}': {}", name, e),
+            })?;
 
         if let Err(e) = session.ensure_ready().await {
             let _ = session.kill().await;
@@ -641,21 +645,29 @@ impl SessionManager {
         // Send SIGTERM so Claude Code saves session state and exits cleanly.
         // SIGTERM is the standard graceful-shutdown signal; Claude Code handles
         // it by persisting conversation history before exiting.
-        if let Some(ref session) = cs.session
-            && let Some(pid) = session.pid()
-        {
-            let _ = std::process::Command::new("kill")
-                .arg(pid.to_string())
-                .stderr(std::process::Stdio::null())
-                .status();
-            info!("Sent SIGTERM to session '{}' (pid={})", name, pid);
-        }
+        // Codex sessions share one app-server process; skip per-session SIGTERM.
+        let should_wait = if let Some(ref session) = cs.session {
+            if session.is_codex_session() {
+                false
+            } else {
+                if let Some(pid) = session.pid() {
+                    let _ = std::process::Command::new("kill")
+                        .arg(pid.to_string())
+                        .stderr(std::process::Stdio::null())
+                        .status();
+                    info!("Sent SIGTERM to session '{}' (pid={})", name, pid);
+                }
+                true
+            }
+        } else {
+            false
+        };
 
         // Drop the write lock while waiting for exit, so we don't block other operations.
         drop(sessions);
 
         // Wait for the process to exit gracefully after SIGTERM.
-        if let Some(ref mut session) = cs.session {
+        if should_wait && let Some(ref mut session) = cs.session {
             match tokio::time::timeout(timeout, session.wait()).await {
                 Ok(Ok(_status)) => {
                     info!(
@@ -731,14 +743,18 @@ impl SessionManager {
             }
             for cs in sessions.values_mut() {
                 if let Some(session) = cs.session.take() {
-                    if let Some(pid) = session.pid() {
-                        let _ = std::process::Command::new("kill")
-                            .arg(pid.to_string())
-                            .stderr(std::process::Stdio::null())
-                            .status();
-                        info!("Sent SIGTERM to session '{}' (pid={})", cs.name, pid);
+                    if !session.is_codex_session() {
+                        if let Some(pid) = session.pid() {
+                            let _ = std::process::Command::new("kill")
+                                .arg(pid.to_string())
+                                .stderr(std::process::Stdio::null())
+                                .status();
+                            info!("Sent SIGTERM to session '{}' (pid={})", cs.name, pid);
+                        }
+                        handles.push((cs.name.clone(), session));
+                    } else {
+                        drop(session);
                     }
-                    handles.push((cs.name.clone(), session));
                 }
                 cs.status = SessionStatus::Stopped;
             }
@@ -769,6 +785,9 @@ impl SessionManager {
 
         // Drop handles — SIGKILL fallback via HeadlessSession::Drop for any still alive
         drop(handles);
+
+        // Ensure shared Codex app-server process is terminated before daemon restart.
+        shutdown_codex_runtime().await;
 
         info!("Gracefully shut down {} headless session(s)", total_count);
         total_count

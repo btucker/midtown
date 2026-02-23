@@ -15,13 +15,18 @@
 //! **Input** (stdin, when `--input-format stream-json`):
 //! - `{"type":"user","message":{"role":"user","content":"..."}}`
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::process::Stdio;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
+use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
+use tokio::sync::OnceCell;
+use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
 /// Configuration for launching a headless Claude Code session.
@@ -237,6 +242,426 @@ struct CodexProtocolState {
     system_prompt: String,
     output_schema: Option<serde_json::Value>,
     start_phase: String,
+}
+
+#[derive(Debug)]
+struct CodexSessionHandle {
+    token: String,
+    runtime: Arc<CodexSharedRuntime>,
+    event_receiver: mpsc::UnboundedReceiver<serde_json::Value>,
+    stderr_cursor: u64,
+}
+
+#[derive(Debug)]
+struct CodexSharedProcess {
+    child: Child,
+    stdin: tokio::process::ChildStdin,
+}
+
+#[derive(Debug)]
+struct CodexSharedRuntime {
+    process: tokio::sync::Mutex<CodexSharedProcess>,
+    next_request_id: AtomicU64,
+    active_sessions: AtomicUsize,
+    session_senders: RwLock<HashMap<String, mpsc::UnboundedSender<serde_json::Value>>>,
+    request_to_session: RwLock<HashMap<u64, String>>,
+    thread_to_session: RwLock<HashMap<String, String>>,
+    resume_to_session: RwLock<HashMap<String, String>>,
+    stderr_lines: RwLock<VecDeque<(u64, String)>>,
+    next_stderr_seq: AtomicU64,
+}
+
+static CODEX_RUNTIME: Lazy<OnceCell<Arc<CodexSharedRuntime>>> = Lazy::new(OnceCell::new);
+
+impl CodexSharedRuntime {
+    async fn spawn() -> std::io::Result<Arc<Self>> {
+        let binary = crate::platform::Platform::Codex.binary_name();
+        let mut cmd = Command::new(binary);
+
+        for arg in crate::platform::build_codex_headless_args() {
+            cmd.arg(arg);
+        }
+
+        cmd.stdin(Stdio::piped());
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::piped());
+        cmd.env("DISABLE_AUTOUPDATER", "1");
+
+        let mut child = cmd.spawn()?;
+
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| std::io::Error::other("failed to capture stdout"))?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| std::io::Error::other("failed to capture stderr"))?;
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| std::io::Error::other("failed to capture stdin"))?;
+
+        let runtime = Arc::new(Self {
+            process: tokio::sync::Mutex::new(CodexSharedProcess { child, stdin }),
+            next_request_id: AtomicU64::new(1),
+            active_sessions: AtomicUsize::new(0),
+            session_senders: RwLock::new(HashMap::new()),
+            request_to_session: RwLock::new(HashMap::new()),
+            thread_to_session: RwLock::new(HashMap::new()),
+            resume_to_session: RwLock::new(HashMap::new()),
+            stderr_lines: RwLock::new(VecDeque::new()),
+            next_stderr_seq: AtomicU64::new(0),
+        });
+
+        let runtime_for_stdout = Arc::clone(&runtime);
+        tokio::spawn(async move {
+            runtime_for_stdout
+                .read_stdout_loop(BufReader::new(stdout))
+                .await;
+        });
+
+        let runtime_for_stderr = Arc::clone(&runtime);
+        tokio::spawn(async move {
+            runtime_for_stderr
+                .read_stderr_loop(BufReader::new(stderr))
+                .await;
+        });
+
+        Ok(runtime)
+    }
+
+    async fn register_session(
+        self: &Arc<Self>,
+        resume_thread_id: Option<&str>,
+    ) -> CodexSessionHandle {
+        let token = uuid::Uuid::new_v4().to_string();
+        let (tx, rx) = mpsc::unbounded_channel();
+
+        self.session_senders
+            .write()
+            .expect("session_senders lock poisoned")
+            .insert(token.clone(), tx);
+
+        if let Some(thread_id) = resume_thread_id {
+            self.resume_to_session
+                .write()
+                .expect("resume_to_session lock poisoned")
+                .insert(thread_id.to_string(), token.clone());
+        }
+
+        self.active_sessions
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+
+        CodexSessionHandle {
+            token,
+            runtime: Arc::clone(self),
+            event_receiver: rx,
+            stderr_cursor: 0,
+        }
+    }
+
+    fn unregister_session(&self, token: &str) {
+        self.active_sessions
+            .fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+        self.session_senders
+            .write()
+            .expect("session_senders lock poisoned")
+            .remove(token);
+
+        {
+            let mut map = self
+                .request_to_session
+                .write()
+                .expect("request_to_session lock poisoned");
+            map.retain(|_, session_token| session_token != token);
+        }
+
+        {
+            let mut map = self
+                .thread_to_session
+                .write()
+                .expect("thread_to_session lock poisoned");
+            map.retain(|_, session_token| session_token != token);
+        }
+
+        {
+            let mut map = self
+                .resume_to_session
+                .write()
+                .expect("resume_to_session lock poisoned");
+            map.retain(|_, session_token| session_token != token);
+        }
+    }
+
+    fn register_request(&self, request_id: u64, token: &str) {
+        self.request_to_session
+            .write()
+            .expect("request_to_session lock poisoned")
+            .insert(request_id, token.to_string());
+    }
+
+    fn clear_request(&self, request_id: u64) {
+        self.request_to_session
+            .write()
+            .expect("request_to_session lock poisoned")
+            .remove(&request_id);
+    }
+
+    fn next_request_id(&self) -> u64 {
+        self.next_request_id.fetch_add(1, Ordering::SeqCst)
+    }
+
+    async fn send_request(
+        &self,
+        token: &str,
+        method: &str,
+        params: serde_json::Value,
+    ) -> std::io::Result<u64> {
+        let request_id = self.next_request_id();
+        self.register_request(request_id, token);
+
+        let payload = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "method": method,
+            "params": params,
+        });
+        let mut payload = serde_json::to_string(&payload)?;
+        payload.push('\n');
+
+        let mut proc = self.process.lock().await;
+        let result = proc.stdin.write_all(payload.as_bytes()).await;
+        if result.is_err() {
+            self.clear_request(request_id);
+            return result.map(|_| request_id);
+        }
+
+        let result = proc.stdin.flush().await;
+        if result.is_err() {
+            self.clear_request(request_id);
+            return result.map(|_| request_id);
+        }
+
+        Ok(request_id)
+    }
+
+    fn route_token_for_thread(&self, thread_id: &str) -> Option<String> {
+        self.thread_to_session
+            .read()
+            .expect("thread_to_session lock poisoned")
+            .get(thread_id)
+            .cloned()
+            .or_else(|| {
+                self.resume_to_session
+                    .read()
+                    .expect("resume_to_session lock poisoned")
+                    .get(thread_id)
+                    .cloned()
+            })
+    }
+
+    async fn dispatch_event(&self, parsed: serde_json::Value) {
+        let mut routed = Vec::new();
+
+        if let Some(id) = parsed.get("id").and_then(|v| v.as_u64()) {
+            let token = self
+                .request_to_session
+                .write()
+                .expect("request_to_session lock poisoned")
+                .remove(&id);
+
+            if let Some(token) = token.clone() {
+                if let Some(thread_id) = codex_thread_id(&parsed) {
+                    self.thread_to_session
+                        .write()
+                        .expect("thread_to_session lock poisoned")
+                        .insert(thread_id, token.clone());
+                    self.resume_to_session
+                        .write()
+                        .expect("resume_to_session lock poisoned")
+                        .retain(|_, session_token| session_token != &token);
+                }
+                routed.push(token);
+            }
+        } else if let Some(thread_id) = codex_thread_id(&parsed)
+            && let Some(token) = self.route_token_for_thread(&thread_id)
+        {
+            routed.push(token);
+        }
+
+        routed.sort();
+        routed.dedup();
+
+        if routed.is_empty() {
+            return;
+        }
+
+        let senders = self
+            .session_senders
+            .read()
+            .expect("session_senders lock poisoned");
+        for token in routed {
+            if let Some(tx) = senders.get(&token) {
+                let _ = tx.send(parsed.clone());
+            }
+        }
+    }
+
+    async fn read_stdout_loop(self: Arc<Self>, mut reader: BufReader<tokio::process::ChildStdout>) {
+        loop {
+            let mut line = String::new();
+            match reader.read_line(&mut line).await {
+                Ok(0) => {
+                    debug!("Shared Codex app-server stdout closed");
+                    self.session_senders
+                        .write()
+                        .expect("session_senders lock poisoned")
+                        .clear();
+                    break;
+                }
+                Ok(_) => {
+                    let trimmed = line.trim();
+                    if trimmed.is_empty() {
+                        continue;
+                    }
+                    match serde_json::from_str::<serde_json::Value>(trimmed) {
+                        Ok(parsed) => self.dispatch_event(parsed).await,
+                        Err(e) => {
+                            warn!(
+                                "Failed to parse shared codex app-server event: {} (line: {})",
+                                e, trimmed
+                            );
+                        }
+                    }
+                }
+                Err(e) => {
+                    warn!("Error reading shared codex app-server stdout: {}", e);
+                    self.session_senders
+                        .write()
+                        .expect("session_senders lock poisoned")
+                        .clear();
+                    break;
+                }
+            }
+        }
+    }
+
+    async fn read_stderr_loop(self: Arc<Self>, mut reader: BufReader<tokio::process::ChildStderr>) {
+        loop {
+            let mut line = String::new();
+            match reader.read_line(&mut line).await {
+                Ok(0) => break,
+                Ok(_) => {
+                    let trimmed = line.trim();
+                    if trimmed.is_empty() {
+                        continue;
+                    }
+                    let seq = self.next_stderr_seq.fetch_add(1, Ordering::SeqCst);
+                    self.stderr_lines
+                        .write()
+                        .expect("stderr_lines lock poisoned")
+                        .push_back((seq, trimmed.to_string()));
+                    let mut lines = self
+                        .stderr_lines
+                        .write()
+                        .expect("stderr_lines lock poisoned");
+                    while lines.len() > 500 {
+                        lines.pop_front();
+                    }
+                    drop(lines);
+                }
+                Err(e) => {
+                    warn!("Error reading shared codex app-server stderr: {}", e);
+                    break;
+                }
+            }
+        }
+    }
+
+    async fn wait(&self) -> std::io::Result<std::process::ExitStatus> {
+        let mut process = self.process.lock().await;
+        process.child.wait().await
+    }
+
+    async fn try_wait(&self) -> std::io::Result<Option<std::process::ExitStatus>> {
+        let mut process = self.process.lock().await;
+        process.child.try_wait()
+    }
+
+    async fn pid(&self) -> Option<u32> {
+        let process = self.process.lock().await;
+        process.child.id()
+    }
+
+    #[allow(dead_code)]
+    async fn shutdown(&self) {
+        let mut process = self.process.lock().await;
+        let _ = process.child.start_kill();
+    }
+
+    async fn drain_stderr(&self, start: u64) -> (u64, Vec<String>) {
+        let (end, lines): (u64, Vec<String>) = {
+            let lines = self
+                .stderr_lines
+                .read()
+                .expect("stderr_lines lock poisoned");
+            let mut values = Vec::new();
+            let mut last_seq = start;
+            for (seq, line) in lines.iter() {
+                if *seq >= start {
+                    values.push(line.clone());
+                    last_seq = *seq + 1;
+                }
+            }
+            (last_seq, values)
+        };
+        (end, lines)
+    }
+}
+
+async fn codex_shared_runtime() -> std::io::Result<Arc<CodexSharedRuntime>> {
+    CODEX_RUNTIME
+        .get_or_try_init(CodexSharedRuntime::spawn)
+        .await
+        .map(Arc::clone)
+}
+
+pub(crate) async fn shutdown_codex_runtime() {
+    if let Some(runtime) = CODEX_RUNTIME.get() {
+        runtime.shutdown().await;
+    }
+}
+
+fn codex_thread_id(parsed: &serde_json::Value) -> Option<String> {
+    let thread_from_result = parsed.get("result").and_then(|result| result.get("thread"));
+    let thread_from_params = parsed.get("params");
+    let parse_thread = |thread: &serde_json::Value| {
+        thread
+            .get("id")
+            .and_then(|id| id.as_str())
+            .map(str::to_string)
+    };
+
+    thread_from_result.and_then(parse_thread).or_else(|| {
+        thread_from_params.and_then(|params| {
+            params
+                .get("thread")
+                .and_then(parse_thread)
+                .or_else(|| {
+                    params
+                        .get("turn")
+                        .and_then(|turn| turn.get("thread"))
+                        .and_then(parse_thread)
+                })
+                .or_else(|| {
+                    params
+                        .get("item")
+                        .and_then(|item| item.get("thread"))
+                        .and_then(parse_thread)
+                })
+        })
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -679,43 +1104,246 @@ fn codex_launch_plan_from_config(config: &HeadlessConfig) -> Result<CodexLaunchP
 /// Owns the child process and provides methods to read streaming events
 /// and optionally send follow-up messages.
 pub struct HeadlessSession {
-    child: Child,
-    stdout_reader: BufReader<tokio::process::ChildStdout>,
-    stderr_reader: BufReader<tokio::process::ChildStderr>,
+    child: Option<Child>,
+    stdout_reader: Option<BufReader<tokio::process::ChildStdout>>,
+    stderr_reader: Option<BufReader<tokio::process::ChildStderr>>,
     stdin: Option<tokio::process::ChildStdin>,
     session_id: Option<String>,
+    backend: HeadlessSessionBackend,
     protocol: SessionProtocol,
+    codex_session: Option<CodexSessionHandle>,
     /// When true, don't kill the child process on drop (for daemon restart survival).
     detach_on_drop: bool,
 }
 
-impl HeadlessSession {
-    /// Spawn a new headless Claude Code session.
-    ///
-    /// Launches the provider CLI with the provided configuration. The process is spawned
-    /// with piped stdin/stdout for bidirectional JSON streaming.
-    ///
-    /// Two modes:
-    /// - **Fresh session** (`resume_session_id: None`): Uses `-p --system-prompt ...`
-    /// - **Resume session** (`resume_session_id: Some(id)`): Uses `--resume <id>`,
-    ///   omits `--system-prompt` and `--json-schema`.
-    pub fn spawn(config: &HeadlessConfig) -> std::io::Result<Self> {
-        if let Err(e) = crate::platform_launch::run_platform_prelaunch_hook(config.auth_provider) {
-            warn!("Platform pre-launch hook failed (continuing): {}", e);
-        }
+#[derive(Debug, Clone, Copy)]
+enum HeadlessSessionBackend {
+    Claude,
+    Codex,
+}
 
+impl HeadlessSessionBackend {
+    async fn next_event(self, session: &mut HeadlessSession) -> Option<StreamEvent> {
+        match self {
+            Self::Claude => session.next_claude_event().await,
+            Self::Codex => session.next_codex_event().await,
+        }
+    }
+
+    async fn send_message(
+        self,
+        session: &mut HeadlessSession,
+        content: &str,
+    ) -> std::io::Result<()> {
+        match self {
+            Self::Claude => {
+                let msg = serde_json::json!({
+                    "type": "user",
+                    "message": {
+                        "role": "user",
+                        "content": content
+                    }
+                });
+                session.write_json_line(&msg).await?;
+                debug!("Sent user message to headless Claude session");
+                Ok(())
+            }
+            Self::Codex => {
+                session.ensure_ready().await?;
+                if let Some(state) = session.codex_state_mut() {
+                    state.pending_messages.push_back(content.to_string());
+                }
+                session.codex_dispatch_pending_turns().await?;
+                debug!("Queued user message for codex app-server turn");
+                Ok(())
+            }
+        }
+    }
+
+    async fn wait(
+        self,
+        session: &mut HeadlessSession,
+    ) -> std::io::Result<std::process::ExitStatus> {
+        match self {
+            Self::Claude => {
+                let child = session
+                    .child
+                    .as_mut()
+                    .ok_or_else(|| std::io::Error::other("no child process"))?;
+                child.wait().await
+            }
+            Self::Codex => {
+                if let Some(context) = session.codex_session() {
+                    context.runtime.wait().await
+                } else {
+                    Err(std::io::Error::other("missing codex runtime"))
+                }
+            }
+        }
+    }
+
+    async fn kill(self, session: &mut HeadlessSession) -> std::io::Result<()> {
+        match self {
+            Self::Claude => {
+                if let Some(child) = session.child.as_mut() {
+                    child.kill().await
+                } else {
+                    Ok(())
+                }
+            }
+            Self::Codex => Ok(()),
+        }
+    }
+
+    fn try_wait(
+        self,
+        session: &mut HeadlessSession,
+    ) -> std::io::Result<Option<std::process::ExitStatus>> {
+        match self {
+            Self::Claude => {
+                let child = session
+                    .child
+                    .as_mut()
+                    .ok_or_else(|| std::io::Error::other("no child process"))?;
+                child.try_wait()
+            }
+            Self::Codex => {
+                if let Some(context) = session.codex_session() {
+                    futures::executor::block_on(context.runtime.try_wait())
+                } else {
+                    Err(std::io::Error::other("missing codex runtime"))
+                }
+            }
+        }
+    }
+
+    fn pid(self, session: &HeadlessSession) -> Option<u32> {
+        match self {
+            Self::Claude => session.child.as_ref().and_then(|child| child.id()),
+            Self::Codex => session
+                .codex_session()
+                .and_then(|context| futures::executor::block_on(context.runtime.pid())),
+        }
+    }
+
+    async fn drain_stderr(self, session: &mut HeadlessSession) -> Vec<String> {
+        match self {
+            Self::Claude => {
+                let mut lines = Vec::new();
+                let mut line = String::new();
+                let reader = session
+                    .stderr_reader
+                    .as_mut()
+                    .expect("missing claude stderr reader");
+
+                for _ in 0..100 {
+                    line.clear();
+                    match tokio::time::timeout(
+                        Duration::from_millis(10),
+                        reader.read_line(&mut line),
+                    )
+                    .await
+                    {
+                        Ok(Ok(0)) => break,
+                        Ok(Ok(_)) => {
+                            let trimmed = line.trim();
+                            if !trimmed.is_empty() {
+                                lines.push(trimmed.to_string());
+                            }
+                        }
+                        Ok(Err(_)) | Err(_) => break,
+                    }
+                }
+
+                lines
+            }
+            Self::Codex => {
+                if let Some(context) = session.codex_session() {
+                    let (next_cursor, lines) =
+                        context.runtime.drain_stderr(context.stderr_cursor).await;
+                    if let Some(context_mut) = session.codex_session_mut() {
+                        context_mut.stderr_cursor = next_cursor;
+                    }
+                    return lines;
+                }
+
+                Vec::new()
+            }
+        }
+    }
+
+    fn close_stdin(self, session: &mut HeadlessSession) {
+        if matches!(self, Self::Claude) {
+            session.stdin = None;
+        }
+    }
+
+    fn should_wait_for_exit(self) -> bool {
+        matches!(self, Self::Claude)
+    }
+}
+
+struct ClaudeHeadlessAdapter;
+struct CodexHeadlessAdapter;
+
+impl CodexHeadlessAdapter {
+    async fn spawn(config: &HeadlessConfig) -> std::io::Result<HeadlessSession> {
+        let plan = codex_launch_plan_from_config(config)
+            .map_err(|msg| std::io::Error::new(std::io::ErrorKind::InvalidInput, msg))?;
+
+        let protocol = SessionProtocol::Codex(Box::new(CodexProtocolState {
+            initialized: false,
+            start_request_id: None,
+            thread_id: None,
+            turn_in_progress: false,
+            next_request_id: 1,
+            pending_messages: VecDeque::new(),
+            latest_agent_message: None,
+            resume_thread_id: plan.resume_thread_id,
+            fork_session: plan.fork_session,
+            allow_tools: plan.allow_tools,
+            model: plan.model,
+            cwd: plan.cwd,
+            system_prompt: plan.system_prompt,
+            output_schema: plan.output_schema,
+            start_phase: "thread/start".to_string(),
+        }));
+
+        let resume_thread_id = match &protocol {
+            SessionProtocol::Codex(state) => state.resume_thread_id.clone(),
+            _ => None,
+        };
+
+        let runtime = codex_shared_runtime().await?;
+        let codex_session = Some(runtime.register_session(resume_thread_id.as_deref()).await);
+
+        info!(
+            "Spawned shared codex headless session (model={}, resume={})",
+            config.model,
+            config.resume_session_id.is_some()
+        );
+
+        Ok(HeadlessSession {
+            child: None,
+            stdout_reader: None,
+            stderr_reader: None,
+            stdin: None,
+            session_id: None,
+            backend: HeadlessSessionBackend::Codex,
+            protocol,
+            codex_session,
+            detach_on_drop: false,
+        })
+    }
+}
+
+impl ClaudeHeadlessAdapter {
+    async fn spawn(config: &HeadlessConfig) -> std::io::Result<HeadlessSession> {
         let platform = crate::platform::Platform::from_provider(config.auth_provider);
         let binary = platform.binary_name();
 
-        // Build platform-specific CLI args using the shared arg builders.
-        let cli_args = match platform {
-            crate::platform::Platform::Claude => {
-                crate::platform::build_claude_headless_args(config)
-            }
-            crate::platform::Platform::Codex => crate::platform::build_codex_headless_args(),
-        };
+        let cli_args = crate::platform::build_claude_headless_args(config);
 
-        // Compute sandbox writable dirs from cwd (project working directory).
         let primary_repo = config
             .cwd
             .as_deref()
@@ -726,12 +1354,7 @@ impl HeadlessSession {
         let writable =
             crate::sandbox::writable_dirs(primary_repo, &[], &sandbox_config.allowed_paths);
 
-        // On macOS/Linux, wrap Claude/z.ai with filesystem sandboxing.
-        // Codex manages sandboxing through thread/start params; running Codex
-        // under an outer sandbox-exec causes nested-sandbox failures for tools.
-        let mut cmd = if config.auth_provider == crate::auth::AuthProvider::Codex {
-            Command::new(binary)
-        } else if cfg!(target_os = "macos") {
+        let mut cmd = if cfg!(target_os = "macos") {
             match crate::sandbox::sandbox_exec_prefix(&writable) {
                 Ok((_profile_path, prefix)) => {
                     let mut c = Command::new("sandbox-exec");
@@ -758,7 +1381,6 @@ impl HeadlessSession {
             Command::new(binary)
         };
 
-        // Apply the platform-specific CLI args
         for arg in &cli_args {
             cmd.arg(arg);
         }
@@ -767,21 +1389,14 @@ impl HeadlessSession {
             cmd.current_dir(cwd);
         }
 
-        // Clear inherited daemon env vars, then re-apply from config.env
-        // so coworker-specific values (MIDTOWN_AGENT) take effect.
         cmd.env_remove("MIDTOWN_AGENT");
-        // Prevent Claude Code's nested session detection from killing spawned sessions.
-        // The daemon may run inside a Claude Code session (e.g., the lead), which sets
-        // CLAUDECODE in the environment. Child sessions inherit it and refuse to start.
         cmd.env_remove("CLAUDECODE");
         cmd.env("DISABLE_AUTOUPDATER", "1");
 
-        // Agent teams requires this env var
         if config.team_name.is_some() && config.auth_provider == crate::auth::AuthProvider::Claude {
             cmd.env("CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS", "1");
         }
 
-        // Apply caller-provided env vars (e.g., MIDTOWN_AGENT for coworker identity)
         for (key, value) in &config.env {
             cmd.env(key, value);
         }
@@ -804,33 +1419,6 @@ impl HeadlessSession {
         let stdout_reader = BufReader::new(stdout);
         let stderr_reader = BufReader::new(stderr);
 
-        let protocol = match config.auth_provider {
-            crate::auth::AuthProvider::Claude | crate::auth::AuthProvider::Zai => {
-                SessionProtocol::Claude
-            }
-            crate::auth::AuthProvider::Codex => {
-                let plan = codex_launch_plan_from_config(config)
-                    .map_err(|msg| std::io::Error::new(std::io::ErrorKind::InvalidInput, msg))?;
-                SessionProtocol::Codex(Box::new(CodexProtocolState {
-                    initialized: false,
-                    start_request_id: None,
-                    thread_id: None,
-                    turn_in_progress: false,
-                    next_request_id: 1,
-                    pending_messages: VecDeque::new(),
-                    latest_agent_message: None,
-                    resume_thread_id: plan.resume_thread_id,
-                    fork_session: plan.fork_session,
-                    allow_tools: plan.allow_tools,
-                    model: plan.model,
-                    cwd: plan.cwd,
-                    system_prompt: plan.system_prompt,
-                    output_schema: plan.output_schema,
-                    start_phase: "thread/start".to_string(),
-                }))
-            }
-        };
-
         info!(
             "Spawned headless {:?} session (model={}, resume={})",
             config.auth_provider,
@@ -838,22 +1426,48 @@ impl HeadlessSession {
             config.resume_session_id.is_some()
         );
 
-        Ok(Self {
-            child,
-            stdout_reader,
-            stderr_reader,
+        Ok(HeadlessSession {
+            child: Some(child),
+            stdout_reader: Some(stdout_reader),
+            stderr_reader: Some(stderr_reader),
             stdin,
             session_id: None,
-            protocol,
+            backend: HeadlessSessionBackend::Claude,
+            protocol: SessionProtocol::Claude,
+            codex_session: None,
             detach_on_drop: false,
         })
+    }
+}
+
+impl HeadlessSession {
+    /// Spawn a new headless Claude Code session.
+    ///
+    /// Launches the provider CLI with the provided configuration. The process is spawned
+    /// with piped stdin/stdout for bidirectional JSON streaming.
+    ///
+    /// Two modes:
+    /// - **Fresh session** (`resume_session_id: None`): Uses `-p --system-prompt ...`
+    /// - **Resume session** (`resume_session_id: Some(id)`): Uses `--resume <id>`,
+    ///   omits `--system-prompt` and `--json-schema`.
+    pub async fn spawn(config: &HeadlessConfig) -> std::io::Result<Self> {
+        if let Err(e) = crate::platform_launch::run_platform_prelaunch_hook(config.auth_provider) {
+            warn!("Platform pre-launch hook failed (continuing): {}", e);
+        }
+
+        match config.auth_provider {
+            crate::auth::AuthProvider::Codex => CodexHeadlessAdapter::spawn(config).await,
+            crate::auth::AuthProvider::Claude | crate::auth::AuthProvider::Zai => {
+                ClaudeHeadlessAdapter::spawn(config).await
+            }
+        }
     }
 
     /// Convenience method to spawn a session that resumes a previous session.
     ///
     /// Creates a config with `resume_session_id` set and `persist_session: true`,
     /// clears `system_prompt` and `json_schema` (not used in resume mode).
-    pub fn resume(session_id: &str, base_config: &HeadlessConfig) -> std::io::Result<Self> {
+    pub async fn resume(session_id: &str, base_config: &HeadlessConfig) -> std::io::Result<Self> {
         let config = HeadlessConfig {
             resume_session_id: Some(session_id.to_string()),
             persist_session: true,
@@ -861,7 +1475,7 @@ impl HeadlessSession {
             json_schema: None,            // Not used in resume mode
             ..base_config.clone()
         };
-        Self::spawn(&config)
+        Self::spawn(&config).await
     }
 
     fn codex_state_mut(&mut self) -> Option<&mut CodexProtocolState> {
@@ -869,6 +1483,18 @@ impl HeadlessSession {
             SessionProtocol::Codex(state) => Some(state.as_mut()),
             SessionProtocol::Claude => None,
         }
+    }
+
+    fn codex_session_mut(&mut self) -> Option<&mut CodexSessionHandle> {
+        self.codex_session.as_mut()
+    }
+
+    fn codex_session(&self) -> Option<&CodexSessionHandle> {
+        self.codex_session.as_ref()
+    }
+
+    pub fn is_codex_session(&self) -> bool {
+        matches!(self.backend, HeadlessSessionBackend::Codex)
     }
 
     async fn write_json_line(&mut self, value: &serde_json::Value) -> std::io::Result<()> {
@@ -887,21 +1513,26 @@ impl HeadlessSession {
         method: &str,
         params: serde_json::Value,
     ) -> std::io::Result<u64> {
-        let request_id = {
-            let state = self.codex_state_mut().ok_or_else(|| {
-                std::io::Error::new(std::io::ErrorKind::InvalidInput, "not a codex session")
-            })?;
-            let id = state.next_request_id;
-            state.next_request_id += 1;
-            id
-        };
-        self.write_json_line(&serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": request_id,
-            "method": method,
-            "params": params
-        }))
-        .await?;
+        let token = self
+            .codex_session()
+            .ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::InvalidInput, "missing codex runtime")
+            })?
+            .token
+            .clone();
+
+        let runtime = self
+            .codex_session()
+            .ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::InvalidInput, "missing codex runtime")
+            })?
+            .runtime
+            .as_ref();
+
+        let request_id = runtime.send_request(&token, method, params).await?;
+        if let Some(state) = self.codex_state_mut() {
+            state.next_request_id = state.next_request_id.saturating_add(1);
+        }
         Ok(request_id)
     }
 
@@ -1005,16 +1636,17 @@ impl HeadlessSession {
     /// Skips blank lines and unparseable lines in a loop (zero-cost,
     /// no heap allocation per skipped line).
     pub async fn next_event(&mut self) -> Option<StreamEvent> {
-        match &self.protocol {
-            SessionProtocol::Claude => self.next_claude_event().await,
-            SessionProtocol::Codex(_) => self.next_codex_event().await,
-        }
+        self.backend.next_event(self).await
     }
 
     async fn next_claude_event(&mut self) -> Option<StreamEvent> {
         loop {
             let mut line = String::new();
-            match self.stdout_reader.read_line(&mut line).await {
+            let reader = self
+                .stdout_reader
+                .as_mut()
+                .expect("missing claude stdout reader");
+            match reader.read_line(&mut line).await {
                 Ok(0) => {
                     debug!("Headless session stdout closed");
                     return None;
@@ -1054,49 +1686,30 @@ impl HeadlessSession {
 
     async fn next_codex_event(&mut self) -> Option<StreamEvent> {
         loop {
-            let mut line = String::new();
-            match self.stdout_reader.read_line(&mut line).await {
-                Ok(0) => {
-                    debug!("Headless codex session stdout closed");
-                    return None;
-                }
-                Ok(_) => {
-                    let trimmed = line.trim();
-                    if trimmed.is_empty() {
-                        continue;
-                    }
-                    let parsed: serde_json::Value = match serde_json::from_str(trimmed) {
-                        Ok(value) => value,
-                        Err(e) => {
-                            // codex may emit non-JSON log lines on stderr in some environments.
-                            warn!(
-                                "Failed to parse codex app-server event: {} (line: {})",
-                                e, trimmed
-                            );
-                            continue;
-                        }
-                    };
-                    let (event, post_action) = match (&mut self.protocol, &mut self.session_id) {
-                        (SessionProtocol::Codex(state), session_id) => {
-                            codex_translate_event(&parsed, state.as_mut(), session_id)
-                        }
-                        (SessionProtocol::Claude, _) => (None, CodexPostAction::None),
-                    };
+            let parsed = {
+                let receiver = match self.codex_session_mut() {
+                    Some(context) => &mut context.event_receiver,
+                    None => return None,
+                };
 
-                    if post_action == CodexPostAction::DispatchPendingTurns
-                        && let Err(e) = self.codex_dispatch_pending_turns().await
-                    {
-                        warn!("Failed to dispatch queued codex turn: {}", e);
-                    }
+                receiver.recv().await?
+            };
 
-                    if let Some(event) = event {
-                        return Some(event);
-                    }
+            let (event, post_action) = match (&mut self.protocol, &mut self.session_id) {
+                (SessionProtocol::Codex(state), session_id) => {
+                    codex_translate_event(&parsed, state.as_mut(), session_id)
                 }
-                Err(e) => {
-                    warn!("Error reading codex app-server stdout: {}", e);
-                    return None;
-                }
+                (SessionProtocol::Claude, _) => (None, CodexPostAction::None),
+            };
+
+            if post_action == CodexPostAction::DispatchPendingTurns
+                && let Err(e) = self.codex_dispatch_pending_turns().await
+            {
+                warn!("Failed to dispatch queued codex turn: {}", e);
+            }
+
+            if let Some(event) = event {
+                return Some(event);
             }
         }
     }
@@ -1105,37 +1718,7 @@ impl HeadlessSession {
     ///
     /// Requires `--input-format stream-json` (which is set by default).
     pub async fn send_message(&mut self, content: &str) -> std::io::Result<()> {
-        match &self.protocol {
-            SessionProtocol::Claude => {
-                let stdin = self.stdin.as_mut().ok_or_else(|| {
-                    std::io::Error::new(std::io::ErrorKind::BrokenPipe, "stdin not available")
-                })?;
-
-                let msg = serde_json::json!({
-                    "type": "user",
-                    "message": {
-                        "role": "user",
-                        "content": content
-                    }
-                });
-
-                let mut payload = serde_json::to_string(&msg)?;
-                payload.push('\n');
-                stdin.write_all(payload.as_bytes()).await?;
-                stdin.flush().await?;
-                debug!("Sent user message to headless Claude session");
-                Ok(())
-            }
-            SessionProtocol::Codex(_) => {
-                self.ensure_ready().await?;
-                if let Some(state) = self.codex_state_mut() {
-                    state.pending_messages.push_back(content.to_string());
-                }
-                self.codex_dispatch_pending_turns().await?;
-                debug!("Queued user message for codex app-server turn");
-                Ok(())
-            }
-        }
+        self.backend.send_message(self, content).await
     }
 
     /// Close stdin, signaling no more input will arrive.
@@ -1143,7 +1726,7 @@ impl HeadlessSession {
     /// For one-shot queries, closing stdin after sending the prompt ensures the
     /// claude process doesn't hang waiting for additional input.
     pub fn close_stdin(&mut self) {
-        self.stdin = None;
+        self.backend.close_stdin(self)
     }
 
     /// Get the session ID (available after the init event).
@@ -1156,40 +1739,17 @@ impl HeadlessSession {
     /// Returns a vector of stderr lines (up to a reasonable limit to avoid memory issues).
     /// This is non-blocking — reads only what's currently buffered.
     pub async fn drain_stderr(&mut self) -> Vec<String> {
-        let mut lines = Vec::new();
-        let mut line = String::new();
-
-        // Read up to 100 lines or until we'd block
-        for _ in 0..100 {
-            line.clear();
-            match tokio::time::timeout(
-                Duration::from_millis(10),
-                self.stderr_reader.read_line(&mut line),
-            )
-            .await
-            {
-                Ok(Ok(0)) => break, // EOF
-                Ok(Ok(_)) => {
-                    let trimmed = line.trim();
-                    if !trimmed.is_empty() {
-                        lines.push(trimmed.to_string());
-                    }
-                }
-                Ok(Err(_)) | Err(_) => break, // Error or timeout
-            }
-        }
-
-        lines
+        self.backend.drain_stderr(self).await
     }
 
     /// Wait for the process to exit and return the exit status.
     pub async fn wait(&mut self) -> std::io::Result<std::process::ExitStatus> {
-        self.child.wait().await
+        self.backend.wait(self).await
     }
 
     /// Kill the child process.
     pub async fn kill(&mut self) -> std::io::Result<()> {
-        self.child.kill().await
+        self.backend.kill(self).await
     }
 
     /// Check if the child process has exited without blocking.
@@ -1197,12 +1757,12 @@ impl HeadlessSession {
     /// Returns `Some(ExitStatus)` if exited, `None` if still running.
     /// This is a non-blocking check using `waitpid(WNOHANG)` under the hood.
     pub fn try_wait(&mut self) -> std::io::Result<Option<std::process::ExitStatus>> {
-        self.child.try_wait()
+        self.backend.try_wait(self)
     }
 
     /// Get the child process ID, if available.
     pub fn pid(&self) -> Option<u32> {
-        self.child.id()
+        self.backend.pid(self)
     }
 
     /// Mark this session to be detached instead of killed on drop.
@@ -1214,16 +1774,22 @@ impl HeadlessSession {
     pub fn detach_on_drop(&mut self) {
         self.detach_on_drop = true;
     }
+
+    pub fn should_wait_for_exit_on_result(&self) -> bool {
+        self.backend.should_wait_for_exit()
+    }
 }
 
 impl Drop for HeadlessSession {
     fn drop(&mut self) {
-        // Ensure the child process is killed when the session is dropped,
-        // UNLESS detach_on_drop is set (for daemon restart survival).
-        // tokio::process::Child does NOT kill on drop (it detaches), so we
-        // must explicitly start_kill() to prevent orphaned claude processes.
-        if !self.detach_on_drop {
-            let _ = self.child.start_kill();
+        if let Some(context) = self.codex_session.take() {
+            context.runtime.unregister_session(&context.token);
+        }
+
+        if !self.detach_on_drop
+            && let Some(child) = self.child.as_mut()
+        {
+            let _ = child.start_kill();
         }
     }
 }
@@ -1244,15 +1810,14 @@ pub async fn execute(
     prompt: &str,
     timeout: Duration,
 ) -> std::io::Result<HeadlessResult> {
-    let mut session = HeadlessSession::spawn(config)?;
+    let mut session = HeadlessSession::spawn(config).await?;
 
     // Send the initial prompt
     session.send_message(prompt).await?;
 
     // Claude stream-json one-shot flows should close stdin immediately.
-    // Codex app-server may still need stdin for follow-up JSON-RPC requests
-    // until the thread is initialized and the turn has been started.
-    if config.auth_provider == crate::auth::AuthProvider::Claude {
+    // Codex app-server keeps the shared process alive for additional turns.
+    if session.should_wait_for_exit_on_result() {
         session.close_stdin();
     }
 
@@ -1260,7 +1825,7 @@ pub async fn execute(
         "Headless: prompt sent, waiting for result (timeout={}s)",
         timeout.as_secs()
     );
-    let should_wait_for_exit = config.auth_provider == crate::auth::AuthProvider::Claude;
+    let should_wait_for_exit = session.should_wait_for_exit_on_result();
 
     // Wrap event collection in a timeout. On timeout, the future is dropped,
     // which drops `session`, which calls start_kill() on the child process.
@@ -1403,6 +1968,89 @@ mod tests {
             output_schema: None,
             start_phase: "thread/start".to_string(),
         }
+    }
+
+    fn test_claude_session() -> HeadlessSession {
+        HeadlessSession {
+            child: None,
+            stdout_reader: None,
+            stderr_reader: None,
+            stdin: None,
+            session_id: None,
+            backend: HeadlessSessionBackend::Claude,
+            protocol: SessionProtocol::Claude,
+            codex_session: None,
+            detach_on_drop: false,
+        }
+    }
+
+    fn test_codex_session() -> HeadlessSession {
+        HeadlessSession {
+            child: None,
+            stdout_reader: None,
+            stderr_reader: None,
+            stdin: None,
+            session_id: None,
+            backend: HeadlessSessionBackend::Codex,
+            protocol: SessionProtocol::Codex(Box::new(test_codex_state())),
+            codex_session: None,
+            detach_on_drop: false,
+        }
+    }
+
+    #[test]
+    fn test_headless_session_protocol_flags() {
+        let claude_session = test_claude_session();
+        let codex_session = test_codex_session();
+
+        assert!(!claude_session.is_codex_session());
+        assert!(codex_session.is_codex_session());
+
+        assert!(claude_session.should_wait_for_exit_on_result());
+        assert!(!codex_session.should_wait_for_exit_on_result());
+    }
+
+    #[tokio::test]
+    async fn test_codex_session_runtime_methods_require_runtime() {
+        let mut session = test_codex_session();
+        session
+            .codex_state_mut()
+            .expect("expected codex protocol")
+            .thread_id = Some("thread-1".to_string());
+        session
+            .codex_state_mut()
+            .expect("expected codex protocol")
+            .initialized = false;
+
+        assert!(session.next_event().await.is_none());
+        assert!(session.drain_stderr().await.is_empty());
+        assert!(session.kill().await.is_ok());
+        assert_eq!(session.pid(), None);
+        assert_eq!(
+            session.wait().await.err().unwrap().to_string(),
+            "missing codex runtime".to_string()
+        );
+        assert_eq!(
+            session.try_wait().err().unwrap().to_string(),
+            "missing codex runtime".to_string()
+        );
+        assert_eq!(
+            session
+                .send_message("hello")
+                .await
+                .err()
+                .unwrap()
+                .to_string(),
+            "missing codex runtime".to_string()
+        );
+
+        session.close_stdin();
+        assert!(session.stdin.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_shutdown_codex_runtime_noop_when_not_started() {
+        shutdown_codex_runtime().await;
     }
 
     #[test]

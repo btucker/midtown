@@ -290,12 +290,12 @@ impl SpecializedCoworker {
 
         let mut session = if let Some(ref sid) = session_id {
             if role.persist_session() {
-                HeadlessSession::resume(sid, &config)?
+                HeadlessSession::resume(sid, &config).await?
             } else {
-                HeadlessSession::spawn(&config)?
+                HeadlessSession::spawn(&config).await?
             }
         } else {
-            HeadlessSession::spawn(&config)?
+            HeadlessSession::spawn(&config).await?
         };
 
         // Send the request
@@ -377,8 +377,12 @@ impl SpecializedCoworker {
         // Drain stderr before waiting to avoid potential pipe buffer deadlock
         let _ = session.drain_stderr().await;
 
-        // Wait for process to exit
-        let _ = session.wait().await;
+        // For one-shot codex sessions, the shared process is long-lived and does not
+        // exit after each request.
+        if session.should_wait_for_exit_on_result() {
+            // Wait for Claude process to exit.
+            let _ = session.wait().await;
+        }
 
         if is_error {
             return Err(SpecializedError::SessionError);
