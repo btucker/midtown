@@ -107,7 +107,9 @@ allow_federation = false
 }
 
 fn default_as_registration_config(config: &MatrixBridgeConfig) -> Result<String, String> {
-    let project_name = crate::paths::detect_project_name().unwrap_or_else(|| "midtown".to_string());
+    let project_name = crate::paths::detect_project_name().ok_or_else(|| {
+        "Cannot determine project name for matrix namespace generation".to_string()
+    })?;
     let user_names = collect_coworker_identities(&project_name);
     let channel_names = collect_channel_names(&project_name);
     let user_pattern = regex_pattern(&user_names);
@@ -187,7 +189,7 @@ fn collect_coworker_identities(project_name: &str) -> Vec<String> {
         }
     }
 
-    identities.insert("midtown".to_string());
+    identities.insert(project_name.to_string());
     identities.into_iter().collect()
 }
 
@@ -196,7 +198,7 @@ fn collect_channel_names(project_name: &str) -> Vec<String> {
 
     if let Ok(state) = crate::daemon::state::DaemonPersistentState::load_for_repo(project_name) {
         if state.channel_lead_sessions.is_empty() {
-            names.insert("midtown".to_string());
+            names.insert(project_name.to_string());
             return names.into_iter().collect();
         }
         names.extend(
@@ -208,7 +210,7 @@ fn collect_channel_names(project_name: &str) -> Vec<String> {
         );
     }
 
-    names.insert("midtown".to_string());
+    names.insert(project_name.to_string());
     names.into_iter().collect()
 }
 
