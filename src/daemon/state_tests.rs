@@ -646,6 +646,95 @@ fn test_fork_bound_threads_only_includes_bound_sessions() {
     );
     assert!(!fork_bound_threads.contains_key("amsterdam"));
 }
+
+#[test]
+fn test_fork_bound_channels_rebuild_only_for_channel_leads() {
+    use std::collections::HashMap;
+
+    let mut sessions: HashMap<String, SessionRecord> = HashMap::new();
+    let mut channel_lead_record = make_test_session_record_named("sess-fork", true, "channel-fork");
+    channel_lead_record.coworker_type = "channel-lead".to_string();
+    channel_lead_record.bound_thread_id = Some("thread-fork".to_string());
+    sessions.insert("sess-fork".to_string(), channel_lead_record);
+
+    let mut dev_record = make_test_session_record_named("sess-task", true, "riverside");
+    dev_record.coworker_type = "dev".to_string();
+    dev_record.bound_thread_id = Some("thread-task".to_string());
+    sessions.insert("sess-task".to_string(), dev_record);
+
+    let mut headless_sessions: HashMap<String, HeadlessSessionInfo> = HashMap::new();
+    headless_sessions.insert(
+        "channel-fork".to_string(),
+        HeadlessSessionInfo {
+            session_id: "sess-fork".to_string(),
+            last_active: Utc::now(),
+            purpose: "forked channel lead".to_string(),
+            pid: None,
+            coworker_type: Some("channel-lead".to_string()),
+            task_id: None,
+            pr_number: None,
+            channel: Some("topic-fork".to_string()),
+            working_dir: Some("/tmp/fork".to_string()),
+            provider: None,
+            profile: None,
+            resume_on_startup: false,
+            initial_prompt: None,
+        },
+    );
+    headless_sessions.insert(
+        "riverside".to_string(),
+        HeadlessSessionInfo {
+            session_id: "sess-task".to_string(),
+            last_active: Utc::now(),
+            purpose: "task coworker".to_string(),
+            pid: None,
+            coworker_type: Some("dev".to_string()),
+            task_id: Some(1690),
+            pr_number: None,
+            channel: Some("topic-task".to_string()),
+            working_dir: Some("/tmp/task".to_string()),
+            provider: None,
+            profile: None,
+            resume_on_startup: false,
+            initial_prompt: None,
+        },
+    );
+
+    let mut fork_bound_channels: HashMap<String, String> = HashMap::new();
+    let mut fork_bound_threads: HashMap<String, String> = HashMap::new();
+    for (session_id, record) in sessions.iter() {
+        if let (Some(name), Some(tid)) = (&record.current_name, &record.bound_thread_id) {
+            fork_bound_threads.insert(name.clone(), tid.clone());
+            if record.coworker_type == "channel-lead"
+                && let Some(channel) = headless_sessions
+                    .values()
+                    .find_map(|info| {
+                        (info.session_id == *session_id).then_some(info.channel.clone())
+                    })
+                    .flatten()
+            {
+                fork_bound_channels.insert(name.clone(), channel);
+            }
+        }
+    }
+
+    assert_eq!(
+        fork_bound_threads.get("channel-fork"),
+        Some(&"thread-fork".to_string())
+    );
+    assert_eq!(
+        fork_bound_threads.get("riverside"),
+        Some(&"thread-task".to_string())
+    );
+    assert_eq!(
+        fork_bound_channels.get("channel-fork"),
+        Some(&"topic-fork".to_string())
+    );
+    assert!(
+        !fork_bound_channels.contains_key("riverside"),
+        "Task coworker bound thread must not be treated as fork output channel"
+    );
+}
 /// When a coworker with a bound thread is cleaned up and the name is reused
 /// without a thread binding, the stale entry must not persist.
 /// This verifies the cleanup logic in `cleanup_coworker_state` that removes

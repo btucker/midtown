@@ -1241,15 +1241,17 @@ impl DaemonState {
                     // coworker posts are auto-tagged after a daemon restart.
                     if let Some(ref tid) = record.bound_thread_id {
                         fork_bound_threads.insert(name.clone(), tid.clone());
-                        // Rebuild inherited channel map from persisted headless session info
-                        // when available (used by stream-level channel routing).
-                        if let Some(channel) = persistent_state
-                            .headless_sessions
-                            .values()
-                            .find_map(|info| {
-                                (info.session_id == *session_id).then_some(info.channel.clone())
-                            })
-                            .flatten()
+                        // Rebuild inherited channel map only for forked channel leads.
+                        // Regular task coworkers also carry `bound_thread_id` but should not
+                        // stream their output as lead-like activity.
+                        if record.coworker_type == "channel-lead"
+                            && let Some(channel) = persistent_state
+                                .headless_sessions
+                                .values()
+                                .find_map(|info| {
+                                    (info.session_id == *session_id).then_some(info.channel.clone())
+                                })
+                                .flatten()
                         {
                             fork_bound_channels.insert(name.clone(), channel);
                         }
