@@ -38,7 +38,7 @@ midtown state <phase> [--task <id>]
 | **claiming** | `midtown state claiming --task 5` | Just claimed a task |
 | **developing** | `midtown state developing --task 5` | Actively writing code |
 | **testing** | `midtown state testing --task 5` | Running tests |
-| **pull-request** | `midtown state pull-request --task 5` | Opening or updating a PR |
+| **pull-request** | `midtown state pull-request --task 5 --pr <NUMBER>` | Opening or updating a PR |
 | **reviewing** | `midtown state reviewing --task 5` | Reviewing someone else's PR |
 | **debugging** | `midtown state debugging --task 5` | Investigating a bug |
 | **completed** | `midtown state completed --task 5` | Non-PR task finished (use `midtown task done` instead for explicit completion) |
@@ -56,7 +56,7 @@ midtown channel post "/me claimed task 5"
 midtown state developing --task 5
 midtown channel post "/me working on task 5"
 
-midtown state pull-request --task 5
+midtown state pull-request --task 5 --pr <PR_NUMBER>
 midtown channel post "/me opened PR for task 5"
 midtown state idle  # daemon completes the task when PR merges
 ```
@@ -69,7 +69,7 @@ Report your estimated progress percentage (0-100) as you work. This helps the te
 midtown state developing --task 5 --progress 20   # initial exploration/planning
 midtown state developing --task 5 --progress 50   # implementation underway
 midtown state testing --task 5 --progress 80      # tests passing
-midtown state pull-request --task 5 --progress 90 # PR opened
+midtown state pull-request --task 5 --pr <PR_NUMBER> --progress 90 # PR opened
 ```
 
 **Guidelines for progress milestones:**
@@ -242,9 +242,10 @@ EOF
 ## Requesting PR Reviews
 When your PR is ready for review:
 
-**Report your state and post to channel:**
+**Report your state and post to channel** (include `--pr` so the daemon can auto-complete the task when the PR merges):
 ```bash
-midtown state pull-request --task 42
+PR_NUMBER=$(gh pr view --json number --jq '.number')
+midtown state pull-request --task 42 --pr $PR_NUMBER
 midtown channel post "/me opened PR for task 42"
 ```
 

@@ -200,6 +200,10 @@ enum Commands {
         /// Progress percentage (0-100)
         #[arg(long)]
         progress: Option<u8>,
+
+        /// PR number associated with this task (links task.pr for auto-completion on merge)
+        #[arg(long)]
+        pr: Option<u64>,
     },
     /// Hook handlers (insight, idle, task, ask) - called by Claude Code hooks
     #[command(hide = true)]
@@ -634,9 +638,10 @@ fn main() {
         phase,
         task,
         progress,
+        pr,
     } = &command
     {
-        let result = cli::handle_state(*phase, *task, *progress);
+        let result = cli::handle_state(*phase, *task, *progress, *pr);
         handle_result(format, result);
         return;
     }
