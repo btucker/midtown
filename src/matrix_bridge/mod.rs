@@ -194,26 +194,18 @@ fn collect_coworker_identities(project_name: &str) -> Vec<String> {
 fn collect_channel_names(project_name: &str) -> Vec<String> {
     let mut names = BTreeSet::new();
 
-    if let Some(config) = crate::config::load_full_project_config(project_name) {
-        names.extend(config.channels.seed);
-    }
-
     if let Ok(state) = crate::daemon::state::DaemonPersistentState::load_for_repo(project_name) {
-        names.extend(state.channel_lead_sessions.keys().cloned());
-    }
-
-    let channels_dir = crate::paths::projects_dir_for_repo(project_name).join("channels");
-    if let Ok(entries) = std::fs::read_dir(channels_dir) {
-        for entry in entries.flatten() {
-            let file_name = entry.file_name();
-            let name = match file_name.to_str() {
-                Some(name) => name.to_string(),
-                None => continue,
-            };
-            if is_channel_dir_name(&name) {
-                names.insert(name.trim_end_matches(".archived").to_string());
-            }
+        if state.channel_lead_sessions.is_empty() {
+            names.insert("midtown".to_string());
+            return names.into_iter().collect();
         }
+        names.extend(
+            state
+                .channel_lead_sessions
+                .keys()
+                .filter(|name| is_channel_dir_name(name))
+                .map(|name| name.trim_end_matches(".archived").to_string()),
+        );
     }
 
     names.insert("midtown".to_string());
@@ -221,7 +213,6 @@ fn collect_channel_names(project_name: &str) -> Vec<String> {
 }
 
 fn is_channel_dir_name(name: &str) -> bool {
-    let name = name.trim_end_matches(".archived");
     if name.is_empty() {
         return false;
     }
