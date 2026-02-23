@@ -1846,7 +1846,7 @@ pub(super) fn launch_lead_split(
 ///
 /// By default, starts `midtown chat` in the current terminal without touching the lead session.
 /// With `--attach`, also attaches to the Lead's headless session and opens it in a split pane.
-pub fn handle_view(project: Option<&str>, attach: bool) -> Result<Response, String> {
+pub fn handle_view(project: Option<&str>, attach: bool, matrix: bool) -> Result<Response, String> {
     let ctx = resolve_attach_context(project)?;
 
     // Ensure project-scoped socket resolution uses the target project's repo root.
@@ -1858,6 +1858,60 @@ pub fn handle_view(project: Option<&str>, attach: bool) -> Result<Response, Stri
             e
         )
     })?;
+
+    if matrix {
+        if attach {
+            if let Some(cwd) = original_cwd {
+                let _ = std::env::set_current_dir(cwd);
+            }
+            return Err(
+                "Cannot combine --matrix with --attach. Use `midtown view --matrix` to launch Cinny."
+                    .to_string(),
+            );
+        }
+
+        if !super::matrix::matrix_bridge_is_running() {
+            match super::matrix::launch_matrix_bridge() {
+                Ok(()) => {
+                    println!("Launched matrix bridge for project '{}'.", ctx.project_name);
+                }
+                Err(e) if e == "Matrix bridge already running" => {}
+                Err(e) => {
+                    if let Some(cwd) = original_cwd {
+                        let _ = std::env::set_current_dir(cwd);
+                    }
+                    return Err(format!("Failed to start matrix bridge: {}", e));
+                }
+            }
+        }
+
+        let (mut cinny_child, cinny_url) = run_cinny_client_for_matrix(&ctx.project_name)?;
+        open_browser(&cinny_url);
+
+        println!("Cinny Matrix client: {}", cinny_url);
+        println!("Press Ctrl+C to stop.");
+
+        let original_cwd_for_error = original_cwd.clone();
+        let cinny_exit = cinny_child.wait().map_err(move |e| {
+            if let Some(cwd) = &original_cwd_for_error {
+                let _ = std::env::set_current_dir(cwd);
+            }
+            format!("Cinny process failed: {}", e)
+        })?;
+        if let Some(cwd) = original_cwd {
+            let _ = std::env::set_current_dir(cwd);
+        }
+        if cinny_exit.success() {
+            return Ok(Response::message(format!(
+                "Exited Cinny Matrix client ({})",
+                cinny_url
+            )));
+        }
+        return Err(format!(
+            "Cinny Matrix client exited with status {}",
+            cinny_exit.code().unwrap_or(-1)
+        ));
+    }
 
     // Ensure daemon + lead are running for this project.
     if !daemon_is_running() {
@@ -1990,6 +2044,263 @@ To open chat without a Lead split, run:\n  midtown view",
     }
 
     Ok(Response::message("Exited chat session"))
+}
+
+const MIDTOWN_MATRIX_PORT: u16 = 6167;
+const CINNY_PORT_START: u16 = 8080;
+const CINNY_PORT_END: u16 = 8090;
+
+fn run_cinny_client_for_matrix(
+    project_name: &str,
+) -> Result<(std::process::Child, String), String> {
+    let release_dir = ensure_cinny_release_source()?;
+    let matrix_url = format!("http://127.0.0.1:{MIDTOWN_MATRIX_PORT}");
+    patch_cinny_config(&release_dir, matrix_url.as_str())?;
+
+    ensure_node_dependencies(&release_dir)?;
+
+    let port = find_available_cinny_port()?;
+    let mut child = launch_cinny_server(&release_dir, port)?;
+
+    let cinny_url = format!("http://127.0.0.1:{port}/");
+    if !wait_for_http_ready(port, std::time::Duration::from_secs(20)) {
+        let _ = child.kill();
+        return Err(format!(
+            "Cinny did not become available on port {port} after startup."
+        ));
+    }
+
+    let instance = format!("midtown-{project_name}");
+    println!(
+        "Started {instance} using Cinny release in {}",
+        release_dir.display()
+    );
+    println!("Connect: {cinny_url}");
+
+    Ok((child, cinny_url))
+}
+
+fn ensure_cinny_release_source() -> Result<PathBuf, String> {
+    let (version, tarball_url) = fetch_latest_cinny_release()?;
+    let base_dir = cinny_cache_dir();
+    let version_dir = base_dir.join(&version);
+    let source_dir = version_dir.join("source");
+    let tarball_path = version_dir.join(format!("{version}.tar.gz"));
+
+    std::fs::create_dir_all(&version_dir)
+        .map_err(|e| format!("Failed to create Cinny cache directory: {}", e))?;
+
+    if !tarball_path.exists() {
+        download_cinny_tarball(&tarball_path, &tarball_url)?;
+    }
+
+    if !source_dir.join("package.json").exists() || !source_dir.join("config.json").exists() {
+        if source_dir.exists() {
+            std::fs::remove_dir_all(&source_dir).map_err(|e| {
+                format!(
+                    "Failed to reset Cinny source directory {}: {}",
+                    source_dir.display(),
+                    e
+                )
+            })?;
+        }
+        extract_cinny_tarball(&tarball_path, &source_dir)?;
+    }
+
+    Ok(source_dir)
+}
+
+fn cinny_cache_dir() -> PathBuf {
+    midtown::paths::midtown_base_dir().join("cinny")
+}
+
+fn fetch_latest_cinny_release() -> Result<(String, String), String> {
+    let output = Command::new("curl")
+        .args([
+            "-fsSL",
+            "-H",
+            "User-Agent: midtown",
+            "https://api.github.com/repos/cinnyapp/cinny/releases/latest",
+        ])
+        .output()
+        .map_err(|e| format!("Failed to query Cinny releases: {}", e))?;
+
+    if !output.status.success() {
+        return Err(format!(
+            "Failed to query Cinny releases: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+
+    let payload: serde_json::Value = serde_json::from_slice(&output.stdout)
+        .map_err(|e| format!("Invalid GitHub API response for Cinny release: {}", e))?;
+    let version = payload
+        .get("tag_name")
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| "GitHub release response missing tag_name".to_string())?;
+    let tarball_url = if let Some(url) = payload.get("tarball_url").and_then(|value| value.as_str())
+    {
+        url.to_string()
+    } else if let Some(url) = payload.get("assets").and_then(|assets| {
+        assets.as_array().and_then(|assets| {
+            assets.iter().find_map(|asset| {
+                asset
+                    .get("browser_download_url")
+                    .and_then(|value| value.as_str())
+                    .filter(|url| url.ends_with(".tar.gz"))
+            })
+        })
+    }) {
+        url.to_string()
+    } else {
+        return Err("GitHub release response missing tarball_url".to_string());
+    };
+
+    Ok((version.to_string(), tarball_url))
+}
+
+fn download_cinny_tarball(tarball_path: &Path, url: &str) -> Result<(), String> {
+    let status = Command::new("curl")
+        .args(["-fsSL", "-H", "User-Agent: midtown", "-L", url, "-o"])
+        .arg(tarball_path)
+        .status()
+        .map_err(|e| format!("Failed to download Cinny tarball: {}", e))?;
+    if !status.success() {
+        return Err(format!(
+            "Failed to download Cinny tarball from {url}. Install `curl` and verify network access."
+        ));
+    }
+    Ok(())
+}
+
+fn extract_cinny_tarball(tarball_path: &Path, source_dir: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(source_dir)
+        .map_err(|e| format!("Failed to create Cinny source directory: {}", e))?;
+
+    let status = Command::new("tar")
+        .args([
+            "-xzf",
+            &tarball_path.to_string_lossy(),
+            "-C",
+            &source_dir.to_string_lossy(),
+            "--strip-components",
+            "1",
+        ])
+        .status()
+        .map_err(|e| format!("Failed to extract Cinny tarball: {}", e))?;
+    if !status.success() {
+        return Err(
+            "Failed to extract Cinny tarball. Install `tar` and verify the archive is valid."
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+fn patch_cinny_config(release_dir: &Path, matrix_url: &str) -> Result<(), String> {
+    let config_path = release_dir.join("config.json");
+    let mut config: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(&config_path)
+            .map_err(|e| format!("Failed to read Cinny config.json: {}", e))?,
+    )
+    .map_err(|e| format!("Failed to parse Cinny config.json: {}", e))?;
+
+    if let Some(obj) = config.as_object_mut() {
+        obj.insert("defaultHomeserver".to_string(), serde_json::json!(0));
+        obj.insert(
+            "homeserverList".to_string(),
+            serde_json::Value::Array(vec![serde_json::Value::String(matrix_url.to_string())]),
+        );
+    }
+
+    let payload = serde_json::to_string_pretty(&config)
+        .map_err(|e| format!("Failed to serialize Cinny config.json: {}", e))?;
+    std::fs::write(&config_path, format!("{}\n", payload))
+        .map_err(|e| format!("Failed to write Cinny config.json: {}", e))?;
+
+    Ok(())
+}
+
+fn ensure_node_dependencies(release_dir: &Path) -> Result<(), String> {
+    if release_dir.join("node_modules").exists() {
+        return Ok(());
+    }
+
+    let status = Command::new("npm")
+        .arg("install")
+        .current_dir(release_dir)
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()
+        .map_err(|e| format!("Failed to run `npm install` for Cinny: {}", e))?;
+    if !status.success() {
+        return Err("`npm install` failed while preparing Cinny".to_string());
+    }
+
+    Ok(())
+}
+
+fn find_available_cinny_port() -> Result<u16, String> {
+    for port in CINNY_PORT_START..=CINNY_PORT_END {
+        if !is_port_open(port) {
+            return Ok(port);
+        }
+    }
+    Err(format!(
+        "No available local port for Cinny in range {CINNY_PORT_START}-{CINNY_PORT_END}"
+    ))
+}
+
+fn is_port_open(port: u16) -> bool {
+    std::net::TcpStream::connect(("127.0.0.1", port)).is_ok()
+}
+
+fn launch_cinny_server(release_dir: &Path, port: u16) -> Result<std::process::Child, String> {
+    let port_arg = port.to_string();
+    Command::new("npm")
+        .arg("run")
+        .arg("start")
+        .args(["--", "--host", "127.0.0.1", "--port"])
+        .arg(port_arg)
+        .current_dir(release_dir)
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .stdin(Stdio::null())
+        .spawn()
+        .map_err(|e| format!("Failed to start Cinny (`npm run start`): {}", e))
+}
+
+fn wait_for_http_ready(port: u16, timeout: std::time::Duration) -> bool {
+    let start = std::time::Instant::now();
+    while start.elapsed() < timeout {
+        if is_port_open(port) {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    false
+}
+
+fn open_browser(url: &str) {
+    let child = if cfg!(target_os = "macos") {
+        Command::new("open").arg(url).spawn()
+    } else if cfg!(target_os = "linux") {
+        Command::new("xdg-open").arg(url).spawn()
+    } else if cfg!(target_os = "windows") {
+        Command::new("rundll32")
+            .args(["url.dll,FileProtocolHandler", url])
+            .spawn()
+    } else {
+        Err(std::io::Error::other(
+            "No browser opener configured for this platform",
+        ))
+    };
+
+    if let Ok(mut child) = child {
+        std::thread::spawn(move || {
+            let _ = child.wait();
+        });
+    }
 }
 
 /// List all known projects and their running status.

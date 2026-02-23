@@ -97,8 +97,8 @@ pub fn handle_restart(force: bool) -> Result<Response, String> {
 }
 
 /// Handle view command (launches chat; optionally attaches Lead and opens a split)
-pub fn handle_view(project: Option<&str>, attach: bool) -> Result<Response, String> {
-    daemon::handle_view(project, attach)
+pub fn handle_view(project: Option<&str>, attach: bool, matrix: bool) -> Result<Response, String> {
+    daemon::handle_view(project, attach, matrix)
 }
 
 /// Handle project list command (no daemon required)

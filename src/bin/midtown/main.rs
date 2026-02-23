@@ -117,6 +117,10 @@ enum Commands {
         /// Attach to the Lead session and open it in a split pane
         #[arg(long)]
         attach: bool,
+
+        /// Launch Cinny Matrix web client instead of the IRC-style chat view
+        #[arg(long)]
+        matrix: bool,
     },
     /// Config management commands (get/set/list)
     Config {
@@ -583,8 +587,13 @@ fn main() {
     }
 
     // View command (launches chat locally and best-effort split for Lead)
-    if let Commands::View { project, attach } = &command {
-        let result = cli::handle_view(project.as_deref(), *attach);
+    if let Commands::View {
+        project,
+        attach,
+        matrix,
+    } = &command
+    {
+        let result = cli::handle_view(project.as_deref(), *attach, *matrix);
         handle_result(format, result);
         return;
     }

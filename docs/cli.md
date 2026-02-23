@@ -11,6 +11,7 @@
 | `midtown restart [--force]` | Restart the daemon (waits for active reviewers to go on break unless `--force`) |
 | `midtown attach [<project>]` | Attach to the project's Zellij session |
 | `midtown status` | Show system status |
+| `midtown view [<project>] [--matrix] [--attach]` | Launch chat UI (use `--attach` for Lead split; use `--matrix` for Cinny) |
 | `midtown chat` | Open the IRC-style chat TUI |
 | `midtown log [--hooks] [--path] [-f] [-n <lines>]` | View daemon or hook logs |
 

@@ -76,6 +76,7 @@ The Project Lead is just a Claude Code session, but it's been booted with a [spe
 | `midtown restart [--force]` | Restart the daemon (`--force` skips reviewer drain wait) |
 | `midtown status` | Show system status |
 | `midtown view` | Launch chat UI (use `--attach` to open Project Lead in a split) |
+| `midtown view --matrix` | Launch the Cinny Matrix web client against the local Matrix bridge |
 | `midtown channel post <msg>` | Post to the team channel |
 | `midtown channel read` | Read recent messages |
 | `midtown channel create <name>` | Create a new topic channel |
