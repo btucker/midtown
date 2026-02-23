@@ -12,6 +12,7 @@ mod lead;
 mod pr;
 mod response;
 mod session;
+mod session_render;
 mod task;
 
 pub use auth::AuthCommand;

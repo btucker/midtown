@@ -1303,12 +1303,32 @@ impl SessionManager {
 
     /// Get recent output for a coworker from the JSONL log file.
     ///
-    /// Reads the last ~200 lines from the headless output log and extracts
-    /// text content from Assistant events. Returns None if the session doesn't
-    /// exist or the log file can't be read.
+    /// Reads the last ~200 lines from the headless output log and returns a
+    /// rich formatted string that includes text from Assistant events as markdown
+    /// prose, tool calls as labeled code fences, and tool results as code fences.
+    ///
+    /// Returns None if the session doesn't exist or the log file can't be read.
     ///
     /// This enables `midtown coworker view` to work with headless coworkers.
     pub async fn get_output(&self, name: &str) -> Option<String> {
+        self.get_output_with_path(name)
+            .await
+            .map(|(output, _, _)| output)
+    }
+
+    /// Get recent output for a coworker alongside the log file path and byte offset.
+    ///
+    /// Returns a rich formatted string that includes:
+    /// - Text from Assistant events (as markdown prose)
+    /// - Tool calls from Assistant events (as labeled code fences)
+    /// - Tool results from User events (as labeled code fences)
+    ///
+    /// Also returns the path to the JSONL log file and the byte offset at which
+    /// the daemon stopped reading. The caller should start tailing from that
+    /// offset to avoid missing events appended after this snapshot was taken.
+    ///
+    /// Returns `None` if no session or log file exists for the coworker.
+    pub async fn get_output_with_path(&self, name: &str) -> Option<(String, PathBuf, u64)> {
         // Get the log path: try active sessions first, fall back to the
         // deterministic path for paused/attached/historical sessions.
         let log_path = {
@@ -1320,6 +1340,8 @@ impl SessionManager {
                 .unwrap_or_else(|| crate::paths::headless_output_file(&self.repo_name, name))
         };
 
+        let log_path_for_return = log_path.clone();
+
         // Perform file I/O in spawn_blocking to avoid blocking the async runtime
         // (following pattern from commit 9575557)
         let content = tokio::task::spawn_blocking(move || std::fs::read_to_string(log_path))
@@ -1327,8 +1349,12 @@ impl SessionManager {
             .ok()?
             .ok()?;
 
+        // Record how many bytes we consumed. The CLI watch mode starts tailing
+        // from this offset so events appended after this snapshot are not missed.
+        let bytes_read = content.len() as u64;
+
         if content.is_empty() {
-            return Some(String::from("(no output yet)"));
+            return Some((String::from("(no output yet)"), log_path_for_return, 0));
         }
 
         // Collect last 200 lines
@@ -1339,26 +1365,105 @@ impl SessionManager {
             .map(|s| s.to_string())
             .collect();
 
-        // Parse JSONL events and extract text from Assistant messages
-        let mut output_lines = Vec::new();
-        for line in lines.iter().rev() {
-            if let Ok(StreamEvent::Assistant { message, .. }) =
-                serde_json::from_str::<StreamEvent>(line)
-                && let Some(content) = message.get("content")
-                && let Some(arr) = content.as_array()
-            {
+        // Parse JSONL events and format as rich text with tool calls as code fences
+        let output = format_events_as_rich_text(lines.iter().rev().map(|s| s.as_str()));
+
+        Some((output, log_path_for_return, bytes_read))
+    }
+}
+
+/// Format a sequence of JSONL event lines into rich text.
+///
+/// Processes Assistant and User events in order, emitting:
+/// - Text blocks as plain markdown prose
+/// - tool_use blocks as labeled code fences with JSON-formatted input
+/// - tool_result blocks (from User events) as labeled code fences
+///
+/// This is the core formatter used by both `get_output_with_path` (snapshot)
+/// and the CLI `--watch` tail mode (incremental per-event rendering).
+pub fn format_events_as_rich_text<'a>(lines: impl Iterator<Item = &'a str>) -> String {
+    let mut output_parts: Vec<String> = Vec::new();
+
+    for line in lines {
+        let Ok(event) = serde_json::from_str::<StreamEvent>(line) else {
+            continue;
+        };
+        match event {
+            StreamEvent::Assistant { message, .. } => {
+                let Some(content) = message.get("content") else {
+                    continue;
+                };
+                let Some(arr) = content.as_array() else {
+                    continue;
+                };
                 for block in arr {
-                    if block.get("type").and_then(|t| t.as_str()) == Some("text")
-                        && let Some(text) = block.get("text").and_then(|t| t.as_str())
-                    {
-                        output_lines.push(text.to_string());
+                    match block.get("type").and_then(|t| t.as_str()) {
+                        Some("text") => {
+                            if let Some(text) = block.get("text").and_then(|t| t.as_str())
+                                && !text.trim().is_empty()
+                            {
+                                output_parts.push(text.to_string());
+                            }
+                        }
+                        Some("tool_use") => {
+                            let name = block
+                                .get("name")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("unknown");
+                            let input = block.get("input").unwrap_or(&serde_json::Value::Null);
+                            let input_str = serde_json::to_string_pretty(input).unwrap_or_default();
+                            // Choose language tag: bash commands look best as bash
+                            let lang = if name == "Bash" { "bash" } else { "json" };
+                            output_parts.push(format!("**[{name}]**\n```{lang}\n{input_str}\n```"));
+                        }
+                        _ => {}
                     }
                 }
             }
+            StreamEvent::User { message, .. } => {
+                let Some(content) = message.get("content") else {
+                    continue;
+                };
+                let Some(arr) = content.as_array() else {
+                    continue;
+                };
+                for block in arr {
+                    if block.get("type").and_then(|t| t.as_str()) == Some("tool_result") {
+                        let result_content = block.get("content");
+                        let result_text = match result_content {
+                            Some(serde_json::Value::String(s)) => s.clone(),
+                            Some(serde_json::Value::Array(arr)) => {
+                                // Content blocks array — extract text
+                                arr.iter()
+                                    .filter_map(|b| {
+                                        if b.get("type").and_then(|t| t.as_str()) == Some("text") {
+                                            b.get("text")
+                                                .and_then(|t| t.as_str())
+                                                .map(|s| s.to_string())
+                                        } else {
+                                            None
+                                        }
+                                    })
+                                    .collect::<Vec<_>>()
+                                    .join("\n")
+                            }
+                            _ => String::new(),
+                        };
+                        if !result_text.trim().is_empty() {
+                            output_parts.push(format!("**[result]**\n```\n{result_text}\n```"));
+                        }
+                    }
+                }
+            }
+            _ => {}
         }
-
-        Some(output_lines.join("\n"))
     }
+
+    if output_parts.is_empty() {
+        return String::from("(no output yet)");
+    }
+
+    output_parts.join("\n\n")
 }
 
 impl Default for SessionManager {

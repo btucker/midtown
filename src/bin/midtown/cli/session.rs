@@ -3,13 +3,14 @@
 //! `midtown session attach` pauses a headless coworker and opens an interactive
 //! terminal pane/session to resume that exact provider session.
 
-use std::io::{IsTerminal, Write};
+use std::io::{BufRead, IsTerminal, Write};
 use std::path::Path;
 use std::process::Command;
 
 use clap::{Args, Subcommand};
 
 use super::Response;
+use super::session_render;
 use crate::client::DaemonClient;
 
 #[derive(Subcommand, Debug, Clone)]
@@ -26,10 +27,13 @@ pub enum SessionCommand {
     },
     /// List attachable headless sessions
     List,
-    /// View a session's current output
+    /// View a session's current output with rich rendering
     View {
         /// Session target (coworker name, task/<id>, pr/<number>, claude, etc.)
         target: String,
+        /// Continuously tail and render new output as it arrives (headless sessions only)
+        #[arg(long, short = 'w')]
+        watch: bool,
     },
     /// Clear a session: stop it and restart fresh with the same initial prompt.
     Clear {
@@ -254,7 +258,7 @@ pub fn handle(cmd: &SessionCommand, client: &DaemonClient) -> Result<Response, S
         SessionCommand::Attach { target } => handle_attach(target, client),
         SessionCommand::Detach { name } => client.session_detach(name),
         SessionCommand::List => client.session_list(),
-        SessionCommand::View { target } => client.session_view(target),
+        SessionCommand::View { target, watch } => handle_view(target, *watch, client),
         SessionCommand::Clear { target } => client.session_clear(target),
         SessionCommand::Fork {
             thread_parent_id,
@@ -1048,6 +1052,121 @@ fn detect_pane_host_from(get_env: impl Fn(&str) -> Option<String>) -> PaneHost {
     }
 
     PaneHost::Unknown
+}
+
+/// Handle `midtown session view` with rich ANSI rendering and optional `--watch` mode.
+///
+/// Fetches the session's current output from the daemon (which returns the rich-text
+/// format with tool calls as code fences), renders it with ANSI syntax highlighting,
+/// and optionally tails the log file for new events.
+fn handle_view(target: &str, watch: bool, client: &DaemonClient) -> Result<Response, String> {
+    // Fetch current snapshot from daemon (includes log_path for watch mode)
+    let raw = client.session_view_raw(target)?;
+    let output = raw
+        .get("output")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let log_path = raw
+        .get("log_path")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    // Byte offset at which the daemon stopped reading the log file.
+    // Used as the starting tail position to avoid missing events that
+    // were appended after the snapshot was taken but before we query
+    // metadata.len() ourselves.
+    let snapshot_log_offset = raw.get("log_offset").and_then(|v| v.as_u64()).unwrap_or(0);
+
+    // Render the initial snapshot
+    let rendered = session_render::render_ansi(&output);
+
+    if !watch {
+        // Return rendered output for standard handle_result printing
+        return Ok(Response::message(rendered.trim_end().to_string()));
+    }
+
+    // Watch mode: print initial snapshot then tail for new events
+    print!("{}", rendered);
+    std::io::stdout()
+        .flush()
+        .map_err(|e| format!("Failed to flush stdout: {e}"))?;
+
+    // --- Watch mode: tail the log file for new events ---
+    let log_path = log_path.ok_or_else(|| {
+        "Daemon did not return a log path; --watch is not available for this session".to_string()
+    })?;
+
+    let path = std::path::PathBuf::from(&log_path);
+    if !path.exists() {
+        return Err(format!("Log file not found: {log_path}"));
+    }
+
+    // Start tailing from where the daemon stopped reading the file.
+    // Using the daemon's snapshot boundary (not a fresh metadata.len() call)
+    // ensures we don't skip events appended between the daemon's read and now.
+    let mut file_offset = snapshot_log_offset;
+
+    eprintln!(
+        "\x1b[2m── watching {} (Ctrl-C to stop) ──\x1b[0m",
+        path.file_name().and_then(|n| n.to_str()).unwrap_or("log")
+    );
+
+    loop {
+        std::thread::sleep(std::time::Duration::from_millis(300));
+
+        let metadata = match std::fs::metadata(&path) {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        let current_size = metadata.len();
+
+        if current_size <= file_offset {
+            continue; // Nothing new yet
+        }
+
+        // Read new bytes since our last offset
+        let file = match std::fs::File::open(&path) {
+            Ok(f) => f,
+            Err(_) => continue,
+        };
+        let mut reader = std::io::BufReader::new(file);
+
+        // Seek to our last position
+        use std::io::Seek;
+        if reader.seek(std::io::SeekFrom::Start(file_offset)).is_err() {
+            continue;
+        }
+
+        // Read lines with read_line() (not .lines()) to keep the reader
+        // alive so we can call stream_position() afterward.
+        let mut new_lines: Vec<String> = Vec::new();
+        loop {
+            let mut buf = String::new();
+            match reader.read_line(&mut buf) {
+                Ok(0) => break, // EOF
+                Ok(_) => {
+                    let line = buf.trim_end_matches('\n').trim_end_matches('\r');
+                    if !line.is_empty() {
+                        new_lines.push(line.to_string());
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+
+        // Use the actual reader position after consuming lines, not the
+        // pre-read metadata size. New bytes appended between the metadata
+        // call and the file read would otherwise cause duplication on the
+        // next poll because current_size would rewind our offset.
+        file_offset = reader.stream_position().unwrap_or(current_size);
+
+        for line in &new_lines {
+            if let Some(rendered) = session_render::render_event_line(line) {
+                print!("{}", rendered);
+                let _ = std::io::stdout().flush();
+            }
+        }
+    }
 }
 
 #[path = "session_tests.rs"]

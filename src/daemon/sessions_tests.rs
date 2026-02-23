@@ -520,6 +520,145 @@ async fn test_set_canonical_initial_prompt_overrides_decorated_prompt() {
     );
 }
 
+// --- Tests for format_events_as_rich_text ---
+
+#[test]
+fn test_format_events_empty_returns_placeholder() {
+    let result = format_events_as_rich_text(std::iter::empty());
+    assert_eq!(result, "(no output yet)");
+}
+
+#[test]
+fn test_format_events_text_block_only() {
+    let event = serde_json::json!({
+        "type": "assistant",
+        "message": {
+            "role": "assistant",
+            "content": [{"type": "text", "text": "Hello world"}]
+        }
+    });
+    let line = serde_json::to_string(&event).unwrap();
+    let result = format_events_as_rich_text(std::iter::once(line.as_str()));
+    assert_eq!(result, "Hello world");
+}
+
+#[test]
+fn test_format_events_tool_use_bash_gets_bash_lang() {
+    let event = serde_json::json!({
+        "type": "assistant",
+        "message": {
+            "role": "assistant",
+            "content": [{
+                "type": "tool_use",
+                "id": "1",
+                "name": "Bash",
+                "input": {"command": "ls -la"}
+            }]
+        }
+    });
+    let line = serde_json::to_string(&event).unwrap();
+    let result = format_events_as_rich_text(std::iter::once(line.as_str()));
+    assert!(result.starts_with("**[Bash]**\n```bash\n"));
+    assert!(result.contains("ls -la"));
+}
+
+#[test]
+fn test_format_events_tool_use_non_bash_gets_json_lang() {
+    let event = serde_json::json!({
+        "type": "assistant",
+        "message": {
+            "role": "assistant",
+            "content": [{
+                "type": "tool_use",
+                "id": "2",
+                "name": "Read",
+                "input": {"file_path": "/tmp/test.txt"}
+            }]
+        }
+    });
+    let line = serde_json::to_string(&event).unwrap();
+    let result = format_events_as_rich_text(std::iter::once(line.as_str()));
+    assert!(result.starts_with("**[Read]**\n```json\n"));
+    assert!(result.contains("file_path"));
+}
+
+#[test]
+fn test_format_events_tool_result_has_result_header() {
+    let event = serde_json::json!({
+        "type": "user",
+        "message": {
+            "role": "user",
+            "content": [{
+                "type": "tool_result",
+                "tool_use_id": "1",
+                "content": "file.txt\ndir/"
+            }]
+        }
+    });
+    let line = serde_json::to_string(&event).unwrap();
+    let result = format_events_as_rich_text(std::iter::once(line.as_str()));
+    assert!(result.starts_with("**[result]**\n```\n"));
+    assert!(result.contains("file.txt"));
+}
+
+#[test]
+fn test_format_events_mixed_text_and_tool_call_preserved_in_order() {
+    let assistant = serde_json::json!({
+        "type": "assistant",
+        "message": {
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": "Let me check that file."},
+                {"type": "tool_use", "id": "1", "name": "Read", "input": {"file_path": "/tmp/x"}}
+            ]
+        }
+    });
+    let tool_result = serde_json::json!({
+        "type": "user",
+        "message": {
+            "role": "user",
+            "content": [{
+                "type": "tool_result",
+                "tool_use_id": "1",
+                "content": "contents here"
+            }]
+        }
+    });
+    let a = serde_json::to_string(&assistant).unwrap();
+    let b = serde_json::to_string(&tool_result).unwrap();
+    let result = format_events_as_rich_text([a.as_str(), b.as_str()].into_iter());
+
+    let pos_text = result.find("Let me check that file.").unwrap();
+    let pos_tool = result.find("**[Read]**").unwrap();
+    let pos_result = result.find("**[result]**").unwrap();
+    assert!(pos_text < pos_tool, "text should precede tool call");
+    assert!(pos_tool < pos_result, "tool call should precede result");
+}
+
+#[test]
+fn test_format_events_whitespace_only_text_skipped() {
+    let event = serde_json::json!({
+        "type": "assistant",
+        "message": {
+            "role": "assistant",
+            "content": [{"type": "text", "text": "   "}]
+        }
+    });
+    let line = serde_json::to_string(&event).unwrap();
+    let result = format_events_as_rich_text(std::iter::once(line.as_str()));
+    assert_eq!(
+        result, "(no output yet)",
+        "whitespace-only text should be ignored"
+    );
+}
+
+#[test]
+fn test_format_events_ignores_non_jsonl_lines() {
+    let lines = ["not valid json", "{}", "also bad"];
+    let result = format_events_as_rich_text(lines.iter().copied());
+    assert_eq!(result, "(no output yet)");
+}
+
 /// set_canonical_initial_prompt should be a no-op for unknown session names.
 #[tokio::test]
 async fn test_set_canonical_initial_prompt_noop_for_unknown_name() {
@@ -723,4 +862,133 @@ fn subagent_flag_cleared_on_tool_result() {
         "tool_result must clear subagent flag — this was the bug"
     );
     assert!(!has_pending_tool, "tool_result must clear pending flag");
+}
+
+// --- Tests for get_output_with_path byte offset (P2 watch-mode fix) ---
+
+/// Regression test: get_output_with_path must return the byte length of the
+/// content it read as the third tuple element. The CLI watch mode uses this
+/// offset as the starting tail position. Without it the CLI would query
+/// metadata.len() *after* the daemon has already returned, and any bytes
+/// appended in that window would be silently skipped.
+#[tokio::test]
+async fn test_get_output_with_path_returns_byte_offset() {
+    use std::io::Write;
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let log_path = dir.path().join("output.jsonl");
+
+    // Write a known assistant event to the log file
+    let event = serde_json::json!({
+        "type": "assistant",
+        "message": {
+            "role": "assistant",
+            "content": [{"type": "text", "text": "hello"}]
+        }
+    });
+    let line = serde_json::to_string(&event).unwrap() + "\n";
+    let expected_bytes = line.len() as u64;
+
+    {
+        let mut f = std::fs::File::create(&log_path).unwrap();
+        f.write_all(line.as_bytes()).unwrap();
+    }
+
+    // Build a SessionManager pointing at a fake repo, then inject a session
+    // whose output_log_path points at our temp file.
+    let sm = SessionManager::new("test-repo".to_string());
+    {
+        let mut sessions = sm.sessions.write().await;
+        let slot_id = uuid::Uuid::new_v4().to_string();
+        sessions.insert(
+            slot_id.clone(),
+            CoworkerSession {
+                session: None,
+                slot_id,
+                name: "park".to_string(),
+                status: SessionStatus::Running,
+                started_at: chrono::Utc::now(),
+                session_id: None,
+                initial_prompt: None,
+                cost_usd: 0.0,
+                input_tokens: 0,
+                output_tokens: 0,
+                last_event_at: None,
+                has_usage_limit: false,
+                usage_limit_reset_at: None,
+                has_api_error: false,
+                has_auth_error: false,
+                has_running_subagent: false,
+                has_pending_tool: false,
+                has_tool_name_conflict: false,
+                has_pending_api_call: false,
+                is_resume: false,
+                output_log: None,
+                output_log_path: log_path.clone(),
+            },
+        );
+    }
+
+    let result = sm.get_output_with_path("park").await;
+    assert!(result.is_some(), "should find the session");
+    let (output, path, offset) = result.unwrap();
+
+    assert_eq!(path, log_path);
+    assert!(
+        output.contains("hello"),
+        "output should contain the event text"
+    );
+    assert_eq!(
+        offset, expected_bytes,
+        "byte offset must equal the number of bytes read from the file; \
+         watch mode uses this to avoid skipping events appended after the snapshot"
+    );
+}
+
+/// Regression test: get_output_with_path on an empty log returns offset 0,
+/// not metadata.len() (which could be non-zero if another write races in).
+#[tokio::test]
+async fn test_get_output_with_path_empty_file_returns_zero_offset() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let log_path = dir.path().join("empty.jsonl");
+    std::fs::File::create(&log_path).unwrap(); // empty file
+
+    let sm = SessionManager::new("test-repo".to_string());
+    {
+        let mut sessions = sm.sessions.write().await;
+        let slot_id = uuid::Uuid::new_v4().to_string();
+        sessions.insert(
+            slot_id.clone(),
+            CoworkerSession {
+                session: None,
+                slot_id,
+                name: "empty-worker".to_string(),
+                status: SessionStatus::Running,
+                started_at: chrono::Utc::now(),
+                session_id: None,
+                initial_prompt: None,
+                cost_usd: 0.0,
+                input_tokens: 0,
+                output_tokens: 0,
+                last_event_at: None,
+                has_usage_limit: false,
+                usage_limit_reset_at: None,
+                has_api_error: false,
+                has_auth_error: false,
+                has_running_subagent: false,
+                has_pending_tool: false,
+                has_tool_name_conflict: false,
+                has_pending_api_call: false,
+                is_resume: false,
+                output_log: None,
+                output_log_path: log_path.clone(),
+            },
+        );
+    }
+
+    let (_, _, offset) = sm
+        .get_output_with_path("empty-worker")
+        .await
+        .expect("should return Some for empty file");
+    assert_eq!(offset, 0, "empty file must yield offset 0");
 }
