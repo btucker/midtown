@@ -456,7 +456,20 @@ fn test_codex_headless_args_is_app_server() {
 
 #[test]
 fn test_codex_headed_args_has_resume() {
-    let args = build_codex_headed_args("thread-123");
+    let args = build_codex_headed_args("thread-123", "system prompt");
+    assert_eq!(args[0], "--resume");
+    assert_eq!(args[1], "thread-123");
+    assert_eq!(args[2], "-c");
+    assert!(
+        args[3].starts_with("developer_instructions="),
+        "Expected developer_instructions override, got: {}",
+        args[3]
+    );
+}
+
+#[test]
+fn test_codex_headed_args_omits_override_when_prompt_empty() {
+    let args = build_codex_headed_args("thread-123", "");
     assert_eq!(args, vec!["--resume", "thread-123"]);
 }
 

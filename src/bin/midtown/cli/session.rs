@@ -805,56 +805,52 @@ pub(crate) fn build_attach_shell_command(
         cmd_parts.extend(prefix);
     }
 
-    // Build CLI args using LaunchConfig — single source of truth for all launch paths
+    let launch_config = midtown::launch::LaunchConfig {
+        name: name.to_string(),
+        session_mode: midtown::launch::SessionMode::Resume,
+        role: role.clone(),
+        initial_prompt: None,
+        additional_dirs: vec![],
+        pr_number: None,
+        team_name: team_name.clone(),
+        working_dir: None,
+        model: match role {
+            midtown::launch::CoworkerRole::Lead | midtown::launch::CoworkerRole::Reviewer => {
+                "opus".to_string()
+            }
+            midtown::launch::CoworkerRole::Coworker
+            | midtown::launch::CoworkerRole::ChannelLead { .. } => "sonnet".to_string(),
+        },
+        channel: None,
+        auth_profile_dir: Some(profile_dir.clone()),
+        auth_provider: provider,
+        persisted_initial_prompt: None,
+    };
+
+    let system_prompt = match &launch_config.role {
+        midtown::launch::CoworkerRole::Lead => midtown::agents::main_lead_system_prompt(&repo_name),
+        midtown::launch::CoworkerRole::Reviewer => {
+            midtown::agents::reviewer_system_prompt(name, &repo_name)
+        }
+        midtown::launch::CoworkerRole::Coworker => {
+            midtown::agents::coworker_system_prompt(name, &repo_name)
+        }
+        midtown::launch::CoworkerRole::ChannelLead {
+            channel_name,
+            domain_context,
+        } => midtown::agents::channel_lead_system_prompt(channel_name, domain_context, &repo_name),
+    };
+
+    // Build provider-specific headed CLI args.
     match provider {
         midtown::auth::AuthProvider::Claude | midtown::auth::AuthProvider::Zai => {
-            let launch_config = midtown::launch::LaunchConfig {
-                name: name.to_string(),
-                session_mode: midtown::launch::SessionMode::Resume,
-                role: role.clone(),
-                initial_prompt: None,
-                additional_dirs: vec![],
-                pr_number: None,
-                team_name: team_name.clone(),
-                working_dir: None,
-                model: match role {
-                    midtown::launch::CoworkerRole::Lead
-                    | midtown::launch::CoworkerRole::Reviewer => "opus".to_string(),
-                    midtown::launch::CoworkerRole::Coworker
-                    | midtown::launch::CoworkerRole::ChannelLead { .. } => "sonnet".to_string(),
-                },
-                channel: None,
-                auth_profile_dir: Some(profile_dir.clone()),
-                auth_provider: provider,
-                persisted_initial_prompt: None,
-            };
-
             // Write system prompt to temp file
-            let system_prompt = match &launch_config.role {
-                midtown::launch::CoworkerRole::Lead => {
-                    midtown::agents::main_lead_system_prompt(&repo_name)
-                }
-                midtown::launch::CoworkerRole::Reviewer => {
-                    midtown::agents::reviewer_system_prompt(name, &repo_name)
-                }
-                midtown::launch::CoworkerRole::Coworker => {
-                    midtown::agents::coworker_system_prompt(name, &repo_name)
-                }
-                midtown::launch::CoworkerRole::ChannelLead {
-                    channel_name,
-                    domain_context,
-                } => midtown::agents::channel_lead_system_prompt(
-                    channel_name,
-                    domain_context,
-                    &repo_name,
-                ),
-            };
             let prompt_file = std::env::temp_dir().join(format!(
                 "midtown-attach-{}-{}.txt",
                 name,
                 std::process::id()
             ));
-            std::fs::write(&prompt_file, system_prompt)
+            std::fs::write(&prompt_file, &system_prompt)
                 .map_err(|e| format!("Failed to write system prompt to temp file: {}", e))?;
 
             // Write role-appropriate settings file
@@ -871,7 +867,10 @@ pub(crate) fn build_attach_shell_command(
         }
         midtown::auth::AuthProvider::Codex => {
             cmd_parts.push("codex".to_string());
-            cmd_parts.extend(midtown::platform::build_codex_headed_args(session_id));
+            cmd_parts.extend(midtown::platform::build_codex_headed_args(
+                session_id,
+                &system_prompt,
+            ));
         }
     }
 

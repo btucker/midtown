@@ -654,6 +654,59 @@ fn test_channel_lead_attach_gets_channel_lead_role() {
     );
 }
 
+#[test]
+fn test_codex_lead_attach_includes_developer_instructions_override() {
+    let cwd = find_project_root();
+    let result = build_attach_shell_command(
+        &cwd,
+        "lead",
+        midtown::auth::AuthProvider::Codex,
+        "thread-123",
+        Some("lead"),
+        None,
+        true,
+    );
+
+    let command = result.expect("build_attach_shell_command should succeed");
+
+    assert!(
+        command.contains("codex"),
+        "Codex attach command should invoke codex, got: {}",
+        command
+    );
+    assert!(
+        command.contains("--resume") && command.contains("thread-123"),
+        "Codex attach should include resume thread id, got: {}",
+        command
+    );
+    assert!(
+        command.contains("developer_instructions="),
+        "Codex attach should pass developer_instructions override, got: {}",
+        command
+    );
+}
+
+#[test]
+fn test_codex_attach_does_not_use_claude_system_prompt_flag() {
+    let cwd = find_project_root();
+    let result = build_attach_shell_command(
+        &cwd,
+        "park",
+        midtown::auth::AuthProvider::Codex,
+        "thread-456",
+        None,
+        None,
+        true,
+    );
+
+    let command = result.expect("build_attach_shell_command should succeed");
+    assert!(
+        !command.contains("--append-system-prompt"),
+        "Codex attach should not use Claude-specific --append-system-prompt, got: {}",
+        command
+    );
+}
+
 // ── Shell quoting ──────────────────────────────────────────────────────
 
 #[test]

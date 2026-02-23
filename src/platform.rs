@@ -300,8 +300,17 @@ pub fn build_codex_headless_args() -> Vec<String> {
 }
 
 /// Build CLI args for a headed (interactive terminal) Codex session.
-pub fn build_codex_headed_args(session_id: &str) -> Vec<String> {
-    vec!["--resume".to_string(), session_id.to_string()]
+///
+/// Codex accepts developer instructions as a config override, so we inject
+/// Midtown's role prompt via `-c developer_instructions=<TOML string>`.
+pub fn build_codex_headed_args(session_id: &str, system_prompt: &str) -> Vec<String> {
+    let mut args = vec!["--resume".to_string(), session_id.to_string()];
+    if !system_prompt.is_empty() {
+        let prompt_toml = toml::Value::String(system_prompt.to_string()).to_string();
+        args.push("-c".to_string());
+        args.push(format!("developer_instructions={prompt_toml}"));
+    }
+    args
 }
 
 #[path = "platform_tests.rs"]
