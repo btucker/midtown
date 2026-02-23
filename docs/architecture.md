@@ -481,6 +481,6 @@ Reminders are stored in `~/.midtown/projects/<repo>/reminders.json` and evaluate
 - `coworkers_with_open_prs` stay running until CI passes and review feedback (if any) is handled.
 - `active_reviewers` keep their review assignment while `PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS` (30 min) has not elapsed.
 - `usage_limited_coworkers`, `api_error_coworkers`, and `auth_error_coworkers` are preserved so recovery flows (limit reset, retry, re-auth) can finish.
-- `coworkers_with_active_tools` comes from `ProcessHealth` (`has_pending_tool` or `has_running_subagent`). Tool calls and Task subagents are treated as critical sections — shutting down mid-tool would drop the result, so these coworkers are automatically exempt from idle shutdown until tool activity ends.
+- `coworkers_with_active_tools` comes from `ProcessHealth` in-flight markers (`has_pending_tool`, `has_running_subagent`, or `has_pending_api_call`). Tool calls, Task subagents, and fresh pending API turns are treated as critical sections — shutting down mid-turn would drop the result. `has_pending_api_call` is freshness-bounded (uses `last_event_at`/startup time) so stale sessions are still eligible for cleanup.
 
 Only coworkers that fall outside all of these protection sets, are older than `MINIMUM_COWORKER_LIFETIME`, and are not the lead session (named after the repo) are eligible for idle shutdown.
