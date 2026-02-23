@@ -351,14 +351,7 @@ impl Drop for ConduitProcess {
 }
 
 fn start_conduit(config: &MatrixBridgeConfig) -> Result<ConduitProcess, String> {
-    let exe = std::env::var("MIDTOWN_CONDUIT_BINARY").unwrap_or_else(|_| {
-        config
-            .matrix_dir
-            .join("bin")
-            .join("conduit")
-            .to_string_lossy()
-            .to_string()
-    });
+    let exe = resolve_conduit_binary_path(config)?;
 
     let mut cmd = Command::new(&exe);
     cmd.stdin(Stdio::null())
@@ -369,7 +362,64 @@ fn start_conduit(config: &MatrixBridgeConfig) -> Result<ConduitProcess, String> 
 
     cmd.spawn()
         .map(|child| ConduitProcess { child })
-        .map_err(|e| format!("Failed to spawn Conduit '{exe}': {e}"))
+        .map_err(|e| format!("Failed to spawn Conduit '{}': {e}", exe.display()))
+}
+
+fn resolve_conduit_binary_path(config: &MatrixBridgeConfig) -> Result<PathBuf, String> {
+    if let Ok(exe) = std::env::var("MIDTOWN_CONDUIT_BINARY")
+        && !exe.trim().is_empty()
+    {
+        return Ok(exe.into());
+    }
+
+    if let Some(path) = resolve_executable_path("conduit") {
+        return Ok(path);
+    }
+
+    if let Some(cargo_bin) = cargo_bin_path() {
+        let exe = add_executable_suffix("conduit");
+        let candidate = cargo_bin.join(exe);
+        if candidate.exists() {
+            return Ok(candidate);
+        }
+    }
+
+    Ok(config
+        .matrix_dir
+        .join("bin")
+        .join(add_executable_suffix("conduit")))
+}
+
+fn resolve_executable_path(name: &str) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    let exe = add_executable_suffix(name);
+    for dir in std::env::split_paths(&path) {
+        let candidate = dir.join(&exe);
+        if candidate.exists() && candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+fn cargo_bin_path() -> Option<PathBuf> {
+    std::env::var_os("CARGO_HOME")
+        .or_else(|| {
+            if cfg!(windows) {
+                std::env::var_os("USERPROFILE")
+            } else {
+                std::env::var_os("HOME")
+            }
+        })
+        .map(|home| Path::new(&home).join(".cargo").join("bin"))
+}
+
+fn add_executable_suffix(name: &str) -> String {
+    if cfg!(windows) && !name.ends_with(std::env::consts::EXE_SUFFIX) {
+        format!("{name}{}", std::env::consts::EXE_SUFFIX)
+    } else {
+        name.to_string()
+    }
 }
 
 fn random_token() -> String {
