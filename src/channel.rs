@@ -656,6 +656,13 @@ impl Channel {
             )));
         }
 
+        if crate::coworker::AVENUE_NAMES.contains(&name) {
+            return Err(crate::Error::InvalidMessage(format!(
+                "Channel name '{}' is reserved for coworker sessions and cannot be used as a channel name",
+                name
+            )));
+        }
+
         let base_dir = base_dir.into();
         let channels_dir = base_dir.join("channels");
         let archived_dir = channels_dir.join(format!("{}.archived", name));

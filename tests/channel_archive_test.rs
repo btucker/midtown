@@ -1,6 +1,7 @@
 //! Integration test for channel archiving when all tasks complete.
 
 use midtown::{Channel, Message};
+use std::fs;
 use tempfile::TempDir;
 
 #[test]
@@ -176,6 +177,20 @@ fn test_unarchive_non_archived_channel_errors() {
     Channel::new(base_dir, "tui").unwrap();
     let result = Channel::unarchive_channel(base_dir, "tui");
     assert!(result.is_err(), "Unarchiving an active channel should fail");
+}
+
+#[test]
+fn test_unarchive_rejects_reserved_names() {
+    let temp_dir = TempDir::new().unwrap();
+    let base_dir = temp_dir.path();
+    let archived_dir = base_dir.join("channels").join("park.archived");
+    fs::create_dir_all(&archived_dir).unwrap();
+
+    let result = Channel::unarchive_channel(base_dir, "park");
+    assert!(
+        matches!(result, Err(midtown::Error::InvalidMessage(_))),
+        "Unarchiving reserved coworker names should fail"
+    );
 }
 
 #[test]
