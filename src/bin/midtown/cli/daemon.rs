@@ -1885,6 +1885,17 @@ pub fn handle_view(project: Option<&str>, attach: bool, matrix: bool) -> Result<
             }
         }
 
+        let bridge_ready_timeout =
+            std::time::Duration::from_secs(MATRIX_BRIDGE_STARTUP_TIMEOUT_SECS);
+        if !wait_for_http_ready(MIDTOWN_MATRIX_PORT, bridge_ready_timeout) {
+            if let Some(cwd) = original_cwd {
+                let _ = std::env::set_current_dir(cwd);
+            }
+            return Err(format!(
+                "Matrix bridge did not start on port {MIDTOWN_MATRIX_PORT} within {MATRIX_BRIDGE_STARTUP_TIMEOUT_SECS}s. Ensure the bridge can bind to the port and restart with `midtown matrix run`."
+            ));
+        }
+
         let (mut cinny_child, cinny_url) = run_cinny_client_for_matrix(&ctx.project_name)?;
         open_browser(&cinny_url);
 
@@ -2047,6 +2058,7 @@ To open chat without a Lead split, run:\n  midtown view",
 }
 
 const MIDTOWN_MATRIX_PORT: u16 = 6167;
+const MATRIX_BRIDGE_STARTUP_TIMEOUT_SECS: u64 = 6;
 const CINNY_PORT_START: u16 = 8080;
 const CINNY_PORT_END: u16 = 8090;
 
