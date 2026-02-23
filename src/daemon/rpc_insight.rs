@@ -118,7 +118,15 @@ pub(super) async fn handle_insight_report(
     // Spawn the architect task asynchronously
     let repo_name = state.repo_name.clone();
     let insight_owned = insight.to_string();
-    let channel_owned = Some(channel_name.to_string());
+    // Pass None when posting to the main channel so the architect skips diagram
+    // generation there (noise guard). For topic channels — whether explicitly
+    // provided or auto-resolved from the coworker's task — pass Some so diagrams
+    // are posted to the correct channel.
+    let channel_owned = if channel_name != state.channel_router.default_channel_name() {
+        Some(channel_name.to_string())
+    } else {
+        None
+    };
     tokio::spawn(async move {
         super::architect::generate_insight_diagram(
             insight_owned,
