@@ -1303,9 +1303,11 @@ impl SessionManager {
 
     /// Get recent output for a coworker from the JSONL log file.
     ///
-    /// Reads the last ~200 lines from the headless output log and extracts
-    /// text content from Assistant events. Returns None if the session doesn't
-    /// exist or the log file can't be read.
+    /// Reads the last ~200 lines from the headless output log and returns a
+    /// rich formatted string that includes text from Assistant events as markdown
+    /// prose, tool calls as labeled code fences, and tool results as code fences.
+    ///
+    /// Returns None if the session doesn't exist or the log file can't be read.
     ///
     /// This enables `midtown coworker view` to work with headless coworkers.
     pub async fn get_output(&self, name: &str) -> Option<String> {

@@ -81,6 +81,13 @@ pub fn handle(cmd: &CoworkerCommand, client: &DaemonClient) -> Result<Response, 
 }
 
 fn handle_view(name: &str, client: &DaemonClient) -> Result<Response, String> {
-    // All sessions are headless — view output via RPC
-    client.coworker_view(name)
+    // Get the rich-text output from the daemon, then render it to ANSI for the
+    // terminal so users see formatted output instead of raw markdown syntax.
+    let response = client.coworker_view(name)?;
+    let raw = match response {
+        Response::Message { message } => message,
+        other => return Ok(other),
+    };
+    let rendered = super::session_render::render_ansi(&raw);
+    Ok(Response::message(rendered.trim_end().to_string()))
 }

@@ -31,7 +31,7 @@ pub enum SessionCommand {
     View {
         /// Session target (coworker name, task/<id>, pr/<number>, claude, etc.)
         target: String,
-        /// Continuously tail and render new output as it arrives
+        /// Continuously tail and render new output as it arrives (headless sessions only)
         #[arg(long, short = 'w')]
         watch: bool,
     },
