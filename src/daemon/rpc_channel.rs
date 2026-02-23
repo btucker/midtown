@@ -336,9 +336,12 @@ pub(super) async fn handle_channel_post(
 /// If the channel already exists, this is a no-op (idempotent).
 pub(super) fn handle_channel_create(id: RequestId, name: &str, state: &DaemonState) -> Response {
     let base_dir = state.channel_router.base_dir();
+    let already_exists = base_dir.join("channels").join(name).exists();
     match crate::Channel::create(base_dir, name) {
         Ok(_) => {
-            state.broadcast_web_update(crate::web::channel_list_changed("created", name));
+            if !already_exists {
+                state.broadcast_web_update(crate::web::channel_list_changed("created", name));
+            }
             Response::success(
                 id,
                 serde_json::json!({

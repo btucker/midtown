@@ -475,6 +475,7 @@ async fn api_channels_create(
 
     // Create the channel (idempotent - returns existing channel if it already exists)
     let base_dir = crate::paths::projects_dir_for_repo(&state.config.repo);
+    let already_exists = base_dir.join("channels").join(channel_name).exists();
     Channel::create(base_dir, channel_name).map_err(|e| {
         error!("Failed to create channel '{}': {}", channel_name, e);
         (
@@ -484,9 +485,11 @@ async fn api_channels_create(
     })?;
 
     info!("Created channel '{}'", channel_name);
-    let _ = state
-        .updates_tx
-        .send(channel_list_changed("created", channel_name));
+    if !already_exists {
+        let _ = state
+            .updates_tx
+            .send(channel_list_changed("created", channel_name));
+    }
     Ok((
         StatusCode::CREATED,
         axum::Json(serde_json::json!({ "name": channel_name })),

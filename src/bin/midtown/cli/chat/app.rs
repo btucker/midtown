@@ -1660,21 +1660,23 @@ impl App {
             return true;
         }
 
-        let channel_repo =
-            midtown::paths::detect_repo_name().unwrap_or_else(|| "default".to_string());
-        let base_dir = midtown::paths::projects_dir_for_repo(&channel_repo);
+        // Prefer daemon RPC so web clients receive the channel_list_changed broadcast.
+        // Fall back to direct filesystem creation if the daemon is unavailable.
+        let created = if let Ok(client) = crate::client::DaemonClient::connect() {
+            client.channel_create(channel_name).is_ok()
+        } else {
+            let channel_repo =
+                midtown::paths::detect_repo_name().unwrap_or_else(|| "default".to_string());
+            let base_dir = midtown::paths::projects_dir_for_repo(&channel_repo);
+            midtown::Channel::new(&base_dir, channel_name).is_ok()
+        };
 
-        // Create the channel (this is idempotent - Channel::new creates the file if it doesn't exist)
-        match midtown::Channel::new(&base_dir, channel_name) {
-            Ok(_) => {
-                // Switch to the newly created channel and load its messages
-                self.selected_channel = channel_name.to_string();
-                self.load_channel_messages();
-                self.refresh_available_channels();
-                true
-            }
-            Err(_) => false,
+        if created {
+            self.selected_channel = channel_name.to_string();
+            self.load_channel_messages();
+            self.refresh_available_channels();
         }
+        created
     }
 
     /// Get messages visible in the current scroll position

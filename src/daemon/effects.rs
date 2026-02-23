@@ -1727,10 +1727,16 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
             } => {
                 // Create the channel JSONL file
                 let base_dir = crate::paths::projects_dir_for_repo(&state.repo_name);
+                let already_exists = base_dir.join("channels").join(&name).exists();
                 if let Err(e) = crate::channel::Channel::create(&base_dir, &name) {
                     warn!("Failed to create channel '{}': {}", name, e);
                 } else {
                     info!("Created channel '{}'", name);
+                    if !already_exists {
+                        state.broadcast_web_update(crate::web::channel_list_changed(
+                            "created", &name,
+                        ));
+                    }
 
                     // Post creation message to main channel
                     let msg = Message::text(
@@ -1822,6 +1828,9 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                             warn!("Failed to archive channel '{}': {}", name, e);
                         } else {
                             info!("Archived channel '{}'", name);
+                            state.broadcast_web_update(crate::web::channel_list_changed(
+                                "archived", &name,
+                            ));
 
                             // Post archive message to main channel
                             let msg = Message::text(
@@ -1956,6 +1965,9 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                             "Merged channel '{}' into '{}' and archived source",
                             from, into
                         );
+                        state.broadcast_web_update(crate::web::channel_list_changed(
+                            "archived", &from,
+                        ));
                     }
                 } else {
                     debug!(
