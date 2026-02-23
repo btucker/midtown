@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::Duration;
+use std::thread;
 
 use state::MatrixBridgeState;
 
@@ -72,9 +72,89 @@ pub fn run(config: MatrixBridgeConfig) -> Result<(), String> {
 
     start_conduit(&config)?;
 
-    loop {
-        std::thread::sleep(Duration::from_secs(1));
+    let access_token =
+        std::env::var("MIDTOWN_MATRIX_ACCESS_TOKEN").unwrap_or_else(|_| "matrix".to_string());
+    let matrix_client = client::MatrixClient::new(
+        format!("http://127.0.0.1:{}", config.matrix_port),
+        access_token,
+    );
+
+    let mut state = MatrixBridgeState::load(&state_path)?;
+    let mut state_updated = false;
+    state_updated |= sync_identity_users(&matrix_client, &project_name, &mut state)?;
+    state_updated |= sync_channel_rooms(&matrix_client, &project_name, &mut state)?;
+    if state_updated {
+        state.save(&state_path)?;
     }
+
+    let outbound_project_name = project_name.clone();
+    let outbound_state_path = state_path.clone();
+    let outbound_client = matrix_client.clone();
+    thread::Builder::new()
+        .name("matrix-outbound-sync".to_string())
+        .spawn(move || {
+            sync::run_outbound_sync(
+                &outbound_client,
+                &outbound_project_name,
+                &outbound_state_path,
+            )
+            .map(|_| ())
+            .unwrap_or_else(|e| {
+                eprintln!("matrix outbound sync exited unexpectedly: {e}");
+            });
+        })
+        .map_err(|e| format!("Failed to spawn outbound sync thread: {e}"))?;
+
+    as_server::run_as_server(
+        config.as_port,
+        &project_name,
+        matrix_client.homeserver_domain(),
+        &state_path,
+    )
+}
+
+fn sync_identity_users(
+    client: &client::MatrixClient,
+    project_name: &str,
+    state: &mut MatrixBridgeState,
+) -> Result<bool, String> {
+    let identities = collect_coworker_identities(project_name);
+    let mut updated = false;
+
+    for identity in identities {
+        if state.users.contains_key(&identity) {
+            continue;
+        }
+
+        client.ensure_virtual_user_exists(&identity)?;
+        state
+            .users
+            .insert(identity.clone(), client.user_id(&identity));
+        updated = true;
+    }
+
+    Ok(updated)
+}
+
+fn sync_channel_rooms(
+    client: &client::MatrixClient,
+    project_name: &str,
+    state: &mut MatrixBridgeState,
+) -> Result<bool, String> {
+    let channel_names = collect_channel_names(project_name);
+    let mut updated = false;
+
+    for channel_name in channel_names {
+        if state.rooms.contains_key(&channel_name) {
+            continue;
+        }
+
+        let room_id = client.ensure_room_exists(&channel_name)?;
+        state.rooms.insert(channel_name, room_id);
+        updated = true;
+    }
+
+    Ok(updated)
 }
 
 impl MatrixBridgeConfig {

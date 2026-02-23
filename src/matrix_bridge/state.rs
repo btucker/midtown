@@ -9,6 +9,8 @@ pub struct MatrixBridgeState {
     pub users: HashMap<String, String>,
     #[serde(rename = "last_synced")]
     pub last_synced: HashMap<String, String>,
+    #[serde(default)]
+    pub matrix_events: HashMap<String, String>,
 }
 
 impl MatrixBridgeState {

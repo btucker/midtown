@@ -134,12 +134,27 @@ impl MatrixClient {
         room_id: &str,
         sender_user_id: &str,
         body: &str,
-    ) -> Result<(), String> {
+        thread_parent_event_id: Option<&str>,
+    ) -> Result<String, String> {
         if room_id.is_empty() || sender_user_id.is_empty() {
             return Err("room_id and sender_user_id are required".to_string());
         }
         if body.is_empty() {
-            return Ok(());
+            return Ok(String::new());
+        }
+
+        let thread_parent_event_id = thread_parent_event_id.filter(|id| !id.is_empty());
+        let mut payload = json!({
+            "msgtype": "m.text",
+            "body": body,
+        });
+        if let Some(parent_event_id) = thread_parent_event_id {
+            payload["m.relates_to"] = json!({
+                "m.in_reply_to": {
+                    "event_id": parent_event_id,
+                },
+                "rel_type": "m.thread",
+            });
         }
 
         let txn_id = random_txn_id();
@@ -147,17 +162,18 @@ impl MatrixClient {
             .http_client()
             .put(self.room_send_url(room_id, &txn_id))
             .bearer_auth(&self.access_token)
-            .json(&json!({
-                "msgtype": "m.text",
-                "body": body,
-            }))
+            .json(&payload)
             .send()
             .map_err(|e| {
                 format!("failed to send Matrix message to {room_id} as {sender_user_id}: {e}")
             })?;
 
         if response.status().is_success() {
-            return Ok(());
+            let response = parse_json::<Value>(response)?;
+            if let Some(event_id) = response.get("event_id").and_then(Value::as_str) {
+                return Ok(event_id.to_string());
+            }
+            return Ok(String::new());
         }
 
         let status = response.status();
@@ -171,7 +187,7 @@ impl MatrixClient {
         ))
     }
 
-    pub fn post_tool_payload(&self, room_id: &str, payload: &Value) -> Result<(), String> {
+    pub fn post_tool_payload(&self, room_id: &str, payload: &Value) -> Result<String, String> {
         if room_id.is_empty() {
             return Err("room_id is required".to_string());
         }
@@ -185,7 +201,16 @@ impl MatrixClient {
             room_id,
             &format!("@midtown:{}", self.homeserver_domain),
             &format!("```json\n{payload}\n```"),
+            None,
         )
+    }
+
+    pub fn homeserver_domain(&self) -> &str {
+        &self.homeserver_domain
+    }
+
+    pub fn user_id(&self, username: &str) -> String {
+        format!("@{}:{}", username, self.homeserver_domain)
     }
 
     fn http_client(&self) -> reqwest::blocking::Client {
