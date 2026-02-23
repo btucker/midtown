@@ -622,10 +622,10 @@ fn test_channel_lead_attach_gets_channel_lead_role() {
         command
     );
 
-    // Channel leads use sonnet model (same as coworkers).
+    // ops channel lead uses haiku by default (smaller model for ops work).
     assert!(
-        command.contains("--model") && command.contains("sonnet"),
-        "Channel lead attach should use sonnet model, got: {}",
+        command.contains("--model") && command.contains("haiku"),
+        "ops channel lead attach should use haiku model, got: {}",
         command
     );
 

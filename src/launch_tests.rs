@@ -1,8 +1,17 @@
-//! Tests for lead system prompt persistence on attach
+//! Tests for lead system prompt persistence on attach and channel lead model selection
 
 use crate::launch::{CoworkerRole, LaunchConfig, SessionMode};
 use crate::paths;
 use std::fs;
+
+#[test]
+fn test_launch_config_ops_channel_lead_uses_haiku() {
+    let config = LaunchConfig::channel_lead("ops", "myrepo", SessionMode::Fresh, "");
+    assert_eq!(
+        config.model, "haiku",
+        "ops channel lead should use haiku by default"
+    );
+}
 
 #[test]
 fn test_lead_system_prompt_saved_on_spawn() {

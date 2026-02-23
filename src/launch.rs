@@ -437,7 +437,8 @@ impl LaunchConfig {
             pr_number: None,
             team_name: Some(team),
             working_dir: None,
-            model: "sonnet".to_string(),
+            model: crate::config::get_channel_leads_config(&repo)
+                .model_for_channel(&channel_name_str),
             channel: Some(channel_name_str),
             auth_profile_dir: None,
             auth_provider,
