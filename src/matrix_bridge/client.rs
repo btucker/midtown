@@ -59,12 +59,11 @@ impl MatrixClient {
 }
 
 fn infer_homeserver_domain(homeserver_url: &str) -> String {
-    let without_path = homeserver_url.trim_end_matches('/')
+    let without_path = homeserver_url.trim_end_matches('/');
+    let without_scheme = without_path
         .trim_start_matches("http://")
-        .trim_start_matches("https://")
-        .split('/')
-        .next()
-        .unwrap_or("matrix.local");
+        .trim_start_matches("https://");
+    let without_path = without_scheme.split('/').next().unwrap_or("matrix.local");
     if without_path.is_empty() {
         "matrix.local".to_string()
     } else {

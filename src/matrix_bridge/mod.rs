@@ -116,8 +116,8 @@ fn default_as_registration_config(
     config: &MatrixBridgeConfig,
     project_name: &str,
 ) -> Result<String, String> {
-    let user_names = collect_coworker_identities(&project_name);
-    let channel_names = collect_channel_names(&project_name);
+    let user_names = collect_coworker_identities(project_name);
+    let channel_names = collect_channel_names(project_name);
     let user_pattern = regex_pattern(&user_names);
     let channel_pattern = regex_pattern(&channel_names);
     let as_token = random_token();
