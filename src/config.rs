@@ -431,13 +431,19 @@ pub struct ChannelLeadsConfig {
 impl ChannelLeadsConfig {
     /// Get the model to use for a given channel.
     ///
-    /// Priority: per-channel override → default_model → "sonnet".
+    /// Priority: per-channel override → default_model → ops-specific default ("haiku") → "sonnet".
     pub fn model_for_channel(&self, channel_name: &str) -> String {
         self.overrides
             .get(channel_name)
             .cloned()
             .or_else(|| self.default_model.clone())
-            .unwrap_or_else(|| "sonnet".to_string())
+            .unwrap_or_else(|| {
+                if channel_name == "ops" {
+                    "haiku".to_string()
+                } else {
+                    "sonnet".to_string()
+                }
+            })
     }
 }
 
@@ -2940,6 +2946,32 @@ allowed_paths = ["~/.cargo", "~/.rustup", "/opt/toolchain"]
     fn test_channel_leads_default_model() {
         let config = ChannelLeadsConfig::default();
         assert_eq!(config.model_for_channel("any-channel"), "sonnet");
+    }
+
+    #[test]
+    fn test_channel_leads_ops_defaults_to_haiku() {
+        let config = ChannelLeadsConfig::default();
+        assert_eq!(config.model_for_channel("ops"), "haiku");
+    }
+
+    #[test]
+    fn test_channel_leads_ops_override_takes_precedence() {
+        let mut overrides = std::collections::HashMap::new();
+        overrides.insert("ops".to_string(), "sonnet".to_string());
+        let config = ChannelLeadsConfig {
+            default_model: None,
+            overrides,
+        };
+        assert_eq!(config.model_for_channel("ops"), "sonnet");
+    }
+
+    #[test]
+    fn test_channel_leads_ops_default_model_takes_precedence() {
+        let config = ChannelLeadsConfig {
+            default_model: Some("opus".to_string()),
+            overrides: std::collections::HashMap::new(),
+        };
+        assert_eq!(config.model_for_channel("ops"), "opus");
     }
 
     #[test]

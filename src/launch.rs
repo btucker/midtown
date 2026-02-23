@@ -437,7 +437,8 @@ impl LaunchConfig {
             pr_number: None,
             team_name: Some(team),
             working_dir: None,
-            model: "sonnet".to_string(),
+            model: crate::config::get_channel_leads_config(&repo)
+                .model_for_channel(&channel_name_str),
             channel: Some(channel_name_str),
             auth_profile_dir: None,
             auth_provider,
@@ -1184,6 +1185,15 @@ mod tests {
         assert_eq!(config.team_name, Some("midtown-myrepo".to_string()));
         assert!(config.initial_prompt.is_some());
         assert!(config.pr_number.is_none());
+    }
+
+    #[test]
+    fn test_launch_config_ops_channel_lead_uses_haiku() {
+        let config = LaunchConfig::channel_lead("ops", "myrepo", SessionMode::Fresh, "");
+        assert_eq!(
+            config.model, "haiku",
+            "ops channel lead should use haiku by default"
+        );
     }
 
     #[test]
