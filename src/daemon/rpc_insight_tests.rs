@@ -127,6 +127,80 @@ async fn test_insight_topic_channel_skips_nudge_when_no_session() {
     assert_eq!(result["posted"], true);
 }
 
+/// When a coworker reports an insight without specifying a channel and they are
+/// assigned to a task with a channel, the insight is routed to the task channel,
+/// not the main channel.
+#[tokio::test]
+async fn test_insight_routes_to_task_channel_when_no_explicit_channel() {
+    let (state, temp_dir, _guard) = make_test_state("testrepo");
+
+    // Assign coworker1 to task 42 in channel "my-feature"
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.headless_sessions.insert(
+            "coworker1".to_string(),
+            super::super::state::HeadlessSessionInfo {
+                session_id: "test-session-id".to_string(),
+                last_active: chrono::Utc::now(),
+                purpose: "task !42: some task".to_string(),
+                pid: None,
+                coworker_type: Some("dev".to_string()),
+                task_id: Some(42),
+                pr_number: None,
+                channel: None,
+                working_dir: None,
+                provider: None,
+                profile: None,
+                resume_on_startup: false,
+                initial_prompt: None,
+            },
+        );
+        ps.task_channel
+            .insert("42".to_string(), "my-feature".to_string());
+    }
+
+    let response = handle_insight_report(
+        RequestId::Number(1),
+        "coworker1",
+        "A task-specific insight",
+        None, // No explicit channel — should auto-route to "my-feature"
+        &state,
+    )
+    .await;
+
+    assert_eq!(response.result.expect("should succeed")["posted"], true);
+
+    // The insight should have been routed to the "my-feature" task channel
+    let task_channel_file = temp_dir
+        .path()
+        .join("channels")
+        .join("my-feature")
+        .join("history")
+        .join("current.jsonl");
+    assert!(
+        task_channel_file.exists(),
+        "insight should be posted to the task channel, not main"
+    );
+    let content = std::fs::read_to_string(&task_channel_file).unwrap();
+    assert!(
+        content.contains("A task-specific insight"),
+        "insight text should be in task channel file"
+    );
+
+    // The main channel should NOT have the insight
+    let main_channel_file = temp_dir
+        .path()
+        .join("channels")
+        .join("midtown")
+        .join("history")
+        .join("current.jsonl");
+    let main_content = std::fs::read_to_string(&main_channel_file).unwrap_or_default();
+    assert!(
+        !main_content.contains("A task-specific insight"),
+        "insight should not be cross-posted to main channel"
+    );
+}
+
 /// Duplicate insights should be deduplicated and return posted=false.
 #[tokio::test]
 async fn test_insight_deduplication() {
