@@ -631,8 +631,12 @@ pub async fn recover_from_session_records(
             LaunchConfig::lead(repo_name, None)
         } else if record.is_reviewer {
             if let Some(pr_number) = record.pr_number {
+                let reviewer_provider = crate::config::get_execution_provider_for_role(
+                    repo_name,
+                    crate::config::ExecutionRole::Reviewer,
+                );
                 // restart_count=0: we're recovering a session, not tracking restarts here
-                LaunchConfig::reviewer(name, pr_number, 0)
+                LaunchConfig::reviewer(name, pr_number, 0, reviewer_provider)
             } else {
                 warn!("Reviewer session {} has no PR number, skipping", session_id);
                 continue;

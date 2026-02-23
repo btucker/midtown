@@ -2488,13 +2488,18 @@ pub(crate) async fn collect_reviewer_effects_with_source(
             truncate_str(title, 40)
         );
 
-        // reviewer() now takes the PR number and generates both the system prompt
-        // (with merged reviewer.md instructions) and the launch prompt internally.
+        // reviewer() now takes the PR number and provider; both are used to generate
+        // a provider-aware initial prompt in addition to spawn arguments.
         // restart_count=0 for new assignments (not a respawn).
-        let mut config = crate::launch::LaunchConfig::reviewer(reviewer_name.clone(), pr_number, 0);
-        config.auth_provider = crate::config::get_execution_provider_for_role(
+        let auth_provider = crate::config::get_execution_provider_for_role(
             &state.repo_name,
             crate::config::ExecutionRole::Reviewer,
+        );
+        let mut config = crate::launch::LaunchConfig::reviewer(
+            reviewer_name.clone(),
+            pr_number,
+            0,
+            auth_provider,
         );
         config.model =
             super::helpers::default_model_for_provider_role(config.auth_provider, &config.role)

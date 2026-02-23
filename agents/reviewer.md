@@ -82,7 +82,7 @@ Task descriptions can evolve after a coworker starts working. The coworker may n
 midtown state --progress 30
 ```
 
-Now run the code review: /code-review:code-review {pr_number}
+Now run the code review: {code_review_invocation}
 
 **Progress during review**: As the code-review skill progresses through its sub-tasks, update your progress:
 - After checking out the PR branch: `midtown state --progress 40`

@@ -57,6 +57,27 @@ fn user_agents_dir() -> Option<PathBuf> {
     dirs::home_dir().map(|h| h.join(".midtown").join("agents"))
 }
 
+fn code_review_invocation_for_platform(
+    platform: crate::auth::AuthProvider,
+    pr_number: Option<u64>,
+) -> String {
+    let pr_suffix = pr_number
+        .map(|n| format!("#{n}"))
+        .unwrap_or_else(|| "<PR_NUMBER>".to_string());
+
+    match platform {
+        crate::auth::AuthProvider::Codex => {
+            format!("use the code-review skill to review PR {pr_suffix}")
+        }
+        crate::auth::AuthProvider::Claude | crate::auth::AuthProvider::Zai => {
+            format!(
+                "run /code-review:code-review {}",
+                pr_suffix.trim_start_matches('#')
+            )
+        }
+    }
+}
+
 /// Load a prompt file, trying multiple locations.
 ///
 /// Search order:
@@ -117,15 +138,22 @@ pub fn coworker_system_prompt(name: &str, project_name: &str) -> String {
 /// Load the reviewer agent's system prompt with name and project substitution.
 ///
 /// Assembly: coworker.md + common.md + reviewer.md
-pub fn reviewer_system_prompt(name: &str, project_name: &str) -> String {
+pub fn reviewer_system_prompt(
+    name: &str,
+    project_name: &str,
+    platform: crate::auth::AuthProvider,
+    pr_number: Option<u64>,
+) -> String {
     let coworker_template =
         load_prompt_file("coworker.md").unwrap_or_else(|| DEFAULT_COWORKER_PROMPT.to_string());
     let common = common_prompt();
     let reviewer =
         load_prompt_file("reviewer.md").unwrap_or_else(|| DEFAULT_REVIEWER_PROMPT.to_string());
+    let invocation = code_review_invocation_for_platform(platform, pr_number);
     format!("{coworker_template}\n{common}\n\n## Reviewer Instructions\n\n{reviewer}")
         .replace("{name}", name)
         .replace("{project_name}", project_name)
+        .replace("{code_review_invocation}", &invocation)
 }
 
 /// Build the reviewer launch prompt for a given PR number.
@@ -136,12 +164,18 @@ pub fn reviewer_system_prompt(name: &str, project_name: &str) -> String {
 /// For respawns (`restart_count > 0`), includes context about the previous attempt
 /// and instructs the reviewer to update an existing placeholder comment rather than
 /// posting a new one.
-pub fn reviewer_launch_prompt(pr_number: u64, restart_count: u32) -> String {
+pub fn reviewer_launch_prompt(
+    pr_number: u64,
+    restart_count: u32,
+    platform: crate::auth::AuthProvider,
+) -> String {
+    let invocation = code_review_invocation_for_platform(platform, Some(pr_number));
+
     if restart_count == 0 {
-        format!("Review PR #{pr_number} using /code-review:code-review {pr_number}")
+        format!("Review PR #{pr_number} — {invocation}")
     } else {
         format!(
-            "Review PR #{pr_number} using /code-review:code-review {pr_number}\n\n\
+            "Review PR #{pr_number} — {invocation}\n\n\
              **NOTE (Restart #{restart_count})**: A previous reviewer started this review but \
              did not complete it. Check if there's an existing \"Review in progress\" placeholder \
              comment on PR #{pr_number} and update it with your final review results instead of \
@@ -166,10 +200,14 @@ pub fn reviewer_launch_prompt(pr_number: u64, restart_count: u32) -> String {
 /// Note: This is the old approach where reviewer.md was passed as initial_prompt.
 /// New code should use `reviewer_system_prompt()` for the system prompt and
 /// `reviewer_launch_prompt()` for the task.
-pub fn reviewer_prompt(pr_number: u64) -> String {
+pub fn reviewer_prompt(pr_number: u64, platform: crate::auth::AuthProvider) -> String {
     let template =
         load_prompt_file("reviewer.md").unwrap_or_else(|| DEFAULT_REVIEWER_PROMPT.to_string());
-    template.replace("{pr_number}", &pr_number.to_string())
+    let invocation = code_review_invocation_for_platform(platform, Some(pr_number));
+
+    template
+        .replace("{pr_number}", &pr_number.to_string())
+        .replace("{code_review_invocation}", &invocation)
 }
 
 /// Build the reviewer resume prompt for a given PR number.
@@ -177,10 +215,14 @@ pub fn reviewer_prompt(pr_number: u64) -> String {
 /// Used when the daemon discovers a reviewer coworker still running after
 /// a restart. Loads `agents/reviewer-resume.md` (or the embedded default)
 /// and replaces `{pr_number}` with the actual PR number.
-pub fn reviewer_resume_prompt(pr_number: u64) -> String {
+pub fn reviewer_resume_prompt(pr_number: u64, platform: crate::auth::AuthProvider) -> String {
     let template = load_prompt_file("reviewer-resume.md")
         .unwrap_or_else(|| DEFAULT_REVIEWER_RESUME_PROMPT.to_string());
-    template.replace("{pr_number}", &pr_number.to_string())
+    let invocation = code_review_invocation_for_platform(platform, Some(pr_number));
+
+    template
+        .replace("{pr_number}", &pr_number.to_string())
+        .replace("{code_review_invocation}", &invocation)
 }
 
 /// Build the initial prompt for the Project Lead session.

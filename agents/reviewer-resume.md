@@ -37,7 +37,7 @@ TASK DESCRIPTION VERIFICATION: Before continuing the code review, verify the PR 
 
 Task descriptions can evolve after a coworker starts working. The coworker may not notice updates. This check catches that gap.
 
-If you haven't already run the code review skill, run it now: /code-review:code-review {pr_number}
+If you haven't already run the code review skill, run it now: {code_review_invocation}
 
 **UPDATING THE COMMENT**: Instead of posting a new comment, edit your initial "review in progress" comment with the final review results:
 

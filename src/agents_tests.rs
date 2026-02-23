@@ -1,4 +1,5 @@
 use super::*;
+use crate::auth::AuthProvider;
 
 #[test]
 fn test_main_lead_system_prompt_loads() {
@@ -100,7 +101,7 @@ fn test_common_prompt_name_substitution_in_coworker() {
 
 #[test]
 fn test_reviewer_prompt_substitutes_pr_number() {
-    let prompt = reviewer_prompt(42);
+    let prompt = reviewer_prompt(42, AuthProvider::Claude);
     assert!(prompt.contains("reviewing PR #42"));
     assert!(prompt.contains("/code-review:code-review 42"));
     assert!(prompt.contains("gh pr comment 42 --body"));
@@ -113,7 +114,7 @@ fn test_reviewer_prompt_substitutes_pr_number() {
 
 #[test]
 fn test_reviewer_resume_prompt_substitutes_pr_number() {
-    let prompt = reviewer_resume_prompt(99);
+    let prompt = reviewer_resume_prompt(99, AuthProvider::Claude);
     assert!(prompt.contains("Resume reviewing PR #99"));
     assert!(prompt.contains("gh pr comment 99 --body"));
     assert!(prompt.contains("PR #99 repeats"));
@@ -125,7 +126,7 @@ fn test_reviewer_resume_prompt_substitutes_pr_number() {
 
 #[test]
 fn test_reviewer_prompt_contains_required_sections() {
-    let prompt = reviewer_prompt(1);
+    let prompt = reviewer_prompt(1, AuthProvider::Claude);
     assert!(
         prompt.contains("IMPORTANT"),
         "Reviewer prompt should contain IMPORTANT section"
@@ -141,8 +142,21 @@ fn test_reviewer_prompt_contains_required_sections() {
 }
 
 #[test]
+fn test_reviewer_prompt_codex_invocation() {
+    let prompt = reviewer_prompt(42, AuthProvider::Codex);
+    assert!(
+        prompt.contains("use the code-review skill to review PR #42"),
+        "Codex reviewer prompt should use the skill instruction"
+    );
+    assert!(
+        !prompt.contains("/code-review:code-review 42"),
+        "Codex reviewer prompt should not use slash command"
+    );
+}
+
+#[test]
 fn test_reviewer_resume_prompt_contains_task_verification() {
-    let prompt = reviewer_resume_prompt(1);
+    let prompt = reviewer_resume_prompt(1, AuthProvider::Claude);
     assert!(
         prompt.contains("TASK DESCRIPTION VERIFICATION"),
         "Reviewer resume prompt should contain TASK DESCRIPTION VERIFICATION section"
@@ -155,7 +169,7 @@ fn test_reviewer_resume_prompt_contains_task_verification() {
 
 #[test]
 fn test_reviewer_system_prompt_merges_all_sources() {
-    let prompt = reviewer_system_prompt("lexington", "midtown");
+    let prompt = reviewer_system_prompt("lexington", "midtown", AuthProvider::Claude, Some(42));
 
     // Should contain content from common.md
     assert!(
@@ -196,8 +210,8 @@ fn test_reviewer_system_prompt_merges_all_sources() {
 
 #[test]
 fn test_reviewer_prompts_include_frontmatter_requirement() {
-    let system_prompt = reviewer_system_prompt("park", "midtown");
-    let resume_prompt = reviewer_resume_prompt(42);
+    let system_prompt = reviewer_system_prompt("park", "midtown", AuthProvider::Claude, Some(42));
+    let resume_prompt = reviewer_resume_prompt(42, AuthProvider::Claude);
 
     assert!(
         system_prompt.contains("MIDTOWN FRONTMATTER REQUIREMENT"),
@@ -383,7 +397,7 @@ fn test_coworker_nudge_prompt_is_brief() {
 #[test]
 fn test_reviewer_launch_prompt_first_attempt_is_simple() {
     // restart_count=0: first attempt — simple "Review PR #N" command, no context
-    let prompt = reviewer_launch_prompt(99, 0);
+    let prompt = reviewer_launch_prompt(99, 0, AuthProvider::Claude);
     assert!(
         prompt.contains("/code-review:code-review 99"),
         "First attempt should include the code-review slash command"
@@ -401,7 +415,7 @@ fn test_reviewer_launch_prompt_first_attempt_is_simple() {
 #[test]
 fn test_reviewer_launch_prompt_restart_includes_context() {
     // restart_count>0: respawn — should include context about previous attempt
-    let prompt = reviewer_launch_prompt(42, 1);
+    let prompt = reviewer_launch_prompt(42, 1, AuthProvider::Claude);
     assert!(
         prompt.contains("/code-review:code-review 42"),
         "Respawn should still include the code-review slash command"
@@ -417,5 +431,18 @@ fn test_reviewer_launch_prompt_restart_includes_context() {
     assert!(
         prompt.contains("review-pr-42"),
         "Respawn should mention the review worktree"
+    );
+}
+
+#[test]
+fn test_reviewer_launch_prompt_codex_invocation() {
+    let prompt = reviewer_launch_prompt(42, 0, AuthProvider::Codex);
+    assert!(
+        prompt.contains("use the code-review skill to review PR #42"),
+        "Codex reviewer launch prompt should mention code-review skill command"
+    );
+    assert!(
+        !prompt.contains("/code-review"),
+        "Codex launch prompt should avoid slash command"
     );
 }

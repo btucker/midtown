@@ -36,8 +36,41 @@ Find coding standards files:
 
 1. Check for root `CLAUDE.md` in the repository
 2. Get modified files: `gh pr view <PR_NUMBER> --json files --jq '.files[].path'`
-3. For each unique directory in the modified files, check if `CLAUDE.md` exists there
+3. For each unique directory in the modified files, check each parent directory until root and
+   collect the first `CLAUDE.md` found in that path
 4. Keep the list of found CLAUDE.md files for reference in later steps
+
+```bash
+MODIFIED_FILES=$(gh pr view <PR_NUMBER> --json files --jq '[.files[].path][]')
+CLAUDE_FILES=$(mktemp)
+
+printf '%s\n' "$MODIFIED_FILES" | while IFS= read -r file; do
+    dir=$(dirname "$file")
+    if [ "$dir" = "." ]; then
+        dir=""
+    fi
+
+    cursor="$dir"
+    while :; do
+        search_dir="${cursor:-.}"
+        if [ -f "$search_dir/CLAUDE.md" ]; then
+            echo "$search_dir/CLAUDE.md"
+            break
+        fi
+
+        if [ -z "$cursor" ] || [ "$cursor" = "." ] || [ "$cursor" = "/" ]; then
+            break
+        fi
+
+        cursor=$(dirname "$cursor")
+    done
+done | sort -u > "$CLAUDE_FILES"
+
+echo "CLAUDE files:"
+cat "$CLAUDE_FILES"
+```
+
+5. Keep the list of found CLAUDE.md files for reference in later steps.
 
 ### Step 3: Get PR Summary
 
@@ -130,7 +163,7 @@ For CLAUDE.md issues: double-check that CLAUDE.md actually calls out the specifi
 Get the full git SHA for links:
 
 ```bash
-git rev-parse HEAD
+HEAD_SHA=$(gh pr view <PR_NUMBER> --json headRefOid --jq '.headRefOid')
 ```
 
 **If issues found, use this format:**
