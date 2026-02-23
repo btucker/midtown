@@ -70,8 +70,12 @@ pub(super) async fn chat_monitor_loop(
                                         let msg_lower = msg.content.to_lowercase();
                                         let lead_mention = format!("@{}", state.repo_name).to_lowercase();
                                         if msg_lower.contains("@lead") || msg_lower.contains(&lead_mention) {
-                                            let nudge_text =
-                                                format!("{} ({}): {}", msg.from, msg.id, msg.content);
+                                            let nudge_text = format!(
+                                                "{} ({}): {}",
+                                                msg.from,
+                                                msg.thread_anchor_id(),
+                                                msg.content
+                                            );
                                             state.nudge_lead(&nudge_text).await;
                                             info!(
                                                 "Nudged lead about @{} mention in {} message",
@@ -90,7 +94,7 @@ pub(super) async fn chat_monitor_loop(
                                                 reason: super::wake_reason::WakeReason::Mention {
                                                     from: msg.from.clone(),
                                                     content: msg.content.clone(),
-                                                    msg_id: msg.id.clone(),
+                                                    msg_id: msg.thread_anchor_id().to_string(),
                                                 },
                                             };
                                             super::effects::execute_effects(vec![effect], &state).await;
@@ -227,7 +231,7 @@ pub(super) async fn route_mentions(state: &DaemonState, msg: &Message) {
         }
 
         let is_running = state.coworkers.get(&target_name).is_some();
-        let nudge_text = format!("{} said ({}): {}", msg.from, msg.id, msg.content);
+        let nudge_text = render_thread_context(msg);
 
         // Decide action using pure decision function
         let action = crate::rules::decide_mention_action(
@@ -251,7 +255,7 @@ pub(super) async fn route_mentions(state: &DaemonState, msg: &Message) {
 async fn route_at_all(state: &DaemonState, msg: &Message) {
     // Only nudge Running coworkers — Stopping/Starting coworkers have no active session.
     let running_coworkers = state.coworkers.list_running();
-    let nudge_text = format!("{} said ({}): {}", msg.from, msg.id, msg.content);
+    let nudge_text = render_thread_context(msg);
 
     info!(
         "@all broadcast from {} to {} running coworker(s) + lead",
@@ -312,6 +316,17 @@ async fn route_at_all(state: &DaemonState, msg: &Message) {
             info!("Nudged {} for @all from {}", coworker.name, msg.from);
         }
     }
+}
+
+/// Human-friendly label for nudges that preserves thread context by using
+/// the parent message ID when the source message is a thread reply.
+fn render_thread_context(msg: &Message) -> String {
+    format!(
+        "{} said ({}): {}",
+        msg.from,
+        msg.thread_anchor_id(),
+        msg.content
+    )
 }
 
 /// Convert a `MentionAction` decision into executable effects.

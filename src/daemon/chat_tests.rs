@@ -1,6 +1,10 @@
 use super::super::effects::Effect;
 use super::*;
-use crate::rules::{CooldownTracker, MentionAction};
+use crate::{
+    Message,
+    message::MessageType,
+    rules::{CooldownTracker, MentionAction},
+};
 use std::time::Duration;
 
 #[test]
@@ -20,6 +24,37 @@ fn mention_nudge_produces_nudge_effect() {
         matches!(&effects[0], Effect::NudgeSession { session_id, reason }
             if session_id == "sess-lexington-1" && reason.to_nudge_message().contains("msg-42")),
         "NudgeSession message must include the message ID in parentheses"
+    );
+}
+
+#[test]
+fn render_thread_context_uses_self_id_for_top_level() {
+    let msg = Message::text("user", "Top level");
+    let label = super::render_thread_context(&msg);
+    assert!(
+        label.contains(&msg.id),
+        "Top-level messages should include their own ID"
+    );
+}
+
+#[test]
+fn render_thread_context_uses_parent_id_for_thread_replies() {
+    let parent_id = "parent-1234";
+    let msg = Message::thread_reply(
+        "midtown",
+        "user",
+        "Thread reply",
+        parent_id,
+        MessageType::Text,
+    );
+    let label = super::render_thread_context(&msg);
+    assert!(
+        label.contains(parent_id),
+        "Thread replies should include thread parent ID in nudges"
+    );
+    assert!(
+        !label.contains(&msg.id),
+        "Thread replies should not surface their own UUID to avoid nesting"
     );
 }
 
