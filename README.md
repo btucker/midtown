@@ -106,7 +106,17 @@ Matrix bridge startup also requires a Conduit binary:
 cargo install matrix-conduit --locked
 ```
 
-That installs `matrix-conduit` (binary name differs from `conduit`). Set either of the following:
+That installs `matrix-conduit` (binary name differs from `conduit`).
+
+Midtown auto-detects a Conduit binary in this order:
+
+- `MIDTOWN_CONDUIT_BINARY`
+- `conduit` on `PATH`
+- `matrix-conduit` on `PATH`
+- `~/.cargo/bin/conduit`
+- `~/.cargo/bin/matrix-conduit`
+
+Set either of the following if you need an explicit override:
 
 ```bash
 export MIDTOWN_CONDUIT_BINARY="$HOME/.cargo/bin/matrix-conduit"

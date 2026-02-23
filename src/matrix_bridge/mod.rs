@@ -372,15 +372,19 @@ fn resolve_conduit_binary_path(config: &MatrixBridgeConfig) -> Result<PathBuf, S
         return Ok(exe.into());
     }
 
-    if let Some(path) = resolve_executable_path("conduit") {
-        return Ok(path);
+    for candidate in ["conduit", "matrix-conduit"] {
+        if let Some(path) = resolve_executable_path(candidate) {
+            return Ok(path);
+        }
     }
 
     if let Some(cargo_bin) = cargo_bin_path() {
-        let exe = add_executable_suffix("conduit");
-        let candidate = cargo_bin.join(exe);
-        if candidate.exists() {
-            return Ok(candidate);
+        for candidate in ["conduit", "matrix-conduit"] {
+            let exe = add_executable_suffix(candidate);
+            let candidate_path = cargo_bin.join(exe);
+            if candidate_path.exists() {
+                return Ok(candidate_path);
+            }
         }
     }
 
