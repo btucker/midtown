@@ -520,6 +520,145 @@ async fn test_set_canonical_initial_prompt_overrides_decorated_prompt() {
     );
 }
 
+// --- Tests for format_events_as_rich_text ---
+
+#[test]
+fn test_format_events_empty_returns_placeholder() {
+    let result = format_events_as_rich_text(std::iter::empty());
+    assert_eq!(result, "(no output yet)");
+}
+
+#[test]
+fn test_format_events_text_block_only() {
+    let event = serde_json::json!({
+        "type": "assistant",
+        "message": {
+            "role": "assistant",
+            "content": [{"type": "text", "text": "Hello world"}]
+        }
+    });
+    let line = serde_json::to_string(&event).unwrap();
+    let result = format_events_as_rich_text(std::iter::once(line.as_str()));
+    assert_eq!(result, "Hello world");
+}
+
+#[test]
+fn test_format_events_tool_use_bash_gets_bash_lang() {
+    let event = serde_json::json!({
+        "type": "assistant",
+        "message": {
+            "role": "assistant",
+            "content": [{
+                "type": "tool_use",
+                "id": "1",
+                "name": "Bash",
+                "input": {"command": "ls -la"}
+            }]
+        }
+    });
+    let line = serde_json::to_string(&event).unwrap();
+    let result = format_events_as_rich_text(std::iter::once(line.as_str()));
+    assert!(result.starts_with("**[Bash]**\n```bash\n"));
+    assert!(result.contains("ls -la"));
+}
+
+#[test]
+fn test_format_events_tool_use_non_bash_gets_json_lang() {
+    let event = serde_json::json!({
+        "type": "assistant",
+        "message": {
+            "role": "assistant",
+            "content": [{
+                "type": "tool_use",
+                "id": "2",
+                "name": "Read",
+                "input": {"file_path": "/tmp/test.txt"}
+            }]
+        }
+    });
+    let line = serde_json::to_string(&event).unwrap();
+    let result = format_events_as_rich_text(std::iter::once(line.as_str()));
+    assert!(result.starts_with("**[Read]**\n```json\n"));
+    assert!(result.contains("file_path"));
+}
+
+#[test]
+fn test_format_events_tool_result_has_result_header() {
+    let event = serde_json::json!({
+        "type": "user",
+        "message": {
+            "role": "user",
+            "content": [{
+                "type": "tool_result",
+                "tool_use_id": "1",
+                "content": "file.txt\ndir/"
+            }]
+        }
+    });
+    let line = serde_json::to_string(&event).unwrap();
+    let result = format_events_as_rich_text(std::iter::once(line.as_str()));
+    assert!(result.starts_with("**[result]**\n```\n"));
+    assert!(result.contains("file.txt"));
+}
+
+#[test]
+fn test_format_events_mixed_text_and_tool_call_preserved_in_order() {
+    let assistant = serde_json::json!({
+        "type": "assistant",
+        "message": {
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": "Let me check that file."},
+                {"type": "tool_use", "id": "1", "name": "Read", "input": {"file_path": "/tmp/x"}}
+            ]
+        }
+    });
+    let tool_result = serde_json::json!({
+        "type": "user",
+        "message": {
+            "role": "user",
+            "content": [{
+                "type": "tool_result",
+                "tool_use_id": "1",
+                "content": "contents here"
+            }]
+        }
+    });
+    let a = serde_json::to_string(&assistant).unwrap();
+    let b = serde_json::to_string(&tool_result).unwrap();
+    let result = format_events_as_rich_text([a.as_str(), b.as_str()].into_iter());
+
+    let pos_text = result.find("Let me check that file.").unwrap();
+    let pos_tool = result.find("**[Read]**").unwrap();
+    let pos_result = result.find("**[result]**").unwrap();
+    assert!(pos_text < pos_tool, "text should precede tool call");
+    assert!(pos_tool < pos_result, "tool call should precede result");
+}
+
+#[test]
+fn test_format_events_whitespace_only_text_skipped() {
+    let event = serde_json::json!({
+        "type": "assistant",
+        "message": {
+            "role": "assistant",
+            "content": [{"type": "text", "text": "   "}]
+        }
+    });
+    let line = serde_json::to_string(&event).unwrap();
+    let result = format_events_as_rich_text(std::iter::once(line.as_str()));
+    assert_eq!(
+        result, "(no output yet)",
+        "whitespace-only text should be ignored"
+    );
+}
+
+#[test]
+fn test_format_events_ignores_non_jsonl_lines() {
+    let lines = ["not valid json", "{}", "also bad"];
+    let result = format_events_as_rich_text(lines.iter().copied());
+    assert_eq!(result, "(no output yet)");
+}
+
 /// set_canonical_initial_prompt should be a no-op for unknown session names.
 #[tokio::test]
 async fn test_set_canonical_initial_prompt_noop_for_unknown_name() {

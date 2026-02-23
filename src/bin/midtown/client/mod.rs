@@ -573,6 +573,10 @@ impl DaemonClient {
     }
 
     /// View a session's current output (PTY for headed, JSONL for headless).
+    ///
+    /// Returns the raw output string wrapped in a `Response::Message`.
+    /// Use [`session_view_raw`] when you also need the log path for `--watch` mode.
+    #[allow(dead_code)]
     pub fn session_view(&self, target: &str) -> Result<Response, String> {
         let result = self.send_raw(
             "session.view",
@@ -584,6 +588,17 @@ impl DaemonClient {
             .unwrap_or("")
             .to_string();
         Ok(Response::message(output))
+    }
+
+    /// View a session's current output, returning the full daemon response.
+    ///
+    /// Returns the raw JSON value so callers can access both `output` (rich text)
+    /// and `log_path` (path to the JSONL log file, for `--watch` mode).
+    pub fn session_view_raw(&self, target: &str) -> Result<Value, String> {
+        self.send_raw(
+            "session.view",
+            Some(serde_json::json!({ "target": target })),
+        )
     }
 
     // Status command

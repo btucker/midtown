@@ -848,12 +848,13 @@ pub(super) async fn handle_session_view(
     }
 
     // Headless path: read JSONL event log
-    match state.session_manager.get_output(&name).await {
-        Some(output) => Response::success(
+    match state.session_manager.get_output_with_path(&name).await {
+        Some((output, log_path)) => Response::success(
             id,
             serde_json::json!({
                 "success": true,
                 "output": output,
+                "log_path": log_path.to_string_lossy(),
                 "source": "jsonl",
             }),
         ),
