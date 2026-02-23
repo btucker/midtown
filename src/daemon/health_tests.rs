@@ -1769,6 +1769,70 @@ fn test_idle_shutdown_falls_back_to_shutdown_coworker_without_mapping() {
     );
 }
 
+/// Snapshots captured before the coworkers_with_active_tools field was added
+/// must still protect coworkers when ProcessHealth marks a pending tool.
+#[test]
+fn test_idle_shutdown_uses_process_health_when_active_tools_missing() {
+    use crate::coworker::{Coworker, CoworkerStatus};
+    use crate::rules::CoworkerSnapshot;
+
+    let now = chrono::Utc::now();
+    let started_at = now - chrono::Duration::minutes(10);
+
+    let coworker = Coworker {
+        slot_id: uuid::Uuid::new_v4().to_string(),
+        name: "york".to_string(),
+        status: CoworkerStatus::Running,
+        working_dir: "/tmp/test".to_string(),
+        started_at,
+        current_task: None,
+        session_id: None,
+        model: "sonnet".to_string(),
+        provider: crate::auth::AuthProvider::Claude,
+        profile: crate::auth::DEFAULT_PROFILE.to_string(),
+    };
+
+    let cw_snap = CoworkerSnapshot {
+        name: "york".to_string(),
+        started_at,
+        session_id: None,
+    };
+
+    let mut snap = snapshot::minimal_snapshot_for_test();
+    snap.now_utc = now;
+    snap.repo_name = "test-repo".to_string();
+    snap.active_coworkers = vec![coworker.clone()];
+    snap.running_coworkers = vec![coworker];
+    snap.coworker_snapshots = vec![cw_snap];
+    snap.headless_process_health.insert(
+        "york".to_string(),
+        snapshot::ProcessHealth {
+            is_alive: true,
+            last_event_at: Some(now),
+            has_usage_limit: false,
+            usage_limit_reset_at: None,
+            has_api_error: false,
+            has_auth_error: false,
+            has_running_subagent: false,
+            has_pending_tool: true,
+            has_tool_name_conflict: false,
+            has_pending_api_call: false,
+            exit_code: None,
+        },
+    );
+    assert!(
+        snap.coworkers_with_active_tools.is_empty(),
+        "Test setup requires empty active tool list to hit fallback"
+    );
+
+    let effects = check_and_shutdown_idle_coworkers(&snap);
+    assert!(
+        effects.is_empty(),
+        "Coworker with pending tool should be protected even when \
+         coworkers_with_active_tools is missing from the snapshot"
+    );
+}
+
 // -----------------------------------------------------------------------
 // Stuck restart → ShutdownSession / ShutdownCoworker branching tests
 // -----------------------------------------------------------------------

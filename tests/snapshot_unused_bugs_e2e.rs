@@ -13,6 +13,18 @@ use midtown::daemon::{
     reset_orphaned_tasks,
 };
 
+fn shutdown_target_names(effects: &[Effect]) -> Vec<String> {
+    effects
+        .iter()
+        .filter_map(|effect| match effect {
+            Effect::BroadcastCoworkerUpdate { name, status, .. } if status == "stopped" => {
+                Some(name.clone())
+            }
+            _ => None,
+        })
+        .collect()
+}
+
 /// Test that duplicate task assignment is prevented.
 ///
 /// Regression test for: snapshot-duplicate-task-assignment-1142-20260211-142015.json
@@ -85,6 +97,86 @@ fn test_coworker_break_task_orphaned() {
         ),
         "Expected ResetTaskToPending for task 1142, got {:?}",
         effects[0]
+    );
+}
+
+/// Pending tool executions must protect idle coworkers from shutdown while the tool runs.
+#[test]
+fn test_idle_shutdown_skips_pending_tool_process_health() {
+    let fixture = include_str!(
+        "fixtures/snapshot/snapshot-duplicate-task-assignment-1142-20260211-142015.json"
+    );
+    let snapshot: WorldSnapshot =
+        serde_json::from_str(fixture).expect("Failed to deserialize snapshot");
+
+    let health = snapshot
+        .headless_process_health
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case("amsterdam"))
+        .map(|(_, health)| health)
+        .expect("amsterdam process health present in snapshot");
+    assert!(
+        health.has_pending_tool,
+        "fixture must include pending tool flag"
+    );
+    assert!(
+        !health.has_running_subagent,
+        "fixture isolates pending tool protection"
+    );
+    assert!(
+        !snapshot
+            .busy_coworkers
+            .iter()
+            .any(|name| name.eq_ignore_ascii_case("amsterdam")),
+        "amsterdam should otherwise appear idle"
+    );
+
+    let effects = check_and_shutdown_idle_coworkers(&snapshot);
+    let shutdown_names = shutdown_target_names(&effects);
+
+    assert!(
+        !shutdown_names
+            .iter()
+            .any(|name| name.eq_ignore_ascii_case("amsterdam")),
+        "Coworker waiting on a pending tool must be protected from idle shutdown"
+    );
+}
+
+/// Running Task subagents must also protect coworkers from idle shutdown decisions.
+#[test]
+fn test_idle_shutdown_skips_running_subagent_process_health() {
+    let fixture = include_str!(
+        "fixtures/snapshot/snapshot-reviewer-not-assigned-pr-1246-20260218-001618.json"
+    );
+    let snapshot: WorldSnapshot =
+        serde_json::from_str(fixture).expect("Failed to deserialize snapshot");
+
+    let health = snapshot
+        .headless_process_health
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case("columbus"))
+        .map(|(_, health)| health)
+        .expect("columbus process health present in snapshot");
+    assert!(
+        health.has_running_subagent,
+        "fixture must include subagent flag"
+    );
+    assert!(
+        snapshot
+            .busy_coworkers
+            .iter()
+            .all(|name| !name.eq_ignore_ascii_case("columbus")),
+        "columbus should otherwise look idle"
+    );
+
+    let effects = check_and_shutdown_idle_coworkers(&snapshot);
+    let shutdown_names = shutdown_target_names(&effects);
+
+    assert!(
+        !shutdown_names
+            .iter()
+            .any(|name| name.eq_ignore_ascii_case("columbus")),
+        "Coworker running a Task subagent must be protected from idle shutdown"
     );
 }
 

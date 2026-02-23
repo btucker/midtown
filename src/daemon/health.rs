@@ -5,6 +5,7 @@
 //! Health state is read from structured `ProcessHealth` data (populated
 //! by the session management layer from headless stream events).
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -65,6 +66,23 @@ pub fn check_and_shutdown_idle_coworkers(snap: &snapshot::WorldSnapshot) -> Vec<
             .join(", "),
     );
 
+    let mut active_tool_guards = snap.coworkers_with_active_tools.clone();
+    if active_tool_guards.is_empty() {
+        // Older snapshot fixtures (and pre-field captures) won't have
+        // coworkers_with_active_tools populated. Derive a fallback from
+        // ProcessHealth flags so regression tests continue to reflect
+        // the intended protections.
+        let derived: HashSet<String> = snap
+            .headless_process_health
+            .iter()
+            .filter(|(_, health)| health.has_pending_tool || health.has_running_subagent)
+            .map(|(name, _)| name.to_lowercase())
+            .collect();
+        if !derived.is_empty() {
+            active_tool_guards.extend(derived);
+        }
+    }
+
     // Pure decision: who should be shut down?
     let to_shutdown = {
         let idle_ctx = crate::rules::IdleShutdownContext {
@@ -79,7 +97,7 @@ pub fn check_and_shutdown_idle_coworkers(snap: &snapshot::WorldSnapshot) -> Vec<
             auth_error_coworkers: &snap.auth_error_coworkers,
             pending_task_owners: &snap.pending_task_owners,
             review_feedback_pr_coworkers: &snap.review_feedback_pr_coworkers,
-            coworkers_with_active_tools: &snap.coworkers_with_active_tools,
+            coworkers_with_active_tools: &active_tool_guards,
             now_utc: snap.now_utc,
             minimum_lifetime: MINIMUM_COWORKER_LIFETIME,
             repo_name: &snap.repo_name,
@@ -113,8 +131,7 @@ pub fn check_and_shutdown_idle_coworkers(snap: &snapshot::WorldSnapshot) -> Vec<
                 .ci_passed_pr_coworkers
                 .iter()
                 .any(|c| c.eq_ignore_ascii_case(name));
-            let has_active_turn = snap
-                .coworkers_with_active_tools
+            let has_active_turn = active_tool_guards
                 .iter()
                 .any(|c| c.eq_ignore_ascii_case(name));
             warn!(
