@@ -430,6 +430,41 @@ pub(super) async fn handle_channel_archive(
     }
 }
 
+/// Handle channel.unarchive RPC method.
+///
+/// Restores an archived channel (`<name>.archived/`) back to an active channel directory.
+/// Returns an error if the channel is not archived or if the destination already exists.
+pub(super) fn handle_channel_unarchive(id: RequestId, name: &str, state: &DaemonState) -> Response {
+    let base_dir = state.channel_router.base_dir();
+    let archived_dir = base_dir.join("channels").join(format!("{}.archived", name));
+    if !archived_dir.exists() {
+        return Response::error(
+            id,
+            RpcError::new(
+                -32602,
+                format!("Channel '{}' is not archived or does not exist", name),
+            ),
+        );
+    }
+
+    match crate::Channel::unarchive_channel(base_dir, name) {
+        Ok(()) => {
+            state.channel_router.remove_channel(name);
+            Response::success(
+                id,
+                serde_json::json!({
+                    "success": true,
+                    "message": format!("Channel '{}' unarchived", name),
+                }),
+            )
+        }
+        Err(e) => {
+            error!("Failed to unarchive channel '{}': {}", name, e);
+            Response::error(id, RpcError::new(-32603, e.to_string()))
+        }
+    }
+}
+
 /// Handle channel.rename RPC method.
 ///
 /// Renames a channel by moving its directory from `channels/<old>/` to `channels/<new>/`.

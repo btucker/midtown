@@ -478,6 +478,11 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
             super::rpc_channel::handle_channel_archive(request.id, name, state).await
         }
 
+        "channel.unarchive" => {
+            let name = require_str!(params, "name", request.id);
+            super::rpc_channel::handle_channel_unarchive(request.id, name, state)
+        }
+
         "channel.rename" => {
             let old = require_str!(params, "old", request.id);
             let new = require_str!(params, "new", request.id);

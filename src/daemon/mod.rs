@@ -6,7 +6,6 @@
 //! actionable issues.
 
 mod architect;
-mod auto_archive;
 mod chat;
 mod constants;
 mod dispatch;

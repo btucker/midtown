@@ -111,11 +111,6 @@ pub async fn evaluate_tick(
             effects.extend(super::health::detect_stale_attached_sessions(snap));
             effects.extend(super::health::ensure_lead_alive(snap));
             effects.extend(super::health::check_and_fire_reminders(snap, state).await);
-            // Auto-archive channels when all tasks are completed
-            effects.extend(super::auto_archive::collect_auto_archive_effects(
-                &snap.all_tasks,
-                &snap.archived_channels,
-            ));
             dedup_spawn_effects(effects)
         }
         DaemonEvent::PrPollTick => {
