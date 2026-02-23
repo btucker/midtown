@@ -2065,6 +2065,7 @@ const CINNY_PORT_END: u16 = 8090;
 fn run_cinny_client_for_matrix(
     project_name: &str,
 ) -> Result<(std::process::Child, String), String> {
+    ensure_cinny_runtime_dependencies()?;
     let release_dir = ensure_cinny_release_source()?;
     let matrix_url = format!("http://127.0.0.1:{MIDTOWN_MATRIX_PORT}");
     patch_cinny_config(&release_dir, matrix_url.as_str())?;
@@ -2090,6 +2091,35 @@ fn run_cinny_client_for_matrix(
     println!("Connect: {cinny_url}");
 
     Ok((child, cinny_url))
+}
+
+fn ensure_cinny_runtime_dependencies() -> Result<(), String> {
+    let dependencies = [
+        ("curl", "querying/download Cinny release tarball"),
+        ("tar", "extracting Cinny tarball"),
+        ("npm", "installing/running Cinny"),
+    ];
+    for (command, purpose) in dependencies {
+        ensure_command_available(command, purpose)?;
+    }
+    Ok(())
+}
+
+fn ensure_command_available(command: &str, purpose: &str) -> Result<(), String> {
+    let status = Command::new(command)
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    match status {
+        Ok(status) if status.success() => Ok(()),
+        Ok(_) => Err(format!(
+            "Command `{command}` is available, but returned non-zero for `--version` while checking dependency for {purpose}."
+        )),
+        Err(_) => Err(format!(
+            "Missing required dependency `{command}` for {purpose}. Install it and retry."
+        )),
+    }
 }
 
 fn ensure_cinny_release_source() -> Result<PathBuf, String> {
