@@ -16,7 +16,7 @@ use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
 use crate::daemon::state::HeadlessSessionInfo;
-use crate::headless::{HeadlessConfig, HeadlessSession, StreamEvent};
+use crate::headless::{HeadlessConfig, HeadlessSession, StreamEvent, shutdown_codex_runtime};
 
 /// Check if an error message indicates an OAuth token expiry.
 ///
@@ -785,6 +785,9 @@ impl SessionManager {
 
         // Drop handles — SIGKILL fallback via HeadlessSession::Drop for any still alive
         drop(handles);
+
+        // Ensure shared Codex app-server process is terminated before daemon restart.
+        shutdown_codex_runtime().await;
 
         info!("Gracefully shut down {} headless session(s)", total_count);
         total_count

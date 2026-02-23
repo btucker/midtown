@@ -620,7 +620,6 @@ impl CodexSharedRuntime {
     }
 }
 
-#[allow(dead_code)]
 async fn codex_shared_runtime() -> std::io::Result<Arc<CodexSharedRuntime>> {
     CODEX_RUNTIME
         .get_or_try_init(CodexSharedRuntime::spawn)
@@ -628,7 +627,6 @@ async fn codex_shared_runtime() -> std::io::Result<Arc<CodexSharedRuntime>> {
         .map(Arc::clone)
 }
 
-#[allow(dead_code)]
 pub(crate) async fn shutdown_codex_runtime() {
     if let Some(runtime) = CODEX_RUNTIME.get() {
         runtime.shutdown().await;
@@ -1970,6 +1968,89 @@ mod tests {
             output_schema: None,
             start_phase: "thread/start".to_string(),
         }
+    }
+
+    fn test_claude_session() -> HeadlessSession {
+        HeadlessSession {
+            child: None,
+            stdout_reader: None,
+            stderr_reader: None,
+            stdin: None,
+            session_id: None,
+            backend: HeadlessSessionBackend::Claude,
+            protocol: SessionProtocol::Claude,
+            codex_session: None,
+            detach_on_drop: false,
+        }
+    }
+
+    fn test_codex_session() -> HeadlessSession {
+        HeadlessSession {
+            child: None,
+            stdout_reader: None,
+            stderr_reader: None,
+            stdin: None,
+            session_id: None,
+            backend: HeadlessSessionBackend::Codex,
+            protocol: SessionProtocol::Codex(Box::new(test_codex_state())),
+            codex_session: None,
+            detach_on_drop: false,
+        }
+    }
+
+    #[test]
+    fn test_headless_session_protocol_flags() {
+        let claude_session = test_claude_session();
+        let codex_session = test_codex_session();
+
+        assert!(!claude_session.is_codex_session());
+        assert!(codex_session.is_codex_session());
+
+        assert!(claude_session.should_wait_for_exit_on_result());
+        assert!(!codex_session.should_wait_for_exit_on_result());
+    }
+
+    #[tokio::test]
+    async fn test_codex_session_runtime_methods_require_runtime() {
+        let mut session = test_codex_session();
+        session
+            .codex_state_mut()
+            .expect("expected codex protocol")
+            .thread_id = Some("thread-1".to_string());
+        session
+            .codex_state_mut()
+            .expect("expected codex protocol")
+            .initialized = false;
+
+        assert!(session.next_event().await.is_none());
+        assert!(session.drain_stderr().await.is_empty());
+        assert!(session.kill().await.is_ok());
+        assert_eq!(session.pid(), None);
+        assert_eq!(
+            session.wait().await.err().unwrap().to_string(),
+            "missing codex runtime".to_string()
+        );
+        assert_eq!(
+            session.try_wait().err().unwrap().to_string(),
+            "missing codex runtime".to_string()
+        );
+        assert_eq!(
+            session
+                .send_message("hello")
+                .await
+                .err()
+                .unwrap()
+                .to_string(),
+            "missing codex runtime".to_string()
+        );
+
+        session.close_stdin();
+        assert!(session.stdin.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_shutdown_codex_runtime_noop_when_not_started() {
+        shutdown_codex_runtime().await;
     }
 
     #[test]
