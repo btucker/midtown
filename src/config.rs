@@ -419,7 +419,8 @@ pub struct ChannelsSection {
 /// ```
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct ChannelLeadsConfig {
-    /// Default model for channel leads (default: "sonnet").
+    /// Default model for all channel leads. When not set, falls back to per-channel
+    /// defaults ("haiku" for "ops", "sonnet" for all others).
     #[serde(default)]
     pub default_model: Option<String>,
 

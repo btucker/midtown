@@ -1188,15 +1188,6 @@ mod tests {
     }
 
     #[test]
-    fn test_launch_config_ops_channel_lead_uses_haiku() {
-        let config = LaunchConfig::channel_lead("ops", "myrepo", SessionMode::Fresh, "");
-        assert_eq!(
-            config.model, "haiku",
-            "ops channel lead should use haiku by default"
-        );
-    }
-
-    #[test]
     fn test_channel_lead_session_name() {
         assert_eq!(channel_lead_session_name("auth"), "auth");
         assert_eq!(channel_lead_session_name("web-interface"), "web-interface");

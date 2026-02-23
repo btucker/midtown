@@ -814,12 +814,15 @@ pub(crate) fn build_attach_shell_command(
         pr_number: None,
         team_name: team_name.clone(),
         working_dir: None,
-        model: match role {
+        model: match &role {
             midtown::launch::CoworkerRole::Lead | midtown::launch::CoworkerRole::Reviewer => {
                 "opus".to_string()
             }
-            midtown::launch::CoworkerRole::Coworker
-            | midtown::launch::CoworkerRole::ChannelLead { .. } => "sonnet".to_string(),
+            midtown::launch::CoworkerRole::Coworker => "sonnet".to_string(),
+            midtown::launch::CoworkerRole::ChannelLead { channel_name, .. } => {
+                midtown::config::get_channel_leads_config(&repo_name)
+                    .model_for_channel(channel_name)
+            }
         },
         channel: None,
         auth_profile_dir: Some(profile_dir.clone()),
