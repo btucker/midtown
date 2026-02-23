@@ -100,6 +100,24 @@ See the [full CLI reference](docs/cli.md) for all flags and options.
 
 `midtown view --matrix` requires `curl`, `tar`, and `npm` on PATH. It downloads and runs the latest Cinny tarball, connects it to the local Matrix bridge on port `6167`, and waits up to 6 seconds for bridge startup.
 
+Matrix bridge startup also requires a Conduit binary:
+
+```bash
+cargo install matrix-conduit --locked
+```
+
+That installs `matrix-conduit` (binary name differs from `conduit`). Set either of the following:
+
+```bash
+export MIDTOWN_CONDUIT_BINARY="$HOME/.cargo/bin/matrix-conduit"
+```
+
+or create a compatibility symlink:
+
+```bash
+ln -sfn "$HOME/.cargo/bin/matrix-conduit" "$HOME/.cargo/bin/conduit"
+```
+
 > **Note:** `midtown view` also accepts `midtown chat` and `midtown attach` as aliases.
 
 ## Documentation
