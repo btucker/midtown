@@ -122,7 +122,7 @@ fn default_as_registration_config(
     let channel_pattern = regex_pattern(&channel_names);
     let as_token = random_token();
     let hs_token = random_token();
-    let bridge_id = format!("midtown-bridge-{project_name}");
+    let bridge_id = format!("midtown-{project_name}");
 
     Ok(format!(
         r##"id: {}
