@@ -172,6 +172,25 @@ Run tests with an isolated `HOME`:
 ./scripts/with-isolated-home.sh cargo test
 ```
 
+### Fake Provider CLIs (Deterministic E2E)
+
+This workspace includes standalone fake provider CLIs for deterministic protocol testing:
+
+- `fake-claude-cli` (simulates Claude stream-json + plugin commands)
+- `fake-codex-cli` (simulates Codex `app-server` JSON-RPC)
+
+Build them:
+
+```bash
+cargo build -p fake-claude-cli -p fake-codex-cli
+```
+
+Both support environment-variable controlled modes (echo, error, tool events, hang/no-response)
+so tests can reproduce timeout/restart/race scenarios reliably. See each crate README:
+
+- `crates/fake-claude-cli/README.md`
+- `crates/fake-codex-cli/README.md`
+
 ## Configuration
 
 Midtown uses two levels of config files:

@@ -536,6 +536,15 @@ const CHANNELS_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 /// Number of lines to scroll per mouse wheel event
 const SCROLL_STEP: usize = 3;
 
+fn project_lead_provider_and_profile(project_name: &str) -> (midtown::auth::AuthProvider, String) {
+    let provider = midtown::config::get_execution_provider_for_role(
+        project_name,
+        midtown::config::ExecutionRole::Lead,
+    );
+    let profile = midtown::auth::active_profile_for_project_with_provider(project_name, provider);
+    (provider, profile)
+}
+
 impl App {
     pub fn new() -> Self {
         // Use detect_repo_name() which correctly handles worktrees by using
@@ -842,6 +851,8 @@ impl App {
         {
             let (tx, rx) = mpsc::channel();
             self.usage_receiver = Some(rx);
+            let (fallback_provider, fallback_profile) =
+                project_lead_provider_and_profile(&self.project_name);
 
             // Collect active provider/profile combinations from coworker data
             let active_profiles: Vec<(midtown::auth::AuthProvider, String)> = self
@@ -851,19 +862,16 @@ impl App {
                     let provider = cw
                         .provider
                         .parse::<midtown::auth::AuthProvider>()
-                        .unwrap_or(midtown::auth::AuthProvider::Claude);
+                        .unwrap_or(fallback_provider);
                     (provider, cw.profile.clone())
                 })
                 .collect::<std::collections::HashSet<_>>()
                 .into_iter()
                 .collect();
 
-            // Fall back to current profile if no coworkers
+            // Fall back to configured project lead provider/profile if no coworkers.
             let profiles_to_fetch = if active_profiles.is_empty() {
-                vec![(
-                    midtown::auth::AuthProvider::Claude,
-                    midtown::auth::current_profile(),
-                )]
+                vec![(fallback_provider, fallback_profile)]
             } else {
                 active_profiles
             };
@@ -3024,6 +3032,8 @@ fn fetch_coworker_status_via_rpc() -> Option<CoworkerStatusData> {
 
     let client = DaemonClient::connect().ok()?;
     let data = client.coworkers_status().ok()?;
+    let project_name = midtown::paths::detect_repo_name().unwrap_or_else(|| "default".to_string());
+    let (fallback_provider, fallback_profile) = project_lead_provider_and_profile(&project_name);
 
     let coworkers_json = data.get("coworkers").and_then(|v| v.as_array());
 
@@ -3055,13 +3065,13 @@ fn fetch_coworker_status_via_rpc() -> Option<CoworkerStatusData> {
                     let provider = cw
                         .get("provider")
                         .and_then(|v| v.as_str())
-                        .unwrap_or("claude")
+                        .unwrap_or(fallback_provider.as_str())
                         .to_string();
                     let profile = cw
                         .get("profile")
                         .and_then(|v| v.as_str())
                         .map(|s| s.to_string())
-                        .unwrap_or_else(midtown::auth::current_profile);
+                        .unwrap_or_else(|| fallback_profile.clone());
                     let progress = cw.get("progress").and_then(|v| v.as_u64()).map(|p| p as u8);
                     let time_estimate = cw
                         .get("time_estimate")

@@ -1,5 +1,10 @@
 [workspace]
-members = [".", "crates/minimad-ratatui"]
+members = [
+    ".",
+    "crates/minimad-ratatui",
+    "crates/fake-claude-cli",
+    "crates/fake-codex-cli",
+]
 resolver = "2"
 
 [package]
@@ -89,6 +94,7 @@ minimad-ratatui = { path = "crates/minimad-ratatui" }
 [dev-dependencies]
 tempfile = "3.0"
 ntest = "0.9"  # Test utilities including timeout attribute
+proptest = "1.7"
 # Web E2E test dependencies
 tokio-tungstenite = "0.26"  # WebSocket client for E2E tests
 futures-util = "0.3"  # Stream extensions for WebSocket handling

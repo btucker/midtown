@@ -1398,12 +1398,15 @@ async fn api_usage(State(state): State<Arc<WebState>>) -> Result<impl IntoRespon
         })
         .unwrap_or_default();
 
-    // If no active coworkers, fall back to current profile
+    // If no active coworkers, fall back to configured project-lead provider/profile.
     let profiles_to_fetch = if active_profiles.is_empty() {
-        vec![(
-            crate::auth::AuthProvider::Claude,
-            crate::auth::current_profile(),
-        )]
+        let provider = crate::config::get_execution_provider_for_role(
+            &state.config.repo,
+            crate::config::ExecutionRole::Lead,
+        );
+        let profile =
+            crate::auth::active_profile_for_project_with_provider(&state.config.repo, provider);
+        vec![(provider, profile)]
     } else {
         active_profiles
     };
