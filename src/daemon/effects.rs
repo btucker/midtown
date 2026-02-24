@@ -2409,174 +2409,199 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     state.nudge_lead(&reason.to_nudge_message()).await;
                 } else {
                     let session_name = crate::launch::channel_lead_session_name(&channel_name);
-                    if state.session_manager.is_alive(&session_name).await {
-                        // Keep channel_lead_sessions aligned with the actual live session.
-                        // Codex resumes can leave a stale session-id mapping after app-server
-                        // reuse, and `send_message` routes to the newest live slot for the
-                        // name, so we refresh the mapping here when it is missing or stale.
-                        let active_session_id =
-                            state.session_manager.get_session_id(&session_name).await;
-                        if let Some(active_session_id) = active_session_id {
-                            let mut ps = state.persistent_state.lock().await;
-                            let stored_session_id =
-                                ps.channel_lead_sessions.get(&channel_name).cloned();
-                            if !matches!(stored_session_id.as_deref(), Some(stored) if stored == active_session_id)
+                    let msg = reason.to_nudge_message();
+                    let session_id = {
+                        let ps = state.persistent_state.lock().await;
+                        ps.channel_lead_sessions.get(&channel_name).cloned()
+                    };
+                    let mut nudge_delivered = false;
+
+                    // First, try to nudge the stored session_id for this channel lead.
+                    // This avoids name collision bugs where a coworker shares the same
+                    // name as the channel lead and would steal nudges.
+                    if let Some(stored_session_id) =
+                        session_id.as_deref().filter(|id| !id.is_empty())
+                    {
+                        if let Err(e) = state
+                            .session_manager
+                            .send_message_to_session_id(stored_session_id, &msg)
+                            .await
+                        {
+                            warn!(
+                                "Failed to nudge channel lead '{}' using stored session_id '{}': {}",
+                                channel_name, stored_session_id, e
+                            );
+                        } else {
+                            nudge_delivered = true;
+                        }
+                    }
+
+                    // If the stored mapping was missing or stale, use the active
+                    // session currently attached to this lead name (if any), and
+                    // sync the mapping from that. This keeps mappings fresh after
+                    // Codex app-server reuse.
+                    #[allow(clippy::collapsible_if)]
+                    if !nudge_delivered {
+                        if let Some(active_session_id) =
+                            state.session_manager.get_session_id(&session_name).await
+                        {
+                            if let Err(e) = state
+                                .session_manager
+                                .send_message_to_session_id(&active_session_id, &msg)
+                                .await
                             {
-                                ps.channel_lead_sessions
-                                    .insert(channel_name.clone(), active_session_id.clone());
-                                if let Err(e) = ps.save_for_repo(&state.repo_name) {
-                                    warn!(
-                                        "Failed to update channel lead session mapping for '{}': {}",
-                                        channel_name, e
-                                    );
-                                }
-                                if let Some(stored_session_id) = stored_session_id {
-                                    if stored_session_id.is_empty() {
-                                        warn!(
-                                            "Refreshed empty channel lead session mapping for '{}' to {}",
+                                warn!(
+                                    "Failed to nudge channel lead '{}' using active session_id '{}': {}",
+                                    channel_name, active_session_id, e
+                                );
+                            } else {
+                                nudge_delivered = true;
+                                if !matches!(
+                                    session_id.as_deref(),
+                                    Some(stored) if stored == active_session_id
+                                ) {
+                                    let mut ps = state.persistent_state.lock().await;
+                                    if let Some(stored_session_id) = session_id.as_deref() {
+                                        if stored_session_id.is_empty() {
+                                            warn!(
+                                                "Refreshed empty channel lead session mapping for '{}' to {}",
+                                                channel_name, active_session_id
+                                            );
+                                        } else {
+                                            warn!(
+                                                "Refreshed stale channel lead mapping for '{}' from {} to {}",
+                                                channel_name, stored_session_id, active_session_id
+                                            );
+                                        }
+                                    } else {
+                                        info!(
+                                            "Initialized channel lead mapping for '{}' to {}",
                                             channel_name, active_session_id
                                         );
-                                    } else {
+                                    }
+
+                                    ps.channel_lead_sessions
+                                        .insert(channel_name.clone(), active_session_id.clone());
+                                    if let Err(e) = ps.save_for_repo(&state.repo_name) {
                                         warn!(
-                                            "Refreshed stale channel lead mapping for '{}' from {} to {}",
-                                            channel_name, stored_session_id, active_session_id
+                                            "Failed to update channel lead session mapping for '{}': {}",
+                                            channel_name, e
                                         );
                                     }
-                                } else {
-                                    info!(
-                                        "Initialized channel lead mapping for '{}' to {}",
-                                        channel_name, active_session_id
-                                    );
                                 }
                             }
                         }
+                    }
 
-                        let msg = reason.to_nudge_message();
-                        if let Err(e) = state
-                            .session_manager
-                            .send_message(&session_name, &msg)
-                            .await
-                        {
-                            warn!("Failed to nudge channel lead '{}': {}", channel_name, e);
-                        }
-                    } else {
-                        let session_id = {
-                            let ps = state.persistent_state.lock().await;
-                            ps.channel_lead_sessions.get(&channel_name).cloned()
-                        };
-                        match session_id.as_deref() {
-                            Some(id) if should_resume_channel_lead_session(id) => {
-                                let mut config = crate::launch::LaunchConfig::channel_lead(
-                                    &channel_name,
-                                    &state.repo_name,
-                                    crate::launch::SessionMode::ResumeSession(id.to_string()),
-                                    "",
-                                );
-                                config.initial_prompt =
-                                    Some(reason.to_initial_prompt(&channel_name));
+                    if nudge_delivered {
+                        continue;
+                    }
 
-                                match spawn_with_resume_fallback(
-                                    state,
-                                    &state.repo_name,
-                                    &mut config,
-                                )
+                    match session_id.as_deref() {
+                        Some(id) if should_resume_channel_lead_session(id) => {
+                            let mut config = crate::launch::LaunchConfig::channel_lead(
+                                &channel_name,
+                                &state.repo_name,
+                                crate::launch::SessionMode::ResumeSession(id.to_string()),
+                                "",
+                            );
+                            config.initial_prompt = Some(reason.to_initial_prompt(&channel_name));
+
+                            match spawn_with_resume_fallback(state, &state.repo_name, &mut config)
                                 .await
-                                {
-                                    Ok((session_id, _)) => {
+                            {
+                                Ok((resumed_session_id, _)) => {
+                                    {
                                         let mut ps = state.persistent_state.lock().await;
-                                        ps.channel_lead_sessions
-                                            .insert(channel_name.clone(), session_id);
+                                        ps.channel_lead_sessions.insert(
+                                            channel_name.clone(),
+                                            resumed_session_id.clone(),
+                                        );
                                         if let Err(e) = ps.save_for_repo(&state.repo_name) {
                                             tracing::error!(
                                                 "Failed to save state after channel lead resume/fallback: {}",
                                                 e
                                             );
                                         }
+                                    }
 
-                                        let msg = reason.to_nudge_message();
-                                        if let Err(e) = state
-                                            .session_manager
-                                            .send_message(&session_name, &msg)
-                                            .await
-                                        {
+                                    if let Err(e) = state
+                                        .session_manager
+                                        .send_message_to_session_id(&resumed_session_id, &msg)
+                                        .await
+                                    {
+                                        warn!(
+                                            "Nudge after resume failed for '{}' — trigger may be lost: {}",
+                                            channel_name, e
+                                        );
+                                    }
+                                }
+                                Err(e) => {
+                                    warn!(
+                                        "Failed to resume channel lead '{}': {}",
+                                        channel_name, e
+                                    );
+                                    {
+                                        let mut ps = state.persistent_state.lock().await;
+                                        ps.channel_lead_sessions
+                                            .insert(channel_name.clone(), String::new());
+                                        if let Err(e) = ps.save_for_repo(&state.repo_name) {
                                             warn!(
-                                                "Nudge after resume failed for '{}' — trigger may be lost: {}",
+                                                "Failed to clear stale channel lead session ID for '{}': {}",
                                                 channel_name, e
                                             );
                                         }
                                     }
-                                    Err(e) => {
-                                        warn!(
-                                            "Failed to resume channel lead '{}': {}",
-                                            channel_name, e
-                                        );
-                                        {
-                                            let mut ps = state.persistent_state.lock().await;
-                                            ps.channel_lead_sessions
-                                                .insert(channel_name.clone(), String::new());
-                                            if let Err(e) = ps.save_for_repo(&state.repo_name) {
-                                                warn!(
-                                                    "Failed to clear stale channel lead session ID for '{}': {}",
-                                                    channel_name, e
-                                                );
-                                            }
-                                        }
-                                    }
                                 }
                             }
-                            _ => {
-                                let mut config = crate::launch::LaunchConfig::channel_lead(
-                                    &channel_name,
-                                    &state.repo_name,
-                                    crate::launch::SessionMode::Fresh,
-                                    "",
-                                );
-                                config.initial_prompt =
-                                    Some(reason.to_initial_prompt(&channel_name));
-                                // Insert empty placeholder before spawning to guard against
-                                // duplicate NudgeChannelLead effects in the same batch.
-                                {
+                        }
+                        _ => {
+                            let mut config = crate::launch::LaunchConfig::channel_lead(
+                                &channel_name,
+                                &state.repo_name,
+                                crate::launch::SessionMode::Fresh,
+                                "",
+                            );
+                            config.initial_prompt = Some(reason.to_initial_prompt(&channel_name));
+                            // Insert empty placeholder before spawning to guard against
+                            // duplicate NudgeChannelLead effects in the same batch.
+                            {
+                                let mut ps = state.persistent_state.lock().await;
+                                ps.channel_lead_sessions
+                                    .insert(channel_name.clone(), String::new());
+                                if let Err(e) = ps.save_for_repo(&state.repo_name) {
+                                    tracing::error!(
+                                        "Failed to save state before spawning channel lead: {}",
+                                        e
+                                    );
+                                }
+                            }
+                            match spawn_with_resume_fallback(state, &state.repo_name, &mut config)
+                                .await
+                            {
+                                Ok((session_id, _)) => {
+                                    // Update channel_lead_sessions with the real session_id
+                                    // immediately (spawn_coworker generated it upfront),
+                                    // eliminating the race window before init event arrives.
                                     let mut ps = state.persistent_state.lock().await;
                                     ps.channel_lead_sessions
-                                        .insert(channel_name.clone(), String::new());
+                                        .insert(channel_name.clone(), session_id);
                                     if let Err(e) = ps.save_for_repo(&state.repo_name) {
                                         tracing::error!(
-                                            "Failed to save state before spawning channel lead: {}",
+                                            "Failed to save state after spawning channel lead: {}",
                                             e
                                         );
                                     }
                                 }
-                                match spawn_with_resume_fallback(
-                                    state,
-                                    &state.repo_name,
-                                    &mut config,
-                                )
-                                .await
-                                {
-                                    Ok((session_id, _)) => {
-                                        // Update channel_lead_sessions with the real session_id
-                                        // immediately (spawn_coworker generated it upfront),
-                                        // eliminating the race window before init event arrives.
-                                        let mut ps = state.persistent_state.lock().await;
-                                        ps.channel_lead_sessions
-                                            .insert(channel_name.clone(), session_id);
-                                        if let Err(e) = ps.save_for_repo(&state.repo_name) {
-                                            tracing::error!(
-                                                "Failed to save state after spawning channel lead: {}",
-                                                e
-                                            );
-                                        }
-                                    }
-                                    Err(e) => {
-                                        tracing::error!(
-                                            "Failed to spawn channel lead '{}': {}",
-                                            channel_name,
-                                            e
-                                        );
-                                        // Keep the empty placeholder in channel_lead_sessions
-                                        // on failure. This allows a fresh spawn attempt on a
-                                        // later nudge and preserves restart visibility.
-                                    }
+                                Err(e) => {
+                                    tracing::error!(
+                                        "Failed to spawn channel lead '{}': {}",
+                                        channel_name,
+                                        e
+                                    );
+                                    // Keep the empty placeholder in channel_lead_sessions
+                                    // on failure. This allows a fresh spawn attempt on a
+                                    // later nudge and preserves restart visibility.
                                 }
                             }
                         }

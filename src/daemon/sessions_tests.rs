@@ -267,6 +267,106 @@ async fn test_spawn_with_session_id_sets_session_id_immediately() {
 }
 
 #[test]
+fn test_select_slot_for_session_id_prefers_live_session() {
+    let now = Utc::now();
+    let older = now - chrono::Duration::seconds(30);
+
+    let mut sessions = std::collections::HashMap::new();
+    sessions.insert(
+        "stopped-slot".to_string(),
+        CoworkerSession {
+            session: None,
+            slot_id: "stopped-slot".to_string(),
+            name: "web".to_string(),
+            status: SessionStatus::Stopped,
+            started_at: older,
+            session_id: Some("lead-session-abc".to_string()),
+            initial_prompt: None,
+            cost_usd: 0.0,
+            input_tokens: 0,
+            output_tokens: 0,
+            last_event_at: Some(older),
+            has_usage_limit: false,
+            usage_limit_reset_at: None,
+            has_api_error: false,
+            has_auth_error: false,
+            has_running_subagent: false,
+            has_pending_tool: false,
+            has_tool_name_conflict: false,
+            has_pending_api_call: false,
+            is_resume: false,
+            output_log: None,
+            output_log_path: PathBuf::new(),
+        },
+    );
+    sessions.insert(
+        "live-slot".to_string(),
+        CoworkerSession {
+            session: None,
+            slot_id: "live-slot".to_string(),
+            name: "web".to_string(),
+            status: SessionStatus::Running,
+            started_at: now,
+            session_id: Some("lead-session-abc".to_string()),
+            initial_prompt: None,
+            cost_usd: 0.0,
+            input_tokens: 0,
+            output_tokens: 0,
+            last_event_at: Some(now),
+            has_usage_limit: false,
+            usage_limit_reset_at: None,
+            has_api_error: false,
+            has_auth_error: false,
+            has_running_subagent: false,
+            has_pending_tool: false,
+            has_tool_name_conflict: false,
+            has_pending_api_call: false,
+            is_resume: false,
+            output_log: None,
+            output_log_path: PathBuf::new(),
+        },
+    );
+    sessions.insert(
+        "other-session-slot".to_string(),
+        CoworkerSession {
+            session: None,
+            slot_id: "other-session-slot".to_string(),
+            name: "other".to_string(),
+            status: SessionStatus::Running,
+            started_at: now,
+            session_id: Some("lead-session-xyz".to_string()),
+            initial_prompt: None,
+            cost_usd: 0.0,
+            input_tokens: 0,
+            output_tokens: 0,
+            last_event_at: Some(now),
+            has_usage_limit: false,
+            usage_limit_reset_at: None,
+            has_api_error: false,
+            has_auth_error: false,
+            has_running_subagent: false,
+            has_pending_tool: false,
+            has_tool_name_conflict: false,
+            has_pending_api_call: false,
+            is_resume: false,
+            output_log: None,
+            output_log_path: PathBuf::new(),
+        },
+    );
+
+    let live_slot = SessionManager::select_slot_for_session_id(&sessions, "lead-session-abc", true)
+        .expect("should prefer live session with matching session_id");
+    assert_eq!(live_slot, "live-slot");
+
+    let any_slot = SessionManager::select_slot_for_session_id(&sessions, "lead-session-abc", false)
+        .expect("should return a matching slot when including stopped");
+    assert_eq!(any_slot, "live-slot");
+
+    let missing = SessionManager::select_slot_for_session_id(&sessions, "missing-session", true);
+    assert!(missing.is_none());
+}
+
+#[test]
 fn test_parse_usage_limit_with_time() {
     // Test parsing "resets 10am (America/Chicago)"
     let msg = "You've hit your limit · resets 10am (America/Chicago) · /upgrade to increase";
