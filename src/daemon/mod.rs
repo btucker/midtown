@@ -3265,10 +3265,8 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                         // Emit PrOpened workflow event if we know the task's channel.
                         if let Some(author) = &pr_opened.author_coworker {
                             let task_channel = {
-                                let ps = state.persistent_state.try_lock().ok();
-                                ps.and_then(|ps| {
-                                    ps.task_channel.get(&task_id.to_string()).cloned()
-                                })
+                                let ps = state.persistent_state.lock().await;
+                                ps.task_channel.get(&task_id.to_string()).cloned()
                             };
                             if let Some(ch) = task_channel {
                                 pr_effects.push(effects::Effect::EmitWorkflowEvent(
@@ -3314,13 +3312,14 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                     // Auto-complete task when PR title contains [Midtown #XX]
                     if let Some(pr_merged_info) = webhook_event.pr_merged_info {
                         // Look up the task's channel for workflow event routing.
-                        let task_channel = crate::tasks::extract_task_id_from_pr_title(
-                            &pr_merged_info.title,
-                        )
-                        .and_then(|task_id| {
-                            let ps = state.persistent_state.try_lock().ok()?;
+                        let task_channel = if let Some(task_id) =
+                            crate::tasks::extract_task_id_from_pr_title(&pr_merged_info.title)
+                        {
+                            let ps = state.persistent_state.lock().await;
                             ps.task_channel.get(&task_id.to_string()).cloned()
-                        });
+                        } else {
+                            None
+                        };
                         let completion_effects = dispatch::build_task_completion_effects(
                             &pr_merged_info.title,
                             pr_merged_info.pr_number,
