@@ -98,9 +98,9 @@ When the daemon starts, it executes a careful cleanup and recovery sequence in `
 
 6. **Session recovery** — `recover_from_session_records()` generates `ResumeCoworker` effects for each resumable session (those with `is_running=true` and `resume_on_startup=true`). The old process is NOT killed here — it dies naturally from the broken pipe when its previous daemon's handles are closed. A fresh `claude --resume <session_id>` process is spawned to continue the session.
 
-7. **Stale flag cleanup** — `clear_stale_running_sessions()` clears the `is_running` flag for any session not included in the recovered set. This covers sessions skipped by `recover_from_session_records` for any reason (non-resumable, reviewer without a PR number, or dropped by name deduplication).
+7. **Channel lead mapping recovery** — `recover_channel_lead_session_mappings()` reconstructs `channel_lead_sessions` from persisted `SessionRecord`s before stale-session cleanup. It filters to root channel leads (`coworker_type=channel-lead`, no `bound_thread_id`, and `resume_on_startup=true`) and keeps the newest session per channel. Mappings are restored independently of `is_running`.
 
-8. **Channel lead session cleanup** — `channel_lead_sessions` is cleared on startup. Channel leads are on-demand — they stay dormant until triggered by a user message, task creation, insight, or nudge. No channel lead sessions are spawned at startup.
+8. **Stale flag cleanup** — `clear_stale_running_sessions()` clears the `is_running` flag for any session not included in the recovered set. This includes channel lead records that are not part of coworker recovery, so stale "alive" flags do not block dispatch or resume logic.
 
 ## Coworkers
 
@@ -123,6 +123,8 @@ Each coworker runs as:
 
 This mirrors the Codex session pattern (`read_stdout_loop` / `read_stderr_loop` in `CodexSharedRuntime`) and ensures the child process never blocks on a full 64 KB kernel pipe buffer regardless of output volume.
 
+**Codex runtime reuse:** In `src/headless.rs`, `CODEX_RUNTIME` is a `HashMap` keyed by profile (`codex-runtime|<CODEX_HOME>`), not a single global process. The daemon now shares one app-server per profile and reuses it across sessions, while isolating runtime state between profiles.
+
 ### Session-Centric Model
 
 The daemon uses a **session-centric model** where Claude Code sessions (keyed by session ID) are the primary coordination entity. Names are ephemeral labels drawn from an LRU pool.
@@ -130,6 +132,8 @@ The daemon uses a **session-centric model** where Claude Code sessions (keyed by
 **NamePool** (`src/name_pool.rs`): Manhattan avenue names (lexington, park, madison, broadway, amsterdam, columbus, riverside, york, pleasant, vernon) are managed in an LRU queue. When a session spawns, it allocates a name from the front of the queue. When it shuts down, the name returns to the back. Preferred name hints allow a resumed session to get its previous name when available, preserving branch and worktree continuity. Name allocation and release both clear the agent's mailbox inbox to prevent message bleed between sessions (see Mailbox Messaging).
 
 **SessionRecord** (`src/daemon/state.rs`): Each session is tracked by a `SessionRecord` containing session ID, task ID, current and preferred names, worktree path, branch, PR number, and running state. Records persist across daemon restarts in `persistent_state.json`.
+
+**Resume fallback path** (`spawn_with_resume_fallback` in `src/daemon/effects.rs`): Resume effects first attempt the requested resume mode and automatically fall back to a fresh spawn if resume fails. The fallback injects a handoff prompt with the prior context so the new session can continue the work with minimal context loss instead of dropping the request.
 
 **Dispatch** (`src/daemon/dispatch.rs`): Two dispatch paths handle session recovery. **Path 1** (`dispatch_via_sessions_with_task_lookup`, called from `dispatch_via_sessions()`) examines in-progress tasks with session records. For stopped sessions, it emits `SpawnSession` effects with `resume=true` and the session's preferred name, unless the coworker is an active reviewer or the session was recently recovered (per-session cooldown prevents re-recovery spam). This replaces the legacy orphan-recovery pattern with a unified session-aware dispatch path.
 
@@ -209,9 +213,11 @@ Channel leads are headless Claude Code sessions attached to individual topic cha
 - **Insight posted** to the channel (via `handle_insight_report`)
 - **Explicit nudge** (@mention routing, task feedback)
 
-All triggers use the `NudgeChannelLead { channel_name, reason }` effect. The execution layer in `effects.rs` handles the decision: if the session is alive, it sends a nudge message; if dead with a session ID from this daemon run, it resumes; if dead with no session ID, it spawns fresh with the trigger context baked into the initial prompt. The project lead is the channel lead for the main channel — `NudgeChannelLead` routes to the project lead's dual-path nudge (headless session manager or headed intercom) when the channel is the default channel.
+All triggers use the `NudgeChannelLead { channel_name, reason }` effect. The execution layer in `effects.rs` routes with session-id-first behavior to avoid name collisions: it tries `send_message_to_session_id()` using the stored channel mapping; if stale/missing, it refreshes from the active named session; if resume is possible, it uses `spawn_with_resume_fallback(...)` and then sends to the resumed/fresh session; otherwise it spawns fresh and persists the new session ID.
 
-Channel leads participate in normal idle shutdown (same timeout as coworkers). The `channel_lead_sessions` map is cleared on daemon startup, so all sessions within a run are fresh. `WakeReason` (in `src/daemon/wake_reason.rs`) captures why a session is being woken and provides formatting for both nudge messages and initial prompts.
+The project lead is the channel lead for the main channel — `NudgeChannelLead` routes to the project lead's dual-path nudge (headless session manager or headed intercom) when the channel is the default channel.
+
+Channel leads participate in normal idle shutdown (same timeout as coworkers). The `channel_lead_sessions` map is rebuilt at startup from session records and then maintained during runtime; `WakeReason` (in `src/daemon/wake_reason.rs`) captures why a session is being woken and provides formatting for both nudge messages and initial prompts.
 
 Note: `route_mentions()` is intentionally disabled for topic channels — user `@coworker` and `@all` mentions in topic channels are silently dropped; only the channel lead nudge path is active.
 
