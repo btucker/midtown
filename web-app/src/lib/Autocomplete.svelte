@@ -40,9 +40,11 @@
     style:top="{position.top}px"
     style:left="{position.left}px"
     style:width={position.width ? `${position.width}px` : 'auto'}
+    data-testid="autocomplete-dropdown"
   >
     {#each items as item, i}
       <button
+        data-testid="autocomplete-item"
         type="button"
         class="flex flex-col items-start gap-0.5 px-3.5 py-2.5 w-full border-none bg-transparent text-foreground text-left cursor-pointer transition-colors duration-150 border-b border-border last:border-b-0 hover:bg-accent {i === selectedIndex ? 'highlighted bg-accent' : ''}"
         onclick={() => handleItemClick(item)}

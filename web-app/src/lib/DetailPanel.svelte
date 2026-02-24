@@ -61,7 +61,10 @@
 <svelte:window onkeydown={handleKeydown} />
 
 {#if panelData}
-  <div class="hidden lg:flex flex-col h-full bg-card border-l-2 border-border [grid-area:detail]">
+  <div
+    class="hidden lg:flex flex-col h-full bg-card border-l-2 border-border [grid-area:detail]"
+    data-testid="detail-panel"
+  >
     <div class="flex items-center justify-between px-[18px] py-4 bg-card border-b-2 border-border shrink-0">
       <h2 class="text-base font-bold text-foreground">
         {#if panelData.type === 'task'}

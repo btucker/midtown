@@ -1,6 +1,6 @@
 // @ts-check
 import { test, expect } from '@playwright/test'
-import { mockAllRoutes, MOCK_STATUS } from './helpers.js'
+import { mockAllRoutes, DETAIL_TASK_ID, THREAD_TASK_ID } from './helpers.js'
 
 test.describe('Status view', () => {
   test.beforeEach(async ({ page }) => {
@@ -24,9 +24,9 @@ test.describe('Status view', () => {
       const response = await fetch('/api/status')
       return response.json()
     })
-    expect(statusData.coworkers).toHaveLength(2)
-    expect(statusData.coworkers[0].name).toBe('park')
-    expect(statusData.coworkers[0].status).toBe('active')
+    expect(statusData.coworkers.length).toBeGreaterThanOrEqual(3)
+    const park = statusData.coworkers.find((c) => c.name === 'park')
+    expect(park).toMatchObject({ status: 'active', phase: 'dev', task_id: DETAIL_TASK_ID })
   })
 
   test('task data is available via API', async ({ page }) => {
@@ -34,8 +34,20 @@ test.describe('Status view', () => {
       const response = await fetch('/api/status')
       return response.json()
     })
-    expect(statusData.tasks).toHaveLength(3)
-    expect(statusData.tasks[0].subject).toBe('Fix login bug')
+    expect(statusData.tasks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: DETAIL_TASK_ID,
+          subject: 'Harden Playwright mocks',
+          status: 'in_progress',
+        }),
+        expect.objectContaining({
+          id: THREAD_TASK_ID,
+          subject: 'Discuss thread UX polish',
+          status: 'pending',
+        }),
+      ])
+    )
   })
 
   test('coworker status is shown in sidebar footer', async ({ page }) => {

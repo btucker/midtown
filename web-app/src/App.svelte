@@ -171,6 +171,7 @@
           <div class="header-controls">
             <AuthSwitcher />
             <button
+              data-testid="theme-toggle"
               class="theme-toggle"
               onclick={toggleTheme}
               title={$theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}

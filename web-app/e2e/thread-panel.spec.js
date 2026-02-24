@@ -1,0 +1,54 @@
+// @ts-check
+import { test, expect } from '@playwright/test'
+import { loadApp, getSentWebSocketMessages } from './helpers.js'
+
+test.describe('Thread panel', () => {
+  test.beforeEach(async ({ page }) => {
+    await loadApp(page)
+  })
+
+  test('opens from reply button and shows parent content', async ({ page }) => {
+    const message = page.getByTestId('message-row').first()
+    const summary = message.getByTestId('thread-summary')
+    await expect(summary).toBeVisible()
+    await expect(summary).toContainText('2 replies')
+
+    await message.hover()
+    const replyButton = message.getByTestId('thread-reply-button')
+    await replyButton.click()
+
+    const panel = page.getByTestId('thread-panel')
+    await expect(panel).toBeVisible()
+    await expect(panel.getByTestId('thread-parent')).toContainText('Starting the sprint')
+
+    await page.getByTestId('thread-close-button').click()
+    await expect(panel).toBeHidden()
+  })
+
+  test('sends a reply via Enter key', async ({ page }) => {
+    const summary = page.getByTestId('thread-summary').first()
+    await expect(summary).toBeVisible()
+    await summary.click()
+    await expect(page.getByTestId('thread-panel')).toBeVisible()
+    const input = page.getByTestId('thread-input').first()
+    await input.fill('Thread reply from test')
+    await page.keyboard.press('Enter')
+
+    const messages = await getSentWebSocketMessages(page)
+    expect(messages).toContainEqual(
+      expect.objectContaining({
+        content: 'Thread reply from test',
+        channel: 'midtown',
+        thread_parent_id: 'msg-1',
+      })
+    )
+  })
+
+  test('Escape key closes the thread panel', async ({ page }) => {
+    await page.getByTestId('thread-summary').first().click()
+    const panel = page.getByTestId('thread-panel')
+    await expect(panel).toBeVisible()
+    await page.keyboard.press('Escape')
+    await expect(panel).toBeHidden()
+  })
+})

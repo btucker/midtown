@@ -635,6 +635,7 @@
       {:else}
         {#each channelMessages as msg, i}
           <div
+            data-testid="message-row"
             in:fly={{ y: 16, duration: isNewMessage($activeChannel, i) ? 180 : 0, opacity: 0 }}
             class="group relative -mx-[18px] px-[18px] rounded-sm hover:bg-accent/30"
             class:mobile-thread-tappable={!$isWideScreen && !msg.thread_parent_id}
@@ -642,6 +643,7 @@
           >
           {#if !msg.thread_parent_id}
             <button
+              data-testid="thread-reply-button"
               class="hidden lg:flex absolute right-2 top-[1px] items-center gap-1 px-1.5 py-[1px] rounded text-[0.68rem] text-muted-foreground cursor-pointer opacity-0 pointer-events-none transition-opacity duration-150 group-hover:opacity-100 group-hover:pointer-events-auto focus:opacity-100 focus:pointer-events-auto hover:text-foreground"
               onclick={() => openThread(msg, $activeChannel)}
               aria-label="Reply in thread"
@@ -657,8 +659,19 @@
             <div
               class="mt-1 whitespace-nowrap overflow-hidden text-ellipsis flex items-center gap-[7px]"
             >
-              <span class="font-mono font-semibold text-[0.82rem]" style="color: {getSenderColor(msg.from)}">{msg.from}</span>
-              <span class="text-muted-foreground/50 text-[0.72rem] select-none">{formatTime(msg.timestamp)}</span>
+              <span
+                class="font-mono font-semibold text-[0.82rem]"
+                style="color: {getSenderColor(msg.from)}"
+                data-testid="message-sender"
+              >
+                {msg.from}
+              </span>
+              <span
+                class="text-muted-foreground/50 text-[0.72rem] select-none"
+                data-testid="message-time"
+              >
+                {formatTime(msg.timestamp)}
+              </span>
               {#if currentTasks[msg.from.toLowerCase()]}
                 <span class="text-muted-foreground text-[0.78rem]"> — {currentTasks[msg.from.toLowerCase()]}</span>
               {/if}
@@ -723,6 +736,7 @@
             <div class="flex gap-0">
               <span class="flex-shrink-0 w-[3.7em] mr-[0.5em]"></span>
               <button
+                data-testid="thread-summary"
                 class="flex items-center gap-1.5 text-[0.75rem] text-link-default hover:text-link-hover cursor-pointer bg-transparent border-none p-0 mt-0.5"
                 onclick={() => openThread(msg, $activeChannel)}
               >
@@ -747,7 +761,7 @@
        In the main channel ('midtown'), dots are driven by lead_working (same signal as
        the TUI braille spinner). In topic channels, InProgress tool items drive the dots —
        channel leads don't have a separate lead_working signal. -->
-  <div class="h-[1.5em] flex items-center gap-[6px] px-[18px] text-[0.82rem] overflow-hidden whitespace-nowrap shrink-0">
+  <div class="h-[1.5em] flex items-center gap-[6px] px-[18px] text-[0.82rem] overflow-hidden whitespace-nowrap shrink-0" data-testid="activity-strip">
     {#if showActivity}
       {#if showDots}
         <span class="typing-dots flex gap-[3px] items-center">
@@ -792,7 +806,7 @@
     />
     <form class="flex flex-col gap-2 px-3 pt-2 pb-1 bg-card border-t border-border" onsubmit={handleSubmit}>
       {#if pendingFile}
-        <div class="relative inline-block max-w-[200px] border border-border rounded-lg p-2 bg-card">
+        <div class="relative inline-block max-w-[200px] border border-border rounded-lg p-2 bg-card" data-testid="file-preview">
           {#if pendingFile.type.startsWith('image/')}
             <img src={URL.createObjectURL(pendingFile)} alt="Preview" class="max-w-full max-h-[120px] rounded block" />
           {:else}
@@ -813,6 +827,7 @@
       {/if}
       <div class="flex gap-2 w-full">
         <textarea
+          data-testid="channel-input"
           bind:this={textareaElement}
           bind:value={inputText}
           placeholder="Message to #{$activeChannel}..."
@@ -825,6 +840,7 @@
         <button
           type="submit"
           disabled={!inputText.trim() && !pendingFile || uploading}
+          data-testid="send-button"
           class="py-[13px] px-[22px] border-none rounded-[26px] bg-primary text-primary-foreground font-bold cursor-pointer transition-all duration-200 text-[0.95rem] tracking-[0.01em] disabled:opacity-40 disabled:cursor-not-allowed hover:bg-primary/90 hover:-translate-y-[1px] active:translate-y-0 not-disabled:hover:bg-primary/90"
         >
           {uploading ? 'Uploading...' : 'Send'}
@@ -836,7 +852,7 @@
 
 <!-- Task detail modal (opened by clicking !N task links in chat) -->
 <Dialog.Root open={selectedTask != null} onOpenChange={(open) => { if (!open) selectedTask = null }}>
-  <Dialog.Content class="bg-card rounded-[9px] p-[18px] max-w-[420px] max-h-[80vh] overflow-y-auto border border-border">
+  <Dialog.Content class="bg-card rounded-[9px] p-[18px] max-w-[420px] max-h-[80vh] overflow-y-auto border border-border" data-testid="task-modal">
     <Dialog.Header>
       <div class="flex items-center gap-[9px]">
         <span class="text-primary font-mono text-[0.88rem]">!{selectedTask?.id}</span>

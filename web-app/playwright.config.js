@@ -1,6 +1,7 @@
 import { defineConfig } from '@playwright/test'
 
-const webPort = process.env.MIDTOWN_WEB_PORT || 47022
+const defaultWebPort = 47111
+const webPort = process.env.MIDTOWN_WEB_PORT || defaultWebPort
 
 // Use preview server for SW tests (PWA disabled in dev mode)
 const isSwTest = process.env.TEST_SW === '1'
@@ -25,9 +26,9 @@ export default defineConfig({
   ...(!process.env.MIDTOWN_WEB_PORT && {
     webServer: {
       command: isSwTest
-        ? 'npm run preview -- --port 47022 --strictPort'
-        : 'npm run dev -- --port 47022 --strictPort',
-      port: 47022,
+        ? `npm run preview -- --port ${defaultWebPort} --strictPort`
+        : `npm run dev -- --port ${defaultWebPort} --strictPort`,
+      port: defaultWebPort,
       reuseExistingServer: true,
     },
   }),

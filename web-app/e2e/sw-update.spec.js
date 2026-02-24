@@ -2,6 +2,8 @@
 import { test, expect } from '@playwright/test'
 import { mockAllRoutes } from './helpers.js'
 
+const describeSw = process.env.TEST_SW === '1' ? test.describe : test.describe.skip
+
 /**
  * Service Worker Update E2E Tests
  *
@@ -14,7 +16,7 @@ import { mockAllRoutes } from './helpers.js'
  * We test the mechanisms are wired up correctly rather than the full Workbox internals.
  */
 
-test.describe('Service Worker Registration', () => {
+describeSw('Service Worker Registration', () => {
   test.beforeEach(async ({ page }) => {
     await mockAllRoutes(page)
   })
@@ -80,7 +82,7 @@ test.describe('Service Worker Registration', () => {
   })
 })
 
-test.describe('Service Worker Update Mechanism', () => {
+describeSw('Service Worker Update Mechanism', () => {
   test.beforeEach(async ({ page }) => {
     await mockAllRoutes(page)
   })
@@ -134,7 +136,7 @@ test.describe('Service Worker Update Mechanism', () => {
   })
 })
 
-test.describe('Service Worker Precaching', () => {
+describeSw('Service Worker Precaching', () => {
   test.beforeEach(async ({ page }) => {
     await mockAllRoutes(page)
   })
@@ -181,7 +183,7 @@ test.describe('Service Worker Precaching', () => {
   })
 })
 
-test.describe('Offline Support', () => {
+describeSw('Offline Support', () => {
   test.beforeEach(async ({ page }) => {
     await mockAllRoutes(page)
   })
