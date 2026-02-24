@@ -444,8 +444,8 @@ We share a GitHub API rate limit across the daemon, lead, and all coworkers. **D
 - Don't run `gh pr list` to check PR status — read the channel instead
 - **NEVER merge before addressing review feedback.** Every review comment must be either addressed in the PR or deferred via `midtown task request` before merging.
 - If `gh pr view <number> --json reviewDecision --jq .reviewDecision` returns `CHANGES_REQUESTED`, do not merge yet.
-- **Also check issue comments for `<!-- midtown:` reviews** — human coworker reviews are posted there, not in the formal reviews list. `gh pr view --json reviews` alone is not enough.
-- **If the lead or user says NOT to merge**, that overrides CI, review approval, and everything else. Read the channel before merging.
+- **Also check issue comments for `<!-- midtown:` reviews** — human coworker reviews are posted there, not in the formal reviews list. Treat them exactly like formal review feedback: reply immediately, fix the issues (or `midtown task request` out-of-scope items), and never merge while anything remains unresolved.
+- **If the lead or user says NOT to merge**, stop immediately — that instruction overrides CI status, review approval, and everything else. Ask in the channel for clarification before proceeding.
 - Do NOT enable auto-merge when creating the PR — wait for review first
 - **NEVER enable auto-merge based on a "review in progress" placeholder** — see the verification steps above for how to confirm a review is complete.
 - After a completed review exists and all feedback is addressed/deferred, enable auto-merge: `gh pr merge --auto --squash`

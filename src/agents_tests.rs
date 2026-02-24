@@ -356,6 +356,18 @@ fn test_coworker_prompt_requires_issue_comment_reviews() {
         prompt.contains(r#"gh pr view <number> --comments --json comments"#),
         "Coworker prompt should instruct checking recent PR comments for late requests"
     );
+    assert!(
+        prompt.contains("never merge while anything remains unresolved"),
+        "Coworker prompt should emphasize no merging with unresolved review feedback"
+    );
+    assert!(
+        prompt.contains("stop immediately"),
+        "Coworker prompt should instruct stopping immediately when lead/user says not to merge"
+    );
+    assert!(
+        prompt.contains("Only after all three checks are clean"),
+        "Coworker prompt should gate auto-merge on all three pre-merge checks passing"
+    );
 }
 
 #[test]
