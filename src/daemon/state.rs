@@ -17,6 +17,20 @@ use crate::github_state::GitHubState;
 use crate::reminders::ReminderState;
 use crate::worktree_registry::WorktreeRegistry;
 
+/// Per-profile usage state for pool-based profile selection.
+///
+/// Persisted in `DaemonPersistentState::profile_pool_state` keyed by profile email.
+/// Used by the profile pool selector to skip limited profiles and pick LRU.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ProfileState {
+    /// Whether this profile is currently at a usage limit.
+    pub is_usage_limited: bool,
+    /// When the usage limit resets (if known).
+    pub usage_limit_reset_at: Option<DateTime<Utc>>,
+    /// When this profile was last used to spawn a coworker.
+    pub last_used_at: Option<DateTime<Utc>>,
+}
+
 /// A session record for the session-centric coworker model.
 ///
 /// Keyed by `session_id` in `DaemonPersistentState::sessions`.
@@ -197,6 +211,13 @@ pub struct DaemonPersistentState {
     /// Maps session_id → SessionRecord. Primary store for coworker session state.
     #[serde(default)]
     pub sessions: HashMap<String, SessionRecord>,
+
+    /// Per-profile usage and LRU state for pool-based profile selection.
+    ///
+    /// Maps profile email → ProfileState. Persists across daemon restarts
+    /// so LRU ordering and usage-limit state survive restarts.
+    #[serde(default)]
+    pub profile_pool_state: HashMap<String, ProfileState>,
 }
 
 impl DaemonPersistentState {
@@ -304,6 +325,7 @@ impl DaemonPersistentState {
             task_message_id: HashMap::new(),
             channel_lead_sessions: HashMap::new(),
             sessions: HashMap::new(),
+            profile_pool_state: HashMap::new(),
         };
 
         // Save the unified file

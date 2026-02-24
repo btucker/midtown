@@ -588,6 +588,19 @@ pub struct ExecutionSection {
     /// Provider override for ad-hoc `headless.execute` RPC.
     #[serde(default)]
     pub headless_execute_provider: Option<crate::auth::AuthProvider>,
+    /// Pool of auth profile emails for coworker spawning.
+    /// Takes precedence over `coworker_provider` when set.
+    /// Example: ["alice@example.com", "bob@example.com"]
+    #[serde(default)]
+    pub coworker_profiles: Option<Vec<String>>,
+    /// Pool of auth profile emails for reviewer spawning.
+    /// Takes precedence over `reviewer_provider` when set.
+    #[serde(default)]
+    pub reviewer_profiles: Option<Vec<String>>,
+    /// Pool of auth profile emails for channel lead spawning.
+    /// Takes precedence over `channel_lead_provider` when set.
+    #[serde(default)]
+    pub channel_lead_profiles: Option<Vec<String>>,
 }
 
 impl ExecutionSection {
@@ -604,6 +617,18 @@ impl ExecutionSection {
             headless_execute_provider: other
                 .headless_execute_provider
                 .or(self.headless_execute_provider),
+            coworker_profiles: other
+                .coworker_profiles
+                .clone()
+                .or_else(|| self.coworker_profiles.clone()),
+            reviewer_profiles: other
+                .reviewer_profiles
+                .clone()
+                .or_else(|| self.reviewer_profiles.clone()),
+            channel_lead_profiles: other
+                .channel_lead_profiles
+                .clone()
+                .or_else(|| self.channel_lead_profiles.clone()),
         }
     }
 }
@@ -2356,6 +2381,7 @@ webhook_port = 47024
             channel_lead_provider: None,
             specialized_provider: None,
             headless_execute_provider: None,
+            ..ExecutionSection::default()
         };
         let project = ExecutionSection {
             lead_provider: Some(crate::auth::AuthProvider::Codex),
@@ -2366,6 +2392,7 @@ webhook_port = 47024
             channel_lead_provider: None,
             specialized_provider: None,
             headless_execute_provider: None,
+            ..ExecutionSection::default()
         };
 
         let merged = global.merge(&project);
@@ -3028,6 +3055,69 @@ name = "test"
         assert_eq!(
             config.channel_leads.model_for_channel("any-channel"),
             "sonnet"
+        );
+    }
+
+    #[test]
+    fn coworker_profiles_pool_parses() {
+        let toml = r#"
+[execution]
+coworker_profiles = ["alice@example.com", "bob@example.com"]
+"#;
+        let config: FullProjectConfig = toml::from_str(toml).unwrap();
+        assert_eq!(
+            config.execution.coworker_profiles,
+            Some(vec![
+                "alice@example.com".to_string(),
+                "bob@example.com".to_string()
+            ])
+        );
+    }
+
+    #[test]
+    fn coworker_profiles_empty_is_none() {
+        let toml = r#"
+[execution]
+"#;
+        let config: FullProjectConfig = toml::from_str(toml).unwrap();
+        assert!(config.execution.coworker_profiles.is_none());
+    }
+
+    #[test]
+    fn reviewer_and_channel_lead_profiles_parse() {
+        let toml = r#"
+[execution]
+reviewer_profiles = ["reviewer@example.com"]
+channel_lead_profiles = ["lead@example.com", "lead2@example.com"]
+"#;
+        let config: FullProjectConfig = toml::from_str(toml).unwrap();
+        assert_eq!(
+            config.execution.reviewer_profiles,
+            Some(vec!["reviewer@example.com".to_string()])
+        );
+        assert_eq!(
+            config.execution.channel_lead_profiles,
+            Some(vec![
+                "lead@example.com".to_string(),
+                "lead2@example.com".to_string()
+            ])
+        );
+    }
+
+    #[test]
+    fn profile_pool_fields_merge_correctly() {
+        let base = ExecutionSection {
+            coworker_profiles: Some(vec!["base@example.com".to_string()]),
+            ..ExecutionSection::default()
+        };
+        let override_section = ExecutionSection {
+            coworker_profiles: Some(vec!["override@example.com".to_string()]),
+            ..ExecutionSection::default()
+        };
+        let merged = base.merge(&override_section);
+        assert_eq!(
+            merged.coworker_profiles,
+            Some(vec!["override@example.com".to_string()])
         );
     }
 }
