@@ -588,6 +588,19 @@ pub struct ExecutionSection {
     /// Provider override for ad-hoc `headless.execute` RPC.
     #[serde(default)]
     pub headless_execute_provider: Option<crate::auth::AuthProvider>,
+    /// Pool of auth profile emails for coworker spawning.
+    /// Takes precedence over `coworker_provider` when set.
+    /// Example: ["alice@example.com", "bob@example.com"]
+    #[serde(default)]
+    pub coworker_profiles: Option<Vec<String>>,
+    /// Pool of auth profile emails for reviewer spawning.
+    /// Takes precedence over `reviewer_provider` when set.
+    #[serde(default)]
+    pub reviewer_profiles: Option<Vec<String>>,
+    /// Pool of auth profile emails for channel lead spawning.
+    /// Takes precedence over `channel_lead_provider` when set.
+    #[serde(default)]
+    pub channel_lead_profiles: Option<Vec<String>>,
 }
 
 impl ExecutionSection {
@@ -604,6 +617,18 @@ impl ExecutionSection {
             headless_execute_provider: other
                 .headless_execute_provider
                 .or(self.headless_execute_provider),
+            coworker_profiles: other
+                .coworker_profiles
+                .clone()
+                .or_else(|| self.coworker_profiles.clone()),
+            reviewer_profiles: other
+                .reviewer_profiles
+                .clone()
+                .or_else(|| self.reviewer_profiles.clone()),
+            channel_lead_profiles: other
+                .channel_lead_profiles
+                .clone()
+                .or_else(|| self.channel_lead_profiles.clone()),
         }
     }
 }
@@ -2356,6 +2381,7 @@ webhook_port = 47024
             channel_lead_provider: None,
             specialized_provider: None,
             headless_execute_provider: None,
+            ..ExecutionSection::default()
         };
         let project = ExecutionSection {
             lead_provider: Some(crate::auth::AuthProvider::Codex),
@@ -2366,6 +2392,7 @@ webhook_port = 47024
             channel_lead_provider: None,
             specialized_provider: None,
             headless_execute_provider: None,
+            ..ExecutionSection::default()
         };
 
         let merged = global.merge(&project);
@@ -3031,3 +3058,7 @@ name = "test"
         );
     }
 }
+
+#[path = "config_tests.rs"]
+#[cfg(test)]
+mod config_tests;

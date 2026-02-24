@@ -143,6 +143,14 @@ On daemon startup, the `NamePool` is restored from persisted session records: na
 
 **Daemon-controlled session IDs**: `spawn_coworker()` returns `Result<String>` — the session ID used for the spawn. For fresh sessions, a UUID is generated upfront and passed to the CLI via `--session-id`, so the daemon knows the session ID immediately at spawn time. For resumed sessions, the existing session ID from `SessionMode::ResumeSession` is reused. This eliminates the race window where `name_to_session`, `session_to_name`, and `channel_lead_sessions` were empty until the init StreamEvent arrived. All callers of `spawn_coworker` (effects.rs handlers, `expedite_lead_respawn_on_user_message`) capture the returned session ID and update their state eagerly.
 
+**Auth Profile Pool** (optional): When `[execution].coworker_profiles` (or `reviewer_profiles`, `channel_lead_profiles`) is set in config, `spawn_coworker()` selects an auth profile using an LRU-among-available strategy before resolving `auth_profile_dir`:
+1. Filter profiles where `ProfileState.is_usage_limited` is `true` in `DaemonPersistentState.profile_pool_state`.
+2. Among available profiles, pick LRU by `ProfileState.last_used_at` (never-used profiles preferred with `last_used_at = None`).
+3. If all profiles are limited, fall back to the single-profile path (existing behavior).
+4. On success, update `last_used_at` in `profile_pool_state` and save state.
+
+`DaemonPersistentState.profile_pool_state` (`HashMap<String, ProfileState>`) persists per-profile usage state across daemon restarts. `ProfileState` tracks `is_usage_limited`, `usage_limit_reset_at`, and `last_used_at`. Tasks 2 and 3 of the pool feature wire up limit detection and clearing (see tasks !1777, !1778).
+
 ## Prompt Architecture
 
 Prompts are assembled from composable markdown files in `agents/` and loaded at runtime by `src/agents.rs`. The file-based approach allows customization without recompilation: the binary embeds defaults, but `agents/` in the git repo root (or `~/.midtown/agents/`) takes precedence.

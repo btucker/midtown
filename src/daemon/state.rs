@@ -17,6 +17,20 @@ use crate::github_state::GitHubState;
 use crate::reminders::ReminderState;
 use crate::worktree_registry::WorktreeRegistry;
 
+/// Per-profile usage state for pool-based profile selection.
+///
+/// Persisted in `DaemonPersistentState::profile_pool_state` keyed by profile email.
+/// Used by the profile pool selector to skip limited profiles and pick LRU.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ProfileState {
+    /// Whether this profile is currently at a usage limit.
+    pub is_usage_limited: bool,
+    /// When the usage limit resets (if known).
+    pub usage_limit_reset_at: Option<DateTime<Utc>>,
+    /// When this profile was last used to spawn a coworker.
+    pub last_used_at: Option<DateTime<Utc>>,
+}
+
 /// A session record for the session-centric coworker model.
 ///
 /// Keyed by `session_id` in `DaemonPersistentState::sessions`.
@@ -197,6 +211,13 @@ pub struct DaemonPersistentState {
     /// Maps session_id → SessionRecord. Primary store for coworker session state.
     #[serde(default)]
     pub sessions: HashMap<String, SessionRecord>,
+
+    /// Per-profile usage and LRU state for pool-based profile selection.
+    ///
+    /// Maps profile email → ProfileState. Persists across daemon restarts
+    /// so LRU ordering and usage-limit state survive restarts.
+    #[serde(default)]
+    pub profile_pool_state: HashMap<String, ProfileState>,
 }
 
 impl DaemonPersistentState {
@@ -216,7 +237,7 @@ impl DaemonPersistentState {
                 // Rebuild reverse indexes that aren't serialized
                 state.worktree_registry.rebuild_indexes();
                 debug!(
-                    "Loaded daemon state: {} PR reviewers, {} reminders, CI stats: {}, {} worktree assignments, {} task-channel mappings, {} task-model mappings, {} task-plan mappings, {} task-execution-skill mappings, {} task-thread-id mappings, {} task-message-id mappings, {} channel-lead sessions",
+                    "Loaded daemon state: {} PR reviewers, {} reminders, CI stats: {}, {} worktree assignments, {} task-channel mappings, {} task-model mappings, {} task-plan mappings, {} task-execution-skill mappings, {} task-thread-id mappings, {} task-message-id mappings, {} channel-lead sessions, {} profile-pool entries",
                     state.github.pr_reviewers.len(),
                     state.reminders.reminders.len(),
                     state.ci_stats.summary(),
@@ -227,7 +248,8 @@ impl DaemonPersistentState {
                     state.task_execution_skill.len(),
                     state.task_thread_id.len(),
                     state.task_message_id.len(),
-                    state.channel_lead_sessions.len()
+                    state.channel_lead_sessions.len(),
+                    state.profile_pool_state.len()
                 );
                 Ok(state)
             }
@@ -250,7 +272,7 @@ impl DaemonPersistentState {
         fs::write(&tmp_path, &contents)?;
         crate::paths::atomic_rename(&tmp_path, &path)?;
         debug!(
-            "Saved daemon state: {} PR reviewers, {} reminders, CI stats: {}, {} worktree assignments, {} task-channel mappings, {} task-model mappings, {} task-plan mappings, {} task-execution-skill mappings, {} channel-lead sessions",
+            "Saved daemon state: {} PR reviewers, {} reminders, CI stats: {}, {} worktree assignments, {} task-channel mappings, {} task-model mappings, {} task-plan mappings, {} task-execution-skill mappings, {} channel-lead sessions, {} profile-pool entries",
             self.github.pr_reviewers.len(),
             self.reminders.reminders.len(),
             self.ci_stats.summary(),
@@ -259,7 +281,8 @@ impl DaemonPersistentState {
             self.task_model.len(),
             self.task_plan.len(),
             self.task_execution_skill.len(),
-            self.channel_lead_sessions.len()
+            self.channel_lead_sessions.len(),
+            self.profile_pool_state.len()
         );
         Ok(())
     }
@@ -304,6 +327,7 @@ impl DaemonPersistentState {
             task_message_id: HashMap::new(),
             channel_lead_sessions: HashMap::new(),
             sessions: HashMap::new(),
+            profile_pool_state: HashMap::new(),
         };
 
         // Save the unified file

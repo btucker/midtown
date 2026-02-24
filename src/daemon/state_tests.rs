@@ -653,3 +653,90 @@ fn test_fork_bound_threads_cleaned_up_on_name_reuse() {
         "Stale fork_bound_threads entry must not persist after cleanup + reuse without binding"
     );
 }
+
+#[test]
+fn profile_state_serializes_round_trip() {
+    let state = ProfileState {
+        is_usage_limited: true,
+        usage_limit_reset_at: None,
+        last_used_at: None,
+    };
+    let json = serde_json::to_string(&state).unwrap();
+    let parsed: ProfileState = serde_json::from_str(&json).unwrap();
+    assert!(parsed.is_usage_limited);
+    assert!(parsed.usage_limit_reset_at.is_none());
+    assert!(parsed.last_used_at.is_none());
+}
+
+#[test]
+fn profile_state_with_timestamps_round_trips() {
+    use chrono::TimeZone;
+    let reset_at = chrono::Utc.with_ymd_and_hms(2026, 3, 1, 12, 0, 0).unwrap();
+    let last_used = chrono::Utc.with_ymd_and_hms(2026, 2, 24, 8, 0, 0).unwrap();
+    let state = ProfileState {
+        is_usage_limited: true,
+        usage_limit_reset_at: Some(reset_at),
+        last_used_at: Some(last_used),
+    };
+    let json = serde_json::to_string(&state).unwrap();
+    let parsed: ProfileState = serde_json::from_str(&json).unwrap();
+    assert!(parsed.is_usage_limited);
+    assert_eq!(parsed.usage_limit_reset_at, Some(reset_at));
+    assert_eq!(parsed.last_used_at, Some(last_used));
+}
+
+#[test]
+fn profile_pool_state_in_daemon_persistent_state() {
+    let mut state = DaemonPersistentState::default();
+    state.profile_pool_state.insert(
+        "alice@example.com".to_string(),
+        ProfileState {
+            is_usage_limited: false,
+            usage_limit_reset_at: None,
+            last_used_at: None,
+        },
+    );
+    state.profile_pool_state.insert(
+        "bob@example.com".to_string(),
+        ProfileState {
+            is_usage_limited: true,
+            usage_limit_reset_at: None,
+            last_used_at: None,
+        },
+    );
+
+    let json = serde_json::to_string_pretty(&state).unwrap();
+    let loaded: DaemonPersistentState = serde_json::from_str(&json).unwrap();
+
+    assert_eq!(loaded.profile_pool_state.len(), 2);
+    assert!(
+        !loaded
+            .profile_pool_state
+            .get("alice@example.com")
+            .unwrap()
+            .is_usage_limited
+    );
+    assert!(
+        loaded
+            .profile_pool_state
+            .get("bob@example.com")
+            .unwrap()
+            .is_usage_limited
+    );
+}
+
+#[test]
+fn profile_pool_state_default_empty() {
+    // Existing state without profile_pool_state should deserialize fine.
+    let json = r#"{"github": {}, "reminders": {"reminders": []}}"#;
+    let state: DaemonPersistentState = serde_json::from_str(json).unwrap();
+    assert!(state.profile_pool_state.is_empty());
+}
+
+#[test]
+fn profile_state_default_is_not_limited() {
+    let state = ProfileState::default();
+    assert!(!state.is_usage_limited);
+    assert!(state.usage_limit_reset_at.is_none());
+    assert!(state.last_used_at.is_none());
+}
