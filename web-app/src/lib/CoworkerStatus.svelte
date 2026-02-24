@@ -87,9 +87,9 @@
 </script>
 
 {#if activeCoworkers.length > 0}
-  <div class="overflow-hidden rounded-md border-2 border-[#2a2a2a] bg-[#0a0a0a]">
-    <div class="border-b border-[#1a1a1a] px-3 py-2">
-      <span class="text-[0.75rem] font-bold tracking-wide text-[#5fafaf]">
+  <div class="overflow-hidden rounded-md border-2 border-sidebar-border bg-sidebar">
+    <div class="border-b border-sidebar-border px-3 py-2">
+      <span class="text-[0.75rem] font-bold tracking-wide text-sidebar-primary">
         Coworkers ({activeCoworkers.length}/{$maxCoworkers})
       </span>
     </div>
@@ -100,18 +100,18 @@
             <span class="shrink-0 text-base leading-none text-[#d7af5f]">{getSpinner()}</span>
             <span class="shrink-0 font-medium lowercase" style="color: {getHealthColor(cw.health)}">{cw.name}</span>
             {#if cw.phase}
-              <span class="hidden text-[0.75rem] text-[#808080] sm:inline">{cw.phase}</span>
+              <span class="hidden text-[0.75rem] text-muted-foreground sm:inline">{cw.phase}</span>
             {/if}
             {#if cw.task_id}
               <button
-                class="hidden text-[0.7rem] text-[#606060] hover:text-[#5fafaf] transition-colors duration-100 cursor-pointer bg-transparent border-none p-0 sm:inline"
+                class="hidden text-[0.7rem] text-muted-foreground hover:text-primary transition-colors duration-100 cursor-pointer bg-transparent border-none p-0 sm:inline"
                 onclick={() => openTaskDetail(cw.task_id)}
                 title="View task details"
               >!{cw.task_id}</button>
             {/if}
             {#if cw.pr_number}
               <a
-                class="hidden text-[0.7rem] text-[#606060] hover:text-[#5faf5f] transition-colors duration-100 sm:inline"
+                class="hidden text-[0.7rem] text-muted-foreground hover:text-primary transition-colors duration-100 sm:inline"
                 href={getPrUrl(cw.pr_number)}
                 target="_blank"
                 rel="noopener"
@@ -121,16 +121,16 @@
             {/if}
             <span class="flex-1"></span>
             {#if cw.time_estimate}
-              <span class="text-[0.7rem] text-[#5faf5f]">{cw.time_estimate}</span>
+              <span class="text-[0.7rem] text-primary">{cw.time_estimate}</span>
             {:else if cw.progress !== undefined && cw.progress !== null}
-              <span class="text-[0.7rem] text-[#5fafaf]">{cw.progress}%</span>
+              <span class="text-[0.7rem] text-accent-teal">{cw.progress}%</span>
             {/if}
           </div>
           {#if cw.progress !== undefined && cw.progress !== null}
             <div class="ml-[26px] flex items-center gap-1.5">
-              <div class="flex-1 h-1 bg-[#2a2a2a] rounded-full overflow-hidden">
+              <div class="flex-1 h-1 bg-sidebar-accent rounded-full overflow-hidden">
                 <div
-                  class="h-full bg-[#5fafaf] rounded-full transition-all duration-500"
+                  class="h-full bg-accent-teal rounded-full transition-all duration-500"
                   style="width: {cw.progress}%"
                 ></div>
               </div>

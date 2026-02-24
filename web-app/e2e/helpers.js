@@ -43,13 +43,25 @@ export const MOCK_STATUS = {
     {
       name: 'park',
       status: 'active',
+      phase: 'developing',
+      task_id: 1762,
+      pr_number: 1499,
+      progress: 42,
+      time_estimate: '~8m',
+      health: 'green',
       current_task: 'Add Playwright e2e tests',
       started_at: '2025-01-15T09:00:00Z',
     },
     {
       name: 'amsterdam',
-      status: 'idle',
-      current_task: null,
+      status: 'active',
+      phase: 'reviewing',
+      task_id: 1758,
+      pr_number: 1492,
+      progress: 78,
+      time_estimate: null,
+      health: 'yellow',
+      current_task: 'Review merge workflow PR',
       started_at: '2025-01-15T08:30:00Z',
     },
   ],
@@ -96,6 +108,27 @@ export const MOCK_LEAD_PANE = {
   content: 'claude> Running tests...\n$ npm test\nAll 42 tests passed.',
 }
 
+export const MOCK_USAGE = [
+  {
+    provider: 'claude',
+    profile: 'default',
+    account_email: 'lead@example.com',
+    session_util: 32,
+    session_resets: new Date(Date.now() + 1000 * 60 * 45).toISOString(),
+    week_util: 58,
+    week_resets: new Date(Date.now() + 1000 * 60 * 60 * 24 * 3).toISOString(),
+  },
+  {
+    provider: 'codex',
+    profile: 'fast',
+    account_email: 'codex@example.com',
+    session_util: 12,
+    session_resets: new Date(Date.now() + 1000 * 60 * 30).toISOString(),
+    week_util: 80,
+    week_resets: new Date(Date.now() + 1000 * 60 * 60 * 24 * 2).toISOString(),
+  },
+]
+
 /**
  * Intercept all API routes with mock data.
  * Also stubs WebSocket so the page doesn't fail trying to connect to a real daemon.
@@ -109,6 +142,7 @@ export async function mockAllRoutes(page, overrides = {}) {
   const msgs = overrides.messages ?? MOCK_MESSAGES
   const status = overrides.status ?? MOCK_STATUS
   const leadPane = overrides.leadPane ?? MOCK_LEAD_PANE
+  const usage = overrides.usage ?? MOCK_USAGE
 
   await page.route('**/api/projects', (route) =>
     route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(MOCK_PROJECTS) })
@@ -132,5 +166,9 @@ export async function mockAllRoutes(page, overrides = {}) {
 
   await page.route('**/api/lead-pane', (route) =>
     route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(leadPane) })
+  )
+
+  await page.route('**/api/usage', (route) =>
+    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ usage }) })
   )
 }

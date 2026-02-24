@@ -19,28 +19,28 @@
   }
 </script>
 
-<div class="hidden md:block bg-[#1a1a1a] border-b-2 border-[#2a2a2a] shrink-0">
+<div class="hidden md:block bg-card border-b-2 border-border shrink-0">
   <div class="flex items-center justify-between px-4 py-3">
     <!-- Left: channel name + task/PR badges -->
     <div class="flex items-center gap-3 flex-1 min-w-0">
       <div class="flex items-baseline gap-1 shrink-0">
-        <span class="text-[1.2rem] text-[#606060] font-bold">#</span>
-        <span class="text-[1.1rem] font-bold font-mono text-[#d0d0d0]">{$activeChannel}</span>
+        <span class="text-[1.2rem] text-muted-foreground font-bold">#</span>
+        <span class="text-[1.1rem] font-bold font-mono text-foreground">{$activeChannel}</span>
       </div>
       {#if totalTasks > 0 || channelPrs.length > 0}
         <div class="flex items-center gap-1.5 flex-wrap">
           {#if channelPrs.length > 0}
-            <span class="text-[0.75rem] px-2 py-[3px] rounded-xl font-semibold whitespace-nowrap bg-[#2a3a5a] text-[#5f87af]" title="{channelPrs.length} active PR{channelPrs.length === 1 ? '' : 's'}">
+            <span class="text-[0.75rem] px-2 py-[3px] rounded-xl font-semibold whitespace-nowrap bg-blue-100 text-blue-700 dark:bg-blue-950/80 dark:text-blue-400" title="{channelPrs.length} active PR{channelPrs.length === 1 ? '' : 's'}">
               {channelPrs.length} PR{channelPrs.length === 1 ? '' : 's'}
             </span>
           {/if}
           {#if channelCounts.inProgress > 0}
-            <span class="text-[0.75rem] px-2 py-[3px] rounded-xl font-semibold whitespace-nowrap bg-[#2a3a2a] text-[#5faf5f]" title="{channelCounts.inProgress} in progress">
+            <span class="text-[0.75rem] px-2 py-[3px] rounded-xl font-semibold whitespace-nowrap bg-green-100 text-green-700 dark:bg-green-950/80 dark:text-green-500" title="{channelCounts.inProgress} in progress">
               {channelCounts.inProgress} in progress
             </span>
           {/if}
           {#if channelCounts.pending > 0}
-            <span class="text-[0.75rem] px-2 py-[3px] rounded-xl font-semibold whitespace-nowrap bg-[#3a3a2a] text-[#af5faf]" title="{channelCounts.pending} pending">
+            <span class="text-[0.75rem] px-2 py-[3px] rounded-xl font-semibold whitespace-nowrap bg-purple-100 text-purple-700 dark:bg-purple-950/80 dark:text-purple-400" title="{channelCounts.pending} pending">
               {channelCounts.pending} pending
             </span>
           {/if}
