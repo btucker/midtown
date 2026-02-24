@@ -285,13 +285,26 @@ pub(super) async fn handle_channel_post(
             // Truncate message for nudge (max 100 chars)
             let summary = truncate_str(&content, 100);
 
-            let nudge_msg = format!(
-                "{} mentioned @{} ({}): {}",
-                from,
-                state.repo_name,
-                msg.thread_anchor_id(),
-                summary
-            );
+            let nudge_msg = if let Some(parent_id) = thread_parent_id {
+                format!(
+                    "{} mentioned @{} ({}): {}\n\nThis is a thread reply. To reply in the thread:\n  \
+                     midtown channel post \"...\" --thread {parent_id} --channel {channel_name}\n\
+                     To read recent thread context:\n  \
+                     midtown channel read --last 50 --channel {channel_name}",
+                    from,
+                    state.repo_name,
+                    msg.thread_anchor_id(),
+                    summary
+                )
+            } else {
+                format!(
+                    "{} mentioned @{} ({}): {}",
+                    from,
+                    state.repo_name,
+                    msg.thread_anchor_id(),
+                    summary
+                )
+            };
             info!(
                 "Nudging Lead about @{} mention from {}",
                 state.repo_name, from

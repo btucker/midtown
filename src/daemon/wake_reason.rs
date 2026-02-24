@@ -17,6 +17,8 @@ pub enum WakeReason {
         insight: String,
         agent: String,
         msg_id: String,
+        task_id: Option<String>,
+        channel_name: String,
     },
 
     // ── Coworker triggers ──────────────────────────────────────────────
@@ -57,11 +59,20 @@ impl WakeReason {
                 insight,
                 agent,
                 msg_id,
+                task_id,
+                channel_name,
             } => {
+                let header = if let Some(tid) = task_id {
+                    format!("{agent} working on !{tid} posted an insight in #{channel_name}:")
+                } else {
+                    format!("{agent} posted an insight in #{channel_name}:")
+                };
                 format!(
-                    "{agent} posted an insight:\n\n{insight}\n\n\
-                     If you have additional context, reply in the thread: \
-                     midtown channel post \"...\" --thread {msg_id}"
+                    "{header}\n\n{insight}\n\n\
+                     ONLY reply in the thread if you can add genuine value — additional context, \
+                     a correction, or a connection to prior work. Do NOT reply just to acknowledge.\n\n\
+                     To reply in the thread:\n  \
+                     midtown channel post \"...\" --thread {msg_id} --channel {channel_name}"
                 )
             }
             Self::TaskAssigned { task_id, subject } => {
@@ -120,13 +131,26 @@ impl WakeReason {
                      2. Respond to the user's message"
                 )
             }
-            Self::InsightPosted { insight, agent, .. } => {
+            Self::InsightPosted {
+                insight,
+                agent,
+                task_id,
+                msg_id,
+                channel_name: insight_channel,
+                ..
+            } => {
+                let header = if let Some(tid) = task_id {
+                    format!("{agent} working on !{tid} posted an insight in #{insight_channel}:")
+                } else {
+                    format!("{agent} posted an insight in #{insight_channel}:")
+                };
                 format!(
-                    "## Wake trigger\n{agent} posted an insight in your channel:\n  \
-                     {insight}\n\n\
+                    "## Wake trigger\n{header}\n  {insight}\n\n\
                      ## First Actions\n\
                      1. Read recent messages in #{channel_name} for context\n\
-                     2. If you have additional context, reply in the thread"
+                     2. ONLY reply in the thread if you can add genuine value — additional context, \
+                     a correction, or a connection to prior work. Do NOT reply just to acknowledge.\n   \
+                     midtown channel post \"...\" --thread {msg_id} --channel {insight_channel}"
                 )
             }
             _ => {
