@@ -268,7 +268,7 @@ Migration runs once per `base_dir` per process (via `OnceLock`) and is idempoten
 - `channel.create` — Create a new channel directory; idempotent (no-op if channel already exists)
 - `channel.archive` — Rename `channels/<name>/` to `channels/<name>.archived/`; returns an error if the channel does not exist or if archiving 'midtown'
 - `channel.unarchive` — Rename `channels/<name>.archived/` back to `channels/<name>/`; returns an error if the channel is not archived or if another active channel of the same name exists
-- `channel.rename` — Rename `channels/<old>/` to `channels/<new>/`; updates `task_channel`, `channel_lead_sessions`, and `sessions` in persistent state; shuts down the old channel lead session; returns an error if the old channel does not exist, the new name is invalid/already exists, or if renaming 'midtown'
+- `channel.rename` — Rename `channels/<old>/` to `channels/<new>/`; updates `task_channel`, `channel_lead_sessions`, and session records in persistent state; shuts down the old channel lead session; returns an error if the old channel does not exist, the new name is invalid/already exists, or if renaming 'midtown'
 - `channel.list` — Return all channels, optionally including archived ones
 
 > Note: Channels are no longer auto-archived when all tasks complete. Archiving and unarchiving are explicit user actions via the CLI/RPC methods above.

@@ -712,8 +712,8 @@ fn test_snapshot_includes_session_fields() {
 }
 
 /// Precondition test: the captured bug snapshot has coworkers running but the
-/// sessions map is empty. This demonstrates the bug where spawn_coworker() writes
-/// to headless_sessions (name-keyed) but not to sessions (session-ID-keyed).
+/// sessions map is empty. This demonstrates a historical bug where spawn_coworker()
+/// populated name-keyed state but not the session-ID-keyed sessions map.
 #[test]
 fn test_captured_snapshot_has_empty_sessions_despite_running_coworkers() {
     let fixture = include_str!(
