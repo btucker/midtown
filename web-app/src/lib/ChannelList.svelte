@@ -2,7 +2,7 @@
   import { SvelteSet } from 'svelte/reactivity'
   import { channels, activeChannel, kanbanData, activeProject, messagesByChannel, showArchivedChannels } from './store.js'
   import { fetchHistory, fetchChannels, getApiBase, closeThread } from './api.js'
-  import { getChannelTaskCount, getChannelCiStatus } from './channelUtils.js'
+  import { getChannelTaskCount, getChannelCiStatus, getChannelHasActiveTasks } from './channelUtils.js'
   import TaskList from './TaskList.svelte'
   import ArchiveIcon from '@lucide/svelte/icons/archive'
 
@@ -32,6 +32,12 @@
     closeThread()
 
     activeChannel.set(channelName)
+
+    // Auto-expand task list when selecting a channel that has active tasks.
+    // Never auto-collapse — preserve any manual expansions the user has set.
+    if (getChannelHasActiveTasks(channelName, $kanbanData)) {
+      expandedChannels.add(channelName)
+    }
 
     // Clear unread count for this channel
     channels.update((channelList) =>

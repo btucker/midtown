@@ -93,6 +93,15 @@ export function getChannelCiStatus(channelName, kanban) {
 }
 
 /**
+ * Returns true if a channel has any active tasks (in-progress or pending).
+ * Used to determine whether to auto-expand the task list on channel select.
+ */
+export function getChannelHasActiveTasks(channelName, kanban) {
+  const counts = getChannelTaskCount(channelName, kanban)
+  return counts.inProgress > 0 || counts.pending > 0
+}
+
+/**
  * Get active PRs for a channel, using task_id → channel lookup.
  * Main channel shows all PRs, topic channels filter by task channel.
  */
