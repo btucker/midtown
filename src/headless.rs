@@ -516,8 +516,9 @@ impl CodexSharedRuntime {
     }
 
     async fn read_stdout_loop(self: Arc<Self>, mut reader: BufReader<tokio::process::ChildStdout>) {
+        let mut line = String::new();
         loop {
-            let mut line = String::new();
+            line.clear();
             match reader.read_line(&mut line).await {
                 Ok(0) => {
                     debug!("Shared Codex app-server stdout closed");
@@ -555,8 +556,9 @@ impl CodexSharedRuntime {
     }
 
     async fn read_stderr_loop(self: Arc<Self>, mut reader: BufReader<tokio::process::ChildStderr>) {
+        let mut line = String::new();
         loop {
-            let mut line = String::new();
+            line.clear();
             match reader.read_line(&mut line).await {
                 Ok(0) => break,
                 Ok(_) => {
@@ -1129,8 +1131,10 @@ fn codex_launch_plan_from_config(config: &HeadlessConfig) -> Result<CodexLaunchP
 /// and optionally send follow-up messages.
 pub struct HeadlessSession {
     child: Option<Child>,
-    stdout_reader: Option<BufReader<tokio::process::ChildStdout>>,
-    stderr_reader: Option<BufReader<tokio::process::ChildStderr>>,
+    /// Receives parsed stdout events from the background reader task (Claude sessions only).
+    stdout_rx: Option<mpsc::UnboundedReceiver<StreamEvent>>,
+    /// Receives stderr lines from the background reader task (Claude sessions only).
+    stderr_rx: Option<mpsc::UnboundedReceiver<String>>,
     stdin: Option<tokio::process::ChildStdin>,
     session_id: Option<String>,
     backend: HeadlessSessionBackend,
@@ -1250,32 +1254,14 @@ impl HeadlessSessionBackend {
     async fn drain_stderr(self, session: &mut HeadlessSession) -> Vec<String> {
         match self {
             Self::Claude => {
-                let mut lines = Vec::new();
-                let mut line = String::new();
-                let reader = session
-                    .stderr_reader
+                let rx = session
+                    .stderr_rx
                     .as_mut()
-                    .expect("missing claude stderr reader");
-
-                for _ in 0..100 {
-                    line.clear();
-                    match tokio::time::timeout(
-                        Duration::from_millis(10),
-                        reader.read_line(&mut line),
-                    )
-                    .await
-                    {
-                        Ok(Ok(0)) => break,
-                        Ok(Ok(_)) => {
-                            let trimmed = line.trim();
-                            if !trimmed.is_empty() {
-                                lines.push(trimmed.to_string());
-                            }
-                        }
-                        Ok(Err(_)) | Err(_) => break,
-                    }
+                    .expect("missing claude stderr channel");
+                let mut lines = Vec::new();
+                while let Ok(line) = rx.try_recv() {
+                    lines.push(line);
                 }
-
                 lines
             }
             Self::Codex => {
@@ -1301,6 +1287,77 @@ impl HeadlessSessionBackend {
 
     fn should_wait_for_exit(self) -> bool {
         matches!(self, Self::Claude)
+    }
+}
+
+/// Background task: continuously drains Claude stdout into an unbounded channel.
+///
+/// Parsing happens here so the OS pipe buffer is never left unread.  The
+/// channel is heap-backed (unbounded mpsc), so the child process can write at
+/// full speed without stalling on a 64 KB kernel pipe buffer.
+async fn claude_stdout_reader_loop(
+    mut reader: BufReader<tokio::process::ChildStdout>,
+    tx: mpsc::UnboundedSender<StreamEvent>,
+) {
+    let mut line = String::new();
+    loop {
+        line.clear();
+        match reader.read_line(&mut line).await {
+            Ok(0) => {
+                debug!("Claude session stdout closed");
+                break;
+            }
+            Ok(_) => {
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                match serde_json::from_str::<StreamEvent>(trimmed) {
+                    Ok(StreamEvent::Unknown) => {
+                        debug!("Skipping unknown headless event type: {}", trimmed);
+                    }
+                    Ok(event) => {
+                        if tx.send(event).is_err() {
+                            // Receiver dropped — session is gone, stop reading.
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        warn!("Failed to parse headless event: {} (line: {})", e, trimmed);
+                    }
+                }
+            }
+            Err(e) => {
+                warn!("Error reading headless session stdout: {}", e);
+                break;
+            }
+        }
+    }
+}
+
+/// Background task: continuously drains Claude stderr into an unbounded channel.
+///
+/// Keeping stderr drained prevents the same pipe-buffer stall as stdout.
+async fn claude_stderr_reader_loop(
+    mut reader: BufReader<tokio::process::ChildStderr>,
+    tx: mpsc::UnboundedSender<String>,
+) {
+    let mut line = String::new();
+    loop {
+        line.clear();
+        match reader.read_line(&mut line).await {
+            Ok(0) => break,
+            Ok(_) => {
+                let trimmed = line.trim();
+                if !trimmed.is_empty() && tx.send(trimmed.to_string()).is_err() {
+                    break;
+                }
+            }
+            Err(e) => {
+                warn!("Error reading headless session stderr: {}", e);
+                break;
+            }
+        }
     }
 }
 
@@ -1346,8 +1403,8 @@ impl CodexHeadlessAdapter {
 
         Ok(HeadlessSession {
             child: None,
-            stdout_reader: None,
-            stderr_reader: None,
+            stdout_rx: None,
+            stderr_rx: None,
             stdin: None,
             session_id: None,
             backend: HeadlessSessionBackend::Codex,
@@ -1437,8 +1494,12 @@ impl ClaudeHeadlessAdapter {
             .take()
             .ok_or_else(|| std::io::Error::other("failed to capture stderr"))?;
         let stdin = child.stdin.take();
-        let stdout_reader = BufReader::new(stdout);
-        let stderr_reader = BufReader::new(stderr);
+
+        let (stdout_tx, stdout_rx) = mpsc::unbounded_channel();
+        tokio::spawn(claude_stdout_reader_loop(BufReader::new(stdout), stdout_tx));
+
+        let (stderr_tx, stderr_rx) = mpsc::unbounded_channel();
+        tokio::spawn(claude_stderr_reader_loop(BufReader::new(stderr), stderr_tx));
 
         info!(
             "Spawned headless {:?} session (model={}, resume={})",
@@ -1449,8 +1510,8 @@ impl ClaudeHeadlessAdapter {
 
         Ok(HeadlessSession {
             child: Some(child),
-            stdout_reader: Some(stdout_reader),
-            stderr_reader: Some(stderr_reader),
+            stdout_rx: Some(stdout_rx),
+            stderr_rx: Some(stderr_rx),
             stdin,
             session_id: None,
             backend: HeadlessSessionBackend::Claude,
@@ -1675,52 +1736,22 @@ impl HeadlessSession {
     }
 
     async fn next_claude_event(&mut self) -> Option<StreamEvent> {
-        loop {
-            let mut line = String::new();
-            let reader = self
-                .stdout_reader
-                .as_mut()
-                .expect("missing claude stdout reader");
-            match reader.read_line(&mut line).await {
-                Ok(0) => {
-                    debug!("Headless session stdout closed");
-                    return None;
-                }
-                Ok(_) => {
-                    let trimmed = line.trim();
-                    if trimmed.is_empty() {
-                        continue;
-                    }
-                    match serde_json::from_str::<StreamEvent>(trimmed) {
-                        Ok(StreamEvent::Unknown) => {
-                            debug!("Skipping unknown headless event type: {}", trimmed);
-                            continue;
-                        }
-                        Ok(event) => {
-                            // Track session_id from init event
-                            if let StreamEvent::System {
-                                ref subtype,
-                                ref session_id,
-                                ..
-                            } = event
-                                && subtype == "init"
-                            {
-                                self.session_id = session_id.clone();
-                            }
-                            return Some(event);
-                        }
-                        Err(e) => {
-                            warn!("Failed to parse headless event: {} (line: {})", e, trimmed);
-                            continue;
-                        }
-                    }
-                }
-                Err(e) => {
-                    warn!("Error reading headless session stdout: {}", e);
-                    return None;
-                }
-            }
+        let rx = self
+            .stdout_rx
+            .as_mut()
+            .expect("missing claude stdout channel");
+        let event = rx.recv().await?;
+        // Track session_id from init event (background task already filtered Unknown events).
+        if let StreamEvent::System {
+            ref subtype,
+            ref session_id,
+            ..
+        } = event
+            && subtype == "init"
+        {
+            self.session_id = session_id.clone();
         }
+        Some(event)
     }
 
     async fn next_codex_event(&mut self) -> Option<StreamEvent> {

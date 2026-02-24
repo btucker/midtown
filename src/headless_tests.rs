@@ -48,8 +48,8 @@ fn test_codex_state() -> CodexProtocolState {
 fn test_claude_session() -> HeadlessSession {
     HeadlessSession {
         child: None,
-        stdout_reader: None,
-        stderr_reader: None,
+        stdout_rx: None,
+        stderr_rx: None,
         stdin: None,
         session_id: None,
         backend: HeadlessSessionBackend::Claude,
@@ -62,8 +62,8 @@ fn test_claude_session() -> HeadlessSession {
 fn test_codex_session() -> HeadlessSession {
     HeadlessSession {
         child: None,
-        stdout_reader: None,
-        stderr_reader: None,
+        stdout_rx: None,
+        stderr_rx: None,
         stdin: None,
         session_id: None,
         backend: HeadlessSessionBackend::Codex,
