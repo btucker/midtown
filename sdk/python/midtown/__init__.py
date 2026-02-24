@@ -24,6 +24,7 @@ import os
 import socket
 import sys
 import tempfile
+import uuid
 from pathlib import Path
 from typing import Any, Callable
 
@@ -52,7 +53,6 @@ class MidtownRPC:
 
     def __init__(self, socket_path: str) -> None:
         self._socket_path = socket_path
-        self._next_id = 1
 
     # ------------------------------------------------------------------
     # Transport
@@ -62,9 +62,15 @@ class MidtownRPC:
         """Send a JSON-RPC request and return the result.
 
         Raises :class:`RpcError` if the daemon responds with an error object.
+
+        Request IDs are UUID4 strings to avoid cross-process collisions.  The
+        daemon caches successful RPC responses by request ID for 60 seconds
+        (``src/daemon/rpc.rs``); a simple per-process counter resets to ``1``
+        on every ``uv run`` invocation, so two different workflow calls could
+        share the same ID within the cache TTL and one would receive a stale
+        result.  UUIDs are effectively unique across processes.
         """
-        request_id = self._next_id
-        self._next_id += 1
+        request_id = str(uuid.uuid4())
 
         request = {
             "jsonrpc": "2.0",
