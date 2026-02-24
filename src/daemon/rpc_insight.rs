@@ -74,11 +74,11 @@ pub(super) async fn handle_insight_report(
     // assigned task's channel so insights don't flood the main channel.
     let resolved_channel: Option<String> = if channel.is_none() {
         let ps = state.persistent_state.lock().await;
-        ps.headless_sessions
-            .get(agent)
-            .and_then(|s| s.task_id)
-            .map(|tid| tid.to_string())
-            .and_then(|tid| ps.task_channel.get(&tid).cloned())
+        ps.sessions
+            .values()
+            .find(|r| r.current_name.as_deref() == Some(agent))
+            .and_then(|r| r.task_id.as_deref())
+            .and_then(|tid| ps.task_channel.get(tid).cloned())
     } else {
         None
     };

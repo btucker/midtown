@@ -137,22 +137,13 @@ async fn test_insight_routes_to_task_channel_when_no_explicit_channel() {
     // Assign coworker1 to task 42 in channel "my-feature"
     {
         let mut ps = state.persistent_state.lock().await;
-        ps.headless_sessions.insert(
-            "coworker1".to_string(),
-            super::super::state::HeadlessSessionInfo {
+        ps.sessions.insert(
+            "test-session-id".to_string(),
+            super::super::state::SessionRecord {
                 session_id: "test-session-id".to_string(),
-                last_active: chrono::Utc::now(),
-                purpose: "task !42: some task".to_string(),
-                pid: None,
-                coworker_type: Some("dev".to_string()),
-                task_id: Some(42),
-                pr_number: None,
-                channel: None,
-                working_dir: None,
-                provider: None,
-                profile: None,
-                resume_on_startup: false,
-                initial_prompt: None,
+                task_id: Some("42".to_string()),
+                current_name: Some("coworker1".to_string()),
+                ..Default::default()
             },
         );
         ps.task_channel
