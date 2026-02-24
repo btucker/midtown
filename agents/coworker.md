@@ -391,19 +391,21 @@ repo=$(gh repo view --json nameWithOwner --jq .nameWithOwner)
 gh api "repos/$repo/issues/<PR_NUMBER>/comments" \
   --jq '.[] | select(.body | contains("<!-- midtown:")) | "\(.user.login): \(.body[:500])"'
 ```
-Human coworker reviews are posted as issue comments with `<!-- midtown: reviewer_name -->` frontmatter — they do **NOT** appear in `gh pr view --json reviews`. You MUST check issue comments explicitly and address every issue listed in those reviews before merging. Treat them exactly like formal review feedback.
+Human coworker reviews are posted as issue comments with `<!-- midtown: reviewer_name -->` frontmatter — they do **NOT** appear in `gh pr view --json reviews`. You MUST check issue comments explicitly and address every issue listed there before merging. Treat them exactly like formal review feedback: reply immediately, fix the issues (or `midtown task request` out-of-scope items), and never merge while anything remains unresolved.
 
 **2. Check the channel to see if the lead or user has said NOT to merge:**
 ```bash
 midtown channel read | grep -i "don't merge\|do not merge\|hold\|stop.*merge\|<PR_NUMBER>"
 ```
-If the lead (`{project_name}`) or user has posted anything saying to hold, not merge, or stop — **do NOT merge, regardless of CI status or review approval.** Post to the channel asking for clarification before proceeding.
+If the lead (`{project_name}`) or user has posted anything telling you to hold or not merge, **stop immediately** — that instruction overrides CI status, review approval, and everything else. Ask in the channel for clarification before proceeding.
 
 **3. Check for late-arriving user comments:**
 ```bash
 gh pr view <number> --comments --json comments --jq '.comments[-3:][] | "\(.author.login): \(.body[:120])"'
 ```
 The user (repo owner) may leave additional requests after the reviewer posts. Merging without addressing these is a process failure.
+
+Only after all three checks are clean should you continue to the auto-merge commands below.
 
 **Verify a completed review exists** before enabling auto-merge. Accept any of:
 - A formal GitHub review (`reviewDecision` is `APPROVED` or `CHANGES_REQUESTED`)
@@ -442,8 +444,8 @@ We share a GitHub API rate limit across the daemon, lead, and all coworkers. **D
 - Don't run `gh pr list` to check PR status — read the channel instead
 - **NEVER merge before addressing review feedback.** Every review comment must be either addressed in the PR or deferred via `midtown task request` before merging.
 - If `gh pr view <number> --json reviewDecision --jq .reviewDecision` returns `CHANGES_REQUESTED`, do not merge yet.
-- **Also check issue comments for `<!-- midtown:` reviews** — human coworker reviews are posted there, not in the formal reviews list. `gh pr view --json reviews` alone is not enough.
-- **If the lead or user says NOT to merge**, that overrides CI, review approval, and everything else. Read the channel before merging.
+- **Also check issue comments for `<!-- midtown:` reviews** — human coworker reviews are posted there, not in the formal reviews list. Treat them exactly like formal review feedback: reply immediately, fix the issues (or `midtown task request` out-of-scope items), and never merge while anything remains unresolved.
+- **If the lead or user says NOT to merge**, stop immediately — that instruction overrides CI status, review approval, and everything else. Ask in the channel for clarification before proceeding.
 - Do NOT enable auto-merge when creating the PR — wait for review first
 - **NEVER enable auto-merge based on a "review in progress" placeholder** — see the verification steps above for how to confirm a review is complete.
 - After a completed review exists and all feedback is addressed/deferred, enable auto-merge: `gh pr merge --auto --squash`

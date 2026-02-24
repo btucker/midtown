@@ -333,6 +333,44 @@ fn test_coworker_prompt_prevents_orphaned_branches() {
 }
 
 #[test]
+fn test_coworker_prompt_requires_issue_comment_reviews() {
+    let prompt = coworker_system_prompt("park", "midtown");
+
+    assert!(
+        prompt.contains("**Before merging**, complete ALL of these checks"),
+        "Coworker prompt should call out the explicit pre-merge checklist"
+    );
+    assert!(
+        prompt.contains(r#"gh api "repos/$repo/issues/<PR_NUMBER>/comments""#),
+        "Coworker prompt should show the issue-comment gh api command using the repo shorthand"
+    );
+    assert!(
+        prompt.contains("<!-- midtown:"),
+        "Coworker prompt should mention the frontmatter signature so reviewers are detected"
+    );
+    assert!(
+        prompt.contains(r#"midtown channel read | grep -i "don't merge\|do not merge\|hold\|stop.*merge\|<PR_NUMBER>""#),
+        "Coworker prompt should instruct checking the channel for 'do not merge' directives"
+    );
+    assert!(
+        prompt.contains(r#"gh pr view <number> --comments --json comments"#),
+        "Coworker prompt should instruct checking recent PR comments for late requests"
+    );
+    assert!(
+        prompt.contains("never merge while anything remains unresolved"),
+        "Coworker prompt should emphasize no merging with unresolved review feedback"
+    );
+    assert!(
+        prompt.contains("stop immediately"),
+        "Coworker prompt should instruct stopping immediately when lead/user says not to merge"
+    );
+    assert!(
+        prompt.contains("Only after all three checks are clean"),
+        "Coworker prompt should gate auto-merge on all three pre-merge checks passing"
+    );
+}
+
+#[test]
 fn test_main_lead_initial_prompt_structure() {
     let prompt = main_lead_initial_prompt("midtown", "main");
     assert!(prompt.contains("## Role"));
