@@ -677,3 +677,201 @@ fn test_code_block_long_line_truncated_to_content_width() {
         content_chars
     );
 }
+
+/// Code block with a language should show just the bare name (e.g. "rust"),
+/// not the old "--- rust ---" format.
+#[test]
+fn test_code_block_lang_label_is_bare_name() {
+    let msg = test_message("ignored");
+    let segments = vec![ContentSegment::CodeBlock {
+        language: "rust".to_string(),
+        source: "fn main() {}".to_string(),
+    }];
+
+    let cache = MermaidCache::new();
+    let current_tasks = HashMap::new();
+    let mut lines = Vec::new();
+    let mut diagram_sources = Vec::new();
+    let mut mermaid_to_render = Vec::new();
+
+    render_message_with_mermaid(
+        &msg,
+        &segments,
+        80,
+        Some("park"),
+        &current_tasks,
+        None,
+        &[],
+        &cache,
+        &mut lines,
+        &mut diagram_sources,
+        &mut mermaid_to_render,
+        false,
+    );
+
+    let all_text: String = lines
+        .iter()
+        .flat_map(|l| l.spans.iter())
+        .map(|s| s.content.as_ref())
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    assert!(
+        !all_text.contains("--- rust ---"),
+        "Should not show '--- rust ---' border, got: {}",
+        all_text
+    );
+    assert!(
+        all_text.contains("rust"),
+        "Should show bare language name 'rust', got: {}",
+        all_text
+    );
+}
+
+/// Code block should have no "--- end ---" bottom border.
+#[test]
+fn test_code_block_no_end_border() {
+    let msg = test_message("ignored");
+    let segments = vec![ContentSegment::CodeBlock {
+        language: "typescript".to_string(),
+        source: "const x = 1;".to_string(),
+    }];
+
+    let cache = MermaidCache::new();
+    let current_tasks = HashMap::new();
+    let mut lines = Vec::new();
+    let mut diagram_sources = Vec::new();
+    let mut mermaid_to_render = Vec::new();
+
+    render_message_with_mermaid(
+        &msg,
+        &segments,
+        80,
+        Some("park"),
+        &current_tasks,
+        None,
+        &[],
+        &cache,
+        &mut lines,
+        &mut diagram_sources,
+        &mut mermaid_to_render,
+        false,
+    );
+
+    let all_text: String = lines
+        .iter()
+        .flat_map(|l| l.spans.iter())
+        .map(|s| s.content.as_ref())
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    assert!(
+        !all_text.contains("--- end ---"),
+        "Should not show '--- end ---' border, got: {}",
+        all_text
+    );
+}
+
+/// Code block with empty language should omit the label line entirely.
+#[test]
+fn test_code_block_empty_lang_no_label() {
+    let msg = test_message("ignored");
+    let segments = vec![ContentSegment::CodeBlock {
+        language: "".to_string(),
+        source: "some code".to_string(),
+    }];
+
+    let cache = MermaidCache::new();
+    let current_tasks = HashMap::new();
+    let mut lines = Vec::new();
+    let mut diagram_sources = Vec::new();
+    let mut mermaid_to_render = Vec::new();
+
+    render_message_with_mermaid(
+        &msg,
+        &segments,
+        80,
+        Some("park"),
+        &current_tasks,
+        None,
+        &[],
+        &cache,
+        &mut lines,
+        &mut diagram_sources,
+        &mut mermaid_to_render,
+        false,
+    );
+
+    let all_text: String = lines
+        .iter()
+        .flat_map(|l| l.spans.iter())
+        .map(|s| s.content.as_ref())
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    assert!(
+        !all_text.contains("--- code ---"),
+        "Should not show '--- code ---' fallback label, got: {}",
+        all_text
+    );
+    // Only code content line(s) should be present, no lang label
+    assert!(
+        all_text.contains("some code") || lines.len() == 1,
+        "Should have code content but no label, got: {}",
+        all_text
+    );
+}
+
+/// Language label line should be styled DarkGray with no leading indent.
+#[test]
+fn test_code_block_lang_label_style_and_no_indent() {
+    let msg = test_message("ignored");
+    let segments = vec![ContentSegment::CodeBlock {
+        language: "python".to_string(),
+        source: "x = 1".to_string(),
+    }];
+
+    let cache = MermaidCache::new();
+    let current_tasks = HashMap::new();
+    let mut lines = Vec::new();
+    let mut diagram_sources = Vec::new();
+    let mut mermaid_to_render = Vec::new();
+
+    render_message_with_mermaid(
+        &msg,
+        &segments,
+        80,
+        Some("park"),
+        &current_tasks,
+        None,
+        &[],
+        &cache,
+        &mut lines,
+        &mut diagram_sources,
+        &mut mermaid_to_render,
+        false,
+    );
+
+    // Find the span containing just "python"
+    let lang_span = lines.iter().flat_map(|l| l.spans.iter()).find(|s| {
+        let text = s.content.as_ref();
+        text == "python" || text.trim() == "python"
+    });
+
+    assert!(
+        lang_span.is_some(),
+        "Should have a span with 'python' label"
+    );
+    let span = lang_span.unwrap();
+    assert_eq!(
+        span.style.fg,
+        Some(Color::DarkGray),
+        "Language label should be DarkGray"
+    );
+    // The label itself should not be indented (no leading spaces in the span)
+    assert!(
+        !span.content.starts_with(' '),
+        "Language label span should not start with spaces, got: {:?}",
+        span.content
+    );
+}

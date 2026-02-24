@@ -93,7 +93,7 @@ fn test_highlight_light_theme_produces_different_colors_than_dark() {
 }
 
 #[test]
-fn test_code_block_segment_renders_with_borders() {
+fn test_code_block_segment_renders_with_lang_label() {
     use std::collections::HashMap;
 
     use midtown::{Message, MessageType};
@@ -151,31 +151,27 @@ fn test_code_block_segment_renders_with_borders() {
     let all_text = all_lines_text.join("\n");
 
     assert!(
-        all_text.contains("--- rust ---"),
-        "Expected top border '--- rust ---', got: {}",
+        all_text.contains("rust"),
+        "Expected bare language label 'rust', got: {}",
         all_text
     );
     assert!(
-        all_text.contains("--- end ---"),
-        "Expected bottom border '--- end ---', got: {}",
+        !all_text.contains("--- rust ---"),
+        "Should not have '--- rust ---' border, got: {}",
+        all_text
+    );
+    assert!(
+        !all_text.contains("--- end ---"),
+        "Should not have '--- end ---' border, got: {}",
         all_text
     );
     // Check that fn main() {} appears somewhere across the highlighted spans
-    let code_lines: Vec<String> = lines
+    let code_text: String = lines
         .iter()
-        .skip(1) // skip border line
-        .take_while(|l| {
-            let text: String = l.spans.iter().map(|s| s.content.as_ref()).collect();
-            !text.contains("--- end ---")
-        })
-        .map(|l| {
-            l.spans
-                .iter()
-                .map(|s| s.content.as_ref())
-                .collect::<String>()
-        })
+        .skip(1) // skip lang label line
+        .flat_map(|l| l.spans.iter())
+        .map(|s| s.content.as_ref())
         .collect();
-    let code_text = code_lines.join("");
     assert!(
         code_text.contains("fn") && code_text.contains("main"),
         "Expected code content with 'fn' and 'main', got: {}",

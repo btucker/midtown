@@ -164,11 +164,13 @@ fn render_mermaid_segment(
     }
 }
 
-/// Render a fenced code block with syntax highlighting and borders.
+/// Render a fenced code block with syntax highlighting.
 ///
-/// Handles the timestamp gutter for the first line of the message when
-/// `is_first_content_line` is true (sets it to false after emitting the first line).
-/// Long code lines are truncated to `content_width` to prevent overflow on narrow terminals.
+/// Emits an optional bare language label (e.g. `rust`) in dim color before the
+/// code lines, with no bottom border. Handles the timestamp gutter for the first
+/// line of the message when `is_first_content_line` is true (sets it to false
+/// after emitting the first line). Long code lines are truncated to
+/// `content_width` to prevent overflow on narrow terminals.
 #[allow(clippy::too_many_arguments)]
 fn render_code_block_segment(
     msg: &midtown::Message,
@@ -182,20 +184,17 @@ fn render_code_block_segment(
 ) {
     let indent = " ".repeat(ctx.indent_width());
 
-    // Top border: "--- rust ---" (or "--- code ---" if no language)
-    let lang_display = if language.is_empty() {
-        "code"
-    } else {
-        language
-    };
-    let top_sep_text = format!("{}--- {} ---", indent, lang_display);
-    let top_sep_span = Span::styled(top_sep_text, Style::default().fg(Color::DarkGray));
-    let top_line = Line::from(vec![top_sep_span]);
-    if *is_first_content_line {
-        lines.push(build_first_content_line(msg, ctx, top_line));
-        *is_first_content_line = false;
-    } else {
-        lines.push(build_continuation_line(ctx, top_line));
+    // Language label: bare name in dim color, no indent (e.g. "rust").
+    // Omitted entirely when language is empty.
+    if !language.is_empty() {
+        let label_span = Span::styled(language.to_string(), Style::default().fg(Color::DarkGray));
+        let label_line = Line::from(vec![label_span]);
+        if *is_first_content_line {
+            lines.push(build_first_content_line(msg, ctx, label_line));
+            *is_first_content_line = false;
+        } else {
+            lines.push(build_continuation_line(ctx, label_line));
+        }
     }
 
     // Highlighted code lines, truncated to content_width
@@ -213,13 +212,13 @@ fn render_code_block_segment(
         }
         let mut spans = vec![Span::raw(indent.clone())];
         spans.extend(truncated_spans);
-        lines.push(Line::from(spans));
+        if *is_first_content_line {
+            lines.push(build_first_content_line(msg, ctx, Line::from(spans)));
+            *is_first_content_line = false;
+        } else {
+            lines.push(Line::from(spans));
+        }
     }
-
-    // Bottom border
-    let bottom_sep_text = format!("{}--- end ---", indent);
-    let bottom_sep_span = Span::styled(bottom_sep_text, Style::default().fg(Color::DarkGray));
-    lines.push(Line::from(vec![bottom_sep_span]));
 }
 
 #[path = "messages_mermaid_tests.rs"]
