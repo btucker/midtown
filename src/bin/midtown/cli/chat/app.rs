@@ -274,6 +274,15 @@ pub struct App {
     session_id: String,
     /// Whether initial messages have been loaded
     initial_load_done: bool,
+    /// In-memory byte offset for the active channel's read cursor.
+    ///
+    /// Initialised from `set_cursor_to_end` on channel open; updated after each
+    /// successful read; persisted to disk on channel switch and app exit.
+    /// Avoids two disk I/Os (cursor load + cursor save) on every `tailf` tick.
+    cursor_position: u64,
+    /// Last message ID read from the active channel (mirrors the disk cursor's
+    /// `last_message_id` but kept in memory to avoid disk reads).
+    cursor_last_message_id: Option<String>,
     /// Byte position where loaded history starts (0 means all history loaded)
     history_start_position: u64,
     /// Whether all history has been loaded
@@ -580,6 +589,8 @@ impl App {
             channel,
             session_id: uuid::Uuid::new_v4().to_string(),
             initial_load_done: false,
+            cursor_position: 0,
+            cursor_last_message_id: None,
             history_start_position: 0,
             history_fully_loaded: false,
             test_mode: false,
@@ -687,17 +698,29 @@ impl App {
                     self.history_fully_loaded = start_pos == 0;
                     self.scroll_offset = 0; // Start at bottom (most recent)
                 }
-                // Position cursor at EOF so read_since_cursor only gets NEW messages
-                let _ = channel.set_cursor_to_end("chat-tui", &self.session_id);
+                // Position cursor at EOF so subsequent reads only get NEW messages.
+                // Capture the position in memory so we avoid a disk load on every tick.
+                if let Ok((pos, last_id)) = channel.set_cursor_to_end("chat-tui", &self.session_id)
+                {
+                    self.cursor_position = pos;
+                    self.cursor_last_message_id = last_id;
+                }
                 self.initial_load_done = true;
                 return;
             }
 
-            // Read new messages since cursor position
-            // On subsequent calls, cursor tracks new messages arriving
-            if let Ok(new_messages) = channel.read_since_cursor("chat-tui", &self.session_id)
+            // Read new messages since our in-memory cursor position.
+            // No file lock is acquired — O_APPEND writes are atomic and we stop
+            // at the last complete newline, so reading is safe without locking.
+            if let Ok((new_messages, new_pos, new_last_id)) =
+                channel.read_messages_from_position(self.cursor_position)
                 && !new_messages.is_empty()
             {
+                self.cursor_position = new_pos;
+                if let Some(id) = new_last_id {
+                    self.cursor_last_message_id = Some(id);
+                }
+
                 let added = new_messages.len();
                 let was_at_bottom = self.scroll_offset == 0;
 
@@ -1408,6 +1431,20 @@ impl App {
         }
     }
 
+    /// Persist the in-memory cursor to disk.
+    ///
+    /// Called on channel switch and app exit so that the cursor file reflects
+    /// the current read position. This keeps unread counts accurate across
+    /// sessions without requiring a disk write on every `tailf` tick.
+    pub fn save_cursor_to_disk(&self) {
+        let Some(ref channel) = self.channel else {
+            return;
+        };
+        let mut cursor = midtown::Cursor::new("chat-tui", &self.session_id);
+        cursor.update(self.cursor_position, self.cursor_last_message_id.clone());
+        let _ = cursor.save(channel.base_dir(), channel.channel_name());
+    }
+
     /// Load messages from the currently selected channel
     fn load_channel_messages(&mut self) {
         #[cfg(test)]
@@ -1420,6 +1457,10 @@ impl App {
         if self.test_mode {
             return;
         }
+
+        // Persist the current channel's cursor before switching so unread counts
+        // for the old channel remain accurate in the next session.
+        self.save_cursor_to_disk();
         // Defensive: clear coworker line map on channel switch so stale entries
         // from the previous render can't be clicked before the next draw pass.
         self.coworker_line_map.clear();
@@ -1448,9 +1489,12 @@ impl App {
                 // Update the channel reference for future refresh
                 self.channel = Some(channel);
 
-                // Set cursor to end for new messages
-                if let Some(ref ch) = self.channel {
-                    let _ = ch.set_cursor_to_end("chat-tui", &self.session_id);
+                // Set cursor to end for new messages, and capture position in memory.
+                if let Some(ref ch) = self.channel
+                    && let Ok((pos, last_id)) = ch.set_cursor_to_end("chat-tui", &self.session_id)
+                {
+                    self.cursor_position = pos;
+                    self.cursor_last_message_id = last_id;
                 }
             }
         }
@@ -3561,6 +3605,8 @@ pub(super) mod tests {
             channel: None,
             session_id: "test-session".to_string(),
             initial_load_done: true,
+            cursor_position: 0,
+            cursor_last_message_id: None,
             history_start_position: 0,
             history_fully_loaded: true,
             test_mode: true, // Prevent daemon communication in tests
