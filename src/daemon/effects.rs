@@ -843,47 +843,17 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     config.session_mode =
                         crate::launch::SessionMode::ResumeSession(session_id.clone());
                 }
-                match state.spawn_coworker(&config).await {
-                    Ok(_) => {
-                        info!("Resumed coworker {} successfully", name);
+
+                match spawn_with_resume_fallback(state, &state.repo_name, &mut config).await {
+                    Ok((_, used_fallback)) => {
+                        if used_fallback {
+                            info!("Fell back to fresh resume handoff for coworker {}", name);
+                        } else {
+                            info!("Resumed coworker {} successfully", name);
+                        }
                     }
                     Err(e) => {
                         warn!("Failed to resume coworker {}: {}", name, e);
-
-                        if !session_id.is_empty() {
-                            let prior_prompt = config
-                                .persisted_initial_prompt
-                                .clone()
-                                .or_else(|| config.initial_prompt.clone());
-
-                            if config.persisted_initial_prompt.is_none() {
-                                config.persisted_initial_prompt = prior_prompt.clone();
-                            }
-
-                            config.session_mode = crate::launch::SessionMode::Fresh;
-                            config.initial_prompt = Some(build_resume_handoff_prompt(
-                                &name,
-                                &state.repo_name,
-                                &session_id,
-                                prior_prompt.as_deref(),
-                                config.working_dir.as_deref(),
-                            ));
-
-                            match state.spawn_coworker(&config).await {
-                                Ok(_) => {
-                                    info!(
-                                        "Fell back to fresh resume handoff for coworker {}",
-                                        name
-                                    );
-                                }
-                                Err(fallback_error) => {
-                                    warn!(
-                                        "Failed to spawn fresh handoff for coworker {}: {}",
-                                        name, fallback_error
-                                    );
-                                }
-                            }
-                        }
                     }
                 }
             }
@@ -2440,6 +2410,47 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 } else {
                     let session_name = crate::launch::channel_lead_session_name(&channel_name);
                     if state.session_manager.is_alive(&session_name).await {
+                        // Keep channel_lead_sessions aligned with the actual live session.
+                        // Codex resumes can leave a stale session-id mapping after app-server
+                        // reuse, and `send_message` routes to the newest live slot for the
+                        // name, so we refresh the mapping here when it is missing or stale.
+                        let active_session_id =
+                            state.session_manager.get_session_id(&session_name).await;
+                        if let Some(active_session_id) = active_session_id {
+                            let mut ps = state.persistent_state.lock().await;
+                            let stored_session_id =
+                                ps.channel_lead_sessions.get(&channel_name).cloned();
+                            if !matches!(stored_session_id.as_deref(), Some(stored) if stored == active_session_id)
+                            {
+                                ps.channel_lead_sessions
+                                    .insert(channel_name.clone(), active_session_id.clone());
+                                if let Err(e) = ps.save_for_repo(&state.repo_name) {
+                                    warn!(
+                                        "Failed to update channel lead session mapping for '{}': {}",
+                                        channel_name, e
+                                    );
+                                }
+                                if let Some(stored_session_id) = stored_session_id {
+                                    if stored_session_id.is_empty() {
+                                        warn!(
+                                            "Refreshed empty channel lead session mapping for '{}' to {}",
+                                            channel_name, active_session_id
+                                        );
+                                    } else {
+                                        warn!(
+                                            "Refreshed stale channel lead mapping for '{}' from {} to {}",
+                                            channel_name, stored_session_id, active_session_id
+                                        );
+                                    }
+                                } else {
+                                    info!(
+                                        "Initialized channel lead mapping for '{}' to {}",
+                                        channel_name, active_session_id
+                                    );
+                                }
+                            }
+                        }
+
                         let msg = reason.to_nudge_message();
                         if let Err(e) = state
                             .session_manager
@@ -2455,29 +2466,62 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                         };
                         match session_id.as_deref() {
                             Some(id) if should_resume_channel_lead_session(id) => {
-                                // Resume existing session from this daemon run
-                                let config = crate::launch::LaunchConfig::channel_lead(
+                                let mut config = crate::launch::LaunchConfig::channel_lead(
                                     &channel_name,
                                     &state.repo_name,
                                     crate::launch::SessionMode::ResumeSession(id.to_string()),
                                     "",
                                 );
-                                if let Err(e) = state.spawn_coworker(&config).await {
-                                    warn!(
-                                        "Failed to resume channel lead '{}': {}",
-                                        channel_name, e
-                                    );
-                                }
-                                let msg = reason.to_nudge_message();
-                                if let Err(e) = state
-                                    .session_manager
-                                    .send_message(&session_name, &msg)
-                                    .await
+                                config.initial_prompt =
+                                    Some(reason.to_initial_prompt(&channel_name));
+
+                                match spawn_with_resume_fallback(
+                                    state,
+                                    &state.repo_name,
+                                    &mut config,
+                                )
+                                .await
                                 {
-                                    warn!(
-                                        "Nudge after resume failed for '{}' — trigger may be lost: {}",
-                                        channel_name, e
-                                    );
+                                    Ok((session_id, _)) => {
+                                        let mut ps = state.persistent_state.lock().await;
+                                        ps.channel_lead_sessions
+                                            .insert(channel_name.clone(), session_id);
+                                        if let Err(e) = ps.save_for_repo(&state.repo_name) {
+                                            tracing::error!(
+                                                "Failed to save state after channel lead resume/fallback: {}",
+                                                e
+                                            );
+                                        }
+
+                                        let msg = reason.to_nudge_message();
+                                        if let Err(e) = state
+                                            .session_manager
+                                            .send_message(&session_name, &msg)
+                                            .await
+                                        {
+                                            warn!(
+                                                "Nudge after resume failed for '{}' — trigger may be lost: {}",
+                                                channel_name, e
+                                            );
+                                        }
+                                    }
+                                    Err(e) => {
+                                        warn!(
+                                            "Failed to resume channel lead '{}': {}",
+                                            channel_name, e
+                                        );
+                                        {
+                                            let mut ps = state.persistent_state.lock().await;
+                                            ps.channel_lead_sessions
+                                                .insert(channel_name.clone(), String::new());
+                                            if let Err(e) = ps.save_for_repo(&state.repo_name) {
+                                                warn!(
+                                                    "Failed to clear stale channel lead session ID for '{}': {}",
+                                                    channel_name, e
+                                                );
+                                            }
+                                        }
+                                    }
                                 }
                             }
                             _ => {
@@ -2502,8 +2546,14 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                                         );
                                     }
                                 }
-                                match state.spawn_coworker(&config).await {
-                                    Ok(session_id) => {
+                                match spawn_with_resume_fallback(
+                                    state,
+                                    &state.repo_name,
+                                    &mut config,
+                                )
+                                .await
+                                {
+                                    Ok((session_id, _)) => {
                                         // Update channel_lead_sessions with the real session_id
                                         // immediately (spawn_coworker generated it upfront),
                                         // eliminating the race window before init event arrives.
@@ -2918,6 +2968,51 @@ fn record_session_recovery_cooldown(
     }
     let mut guard = cooldowns.lock().unwrap();
     guard.record("session_recovered", session_id);
+}
+
+async fn spawn_with_resume_fallback(
+    state: &DaemonState,
+    repo_name: &str,
+    config: &mut crate::launch::LaunchConfig,
+) -> Result<(String, bool), String> {
+    let resume_session_id = match &config.session_mode {
+        crate::launch::SessionMode::ResumeSession(session_id) => Some(session_id.clone()),
+        _ => None,
+    };
+
+    match state.spawn_coworker(config).await {
+        Ok(session_id) => Ok((session_id, false)),
+        Err(error) => {
+            let Some(session_id) = resume_session_id else {
+                return Err(error.to_string());
+            };
+
+            let prior_prompt = config
+                .persisted_initial_prompt
+                .clone()
+                .or_else(|| config.initial_prompt.clone());
+
+            if config.persisted_initial_prompt.is_none() {
+                config.persisted_initial_prompt = prior_prompt.clone();
+            }
+
+            config.session_mode = crate::launch::SessionMode::Fresh;
+            config.initial_prompt = Some(build_resume_handoff_prompt(
+                &config.name,
+                repo_name,
+                &session_id,
+                prior_prompt.as_deref(),
+                config.working_dir.as_deref(),
+            ));
+
+            match state.spawn_coworker(config).await {
+                Ok(session_id) => Ok((session_id, true)),
+                Err(fallback_error) => {
+                    Err(format!("{}; fallback failed: {}", error, fallback_error))
+                }
+            }
+        }
+    }
 }
 
 #[path = "effects_tests.rs"]
