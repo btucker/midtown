@@ -227,6 +227,68 @@ fn render_code_block_segment(
     }
 }
 
+/// Render content segments as flat lines with no message framing.
+///
+/// Used by the thread header to render the parent message content without
+/// sender prefix or continuation-line indentation. Handles text, code blocks,
+/// and mermaid placeholders.
+pub fn render_header_content_segments(
+    segments: &[ContentSegment],
+    content_width: usize,
+    content_style: Style,
+    use_light_theme: bool,
+) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+
+    for segment in segments {
+        match segment {
+            ContentSegment::Text(text) => {
+                let content_lines = wrap_content(text, content_width);
+                for content in &content_lines {
+                    lines.push(minimad_ratatui::inline(content, content_style));
+                }
+            }
+            ContentSegment::CodeBlock { language, source } => {
+                let lang_display = if language.is_empty() {
+                    "code"
+                } else {
+                    language
+                };
+                lines.push(Line::from(Span::styled(
+                    format!("--- {} ---", lang_display),
+                    Style::default().fg(Color::DarkGray),
+                )));
+                let highlighted = highlight_code(language, source, use_light_theme);
+                for hl_line in highlighted {
+                    let mut truncated_spans = Vec::new();
+                    let mut remaining = content_width;
+                    for span in hl_line.spans {
+                        if remaining == 0 {
+                            break;
+                        }
+                        let text: String = span.content.chars().take(remaining).collect();
+                        remaining = remaining.saturating_sub(span.content.chars().count());
+                        truncated_spans.push(Span::styled(text, span.style));
+                    }
+                    lines.push(Line::from(truncated_spans));
+                }
+                lines.push(Line::from(Span::styled(
+                    "--- end ---",
+                    Style::default().fg(Color::DarkGray),
+                )));
+            }
+            ContentSegment::Mermaid(_) => {
+                lines.push(Line::from(Span::styled(
+                    "[diagram]",
+                    Style::default().fg(Color::DarkGray),
+                )));
+            }
+        }
+    }
+
+    lines
+}
+
 #[path = "messages_mermaid_tests.rs"]
 #[cfg(test)]
 mod tests;

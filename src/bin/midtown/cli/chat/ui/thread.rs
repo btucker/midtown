@@ -12,7 +12,7 @@ use ratatui_themes::ThemePalette;
 use super::super::app::{App, FocusedPane};
 use super::chat::calculate_input_bar_height;
 use super::messages::{apply_mention_highlights, render_content_lines, render_message};
-use super::messages_mermaid::render_message_with_mermaid;
+use super::messages_mermaid::{render_header_content_segments, render_message_with_mermaid};
 use crate::cli::chat::mermaid;
 
 /// Draw the thread panel showing a parent message's thread replies.
@@ -28,6 +28,7 @@ pub fn draw_thread_panel(f: &mut Frame, app: &mut App, area: Rect) {
     let content_width = area.width.saturating_sub(2) as usize;
     let content_style = Style::default().fg(palette.fg);
 
+    let use_light_theme = app.theme.palette().is_light();
     let parent_msg_data: Option<(String, Vec<Line<'static>>)> = app
         .messages
         .iter()
@@ -39,8 +40,21 @@ pub fn draw_thread_panel(f: &mut Frame, app: &mut App, area: Rect) {
             if content_width == 0 {
                 return (m.from.clone(), vec![]);
             }
-            let rendered = render_content_lines(&m.content, content_width, content_style);
-            let rendered = apply_mention_highlights(rendered);
+            let segments = mermaid::parse_content_segments(&m.content);
+            let has_special = segments
+                .iter()
+                .any(|s| !matches!(s, mermaid::ContentSegment::Text(_)));
+            let rendered = if has_special {
+                render_header_content_segments(
+                    &segments,
+                    content_width,
+                    content_style,
+                    use_light_theme,
+                )
+            } else {
+                let lines = render_content_lines(&m.content, content_width, content_style);
+                apply_mention_highlights(lines)
+            };
             (m.from.clone(), rendered)
         });
 
