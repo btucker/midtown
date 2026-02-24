@@ -1,7 +1,8 @@
 //! Tests for channel lead behavior in decision functions.
 //!
-//! Channel leads are on-demand sessions that are idle-shutdown like any other coworker,
-//! but are exempt from task dispatch and orphan recovery.
+//! Channel leads are long-running domain experts for topic channels. They are
+//! exempt from idle shutdown (unlike ordinary coworkers) and are also exempt
+//! from task dispatch and orphan recovery.
 
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
@@ -22,15 +23,16 @@ fn names(items: &[&str]) -> HashSet<String> {
 }
 
 #[test]
-fn channel_lead_is_idle_shutdown() {
-    // Channel leads are now on-demand and should be shut down when idle,
-    // just like any other coworker.
+fn channel_lead_is_not_idle_shutdown() {
+    // Channel leads maintain persistent domain context and must never be
+    // idle-shutdown, even when no tasks are assigned.
     let coworkers = vec![CoworkerSnapshot {
         name: "ops".to_string(),
         started_at: Utc::now() - chrono::Duration::minutes(10),
         session_id: None,
     }];
     let empty = empty_set();
+    let leads = names(&["ops"]);
     let ctx = IdleShutdownContext {
         coworkers: &coworkers,
         busy_coworkers: &empty,
@@ -47,14 +49,13 @@ fn channel_lead_is_idle_shutdown() {
         now_utc: Utc::now(),
         minimum_lifetime: Duration::from_secs(300),
         repo_name: "test-repo",
+        channel_lead_names: &leads,
     };
     let result = decide_idle_shutdowns(&ctx);
-    assert_eq!(
-        result.len(),
-        1,
-        "channel lead should be idle-shutdown when idle (on-demand behavior)"
+    assert!(
+        result.is_empty(),
+        "channel lead should never be idle-shutdown"
     );
-    assert_eq!(result[0].name, "ops");
 }
 
 #[test]
