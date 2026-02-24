@@ -121,6 +121,11 @@ The daemon uses a **session-centric model** where Claude Code sessions (keyed by
 
 **Dispatch** (`src/daemon/dispatch.rs`): `dispatch_via_sessions()` is a pure function that examines in-progress tasks with session records. For stopped sessions, it emits `SpawnSession` effects with `resume=true` and the session's preferred name, unless the coworker is an active reviewer or the session was recently recovered (per-session cooldown prevents re-recovery spam). This replaces the legacy orphan-recovery pattern with a unified session-aware dispatch path.
 
+Both dispatch paths (`dispatch_via_sessions_with_task_lookup` for Path 1, `spawn_for_pending_tasks_excluding` for Path 2) validate `record.working_dir.exists()` before using the recorded path. If the path no longer exists (worktree was cleaned up between ticks), they fall back to a fresh worktree and emit `Effect::ClearSessionWorkingDir` so the stale path is not retried on the next tick.
+
+**Effect:**
+- `Effect::ClearSessionWorkingDir { session_id }` — Clears the `working_dir` field in the `SessionRecord` on disk. Emitted by both dispatch paths when a session's recorded `working_dir` no longer exists on the filesystem. Analogous to `ClearSessionForTask` for stale task bindings.
+
 **In-memory reverse maps** on `DaemonState`:
 - `name_to_session` / `session_to_name` — bidirectional name↔session lookup
 - `task_to_session` — task→session mapping for dispatch decisions
@@ -519,4 +524,4 @@ Reminders are stored in `~/.midtown/projects/<repo>/reminders.json` and evaluate
 - `usage_limited_coworkers`, `api_error_coworkers`, and `auth_error_coworkers` are preserved so recovery flows (limit reset, retry, re-auth) can finish.
 - `coworkers_with_active_tools` comes from `ProcessHealth` in-flight markers (`has_pending_tool`, `has_running_subagent`, or `has_pending_api_call`). Tool calls, Task subagents, and fresh pending API turns are treated as critical sections — shutting down mid-turn would drop the result. `has_pending_api_call` is freshness-bounded (uses `last_event_at`/startup time) so stale sessions are still eligible for cleanup.
 
-Only coworkers that fall outside all of these protection sets, are older than `MINIMUM_COWORKER_LIFETIME`, and are not the lead session (named after the repo) are eligible for idle shutdown.
+Only coworkers that fall outside all of these protection sets, are older than `MINIMUM_COWORKER_LIFETIME` (90 seconds — increased from 60s because session startup takes 40-60s, and a 60s guard could expire before initialization completes), and are not the lead session (named after the repo) are eligible for idle shutdown.
