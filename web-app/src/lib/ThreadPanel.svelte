@@ -3,24 +3,7 @@
   import { sendMessage, closeThread } from './api.js'
   import { renderContent } from './markdown.js'
   import { tick, onMount } from 'svelte'
-  import { AVENUE_COLORS as BASE_AVENUE_COLORS } from './avenue-colors.js'
-
-  // Avenue colors (same as Channel.svelte) with muted midtown tone
-  const AVENUE_COLORS = { ...BASE_AVENUE_COLORS, midtown: '#585858' }
-  const DIM_SENDERS = new Set(['daemon', 'midtown', 'github', 'system'])
-
-  function getSenderColor(name) {
-    return AVENUE_COLORS[name?.toLowerCase()] || '#d0d0d0'
-  }
-  function isDimSender(sender) {
-    return DIM_SENDERS.has(sender?.toLowerCase())
-  }
-  function formatTime(timestamp) {
-    try {
-      const date = new Date(timestamp)
-      return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })
-    } catch { return '' }
-  }
+  import { getSenderColor, isDimSender, formatTime, senderChanged, timeChanged } from './messageUtils.js'
 
   let replyText = $state('')
   let desktopScrollArea = $state(null)

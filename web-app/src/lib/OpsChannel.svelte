@@ -3,6 +3,7 @@
   import { AVENUE_COLORS as BASE_AVENUE_COLORS } from './avenue-colors.js'
   import { tick } from 'svelte'
   import { fetchHistory } from './api.js'
+  import { getSenderColor, formatTime } from './messageUtils.js'
 
   // Read directly from the ops channel (daemon system messages are routed there)
   let opsMessages = $derived(
@@ -13,15 +14,6 @@
   let autoScroll = $state(true)
   let collapsed = $state(false)
 
-  function formatTime(timestamp) {
-    try {
-      const date = new Date(timestamp)
-      return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })
-    } catch {
-      return ''
-    }
-  }
-
   function getSenderLabel(msg) {
     return msg.from || '?'
   }
@@ -31,13 +23,6 @@
       return msg.content.replace(/^\/me\s*/, '')
     }
     return msg.content
-  }
-
-  // Sender color palette — matches Channel.svelte with ops-specific overrides
-  const AVENUE_COLORS = { ...BASE_AVENUE_COLORS, midtown: '#585858' }
-
-  function getSenderColor(name) {
-    return AVENUE_COLORS[name?.toLowerCase()] || '#808080'
   }
 
   // Pre-populate ops history on mount so the sidebar shows existing messages
