@@ -387,7 +387,8 @@ Creating a new branch when a PR already exists leaves orphaned remote branches t
 
 **1. Check for human (midtown) reviews in issue comments:**
 ```bash
-gh api repos/btucker/midtown/issues/<PR_NUMBER>/comments \
+repo=$(gh repo view --json nameWithOwner --jq .nameWithOwner)
+gh api "repos/$repo/issues/<PR_NUMBER>/comments" \
   --jq '.[] | select(.body | contains("<!-- midtown:")) | "\(.user.login): \(.body[:500])"'
 ```
 Human coworker reviews are posted as issue comments with `<!-- midtown: reviewer_name -->` frontmatter — they do **NOT** appear in `gh pr view --json reviews`. You MUST check issue comments explicitly and address every issue listed in those reviews before merging. Treat them exactly like formal review feedback.
