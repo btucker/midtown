@@ -2231,16 +2231,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                             }
                         }
 
-                        // Record per-session-id recovery cooldown so the next tick skips
-                        // re-recovery if the session dies quickly. Only recorded for resume
-                        // spawns — fresh (non-recovery) spawns should not block future recovery
-                        // attempts. This mirrors the on_success RecordCooldown in Path 1
-                        // (dispatch_via_sessions_with_task_lookup) and prevents the retry loop
-                        // described in task !1728.
-                        if resume {
-                            let mut cooldowns = state.cooldowns.lock().unwrap();
-                            cooldowns.record("session_recovered", &session_id);
-                        }
+                        record_session_recovery_cooldown(&state.cooldowns, &session_id, resume);
 
                         state.broadcast_coworker_update(&name, "running", None);
                     }
@@ -2665,6 +2656,19 @@ async fn auto_merge_pr(state: &DaemonState, pr_number: u64, title: &str) {
             warn!("Failed to post auto-merge failure message: {}", e);
         }
     }
+}
+
+/// Record the `session_recovered` cooldown for resume spawns to prevent rapid retries.
+fn record_session_recovery_cooldown(
+    cooldowns: &std::sync::Mutex<crate::rules::CooldownTracker>,
+    session_id: &str,
+    resume: bool,
+) {
+    if !resume {
+        return;
+    }
+    let mut guard = cooldowns.lock().unwrap();
+    guard.record("session_recovered", session_id);
 }
 
 #[path = "effects_tests.rs"]
