@@ -5602,6 +5602,7 @@ fn test_pending_task_with_stale_working_dir_uses_fresh_worktree() {
         session_task_map,
         is_at_dev_limit: false,
         is_at_coworker_limit: false,
+        stale_working_dir_sessions: ["sess-stale-wdir".to_string()].into_iter().collect(),
         ..make_session_dispatch_snapshot(vec![], HashMap::new(), HashMap::new())
     };
 
