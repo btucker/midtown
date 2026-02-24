@@ -2758,6 +2758,9 @@ async fn invoke_workflow_script(state: &DaemonState, event: crate::workflow::Wor
         ])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
+        // Kill the subprocess if the future is dropped (e.g. 30s timeout fires).
+        // Without this, timed-out processes survive and can accumulate as orphans.
+        .kill_on_drop(true)
         .spawn();
 
     let child = match child {
@@ -2780,7 +2783,8 @@ async fn invoke_workflow_script(state: &DaemonState, event: crate::workflow::Wor
     match result {
         Err(_timeout) => {
             // wait_with_output consumed `child`; the future was dropped by the timeout,
-            // which tokio translates to SIGKILL on the child process.
+            // `kill_on_drop(true)` ensures the subprocess is killed when the
+            // future is dropped here.
             warn!(
                 channel = %channel,
                 script = %script.display(),
