@@ -241,10 +241,21 @@ fn test_thread_header_renders_code_block_in_parent_message() {
         .collect();
     let all_text = rendered_lines.join("\n");
 
-    // The header must show code block borders, not raw backtick fences
+    // The header must show the bare language label and syntax-highlighted code,
+    // not raw backtick fences. New format: bare "rust" label, no "--- ---" borders.
     assert!(
-        all_text.contains("--- rust ---"),
-        "Thread header should render code blocks with '--- rust ---' border, got:\n{}",
+        all_text.contains("rust"),
+        "Thread header should render code blocks with bare language label 'rust', got:\n{}",
+        all_text
+    );
+    assert!(
+        !all_text.contains("--- rust ---"),
+        "Thread header should NOT show old '--- rust ---' border format, got:\n{}",
+        all_text
+    );
+    assert!(
+        !all_text.contains("--- end ---"),
+        "Thread header should NOT show '--- end ---' bottom border, got:\n{}",
         all_text
     );
     assert!(
@@ -255,8 +266,8 @@ fn test_thread_header_renders_code_block_in_parent_message() {
 }
 
 /// Thread messages containing fenced code blocks must be syntax-highlighted,
-/// not shown as raw backtick fences. The rendered thread panel must contain
-/// "--- rust ---" (code block border) when a reply has a rust code block.
+/// not shown as raw backtick fences. The rendered thread panel must use the
+/// bare language label (e.g. "rust") when a reply has a rust code block.
 ///
 /// Before the fix: draw_thread_messages used render_message() which passed the
 /// raw content through minimad_ratatui::inline, showing "```rust" as plain text.

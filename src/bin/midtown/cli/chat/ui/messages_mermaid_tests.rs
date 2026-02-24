@@ -937,3 +937,53 @@ fn test_code_block_empty_lang_first_line_not_double_indented() {
         );
     }
 }
+
+// ── render_header_content_segments ───────────────────────────────────────────
+
+/// A code block with empty language in a thread header should produce no label line —
+/// matching render_code_block_segment which omits the label when language is empty.
+#[test]
+fn test_header_code_block_empty_language_has_no_label() {
+    use ratatui::style::Style;
+
+    let segments = vec![ContentSegment::CodeBlock {
+        language: "".to_string(),
+        source: "x = 1".to_string(),
+    }];
+    let lines = render_header_content_segments(&segments, 40, Style::default(), false);
+
+    let text: String = lines
+        .iter()
+        .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
+        .collect::<Vec<_>>()
+        .join("");
+    // No label span for empty language — only code content
+    assert!(
+        !text.contains("code"),
+        "Empty language should produce no label line, got: {text}"
+    );
+    assert!(
+        text.contains("x = 1") || !lines.is_empty(),
+        "Should still produce code content lines, got: {text}"
+    );
+}
+
+/// A mermaid segment in a thread header should render as a "[diagram]" placeholder
+/// (async diagram rendering is not available in the pre-computation context).
+#[test]
+fn test_header_mermaid_segment_shows_placeholder() {
+    use ratatui::style::Style;
+
+    let segments = vec![ContentSegment::Mermaid("graph TD\n  A-->B".to_string())];
+    let lines = render_header_content_segments(&segments, 40, Style::default(), false);
+
+    let text: String = lines
+        .iter()
+        .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
+        .collect::<Vec<_>>()
+        .join("");
+    assert!(
+        text.contains("[diagram]"),
+        "Mermaid segment in header should show '[diagram]' placeholder, got: {text}"
+    );
+}

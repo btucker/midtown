@@ -12,6 +12,7 @@ use crate::cli::chat::mermaid::{ContentSegment, MermaidCache};
 use super::highlight::highlight_code;
 use super::messages::{
     MessageRenderContext, build_continuation_line, build_first_content_line, push_sender_header,
+    render_content_lines,
 };
 use super::text::wrap_content;
 
@@ -243,21 +244,20 @@ pub fn render_header_content_segments(
     for segment in segments {
         match segment {
             ContentSegment::Text(text) => {
-                let content_lines = wrap_content(text, content_width);
-                for content in &content_lines {
-                    lines.push(minimad_ratatui::inline(content, content_style));
-                }
+                // Use render_content_lines to preserve block-level table detection:
+                // text segments can contain markdown tables (|...|), and the line-by-line
+                // table parser in render_content_lines must see them as a contiguous block.
+                lines.extend(render_content_lines(text, content_width, content_style));
             }
             ContentSegment::CodeBlock { language, source } => {
-                let lang_display = if language.is_empty() {
-                    "code"
-                } else {
-                    language
-                };
-                lines.push(Line::from(Span::styled(
-                    format!("--- {} ---", lang_display),
-                    Style::default().fg(Color::DarkGray),
-                )));
+                // Language label: bare name in dim color (e.g. "rust").
+                // Omitted entirely when language is empty, matching render_code_block_segment.
+                if !language.is_empty() {
+                    lines.push(Line::from(Span::styled(
+                        language.to_string(),
+                        Style::default().fg(Color::DarkGray),
+                    )));
+                }
                 let highlighted = highlight_code(language, source, use_light_theme);
                 for hl_line in highlighted {
                     let mut truncated_spans = Vec::new();
@@ -272,10 +272,6 @@ pub fn render_header_content_segments(
                     }
                     lines.push(Line::from(truncated_spans));
                 }
-                lines.push(Line::from(Span::styled(
-                    "--- end ---",
-                    Style::default().fg(Color::DarkGray),
-                )));
             }
             ContentSegment::Mermaid(_) => {
                 lines.push(Line::from(Span::styled(

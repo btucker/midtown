@@ -45,12 +45,13 @@ pub fn draw_thread_panel(f: &mut Frame, app: &mut App, area: Rect) {
                 .iter()
                 .any(|s| !matches!(s, mermaid::ContentSegment::Text(_)));
             let rendered = if has_special {
-                render_header_content_segments(
+                let lines = render_header_content_segments(
                     &segments,
                     content_width,
                     content_style,
                     use_light_theme,
-                )
+                );
+                apply_mention_highlights(lines)
             } else {
                 let lines = render_content_lines(&m.content, content_width, content_style);
                 apply_mention_highlights(lines)
