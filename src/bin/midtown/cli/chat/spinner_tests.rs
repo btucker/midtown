@@ -1,20 +1,18 @@
 //! Tests for time-based spinner animation.
 
-use super::CHANNEL_LEAD_THINKING_TIMEOUT;
-use super::CoworkerInfo;
-use super::ToolActivityEntry;
-use super::tests::test_app;
+use super::{App, CHANNEL_LEAD_THINKING_TIMEOUT, CoworkerInfo, ToolActivityEntry, tests::test_app};
 use std::time::Duration;
 
 #[test]
 fn test_tick_spinner_does_not_advance_immediately() {
     let mut app = test_app();
     let frame_before = app.spinner_char();
+    std::thread::sleep(App::COWORKER_PULSE_INTERVAL / 2);
     app.tick_spinner();
     let frame_after = app.spinner_char();
     assert_eq!(
         frame_before, frame_after,
-        "Spinner should not advance within 100ms of creation"
+        "Spinner should not advance before the pulse interval elapses"
     );
 }
 
@@ -22,13 +20,12 @@ fn test_tick_spinner_does_not_advance_immediately() {
 fn test_tick_spinner_advances_after_interval() {
     let mut app = test_app();
     let frame_before = app.spinner_char();
-    // Sleep just over the 100ms interval
-    std::thread::sleep(Duration::from_millis(110));
+    std::thread::sleep(App::COWORKER_PULSE_INTERVAL + Duration::from_millis(1));
     app.tick_spinner();
     let frame_after = app.spinner_char();
     assert_ne!(
         frame_before, frame_after,
-        "Spinner should advance after 100ms"
+        "Spinner should advance after the pulse interval elapses"
     );
 }
 
