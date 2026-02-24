@@ -80,7 +80,7 @@ pub struct LaunchConfig {
     pub auth_profile_dir: Option<PathBuf>,
     /// Auth provider for this session. Determines which auth env var is set.
     pub auth_provider: crate::auth::AuthProvider,
-    /// Override for the `initial_prompt` stored in `HeadlessSessionInfo` at spawn time.
+    /// Override for the `initial_prompt` stored in `SessionRecord` at spawn time.
     ///
     /// When `Some`, `spawn_coworker` persists this value instead of `initial_prompt`.
     /// Use this when the actual message sent to Claude (in `initial_prompt`) differs

@@ -2190,6 +2190,16 @@ pub(super) fn spawn_for_pending_tasks_excluding(
             && let Some(record) = snap.sessions.get(session_id)
         {
             if !record.is_running {
+                // Check per-session cooldown to prevent crash loops.
+                // Same guard as orphan recovery (line ~817): if a recovery was
+                // recently attempted for this session, skip to avoid spinning.
+                if snap.recently_recovered_session_ids.contains(session_id) {
+                    debug!(
+                        "Pending task !{} has recently-recovered session {} — skipping (cooldown)",
+                        task.id, record.session_id
+                    );
+                    continue;
+                }
                 info!(
                     "Pending task !{} has stopped session {} — resuming instead of spawning fresh",
                     task.id, record.session_id

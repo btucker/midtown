@@ -522,7 +522,7 @@ pub async fn recovering_coworker_names(
     names
 }
 
-/// Collect PIDs of headless sessions that should be recovered on startup.
+/// Collect PIDs of sessions that should be recovered on startup.
 ///
 /// These PIDs must be excluded from the zombie scanner — the sessions are
 /// intentionally detached and will die naturally from broken pipes. Killing
@@ -532,10 +532,10 @@ pub async fn recoverable_session_pids(
 ) -> HashSet<u32> {
     let state = persistent_state.lock().await;
     state
-        .headless_sessions
+        .sessions
         .values()
-        .filter(|info| info.resume_on_startup)
-        .filter_map(|info| info.pid)
+        .filter(|record| record.resume_on_startup)
+        .filter_map(|record| record.pid)
         .collect()
 }
 
@@ -627,7 +627,7 @@ pub async fn recover_from_session_records(
         let mut config = if name == "lead" {
             // Lead session — uses lead system prompt, provider-compatible model,
             // unrestricted settings.
-            // Must match recover_headless_sessions() which also special-cases the lead.
+            // Must match recover_from_session_records() which also special-cases the lead.
             LaunchConfig::lead(repo_name, None)
         } else if record.is_reviewer {
             if let Some(pr_number) = record.pr_number {

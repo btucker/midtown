@@ -75,8 +75,7 @@ fn default_resume_on_startup() -> bool {
 ///
 /// Keyed by `session_id` in `DaemonPersistentState::sessions`.
 /// Tracks the full lifecycle of a headless coworker session — from spawn
-/// through suspend/resume cycles to final shutdown. Unlike `HeadlessSessionInfo`
-/// (which is keyed by coworker name), `SessionRecord` is keyed by session ID,
+/// through suspend/resume cycles to final shutdown. Keyed by session ID,
 /// allowing names to be reassigned between sessions.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionRecord {
@@ -113,6 +112,55 @@ pub struct SessionRecord {
     /// the correct thread without the session needing to pass `--thread` manually.
     #[serde(default)]
     pub bound_thread_id: Option<String>,
+    /// Last time this session was active (event received or message sent).
+    #[serde(default = "Utc::now")]
+    pub last_active: DateTime<Utc>,
+    /// Human-readable purpose (e.g., "task !5: Add auth endpoint").
+    #[serde(default)]
+    pub purpose: String,
+    /// OS process ID for zombie detection and cleanup.
+    #[serde(default)]
+    pub pid: Option<u32>,
+    /// Channel name for channel-lead sessions and channel-routed tasks.
+    #[serde(default)]
+    pub channel: Option<String>,
+    /// Auth provider (Claude, Codex, or Zai) — where the account lives.
+    #[serde(default)]
+    pub provider: Option<crate::auth::AuthProvider>,
+    /// Platform (Claude Code or Codex CLI) — which agent tool binary.
+    #[serde(default)]
+    pub platform: Option<crate::platform::Platform>,
+    /// Auth profile name (e.g., "ben@example.com") — account identity.
+    #[serde(default)]
+    pub profile: Option<String>,
+}
+
+impl Default for SessionRecord {
+    fn default() -> Self {
+        Self {
+            session_id: String::new(),
+            task_id: None,
+            current_name: None,
+            preferred_name: None,
+            working_dir: String::new(),
+            branch: None,
+            pr_number: None,
+            initial_prompt: None,
+            is_reviewer: false,
+            coworker_type: "dev".to_string(),
+            is_running: false,
+            created_at: Utc::now(),
+            resume_on_startup: true,
+            bound_thread_id: None,
+            last_active: Utc::now(),
+            purpose: String::new(),
+            pid: None,
+            channel: None,
+            provider: None,
+            platform: None,
+            profile: None,
+        }
+    }
 }
 
 /// All persistent daemon state in one struct.
@@ -140,12 +188,12 @@ pub struct DaemonPersistentState {
     #[serde(default)]
     pub worktree_registry: WorktreeRegistry,
 
-    /// Persisted headless sessions keyed by coworker name.
+    /// Legacy headless sessions keyed by coworker name (read-only for migration).
     ///
-    /// Includes currently running sessions and historical sessions that are not
-    /// running. `HeadlessSessionInfo::resume_on_startup` controls whether a
-    /// persisted session should be auto-resumed at daemon startup.
-    #[serde(default)]
+    /// Superseded by `sessions` (session-ID-keyed `SessionRecord`). Kept for
+    /// one release so older state files still deserialize. New data is written
+    /// only to `sessions`; this field is never serialized.
+    #[serde(default, skip_serializing)]
     pub headless_sessions: HashMap<String, HeadlessSessionInfo>,
 
     /// Task-to-channel assignment mapping for message routing.
@@ -199,9 +247,9 @@ pub struct DaemonPersistentState {
 
     /// Session records for the session-centric coworker model.
     ///
-    /// Maps session_id → SessionRecord. The session-centric model uses this
-    /// as the primary store for coworker state, replacing the name-keyed
-    /// `headless_sessions` map over time. During migration, both maps coexist.
+    /// Maps session_id → SessionRecord. This is the primary store for coworker
+    /// session state. Legacy `headless_sessions` entries are auto-migrated into
+    /// this map at load time via `migrate_headless_to_sessions()`.
     #[serde(default)]
     pub sessions: HashMap<String, SessionRecord>,
 }
@@ -222,6 +270,8 @@ impl DaemonPersistentState {
                 })?;
                 // Rebuild reverse indexes that aren't serialized
                 state.worktree_registry.rebuild_indexes();
+                // Migrate legacy headless_sessions → sessions (one-time)
+                state.migrate_headless_to_sessions();
                 debug!(
                     "Loaded daemon state: {} PR reviewers, {} reminders, CI stats: {}, {} worktree assignments, {} task-channel mappings, {} task-model mappings, {} task-plan mappings, {} task-execution-skill mappings, {} task-thread-id mappings, {} channel-lead sessions",
                     state.github.pr_reviewers.len(),
@@ -347,6 +397,57 @@ impl DaemonPersistentState {
                 r.current_name = current_name;
             })
             .or_insert(new_record);
+    }
+
+    /// Migrate legacy `headless_sessions` entries into `sessions` (SessionRecord).
+    ///
+    /// Called once at load time. If `headless_sessions` has entries that don't already
+    /// have a corresponding SessionRecord, creates one. This handles the case where
+    /// an older daemon version wrote `headless_sessions` but not `sessions`.
+    fn migrate_headless_to_sessions(&mut self) {
+        if self.headless_sessions.is_empty() {
+            return;
+        }
+        let mut migrated = 0usize;
+        for (name, info) in &self.headless_sessions {
+            if info.session_id.is_empty() {
+                continue;
+            }
+            // Skip if a SessionRecord already exists for this session_id
+            if self.sessions.contains_key(&info.session_id) {
+                continue;
+            }
+            let record = SessionRecord {
+                session_id: info.session_id.clone(),
+                current_name: Some(name.clone()),
+                preferred_name: Some(name.clone()),
+                working_dir: info.working_dir.clone().unwrap_or_default(),
+                coworker_type: info
+                    .coworker_type
+                    .clone()
+                    .unwrap_or_else(|| "dev".to_string()),
+                task_id: info.task_id.map(|id| id.to_string()),
+                pr_number: info.pr_number,
+                channel: info.channel.clone(),
+                initial_prompt: info.initial_prompt.clone(),
+                is_running: false, // not running yet — recovery will start them
+                resume_on_startup: info.resume_on_startup,
+                last_active: info.last_active,
+                purpose: info.purpose.clone(),
+                pid: info.pid,
+                provider: info.provider,
+                profile: info.profile.clone(),
+                ..Default::default()
+            };
+            self.sessions.insert(info.session_id.clone(), record);
+            migrated += 1;
+        }
+        if migrated > 0 {
+            debug!(
+                "Migrated {} headless_sessions entries to sessions (SessionRecord)",
+                migrated
+            );
+        }
     }
 
     /// Clear reviewer assignment for a coworker and save state.

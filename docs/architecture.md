@@ -426,6 +426,19 @@ Coworkers can ask the Lead questions via the Claude Code `AskUserQuestion` tool.
 - `coworker.asking` — Store a pending question and notify the Lead
 - `coworker.questions` — Return all pending questions (used by TUI polling and `/api/questions` endpoint)
 
+## Channel List Changed Events
+
+When a channel is created, archived, unarchived, or renamed, the daemon broadcasts a `WebUpdate::ChannelListChanged` event to all connected WebSocket clients. This allows the web app sidebar to update immediately without polling.
+
+**Broadcast sites** (all mutation paths covered):
+- **RPC handlers** (`rpc_channel.rs`): `channel.create`, `channel.archive`, `channel.unarchive`, `channel.rename` — broadcast after successful operation. Create checks `already_exists` to avoid spurious broadcasts from idempotent `Channel::create()`.
+- **REST API** (`web.rs`): `POST /api/channels` — broadcast after creation, with the same `already_exists` guard.
+- **Effects system** (`effects.rs`): `Effect::CreateChannel`, `Effect::ArchiveChannel`, `Effect::MergeChannels` — broadcast after successful execution. Each has an idempotency guard to prevent duplicate broadcasts from repeated ticks.
+
+**Web app handling** (`api.js`): The `channel_list_changed` WebSocket event triggers `fetchChannels()` to re-fetch the full channel list from the REST API (source of truth), rather than optimistically updating client-side state.
+
+**TUI**: The TUI creates channels via daemon RPC when available (falling back to direct filesystem access if the daemon is unreachable), so the daemon handles broadcasting. The TUI's 30-second channel poll handles updates from other clients.
+
 ## Reviewer Health and Stuck Detection
 
 Reviewers are headless Claude Code sessions assigned to specific PRs. The daemon monitors them for stuck conditions (alive but unresponsive) and dead conditions (process exited before posting a review).

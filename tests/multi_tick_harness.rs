@@ -173,16 +173,8 @@ impl MultiTickHarness {
             task_id: Some(task_id.to_string()),
             current_name: name_opt.clone(),
             preferred_name: name_opt.clone(),
-            working_dir: String::new(),
-            branch: None,
-            pr_number: None,
-            initial_prompt: None,
-            is_reviewer: false,
-            coworker_type: "dev".to_string(),
             is_running: true,
-            created_at: Utc::now(),
-            resume_on_startup: true,
-            bound_thread_id: None,
+            ..Default::default()
         };
         self.snapshot
             .sessions
@@ -455,10 +447,6 @@ impl MultiTickHarness {
                             task_id: Some(task_id.clone()),
                             current_name: Some(name.clone()),
                             preferred_name: preferred_name.clone(),
-                            working_dir: String::new(),
-                            branch: None,
-                            pr_number: None,
-                            initial_prompt: None,
                             is_reviewer: *is_reviewer,
                             coworker_type: if *is_reviewer {
                                 "reviewer".to_string()
@@ -466,9 +454,8 @@ impl MultiTickHarness {
                                 "dev".to_string()
                             },
                             is_running: true,
-                            created_at: Utc::now(),
                             resume_on_startup: !is_reviewer,
-                            bound_thread_id: None,
+                            ..Default::default()
                         };
                         self.snapshot.sessions.insert(session_id.clone(), record);
                     }

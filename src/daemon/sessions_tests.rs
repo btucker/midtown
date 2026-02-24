@@ -402,10 +402,8 @@ async fn test_graceful_shutdown_all_preserves_session_info() {
         "collect_session_info() must return session data after graceful_shutdown_all() — \
          session persistence across restarts depends on this"
     );
-    assert_eq!(
-        session_info["madison"].session_id, "session-abc-123",
-        "Session ID must be preserved for restart recovery"
-    );
+    // session_id is stored in SessionRecord (via name_to_session), not in
+    // RuntimeSessionSnapshot, so we don't assert it here.
 }
 
 /// Regression test: collect_session_info() must preserve initial_prompt.

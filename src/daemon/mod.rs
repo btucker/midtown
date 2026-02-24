@@ -42,7 +42,7 @@ pub use constants::{
     DEFAULT_WEBHOOK_RESTART_INTERVAL_SECS, PR_NUDGE_COOLDOWN_SECS,
     PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS, PR_REVIEW_DELAY_SECS,
 };
-pub use state::{DaemonPersistentState, HeadlessSessionInfo};
+pub use state::DaemonPersistentState;
 pub use trackers::{
     CommentTracker, OrphanTracker, PrIssueTracker, PrIssueType, StuckConditionTracker,
     StuckConditionType,
@@ -82,7 +82,7 @@ pub use state::SessionRecord;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::File;
-use std::io::{BufRead, BufReader, Read as _, Seek, SeekFrom, Write};
+use std::io::{Read as _, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -837,18 +837,23 @@ impl DaemonState {
         let session_ready = if self.session_manager.is_alive(&session_name).await {
             true
         } else {
-            let (session_id, headless_session_id_cleared) = {
+            let (session_id, session_id_cleared) = {
                 let ps = self.persistent_state.lock().await;
                 let sid = ps.channel_lead_sessions.get(ops_channel).cloned();
-                let cleared = ps
-                    .headless_sessions
+                // Check if the SessionRecord for this channel lead has a cleared session_id
+                // (indicating a failed resume that invalidated the session data).
+                let cleared = self
+                    .name_to_session
+                    .lock()
+                    .unwrap()
                     .get(ops_channel)
-                    .is_some_and(|info| info.session_id.is_empty());
+                    .and_then(|session_id| ps.sessions.get(session_id))
+                    .is_some_and(|record| record.session_id.is_empty());
                 (sid, cleared)
             };
 
             let session_mode = match session_id {
-                Some(ref id) if !id.is_empty() && !headless_session_id_cleared => {
+                Some(ref id) if !id.is_empty() && !session_id_cleared => {
                     tracing::info!(
                         "Resuming ops channel lead session (session {}) for lead-dead expedite",
                         id
@@ -856,9 +861,9 @@ impl DaemonState {
                     crate::launch::SessionMode::ResumeSession(id.clone())
                 }
                 _ => {
-                    if headless_session_id_cleared {
+                    if session_id_cleared {
                         tracing::info!(
-                            "Skipping stale ops channel lead session ID: headless_sessions entry was cleared"
+                            "Skipping stale ops channel lead session ID: session record was cleared"
                         );
                     } else {
                         tracing::info!(
@@ -1171,24 +1176,11 @@ impl DaemonState {
         shutdown_tx: broadcast::Sender<()>,
     ) -> crate::Result<Self> {
         // Load unified persistent state (migrates from legacy files if needed)
-        let mut persistent_state = state::DaemonPersistentState::load_for_repo(&repo_name)
+        let persistent_state = state::DaemonPersistentState::load_for_repo(&repo_name)
             .unwrap_or_else(|e| {
                 warn!("Failed to load daemon-state.json: {}, using defaults", e);
                 state::DaemonPersistentState::default()
             });
-        let backfilled = backfill_headless_sessions_from_logs(
-            &repo_name,
-            &mut persistent_state.headless_sessions,
-        );
-        if backfilled > 0 {
-            info!(
-                "Backfilled {} historical headless session(s) from headless-*.jsonl logs",
-                backfilled
-            );
-            if let Err(e) = persistent_state.save_for_repo(&repo_name) {
-                warn!("Failed saving backfilled historical sessions: {}", e);
-            }
-        }
 
         let user_display_name = config::get_user_display_name_for_project(&repo_name);
 
@@ -1245,15 +1237,9 @@ impl DaemonState {
                         // Regular task coworkers also carry `bound_thread_id` but should not
                         // stream their output as lead-like activity.
                         if record.coworker_type == "channel-lead"
-                            && let Some(channel) = persistent_state
-                                .headless_sessions
-                                .values()
-                                .find_map(|info| {
-                                    (info.session_id == *session_id).then_some(info.channel.clone())
-                                })
-                                .flatten()
+                            && let Some(ref channel) = record.channel
                         {
-                            fork_bound_channels.insert(name.clone(), channel);
+                            fork_bound_channels.insert(name.clone(), channel.clone());
                         }
                     }
                 }
@@ -1417,22 +1403,21 @@ impl DaemonState {
             }
         }
 
-        // Determine whether this spawn has a known session ID before init.
+        // Determine the session ID for this spawn.
         //
-        // - ResumeSession(id): known for all platforms.
+        // - ResumeSession(id): use the existing session ID.
         // - Fresh Claude/z.ai: pre-assign UUID and pass --session-id.
-        // - Fresh Codex: unknown until thread/start init response arrives.
-        let platform = crate::platform::Platform::from_provider(config.auth_provider);
+        // - Fresh Codex: pre-assign a provisional UUID. The real session ID
+        //   arrives with the init event and replaces it via atomic migration.
+        //   This ensures every session has a SessionRecord from spawn time.
         let session_id = match &config.session_mode {
             crate::launch::SessionMode::ResumeSession(sid) => Some(sid.clone()),
-            _ if platform == crate::platform::Platform::Claude => {
-                Some(uuid::Uuid::new_v4().to_string())
-            }
-            _ => None,
+            _ => Some(uuid::Uuid::new_v4().to_string()),
         };
         // For fresh Claude-platform sessions, set the pre-generated session ID on the
         // headless config so it gets passed as --session-id to the CLI.
-        // Codex has no pre-assigned session ID equivalent.
+        // Codex sessions don't accept --session-id, so the UUID is provisional
+        // (used internally for SessionRecord keying, migrated on init).
         if !matches!(
             config.session_mode,
             crate::launch::SessionMode::ResumeSession(_)
@@ -1508,86 +1493,61 @@ impl DaemonState {
             return Err(e);
         }
 
-        // Persist session info immediately so `session.list` can find the entry
-        // without waiting for shutdown-time save. Some platforms (Codex fresh
-        // sessions) don't have a known session_id until init.
+        // Persist SessionRecord immediately so `session.list` can find the entry
+        // without waiting for the init event. Every session gets a UUID at spawn:
+        // Claude/z.ai sessions pass it as --session-id, Codex sessions use it as a
+        // provisional key that gets migrated to the real ID on init.
         let session_id_for_record = persisted_session_id.clone();
         let working_dir_for_record = working_dir_for_persist.clone();
         {
             let mut ps = self.persistent_state.lock().await;
-            ps.headless_sessions.insert(
-                name.clone(),
-                crate::daemon::state::HeadlessSessionInfo {
-                    session_id: persisted_session_id,
+            let coworker_type_str = match &config.role {
+                crate::launch::CoworkerRole::Reviewer => "reviewer".to_string(),
+                crate::launch::CoworkerRole::ChannelLead { .. } => "channel-lead".to_string(),
+                _ => "dev".to_string(),
+            };
+            let is_reviewer = matches!(config.role, crate::launch::CoworkerRole::Reviewer);
+            ps.upsert_session_running(
+                session_id_for_record.clone(),
+                crate::daemon::state::SessionRecord {
+                    session_id: session_id_for_record.clone(),
+                    task_id: None, // Not available at spawn time; set by dispatch
+                    current_name: Some(name.clone()),
+                    preferred_name: Some(name.clone()),
+                    working_dir: working_dir_for_record.clone(),
+                    pr_number: config.pr_number,
+                    initial_prompt: config
+                        .persisted_initial_prompt
+                        .clone()
+                        .or_else(|| config.initial_prompt.clone()),
+                    is_reviewer,
+                    coworker_type: coworker_type_str,
+                    is_running: true,
+                    created_at: chrono::Utc::now(),
+                    resume_on_startup: !is_reviewer,
                     last_active: chrono::Utc::now(),
                     purpose: config
                         .initial_prompt
                         .as_deref()
                         .map(|p| p.chars().take(120).collect::<String>())
                         .unwrap_or_default(),
-                    pid: self.session_manager.get_pid(&name).await,
-                    coworker_type: match &config.role {
-                        crate::launch::CoworkerRole::Reviewer => Some("reviewer".to_string()),
-                        crate::launch::CoworkerRole::ChannelLead { .. } => {
-                            Some("channel-lead".to_string())
-                        }
-                        _ => Some("dev".to_string()),
-                    },
-                    task_id: None,
-                    pr_number: config.pr_number,
+                    pid: None, // Set after process starts
                     channel: config.channel.clone(),
-                    working_dir: Some(working_dir_for_persist),
                     provider: Some(config.auth_provider),
-                    profile: Some(profile),
-                    resume_on_startup: true,
-                    // Use persisted_initial_prompt when set (e.g., session clear sends a
-                    // decorated "fresh restart" message but stores the original prompt).
-                    // Falls back to initial_prompt when not overridden.
-                    initial_prompt: config
-                        .persisted_initial_prompt
-                        .clone()
-                        .or_else(|| config.initial_prompt.clone()),
+                    platform: Some(crate::platform::Platform::from_provider(
+                        config.auth_provider,
+                    )),
+                    profile: Some(profile.clone()),
+                    ..Default::default()
                 },
             );
-            // Record in session-centric sessions map when a session_id is already known.
-            if !session_id_for_record.is_empty() {
-                let coworker_type_str = match &config.role {
-                    crate::launch::CoworkerRole::Reviewer => "reviewer".to_string(),
-                    crate::launch::CoworkerRole::ChannelLead { .. } => "channel-lead".to_string(),
-                    _ => "dev".to_string(),
-                };
-                let is_reviewer = matches!(config.role, crate::launch::CoworkerRole::Reviewer);
-                ps.upsert_session_running(
-                    session_id_for_record.clone(),
-                    crate::daemon::state::SessionRecord {
-                        session_id: session_id_for_record.clone(),
-                        task_id: None, // Not available at spawn time; set by dispatch
-                        current_name: Some(name.clone()),
-                        preferred_name: Some(name.clone()),
-                        working_dir: working_dir_for_record.clone(),
-                        branch: None,
-                        pr_number: config.pr_number,
-                        initial_prompt: config
-                            .persisted_initial_prompt
-                            .clone()
-                            .or_else(|| config.initial_prompt.clone()),
-                        is_reviewer,
-                        coworker_type: coworker_type_str,
-                        is_running: true,
-                        created_at: chrono::Utc::now(),
-                        resume_on_startup: !is_reviewer,
-                        bound_thread_id: None,
-                    },
-                );
-            }
             if let Err(e) = ps.save_for_repo(&self.repo_name) {
                 warn!("Failed to save persistent state after spawn: {}", e);
             }
         }
 
-        // Update session reverse maps only when the session_id is already known.
-        // For Codex fresh sessions, this is backfilled on init.
-        if !session_id_for_record.is_empty() {
+        // Update session reverse maps.
+        {
             self.name_to_session
                 .lock()
                 .unwrap()
@@ -2115,7 +2075,7 @@ impl DaemonState {
     }
 
     /// Send a WebUpdate to all connected WebSocket clients (no-op if web is disabled).
-    fn broadcast_web_update(&self, update: WebUpdate) {
+    pub(crate) fn broadcast_web_update(&self, update: WebUpdate) {
         if let Some(ref tx) = self.web_updates_tx {
             let _ = tx.send(update);
         }
@@ -2427,6 +2387,7 @@ fn acquire_pid_lock(pid_path: &PathBuf, workdir: &Path) -> crate::Result<File> {
 ///
 /// Collects session data from SessionManager and enriches it with task/PR/purpose
 /// info from CoworkerManager and persistent state, then saves to daemon-state.json.
+#[cfg(test)]
 fn merge_headless_sessions(
     persisted: &mut HashMap<String, crate::daemon::state::HeadlessSessionInfo>,
     running: HashMap<String, crate::daemon::state::HeadlessSessionInfo>,
@@ -2447,6 +2408,7 @@ fn merge_headless_sessions(
     running_count
 }
 
+#[cfg(test)]
 fn parse_task_id_from_workdir(working_dir: &str) -> Option<u64> {
     let task_component = working_dir
         .split('/')
@@ -2457,6 +2419,7 @@ fn parse_task_id_from_workdir(working_dir: &str) -> Option<u64> {
     id_part.parse::<u64>().ok()
 }
 
+#[cfg(test)]
 fn infer_provider_from_model(model: Option<&str>) -> Option<crate::auth::AuthProvider> {
     let model = model?.to_ascii_lowercase();
     if model.contains("gpt")
@@ -2470,12 +2433,14 @@ fn infer_provider_from_model(model: Option<&str>) -> Option<crate::auth::AuthPro
     }
 }
 
+#[cfg(test)]
 fn parse_historical_session_info_from_log(
     path: &std::path::Path,
     coworker_name: &str,
 ) -> Option<crate::daemon::state::HeadlessSessionInfo> {
+    use std::io::BufRead;
     let file = std::fs::File::open(path).ok()?;
-    let reader = BufReader::new(file);
+    let reader = std::io::BufReader::new(file);
 
     let mut session_id: Option<String> = None;
     let mut working_dir: Option<String> = None;
@@ -2531,14 +2496,7 @@ fn parse_historical_session_info_from_log(
     })
 }
 
-fn backfill_headless_sessions_from_logs(
-    repo_name: &str,
-    persisted: &mut HashMap<String, crate::daemon::state::HeadlessSessionInfo>,
-) -> usize {
-    let project_dir = crate::paths::projects_dir_for_repo(repo_name);
-    backfill_headless_sessions_from_dir(&project_dir, persisted)
-}
-
+#[cfg(test)]
 fn backfill_headless_sessions_from_dir(
     project_dir: &std::path::Path,
     persisted: &mut HashMap<String, crate::daemon::state::HeadlessSessionInfo>,
@@ -2637,16 +2595,50 @@ async fn persist_sessions_for_restart(state: &DaemonState) -> crate::Result<()> 
         }
     }
 
-    // Save enriched session info to persistent state
+    // Save enriched session info to persistent state.
+    // Update SessionRecords (the primary store) with fresh runtime data from running sessions.
     {
         let mut persistent = state.persistent_state.lock().await;
-        let running_count =
-            merge_headless_sessions(&mut persistent.headless_sessions, session_info);
+        let name_to_session = state.name_to_session.lock().unwrap().clone();
+        let mut running_count = 0usize;
+
+        // Mark all existing session records as not running by default.
+        // Running sessions will be re-marked below.
+        for record in persistent.sessions.values_mut() {
+            record.is_running = false;
+            record.resume_on_startup = false;
+            record.pid = None;
+        }
+
+        for (name, info) in &session_info {
+            running_count += 1;
+            if let Some(session_id) = name_to_session.get(name)
+                && let Some(record) = persistent.sessions.get_mut(session_id)
+            {
+                record.is_running = true;
+                record.resume_on_startup = !record.is_reviewer;
+                record.pid = info.pid;
+                record.last_active = info.last_active;
+                if let Some(ref wd) = info.working_dir {
+                    record.working_dir = wd.clone();
+                }
+                if let Some(provider) = info.provider {
+                    record.provider = Some(provider);
+                }
+                if let Some(ref profile) = info.profile {
+                    record.profile = Some(profile.clone());
+                }
+                if info.initial_prompt.is_some() {
+                    record.initial_prompt = info.initial_prompt.clone();
+                }
+            }
+        }
+
         persistent.save_for_repo(&state.repo_name)?;
         info!(
-            "Persisted {} running session(s); {} total session(s) retained (including historical)",
+            "Persisted {} running session(s); {} total session record(s) retained",
             running_count,
-            persistent.headless_sessions.len()
+            persistent.sessions.len()
         );
     }
 
@@ -2959,7 +2951,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
 
     // Collect PIDs of sessions we intend to recover BEFORE running the zombie scanner.
     // The scanner must skip these — they are intentionally detached processes that
-    // will die naturally from broken pipes. Killing them before recover_headless_sessions
+    // will die naturally from broken pipes. Killing them before session recovery
     // runs defeats session survival across daemon restarts.
     let session_pids_to_preserve = startup::recoverable_session_pids(&state.persistent_state).await;
 
@@ -3430,18 +3422,17 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                             && !sid.is_empty()
                         {
                             let mut ps = state.persistent_state.lock().await;
-                            let previous_sid = ps
-                                .headless_sessions
-                                .get(name)
-                                .map(|info| info.session_id.clone())
+                            // Look up the previous session_id from the SessionRecord
+                            // (via name_to_session reverse map) instead of headless_sessions.
+                            let previous_sid = state
+                                .name_to_session
+                                .lock()
+                                .unwrap()
+                                .get(name.as_str())
+                                .and_then(|prev_id| {
+                                    ps.sessions.get(prev_id).map(|r| r.session_id.clone())
+                                })
                                 .unwrap_or_default();
-                            if let Some(info) = ps.headless_sessions.get_mut(name)
-                                && (previous_sid.is_empty() || previous_sid != *sid)
-                            {
-                                info!("Backfilling session_id for '{}': {}", name, sid);
-                                info.session_id = sid.clone();
-                                needs_persist_save = true;
-                            }
                             // Also backfill channel_lead_sessions for channel lead sessions.
                             // Channel leads use the channel name directly as their session name,
                             // so we can look up the key directly in channel_lead_sessions.
@@ -3474,8 +3465,9 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                                     .remove(&previous_sid);
                             }
                             // Ensure a SessionRecord exists for this session.
-                            // For fresh spawns, this is the first time we know the session_id.
-                            // For resumed spawns, the record may already exist from spawn_coworker().
+                            // For spawned sessions, the record already exists from spawn_coworker().
+                            // For migrated sessions (provisional → real ID), re-insert under the new key.
+                            // The else branch is a rare fallback for sessions without a pre-existing record.
                             if let Some(record) = migrated_record {
                                 if let std::collections::hash_map::Entry::Vacant(entry) =
                                     ps.sessions.entry(sid.clone())
@@ -3483,41 +3475,22 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                                     entry.insert(record);
                                     needs_persist_save = true;
                                 }
-                            } else {
-                                let hs_info = ps.headless_sessions.get(name);
-                                let task_id_str =
-                                    hs_info.and_then(|info| info.task_id.map(|id| id.to_string()));
-                                let working_dir_val = hs_info
-                                    .and_then(|info| info.working_dir.clone())
-                                    .unwrap_or_default();
-                                let coworker_type_val = hs_info
-                                    .and_then(|info| info.coworker_type.clone())
-                                    .unwrap_or_else(|| "dev".to_string());
-                                let is_reviewer_val = coworker_type_val == "reviewer";
-                                let initial_prompt_val =
-                                    hs_info.and_then(|info| info.initial_prompt.clone());
-                                let pr_number_val = hs_info.and_then(|info| info.pr_number);
-                                if let std::collections::hash_map::Entry::Vacant(entry) =
-                                    ps.sessions.entry(sid.clone())
-                                {
-                                    entry.insert(crate::daemon::state::SessionRecord {
-                                        session_id: sid.clone(),
-                                        task_id: task_id_str,
-                                        current_name: Some(name.to_string()),
-                                        preferred_name: Some(name.to_string()),
-                                        working_dir: working_dir_val,
-                                        branch: None,
-                                        pr_number: pr_number_val,
-                                        initial_prompt: initial_prompt_val,
-                                        is_reviewer: is_reviewer_val,
-                                        coworker_type: coworker_type_val,
-                                        is_running: true,
-                                        created_at: chrono::Utc::now(),
-                                        resume_on_startup: !is_reviewer_val,
-                                        bound_thread_id: None,
-                                    });
-                                    needs_persist_save = true;
-                                }
+                            } else if let std::collections::hash_map::Entry::Vacant(entry) =
+                                ps.sessions.entry(sid.clone())
+                            {
+                                // Fallback: create a minimal SessionRecord for sessions that
+                                // weren't created via spawn_coworker() (e.g., externally started
+                                // sessions or very old daemon state).
+                                entry.insert(crate::daemon::state::SessionRecord {
+                                    session_id: sid.clone(),
+                                    current_name: Some(name.to_string()),
+                                    preferred_name: Some(name.to_string()),
+                                    is_running: true,
+                                    created_at: chrono::Utc::now(),
+                                    last_active: chrono::Utc::now(),
+                                    ..Default::default()
+                                });
+                                needs_persist_save = true;
                             }
                             // Update in-memory reverse maps when session gets its ID.
                             if let Some(record) = ps.sessions.get(sid) {
@@ -3599,6 +3572,14 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                     // handling is single-threaded, so no concurrent remove() is possible.
                     let failed_resume = state.session_manager.was_failed_resume(&name).await;
 
+                    // Capture session_id BEFORE cleanup (cleanup clears name_to_session).
+                    let session_id_for_cleanup = state
+                        .name_to_session
+                        .lock()
+                        .unwrap()
+                        .get(&name)
+                        .cloned();
+
                     // Remove from session manager tracking (session-death-specific:
                     // shutdown path uses session_manager.shutdown() instead)
                     state.session_manager.remove(&name).await;
@@ -3616,14 +3597,28 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                     // so the next spawn can try to resume them.
                     if failed_resume {
                         let mut ps = state.persistent_state.lock().await;
-                        if let Some(info) = ps.headless_sessions.get_mut(&name)
-                            && !info.session_id.is_empty()
+                        // Clear stale session_id from SessionRecord so the next spawn
+                        // doesn't attempt to resume a session that failed immediately.
+                        if let Some(ref sid) = session_id_for_cleanup
+                            && let Some(record) = ps.sessions.get_mut(sid)
                         {
-                            info!(
-                                "Clearing stale session_id for '{}' after failed resume (was: {})",
-                                name, info.session_id
-                            );
-                            info.session_id.clear();
+                            if !record.session_id.is_empty() {
+                                info!(
+                                    "Clearing stale session_id for '{}' after failed resume (was: {})",
+                                    name, record.session_id
+                                );
+                                record.session_id.clear();
+                            }
+                            // Clear task binding to prevent dispatch crash-loop.
+                            // Without this, session_task_map rebuilds the stale task->session link on
+                            // the next tick and dispatch re-attempts resume indefinitely.
+                            if let Some(task_id) = record.task_id.take() {
+                                info!(
+                                    "Clearing task !{} from failed-resume session {}",
+                                    task_id, sid
+                                );
+                            }
+                            record.resume_on_startup = false;
                         }
                         // Also clear channel_lead_sessions for channel lead sessions.
                         // Channel leads use the channel name as their session name, so

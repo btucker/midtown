@@ -12,15 +12,8 @@ fn mk_session_record(
         current_name: Some("lexington".to_string()),
         preferred_name: Some("lexington".to_string()),
         working_dir: "/tmp/worktree".to_string(),
-        branch: None,
-        pr_number: None,
-        initial_prompt: None,
-        is_reviewer: false,
-        coworker_type: "dev".to_string(),
         is_running,
-        created_at: chrono::Utc::now(),
-        resume_on_startup: true,
-        bound_thread_id: None,
+        ..Default::default()
     }
 }
 
@@ -440,7 +433,6 @@ async fn test_cleanup_merged_worktree_removes_pr_author_session() {
 #[test]
 fn test_record_session_inserts_into_persistent_state() {
     use crate::daemon::state::{DaemonPersistentState, SessionRecord};
-    use chrono::Utc;
 
     let mut persistent_state = DaemonPersistentState::default();
     let record = SessionRecord {
@@ -450,14 +442,9 @@ fn test_record_session_inserts_into_persistent_state() {
         preferred_name: Some("lexington".to_string()),
         working_dir: "/tmp/worktree".to_string(),
         branch: Some("lexington/task-42".to_string()),
-        pr_number: None,
         initial_prompt: Some("Work on task 42".to_string()),
-        is_reviewer: false,
-        coworker_type: "dev".to_string(),
         is_running: true,
-        created_at: Utc::now(),
-        resume_on_startup: true,
-        bound_thread_id: None,
+        ..Default::default()
     };
 
     persistent_state
@@ -474,7 +461,6 @@ fn test_record_session_inserts_into_persistent_state() {
 #[test]
 fn test_record_session_updates_existing_record() {
     use crate::daemon::state::{DaemonPersistentState, SessionRecord};
-    use chrono::Utc;
 
     let mut persistent_state = DaemonPersistentState::default();
     let record = SessionRecord {
@@ -483,15 +469,8 @@ fn test_record_session_updates_existing_record() {
         current_name: Some("lexington".to_string()),
         preferred_name: Some("lexington".to_string()),
         working_dir: "/tmp/worktree".to_string(),
-        branch: None,
-        pr_number: None,
-        initial_prompt: None,
-        is_reviewer: false,
-        coworker_type: "dev".to_string(),
         is_running: true,
-        created_at: Utc::now(),
-        resume_on_startup: true,
-        bound_thread_id: None,
+        ..Default::default()
     };
     persistent_state
         .sessions
@@ -536,7 +515,6 @@ fn test_release_name_frees_name_in_pool() {
 #[test]
 fn test_shutdown_session_marks_not_running() {
     use crate::daemon::state::{DaemonPersistentState, SessionRecord};
-    use chrono::Utc;
 
     let mut persistent_state = DaemonPersistentState::default();
     let record = SessionRecord {
@@ -545,15 +523,8 @@ fn test_shutdown_session_marks_not_running() {
         current_name: Some("lexington".to_string()),
         preferred_name: Some("lexington".to_string()),
         working_dir: "/tmp/worktree".to_string(),
-        branch: None,
-        pr_number: None,
-        initial_prompt: None,
-        is_reviewer: false,
-        coworker_type: "dev".to_string(),
         is_running: true,
-        created_at: Utc::now(),
-        resume_on_startup: true,
-        bound_thread_id: None,
+        ..Default::default()
     };
     persistent_state
         .sessions
@@ -628,7 +599,6 @@ fn test_reverse_maps_consistency() {
 #[test]
 fn test_coworker_break_updates_session_record() {
     use crate::daemon::state::{DaemonPersistentState, SessionRecord};
-    use chrono::Utc;
     use std::collections::HashMap;
 
     let mut persistent_state = DaemonPersistentState::default();
@@ -638,15 +608,8 @@ fn test_coworker_break_updates_session_record() {
         current_name: Some("lexington".to_string()),
         preferred_name: Some("lexington".to_string()),
         working_dir: "/tmp/worktree".to_string(),
-        branch: None,
-        pr_number: None,
-        initial_prompt: None,
-        is_reviewer: false,
-        coworker_type: "dev".to_string(),
         is_running: true,
-        created_at: Utc::now(),
-        resume_on_startup: true,
-        bound_thread_id: None,
+        ..Default::default()
     };
     persistent_state
         .sessions
@@ -672,7 +635,6 @@ fn test_coworker_break_updates_session_record() {
 fn test_shutdown_coworker_impl_updates_session_via_name_lookup() {
     use crate::daemon::state::{DaemonPersistentState, SessionRecord};
     use crate::name_pool::NamePool;
-    use chrono::Utc;
     use std::collections::HashMap;
 
     let mut persistent_state = DaemonPersistentState::default();
@@ -686,15 +648,8 @@ fn test_shutdown_coworker_impl_updates_session_via_name_lookup() {
         current_name: Some("lexington".to_string()),
         preferred_name: Some("lexington".to_string()),
         working_dir: "/tmp/worktree".to_string(),
-        branch: None,
-        pr_number: None,
-        initial_prompt: None,
-        is_reviewer: false,
-        coworker_type: "dev".to_string(),
         is_running: true,
-        created_at: Utc::now(),
-        resume_on_startup: true,
-        bound_thread_id: None,
+        ..Default::default()
     };
     persistent_state
         .sessions
@@ -777,15 +732,9 @@ fn test_spawn_session_marks_old_records_with_same_name_as_not_running() {
         current_name: Some("riverside".to_string()),
         preferred_name: Some("riverside".to_string()),
         working_dir: "/tmp/worktree".to_string(),
-        branch: None,
-        pr_number: None,
-        initial_prompt: None,
-        is_reviewer: false,
-        coworker_type: "dev".to_string(),
         is_running: true,
         created_at: Utc::now() - chrono::Duration::hours(1),
-        resume_on_startup: true,
-        bound_thread_id: None,
+        ..Default::default()
     };
     persistent_state
         .sessions
@@ -793,19 +742,16 @@ fn test_spawn_session_marks_old_records_with_same_name_as_not_running() {
 
     let old_reviewer = SessionRecord {
         session_id: "sess-old-222".to_string(),
-        task_id: None,
         current_name: Some("riverside".to_string()),
         preferred_name: Some("riverside".to_string()),
         working_dir: "/tmp/worktree".to_string(),
-        branch: None,
         pr_number: Some(100),
-        initial_prompt: None,
         is_reviewer: true,
         coworker_type: "reviewer".to_string(),
         is_running: true,
         created_at: Utc::now() - chrono::Duration::minutes(30),
         resume_on_startup: false,
-        bound_thread_id: None,
+        ..Default::default()
     };
     persistent_state
         .sessions
@@ -817,15 +763,8 @@ fn test_spawn_session_marks_old_records_with_same_name_as_not_running() {
         current_name: Some("amsterdam".to_string()),
         preferred_name: Some("amsterdam".to_string()),
         working_dir: "/tmp/worktree".to_string(),
-        branch: None,
-        pr_number: None,
-        initial_prompt: None,
-        is_reviewer: false,
-        coworker_type: "dev".to_string(),
         is_running: true,
-        created_at: Utc::now(),
-        resume_on_startup: true,
-        bound_thread_id: None,
+        ..Default::default()
     };
     persistent_state
         .sessions
@@ -850,15 +789,8 @@ fn test_spawn_session_marks_old_records_with_same_name_as_not_running() {
         current_name: Some(effective_name.to_string()),
         preferred_name: Some(effective_name.to_string()),
         working_dir: "/tmp/worktree".to_string(),
-        branch: None,
-        pr_number: None,
-        initial_prompt: None,
-        is_reviewer: false,
-        coworker_type: "dev".to_string(),
         is_running: true,
-        created_at: Utc::now(),
-        resume_on_startup: true,
-        bound_thread_id: None,
+        ..Default::default()
     };
     persistent_state
         .sessions
