@@ -147,6 +147,31 @@ midtown channel post "@{project_name} [from #{channel_name}] <situation and what
 
 Keep domain questions in #{channel_name}. Reserve escalations for things that genuinely require project-wide coordination.
 
+## Workflow Script
+
+Each channel can have a `workflow.py` that controls how the daemon responds to events — PR lifecycle, coworker nudges, task transitions, CI status, and more. This is the primary customization point for channel behavior.
+
+**Script resolution order** (first file found wins):
+
+1. `<project_root>/.midtown/channels/{channel_name}/workflow.py` — channel-specific, committed to repo
+2. `~/.midtown/projects/<repo>/channels/{channel_name}/workflow.py` — channel-specific, local only
+3. `<project_root>/.midtown/workflow.py` — project default, committed to repo
+4. `~/.midtown/projects/<repo>/workflow.py` — project default, local only
+
+If no script is found at any level, the daemon falls back to its compiled-in default behavior.
+
+**Changes take effect on the next daemon tick** — no restart needed.
+
+To bootstrap a channel-specific script from the reference implementation:
+
+```bash
+mkdir -p .midtown/channels/{channel_name}
+cp $(python -c "import midtown, os; print(os.path.dirname(midtown.__file__))")/default_workflow.py \
+   .midtown/channels/{channel_name}/workflow.py
+```
+
+When a user or coworker asks about customizing channel behavior, direct them to this path and explain that the script controls what happens when PRs are opened, CI fails, coworkers go idle, etc.
+
 ## Tools
 
 **Codebase access (read-only):** Read, Glob, Grep, WebSearch, WebFetch

@@ -394,11 +394,67 @@ StreamEvent (NDJSON drain) → extract_tool_events() → Vec<UniversalItem>
 - **TUI rendering**: The TUI polls `coworkers.status` (at 2s intervals) which calls `collect_tool_activity()` to serialize `recent_tool_items`. The TUI renders a compact activity strip at the bottom of the chat pane showing the most recent tool calls per active agent, using `semantic_header` for tool call labels and "✓ ok" / "✗ error" for tool results.
 - **Lifecycle**: Tool activity for a coworker is cleared from `recent_tool_items` when the coworker shuts down (in `shutdown_coworker_impl()`), preventing ghost activity from persisting when the avenue name is reused.
 
-## Workflow Events
+## Workflow Script System
 
-The `workflow` module (`src/workflow.rs`) defines the `WorkflowEvent` enum — the event taxonomy passed to per-channel `workflow.py` scripts when invoked by the daemon.
+Each channel can have a `workflow.py` script that customizes how the daemon responds to domain events — PR lifecycle, coworker status changes, task transitions, CI results, and more. Scripts are invoked by the daemon via `uv run` using the [Midtown Python SDK](../sdk/python/).
 
-**Event taxonomy:**
+### Script Resolution
+
+`workflow_script_for_channel()` in `src/paths.rs` resolves the active script using a 4-level priority order (first file found wins):
+
+1. `<project_root>/.midtown/channels/<channel>/workflow.py` — channel-specific, committed to repo
+2. `~/.midtown/projects/<repo>/channels/<channel>/workflow.py` — channel-specific, local only
+3. `<project_root>/.midtown/workflow.py` — project default, committed to repo
+4. `~/.midtown/projects/<repo>/workflow.py` — project default, local only
+
+If no script is found, the daemon falls back to its compiled-in default behavior. This layered resolution allows teams to commit shared workflows to the repo while maintaining machine-specific local overrides.
+
+### Invocation
+
+The daemon emits `Effect::EmitWorkflowEvent` at detection points in `pr.rs`, `health.rs`, and `dispatch.rs`. The effect executes the script as:
+
+```
+uv run workflow.py --event '{"type":"pr.opened",...}' \
+    --state ~/.midtown/projects/<repo>/channels/<channel>/workflow-state.json \
+    --socket ~/.local/state/midtown/<repo>/daemon.sock
+```
+
+**Changes take effect on the next daemon tick** — no daemon restart required.
+
+### State Persistence
+
+The state file (`workflow-state.json`, path from `workflow_state_file()` in `src/paths.rs`) stores the script's mutable state between invocations. Since workflow scripts are short-lived subprocesses (one `uv run` per event), external persistence is required. The `run()` entry point in the SDK loads state before calling the handler and saves it atomically afterward.
+
+### Python SDK
+
+The Midtown Python SDK (`sdk/python/midtown/`) provides the `run()` entry point and `MidtownRPC` client. A typical workflow script:
+
+```python
+from midtown import run, MidtownRPC
+
+def handle(event: dict, rpc: MidtownRPC, state: dict) -> None:
+    if event["type"] == "coworker.idle":
+        rpc.post_to_channel(f"{event['coworker']} is idle")
+
+if __name__ == "__main__":
+    run(handle)
+```
+
+`MidtownRPC` methods: `post_to_channel()`, `spawn_coworker()`, `nudge_coworker()`, `create_task()`, `update_task()`, `complete_task()`, `list_tasks()`.
+
+### Reference Implementation
+
+`sdk/python/midtown/default_workflow.py` is the reference implementation that replicates the compiled-in PR lifecycle. Copy it to start customizing:
+
+```bash
+mkdir -p .midtown/channels/<channel>
+cp $(python -c "import midtown, os; print(os.path.dirname(midtown.__file__))")/default_workflow.py \
+   .midtown/channels/<channel>/workflow.py
+```
+
+### Event Taxonomy
+
+The `workflow` module (`src/workflow.rs`) defines the `WorkflowEvent` enum:
 
 | Group | Events |
 |-------|--------|
@@ -411,8 +467,6 @@ The `workflow` module (`src/workflow.rs`) defines the `WorkflowEvent` enum — t
 **Serialization contract:** Events are serialized as JSON objects with a `"type"` discriminant (dotted name), a `"channel"` field (always present), and event-specific fields. `task_id` is a `String` matching `Task { id: String }` in `src/tasks.rs`. Optional fields (`task_id` on coworker events, `check_name` on `pr.ci_failed`) are **omitted entirely** when absent — not serialized as `null` — following the `#[serde(skip_serializing_if = "Option::is_none")]` pattern used throughout the codebase. Python scripts should use `event.get("task_id")` to test presence.
 
 **Accessors:** `WorkflowEvent::channel() -> &str` and `WorkflowEvent::task_id() -> Option<&str>` provide typed access without deserializing JSON.
-
-**Invocation:** The daemon will emit `Effect::EmitWorkflowEvent` at the same detection points where it produces effects in `pr.rs`, `health.rs`, and `dispatch.rs`. The script is invoked via `uv run workflow.py --event '{...}' --state /path/to/state.json --socket /path/to/daemon.sock`. Script path resolution uses `workflow_script_for_channel()` from `src/paths.rs` (4-level priority: channel-specific local → project default local → channel-specific repo → project default repo).
 
 ## Headed Intercom RPC
 
