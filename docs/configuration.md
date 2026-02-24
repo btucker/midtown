@@ -90,7 +90,7 @@ Model aliases are auto-normalized per provider at launch:
 - Generic sizes:
   - Claude: `small` → `haiku`, `medium` → `sonnet`, `large` → `opus`
   - z.ai: `small` → `GLM-4.5-Air`, `medium` → `GLM-4.7`, `large` → `GLM-5`
-  - Codex: `small` → `gpt-5.1-codex-mini`, `medium`/`large` → `gpt-5.3-codex`
+  - Codex: `small` → `gpt-5.1-codex-mini`, `medium` → `gpt-5.3-codex-spark`, `large` → `gpt-5.3-codex`
 - Cross-provider safety:
   - Claude/z.ai aliases (`haiku`/`sonnet`/`opus`) are normalized to Codex defaults when provider is Codex.
   - `gpt-5-codex` is normalized to role defaults (`opus` for lead/reviewer, `sonnet` for coworker/channel lead) when provider is Claude/z.ai.

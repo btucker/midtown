@@ -290,7 +290,7 @@ Model aliases are auto-normalized per provider at launch:
 - Generic sizes:
   - Claude: `small` -> `haiku`, `medium` -> `sonnet`, `large` -> `opus`
   - z.ai: `small` -> `haiku`, `medium` -> `sonnet`, `large` -> `opus`
-  - Codex: `small` -> `gpt-5.1-codex-mini`, `medium`/`large` -> `gpt-5.3-codex`
+- Codex: `small` -> `gpt-5.1-codex-mini`, `medium` -> `gpt-5.3-codex-spark`, `large` -> `gpt-5.3-codex`
 - z.ai model aliases are hard-mapped at launch via env vars:
   - `ANTHROPIC_DEFAULT_HAIKU_MODEL=GLM-4.5-Air`
   - `ANTHROPIC_DEFAULT_SONNET_MODEL=GLM-4.7`
