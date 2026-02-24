@@ -311,6 +311,8 @@ pub struct App {
     /// Repository name with owner (e.g., "btucker/midtown")
     /// Used for constructing GitHub PR URLs in kanban hyperlinks
     pub repo_name: String,
+    /// Last time task list was refreshed (independent of PR/kanban refresh)
+    tasks_last_refresh: Instant,
     /// Last time kanban data was refreshed
     kanban_last_refresh: Instant,
     /// Receiver for async kanban data from background thread
@@ -518,6 +520,12 @@ pub struct ChannelSwitcherItem {
 /// 30s is short enough to stay within cache TTL while avoiding redundant fetches.
 const KANBAN_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 
+/// Interval between task list refreshes (5 seconds).
+///
+/// Tasks are local file reads (~/.claude/tasks/) — nearly instant, no network.
+/// Short interval keeps the sidebar feeling real-time after task creation.
+const TASK_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
+
 /// Interval between coworker status refreshes (2 seconds — live in-memory state, no GraphQL)
 const COWORKER_STATUS_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
 
@@ -589,6 +597,7 @@ impl App {
             max_coworkers: 10, // Default, will be updated from daemon
             pending_questions: Vec::new(),
             repo_name,
+            tasks_last_refresh: Instant::now() - TASK_REFRESH_INTERVAL, // Force initial refresh
             kanban_last_refresh: Instant::now() - KANBAN_REFRESH_INTERVAL, // Force initial refresh
             kanban_receiver: None,
             coworker_status_last_refresh: Instant::now() - COWORKER_STATUS_REFRESH_INTERVAL, // Force initial refresh
@@ -758,6 +767,12 @@ impl App {
             }
         }
 
+        // Refresh task list frequently — local file reads, no network
+        if self.tasks_last_refresh.elapsed() >= TASK_REFRESH_INTERVAL {
+            self.refresh_tasks();
+            self.tasks_last_refresh = Instant::now();
+        }
+
         // Refresh kanban data less frequently - spawn background thread if not already running
         if self.kanban_last_refresh.elapsed() >= KANBAN_REFRESH_INTERVAL
             && self.kanban_receiver.is_none()
@@ -902,13 +917,18 @@ impl App {
         self.refresh_unread_counts();
     }
 
-    /// Refresh kanban board data (tasks and PRs via kanban.data RPC).
+    /// Refresh task list from local filesystem (~/.claude/tasks/).
     ///
+    /// Runs on its own fast interval (5s) independent of PR/kanban refreshes.
+    fn refresh_tasks(&mut self) {
+        self.tasks = fetch_tasks();
+    }
+
+    /// Refresh kanban board data (PRs via kanban.data RPC).
+    ///
+    /// Tasks are refreshed separately by `refresh_tasks`.
     /// Coworker status is refreshed separately by `refresh_coworker_status`.
     fn refresh_kanban(&mut self) {
-        // Tasks are local file reads - fast, can stay synchronous
-        self.tasks = fetch_tasks();
-
         // PRs: try daemon RPC first, fall back to direct gh CLI
         let (tx, rx) = mpsc::channel();
         self.kanban_receiver = Some(rx);
@@ -3558,6 +3578,7 @@ pub(super) mod tests {
             max_coworkers: 10, // Test default
             pending_questions: Vec::new(),
             repo_name: "test".to_string(),
+            tasks_last_refresh: Instant::now(),
             kanban_last_refresh: Instant::now(),
             kanban_receiver: None,
             coworker_status_last_refresh: Instant::now(),
