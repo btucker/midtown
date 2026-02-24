@@ -87,7 +87,10 @@
   {@const parentMsg = $threadData.parentMessage}
   {@const parentContent = parentMsg?.content || ''}
   <!-- Desktop: side panel -->
-  <div class="hidden lg:flex flex-col h-full bg-background border-l-2 border-border w-[380px] shrink-0">
+  <div
+    class="hidden lg:flex flex-col h-full bg-background border-l-2 border-border w-[380px] shrink-0"
+    data-testid="thread-panel"
+  >
     <!-- Header -->
     <div class="flex items-center justify-between px-[18px] py-4 bg-card border-b-2 border-border shrink-0">
       <div class="flex-1 min-w-0">
@@ -108,6 +111,7 @@
         class="w-8 h-8 flex items-center justify-center bg-transparent border border-border rounded-md text-muted-foreground text-[1.3rem] cursor-pointer transition-all duration-150 leading-none hover:bg-accent hover:border-destructive hover:text-destructive ml-2 shrink-0 self-start mt-1"
         onclick={handleClose}
         aria-label="Close thread"
+        data-testid="thread-close-button"
       >&times;</button>
     </div>
 
@@ -117,7 +121,7 @@
       bind:this={desktopScrollArea}
     >
       <!-- Parent message / task metadata (highlighted) -->
-      <div class="pb-2 mb-2 border-b border-border">
+      <div class="pb-2 mb-2 border-b border-border" data-testid="thread-parent">
         {#if $threadData.task}
           <!-- Task metadata header -->
           <div class="font-bold text-[0.82rem] text-[hsl(var(--link-task))]">!{$threadData.task.id}</div>
@@ -194,6 +198,7 @@
     <!-- Input -->
     <form class="flex gap-2 px-3 pt-2 pb-2 bg-card border-t border-border shrink-0" onsubmit={handleSubmit}>
       <textarea
+        data-testid="thread-input"
         bind:this={desktopTextareaEl}
         bind:value={replyText}
         placeholder="Reply in thread..."
@@ -205,13 +210,14 @@
       <button
         type="submit"
         disabled={!replyText.trim()}
+        data-testid="thread-send-button"
         class="py-[10px] px-[16px] border-none rounded-[18px] bg-primary text-primary-foreground font-bold cursor-pointer transition-all duration-200 text-[0.85rem] disabled:opacity-40 disabled:cursor-not-allowed hover:bg-primary/90"
       >Send</button>
     </form>
   </div>
 
   <!-- Mobile: slide-in pane (inside board content area) -->
-  <div class="lg:hidden absolute inset-0 z-20 bg-background flex flex-col thread-mobile-pane">
+  <div class="lg:hidden absolute inset-0 z-20 bg-background flex flex-col thread-mobile-pane" data-testid="thread-panel-mobile">
     <!-- Mobile header with back button -->
     <!-- No top safe-area padding here: this pane is inside board content, below
          App.svelte's mobile header which already applies pt-safe-offset-* -->
@@ -220,6 +226,7 @@
         class="w-8 h-8 flex items-center justify-center bg-transparent border border-border rounded-md text-muted-foreground text-[1.1rem] cursor-pointer transition-all duration-150 leading-none hover:text-foreground shrink-0"
         onclick={handleClose}
         aria-label="Back to channel"
+        data-testid="thread-back-button"
       >&larr;</button>
       <div class="flex-1 min-w-0">
         <h2 class="text-[0.85rem] font-bold text-foreground m-0">Thread</h2>
@@ -243,7 +250,7 @@
       bind:this={mobileScrollArea}
     >
       <!-- Parent message / task metadata -->
-      <div class="pb-2 mb-2 border-b border-border">
+      <div class="pb-2 mb-2 border-b border-border" data-testid="thread-parent">
         {#if $threadData.task}
           <div class="font-bold text-[0.82rem] text-[hsl(var(--link-task))]">!{$threadData.task.id}</div>
           <div class="text-foreground font-bold break-words mb-1">{$threadData.task.subject}</div>
@@ -320,6 +327,7 @@
     <!-- Mobile input -->
     <form class="flex gap-2 px-3 pt-2 pb-safe-offset-2 bg-card border-t border-border shrink-0" onsubmit={handleSubmit}>
       <textarea
+        data-testid="thread-input"
         bind:this={mobileTextareaEl}
         bind:value={replyText}
         placeholder="Reply in thread..."
@@ -331,6 +339,7 @@
       <button
         type="submit"
         disabled={!replyText.trim()}
+        data-testid="thread-send-button"
         class="py-[10px] px-[16px] border-none rounded-[18px] bg-primary text-primary-foreground font-bold cursor-pointer transition-all duration-200 text-[0.85rem] disabled:opacity-40 disabled:cursor-not-allowed hover:bg-primary/90"
       >Send</button>
     </form>

@@ -227,11 +227,10 @@ test.describe('Mobile PWA - Typography and Readability', () => {
     expect(bgColor).toBeTruthy()
   })
 
-  test('monospace font is applied', async ({ page }) => {
+  test('IBM Plex Sans stack is applied', async ({ page }) => {
     const body = page.locator('body')
     const fontFamily = await body.evaluate((el) => getComputedStyle(el).fontFamily)
-    // Body uses monospace font (Terminal Noir design)
-    expect(fontFamily).toMatch(/monospace|SF Mono|Menlo|Consolas/i)
+    expect(fontFamily).toMatch(/IBM Plex Sans|system-ui|sans-serif/i)
   })
 })
 
