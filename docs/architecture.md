@@ -346,10 +346,11 @@ The `midtown chat` command opens a split-panel interface with:
 
 **Data polling**:
 - **Coworker state** (2s): `coworkers.status` RPC — live in-memory data, no GraphQL.
+- **Task list** (5s): Local filesystem reads (`~/.claude/tasks/`) — nearly instant, no network.
 - **PR data** (30s): `prs.status` RPC — GitHub GraphQL, daemon-cached for 60s.
 - **Repo status** (60s): Direct `gh` CLI calls for commit/CI/release info.
 
-The split-poll architecture ensures coworker phase changes appear in real-time (2s) while expensive PR data is fetched at a rate that stays within the daemon's 60s cache TTL.
+The split-poll architecture ensures coworker phase changes appear in real-time (2s), task list updates within 5s, while expensive PR data is fetched at a rate that stays within the daemon's 60s cache TTL.
 
 ## Web UI
 
