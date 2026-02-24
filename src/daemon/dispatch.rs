@@ -2209,23 +2209,20 @@ pub(super) fn spawn_for_pending_tasks_excluding(
                 let prompt =
                     crate::agents::coworker_recovery_prompt(&task.id, &task.subject, &plan_section);
                 let wt = prepare_task_worktree(&task.id, &task.subject, &snap.repo_name, snap);
-                let mut working_dir = wt.path.clone();
-                if !record.working_dir.is_empty() {
+                let working_dir = if !record.working_dir.is_empty() {
                     let recorded = std::path::PathBuf::from(&record.working_dir);
                     if recorded.exists() {
-                        working_dir = recorded;
+                        recorded
                     } else {
                         warn!(
                             "Session {} working_dir {:?} no longer exists — using fresh worktree {:?}",
                             record.session_id, recorded, wt.path
                         );
-                        let mut cleared_record = record.clone();
-                        cleared_record.working_dir.clear();
-                        effects.push(Effect::RecordSession {
-                            record: Box::new(cleared_record),
-                        });
+                        wt.path.clone()
                     }
-                }
+                } else {
+                    wt.path.clone()
+                };
                 let mut config = crate::launch::LaunchConfig::coworker(
                     record.preferred_name.clone().unwrap_or_default(),
                     snap.repo_name.clone(),
