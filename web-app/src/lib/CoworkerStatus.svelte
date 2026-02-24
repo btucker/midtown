@@ -4,15 +4,21 @@
   import { detailPanelData } from './store.js'
   import { closeThread } from './api.js'
 
-  // Filter to only active coworkers (matching TUI logic - skip idle/completed)
+  // Filter to only active coworkers (matching TUI logic - skip idle/completed).
+  // Phase may be missing (freshly spawned / not reporting), null (serialized absent
+  // phase from /status), or a string abbreviation.
   let activeCoworkers = $derived(
     $coworkers.filter((cw) => {
-      // If phase is present, filter by phase (skip idle/completed)
-      if (cw.phase !== undefined) {
-        return cw.phase !== null
+      // If phase is present as a non-empty string, filter idle/completed out.
+      if (typeof cw.phase === 'string' && cw.phase.length > 0) {
+        const phase = cw.phase.toLowerCase()
+        return phase !== 'idle' && phase !== 'done'
       }
-      // Otherwise filter by status
-      return cw.status !== 'idle' && cw.status !== 'stopped'
+
+      // Otherwise filter by status (status is typically present on websocket status
+      // updates but not always included in /status payloads).
+      const status = (cw.status || '').toLowerCase()
+      return status !== 'idle' && status !== 'stopped'
     })
   )
 

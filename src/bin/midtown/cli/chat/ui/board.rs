@@ -18,6 +18,16 @@ use super::super::app::{
 use super::Hyperlink;
 use super::text::wrap_content;
 
+fn is_coworker_idle_or_done(phase: Option<&str>) -> bool {
+    match phase {
+        Some(raw_phase) => {
+            let phase = raw_phase.trim().to_ascii_lowercase();
+            phase == "idle" || phase == "done"
+        }
+        None => false,
+    }
+}
+
 /// Draw the board panel (left side) with channel list
 ///
 /// Returns (hyperlinks, tasks_area) where tasks_area is the rect containing the task list
@@ -35,7 +45,7 @@ pub fn draw_board_panel(f: &mut Frame, app: &mut App, area: Rect) -> (Vec<Hyperl
     let active_coworker_count = app
         .coworkers
         .iter()
-        .filter(|cw| !matches!(cw.phase.as_deref(), Some("idle") | Some("done")))
+        .filter(|cw| !is_coworker_idle_or_done(cw.phase.as_deref()))
         .filter(|cw| {
             let name = cw.name.to_lowercase();
             name != "lead" && name != project_name_lower_bp
@@ -449,7 +459,7 @@ fn draw_coworker_status(f: &mut Frame, app: &mut App, area: Rect) {
     let active_coworkers: Vec<_> = app
         .coworkers
         .iter()
-        .filter(|cw| !matches!(cw.phase.as_deref(), Some("idle") | Some("done")))
+        .filter(|cw| !is_coworker_idle_or_done(cw.phase.as_deref()))
         .filter(|cw| {
             let name = cw.name.to_lowercase();
             name != "lead" && name != project_name_lower

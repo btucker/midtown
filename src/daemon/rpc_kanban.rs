@@ -294,6 +294,7 @@ async fn build_coworkers_data(
                 "name": cw.name,
                 "task_id": display_task_id,
                 "phase": workflow_phase.map(|p| p.abbreviation()),
+                "status": cw.status.to_string(),
                 "pr_number": pr_number,
                 "health": health_color,
                 "provider": cw.provider.as_str(),

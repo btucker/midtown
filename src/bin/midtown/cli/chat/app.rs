@@ -3365,6 +3365,25 @@ fn fetch_coworker_status_via_rpc() -> Option<CoworkerStatusData> {
                         .get("phase")
                         .and_then(|v| v.as_str())
                         .map(|s| s.to_string());
+                    let status = cw.get("status").and_then(|v| v.as_str());
+
+                    let is_inactive = match phase.as_deref() {
+                        Some(phase) if !phase.trim().is_empty() => {
+                            let phase = phase.trim().to_ascii_lowercase();
+                            matches!(phase.as_str(), "idle" | "done")
+                        }
+                        _ => match status {
+                            Some(status) => {
+                                let status = status.trim().to_ascii_lowercase();
+                                matches!(status.as_str(), "idle" | "stopped")
+                            }
+                            None => false,
+                        },
+                    };
+                    if is_inactive {
+                        return None;
+                    }
+
                     let pr_number = cw.get("pr_number").and_then(|v| v.as_u64());
                     let health = cw
                         .get("health")
