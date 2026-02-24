@@ -462,6 +462,13 @@ describe('renderContent - image attachments', () => {
     expect(result).toContain('photo.png')
   })
 
+  it('handles filenames with spaces in [Attached file:]\\nPlease read: format', () => {
+    const input = '[Attached file: my photo.png]\nPlease read: /home/user/.midtown/projects/mid/uploads/20260101-my photo.png'
+    const result = renderContent(input, API)
+    expect(result).toContain('<img')
+    expect(result).toContain('20260101-my%20photo.png')
+  })
+
   it('XSS: attachment path with special chars is escaped in alt text', () => {
     const result = renderContent('[Attached: /uploads/file"name.png]', API)
     expect(result).not.toContain('"name')

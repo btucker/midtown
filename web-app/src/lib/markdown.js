@@ -87,7 +87,7 @@ export function renderContent(text, apiBase = '') {
   // Both forms are replaced with a control-char placeholder; final HTML is injected after
   // all markdown transformations so the image tags aren't escaped or double-processed.
   const attachments = []
-  text = text.replace(/\[Attached file:[^\]]*\]\nPlease read:\s*(\S+)/g, (_, path) => {
+  text = text.replace(/\[Attached file:[^\]]*\]\nPlease read:\s*(.+)/g, (_, path) => {
     attachments.push(path)
     return `\x01ATTACH${attachments.length - 1}\x01`
   })
