@@ -417,3 +417,54 @@ describe('renderContent - tables', () => {
     expect(result).not.toContain('<table>')
   })
 })
+
+describe('renderContent - image attachments', () => {
+  const API = 'http://localhost:47023/api'
+
+  it('renders [Attached: /path/file.png] as an inline image', () => {
+    const result = renderContent('[Attached: /home/user/.midtown/projects/mid/uploads/20260101-file.png]', API)
+    expect(result).toContain('<img')
+    expect(result).toContain('src="http://localhost:47023/api/uploads/20260101-file.png"')
+    expect(result).toContain('class="message-image"')
+  })
+
+  it('wraps the image in a clickable link', () => {
+    const result = renderContent('[Attached: /uploads/photo.png]', API)
+    expect(result).toContain('<a')
+    expect(result).toContain('target="_blank"')
+    expect(result).toContain('class="attachment-link"')
+  })
+
+  it('renders [Attached file:]\\nPlease read: /path/file.png as an image', () => {
+    const input = '[Attached file: photo.png]\nPlease read: /home/user/.midtown/projects/mid/uploads/20260101-photo.png'
+    const result = renderContent(input, API)
+    expect(result).toContain('<img')
+    expect(result).toContain('src="http://localhost:47023/api/uploads/20260101-photo.png"')
+  })
+
+  it('renders a non-image attachment as a file badge', () => {
+    const result = renderContent('[Attached: /uploads/report.pdf]', API)
+    expect(result).not.toContain('<img')
+    expect(result).toContain('class="attachment-ref"')
+    expect(result).toContain('report.pdf')
+  })
+
+  it('renders message text followed by attachment correctly', () => {
+    const result = renderContent('Here is the screenshot\n\n[Attached: /uploads/shot.png]', API)
+    expect(result).toContain('Here is the screenshot')
+    expect(result).toContain('<img')
+  })
+
+  it('shows file badge when no apiBase is provided', () => {
+    const result = renderContent('[Attached: /uploads/photo.png]')
+    expect(result).not.toContain('<img')
+    expect(result).toContain('class="attachment-ref"')
+    expect(result).toContain('photo.png')
+  })
+
+  it('XSS: attachment path with special chars is escaped in alt text', () => {
+    const result = renderContent('[Attached: /uploads/file"name.png]', API)
+    expect(result).not.toContain('"name')
+    expect(result).toContain('&quot;')
+  })
+})

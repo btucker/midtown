@@ -1,6 +1,6 @@
 <script>
   import { threadData } from './store.js'
-  import { sendMessage, closeThread } from './api.js'
+  import { sendMessage, closeThread, getApiBase } from './api.js'
   import { renderContent, hasMermaid, parseSegments } from './markdown.js'
   import MermaidDiagram from './MermaidDiagram.svelte'
   import { tick, onMount } from 'svelte'
@@ -164,16 +164,16 @@
                     {#if segment.type === 'mermaid'}
                       <MermaidDiagram code={segment.content} />
                     {:else}
-                      <div class="message-text text-foreground">{@html renderContent(segment.content)}</div>
+                      <div class="message-text text-foreground">{@html renderContent(segment.content, getApiBase())}</div>
                     {/if}
                   {/each}
                 </div>
               {:else}
-                <div class="message-text text-foreground">{@html renderContent(parentContent)}</div>
+                <div class="message-text text-foreground">{@html renderContent(parentContent, getApiBase())}</div>
               {/if}
             </div>
           {:else}
-            <div class="text-foreground break-words">{@html renderContent(parentContent)}</div>
+            <div class="text-foreground break-words">{@html renderContent(parentContent, getApiBase())}</div>
           {/if}
         {/if}
       </div>
@@ -192,7 +192,7 @@
           {/if}
           <div class="flex gap-0 break-words">
             <span class="text-muted-foreground/50 flex-shrink-0 w-[3.2em] text-right mr-[0.4em] select-none text-[0.78rem]">{timeChanged($threadData.messages, i) ? formatTime(msg.timestamp) : ''}</span>
-            <span class="flex-1 min-w-0 {isDimSender(msg.from, THREAD_DIM_SENDERS) ? 'text-muted-foreground' : 'text-foreground'}">{@html renderContent(msg.content || '')}</span>
+            <span class="flex-1 min-w-0 {isDimSender(msg.from, THREAD_DIM_SENDERS) ? 'text-muted-foreground' : 'text-foreground'}">{@html renderContent(msg.content || '', getApiBase())}</span>
           </div>
         {/each}
       {/if}
@@ -295,16 +295,16 @@
                     {#if segment.type === 'mermaid'}
                       <MermaidDiagram code={segment.content} />
                     {:else}
-                      <div class="message-text text-foreground">{@html renderContent(segment.content)}</div>
+                      <div class="message-text text-foreground">{@html renderContent(segment.content, getApiBase())}</div>
                     {/if}
                   {/each}
                 </div>
               {:else}
-                <div class="message-text text-foreground">{@html renderContent(parentContent)}</div>
+                <div class="message-text text-foreground">{@html renderContent(parentContent, getApiBase())}</div>
               {/if}
             </div>
           {:else}
-            <div class="text-foreground break-words">{@html renderContent(parentContent)}</div>
+            <div class="text-foreground break-words">{@html renderContent(parentContent, getApiBase())}</div>
           {/if}
           <div class="text-muted-foreground text-[0.75rem] mt-1">{formatTime(parentMsg?.timestamp)}</div>
         {/if}
@@ -324,7 +324,7 @@
           {/if}
           <div class="flex gap-0 break-words">
             <span class="text-muted-foreground/50 flex-shrink-0 w-[3.2em] text-right mr-[0.4em] select-none text-[0.78rem]">{timeChanged($threadData.messages, i) ? formatTime(msg.timestamp) : ''}</span>
-            <span class="flex-1 min-w-0 {isDimSender(msg.from, THREAD_DIM_SENDERS) ? 'text-muted-foreground' : 'text-foreground'}">{@html renderContent(msg.content || '')}</span>
+            <span class="flex-1 min-w-0 {isDimSender(msg.from, THREAD_DIM_SENDERS) ? 'text-muted-foreground' : 'text-foreground'}">{@html renderContent(msg.content || '', getApiBase())}</span>
           </div>
         {/each}
       {/if}

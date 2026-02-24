@@ -1,6 +1,6 @@
 <script>
   import { messages, messagesByChannel, activeChannel, channels, coworkers, kanbanData, repoStatus, repoStatuses, daemonStatus, detailPanelData, isWideScreen, agentToolItems, threadData } from './store.js'
-  import { sendMessage, uploadFile, closeThread, openThread, openTaskThread } from './api.js'
+  import { sendMessage, uploadFile, closeThread, openThread, openTaskThread, getApiBase } from './api.js'
   import { AVENUE_COLORS, getSenderColor, isDimSender, formatTime, senderChanged, timeChanged } from './messageUtils.js'
   import { tick, onMount } from 'svelte'
   import { fly } from 'svelte/transition'
@@ -683,7 +683,7 @@
             <div class="flex gap-0 break-words">
               <span class="text-muted-foreground/50 flex-shrink-0 w-[3.7em] text-right mr-[0.5em] select-none text-[0.78rem]">{timeChanged(channelMessages, i) ? formatTime(msg.timestamp) : ''}</span>
               <span class="flex-shrink-0 mr-[0.3em]" style="color: {getSenderColor(msg.from)}">*</span>
-              <span class="action-text flex-1 min-w-0" style="color: {getSenderColor(msg.from)}">{@html renderContent(getActionContent(msg))}</span>
+              <span class="action-text flex-1 min-w-0" style="color: {getSenderColor(msg.from)}">{@html renderContent(getActionContent(msg), getApiBase())}</span>
             </div>
           {:else if isAction(msg) && hasMermaid(msg.content)}
             <!-- Action message with mermaid diagram(s): gutter shows time only on minute change -->
@@ -701,7 +701,7 @@
                     <span class="flex-shrink-0 w-[3.7em] mr-[0.5em]"></span>
                     <span class="flex-shrink-0 mr-[0.3em] invisible">*</span>
                   {/if}
-                  <span class="action-text flex-1 min-w-0" style="color: {getSenderColor(msg.from)}">{@html renderContent(segment.content)}</span>
+                  <span class="action-text flex-1 min-w-0" style="color: {getSenderColor(msg.from)}">{@html renderContent(segment.content, getApiBase())}</span>
                 </div>
               {/if}
             {/each}
@@ -742,7 +742,7 @@
                   {:else}
                     <span class="flex-shrink-0 w-[3.7em] mr-[0.5em]"></span>
                   {/if}
-                  <span class="message-text flex-1 min-w-0 {isDimSender(msg.from) ? 'text-muted-foreground' : 'text-foreground'}">{@html renderContent(segment.content)}</span>
+                  <span class="message-text flex-1 min-w-0 {isDimSender(msg.from) ? 'text-muted-foreground' : 'text-foreground'}">{@html renderContent(segment.content, getApiBase())}</span>
                 </div>
               {/if}
             {/each}
@@ -750,7 +750,7 @@
             <!-- Regular message: gutter shows time only on minute change -->
             <div class="flex gap-0 break-words">
               <span class="text-muted-foreground/50 flex-shrink-0 w-[3.7em] text-right mr-[0.5em] select-none text-[0.78rem]">{timeChanged(channelMessages, i) ? formatTime(msg.timestamp) : ''}</span>
-              <span class="message-text flex-1 min-w-0 {isDimSender(msg.from) ? 'text-muted-foreground' : 'text-foreground'}">{@html renderContent(msg.content)}</span>
+              <span class="message-text flex-1 min-w-0 {isDimSender(msg.from) ? 'text-muted-foreground' : 'text-foreground'}">{@html renderContent(msg.content, getApiBase())}</span>
             </div>
           {/if}
 
@@ -902,6 +902,30 @@
 </Dialog.Root>
 
 <style>
+  /* Inline image attachments */
+  :global(.message-image) {
+    max-width: 320px;
+    max-height: 320px;
+    border-radius: 6px;
+    display: block;
+    margin-top: 4px;
+  }
+
+  :global(.attachment-link) {
+    display: inline-block;
+    line-height: 0;
+  }
+
+  :global(.attachment-ref) {
+    display: inline-block;
+    font-size: 0.88em;
+    color: hsl(var(--muted-foreground));
+    background: hsl(var(--accent));
+    border-radius: 4px;
+    padding: 2px 8px;
+    margin-top: 4px;
+  }
+
   /* Link styles - applied globally within message content */
   :global(.message-text a),
   :global(.action-text a) {

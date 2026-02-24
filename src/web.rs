@@ -7,7 +7,7 @@
 use axum::{
     Json, Router,
     extract::{
-        DefaultBodyLimit, Multipart, Query, State,
+        DefaultBodyLimit, Multipart, Path, Query, State,
         ws::{Message as WsMessage, WebSocket, WebSocketUpgrade},
     },
     http::StatusCode,
@@ -380,6 +380,7 @@ pub fn create_web_router(state: Arc<WebState>) -> Router {
         .route("/api/usage", get(api_usage))
         .route("/api/questions", get(api_pending_questions))
         .route("/api/upload", post(api_upload))
+        .route("/api/uploads/{filename}", get(api_get_upload))
         .layer(DefaultBodyLimit::max(11 * 1024 * 1024))
         .with_state(state)
 }
@@ -1635,6 +1636,38 @@ async fn api_upload(
         StatusCode::BAD_REQUEST,
         axum::Json(serde_json::json!({ "error": "No file provided" })),
     ))
+}
+
+/// Serve a previously uploaded file by filename.
+///
+/// Files are served from `~/.midtown/projects/<repo>/uploads/<filename>`.
+/// The filename must not contain path separators or `..` to prevent traversal.
+async fn api_get_upload(
+    State(state): State<Arc<WebState>>,
+    Path(filename): Path<String>,
+) -> Result<impl IntoResponse, StatusCode> {
+    if filename.contains("..") || filename.contains('/') || filename.contains('\\') {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    let file_path = crate::paths::projects_dir_for_repo(&state.config.repo)
+        .join("uploads")
+        .join(&filename);
+
+    let data = tokio::fs::read(&file_path)
+        .await
+        .map_err(|_| StatusCode::NOT_FOUND)?;
+
+    let content_type = match file_path.extension().and_then(|e| e.to_str()) {
+        Some("png") => "image/png",
+        Some("jpg") | Some("jpeg") => "image/jpeg",
+        Some("gif") => "image/gif",
+        Some("webp") => "image/webp",
+        Some("pdf") => "application/pdf",
+        _ => "application/octet-stream",
+    };
+
+    Ok(([(axum::http::header::CONTENT_TYPE, content_type)], data))
 }
 
 /// WebSocket upgrade handler
