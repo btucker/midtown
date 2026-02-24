@@ -5146,14 +5146,14 @@ fn test_dispatch_via_sessions_uses_preferred_name() {
 
 #[test]
 fn test_dispatch_via_sessions_uses_session_working_dir() {
-    // Session has a working_dir -- spawn should use it.
-    let session = make_test_session_record(
-        "sess-xyz",
-        Some("99"),
-        Some("park"),
-        "/custom/worktree/path",
-        false,
-    );
+    // Session has a working_dir that exists on disk — spawn should use it.
+    // The path must actually exist because dispatch now validates existence
+    // before trusting the recorded path (stale-path fix, !1730 item 2).
+    let existing_dir = tempfile::TempDir::new().expect("temp dir");
+    let existing_path = existing_dir.path().to_string_lossy().to_string();
+
+    let session =
+        make_test_session_record("sess-xyz", Some("99"), Some("park"), &existing_path, false);
     let sessions = [("sess-xyz".to_string(), session)].into_iter().collect();
     let session_task_map = [("99".to_string(), "sess-xyz".to_string())]
         .into_iter()
@@ -5182,8 +5182,8 @@ fn test_dispatch_via_sessions_uses_session_working_dir() {
     let config = spawn_config.unwrap();
     assert_eq!(
         config.working_dir,
-        Some(std::path::PathBuf::from("/custom/worktree/path")),
-        "Spawn should use the session's working_dir"
+        Some(std::path::PathBuf::from(&existing_path)),
+        "Spawn should use the session's working_dir when it exists on disk"
     );
 }
 
