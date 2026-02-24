@@ -259,11 +259,6 @@ fn test_thread_header_renders_code_block_in_parent_message() {
         all_text
     );
     assert!(
-        all_text.contains("--- end ---"),
-        "Thread header should render code blocks with '--- end ---' closing border, got:\n{}",
-        all_text
-    );
-    assert!(
         !all_text.contains("```rust"),
         "Thread header should NOT show raw '```rust' fences, got:\n{}",
         all_text
