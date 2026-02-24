@@ -27,7 +27,10 @@ pub(super) async fn handle_insight_report(
     channel: Option<&str>,
     state: &DaemonState,
 ) -> Response {
-    // Deduplicate: normalize and hash the insight content
+    // Deduplicate: normalize and hash the insight content.
+    // Must happen before the channel-lead check so that channel-lead insights
+    // still enter the hash set. This prevents a non-lead coworker from
+    // re-posting the same insight text after a channel lead already reported it.
     let hash = hash_insight(insight);
     {
         let mut hashes = state.insight_hashes.lock().unwrap();
@@ -38,6 +41,29 @@ pub(super) async fn handle_insight_report(
                 serde_json::json!({
                     "posted": false,
                     "reason": "duplicate",
+                }),
+            );
+        }
+    }
+
+    // Channel leads auto-post all output to their channel already.
+    // Suppress the explicit insight.report to avoid double-posting.
+    {
+        let ps = state.persistent_state.lock().await;
+        let is_channel_lead = ps
+            .sessions
+            .values()
+            .any(|s| s.current_name.as_deref() == Some(agent) && s.coworker_type == "channel-lead");
+        if is_channel_lead {
+            debug!(
+                "insight.report: suppressing insight from channel lead {}, already auto-posted",
+                agent
+            );
+            return Response::success(
+                id,
+                serde_json::json!({
+                    "posted": false,
+                    "reason": "channel_lead",
                 }),
             );
         }
