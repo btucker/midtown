@@ -13,6 +13,7 @@ pub(crate) mod events;
 mod health;
 pub mod helpers;
 mod pr;
+pub(crate) mod profile_pool;
 mod rpc;
 mod rpc_auth;
 mod rpc_channel;
@@ -716,6 +717,16 @@ pub(crate) struct DaemonState {
     /// Maps `fork_name → channel_name`. Used by stream processing so forked
     /// output is routed to the thread's topic channel.
     pub(crate) fork_bound_channels: std::sync::Mutex<HashMap<String, String>>,
+
+    /// Maps coworker session name → auth profile email for pool-based spawns.
+    ///
+    /// Populated in `spawn_coworker()` when a profile is selected from the pool.
+    /// Used by usage-limit detection to attribute a session's limit to the
+    /// correct profile (so it can be marked as `is_usage_limited` in persistent state).
+    ///
+    /// Ephemeral — not persisted across daemon restarts. Entries are added
+    /// on spawn and removed in `cleanup_coworker_state`.
+    pub(crate) session_profile_map: std::sync::Mutex<HashMap<String, String>>,
 }
 
 impl DaemonState {
@@ -979,6 +990,10 @@ impl DaemonState {
         {
             self.fork_bound_channels.lock().unwrap().remove(name);
         }
+        // Clear profile pool mapping (prevents stale profile attribution on name reuse)
+        {
+            self.session_profile_map.lock().unwrap().remove(name);
+        }
         // Clear the inbox for this name so the next session that gets
         // allocated this name does not inherit unread messages from this session.
         {
@@ -1044,6 +1059,32 @@ impl DaemonState {
         // Also clean up expired kanban cache entries
         self.kanban_cache.cleanup();
         self.prs_cache.cleanup();
+    }
+
+    /// Select an auth profile from the pool configured for this coworker's role.
+    ///
+    /// Returns `None` if no pool is configured for this role, or if all profiles
+    /// in the pool are currently usage-limited.
+    ///
+    /// Role-to-pool mapping:
+    /// - `Coworker` → `execution.coworker_profiles`
+    /// - `Reviewer` → `execution.reviewer_profiles`
+    /// - `ChannelLead` → `execution.channel_lead_profiles`
+    /// - `Lead` → always `None` (leads use a fixed profile)
+    async fn select_profile_from_pool(
+        &self,
+        config: &crate::launch::LaunchConfig,
+    ) -> Option<String> {
+        let execution = crate::config::get_project_execution_config(&self.repo_name);
+        let pool = match &config.role {
+            crate::launch::CoworkerRole::Coworker => execution.coworker_profiles,
+            crate::launch::CoworkerRole::Reviewer => execution.reviewer_profiles,
+            crate::launch::CoworkerRole::ChannelLead { .. } => execution.channel_lead_profiles,
+            crate::launch::CoworkerRole::Lead => None,
+        }?;
+
+        let ps = self.persistent_state.lock().await;
+        crate::daemon::profile_pool::select_profile(&pool, &ps.profile_pool_state)
     }
 
     /// Check if the daemon is at the absolute coworker limit (including reviewer headroom).
@@ -1305,6 +1346,7 @@ impl DaemonState {
             topic_sessions: std::sync::Mutex::new(HashMap::new()),
             fork_bound_threads: std::sync::Mutex::new(fork_bound_threads),
             fork_bound_channels: std::sync::Mutex::new(fork_bound_channels),
+            session_profile_map: std::sync::Mutex::new(HashMap::new()),
         })
     }
 
@@ -1341,10 +1383,33 @@ impl DaemonState {
         // Inject project-resolved auth profile if not already set
         let mut config = if config.auth_profile_dir.is_none() {
             let mut c = config.clone();
-            c.auth_profile_dir = Some(crate::auth::active_profile_dir_for_project_with_provider(
-                &self.repo_name,
-                c.auth_provider,
-            ));
+
+            // Try pool-based profile selection first.
+            if let Some(email) = self.select_profile_from_pool(&c).await {
+                tracing::debug!("Pool selected profile '{}' for coworker '{}'", email, name);
+                // Record session→profile mapping for usage-limit attribution.
+                self.session_profile_map
+                    .lock()
+                    .unwrap()
+                    .insert(name.clone(), email.clone());
+                // Mark last_used_at so future spawns use LRU ordering.
+                {
+                    let mut ps = self.persistent_state.lock().await;
+                    ps.profile_pool_state
+                        .entry(email.clone())
+                        .or_default()
+                        .last_used_at = Some(chrono::Utc::now());
+                    let _ = ps.save_for_repo(&self.repo_name);
+                }
+                c.auth_profile_dir = Some(crate::auth::profile_dir_for_email(&email));
+            } else {
+                // No pool configured or all profiles limited — fall back to single profile.
+                c.auth_profile_dir =
+                    Some(crate::auth::active_profile_dir_for_project_with_provider(
+                        &self.repo_name,
+                        c.auth_provider,
+                    ));
+            }
             c
         } else {
             config.clone()

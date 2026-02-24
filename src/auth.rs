@@ -230,6 +230,16 @@ pub fn profile_dir(name: &str) -> PathBuf {
     profile_dir_for(AuthProvider::Claude, name)
 }
 
+/// Return the Claude profile directory for a known profile email.
+///
+/// Used by pool-based spawn to resolve a selected email to the directory
+/// that gets set as `CLAUDE_CONFIG_DIR` for the spawned process.
+///
+/// Returns `~/.midtown/auth/<email>/claude/`
+pub fn profile_dir_for_email(email: &str) -> PathBuf {
+    profile_dir_for(AuthProvider::Claude, email)
+}
+
 /// Get the profile directory for a specific provider/profile pair.
 ///
 /// For Claude, this returns `~/.midtown/auth/<profile>/claude/`
