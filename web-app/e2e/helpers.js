@@ -62,7 +62,7 @@ export const MOCK_MESSAGES = [
     id: THREAD_PARENT_ID,
     channel: 'midtown',
     from: 'amsterdam',
-    content: 'Thread me with any blockers on !303 — want to keep the discussion scoped.',
+    content: 'PR is up: **auth endpoint** [link](https://github.com/example/pull/1) — thread for blockers on !303.',
     timestamp: '2025-01-15T10:03:00Z',
     msg_type: 'message',
     reply_count: 1,

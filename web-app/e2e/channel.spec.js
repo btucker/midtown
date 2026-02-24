@@ -13,7 +13,7 @@ test.describe('Channel messaging', () => {
   })
 
   test('displays sender names with color', async ({ page }) => {
-    const leadSender = page.getByTestId('message-sender', { hasText: 'lead' })
+    const leadSender = page.getByTestId('message-sender').filter({ hasText: 'lead' })
     await expect(leadSender.first()).toBeVisible()
   })
 
