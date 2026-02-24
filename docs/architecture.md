@@ -111,6 +111,18 @@ Each coworker runs as:
 - With `--add-dir` worktrees for additional repos in multi-repo projects
 - Nudges are delivered via stdin JSON, and health is monitored via stdout stream events
 
+### HeadlessSession I/O Architecture
+
+`HeadlessSession` (`src/headless.rs`) manages the child process and exposes a typed event stream. Claude sessions use a **background reader** pattern to avoid OS pipe-buffer stalls:
+
+- On spawn, two `tokio::spawn` tasks are created — `claude_stdout_reader_loop` and `claude_stderr_reader_loop` — each owning a `BufReader` over the child's piped stdout/stderr.
+- Each task continuously calls `read_line()` and forwards parsed events or raw lines into **unbounded `mpsc` channels** (`stdout_rx` / `stderr_rx` stored in `HeadlessSession`).
+- `next_claude_event()` does a single `rx.recv().await` — a simple channel receive. Blank lines and `StreamEvent::Unknown` events are filtered in the reader task, not in the hot path.
+- `drain_stderr()` waits up to 10ms for any line the background task is mid-read, then drains up to 100 lines non-blocking.
+- **Detach-on-drop**: When `detach_on_drop` is set (daemon restart path), the `Drop` impl spawns drain tasks to keep the channel receivers alive. Without this, dropping the receivers would cause the reader tasks to exit, closing the pipe FDs and sending SIGPIPE to the child.
+
+This mirrors the Codex session pattern (`read_stdout_loop` / `read_stderr_loop` in `CodexSharedRuntime`) and ensures the child process never blocks on a full 64 KB kernel pipe buffer regardless of output volume.
+
 ### Session-Centric Model
 
 The daemon uses a **session-centric model** where Claude Code sessions (keyed by session ID) are the primary coordination entity. Names are ephemeral labels drawn from an LRU pool.
