@@ -582,12 +582,9 @@ pub struct ExecutionSection {
     /// Provider used for channel lead sessions.
     #[serde(default)]
     pub channel_lead_provider: Option<crate::auth::AuthProvider>,
-    /// Provider used for specialized workers (architect/headless.execute default).
+    /// Provider used for specialized workers (headless.execute default).
     #[serde(default)]
     pub specialized_provider: Option<crate::auth::AuthProvider>,
-    /// Provider override for architect specialized worker.
-    #[serde(default)]
-    pub architect_provider: Option<crate::auth::AuthProvider>,
     /// Provider override for ad-hoc `headless.execute` RPC.
     #[serde(default)]
     pub headless_execute_provider: Option<crate::auth::AuthProvider>,
@@ -604,7 +601,6 @@ impl ExecutionSection {
             review_mode: other.review_mode.or(self.review_mode),
             channel_lead_provider: other.channel_lead_provider.or(self.channel_lead_provider),
             specialized_provider: other.specialized_provider.or(self.specialized_provider),
-            architect_provider: other.architect_provider.or(self.architect_provider),
             headless_execute_provider: other
                 .headless_execute_provider
                 .or(self.headless_execute_provider),
@@ -633,7 +629,6 @@ pub enum ExecutionRole {
     Reviewer,
     ChannelLead,
     Specialized,
-    Architect,
     HeadlessExecute,
 }
 
@@ -879,10 +874,8 @@ impl GlobalConfig {
 # review_mode = "local"
 # Optional override for channel leads (defaults to lead_provider when unset)
 # channel_lead_provider = "claude"
-# Default provider for specialized workers (architect/headless.execute)
+# Default provider for specialized workers (headless.execute)
 # specialized_provider = "claude"
-# Optional override provider for architect
-# architect_provider = "claude"
 # Optional override provider for headless.execute RPC
 # headless_execute_provider = "claude"
 
@@ -1003,13 +996,10 @@ fn resolve_execution_provider(
         ExecutionRole::Reviewer => execution.reviewer_provider,
         ExecutionRole::ChannelLead => execution.channel_lead_provider.or(execution.lead_provider),
         ExecutionRole::Specialized => execution.specialized_provider,
-        ExecutionRole::Architect => execution.architect_provider,
         ExecutionRole::HeadlessExecute => execution.headless_execute_provider,
     };
     let configured = match role {
-        ExecutionRole::Architect | ExecutionRole::HeadlessExecute => {
-            direct.or(execution.specialized_provider)
-        }
+        ExecutionRole::HeadlessExecute => direct.or(execution.specialized_provider),
         _ => direct,
     };
     configured.unwrap_or(crate::auth::AuthProvider::Claude)
@@ -2365,8 +2355,6 @@ webhook_port = 47024
             review_mode: Some(ReviewMode::Local),
             channel_lead_provider: None,
             specialized_provider: None,
-            architect_provider: None,
-
             headless_execute_provider: None,
         };
         let project = ExecutionSection {
@@ -2377,8 +2365,6 @@ webhook_port = 47024
             review_mode: Some(ReviewMode::GithubApp),
             channel_lead_provider: None,
             specialized_provider: None,
-            architect_provider: None,
-
             headless_execute_provider: None,
         };
 
@@ -2409,7 +2395,6 @@ coworker_provider = "zai"
 reviewer_provider = "claude"
 review_mode = "both"
 specialized_provider = "codex"
-architect_provider = "zai"
 "#;
         let config: GlobalConfig = toml::from_str(toml).unwrap();
         assert_eq!(
@@ -2433,10 +2418,6 @@ architect_provider = "zai"
             config.execution.specialized_provider,
             Some(crate::auth::AuthProvider::Codex)
         );
-        assert_eq!(
-            config.execution.architect_provider,
-            Some(crate::auth::AuthProvider::Zai)
-        );
     }
 
     #[test]
@@ -2449,19 +2430,10 @@ architect_provider = "zai"
             review_mode: None,
             channel_lead_provider: None,
             specialized_provider: Some(crate::auth::AuthProvider::Codex),
-            architect_provider: Some(crate::auth::AuthProvider::Zai),
-
             headless_execute_provider: None,
         };
 
-        // Role-specific override should win when set.
-        let architect = execution
-            .architect_provider
-            .or(execution.specialized_provider)
-            .unwrap_or(crate::auth::AuthProvider::Claude);
-        assert_eq!(architect, crate::auth::AuthProvider::Zai);
-
-        // Otherwise specialized default should be used (no role-specific override).
+        // HeadlessExecute falls back to specialized_provider when no override set.
         let headless = execution
             .headless_execute_provider
             .or(execution.specialized_provider)

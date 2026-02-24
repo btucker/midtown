@@ -220,8 +220,8 @@ fn set_and_get_project_specialized_override_provider() {
     let dir = TempDir::new().unwrap();
     let config_path = temp_project_config(&dir);
 
-    set_project_key("execution.architect_provider", "zai", &config_path).unwrap();
-    let value = get_project_key("execution.architect_provider", &config_path).unwrap();
+    set_project_key("execution.headless_execute_provider", "zai", &config_path).unwrap();
+    let value = get_project_key("execution.headless_execute_provider", &config_path).unwrap();
     assert_eq!(value, "zai");
 }
 
@@ -383,10 +383,6 @@ fn list_global_shows_all_keys() {
     );
     assert!(
         output.contains("execution.specialized_provider"),
-        "Missing: {output}"
-    );
-    assert!(
-        output.contains("execution.architect_provider"),
         "Missing: {output}"
     );
     assert!(

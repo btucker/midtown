@@ -60,7 +60,6 @@ const VALID_KEYS: &[&str] = &[
     "execution.review_mode",
     "execution.channel_lead_provider",
     "execution.specialized_provider",
-    "execution.architect_provider",
     "execution.headless_execute_provider",
 ];
 
@@ -305,9 +304,6 @@ fn global_field_value(config: &midtown::config::GlobalConfig, key: &str) -> Stri
         "execution.specialized_provider" => {
             fmt_opt(config.execution.specialized_provider.map(|p| p.as_str()))
         }
-        "execution.architect_provider" => {
-            fmt_opt(config.execution.architect_provider.map(|p| p.as_str()))
-        }
         "execution.headless_execute_provider" => fmt_opt(
             config
                 .execution
@@ -360,9 +356,6 @@ fn project_field_value(config: &midtown::config::FullProjectConfig, key: &str) -
         }
         "execution.specialized_provider" => {
             fmt_opt(config.execution.specialized_provider.map(|p| p.as_str()))
-        }
-        "execution.architect_provider" => {
-            fmt_opt(config.execution.architect_provider.map(|p| p.as_str()))
         }
         "execution.headless_execute_provider" => fmt_opt(
             config
@@ -449,9 +442,6 @@ fn apply_global_key(
         "execution.specialized_provider" => {
             config.execution.specialized_provider = Some(parse_provider(key, value)?);
         }
-        "execution.architect_provider" => {
-            config.execution.architect_provider = Some(parse_provider(key, value)?);
-        }
         "execution.headless_execute_provider" => {
             config.execution.headless_execute_provider = Some(parse_provider(key, value)?);
         }
@@ -534,9 +524,6 @@ fn apply_project_key(
         }
         "execution.specialized_provider" => {
             config.execution.specialized_provider = Some(parse_provider(key, value)?);
-        }
-        "execution.architect_provider" => {
-            config.execution.architect_provider = Some(parse_provider(key, value)?);
         }
         "execution.headless_execute_provider" => {
             config.execution.headless_execute_provider = Some(parse_provider(key, value)?);
