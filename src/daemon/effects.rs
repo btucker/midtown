@@ -108,6 +108,12 @@ pub enum Effect {
     /// Used for unrecoverable resume/session errors (e.g., stale Codex thread IDs).
     /// This prevents retry loops by ensuring the next spawn is fresh.
     ClearSavedSessionId { name: String },
+    /// Clear the `working_dir` field from a session record.
+    ///
+    /// When a session's recorded `working_dir` no longer exists on disk (e.g.
+    /// the worktree was cleaned up), dispatch falls back to a fresh worktree and
+    /// emits this effect so the stale path is not retried on the next tick.
+    ClearSessionWorkingDir { session_id: String },
     /// Spawn a coworker with conditional follow-up effects.
     ///
     /// On success, `on_success` effects are executed. On failure, `on_failure`
@@ -1037,6 +1043,27 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     for task_id in &cleared_task_ids {
                         state.clear_task_assignment_by_task(task_id);
                     }
+                }
+            }
+            Effect::ClearSessionWorkingDir { session_id } => {
+                let mut ps = state.persistent_state.lock().await;
+                if let Some(record) = ps.sessions.get_mut(&session_id) {
+                    info!(
+                        "ClearSessionWorkingDir: cleared stale working_dir '{}' from session {}",
+                        record.working_dir, session_id
+                    );
+                    record.working_dir = String::new();
+                    if let Err(e) = ps.save_for_repo(&state.repo_name) {
+                        warn!(
+                            "Failed to save state after clearing working_dir for session {}: {}",
+                            session_id, e
+                        );
+                    }
+                } else {
+                    debug!(
+                        "ClearSessionWorkingDir: no session record found for {}",
+                        session_id
+                    );
                 }
             }
             Effect::SpawnCoworkerWithCallbacks {

@@ -202,6 +202,7 @@ fn make_dev_limit_snapshot(
         session_dispatch_cooldown_active: false,
         spawn_failure_cooldown_names: std::collections::HashSet::new(),
         recently_recovered_session_ids: std::collections::HashSet::new(),
+        stale_working_dir_sessions: std::collections::HashSet::new(),
     }
 }
 

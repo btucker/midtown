@@ -963,3 +963,149 @@ fn test_session_dispatch_on_success_includes_session_recovered_cooldown() {
         );
     }
 }
+
+// ======================================================================
+// Stale working_dir validation tests (!1730 item 2)
+// ======================================================================
+
+/// Path 2: when a pending task's session has a working_dir that no longer exists,
+/// spawn_for_pending_tasks_excluding should fall back to the fresh worktree path
+/// and emit ClearSessionWorkingDir to prevent retrying the stale path next tick.
+#[test]
+fn test_pending_task_stale_working_dir_falls_back_and_clears() {
+    use crate::tasks::{Task, TaskStatus};
+
+    let stale_path = "/tmp/nonexistent-worktree-for-test";
+
+    let mut session = make_session_record(
+        "sess-stale-wd-123",
+        Some("99"),
+        Some("pleasantville"),
+        false,
+    );
+    session.working_dir = stale_path.to_string();
+
+    let snap = snapshot::WorldSnapshot {
+        pending_tasks_without_owners: vec![Task {
+            id: "99".to_string(),
+            subject: "Fix stale working dir".to_string(),
+            status: TaskStatus::Pending,
+            owner: None,
+            description: None,
+            blocked_by: vec![],
+            channel: None,
+            pr: None,
+            created_at: None,
+        }],
+        sessions: [("sess-stale-wd-123".to_string(), session)]
+            .into_iter()
+            .collect(),
+        session_task_map: [("99".to_string(), "sess-stale-wd-123".to_string())]
+            .into_iter()
+            .collect(),
+        stale_working_dir_sessions: ["sess-stale-wd-123".to_string()].into_iter().collect(),
+        recently_recovered_session_ids: HashSet::new(),
+        ..snapshot::minimal_snapshot_for_test()
+    };
+
+    let (state, _tmp, _guard) = make_test_state();
+    let effects =
+        spawn_for_pending_tasks_excluding(&snap, &state, &std::collections::HashSet::new());
+
+    // Should emit ClearSessionWorkingDir for the stale session
+    let has_clear_wd = effects.iter().any(|e| {
+        matches!(e, Effect::ClearSessionWorkingDir { session_id } if session_id == "sess-stale-wd-123")
+    });
+    assert!(
+        has_clear_wd,
+        "Should emit ClearSessionWorkingDir when working_dir doesn't exist, got: {:?}",
+        effects
+            .iter()
+            .map(|e| format!("{:?}", e))
+            .collect::<Vec<_>>()
+    );
+
+    // Should still emit SpawnSession (using the fresh worktree path, not the stale one)
+    let spawn_eff = effects.iter().find(|e| {
+        matches!(e, Effect::SpawnSession { session_id, .. } if session_id == "sess-stale-wd-123")
+    });
+    assert!(
+        spawn_eff.is_some(),
+        "Should emit SpawnSession even when working_dir is stale, got: {:?}",
+        effects
+            .iter()
+            .map(|e| format!("{:?}", e))
+            .collect::<Vec<_>>()
+    );
+
+    // The SpawnSession working_dir must NOT be the stale path
+    if let Some(Effect::SpawnSession { working_dir, .. }) = spawn_eff {
+        assert_ne!(
+            working_dir.to_string_lossy(),
+            stale_path,
+            "SpawnSession must use fresh worktree, not the stale path"
+        );
+    }
+}
+
+/// Path 1: when a recovered session has a working_dir that no longer exists,
+/// dispatch_via_sessions_with_task_lookup should fall back to the fresh worktree
+/// path and include ClearSessionWorkingDir in the effects.
+#[test]
+fn test_session_dispatch_stale_working_dir_falls_back_and_clears() {
+    let stale_path = "/tmp/nonexistent-worktree-for-test";
+
+    let mut session = make_session_record("sess-stale-p1-abc", Some("1740"), Some("park"), false);
+    session.working_dir = stale_path.to_string();
+
+    let task = in_progress_task_for_lookup("1740", "Stale worktree test", "park");
+
+    let snap = snapshot::WorldSnapshot {
+        in_progress_tasks: vec![(
+            "1740".to_string(),
+            "Stale worktree test".to_string(),
+            "park".to_string(),
+        )],
+        sessions: [("sess-stale-p1-abc".to_string(), session)]
+            .into_iter()
+            .collect(),
+        session_task_map: [("1740".to_string(), "sess-stale-p1-abc".to_string())]
+            .into_iter()
+            .collect(),
+        stale_working_dir_sessions: ["sess-stale-p1-abc".to_string()].into_iter().collect(),
+        recently_recovered_session_ids: HashSet::new(),
+        ..snapshot::minimal_snapshot_for_test()
+    };
+
+    let lookup = |id: &str| -> Option<crate::tasks::Task> {
+        if id == "1740" {
+            Some(task.clone())
+        } else {
+            None
+        }
+    };
+
+    let effects = dispatch_via_sessions_with_task_lookup(&snap, None, lookup);
+
+    // Must emit ClearSessionWorkingDir for the stale session
+    let has_clear_wd = effects.iter().any(|e| {
+        matches!(e, Effect::ClearSessionWorkingDir { session_id } if session_id == "sess-stale-p1-abc")
+    });
+    assert!(
+        has_clear_wd,
+        "Path 1 should emit ClearSessionWorkingDir when working_dir is stale, got: {:?}",
+        effects
+            .iter()
+            .map(|e| format!("{:?}", e))
+            .collect::<Vec<_>>()
+    );
+
+    // Must still attempt spawn via SpawnCoworkerWithCallbacks
+    let has_spawn = effects
+        .iter()
+        .any(|e| matches!(e, Effect::SpawnCoworkerWithCallbacks { .. }));
+    assert!(
+        has_spawn,
+        "Path 1 should still emit SpawnCoworkerWithCallbacks even with stale working_dir"
+    );
+}

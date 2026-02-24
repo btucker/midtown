@@ -1351,6 +1351,10 @@ mod rules_session_tests;
 #[cfg(test)]
 mod rules_channel_lead_tests;
 
+#[path = "rules_idle_tests.rs"]
+#[cfg(test)]
+mod rules_idle_tests;
+
 #[cfg(test)]
 mod tests {
     use super::*;

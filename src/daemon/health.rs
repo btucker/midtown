@@ -33,9 +33,9 @@ use super::{DaemonState, snapshot};
 /// - They have API errors (will be nudged to retry instead)
 /// - They have auth errors (waiting for re-authentication)
 ///
-/// Also enforces a minimum lifetime check - coworkers must be alive for at least
-/// 5 minutes before they can be sent on a break. This prevents spawn storms where
-/// coworkers are rapidly sent on breaks.
+/// Also enforces a minimum lifetime check — coworkers must be alive for at least
+/// `MINIMUM_COWORKER_LIFETIME` before they can be sent on a break. This prevents
+/// killing coworkers during session initialization (which takes 40-60s).
 pub fn check_and_shutdown_idle_coworkers(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
     if snap.active_coworkers.is_empty() {
         return vec![];

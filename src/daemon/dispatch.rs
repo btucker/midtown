@@ -704,7 +704,8 @@ pub(super) fn extract_claimed_task_ids_from_effects(effects: &[Effect]) -> HashS
 /// Rate-limited to one spawn per tick across all paths.
 ///
 /// Note: not fully pure — `build_plan_prompt_section` reads plan files from disk.
-/// Cooldown state is pre-evaluated into the snapshot by `collect_world_snapshot()`.
+/// Stale working-dir checks and cooldown state are pre-evaluated into the snapshot
+/// by `collect_world_snapshot()`.
 pub(super) fn dispatch_via_sessions(
     snap: &snapshot::WorldSnapshot,
     state: &DaemonState,
@@ -880,8 +881,22 @@ where
         );
         // Prefer the session's recorded working_dir (actual location on disk).
         // Fall back to the computed worktree path from the registry.
-        let working_dir = if !record.working_dir.is_empty() {
+        // Staleness is pre-evaluated in WorldSnapshot::stale_working_dir_sessions
+        // during collect_world_snapshot() — no filesystem I/O here.
+        let working_dir = if !record.working_dir.is_empty()
+            && !snap.stale_working_dir_sessions.contains(&record.session_id)
+        {
             std::path::PathBuf::from(&record.working_dir)
+        } else if !record.working_dir.is_empty() {
+            warn!(
+                "Session {}: recorded working_dir {:?} no longer exists; \
+                 falling back to fresh worktree for task !{}",
+                record.session_id, record.working_dir, task_id
+            );
+            effects.push(effects::Effect::ClearSessionWorkingDir {
+                session_id: record.session_id.clone(),
+            });
+            wt.path.clone()
         } else {
             wt.path.clone()
         };
@@ -2209,17 +2224,21 @@ pub(super) fn spawn_for_pending_tasks_excluding(
                 let prompt =
                     crate::agents::coworker_recovery_prompt(&task.id, &task.subject, &plan_section);
                 let wt = prepare_task_worktree(&task.id, &task.subject, &snap.repo_name, snap);
-                let working_dir = if !record.working_dir.is_empty() {
-                    let recorded = std::path::PathBuf::from(&record.working_dir);
-                    if recorded.exists() {
-                        recorded
-                    } else {
-                        warn!(
-                            "Session {} working_dir {:?} no longer exists — using fresh worktree {:?}",
-                            record.session_id, recorded, wt.path
-                        );
-                        wt.path.clone()
-                    }
+                // Staleness is pre-evaluated in WorldSnapshot::stale_working_dir_sessions.
+                let working_dir = if !record.working_dir.is_empty()
+                    && !snap.stale_working_dir_sessions.contains(&record.session_id)
+                {
+                    std::path::PathBuf::from(&record.working_dir)
+                } else if !record.working_dir.is_empty() {
+                    warn!(
+                        "Session {}: recorded working_dir {:?} no longer exists; \
+                         falling back to fresh worktree for task !{}",
+                        record.session_id, record.working_dir, task.id
+                    );
+                    effects.push(effects::Effect::ClearSessionWorkingDir {
+                        session_id: record.session_id.clone(),
+                    });
+                    wt.path.clone()
                 } else {
                     wt.path.clone()
                 };

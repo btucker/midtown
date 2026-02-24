@@ -1289,6 +1289,7 @@ fn test_spawn_for_pending_tasks_generates_registry_effects_new_task() {
         session_dispatch_cooldown_active: false,
         spawn_failure_cooldown_names: std::collections::HashSet::new(),
         recently_recovered_session_ids: std::collections::HashSet::new(),
+        stale_working_dir_sessions: std::collections::HashSet::new(),
     };
 
     let (state, _tmp, _guard) = make_test_state();
@@ -1453,6 +1454,7 @@ fn test_spawn_for_pending_tasks_reuses_worktree_for_owned_task() {
         session_dispatch_cooldown_active: false,
         spawn_failure_cooldown_names: std::collections::HashSet::new(),
         recently_recovered_session_ids: std::collections::HashSet::new(),
+        stale_working_dir_sessions: std::collections::HashSet::new(),
     };
 
     let (state, _tmp, _guard) = make_test_state();
@@ -1592,6 +1594,7 @@ fn test_spawn_for_pending_tasks_skips_when_owner_has_pending_task() {
         session_dispatch_cooldown_active: false,
         spawn_failure_cooldown_names: std::collections::HashSet::new(),
         recently_recovered_session_ids: std::collections::HashSet::new(),
+        stale_working_dir_sessions: std::collections::HashSet::new(),
     };
 
     let (state, _tmp, _guard) = make_test_state();
@@ -1701,6 +1704,7 @@ fn test_spawn_owner_includes_record_task_assignment_for_cross_tick_dedup() {
         session_dispatch_cooldown_active: false,
         spawn_failure_cooldown_names: std::collections::HashSet::new(),
         recently_recovered_session_ids: std::collections::HashSet::new(),
+        stale_working_dir_sessions: std::collections::HashSet::new(),
     };
 
     let (state, _tmp, _guard) = make_test_state();
@@ -1814,6 +1818,7 @@ fn test_cross_tick_dedup_skips_in_flight_owned_task() {
         session_dispatch_cooldown_active: false,
         spawn_failure_cooldown_names: std::collections::HashSet::new(),
         recently_recovered_session_ids: std::collections::HashSet::new(),
+        stale_working_dir_sessions: std::collections::HashSet::new(),
     };
 
     let (state, _tmp, _guard) = make_test_state();
@@ -1956,6 +1961,7 @@ fn test_cross_case_dedup_prevents_same_coworker_from_case1_and_case2() {
         session_dispatch_cooldown_active: false,
         spawn_failure_cooldown_names: std::collections::HashSet::new(),
         recently_recovered_session_ids: std::collections::HashSet::new(),
+        stale_working_dir_sessions: std::collections::HashSet::new(),
     };
 
     let (state, _tmp, _guard) = make_test_state();
@@ -2075,6 +2081,7 @@ fn test_spawn_for_pending_tasks_skips_via_snapshot_assignment_check() {
         session_dispatch_cooldown_active: false,
         spawn_failure_cooldown_names: std::collections::HashSet::new(),
         recently_recovered_session_ids: std::collections::HashSet::new(),
+        stale_working_dir_sessions: std::collections::HashSet::new(),
     };
 
     let (state, _tmp, _guard) = make_test_state();
@@ -2177,6 +2184,7 @@ fn test_orphan_recovery_reuses_existing_task_worktree() {
         session_dispatch_cooldown_active: false,
         spawn_failure_cooldown_names: std::collections::HashSet::new(),
         recently_recovered_session_ids: std::collections::HashSet::new(),
+        stale_working_dir_sessions: std::collections::HashSet::new(),
     };
 
     let (state, _tmp, _guard) = make_test_state();
@@ -2337,6 +2345,7 @@ fn test_orphan_recovery_creates_new_worktree_when_none_exists() {
         session_dispatch_cooldown_active: false,
         spawn_failure_cooldown_names: std::collections::HashSet::new(),
         recently_recovered_session_ids: std::collections::HashSet::new(),
+        stale_working_dir_sessions: std::collections::HashSet::new(),
     };
 
     let (state, _tmp, _guard) = make_test_state();
@@ -2520,6 +2529,7 @@ fn test_spawn_for_pending_unowned_reuses_existing_worktree() {
         session_dispatch_cooldown_active: false,
         spawn_failure_cooldown_names: std::collections::HashSet::new(),
         recently_recovered_session_ids: std::collections::HashSet::new(),
+        stale_working_dir_sessions: std::collections::HashSet::new(),
     };
 
     let (state, _tmp, _guard) = make_test_state();
@@ -2684,6 +2694,7 @@ fn make_reconcile_snapshot(
         session_dispatch_cooldown_active: false,
         spawn_failure_cooldown_names: HashSet::new(),
         recently_recovered_session_ids: HashSet::new(),
+        stale_working_dir_sessions: HashSet::new(),
     }
 }
 
@@ -3321,6 +3332,7 @@ fn test_spawn_for_pending_tasks_when_all_coworkers_are_gone() {
         session_dispatch_cooldown_active: false,
         spawn_failure_cooldown_names: std::collections::HashSet::new(),
         recently_recovered_session_ids: std::collections::HashSet::new(),
+        stale_working_dir_sessions: std::collections::HashSet::new(),
     };
 
     let (state, _tmp, _guard) = make_test_state();
@@ -3997,6 +4009,7 @@ fn test_spawn_extracts_model_alias_from_provider_model_format() {
         session_dispatch_cooldown_active: false,
         spawn_failure_cooldown_names: std::collections::HashSet::new(),
         recently_recovered_session_ids: std::collections::HashSet::new(),
+        stale_working_dir_sessions: std::collections::HashSet::new(),
     };
 
     let (state, _tmp, _guard) = make_test_state();
@@ -4116,6 +4129,7 @@ fn test_orphan_recovery_marks_task_in_flight() {
         session_dispatch_cooldown_active: false,
         spawn_failure_cooldown_names: std::collections::HashSet::new(),
         recently_recovered_session_ids: std::collections::HashSet::new(),
+        stale_working_dir_sessions: std::collections::HashSet::new(),
     };
 
     let (state, _tmp, _guard) = make_test_state();
@@ -4408,6 +4422,7 @@ fn test_stale_task_cleanup_false_positive_task_about_merged_pr() {
         session_dispatch_cooldown_active: false,
         spawn_failure_cooldown_names: std::collections::HashSet::new(),
         recently_recovered_session_ids: std::collections::HashSet::new(),
+        stale_working_dir_sessions: std::collections::HashSet::new(),
     };
 
     let (state, _tmp, _guard) = make_test_state();
@@ -4521,6 +4536,7 @@ fn test_stale_task_cleanup_correct_behavior_with_explicit_pr_field() {
         session_dispatch_cooldown_active: false,
         spawn_failure_cooldown_names: std::collections::HashSet::new(),
         recently_recovered_session_ids: std::collections::HashSet::new(),
+        stale_working_dir_sessions: std::collections::HashSet::new(),
     };
 
     let (state, _tmp, _guard) = make_test_state();
@@ -4799,6 +4815,7 @@ fn make_session_dispatch_snapshot(
         session_dispatch_cooldown_active: false,
         spawn_failure_cooldown_names: HashSet::new(),
         recently_recovered_session_ids: HashSet::new(),
+        stale_working_dir_sessions: HashSet::new(),
     }
 }
 
@@ -5146,14 +5163,14 @@ fn test_dispatch_via_sessions_uses_preferred_name() {
 
 #[test]
 fn test_dispatch_via_sessions_uses_session_working_dir() {
-    // Session has a working_dir -- spawn should use it.
-    let session = make_test_session_record(
-        "sess-xyz",
-        Some("99"),
-        Some("park"),
-        "/custom/worktree/path",
-        false,
-    );
+    // Session has a working_dir that exists on disk — spawn should use it.
+    // The path must actually exist because dispatch now validates existence
+    // before trusting the recorded path (stale-path fix, !1730 item 2).
+    let existing_dir = tempfile::TempDir::new().expect("temp dir");
+    let existing_path = existing_dir.path().to_string_lossy().to_string();
+
+    let session =
+        make_test_session_record("sess-xyz", Some("99"), Some("park"), &existing_path, false);
     let sessions = [("sess-xyz".to_string(), session)].into_iter().collect();
     let session_task_map = [("99".to_string(), "sess-xyz".to_string())]
         .into_iter()
@@ -5182,8 +5199,8 @@ fn test_dispatch_via_sessions_uses_session_working_dir() {
     let config = spawn_config.unwrap();
     assert_eq!(
         config.working_dir,
-        Some(std::path::PathBuf::from("/custom/worktree/path")),
-        "Spawn should use the session's working_dir"
+        Some(std::path::PathBuf::from(&existing_path)),
+        "Spawn should use the session's working_dir when it exists on disk"
     );
 }
 
@@ -5585,6 +5602,7 @@ fn test_pending_task_with_stale_working_dir_uses_fresh_worktree() {
         session_task_map,
         is_at_dev_limit: false,
         is_at_coworker_limit: false,
+        stale_working_dir_sessions: ["sess-stale-wdir".to_string()].into_iter().collect(),
         ..make_session_dispatch_snapshot(vec![], HashMap::new(), HashMap::new())
     };
 
