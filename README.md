@@ -123,8 +123,6 @@ midtown oneshot "Generate a report" --json-schema '{"type": "object", ...}'
 midtown oneshot "Fix the bug" --allow-tools --max-budget-usd 0.50
 ```
 
-`midtown headless` remains as a compatibility alias.
-
 | Flag | Description |
 |------|-------------|
 | `--model <name>` | Model to use (default: `sonnet`) |
@@ -279,8 +277,7 @@ Execution provider resolution is role-based:
 - Reviewers: `execution.reviewer_provider` (default: `claude`)
 - Channel leads: `execution.channel_lead_provider` -> `execution.lead_provider` -> `claude`
 - Specialized workers:
-- `oneshot.execute`: `execution.headless_execute_provider` -> `execution.specialized_provider` -> `claude`
-  - (`headless.execute` remains supported as a compatibility alias)
+ - `oneshot.execute`: `execution.headless_execute_provider` -> `execution.specialized_provider` -> `claude`
 
 Review execution mode controls how PR reviews are sourced:
 

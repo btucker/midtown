@@ -322,11 +322,6 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
         "snapshot" => super::rpc_headless::handle_snapshot(request.id, state).await,
 
         "oneshot.execute" => handle_oneshot_execute(request.id, params, state).await,
-        "headless.execute" => {
-            warn!("headless.execute is deprecated; use oneshot.execute");
-            handle_oneshot_execute(request.id, params, state).await
-        }
-
         // ---- Coworker lifecycle ----
         "coworker.spawn" => {
             let resume = params.bool_or("resume", false);
@@ -678,7 +673,7 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
     }
 }
 
-/// Handle one-shot RPC execution (`oneshot.execute`, with deprecated `headless.execute` alias).
+/// Handle one-shot RPC execution.
 async fn handle_oneshot_execute(
     id: RequestId,
     params: Option<&serde_json::Value>,

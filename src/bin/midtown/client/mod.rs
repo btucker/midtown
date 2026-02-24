@@ -693,29 +693,6 @@ impl DaemonClient {
         self.send_raw_with_timeout("oneshot.execute", Some(params), 120)
     }
 
-    /// Execute a headless Claude Code session via the daemon.
-    ///
-    /// Kept for backward compatibility; prefer `oneshot_execute`.
-    #[allow(dead_code)]
-    pub fn headless_execute(
-        &self,
-        prompt: &str,
-        model: &str,
-        system_prompt: &str,
-        json_schema: Option<Value>,
-        max_budget_usd: Option<f64>,
-        allow_tools: bool,
-    ) -> Result<Value, String> {
-        self.oneshot_execute(
-            prompt,
-            model,
-            system_prompt,
-            json_schema,
-            max_budget_usd,
-            allow_tools,
-        )
-    }
-
     // Headed wrapper intercom commands
 
     pub fn headed_register(

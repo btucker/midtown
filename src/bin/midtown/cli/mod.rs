@@ -245,25 +245,3 @@ pub fn handle_oneshot(
         Err(format!("One-shot execution failed: {}", result_text))
     }
 }
-
-/// Backward-compatible handler for `midtown headless` alias.
-#[allow(dead_code)]
-pub fn handle_headless(
-    client: &DaemonClient,
-    prompt: &str,
-    model: &str,
-    system_prompt: &str,
-    json_schema: Option<&str>,
-    max_budget_usd: Option<f64>,
-    allow_tools: bool,
-) -> Result<Response, String> {
-    handle_oneshot(
-        client,
-        prompt,
-        model,
-        system_prompt,
-        json_schema,
-        max_budget_usd,
-        allow_tools,
-    )
-}

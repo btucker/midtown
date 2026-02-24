@@ -251,7 +251,6 @@ enum Commands {
     },
     /// Run a one-shot Claude Code session via the daemon (JSON streaming)
     #[command(hide = true)]
-    #[command(alias = "headless")]
     Oneshot {
         /// Prompt to send to Claude
         prompt: String,

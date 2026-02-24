@@ -189,7 +189,6 @@ Each session role resolves its AI provider via `get_execution_provider_for_role(
 - **Coworker**: `execution.coworker_provider` → `Claude` (default)
 - **Reviewer**: `execution.reviewer_provider` → `Claude` (default)
 - **HeadlessExecute** (`oneshot.execute`): `execution.headless_execute_provider` → `execution.specialized_provider` → `Claude` (default)
-  - (`headless.execute` remains supported as a compatibility alias)
 
 Review source strategy is controlled separately by `execution.review_mode`:
 - `local`: daemon spawns local reviewer coworkers

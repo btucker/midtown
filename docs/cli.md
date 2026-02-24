@@ -77,8 +77,6 @@ midtown oneshot "Generate a report" --json-schema '{"type": "object", ...}'
 midtown oneshot "Fix the bug" --allow-tools --max-budget-usd 0.50
 ```
 
-`midtown headless` remains as a compatibility alias for now.
-
 | Flag | Description |
 |------|-------------|
 | `--model <name>` | Model to use (default: `sonnet`) |

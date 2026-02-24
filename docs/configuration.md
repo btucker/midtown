@@ -84,7 +84,6 @@ Execution provider resolution is role-based:
 - Specialized workers:
   - Architect: `execution.architect_provider` → `execution.specialized_provider` → `claude`
   - `oneshot.execute`: `execution.headless_execute_provider` → `execution.specialized_provider` → `claude`
-  - (`headless.execute` remains supported as a compatibility alias)
 
 Model aliases are auto-normalized per provider at launch:
 
