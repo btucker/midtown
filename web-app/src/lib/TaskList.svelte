@@ -1,5 +1,6 @@
 <script>
-  import { kanbanData } from './store.js'
+  import { kanbanData, detailPanelData } from './store.js'
+  import { openTaskThread, closeThread } from './api.js'
 
   let { channelName = '' } = $props()
 
@@ -38,12 +39,25 @@
   function getStatusColor(status) {
     return status === 'in_progress' ? 'text-primary' : 'text-muted-foreground'
   }
+
+  function handleTaskClick(task) {
+    if (task.message_id) {
+      openTaskThread(task, task.channel || channelName)
+    } else {
+      closeThread()
+      detailPanelData.set({ type: 'task', data: task })
+    }
+  }
 </script>
 
 <div class="flex flex-col gap-px py-1">
   {#each channelTasks as task}
     <div
       class="flex items-baseline gap-1.5 px-2 py-[3px] text-[0.75rem] leading-snug cursor-pointer transition-colors duration-100 rounded hover:bg-sidebar-accent"
+      onclick={() => handleTaskClick(task)}
+      role="button"
+      tabindex="0"
+      onkeydown={(e) => e.key === 'Enter' && handleTaskClick(task)}
     >
       <span class="shrink-0 text-[0.6rem] {getStatusColor(task.status)}">{getStatusMarker(task.status)}</span>
       {#if task.blocked_by?.length > 0}
