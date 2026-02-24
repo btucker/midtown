@@ -2497,8 +2497,16 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                         continue;
                     }
 
-                    match session_id.as_deref() {
+                    let can_resume_channel_lead = match session_id.as_deref() {
                         Some(id) if should_resume_channel_lead_session(id) => {
+                            let ps = state.persistent_state.lock().await;
+                            ps.sessions.contains_key(id)
+                        }
+                        _ => false,
+                    };
+
+                    match (session_id.as_deref(), can_resume_channel_lead) {
+                        (Some(id), true) => {
                             let mut config = crate::launch::LaunchConfig::channel_lead(
                                 &channel_name,
                                 &state.repo_name,
@@ -2511,11 +2519,18 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                                 .await
                             {
                                 Ok((resumed_session_id, _)) => {
+                                    let active_session_id = state
+                                        .session_manager
+                                        .get_session_id(&session_name)
+                                        .await
+                                        .filter(|active_id| !active_id.is_empty())
+                                        .unwrap_or_else(|| resumed_session_id.clone());
+
                                     {
                                         let mut ps = state.persistent_state.lock().await;
                                         ps.channel_lead_sessions.insert(
                                             channel_name.clone(),
-                                            resumed_session_id.clone(),
+                                            active_session_id.clone(),
                                         );
                                         if let Err(e) = ps.save_for_repo(&state.repo_name) {
                                             tracing::error!(
@@ -2527,13 +2542,22 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
 
                                     if let Err(e) = state
                                         .session_manager
-                                        .send_message_to_session_id(&resumed_session_id, &msg)
+                                        .send_message_to_session_id(&active_session_id, &msg)
                                         .await
                                     {
                                         warn!(
-                                            "Nudge after resume failed for '{}' — trigger may be lost: {}",
+                                            "Nudge after resume failed for '{}' — clearing stale mapping: {}",
                                             channel_name, e
                                         );
+                                        let mut ps = state.persistent_state.lock().await;
+                                        ps.channel_lead_sessions
+                                            .insert(channel_name.clone(), String::new());
+                                        if let Err(save_err) = ps.save_for_repo(&state.repo_name) {
+                                            warn!(
+                                                "Failed to clear stale channel lead session ID for '{}': {}",
+                                                channel_name, save_err
+                                            );
+                                        }
                                     }
                                 }
                                 Err(e) => {

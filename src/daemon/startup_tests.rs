@@ -739,6 +739,7 @@ async fn test_recover_channel_lead_session_mappings_rebuilds_active_root_leads()
         state.sessions.insert("sess-lead".to_string(), lead);
 
         let mut skipped = test_session_record("sess-skipped", "park", "channel-lead");
+        skipped.resume_on_startup = false;
         skipped.is_running = false;
         state.sessions.insert("sess-skipped".to_string(), skipped);
 
@@ -767,6 +768,51 @@ async fn test_recover_channel_lead_session_mappings_rebuilds_active_root_leads()
         Some(&"sess-lead".to_string())
     );
     assert!(!state.channel_lead_sessions.contains_key("stale-channel"));
+}
+
+#[tokio::test]
+async fn test_recover_channel_lead_session_mappings_persists_after_stale_is_running_clear() {
+    let persistent_state = tokio::sync::Mutex::new(DaemonPersistentState::default());
+
+    {
+        let mut state = persistent_state.lock().await;
+        let mut lead = test_session_record("sess-lead", "payments", "channel-lead");
+        lead.channel = Some("payments".to_string());
+        lead.bound_thread_id = None;
+        lead.resume_on_startup = true;
+        lead.is_running = true;
+        state.sessions.insert("sess-lead".to_string(), lead);
+    }
+
+    // First recovery builds the in-memory channel-lead mapping.
+    let recovered = recover_channel_lead_session_mappings(&persistent_state).await;
+    assert_eq!(recovered, 1);
+
+    {
+        let state = persistent_state.lock().await;
+        assert_eq!(
+            state.channel_lead_sessions.get("payments"),
+            Some(&"sess-lead".to_string())
+        );
+    }
+
+    // clear_stale_running_sessions runs after recovery and clears is_running, which
+    // previously caused this mapping to be dropped on the next restart cycle.
+    clear_stale_running_sessions(&persistent_state, &std::collections::HashSet::new()).await;
+    {
+        let state = persistent_state.lock().await;
+        assert!(!state.sessions["sess-lead"].is_running);
+    }
+
+    // Simulate a second restart cycle: recovery should still repopulate the mapping
+    // based on resume_on_startup, not live is_running.
+    let recovered = recover_channel_lead_session_mappings(&persistent_state).await;
+    assert_eq!(recovered, 1);
+    let state = persistent_state.lock().await;
+    assert_eq!(
+        state.channel_lead_sessions.get("payments"),
+        Some(&"sess-lead".to_string())
+    );
 }
 
 #[tokio::test]

@@ -709,14 +709,14 @@ pub async fn recover_channel_lead_session_mappings(
 
     // Start from a clean in-memory mapping and repopulate only from
     // persisted sessions that should be recoverable and look like root channel
-    // leads (non-forked, running, resumable).
+    // leads (non-forked, resumable).
     state.channel_lead_sessions.clear();
 
     for record in state.sessions.values() {
         if record.coworker_type != "channel-lead" {
             continue;
         }
-        if !record.resume_on_startup || !record.is_running {
+        if !record.resume_on_startup {
             continue;
         }
 
