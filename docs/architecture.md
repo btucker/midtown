@@ -121,6 +121,8 @@ The daemon uses a **session-centric model** where Claude Code sessions (keyed by
 
 **Dispatch** (`src/daemon/dispatch.rs`): `dispatch_via_sessions()` is a pure function that examines in-progress tasks with session records. For stopped sessions, it emits `SpawnSession` effects with `resume=true` and the session's preferred name, unless the coworker is an active reviewer or the session was recently recovered (per-session cooldown prevents re-recovery spam). This replaces the legacy orphan-recovery pattern with a unified session-aware dispatch path.
 
+**Stale `working_dir` fallback (Path 2):** `spawn_for_pending_tasks_excluding` validates `record.working_dir.exists()` before using the recorded path. If the path no longer exists (worktree was cleaned up between dispatch ticks), it falls back to a fresh worktree. On the next successful `SpawnSession`, `effects.rs` writes the actual spawn path back into `record.working_dir`, implicitly clearing the stale entry so it is not retried on subsequent ticks.
+
 **In-memory reverse maps** on `DaemonState`:
 - `name_to_session` / `session_to_name` — bidirectional name↔session lookup
 - `task_to_session` — task→session mapping for dispatch decisions
@@ -519,4 +521,4 @@ Reminders are stored in `~/.midtown/projects/<repo>/reminders.json` and evaluate
 - `usage_limited_coworkers`, `api_error_coworkers`, and `auth_error_coworkers` are preserved so recovery flows (limit reset, retry, re-auth) can finish.
 - `coworkers_with_active_tools` comes from `ProcessHealth` in-flight markers (`has_pending_tool`, `has_running_subagent`, or `has_pending_api_call`). Tool calls, Task subagents, and fresh pending API turns are treated as critical sections — shutting down mid-turn would drop the result. `has_pending_api_call` is freshness-bounded (uses `last_event_at`/startup time) so stale sessions are still eligible for cleanup.
 
-Only coworkers that fall outside all of these protection sets, are older than `MINIMUM_COWORKER_LIFETIME`, and are not the lead session (named after the repo) are eligible for idle shutdown.
+Only coworkers that fall outside all of these protection sets, are older than `MINIMUM_COWORKER_LIFETIME` (90 seconds — increased from 60s because session startup takes 40-60s, and a 60s guard could expire before initialization completes), and are not the lead session (named after the repo) are eligible for idle shutdown.
