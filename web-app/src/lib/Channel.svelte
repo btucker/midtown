@@ -6,7 +6,6 @@
   import MermaidDiagram from './MermaidDiagram.svelte'
   import { parseSegments, hasMermaid, renderContent } from './markdown.js'
   import Autocomplete from './Autocomplete.svelte'
-  import ToolActivity from './ToolActivity.svelte'
   import * as Dialog from '$lib/components/ui/dialog'
 
   let inputText = $state('')
@@ -60,6 +59,35 @@
   // Tool call items for the active channel.
   // Main channel ('midtown') shows the lead's tool calls; topic channels show their channel lead's.
   let activeChannelToolItems = $derived($agentToolItems[$activeChannel] || [])
+
+  // Activity strip computed values (always-rendered single line above input)
+  let isLeadWorking = $derived($activeChannel === 'midtown' ? !!$daemonStatus?.lead_working : false)
+  let hasInProgressItems = $derived(activeChannelToolItems.some((item) => item.status === 'InProgress'))
+  let showActivity = $derived(activeChannelToolItems.length > 0 || channelLeadThinking || isLeadWorking)
+  let showDots = $derived(isLeadWorking || hasInProgressItems || channelLeadThinking)
+
+  // Most recent tool call entry for inline display in the activity strip.
+  // Replicates ToolActivity's merge logic but returns only the last call.
+  let mostRecentToolCallEntry = $derived.by(() => {
+    if (activeChannelToolItems.length === 0) return null
+    const resultStatus = {}
+    for (const item of activeChannelToolItems) {
+      for (const part of item.content) {
+        if (part.ToolResult) {
+          resultStatus[part.ToolResult.call_id] = part.ToolResult.is_error ? 'error' : 'ok'
+        }
+      }
+    }
+    for (let i = activeChannelToolItems.length - 1; i >= 0; i--) {
+      const item = activeChannelToolItems[i]
+      if (item.content.some((p) => p.ToolCall)) {
+        const callId = item.content.find((p) => p.ToolCall)?.ToolCall?.call_id
+        const status = callId ? (resultStatus[callId] ?? null) : null
+        return { item, status }
+      }
+    }
+    return null
+  })
 
   // Autocomplete filtering and data preparation
   function getAutocompleteItems(type, query) {
@@ -620,6 +648,21 @@
     resizeTextarea()
     detectAutocompleteTrigger()
   }
+
+  function describeToolCall(entry) {
+    for (const part of entry.item.content) {
+      if (part.ToolCall) {
+        return part.ToolCall.semantic_header || part.ToolCall.name?.toLowerCase() || '?'
+      }
+    }
+    return '?'
+  }
+
+  function getToolCallStatusIcon(entry) {
+    if (entry.status === 'error') return '✗'
+    if (entry.status === 'ok') return '✓'
+    return '›'
+  }
 </script>
 
 <div class="flex flex-col h-full min-h-0 overflow-hidden relative">
@@ -740,32 +783,28 @@
         {/each}
       {/if}
 
-      <!-- Unified activity strip: shows the active channel's lead name, bouncing dots,
-           and tool call activity. In the main channel, uses lead_working (same signal as
-           the TUI braille spinner) to drive the dots. In topic channels, InProgress tool
-           items drive the dots (channel leads don't have a separate lead_working signal). -->
-      {#if activeChannelToolItems.length > 0 || channelLeadThinking || ($activeChannel === 'midtown' && !!$daemonStatus?.lead_working)}
-        {@const agentName = $activeChannel}
-        {@const stripColor = agentName === 'midtown' ? AVENUE_COLORS.lead : getSenderColor(agentName)}
-        {@const isLeadWorking = $activeChannel === 'midtown' ? !!$daemonStatus?.lead_working : false}
-        {@const hasInProgressItems = activeChannelToolItems.some((item) => item.status === 'InProgress')}
-        {@const showDots = isLeadWorking || hasInProgressItems || channelLeadThinking}
-        <div class="mt-[3px]">
-          {#if activeChannelToolItems.length > 0}
-            <ToolActivity {agentName} items={activeChannelToolItems} />
-          {/if}
-          <div class="flex items-center gap-[7px] whitespace-nowrap overflow-hidden text-ellipsis">
-            {#if showDots}
-              <span class="typing-dots flex gap-[3px] items-center">
-                <span class="dot w-[5px] h-[5px] rounded-full" style="background-color: {stripColor}"></span>
-                <span class="dot w-[5px] h-[5px] rounded-full" style="background-color: {stripColor}"></span>
-                <span class="dot w-[5px] h-[5px] rounded-full" style="background-color: {stripColor}"></span>
-              </span>
-            {/if}
-            <span class="font-mono font-semibold text-[0.85rem]" style="color: {stripColor}">{agentName}</span>
-          </div>
-        </div>
+  </div>
+
+  <!-- Activity strip: always rendered at fixed height to prevent layout shift.
+       Shows [dots?] [lead name] [icon] [tool description] on one line.
+       In the main channel ('midtown'), dots are driven by lead_working (same signal as
+       the TUI braille spinner). In topic channels, InProgress tool items drive the dots —
+       channel leads don't have a separate lead_working signal. -->
+  <div class="h-[1.5em] flex items-center gap-[6px] px-[18px] text-[0.82rem] overflow-hidden whitespace-nowrap shrink-0">
+    {#if showActivity}
+      {#if showDots}
+        <span class="typing-dots flex gap-[3px] items-center">
+          <span class="dot w-[5px] h-[5px] rounded-full" style="background-color: {AVENUE_COLORS.lead}"></span>
+          <span class="dot w-[5px] h-[5px] rounded-full" style="background-color: {AVENUE_COLORS.lead}"></span>
+          <span class="dot w-[5px] h-[5px] rounded-full" style="background-color: {AVENUE_COLORS.lead}"></span>
+        </span>
       {/if}
+      <span class="font-mono font-semibold" style="color: {AVENUE_COLORS.lead}">{$activeChannel}</span>
+      {#if mostRecentToolCallEntry}
+        <span class="text-muted-foreground/60 select-none">{getToolCallStatusIcon(mostRecentToolCallEntry)}</span>
+        <span class="font-mono text-muted-foreground truncate">{describeToolCall(mostRecentToolCallEntry)}</span>
+      {/if}
+    {/if}
   </div>
 
   {#if !autoScroll}
