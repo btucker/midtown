@@ -1,6 +1,6 @@
 <script>
   import { kanbanData, detailPanelData } from './store.js'
-  import { openTaskThread } from './api.js'
+  import { openTaskThread, closeThread } from './api.js'
 
   let { channelName = '' } = $props()
 
@@ -44,6 +44,7 @@
     if (task.message_id) {
       openTaskThread(task, task.channel || channelName)
     } else {
+      closeThread()
       detailPanelData.set({ type: 'task', data: task })
     }
   }
