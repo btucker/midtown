@@ -588,6 +588,13 @@ fn project_lead_provider_and_profile(project_name: &str) -> (midtown::auth::Auth
 }
 
 impl App {
+    // Coworker name pulse animation tuning used by the coworker status table.
+    const COWORKER_PULSE_CYCLE_FRAMES: usize = 10;
+    const COWORKER_PULSE_HALF_CYCLE: usize = Self::COWORKER_PULSE_CYCLE_FRAMES / 2;
+    const COWORKER_PULSE_WAVE_OFFSET_FRAMES: usize = 2;
+    const COWORKER_PULSE_DIM_MAX: usize = 1;
+    const COWORKER_PULSE_BOLD_MIN: usize = 4;
+
     pub fn new() -> Self {
         // Use detect_repo_name() which correctly handles worktrees by using
         // git-common-dir, ensuring we read from the same channel as the daemon
@@ -2703,6 +2710,37 @@ impl App {
             Style::default().fg(base_color).add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(base_color)
+        }
+    }
+
+    /// Return a style for a coworker row that fades in/out with a small wave delay
+    /// based on the row index.
+    ///
+    /// The pulse is a gentle triangular wave (dim -> normal -> bold) over
+    /// 10 animation frames and each row is shifted by 2 frames to create a
+    /// staggered wave effect across the coworking box.
+    pub fn coworker_name_style(&self, base_color: Color, row_index: usize) -> Style {
+        let wave_step = self.coworker_pulse_wave_step(row_index);
+        let style = Style::default().fg(base_color);
+
+        if wave_step <= Self::COWORKER_PULSE_DIM_MAX {
+            style.add_modifier(Modifier::DIM)
+        } else if wave_step >= Self::COWORKER_PULSE_BOLD_MIN {
+            style.add_modifier(Modifier::BOLD)
+        } else {
+            style
+        }
+    }
+
+    fn coworker_pulse_wave_step(&self, row_index: usize) -> usize {
+        let phase = (self.spinner_frame
+            + row_index.saturating_mul(Self::COWORKER_PULSE_WAVE_OFFSET_FRAMES))
+            % Self::COWORKER_PULSE_CYCLE_FRAMES;
+
+        if phase <= Self::COWORKER_PULSE_HALF_CYCLE {
+            phase
+        } else {
+            Self::COWORKER_PULSE_CYCLE_FRAMES - phase
         }
     }
 

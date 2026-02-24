@@ -178,6 +178,49 @@ fn test_pulse_name_style_normal_branch() {
 }
 
 #[test]
+fn test_coworker_name_style_fades_over_time() {
+    use ratatui::style::{Color, Modifier};
+    let mut app = test_app();
+
+    app.spinner_frame = 0;
+    let dim_style = app.coworker_name_style(Color::Yellow, 0);
+    assert!(
+        dim_style.add_modifier.contains(Modifier::DIM),
+        "Coworker names should start dimmed"
+    );
+
+    app.spinner_frame = 2;
+    let normal_style = app.coworker_name_style(Color::Yellow, 0);
+    assert!(
+        !normal_style.add_modifier.contains(Modifier::DIM)
+            && !normal_style.add_modifier.contains(Modifier::BOLD),
+        "Coworker names should pass through normal during fade middle"
+    );
+
+    app.spinner_frame = 5;
+    let bold_style = app.coworker_name_style(Color::Yellow, 0);
+    assert!(
+        bold_style.add_modifier.contains(Modifier::BOLD),
+        "Coworker names should reach bold at wave peak"
+    );
+    assert_eq!(normal_style.fg, bold_style.fg);
+}
+
+#[test]
+fn test_coworker_name_style_is_waved_by_row_index() {
+    let mut app = test_app();
+    app.spinner_frame = 0;
+    let row0 = app.coworker_name_style(ratatui::style::Color::Yellow, 0);
+
+    app.spinner_frame = 2;
+    let row1_delayed = app.coworker_name_style(ratatui::style::Color::Yellow, 1);
+    assert_eq!(
+        row0, row1_delayed,
+        "Row index should advance the same animation by 2-frame steps"
+    );
+}
+
+#[test]
 fn test_any_spinner_visible_false_when_channel_thinking_expired() {
     // Thinking state expires after CHANNEL_LEAD_THINKING_TIMEOUT seconds.
     // An expired entry should not make the spinner visible.
