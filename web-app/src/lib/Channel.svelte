@@ -464,6 +464,13 @@
     return msgs[index].from !== msgs[index - 1].from
   }
 
+  // Returns true if the minute ticked over from the previous message in the same group.
+  // Used to conditionally show a gutter timestamp on continuation messages.
+  function timeChanged(msgs, index) {
+    if (index === 0 || senderChanged(msgs, index)) return false
+    return formatTime(msgs[index].timestamp) !== formatTime(msgs[index - 1].timestamp)
+  }
+
   // Blank line before every sender change for consistent visual separation
   function needsBlankLine(msgs, index) {
     if (index === 0) return false
@@ -697,26 +704,27 @@
             <div class="h-[1.4em]"></div>
           {/if}
           {#if senderChanged(channelMessages, i)}
-            <!-- Author line: bold name + current task -->
+            <!-- Group header: bold name + dim timestamp + current task on one line (Slack-style) -->
             <div
               class="mt-1 whitespace-nowrap overflow-hidden text-ellipsis flex items-center gap-[7px]"
             >
               <span class="font-mono font-semibold text-[0.82rem]" style="color: {getSenderColor(msg.from)}">{msg.from}</span>
+              <span class="text-muted-foreground/50 text-[0.72rem] select-none">{formatTime(msg.timestamp)}</span>
               {#if currentTasks[msg.from.toLowerCase()]}
-                <span class="text-muted-foreground"> - {currentTasks[msg.from.toLowerCase()]}</span>
+                <span class="text-muted-foreground text-[0.78rem]"> — {currentTasks[msg.from.toLowerCase()]}</span>
               {/if}
             </div>
           {/if}
 
           {#if isAction(msg) && !hasMermaid(msg.content)}
-            <!-- Action message: HH:MM * content -->
+            <!-- Action message: gutter shows time only on minute change, then * content -->
             <div class="flex gap-0 break-words">
-              <span class="text-muted-foreground/60 flex-shrink-0 w-[3.7em] text-right mr-[0.5em] select-none text-[0.78rem]">{formatTime(msg.timestamp)}</span>
+              <span class="text-muted-foreground/50 flex-shrink-0 w-[3.7em] text-right mr-[0.5em] select-none text-[0.78rem]">{timeChanged(channelMessages, i) ? formatTime(msg.timestamp) : ''}</span>
               <span class="flex-shrink-0 mr-[0.3em]" style="color: {getSenderColor(msg.from)}">*</span>
               <span class="action-text flex-1 min-w-0" style="color: {getSenderColor(msg.from)}">{@html renderContent(getActionContent(msg))}</span>
             </div>
           {:else if isAction(msg) && hasMermaid(msg.content)}
-            <!-- Action message with mermaid diagram(s) -->
+            <!-- Action message with mermaid diagram(s): gutter shows time only on minute change -->
             {#each parseSegments(getActionContent(msg)) as segment, si}
               {#if segment.type === 'mermaid'}
                 <div class="ml-[4.2em]">
@@ -725,10 +733,10 @@
               {:else}
                 <div class="flex gap-0 break-words">
                   {#if si === 0}
-                    <span class="text-muted-foreground/60 flex-shrink-0 w-[3.7em] text-right mr-[0.5em] select-none text-[0.78rem]">{formatTime(msg.timestamp)}</span>
+                    <span class="text-muted-foreground/50 flex-shrink-0 w-[3.7em] text-right mr-[0.5em] select-none text-[0.78rem]">{timeChanged(channelMessages, i) ? formatTime(msg.timestamp) : ''}</span>
                     <span class="flex-shrink-0 mr-[0.3em]" style="color: {getSenderColor(msg.from)}">*</span>
                   {:else}
-                    <span class="text-muted-foreground/60 flex-shrink-0 w-[3.7em] text-right mr-[0.5em] select-none text-[0.78rem]"></span>
+                    <span class="flex-shrink-0 w-[3.7em] mr-[0.5em]"></span>
                     <span class="flex-shrink-0 mr-[0.3em] invisible">*</span>
                   {/if}
                   <span class="action-text flex-1 min-w-0" style="color: {getSenderColor(msg.from)}">{@html renderContent(segment.content)}</span>
@@ -736,7 +744,7 @@
               {/if}
             {/each}
           {:else if hasMermaid(msg.content)}
-            <!-- Message with mermaid diagram(s) -->
+            <!-- Message with mermaid diagram(s): gutter shows time only on minute change -->
             {#each parseSegments(msg.content) as segment, si}
               {#if segment.type === 'mermaid'}
                 <div class="ml-[4.2em]">
@@ -745,18 +753,18 @@
               {:else}
                 <div class="flex gap-0 break-words">
                   {#if si === 0}
-                    <span class="text-muted-foreground/60 flex-shrink-0 w-[3.7em] text-right mr-[0.5em] select-none text-[0.78rem]">{formatTime(msg.timestamp)}</span>
+                    <span class="text-muted-foreground/50 flex-shrink-0 w-[3.7em] text-right mr-[0.5em] select-none text-[0.78rem]">{timeChanged(channelMessages, i) ? formatTime(msg.timestamp) : ''}</span>
                   {:else}
-                    <span class="text-muted-foreground/60 flex-shrink-0 w-[3.7em] text-right mr-[0.5em] select-none text-[0.78rem]"></span>
+                    <span class="flex-shrink-0 w-[3.7em] mr-[0.5em]"></span>
                   {/if}
                   <span class="message-text flex-1 min-w-0 {isDimSender(msg.from) ? 'text-muted-foreground' : 'text-foreground'}">{@html renderContent(segment.content)}</span>
                 </div>
               {/if}
             {/each}
           {:else}
-            <!-- Regular message: HH:MM content -->
+            <!-- Regular message: gutter shows time only on minute change -->
             <div class="flex gap-0 break-words">
-              <span class="text-muted-foreground/60 flex-shrink-0 w-[3.7em] text-right mr-[0.5em] select-none text-[0.78rem]">{formatTime(msg.timestamp)}</span>
+              <span class="text-muted-foreground/50 flex-shrink-0 w-[3.7em] text-right mr-[0.5em] select-none text-[0.78rem]">{timeChanged(channelMessages, i) ? formatTime(msg.timestamp) : ''}</span>
               <span class="message-text flex-1 min-w-0 {isDimSender(msg.from) ? 'text-muted-foreground' : 'text-foreground'}">{@html renderContent(msg.content)}</span>
             </div>
           {/if}
