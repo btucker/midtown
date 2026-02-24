@@ -2232,10 +2232,12 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                         }
 
                         // Record per-session-id recovery cooldown so the next tick skips
-                        // re-recovery if the session dies quickly. This mirrors the on_success
-                        // RecordCooldown in Path 1 (dispatch_via_sessions_with_task_lookup)
-                        // and prevents the retry loop described in task !1728.
-                        {
+                        // re-recovery if the session dies quickly. Only recorded for resume
+                        // spawns — fresh (non-recovery) spawns should not block future recovery
+                        // attempts. This mirrors the on_success RecordCooldown in Path 1
+                        // (dispatch_via_sessions_with_task_lookup) and prevents the retry loop
+                        // described in task !1728.
+                        if resume {
                             let mut cooldowns = state.cooldowns.lock().unwrap();
                             cooldowns.record("session_recovered", &session_id);
                         }

@@ -231,7 +231,6 @@ reviewer_provider = "claude"          # Independent default for reviewers
 review_mode = "both"                  # "local", "github_app", or "both"
 channel_lead_provider = "codex"       # Optional channel-lead override (falls back to lead_provider)
 specialized_provider = "claude"       # Default for specialized workers
-architect_provider = "zai"            # Optional override (fallback: specialized_provider)
 headless_execute_provider = "claude"  # Optional override (fallback: specialized_provider)
 ```
 
@@ -278,7 +277,6 @@ Execution provider resolution is role-based:
 - Reviewers: `execution.reviewer_provider` (default: `claude`)
 - Channel leads: `execution.channel_lead_provider` -> `execution.lead_provider` -> `claude`
 - Specialized workers:
-  - Architect: `execution.architect_provider` -> `execution.specialized_provider` -> `claude`
   - `headless.execute`: `execution.headless_execute_provider` -> `execution.specialized_provider` -> `claude`
 
 Review execution mode controls how PR reviews are sourced:
