@@ -37,7 +37,7 @@
       case 'failed':
         return '#af5f5f'
       default:
-        return '#585858'
+        return 'hsl(var(--muted-foreground))'
     }
   }
 
@@ -53,7 +53,7 @@
       case 'rejected':
         return '#af5f5f'
       default:
-        return '#585858'
+        return 'hsl(var(--muted-foreground))'
     }
   }
 </script>
@@ -61,9 +61,9 @@
 <svelte:window onkeydown={handleKeydown} />
 
 {#if panelData}
-  <div class="hidden lg:flex flex-col h-full bg-[#0f0f0f] border-l-2 border-[#2a2a2a] [grid-area:detail]">
-    <div class="flex items-center justify-between px-[18px] py-4 bg-[#1a1a1a] border-b-2 border-[#2a2a2a] shrink-0">
-      <h2 class="text-base font-bold text-[#d0d0d0]">
+  <div class="hidden lg:flex flex-col h-full bg-card border-l-2 border-border [grid-area:detail]">
+    <div class="flex items-center justify-between px-[18px] py-4 bg-card border-b-2 border-border shrink-0">
+      <h2 class="text-base font-bold text-foreground">
         {#if panelData.type === 'task'}
           Task !{panelData.data.id}
         {:else if panelData.type === 'pr'}
@@ -73,7 +73,7 @@
         {/if}
       </h2>
       <button
-        class="w-8 h-8 flex items-center justify-center bg-transparent border border-[#2a2a2a] rounded-md text-[#808080] text-[1.3rem] cursor-pointer transition-all duration-150 leading-none hover:bg-[#1a1a1a] hover:border-[#af5f5f] hover:text-[#ff5f5f]"
+        class="w-8 h-8 flex items-center justify-center bg-transparent border border-border rounded-md text-muted-foreground text-[1.3rem] cursor-pointer transition-all duration-150 leading-none hover:bg-accent hover:border-destructive hover:text-destructive"
         onclick={handleClose}
         aria-label="Close"
       >
@@ -86,21 +86,21 @@
         <!-- Task detail -->
         <div class="flex flex-col gap-4">
           <div class="flex flex-col gap-1.5">
-            <span class="text-[0.75rem] text-[#606060] font-semibold uppercase tracking-wide">Subject</span>
-            <span class="text-[0.9rem] text-[#d0d0d0]">{panelData.data.subject}</span>
+            <span class="text-[0.75rem] text-muted-foreground font-semibold uppercase tracking-wide">Subject</span>
+            <span class="text-[0.9rem] text-foreground">{panelData.data.subject}</span>
           </div>
           {#if panelData.data.description}
             <div class="flex flex-col gap-1.5">
-              <span class="text-[0.75rem] text-[#606060] font-semibold uppercase tracking-wide">Description</span>
-              <div class="text-[0.9rem] text-[#d0d0d0] whitespace-pre-wrap leading-relaxed p-2.5 bg-[#1a1a1a] rounded-md border border-[#2a2a2a]">
+              <span class="text-[0.75rem] text-muted-foreground font-semibold uppercase tracking-wide">Description</span>
+              <div class="text-[0.9rem] text-foreground whitespace-pre-wrap leading-relaxed p-2.5 bg-muted rounded-md border border-border">
                 {panelData.data.description}
               </div>
             </div>
           {/if}
           <div class="flex flex-col gap-1.5">
-            <span class="text-[0.75rem] text-[#606060] font-semibold uppercase tracking-wide">Status</span>
+            <span class="text-[0.75rem] text-muted-foreground font-semibold uppercase tracking-wide">Status</span>
             <span
-              class="inline-block px-2.5 py-1 rounded-xl text-[0.75rem] font-semibold text-[#0f0f0f] capitalize"
+              class="inline-block px-2.5 py-1 rounded-xl text-[0.75rem] font-semibold text-chip-foreground capitalize"
               style="background: {getStatusColor(panelData.data.status)}"
             >
               {panelData.data.status || 'Unknown'}
@@ -108,16 +108,16 @@
           </div>
           {#if panelData.data.owner}
             <div class="flex flex-col gap-1.5">
-              <span class="text-[0.75rem] text-[#606060] font-semibold uppercase tracking-wide">Owner</span>
-              <span class="text-[0.9rem] text-[#d0d0d0]">{panelData.data.owner}</span>
+              <span class="text-[0.75rem] text-muted-foreground font-semibold uppercase tracking-wide">Owner</span>
+              <span class="text-[0.9rem] text-foreground">{panelData.data.owner}</span>
             </div>
           {/if}
           {#if panelData.data.blocked_by && panelData.data.blocked_by.length > 0}
             <div class="flex flex-col gap-1.5">
-              <span class="text-[0.75rem] text-[#606060] font-semibold uppercase tracking-wide">Blocked by</span>
+              <span class="text-[0.75rem] text-muted-foreground font-semibold uppercase tracking-wide">Blocked by</span>
               <div class="flex flex-wrap">
                 {#each panelData.data.blocked_by as blocker}
-                  <span class="inline-block px-2 py-[3px] mr-1.5 mb-1 bg-[#2a2a2a] border border-[#3a3a3a] rounded text-[0.8rem] text-[#af5f5f]">
+                  <span class="inline-block px-2 py-[3px] mr-1.5 mb-1 bg-accent border border-border rounded text-[0.8rem] text-destructive">
                     !{blocker}
                   </span>
                 {/each}
@@ -129,26 +129,26 @@
         <!-- PR detail -->
         <div class="flex flex-col gap-4">
           <div class="flex flex-col gap-1.5">
-            <span class="text-[0.75rem] text-[#606060] font-semibold uppercase tracking-wide">Title</span>
-            <span class="text-[0.9rem] text-[#d0d0d0]">{panelData.data.title}</span>
+            <span class="text-[0.75rem] text-muted-foreground font-semibold uppercase tracking-wide">Title</span>
+            <span class="text-[0.9rem] text-foreground">{panelData.data.title}</span>
           </div>
           {#if panelData.data.author}
             <div class="flex flex-col gap-1.5">
-              <span class="text-[0.75rem] text-[#606060] font-semibold uppercase tracking-wide">Author</span>
-              <span class="text-[0.9rem] text-[#d0d0d0]">{panelData.data.author}</span>
+              <span class="text-[0.75rem] text-muted-foreground font-semibold uppercase tracking-wide">Author</span>
+              <span class="text-[0.9rem] text-foreground">{panelData.data.author}</span>
             </div>
           {/if}
           {#if panelData.data.reviewer}
             <div class="flex flex-col gap-1.5">
-              <span class="text-[0.75rem] text-[#606060] font-semibold uppercase tracking-wide">Reviewer</span>
-              <span class="text-[0.9rem] text-[#d0d0d0]">{panelData.data.reviewer}</span>
+              <span class="text-[0.75rem] text-muted-foreground font-semibold uppercase tracking-wide">Reviewer</span>
+              <span class="text-[0.9rem] text-foreground">{panelData.data.reviewer}</span>
             </div>
           {/if}
           {#if panelData.data.status}
             <div class="flex flex-col gap-1.5">
-              <span class="text-[0.75rem] text-[#606060] font-semibold uppercase tracking-wide">CI Status</span>
+              <span class="text-[0.75rem] text-muted-foreground font-semibold uppercase tracking-wide">CI Status</span>
               <span
-                class="inline-block px-2.5 py-1 rounded-xl text-[0.75rem] font-semibold text-[#0f0f0f] capitalize"
+                class="inline-block px-2.5 py-1 rounded-xl text-[0.75rem] font-semibold text-chip-foreground capitalize"
                 style="background: {getPrStatusColor(panelData.data.status)}"
               >
                 {panelData.data.status}
@@ -157,12 +157,12 @@
           {/if}
           {#if panelData.data.url}
             <div class="flex flex-col gap-1.5">
-              <span class="text-[0.75rem] text-[#606060] font-semibold uppercase tracking-wide">GitHub</span>
+              <span class="text-[0.75rem] text-muted-foreground font-semibold uppercase tracking-wide">GitHub</span>
               <a
                 href={panelData.data.url}
                 target="_blank"
                 rel="noopener"
-                class="text-[#5fafaf] no-underline transition-colors duration-150 hover:text-[#87d7d7] hover:underline"
+                class="text-link-default no-underline transition-colors duration-150 hover:text-link-hover hover:underline"
               >
                 View on GitHub &rarr;
               </a>
@@ -173,14 +173,14 @@
         <!-- Coworker detail -->
         <div class="flex flex-col gap-4">
           <div class="flex flex-col gap-1.5">
-            <span class="text-[0.75rem] text-[#606060] font-semibold uppercase tracking-wide">Name</span>
-            <span class="text-[0.9rem] text-[#d0d0d0]">{panelData.data.name}</span>
+            <span class="text-[0.75rem] text-muted-foreground font-semibold uppercase tracking-wide">Name</span>
+            <span class="text-[0.9rem] text-foreground">{panelData.data.name}</span>
           </div>
           {#if panelData.data.status}
             <div class="flex flex-col gap-1.5">
-              <span class="text-[0.75rem] text-[#606060] font-semibold uppercase tracking-wide">Status</span>
+              <span class="text-[0.75rem] text-muted-foreground font-semibold uppercase tracking-wide">Status</span>
               <span
-                class="inline-block px-2.5 py-1 rounded-xl text-[0.75rem] font-semibold text-[#0f0f0f] capitalize"
+                class="inline-block px-2.5 py-1 rounded-xl text-[0.75rem] font-semibold text-chip-foreground capitalize"
                 style="background: {getStatusColor(panelData.data.status)}"
               >
                 {panelData.data.status}
@@ -189,22 +189,22 @@
           {/if}
           {#if panelData.data.current_task}
             <div class="flex flex-col gap-1.5">
-              <span class="text-[0.75rem] text-[#606060] font-semibold uppercase tracking-wide">Current Task</span>
-              <span class="text-[0.9rem] text-[#d0d0d0]">{panelData.data.current_task}</span>
+              <span class="text-[0.75rem] text-muted-foreground font-semibold uppercase tracking-wide">Current Task</span>
+              <span class="text-[0.9rem] text-foreground">{panelData.data.current_task}</span>
             </div>
           {/if}
           {#if panelData.data.model}
             <div class="flex flex-col gap-1.5">
-              <span class="text-[0.75rem] text-[#606060] font-semibold uppercase tracking-wide">Model</span>
-              <span class="inline-block px-2.5 py-1 rounded-xl text-[0.75rem] font-semibold bg-[#2a2a2a] text-[#a8a8a8] capitalize">
+              <span class="text-[0.75rem] text-muted-foreground font-semibold uppercase tracking-wide">Model</span>
+              <span class="inline-block px-2.5 py-1 rounded-xl text-[0.75rem] font-semibold bg-muted text-muted-foreground capitalize">
                 {panelData.data.model}
               </span>
             </div>
           {/if}
           {#if panelData.data.started_at}
             <div class="flex flex-col gap-1.5">
-              <span class="text-[0.75rem] text-[#606060] font-semibold uppercase tracking-wide">Started</span>
-              <span class="text-[0.9rem] text-[#d0d0d0]">{formatDate(panelData.data.started_at)}</span>
+              <span class="text-[0.75rem] text-muted-foreground font-semibold uppercase tracking-wide">Started</span>
+              <span class="text-[0.9rem] text-foreground">{formatDate(panelData.data.started_at)}</span>
             </div>
           {/if}
         </div>

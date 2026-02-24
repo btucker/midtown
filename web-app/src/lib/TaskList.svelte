@@ -92,7 +92,7 @@
   }
 
   function getStatusColor(status) {
-    return status === 'in_progress' ? 'text-[#4ade80]' : 'text-[#606060]'
+    return status === 'in_progress' ? 'text-primary' : 'text-muted-foreground'
   }
 </script>
 
@@ -102,19 +102,19 @@
     {@const indentStyle = `padding-left: ${indentLevel * 16}px`}
 
     <div
-      class="flex items-baseline gap-1.5 px-2 py-[3px] text-[0.75rem] leading-snug cursor-pointer transition-colors duration-100 rounded hover:bg-[#1a1a1a]"
+      class="flex items-baseline gap-1.5 px-2 py-[3px] text-[0.75rem] leading-snug cursor-pointer transition-colors duration-100 rounded hover:bg-sidebar-accent"
       style={indentStyle}
     >
       <span class="shrink-0 text-[0.6rem] {getStatusColor(task.status)}">{getStatusMarker(task.status)}</span>
-      <span class="shrink-0 text-[#606060] font-medium">!{task.id}</span>
-      <span class="flex-1 text-[#a8a8a8] truncate {task.status === 'in_progress' ? 'text-[#d0d0d0]' : ''}">{task.subject}</span>
+      <span class="shrink-0 text-muted-foreground font-medium">!{task.id}</span>
+      <span class="flex-1 text-muted-foreground truncate {task.status === 'in_progress' ? 'text-foreground' : ''}">{task.subject}</span>
       {#if task.owner}
-        <span class="shrink-0 text-[0.7rem] text-[#606060]">[{task.owner}]</span>
+        <span class="shrink-0 text-[0.7rem] text-muted-foreground">[{task.owner}]</span>
       {/if}
     </div>
   {/each}
 
   {#if channelTasks.length === 0}
-    <div class="py-2 text-[0.75rem] text-[#444] italic text-center">No active tasks</div>
+    <div class="py-2 text-[0.75rem] text-muted-foreground italic text-center">No active tasks</div>
   {/if}
 </div>

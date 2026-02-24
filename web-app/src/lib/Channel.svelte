@@ -723,7 +723,7 @@
             <div class="flex gap-0">
               <span class="flex-shrink-0 w-[3.7em] mr-[0.5em]"></span>
               <button
-                class="flex items-center gap-1.5 text-[0.75rem] text-[hsl(var(--link-default))] hover:text-[hsl(var(--link-hover))] cursor-pointer bg-transparent border-none p-0 mt-0.5"
+                class="flex items-center gap-1.5 text-[0.75rem] text-link-default hover:text-link-hover cursor-pointer bg-transparent border-none p-0 mt-0.5"
                 onclick={() => openThread(msg, $activeChannel)}
               >
                 <span>{msg.reply_count} {msg.reply_count === 1 ? 'reply' : 'replies'}</span>

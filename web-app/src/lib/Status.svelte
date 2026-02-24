@@ -26,14 +26,14 @@
     switch (status?.toLowerCase()) {
       case 'running':
       case 'active':
-        return '#5faf5f'
+        return 'hsl(var(--status-green))'
       case 'idle':
-        return '#d7af5f'
+        return 'hsl(var(--status-amber))'
       case 'stopped':
       case 'failed':
-        return '#af5f5f'
+        return 'hsl(var(--status-red))'
       default:
-        return '#585858'
+        return 'hsl(var(--muted-foreground))'
     }
   }
 
@@ -54,13 +54,13 @@
   function getHealthColor(health) {
     switch (health?.toLowerCase()) {
       case 'green':
-        return '#5faf5f'
+        return 'hsl(var(--status-green))'
       case 'yellow':
-        return '#d7af5f'
+        return 'hsl(var(--status-amber))'
       case 'red':
-        return '#af5f5f'
+        return 'hsl(var(--status-red))'
       default:
-        return '#5faf5f'
+        return 'hsl(var(--status-green))'
     }
   }
 
@@ -72,15 +72,15 @@
 <div class="p-4 overflow-y-auto h-full">
   <div class="mb-6">
     <div class="flex justify-between items-center mb-3">
-      <h2 class="text-base text-[#5fafaf] mb-0">Daemon</h2>
+      <h2 class="text-base text-link-default mb-0">Daemon</h2>
       <button
-        class="px-3 py-1.5 border border-[#3a3a3a] rounded bg-transparent text-[#585858] text-xs cursor-pointer hover:border-[#5fafaf] hover:text-[#5fafaf]"
+        class="px-3 py-1.5 border border-border rounded bg-transparent text-muted-foreground text-xs cursor-pointer hover:border-link-default hover:text-link-default"
         onclick={refresh}
       >
         Refresh
       </button>
     </div>
-    <div class="flex items-center gap-2 p-3 bg-[#262626] rounded-lg">
+    <div class="flex items-center gap-2 p-3 bg-card rounded-lg">
       <span
         class="w-2.5 h-2.5 rounded-full"
         style="background: {getStatusColor($daemonStatus?.daemon)}"
@@ -90,31 +90,31 @@
   </div>
 
   <div class="mb-6">
-    <h2 class="text-base text-[#5fafaf] mb-3">Coworkers ({$coworkers.length})</h2>
+    <h2 class="text-base text-link-default mb-3">Coworkers ({$coworkers.length})</h2>
     {#if $coworkers.length === 0}
-      <p class="text-[#585858] italic p-3 bg-[#262626] rounded-lg">No active coworkers</p>
+      <p class="text-muted-foreground italic p-3 bg-card rounded-lg">No active coworkers</p>
     {:else}
       <div class="flex flex-col gap-2">
         {#each $coworkers as cw}
-          <div class="flex flex-col gap-1 p-2 bg-[#262626] rounded-lg font-mono text-sm">
+          <div class="flex flex-col gap-1 p-2 bg-card rounded-lg font-mono text-sm">
             <div class="flex items-center gap-2">
-              <span class="text-base text-[#d7af5f]">{getSpinner()}</span>
+              <span class="text-base text-status-amber">{getSpinner()}</span>
               <span class="font-medium lowercase" style="color: {getHealthColor(cw.health)}">{cw.name}</span>
               {#if cw.phase}
-                <span class="text-[0.75rem] text-[#808080]">{cw.phase}</span>
+                <span class="text-[0.75rem] text-muted-foreground">{cw.phase}</span>
               {/if}
               <span class="flex-1"></span>
               {#if cw.time_estimate}
-                <span class="text-[0.7rem] text-[#5faf5f]">{cw.time_estimate}</span>
+                <span class="text-[0.7rem] text-primary">{cw.time_estimate}</span>
               {:else if cw.progress != null}
-                <span class="text-[0.7rem] text-[#5fafaf]">{cw.progress}%</span>
+                <span class="text-[0.7rem] text-accent-teal">{cw.progress}%</span>
               {/if}
             </div>
             {#if cw.progress != null}
               <div class="flex items-center gap-2 ml-7">
-                <div class="flex-1 h-1.5 bg-[#3a3a3a] rounded-full overflow-hidden">
+                <div class="flex-1 h-1.5 bg-muted rounded-full overflow-hidden">
                   <div
-                    class="h-full bg-[#5fafaf] rounded-full transition-all duration-500"
+                    class="h-full bg-accent-teal rounded-full transition-all duration-500"
                     style="width: {cw.progress}%"
                   ></div>
                 </div>
@@ -127,29 +127,29 @@
   </div>
 
   <div class="mb-6">
-    <h2 class="text-base text-[#5fafaf] mb-3">Tasks</h2>
+    <h2 class="text-base text-link-default mb-3">Tasks</h2>
     {#if !$daemonStatus?.tasks || $daemonStatus.tasks.length === 0}
-      <p class="text-[#585858] italic p-3 bg-[#262626] rounded-lg">No tasks</p>
+      <p class="text-muted-foreground italic p-3 bg-card rounded-lg">No tasks</p>
     {:else}
       <div class="flex flex-col gap-1">
         {#each $daemonStatus.tasks as task}
           {@const coworker = $coworkers.find(cw => cw.task_id === Number(task.id))}
           {@const progress = coworker?.progress}
-          <div class="flex flex-col gap-1.5 px-3 py-2 bg-[#262626] rounded text-[0.85rem]">
+          <div class="flex flex-col gap-1.5 px-3 py-2 bg-card rounded text-[0.85rem]">
             <div class="flex gap-2">
-              <span class="text-[#585858] min-w-[30px]">!{task.id}</span>
+              <span class="text-muted-foreground min-w-[30px]">!{task.id}</span>
               <span class="flex-1 line-clamp-2 overflow-hidden">{task.subject}</span>
-              <span class="text-[#585858] capitalize">{task.status}</span>
+              <span class="text-muted-foreground capitalize">{task.status}</span>
             </div>
             {#if progress != null}
               <div class="flex items-center gap-2 ml-[38px]">
-                <div class="flex-1 h-1.5 bg-[#3a3a3a] rounded-full overflow-hidden">
+                <div class="flex-1 h-1.5 bg-muted rounded-full overflow-hidden">
                   <div
-                    class="h-full bg-[#5fafaf] rounded-full transition-all duration-300"
+                    class="h-full bg-accent-teal rounded-full transition-all duration-300"
                     style="width: {progress}%"
                   ></div>
                 </div>
-                <span class="text-[#a8a8a8] font-mono text-[0.65rem] min-w-[32px] text-right">{progress}%</span>
+                <span class="text-muted-foreground font-mono text-[0.65rem] min-w-[32px] text-right">{progress}%</span>
               </div>
             {/if}
           </div>
