@@ -2421,24 +2421,31 @@ specialized_provider = "codex"
     }
 
     #[test]
-    fn test_specialized_override_fallback_order() {
-        let execution = ExecutionSection {
-            lead_provider: None,
-            project_lead_provider: None,
-            coworker_provider: None,
-            reviewer_provider: None,
-            review_mode: None,
-            channel_lead_provider: None,
+    fn test_headless_execute_provider_precedence() {
+        let specialized_only = ExecutionSection {
             specialized_provider: Some(crate::auth::AuthProvider::Codex),
-            headless_execute_provider: None,
+            ..ExecutionSection::default()
         };
+        assert_eq!(
+            resolve_execution_provider(&specialized_only, ExecutionRole::HeadlessExecute),
+            crate::auth::AuthProvider::Codex
+        );
 
-        // HeadlessExecute falls back to specialized_provider when no override set.
-        let headless = execution
-            .headless_execute_provider
-            .or(execution.specialized_provider)
-            .unwrap_or(crate::auth::AuthProvider::Claude);
-        assert_eq!(headless, crate::auth::AuthProvider::Codex);
+        let headless_override = ExecutionSection {
+            specialized_provider: Some(crate::auth::AuthProvider::Codex),
+            headless_execute_provider: Some(crate::auth::AuthProvider::Zai),
+            ..ExecutionSection::default()
+        };
+        assert_eq!(
+            resolve_execution_provider(&headless_override, ExecutionRole::HeadlessExecute),
+            crate::auth::AuthProvider::Zai
+        );
+
+        let default_only = ExecutionSection::default();
+        assert_eq!(
+            resolve_execution_provider(&default_only, ExecutionRole::HeadlessExecute),
+            crate::auth::AuthProvider::Claude
+        );
     }
 
     #[test]

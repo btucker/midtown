@@ -26,6 +26,28 @@ fn count_nudge_session(effects: &[Effect], sid: &str) -> usize {
 }
 
 #[test]
+fn record_session_recovery_cooldown_records_resume_spawns() {
+    let tracker = std::sync::Mutex::new(crate::rules::CooldownTracker::new());
+    super::record_session_recovery_cooldown(&tracker, "sess-resume-1", true);
+    let guard = tracker.lock().unwrap();
+    assert!(
+        guard.has_entry("session_recovered", "sess-resume-1"),
+        "resume spawns should record the session_recovered cooldown"
+    );
+}
+
+#[test]
+fn record_session_recovery_cooldown_skips_fresh_spawns() {
+    let tracker = std::sync::Mutex::new(crate::rules::CooldownTracker::new());
+    super::record_session_recovery_cooldown(&tracker, "fresh-spawn-1", false);
+    let guard = tracker.lock().unwrap();
+    assert!(
+        !guard.has_entry("session_recovered", "fresh-spawn-1"),
+        "fresh spawns should not record session_recovered cooldowns"
+    );
+}
+
+#[test]
 fn clear_task_binding_in_records_clears_only_stale_when_no_expected_session() {
     use std::collections::HashMap;
 
