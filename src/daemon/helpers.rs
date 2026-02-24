@@ -252,7 +252,8 @@ fn normalize_size_alias_for_provider(
         },
         crate::auth::AuthProvider::Codex => match size {
             "small" => "gpt-5.1-codex-mini",
-            "medium" | "large" => "gpt-5.3-codex",
+            "medium" => "gpt-5.3-codex-spark",
+            "large" => "gpt-5.3-codex",
             _ => unreachable!(),
         },
     };

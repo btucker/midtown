@@ -1585,6 +1585,7 @@ impl DaemonState {
             let mut ps = self.persistent_state.lock().await;
             let coworker_type_str = match &config.role {
                 crate::launch::CoworkerRole::Reviewer => "reviewer".to_string(),
+                crate::launch::CoworkerRole::Lead => "lead".to_string(),
                 crate::launch::CoworkerRole::ChannelLead { .. } => "channel-lead".to_string(),
                 _ => "dev".to_string(),
             };
@@ -2932,6 +2933,19 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
         effects::execute_effects(session_recovery_effects, &state).await;
     }
 
+    // Restore channel lead session mappings from persisted session records.
+    // Channel leads are on-demand — they'll be spawned by triggers if absent.
+    let _ = startup::recover_channel_lead_session_mappings(&state.persistent_state).await;
+    {
+        let ps = state.persistent_state.lock().await;
+        if let Err(e) = ps.save_for_repo(&repo_name) {
+            warn!(
+                "Failed to save recovered channel lead mappings on startup: {}",
+                e
+            );
+        }
+    }
+
     // Clear stale is_running flags for sessions that were not recovered.
     // Sessions with is_running=true but resume_on_startup=false (e.g., reviewers,
     // manually-stopped sessions) are skipped by recover_from_session_records but
@@ -2945,18 +2959,6 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                 "Failed to save persistent state after clearing stale session flags: {}",
                 e
             );
-        }
-    }
-
-    // Clear stale channel lead sessions from previous daemon run.
-    // Channel leads are on-demand — they'll be spawned by triggers.
-    {
-        let mut ps = state.persistent_state.lock().await;
-        if !ps.channel_lead_sessions.is_empty() {
-            ps.channel_lead_sessions.clear();
-            if let Err(e) = ps.save_for_repo(&repo_name) {
-                warn!("Failed to clear channel_lead_sessions on startup: {}", e);
-            }
         }
     }
 

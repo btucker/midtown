@@ -124,6 +124,16 @@ pub struct CoworkerInfo {
     pub time_estimate: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct CoworkerStatusLine {
+    task_id: Option<u32>,
+    phase: Option<String>,
+    pr_number: Option<u64>,
+    health: String,
+    progress: Option<u8>,
+    time_estimate: Option<String>,
+}
+
 /// Info about a repo in a multi-repo project
 #[derive(Debug, Clone)]
 pub struct RepoInfo {
@@ -304,6 +314,12 @@ pub struct App {
     pub merged_prs: Vec<MergedPr>,
     /// Active coworkers with their current status
     pub coworkers: Vec<CoworkerInfo>,
+    /// Last observed status line snapshot per coworker name.
+    coworker_status_lines: HashMap<String, CoworkerStatusLine>,
+    /// Remaining pulse frames for coworkers whose status line changed.
+    coworker_pulse_frames: HashMap<String, usize>,
+    /// Whether we have applied an initial baseline status snapshot.
+    coworker_status_snapshot_ready: bool,
     /// Whether the headless lead session is actively working
     pub lead_working: bool,
     /// Recent tool call activity per agent, keyed by lowercase agent name.
@@ -588,6 +604,14 @@ fn project_lead_provider_and_profile(project_name: &str) -> (midtown::auth::Auth
 }
 
 impl App {
+    // Coworker name pulse animation tuning used by the coworker status table.
+    const COWORKER_PULSE_CYCLE_FRAMES: usize = 10;
+    const COWORKER_PULSE_HALF_CYCLE: usize = Self::COWORKER_PULSE_CYCLE_FRAMES / 2;
+    const COWORKER_PULSE_WAVE_OFFSET_FRAMES: usize = 2;
+    const COWORKER_PULSE_DIM_MAX: usize = 1;
+    const COWORKER_PULSE_BOLD_MIN: usize = 4;
+    const COWORKER_PULSE_INTERVAL: Duration = Duration::from_millis(180);
+
     pub fn new() -> Self {
         // Use detect_repo_name() which correctly handles worktrees by using
         // git-common-dir, ensuring we read from the same channel as the daemon
@@ -620,6 +644,9 @@ impl App {
             prs: Vec::new(),
             merged_prs: Vec::new(),
             coworkers: Vec::new(),
+            coworker_status_lines: HashMap::new(),
+            coworker_pulse_frames: HashMap::new(),
+            coworker_status_snapshot_ready: false,
             lead_working: false,
             tool_activity: HashMap::new(),
             channel_lead_thinking: HashMap::new(),
@@ -834,7 +861,7 @@ impl App {
         if let Some(ref receiver) = self.coworker_status_receiver {
             match receiver.try_recv() {
                 Ok(data) => {
-                    self.coworkers = data.coworkers;
+                    self.update_coworker_status(data.coworkers);
                     self.lead_working = data.lead_working;
                     self.tool_activity = merge_tool_activity(
                         std::mem::take(&mut self.tool_activity),
@@ -2687,15 +2714,15 @@ impl App {
 
     /// Returns true when active names should be rendered BOLD (vs. normal) for the pulse effect.
     ///
-    /// Uses `spinner_frame` to alternate every 5 frames (~500ms on, ~500ms off = ~1s cycle).
+    /// Uses `spinner_frame` to alternate every 5 frames.
     pub fn pulse_bold(&self) -> bool {
         (self.spinner_frame / 5).is_multiple_of(2)
     }
 
     /// Return a style that pulses the given color between bold and normal.
     ///
-    /// Uses `spinner_frame` (advanced by `tick_spinner()` at 100ms intervals) to
-    /// alternate BOLD ↔ normal every 5 frames (~500ms on, ~500ms off = ~1s cycle).
+    /// Uses `spinner_frame` (advanced by `tick_spinner()`) to
+    /// alternate BOLD ↔ normal every 5 frames.
     /// Applied to active coworker names and the lead indicator name instead of
     /// braille spinner glyphs.
     pub fn pulse_name_style(&self, base_color: Color) -> Style {
@@ -2703,6 +2730,50 @@ impl App {
             Style::default().fg(base_color).add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(base_color)
+        }
+    }
+
+    /// Return a style for a coworker row that fades in/out with a small wave delay
+    /// based on the row index.
+    ///
+    /// The pulse is a gentle triangular wave (dim -> normal -> bold) over
+    /// 10 animation frames and each row is shifted by 2 frames to create a
+    /// staggered wave effect downward through the coworker box.
+    pub fn coworker_name_style(
+        &self,
+        base_color: Color,
+        row_index: usize,
+        has_active_change: bool,
+    ) -> Style {
+        if !has_active_change {
+            return Style::default().fg(base_color);
+        }
+
+        let wave_step = self.coworker_pulse_wave_step(row_index);
+        let style = Style::default().fg(base_color);
+
+        if wave_step <= Self::COWORKER_PULSE_DIM_MAX {
+            style.add_modifier(Modifier::DIM)
+        } else if wave_step >= Self::COWORKER_PULSE_BOLD_MIN {
+            style.add_modifier(Modifier::BOLD)
+        } else {
+            style
+        }
+    }
+
+    fn coworker_pulse_wave_step(&self, row_index: usize) -> usize {
+        let row_offset = row_index.saturating_mul(Self::COWORKER_PULSE_WAVE_OFFSET_FRAMES)
+            % Self::COWORKER_PULSE_CYCLE_FRAMES;
+        let phase = (self
+            .spinner_frame
+            .wrapping_add(Self::COWORKER_PULSE_CYCLE_FRAMES)
+            .wrapping_sub(row_offset))
+            % Self::COWORKER_PULSE_CYCLE_FRAMES;
+
+        if phase <= Self::COWORKER_PULSE_HALF_CYCLE {
+            phase
+        } else {
+            Self::COWORKER_PULSE_CYCLE_FRAMES - phase
         }
     }
 
@@ -2759,7 +2830,8 @@ impl App {
         visible
     }
 
-    /// Returns true if any animation frame is needed (lead working, in-progress tool entries, or active coworkers).
+    /// Returns true if any animation frame is needed (lead working, in-progress tool entries,
+    /// or an active coworker status change pulse).
     ///
     /// Controls whether `tick_spinner()` advances the frame — which drives name pulsing
     /// via `pulse_name_style()`. Returns false when everything is idle so the frame clock stops.
@@ -2770,9 +2842,9 @@ impl App {
                 .values()
                 .any(|entries| entries.iter().any(|e| e.completed_at.is_none()))
             || self
-                .coworkers
-                .iter()
-                .any(|cw| cw.phase.as_deref() != Some("idle") && cw.phase.is_some())
+                .coworker_pulse_frames
+                .values()
+                .any(|frames| *frames > 0)
             || self
                 .channel_lead_thinking
                 .values()
@@ -2781,11 +2853,69 @@ impl App {
 
     /// Advance the spinner frame if enough time has elapsed since the last tick.
     pub fn tick_spinner(&mut self) {
-        const SPINNER_INTERVAL: Duration = Duration::from_millis(100);
-        if self.spinner_last_tick.elapsed() >= SPINNER_INTERVAL {
+        if self.spinner_last_tick.elapsed() >= Self::COWORKER_PULSE_INTERVAL {
             self.spinner_frame = self.spinner_frame.wrapping_add(1);
             self.spinner_last_tick = Instant::now();
+            self.advance_coworker_pulse_frames();
         }
+    }
+
+    fn coworker_status_line_signature(cw: &CoworkerInfo) -> CoworkerStatusLine {
+        CoworkerStatusLine {
+            task_id: cw.task_id,
+            phase: cw.phase.clone(),
+            pr_number: cw.pr_number,
+            health: cw.health.clone(),
+            progress: cw.progress,
+            time_estimate: cw.time_estimate.clone(),
+        }
+    }
+
+    pub(crate) fn is_coworker_name_pulsing(&self, coworker_name: &str) -> bool {
+        self.coworker_pulse_frames
+            .get(coworker_name)
+            .is_some_and(|frames| *frames > 0)
+    }
+
+    fn advance_coworker_pulse_frames(&mut self) {
+        for remaining in self.coworker_pulse_frames.values_mut() {
+            *remaining = remaining.saturating_sub(1);
+        }
+        self.coworker_pulse_frames
+            .retain(|_, remaining| *remaining > 0);
+    }
+
+    fn update_coworker_status(&mut self, coworkers: Vec<CoworkerInfo>) {
+        if self.coworker_status_snapshot_ready {
+            let mut next_status_lines = HashMap::with_capacity(coworkers.len());
+            for cw in &coworkers {
+                let name = cw.name.clone();
+                let signature = Self::coworker_status_line_signature(cw);
+
+                let should_pulse = self
+                    .coworker_status_lines
+                    .get(&name)
+                    .is_none_or(|prev| *prev != signature);
+                if should_pulse {
+                    self.coworker_pulse_frames
+                        .insert(name.clone(), Self::COWORKER_PULSE_CYCLE_FRAMES);
+                }
+
+                next_status_lines.insert(name, signature);
+            }
+            self.coworker_pulse_frames
+                .retain(|name, _| next_status_lines.contains_key(name));
+            self.coworker_status_lines = next_status_lines;
+        } else {
+            self.coworker_pulse_frames.clear();
+            self.coworker_status_snapshot_ready = true;
+            self.coworker_status_lines = coworkers
+                .iter()
+                .map(|cw| (cw.name.clone(), Self::coworker_status_line_signature(cw)))
+                .collect();
+        }
+
+        self.coworkers = coworkers;
     }
 }
 
@@ -3365,6 +3495,25 @@ fn fetch_coworker_status_via_rpc() -> Option<CoworkerStatusData> {
                         .get("phase")
                         .and_then(|v| v.as_str())
                         .map(|s| s.to_string());
+                    let status = cw.get("status").and_then(|v| v.as_str());
+
+                    let is_inactive = match phase.as_deref() {
+                        Some(phase) if !phase.trim().is_empty() => {
+                            let phase = phase.trim().to_ascii_lowercase();
+                            matches!(phase.as_str(), "idle" | "done")
+                        }
+                        _ => match status {
+                            Some(status) => {
+                                let status = status.trim().to_ascii_lowercase();
+                                matches!(status.as_str(), "idle" | "stopped")
+                            }
+                            None => false,
+                        },
+                    };
+                    if is_inactive {
+                        return None;
+                    }
+
                     let pr_number = cw.get("pr_number").and_then(|v| v.as_u64());
                     let health = cw
                         .get("health")
@@ -3843,6 +3992,9 @@ pub(super) mod tests {
             prs: Vec::new(),
             merged_prs: Vec::new(),
             coworkers: Vec::new(),
+            coworker_status_lines: HashMap::new(),
+            coworker_pulse_frames: HashMap::new(),
+            coworker_status_snapshot_ready: false,
             lead_working: false,
             tool_activity: HashMap::new(),
             channel_lead_thinking: HashMap::new(),

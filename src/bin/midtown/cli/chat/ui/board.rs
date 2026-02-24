@@ -18,6 +18,16 @@ use super::super::app::{
 use super::Hyperlink;
 use super::text::wrap_content;
 
+fn is_coworker_idle_or_done(phase: Option<&str>) -> bool {
+    match phase {
+        Some(raw_phase) => {
+            let phase = raw_phase.trim().to_ascii_lowercase();
+            phase == "idle" || phase == "done"
+        }
+        None => false,
+    }
+}
+
 /// Draw the board panel (left side) with channel list
 ///
 /// Returns (hyperlinks, tasks_area) where tasks_area is the rect containing the task list
@@ -35,7 +45,7 @@ pub fn draw_board_panel(f: &mut Frame, app: &mut App, area: Rect) -> (Vec<Hyperl
     let active_coworker_count = app
         .coworkers
         .iter()
-        .filter(|cw| !matches!(cw.phase.as_deref(), Some("idle") | Some("done")))
+        .filter(|cw| !is_coworker_idle_or_done(cw.phase.as_deref()))
         .filter(|cw| {
             let name = cw.name.to_lowercase();
             name != "lead" && name != project_name_lower_bp
@@ -439,9 +449,6 @@ fn draw_coworker_status(f: &mut Frame, app: &mut App, area: Rect) {
         ])
         .split(area);
 
-    // Capture pulse state before borrowing app.coworkers (drives name pulsing)
-    let pulse_bold = app.pulse_bold();
-
     // Filter out idle/completed coworkers and the project lead. The project lead
     // and channel leads are both excluded upstream by build_coworkers_data
     // (via is_project_lead / is_channel_lead); this is a defensive guard.
@@ -449,7 +456,7 @@ fn draw_coworker_status(f: &mut Frame, app: &mut App, area: Rect) {
     let active_coworkers: Vec<_> = app
         .coworkers
         .iter()
-        .filter(|cw| !matches!(cw.phase.as_deref(), Some("idle") | Some("done")))
+        .filter(|cw| !is_coworker_idle_or_done(cw.phase.as_deref()))
         .filter(|cw| {
             let name = cw.name.to_lowercase();
             name != "lead" && name != project_name_lower
@@ -549,10 +556,14 @@ fn draw_coworker_status(f: &mut Frame, app: &mut App, area: Rect) {
 
     let rows: Vec<Row> = active_coworkers
         .iter()
-        .map(|cw| {
+        .enumerate()
+        .map(|(row_index, cw)| {
+            let health_color = coworker_health_color(cw, palette);
+            let has_change = app.is_coworker_name_pulsing(&cw.name);
+            let name_style = app.coworker_name_style(health_color, row_index, has_change);
             coworker_table_row(
                 cw,
-                pulse_bold,
+                name_style,
                 show_task_id,
                 show_phase,
                 show_pr,
@@ -578,7 +589,7 @@ fn draw_coworker_status(f: &mut Frame, app: &mut App, area: Rect) {
 #[allow(clippy::too_many_arguments)]
 fn coworker_table_row(
     cw: &CoworkerInfo,
-    pulse_bold: bool,
+    name_style: Style,
     show_task_id: bool,
     show_phase: bool,
     show_pr: bool,
@@ -586,22 +597,6 @@ fn coworker_table_row(
     show_time: bool,
     palette: ThemePalette,
 ) -> Row<'static> {
-    let health_color = match cw.health.as_str() {
-        "green" => palette.success,
-        "yellow" => palette.warning,
-        "red" => palette.error,
-        _ => palette.success,
-    };
-
-    // Pulse the name bold/normal (~500ms on, ~500ms off) to indicate activity
-    let name_style = if pulse_bold {
-        Style::default()
-            .fg(health_color)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(health_color)
-    };
-
     let mut cells: Vec<Cell> = vec![Cell::from(cw.name.clone()).style(name_style)];
 
     if show_task_id {
@@ -630,6 +625,15 @@ fn coworker_table_row(
     }
 
     Row::new(cells)
+}
+
+fn coworker_health_color(cw: &CoworkerInfo, palette: ThemePalette) -> Color {
+    match cw.health.as_str() {
+        "green" => palette.success,
+        "yellow" => palette.warning,
+        "red" => palette.error,
+        _ => palette.success,
+    }
 }
 
 /// Compute indentation level for each task based on dependency structure.
@@ -1028,7 +1032,8 @@ mod tests {
         cw.progress = Some(42);
         cw.time_estimate = Some("~3m".to_string());
 
-        let row = coworker_table_row(&cw, true, true, true, true, true, true, palette);
+        let name_style = Style::default().fg(palette.success);
+        let row = coworker_table_row(&cw, name_style, true, true, true, true, true, palette);
 
         // Verify all 7 columns are present by checking the row can be constructed
         // (Row doesn't expose cell count directly, but we verify data is correct
@@ -1042,7 +1047,8 @@ mod tests {
         let palette = Theme::new(ThemeName::CatppuccinMocha).palette();
         let cw = make_coworker("york");
         // Minimal: only spinner + name (all show_* = false)
-        let row = coworker_table_row(&cw, false, false, false, false, false, false, palette);
+        let name_style = Style::default().fg(palette.success);
+        let row = coworker_table_row(&cw, name_style, false, false, false, false, false, palette);
         let _ = row;
     }
 
@@ -1415,7 +1421,8 @@ mod tests {
         cw.phase = Some("review".to_string());
         cw.task_id = Some(42);
 
-        let row = coworker_table_row(&cw, true, true, true, false, false, false, palette);
+        let name_style = Style::default().fg(palette.success);
+        let row = coworker_table_row(&cw, name_style, true, true, true, false, false, palette);
         let _ = row; // Row builds successfully with the phase data
     }
 

@@ -116,7 +116,7 @@ fn normalize_model_for_provider_role_maps_size_aliases_for_codex() {
         &crate::launch::CoworkerRole::Reviewer,
     );
     assert_eq!(small, "gpt-5.1-codex-mini");
-    assert_eq!(medium, "gpt-5.3-codex");
+    assert_eq!(medium, "gpt-5.3-codex-spark");
     assert_eq!(large, "gpt-5.3-codex");
 }
 

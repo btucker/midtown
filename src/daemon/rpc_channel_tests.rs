@@ -739,6 +739,50 @@ async fn test_crash_loop_guard_skips_resume_when_headless_cleared() {
     );
 }
 
+#[tokio::test]
+async fn test_handle_channel_post_clears_stale_channel_lead_mapping_on_resume_failure() {
+    let (state, _tmp, _guard) = make_test_state("midtown-test-channel-lead-resume-failure");
+    let adapter_id = "test-adapter-channel-lead-resume-failure";
+    state
+        .headed_register(
+            &state.repo_name,
+            adapter_id,
+            crate::auth::AuthProvider::Claude,
+        )
+        .await
+        .expect("register headed adapter");
+
+    let channel_name = "multi-platform";
+    let stale_session_id = "non-existent-session-id-xyz";
+
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.channel_lead_sessions
+            .insert(channel_name.to_string(), stale_session_id.to_string());
+    }
+
+    let response = handle_channel_post(
+        1_i64.into(),
+        "user",
+        "can you continue this flow?",
+        Some(channel_name),
+        None,
+        &state,
+    )
+    .await;
+    assert!(
+        response.error.is_none(),
+        "channel.post should succeed even when resume path fails"
+    );
+
+    let ps = state.persistent_state.lock().await;
+    let mapped = ps.channel_lead_sessions.get(channel_name).cloned();
+    assert!(
+        mapped.as_deref() != Some(stale_session_id),
+        "Stale channel lead session mapping should not be reused after resume failure"
+    );
+}
+
 /// When a user sends a thread reply, the lead nudge must use the PARENT's ID
 /// (thread_parent_id), not the reply's own ID.
 ///

@@ -548,8 +548,9 @@ async fn test_recover_from_session_records_uses_lead_config_for_lead() {
     let persistent_state = tokio::sync::Mutex::new(DaemonPersistentState::default());
     {
         let mut state = persistent_state.lock().await;
-        // The lead's SessionRecord has coworker_type="dev", not "lead"
-        let record = test_session_record("sess-lead", "lead", "dev");
+        // The lead's SessionRecord is identified either by coworker_type=="lead"
+        // (new records) or by name==repo_name (legacy/newly-started records).
+        let record = test_session_record("sess-lead", "test-repo", "dev");
         state.sessions.insert("sess-lead".to_string(), record);
     }
 
@@ -573,7 +574,7 @@ async fn test_recover_from_session_records_uses_lead_config_for_lead() {
             session_id,
             config,
         } => {
-            assert_eq!(name, "lead");
+            assert_eq!(name, "test-repo");
             assert_eq!(session_id, "sess-lead");
             assert_eq!(
                 config.role,
@@ -584,6 +585,46 @@ async fn test_recover_from_session_records_uses_lead_config_for_lead() {
                 config.model, expected_model,
                 "Lead should use role/provider default model, not coworker defaults"
             );
+        }
+        other => panic!("Expected ResumeCoworker, got {:?}", other),
+    }
+}
+
+#[tokio::test]
+async fn test_recover_from_session_records_uses_lead_config_for_codex_lead_record() {
+    let persistent_state = tokio::sync::Mutex::new(DaemonPersistentState::default());
+    {
+        let mut state = persistent_state.lock().await;
+        // Newer sessions can persist coworker_type == "lead" even when the
+        // runtime name is a provider/session artifact.
+        let record = test_session_record("sess-lead-codex", "codex-session-1", "lead");
+        state.sessions.insert("sess-lead-codex".to_string(), record);
+    }
+
+    let (effects, recovered_ids) =
+        recover_from_session_records(&persistent_state, "test-repo").await;
+
+    assert_eq!(effects.len(), 1);
+    assert!(recovered_ids.contains("sess-lead-codex"));
+    let expected_provider = crate::config::get_execution_provider_for_role(
+        "test-repo",
+        crate::config::ExecutionRole::Lead,
+    );
+    let expected_model = crate::daemon::helpers::default_model_for_provider_role(
+        expected_provider,
+        &crate::launch::CoworkerRole::Lead,
+    );
+
+    match &effects[0] {
+        Effect::ResumeCoworker {
+            name,
+            session_id,
+            config,
+        } => {
+            assert_eq!(name, "codex-session-1");
+            assert_eq!(session_id, "sess-lead-codex");
+            assert_eq!(config.role, crate::launch::CoworkerRole::Lead);
+            assert_eq!(config.model, expected_model);
         }
         other => panic!("Expected ResumeCoworker, got {:?}", other),
     }
@@ -677,6 +718,132 @@ async fn test_recover_from_session_records_deduplicates_by_name() {
         }
         other => panic!("Expected ResumeCoworker, got {:?}", other),
     }
+}
+
+#[tokio::test]
+async fn test_recover_channel_lead_session_mappings_rebuilds_active_root_leads() {
+    let persistent_state = tokio::sync::Mutex::new(DaemonPersistentState::default());
+
+    {
+        let mut state = persistent_state.lock().await;
+
+        state
+            .channel_lead_sessions
+            .insert("stale-channel".to_string(), "stale-session".to_string());
+
+        let mut lead = test_session_record("sess-lead", "payments", "channel-lead");
+        lead.channel = Some("payments".to_string());
+        lead.bound_thread_id = None;
+        lead.resume_on_startup = true;
+        lead.is_running = true;
+        state.sessions.insert("sess-lead".to_string(), lead);
+
+        let mut skipped = test_session_record("sess-skipped", "park", "channel-lead");
+        skipped.resume_on_startup = false;
+        skipped.is_running = false;
+        state.sessions.insert("sess-skipped".to_string(), skipped);
+
+        let mut forked = test_session_record("sess-fork", "follows", "channel-lead");
+        forked.channel = Some("follows".to_string());
+        forked.bound_thread_id = Some("thread-1".to_string());
+        forked.resume_on_startup = true;
+        forked.is_running = true;
+        state.sessions.insert("sess-fork".to_string(), forked);
+
+        let mut wrong_type = test_session_record("sess-dev", "dev", "dev");
+        wrong_type.channel = Some("dev".to_string());
+        wrong_type.is_running = true;
+        wrong_type.resume_on_startup = true;
+        state.sessions.insert("sess-dev".to_string(), wrong_type);
+    }
+
+    let recovered = recover_channel_lead_session_mappings(&persistent_state).await;
+
+    assert_eq!(recovered, 1);
+
+    let state = persistent_state.lock().await;
+    assert_eq!(state.channel_lead_sessions.len(), 1);
+    assert_eq!(
+        state.channel_lead_sessions.get("payments"),
+        Some(&"sess-lead".to_string())
+    );
+    assert!(!state.channel_lead_sessions.contains_key("stale-channel"));
+}
+
+#[tokio::test]
+async fn test_recover_channel_lead_session_mappings_persists_after_stale_is_running_clear() {
+    let persistent_state = tokio::sync::Mutex::new(DaemonPersistentState::default());
+
+    {
+        let mut state = persistent_state.lock().await;
+        let mut lead = test_session_record("sess-lead", "payments", "channel-lead");
+        lead.channel = Some("payments".to_string());
+        lead.bound_thread_id = None;
+        lead.resume_on_startup = true;
+        lead.is_running = true;
+        state.sessions.insert("sess-lead".to_string(), lead);
+    }
+
+    // First recovery builds the in-memory channel-lead mapping.
+    let recovered = recover_channel_lead_session_mappings(&persistent_state).await;
+    assert_eq!(recovered, 1);
+
+    {
+        let state = persistent_state.lock().await;
+        assert_eq!(
+            state.channel_lead_sessions.get("payments"),
+            Some(&"sess-lead".to_string())
+        );
+    }
+
+    // clear_stale_running_sessions runs after recovery and clears is_running, which
+    // previously caused this mapping to be dropped on the next restart cycle.
+    clear_stale_running_sessions(&persistent_state, &std::collections::HashSet::new()).await;
+    {
+        let state = persistent_state.lock().await;
+        assert!(!state.sessions["sess-lead"].is_running);
+    }
+
+    // Simulate a second restart cycle: recovery should still repopulate the mapping
+    // based on resume_on_startup, not live is_running.
+    let recovered = recover_channel_lead_session_mappings(&persistent_state).await;
+    assert_eq!(recovered, 1);
+    let state = persistent_state.lock().await;
+    assert_eq!(
+        state.channel_lead_sessions.get("payments"),
+        Some(&"sess-lead".to_string())
+    );
+}
+
+#[tokio::test]
+async fn test_recover_channel_lead_session_mappings_prefers_newest_session_per_channel() {
+    let persistent_state = tokio::sync::Mutex::new(DaemonPersistentState::default());
+
+    {
+        let mut state = persistent_state.lock().await;
+
+        let mut older = test_session_record("sess-old", "payments", "channel-lead");
+        older.channel = Some("payments".to_string());
+        older.created_at = chrono::Utc::now() - chrono::Duration::hours(1);
+        older.resume_on_startup = true;
+        older.is_running = true;
+        state.sessions.insert("sess-old".to_string(), older);
+
+        let mut newer = test_session_record("sess-new", "payments", "channel-lead");
+        newer.channel = Some("payments".to_string());
+        newer.created_at = chrono::Utc::now();
+        newer.resume_on_startup = true;
+        newer.is_running = true;
+        state.sessions.insert("sess-new".to_string(), newer);
+    }
+
+    recover_channel_lead_session_mappings(&persistent_state).await;
+
+    let state = persistent_state.lock().await;
+    assert_eq!(
+        state.channel_lead_sessions.get("payments"),
+        Some(&"sess-new".to_string())
+    );
 }
 
 // ── clear_stale_running_sessions tests ────────────────────────────────

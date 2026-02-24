@@ -598,6 +598,20 @@ fn coworker_role_to_execution_role(
     }
 }
 
+fn fork_channel_lead_model(
+    auth_provider: crate::auth::AuthProvider,
+    fork_channel: Option<&str>,
+) -> String {
+    let fork_role = crate::launch::CoworkerRole::ChannelLead {
+        channel_name: fork_channel.unwrap_or_default().to_string(),
+        domain_context: String::new(),
+    };
+
+    let configured_model =
+        super::helpers::default_model_for_provider_role(auth_provider, &fork_role);
+    super::helpers::normalize_model_for_provider_role(configured_model, auth_provider, &fork_role)
+}
+
 /// Resumes headless execution for a coworker that was previously attached.
 /// Idempotent: if the coworker is already running (e.g., a previous detach
 /// succeeded), returns success without spawning a duplicate.
@@ -1168,7 +1182,7 @@ pub(super) async fn handle_session_fork(
     );
 
     let headless_config = crate::headless::HeadlessConfig {
-        model: "sonnet".to_string(),
+        model: fork_channel_lead_model(auth_provider, fork_channel.as_deref()),
         system_prompt: String::new(),
         json_schema: None,
         cwd: working_dir.clone(),

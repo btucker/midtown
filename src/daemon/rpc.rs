@@ -6,7 +6,7 @@
 //! - `rpc_auth` — authentication switching
 //! - `rpc_channel` — channel post/read/create/archive/rename/list
 //! - `rpc_coworker` — coworker lifecycle (spawn, break, list, view, state, nudge)
-//! - `rpc_headless` — headless execution and snapshot
+//! - `rpc_headless` — one-shot execution and snapshot
 //! - `rpc_headed` — headed wrapper intercom (register/poll/ack)
 //! - `rpc_insight` — insight reporting and deduplication
 //! - `rpc_kanban` — kanban board data (legacy combined endpoint)
@@ -318,48 +318,10 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
             Response::success(request.id, serde_json::json!({"message": "ok"}))
         }
 
-        // ---- Snapshot / headless ----
+        // ---- Snapshot / oneshot ----
         "snapshot" => super::rpc_headless::handle_snapshot(request.id, state).await,
 
-        "headless.execute" => {
-            let prompt = require_str!(params, "prompt", request.id);
-            let auth_provider = match parse_optional_provider_param(params) {
-                Ok(Some(provider)) => provider,
-                Ok(None) => crate::config::get_execution_provider_for_role(
-                    &state.repo_name,
-                    crate::config::ExecutionRole::HeadlessExecute,
-                ),
-                Err(msg) => return Response::error(request.id, RpcError::new(-32602, msg)),
-            };
-            let config = crate::headless::HeadlessConfig {
-                model: params.str_or("model", "sonnet").to_string(),
-                system_prompt: params.str_or("system_prompt", "").to_string(),
-                json_schema: params.and_then(|p| p.get("json_schema")).cloned(),
-                max_budget_usd: params
-                    .and_then(|p| p.get("max_budget_usd"))
-                    .and_then(|v| v.as_f64()),
-                allow_tools: params.bool_or("allow_tools", false),
-                cwd: state
-                    .all_repo_paths
-                    .first()
-                    .map(|p| p.to_string_lossy().to_string()),
-                project_name: Some(state.repo_name.clone()),
-                persist_session: false,
-                resume_session_id: None,
-                session_id: None,
-                inactivity_timeout: None,
-                team_name: None,
-                agent_id: None,
-                agent_name: None,
-                settings_path: None,
-                setting_sources: None,
-                auth_provider,
-                env: std::collections::BTreeMap::new(),
-                fork_session: false,
-            };
-            super::rpc_headless::handle_headless_execute(request.id, prompt, &config).await
-        }
-
+        "oneshot.execute" => handle_oneshot_execute(request.id, params, state).await,
         // ---- Coworker lifecycle ----
         "coworker.spawn" => {
             let resume = params.bool_or("resume", false);
@@ -553,14 +515,24 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
 
         "task.request" => {
             let message = require_str!(params, "message", request.id);
-            let from = params.str_or("from", "unknown");
-            super::rpc_task::handle_task_request(request.id, from, message, state).await
+            let from = params
+                .str_param("from")
+                .filter(|from| !from.trim().is_empty())
+                .filter(|from| !from.eq_ignore_ascii_case("unknown"))
+                .map(str::to_string)
+                .unwrap_or_else(|| state.repo_name.clone());
+            super::rpc_task::handle_task_request(request.id, &from, message, state).await
         }
 
         "task.claim" => {
             let task_id = require_str!(params, "id", request.id);
-            let from = params.str_or("from", "unknown");
-            super::rpc_task::handle_task_claim(request.id, task_id, from, state)
+            let from = params
+                .str_param("from")
+                .filter(|from| !from.trim().is_empty())
+                .filter(|from| !from.eq_ignore_ascii_case("unknown"))
+                .map(str::to_string)
+                .unwrap_or_else(|| state.repo_name.clone());
+            super::rpc_task::handle_task_claim(request.id, task_id, &from, state)
         }
 
         // ---- Reminders ----
@@ -709,6 +681,59 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
             Response::error(request.id, RpcError::method_not_found())
         }
     }
+}
+
+/// Handle one-shot RPC execution.
+async fn handle_oneshot_execute(
+    id: RequestId,
+    params: Option<&serde_json::Value>,
+    state: &DaemonState,
+) -> Response {
+    let prompt = match params
+        .and_then(|p| p.get("prompt"))
+        .and_then(|v| v.as_str())
+    {
+        Some(v) => v,
+        None => return Response::error(id, RpcError::invalid_params()),
+    };
+
+    let auth_provider = match parse_optional_provider_param(params) {
+        Ok(Some(provider)) => provider,
+        Ok(None) => crate::config::get_execution_provider_for_role(
+            &state.repo_name,
+            crate::config::ExecutionRole::HeadlessExecute,
+        ),
+        Err(msg) => return Response::error(id, RpcError::new(-32602, msg)),
+    };
+
+    let config = crate::headless::HeadlessConfig {
+        model: params.str_or("model", "sonnet").to_string(),
+        system_prompt: params.str_or("system_prompt", "").to_string(),
+        json_schema: params.and_then(|p| p.get("json_schema")).cloned(),
+        max_budget_usd: params
+            .and_then(|p| p.get("max_budget_usd"))
+            .and_then(|v| v.as_f64()),
+        allow_tools: params.bool_or("allow_tools", false),
+        cwd: state
+            .all_repo_paths
+            .first()
+            .map(|p| p.to_string_lossy().to_string()),
+        project_name: Some(state.repo_name.clone()),
+        persist_session: false,
+        resume_session_id: None,
+        session_id: None,
+        inactivity_timeout: None,
+        team_name: None,
+        agent_id: None,
+        agent_name: None,
+        settings_path: None,
+        setting_sources: None,
+        auth_provider,
+        env: std::collections::BTreeMap::new(),
+        fork_session: false,
+    };
+
+    super::rpc_headless::handle_headless_execute(id, prompt, &config).await
 }
 
 #[path = "rpc_tests.rs"]

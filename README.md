@@ -113,14 +113,14 @@ See the [full CLI reference](docs/cli.md) for all flags and options.
 
 These commands are not shown in `midtown --help` but remain fully functional. They are used internally by the daemon, coworker hooks, and agent prompts.
 
-#### Headless Execution
+#### One-shot Execution
 
 Run Claude Code sessions non-interactively with JSON streaming output:
 
 ```bash
-midtown headless "Summarize this codebase" --model sonnet
-midtown headless "Generate a report" --json-schema '{"type": "object", ...}'
-midtown headless "Fix the bug" --allow-tools --max-budget-usd 0.50
+midtown oneshot "Summarize this codebase" --model sonnet
+midtown oneshot "Generate a report" --json-schema '{"type": "object", ...}'
+midtown oneshot "Fix the bug" --allow-tools --max-budget-usd 0.50
 ```
 
 | Flag | Description |
@@ -277,7 +277,7 @@ Execution provider resolution is role-based:
 - Reviewers: `execution.reviewer_provider` (default: `claude`)
 - Channel leads: `execution.channel_lead_provider` -> `execution.lead_provider` -> `claude`
 - Specialized workers:
-  - `headless.execute`: `execution.headless_execute_provider` -> `execution.specialized_provider` -> `claude`
+ - `oneshot.execute`: `execution.headless_execute_provider` -> `execution.specialized_provider` -> `claude`
 
 Review execution mode controls how PR reviews are sourced:
 
@@ -290,7 +290,7 @@ Model aliases are auto-normalized per provider at launch:
 - Generic sizes:
   - Claude: `small` -> `haiku`, `medium` -> `sonnet`, `large` -> `opus`
   - z.ai: `small` -> `haiku`, `medium` -> `sonnet`, `large` -> `opus`
-  - Codex: `small` -> `gpt-5.1-codex-mini`, `medium`/`large` -> `gpt-5.3-codex`
+- Codex: `small` -> `gpt-5.1-codex-mini`, `medium` -> `gpt-5.3-codex-spark`, `large` -> `gpt-5.3-codex`
 - z.ai model aliases are hard-mapped at launch via env vars:
   - `ANTHROPIC_DEFAULT_HAIKU_MODEL=GLM-4.5-Air`
   - `ANTHROPIC_DEFAULT_SONNET_MODEL=GLM-4.7`

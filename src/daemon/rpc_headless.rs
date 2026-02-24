@@ -1,6 +1,6 @@
-//! Headless execution and snapshot RPC handlers.
+//! One-shot execution and snapshot RPC handlers.
 //!
-//! Handles `headless.execute` (run a one-shot headless Claude session) and
+//! Handles `oneshot.execute` (run a one-shot Claude session) and
 //! `snapshot` (return the full WorldSnapshot for debugging).
 
 use tracing::{error, info, warn};
@@ -13,14 +13,14 @@ use super::DaemonState;
 // Handlers
 // ============================================================================
 
-/// Handle headless.execute RPC method.
+/// Handle one-shot execute RPC method.
 pub(super) async fn handle_headless_execute(
     id: RequestId,
     prompt: &str,
     config: &crate::headless::HeadlessConfig,
 ) -> Response {
     info!(
-        "Headless execute: model={}, prompt_len={}, has_schema={}",
+        "One-shot execute: model={}, prompt_len={}, has_schema={}",
         config.model,
         prompt.len(),
         config.json_schema.is_some()
@@ -31,7 +31,7 @@ pub(super) async fn handle_headless_execute(
     match crate::headless::execute(config, prompt, timeout).await {
         Ok(result) => {
             info!(
-                "Headless execute complete: cost=${:.4}, duration={}ms, error={}",
+                "One-shot execute complete: cost=${:.4}, duration={}ms, error={}",
                 result.cost_usd.unwrap_or(0.0),
                 result.duration_ms.unwrap_or(0),
                 result.is_error,
@@ -48,10 +48,10 @@ pub(super) async fn handle_headless_execute(
             )
         }
         Err(e) => {
-            warn!("Headless execute failed: {}", e);
+            warn!("One-shot execute failed: {}", e);
             Response::error(
                 id,
-                RpcError::new(-32603, format!("Headless execution failed: {}", e)),
+                RpcError::new(-32603, format!("One-shot execution failed: {}", e)),
             )
         }
     }

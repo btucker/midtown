@@ -663,13 +663,13 @@ impl DaemonClient {
         self.send_raw("prs.status", None)
     }
 
-    // Headless execution
+    // One-shot execution
 
-    /// Execute a headless Claude Code session via the daemon.
+    /// Execute a one-shot Claude Code session via the daemon.
     ///
-    /// Uses a longer timeout (120s) since headless execution waits for the
+    /// Uses a longer timeout (120s) since one-shot execution waits for the
     /// Claude API response, which can take significant time.
-    pub fn headless_execute(
+    pub fn oneshot_execute(
         &self,
         prompt: &str,
         model: &str,
@@ -690,7 +690,7 @@ impl DaemonClient {
         if let Some(budget) = max_budget_usd {
             params["max_budget_usd"] = serde_json::json!(budget);
         }
-        self.send_raw_with_timeout("headless.execute", Some(params), 120)
+        self.send_raw_with_timeout("oneshot.execute", Some(params), 120)
     }
 
     // Headed wrapper intercom commands

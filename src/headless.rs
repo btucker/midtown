@@ -273,11 +273,11 @@ struct CodexSharedRuntime {
     next_stderr_seq: AtomicU64,
 }
 
-static CODEX_RUNTIME: Lazy<tokio::sync::Mutex<Option<Arc<CodexSharedRuntime>>>> =
-    Lazy::new(|| tokio::sync::Mutex::new(None));
+static CODEX_RUNTIME: Lazy<tokio::sync::Mutex<HashMap<String, Arc<CodexSharedRuntime>>>> =
+    Lazy::new(|| tokio::sync::Mutex::new(HashMap::new()));
 
 impl CodexSharedRuntime {
-    async fn spawn() -> std::io::Result<Arc<Self>> {
+    async fn spawn(env: &std::collections::BTreeMap<String, String>) -> std::io::Result<Arc<Self>> {
         let binary = crate::platform::Platform::Codex.binary_name();
         let mut cmd = Command::new(binary);
 
@@ -289,6 +289,9 @@ impl CodexSharedRuntime {
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
         cmd.env("DISABLE_AUTOUPDATER", "1");
+        for (key, value) in env {
+            cmd.env(key, value);
+        }
 
         let mut child = cmd.spawn()?;
 
@@ -635,26 +638,42 @@ impl CodexSharedRuntime {
     }
 }
 
-async fn codex_shared_runtime() -> std::io::Result<Arc<CodexSharedRuntime>> {
+fn codex_runtime_key(env: &std::collections::BTreeMap<String, String>) -> String {
+    // Share a single app-server per Codex profile (CODEX_HOME), even across
+    // multiple coworkers/sessions, so we don't spin up one process per agent.
+    let profile = env
+        .get("CODEX_HOME")
+        .map(|value| value.as_str())
+        .unwrap_or("default");
+    format!("codex-runtime|{}", profile)
+}
+
+async fn codex_shared_runtime(
+    env: &std::collections::BTreeMap<String, String>,
+) -> std::io::Result<Arc<CodexSharedRuntime>> {
     let mut guard = CODEX_RUNTIME.lock().await;
+    let key = codex_runtime_key(env);
 
     // If the runtime exists but the process died, discard it and re-spawn.
-    if let Some(ref runtime) = *guard {
+    if let Some(runtime) = guard.get(&key) {
         if runtime.is_alive() {
             return Ok(Arc::clone(runtime));
         }
         warn!("Shared Codex app-server process died — re-spawning");
-        *guard = None;
+        guard.remove(&key);
     }
 
-    let runtime = CodexSharedRuntime::spawn().await?;
-    *guard = Some(Arc::clone(&runtime));
+    let runtime = CodexSharedRuntime::spawn(env).await?;
+    guard.insert(key, Arc::clone(&runtime));
     Ok(runtime)
 }
 
 pub(crate) async fn shutdown_codex_runtime() {
     let mut guard = CODEX_RUNTIME.lock().await;
-    if let Some(runtime) = guard.take() {
+    let runtimes: Vec<_> = guard.values().cloned().collect();
+    guard.clear();
+    drop(guard);
+    for runtime in runtimes {
         runtime.shutdown().await;
     }
 }
@@ -737,11 +756,38 @@ fn codex_command_text(item: &serde_json::Value) -> Option<String> {
         })
 }
 
+fn codex_json_value_to_string(value: &serde_json::Value) -> Option<String> {
+    match value {
+        serde_json::Value::String(s) => Some(s.clone()),
+        serde_json::Value::Number(n) => Some(n.to_string()),
+        serde_json::Value::Bool(b) => Some(b.to_string()),
+        _ => None,
+    }
+}
+
+fn codex_is_command_execution_item(item: &serde_json::Value) -> bool {
+    match item.get("type").and_then(|v| v.as_str()) {
+        Some("commandExecution") => true,
+        Some(_) => false,
+        None => {
+            item.get("command").is_some()
+                || item.get("commandActions").is_some()
+                || item.get("aggregatedOutput").is_some()
+        }
+    }
+}
+
 fn codex_command_call_id(item: &serde_json::Value) -> Option<String> {
     item.get("id")
-        .and_then(|v| v.as_str())
+        .and_then(codex_json_value_to_string)
+        .or_else(|| item.get("callId").and_then(codex_json_value_to_string))
+        .or_else(|| item.get("call_id").and_then(codex_json_value_to_string))
+        .or_else(|| {
+            item.get("commandExecutionId")
+                .and_then(codex_json_value_to_string)
+        })
+        .or_else(|| item.get("tool_use_id").and_then(codex_json_value_to_string))
         .filter(|id| !id.is_empty())
-        .map(str::to_string)
 }
 
 fn codex_command_is_error(item: &serde_json::Value) -> bool {
@@ -895,7 +941,7 @@ fn codex_translate_event(
         }
         "item/started" => {
             if let Some(item) = params.get("item")
-                && item.get("type").and_then(|t| t.as_str()) == Some("commandExecution")
+                && codex_is_command_execution_item(item)
                 && let Some(call_id) = codex_command_call_id(item)
             {
                 let command = codex_command_text(item).unwrap_or_default();
@@ -923,7 +969,7 @@ fn codex_translate_event(
         }
         "item/completed" => {
             if let Some(item) = params.get("item")
-                && item.get("type").and_then(|t| t.as_str()) == Some("commandExecution")
+                && codex_is_command_execution_item(item)
                 && let Some(call_id) = codex_command_call_id(item)
             {
                 let output = item
@@ -1405,7 +1451,7 @@ impl CodexHeadlessAdapter {
             _ => None,
         };
 
-        let runtime = codex_shared_runtime().await?;
+        let runtime = codex_shared_runtime(&config.env).await?;
         let codex_session = Some(runtime.register_session(resume_thread_id.as_deref()).await);
 
         info!(

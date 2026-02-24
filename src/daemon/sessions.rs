@@ -299,10 +299,16 @@ impl CoworkerSession {
 ///
 /// Thread-safe: uses `RwLock` for concurrent access from the daemon's
 /// event loop, RPC handlers, and health checks.
+#[cfg(test)]
+type TestSendMessageToSessionIdHook =
+    std::sync::Arc<dyn Fn(&str, &str) -> crate::Result<()> + Send + Sync>;
+
 #[allow(dead_code)]
 pub struct SessionManager {
     sessions: RwLock<HashMap<String, CoworkerSession>>,
     repo_name: String,
+    #[cfg(test)]
+    test_send_message_to_session_id_hook: std::sync::Mutex<Option<TestSendMessageToSessionIdHook>>,
 }
 
 #[allow(dead_code)]
@@ -312,7 +318,21 @@ impl SessionManager {
         Self {
             sessions: RwLock::new(HashMap::new()),
             repo_name,
+            #[cfg(test)]
+            test_send_message_to_session_id_hook: std::sync::Mutex::new(None),
         }
+    }
+
+    #[cfg(test)]
+    pub(super) fn set_test_send_message_to_session_id_hook(
+        &self,
+        hook: Option<TestSendMessageToSessionIdHook>,
+    ) {
+        let mut guard = self
+            .test_send_message_to_session_id_hook
+            .lock()
+            .expect("session hook mutex poisoned");
+        *guard = hook;
     }
 
     fn is_session_live(cs: &CoworkerSession) -> bool {
@@ -333,6 +353,41 @@ impl SessionManager {
                 continue;
             }
             let live_rank = if Self::is_session_live(cs) { 1 } else { 0 };
+            if live_only && live_rank == 0 {
+                continue;
+            }
+            let activity = cs.last_event_at.unwrap_or(cs.started_at);
+            match &best {
+                None => best = Some((slot_id.clone(), live_rank, activity)),
+                Some((_, best_live_rank, best_activity))
+                    if (live_rank, activity) > (*best_live_rank, *best_activity) =>
+                {
+                    best = Some((slot_id.clone(), live_rank, activity));
+                }
+                _ => {}
+            }
+        }
+        best.map(|(slot_id, _, _)| slot_id)
+    }
+
+    /// Select the best slot for a specific session ID.
+    ///
+    /// Prefers live sessions over stopped entries, then most recent activity.
+    fn select_slot_for_session_id(
+        sessions: &HashMap<String, CoworkerSession>,
+        session_id: &str,
+        live_only: bool,
+    ) -> Option<String> {
+        let mut best: Option<(String, u8, DateTime<Utc>)> = None;
+        for (slot_id, cs) in sessions {
+            if cs.session_id.as_deref() != Some(session_id) {
+                continue;
+            }
+            let live_rank = if cs.status != SessionStatus::Stopped {
+                1
+            } else {
+                0
+            };
             if live_only && live_rank == 0 {
                 continue;
             }
@@ -593,6 +648,74 @@ impl SessionManager {
         cs.last_event_at = Some(Utc::now());
 
         debug!("Sent message to headless session '{}'", name);
+        Ok(())
+    }
+
+    /// Send a message (nudge) to a running coworker session (by session ID).
+    ///
+    /// This avoids name-collision errors when multiple sessions share a name.
+    ///
+    /// Selects the best live session for the session ID (ignores stale stopped
+    /// entries). Falls back to stopped/error variants only after live matches
+    /// are exhausted.
+    pub async fn send_message_to_session_id(
+        &self,
+        session_id: &str,
+        message: &str,
+    ) -> Result<(), crate::Error> {
+        #[cfg(test)]
+        {
+            if let Some(hook) = self
+                .test_send_message_to_session_id_hook
+                .lock()
+                .expect("session hook mutex poisoned")
+                .clone()
+            {
+                return hook(session_id, message);
+            }
+        }
+
+        let mut sessions = self.sessions.write().await;
+        let live_slot_id = Self::select_slot_for_session_id(&sessions, session_id, true);
+        let slot_id = if let Some(slot_id) = live_slot_id {
+            slot_id
+        } else if Self::select_slot_for_session_id(&sessions, session_id, false).is_some() {
+            return Err(crate::Error::Rpc {
+                code: -32603,
+                message: format!("Session '{}' has stopped", session_id),
+            });
+        } else {
+            return Err(crate::Error::Rpc {
+                code: -32602,
+                message: format!("No headless session for '{}'", session_id),
+            });
+        };
+
+        let cs = sessions
+            .get_mut(&slot_id)
+            .ok_or_else(|| crate::Error::Rpc {
+                code: -32602,
+                message: format!("No headless session for '{}'", session_id),
+            })?;
+        let session = cs.session.as_mut().ok_or_else(|| crate::Error::Rpc {
+            code: -32603,
+            message: format!("Session '{}' has stopped", session_id),
+        })?;
+
+        session
+            .send_message(message)
+            .await
+            .map_err(|e| crate::Error::Rpc {
+                code: -32603,
+                message: format!("Failed to send message to '{}': {}", session_id, e),
+            })?;
+
+        // Track outbound turn start so stuck detection doesn't kill sessions
+        // during long silent model thinking windows.
+        cs.has_pending_api_call = true;
+        cs.last_event_at = Some(Utc::now());
+
+        debug!("Sent message to headless session_id '{}'", session_id);
         Ok(())
     }
 

@@ -582,10 +582,10 @@ pub struct ExecutionSection {
     /// Provider used for channel lead sessions.
     #[serde(default)]
     pub channel_lead_provider: Option<crate::auth::AuthProvider>,
-    /// Provider used for specialized workers (headless.execute default).
+    /// Provider used for specialized one-shot workers (oneshot.execute default).
     #[serde(default)]
     pub specialized_provider: Option<crate::auth::AuthProvider>,
-    /// Provider override for ad-hoc `headless.execute` RPC.
+    /// Provider override for ad-hoc one-shot execution RPC (`oneshot.execute`).
     #[serde(default)]
     pub headless_execute_provider: Option<crate::auth::AuthProvider>,
     /// Pool of auth profile emails for coworker spawning.
@@ -899,9 +899,9 @@ impl GlobalConfig {
 # review_mode = "local"
 # Optional override for channel leads (defaults to lead_provider when unset)
 # channel_lead_provider = "claude"
-# Default provider for specialized workers (headless.execute)
+# Default provider for specialized workers (oneshot.execute)
 # specialized_provider = "claude"
-# Optional override provider for headless.execute RPC
+# Optional override provider for oneshot.execute RPC
 # headless_execute_provider = "claude"
 
 [providers.claude]

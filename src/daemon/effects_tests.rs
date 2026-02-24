@@ -236,6 +236,71 @@ fn test_dedup_preserves_non_nudge_effects() {
     assert_eq!(count_nudge_session(&deduped, "sess-riverside-1"), 1);
 }
 
+#[tokio::test]
+async fn test_execute_effects_nudge_channel_lead_uses_stored_session_id() {
+    let (state, _project_dir, _guard) = make_workflow_test_state("myrepo");
+    let channel = "web".to_string();
+    let stored_session_id = "lead-session-123".to_string();
+    let message = "wake web lead".to_string();
+
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.channel_lead_sessions
+            .insert(channel.clone(), stored_session_id.clone());
+    }
+
+    let observed_session_ids = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let observed_for_hook = observed_session_ids.clone();
+    let message_for_hook = message.clone();
+    state
+        .session_manager
+        .set_test_send_message_to_session_id_hook(Some(std::sync::Arc::new(
+            move |session_id, msg| {
+                observed_for_hook
+                    .lock()
+                    .expect("hook mutex poisoned")
+                    .push(session_id.to_string());
+                assert_eq!(msg, message_for_hook);
+                Ok(())
+            },
+        )));
+
+    execute_effects(
+        vec![Effect::NudgeChannelLead {
+            channel_name: channel.clone(),
+            reason: crate::daemon::wake_reason::WakeReason::Nudge {
+                message: message.clone(),
+            },
+        }],
+        &state,
+    )
+    .await;
+
+    let observed = observed_session_ids
+        .lock()
+        .expect("hook mutex poisoned")
+        .clone();
+    assert_eq!(observed, vec![stored_session_id.clone()]);
+
+    let ps = state.persistent_state.lock().await;
+    assert_eq!(
+        ps.channel_lead_sessions.get(&channel),
+        Some(&stored_session_id)
+    );
+}
+
+#[test]
+fn test_should_resume_channel_lead_session() {
+    assert!(
+        !should_resume_channel_lead_session(""),
+        "Empty stored session ID should trigger fresh spawn"
+    );
+    assert!(
+        should_resume_channel_lead_session("session-123"),
+        "Non-empty stored session ID should resume"
+    );
+}
+
 #[test]
 fn test_dedup_session_id_based() {
     // Session IDs are exact match, not case-insensitive

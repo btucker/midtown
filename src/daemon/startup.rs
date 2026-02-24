@@ -624,7 +624,10 @@ pub async fn recover_from_session_records(
         );
 
         // Build launch config from SessionRecord
-        let mut config = if name == "lead" {
+        let is_main_lead_session =
+            record.coworker_type == "lead" || name == "lead" || name == repo_name;
+
+        let mut config = if is_main_lead_session {
             // Lead session — uses lead system prompt, provider-compatible model,
             // unrestricted settings.
             // Must match recover_from_session_records() which also special-cases the lead.
@@ -663,6 +666,12 @@ pub async fn recover_from_session_records(
 
         // Clear auth_profile_dir to re-resolve from project config
         config.auth_profile_dir = None;
+        if config.persisted_initial_prompt.is_none() {
+            config.persisted_initial_prompt = record
+                .initial_prompt
+                .clone()
+                .or_else(|| config.initial_prompt.clone());
+        }
         if matches!(config.role, crate::launch::CoworkerRole::Reviewer) {
             config.auth_provider = crate::config::get_execution_provider_for_role(
                 repo_name,
@@ -684,6 +693,86 @@ pub async fn recover_from_session_records(
     (effects, recovered_session_ids)
 }
 
+/// Rebuild `channel_lead_sessions` from persisted SessionRecords.
+///
+/// Uses the canonical SessionRecord store instead of stale in-memory state.
+/// This is required after daemon restarts, because `channel_lead_sessions` was
+/// previously cleared on startup and never repopulated, which breaks channel lead
+/// routing and thinking indicators.
+pub async fn recover_channel_lead_session_mappings(
+    persistent_state: &tokio::sync::Mutex<DaemonPersistentState>,
+) -> usize {
+    let mut state = persistent_state.lock().await;
+    let mut recovered = 0usize;
+    let mut records_by_channel: HashMap<String, (chrono::DateTime<chrono::Utc>, SessionRecord)> =
+        HashMap::new();
+
+    // Start from a clean in-memory mapping and repopulate only from
+    // persisted sessions that should be recoverable and look like root channel
+    // leads (non-forked, resumable).
+    state.channel_lead_sessions.clear();
+
+    for record in state.sessions.values() {
+        if record.coworker_type != "channel-lead" {
+            continue;
+        }
+        if !record.resume_on_startup {
+            continue;
+        }
+
+        // Only root channel leads (not forked topic sessions) are tracked in
+        // `channel_lead_sessions`. Forked leads use `fork_bound_channels`.
+        if record.bound_thread_id.is_some() {
+            continue;
+        }
+
+        if record.session_id.is_empty() {
+            continue;
+        }
+
+        let session_name = record
+            .preferred_name
+            .as_deref()
+            .or(record.current_name.as_deref())
+            .unwrap_or("");
+        if session_name.is_empty() {
+            continue;
+        }
+
+        let channel_name = record
+            .channel
+            .as_deref()
+            .filter(|name| !name.is_empty())
+            .unwrap_or(session_name);
+
+        let should_replace = records_by_channel
+            .get(channel_name)
+            .is_none_or(|(created_at, _)| record.created_at > *created_at);
+        if should_replace {
+            records_by_channel.insert(
+                channel_name.to_string(),
+                (record.created_at, record.clone()),
+            );
+        }
+    }
+
+    for (channel_name, (_, record)) in records_by_channel {
+        state
+            .channel_lead_sessions
+            .insert(channel_name, record.session_id.clone());
+        recovered += 1;
+    }
+
+    if recovered > 0 {
+        info!(
+            "Recovered {} channel lead session mapping(s) from session records",
+            recovered
+        );
+    }
+
+    recovered
+}
+
 /// Clear is_running flags for sessions that were not recovered on startup.
 ///
 /// On restart, `recover_from_session_records` resumes sessions where both
@@ -698,7 +787,8 @@ pub async fn recover_from_session_records(
 /// - Is NOT in `recovered_session_ids` (was not recovered by `recover_from_session_records`)
 ///
 /// Channel lead sessions are included — they are on-demand and not recovered at startup.
-/// Their `channel_lead_sessions` map is cleared separately in `mod.rs`.
+/// Their `channel_lead_sessions` map is rebuilt in this module via
+/// `recover_channel_lead_session_mappings()` prior to this stale-flag pass.
 ///
 /// Call this after `recover_from_session_records` completes, before the event loop starts.
 /// The caller is responsible for saving persistent state after this call.

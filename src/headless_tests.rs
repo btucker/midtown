@@ -537,6 +537,89 @@ fn test_codex_translate_command_execution_completed_emits_tool_result() {
 }
 
 #[test]
+fn test_codex_translate_command_execution_started_with_numeric_id() {
+    let mut state = test_codex_state();
+    let mut session_id = Some("thread_123".to_string());
+    let parsed = serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "item/started",
+        "params": {
+            "item": {
+                "type": "commandExecution",
+                "id": 1001,
+                "command": "ls -la"
+            }
+        }
+    });
+
+    let (event, post_action) = codex_translate_event(&parsed, &mut state, &mut session_id);
+    assert_eq!(post_action, CodexPostAction::None);
+    match event {
+        Some(StreamEvent::Assistant { message, extra, .. }) => {
+            assert_eq!(extra["provider"], "codex");
+            assert_eq!(message["content"][0]["id"], "1001");
+            assert_eq!(message["content"][0]["name"], "Bash");
+            assert_eq!(message["content"][0]["input"]["command"], "ls -la");
+        }
+        _ => panic!("Expected commandExecution start to emit assistant tool_use"),
+    }
+}
+
+#[test]
+fn test_codex_translate_command_execution_started_without_type() {
+    let mut state = test_codex_state();
+    let mut session_id = Some("thread_123".to_string());
+    let parsed = serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "item/started",
+        "params": {
+            "item": {
+                "call_id": "cmd-plain",
+                "commandActions": [{ "command": "pwd" }]
+            }
+        }
+    });
+
+    let (event, post_action) = codex_translate_event(&parsed, &mut state, &mut session_id);
+    assert_eq!(post_action, CodexPostAction::None);
+    match event {
+        Some(StreamEvent::Assistant { message, extra, .. }) => {
+            assert_eq!(extra["provider"], "codex");
+            assert_eq!(message["content"][0]["id"], "cmd-plain");
+        }
+        _ => panic!("Expected commandExecution start fallback path to emit tool_use"),
+    }
+}
+
+#[test]
+fn test_codex_translate_command_execution_completed_with_alt_id_field() {
+    let mut state = test_codex_state();
+    let mut session_id = Some("thread_123".to_string());
+    let parsed = serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "item/completed",
+        "params": {
+            "item": {
+                "type": "commandExecution",
+                "callId": "call_xyz",
+                "aggregatedOutput": "ok\n",
+                "exitCode": 0,
+                "status": "completed"
+            }
+        }
+    });
+
+    let (event, post_action) = codex_translate_event(&parsed, &mut state, &mut session_id);
+    assert_eq!(post_action, CodexPostAction::None);
+    match event {
+        Some(StreamEvent::User { message, .. }) => {
+            assert_eq!(message["content"][0]["tool_use_id"], "call_xyz");
+        }
+        _ => panic!("Expected commandExecution completion with alt id to emit user tool_result"),
+    }
+}
+
+#[test]
 fn test_codex_translate_command_execution_failed_sets_tool_result_error() {
     let mut state = test_codex_state();
     let mut session_id = Some("thread_123".to_string());
