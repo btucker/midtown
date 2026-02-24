@@ -89,7 +89,7 @@
     aria-label="Toggle Midtown Ops"
   >
     <span class="text-[0.7rem] font-bold tracking-wide text-muted-foreground">MIDTOWN OPS</span>
-    <span class="text-[0.6rem] text-muted-foreground">{collapsed ? '▶' : '▼'}</span>
+    <span class="text-[0.6rem] text-muted-foreground/40">{collapsed ? '▶' : '▼'}</span>
   </button>
 
   {#if !collapsed}
@@ -103,12 +103,12 @@
       {:else}
         {#each opsMessages as msg}
           <div class="flex gap-1 break-words min-w-0">
-            <span class="text-muted-foreground flex-shrink-0 w-[3.2em] text-right">{formatTime(msg.timestamp)}</span>
+            <span class="text-muted-foreground/60 flex-shrink-0 w-[3.2em] text-right">{formatTime(msg.timestamp)}</span>
             {#if msg.msg_type === 'action' || msg.content?.startsWith('/me ')}
               <!-- Action: "* name content" -->
               <span class="flex-shrink-0" style="color: {getSenderColor(msg.from)}">*</span>
               <span class="flex-shrink-0 font-medium" style="color: {getSenderColor(msg.from)}">{getSenderLabel(msg)}</span>
-              <span class="flex-1 min-w-0 text-muted-foreground">{getContent(msg)}</span>
+              <span class="flex-1 min-w-0 text-muted-foreground/80">{getContent(msg)}</span>
             {:else}
               <!-- System: "source message" -->
               <span class="flex-shrink-0 font-medium" style="color: {getSenderColor(msg.from)}">{getSenderLabel(msg)}</span>

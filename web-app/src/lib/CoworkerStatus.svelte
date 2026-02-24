@@ -123,7 +123,7 @@
             {#if cw.time_estimate}
               <span class="text-[0.7rem] text-primary">{cw.time_estimate}</span>
             {:else if cw.progress !== undefined && cw.progress !== null}
-              <span class="text-[0.7rem] text-sidebar-primary">{cw.progress}%</span>
+              <span class="text-[0.7rem] text-[#5fafaf]">{cw.progress}%</span>
             {/if}
           </div>
           {#if cw.progress !== undefined && cw.progress !== null}

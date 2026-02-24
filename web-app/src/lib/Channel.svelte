@@ -858,7 +858,7 @@
           {/if}
           <button
             type="button"
-            class="absolute top-1 right-1 w-6 h-6 p-0 rounded-full bg-[rgba(0,0,0,0.7)] text-white text-[1.2rem] leading-none flex items-center justify-center cursor-pointer border border-white/20 hover:bg-[rgba(255,87,87,0.8)] hover:border-[#ff5f5f]"
+            class="absolute top-1 right-1 w-6 h-6 p-0 rounded-full bg-[rgba(0,0,0,0.7)] text-white text-[1.2rem] leading-none flex items-center justify-center cursor-pointer border border-border hover:bg-[rgba(255,87,87,0.8)] hover:border-[#ff5f5f]"
             onclick={clearPendingFile}
             aria-label="Remove file"
           >

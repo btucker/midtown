@@ -134,7 +134,7 @@
         class="w-6 h-6 p-0 border-none rounded bg-transparent text-muted-foreground text-sm leading-none cursor-pointer transition-all duration-150 flex items-center justify-center hover:bg-sidebar-accent hover:text-sidebar-foreground"
         aria-label="Toggle archived channels"
         class:bg-sidebar-accent={$showArchivedChannels}
-        class:text-primary={$showArchivedChannels}
+        class:text-sidebar-primary={$showArchivedChannels}
         onclick={() => showArchivedChannels.update(v => !v)}
         title={$showArchivedChannels ? "Hide archived channels" : "Show archived channels"}
       >
