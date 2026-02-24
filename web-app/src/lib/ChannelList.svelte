@@ -193,44 +193,35 @@
   {#each $channels as channel}
     {@const counts = getChannelTaskCount(channel.name, $kanbanData)}
     {@const ciStatus = getChannelCiStatus(channel.name, $kanbanData)}
-    {@const totalTasks = counts.inProgress + counts.pending + counts.review}
     {@const isActive = $activeChannel === channel.name}
     {@const isExpanded = expandedChannels.has(channel.name)}
     {@const hasActiveTasks = counts.inProgress > 0 || counts.pending > 0}
+    {@const hasUnread = channel.unread > 0 && channel.name !== 'ops'}
 
     <div class="mb-0.5">
       <div class="flex items-center rounded-md {isActive ? 'bg-accent text-primary' : 'text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground'}">
-        {#if hasActiveTasks}
-          <button
-            type="button"
-            class="w-[28px] h-[28px] shrink-0 p-0 border-none bg-transparent text-muted-foreground text-[0.65rem] leading-none cursor-pointer flex items-center justify-center transition-colors duration-150 hover:text-sidebar-foreground ml-1"
-            onclick={(e) => toggleChannelTasks(channel.name, e)}
-            title={isExpanded ? 'Collapse tasks' : 'Expand tasks'}
-          >
-            {isExpanded ? '▼' : '▶'}
-          </button>
-        {/if}
+        <!-- Fixed-width gutter keeps channel names aligned whether or not a triangle is present -->
+        <div class="w-[28px] ml-1 shrink-0 flex items-center justify-center">
+          {#if hasActiveTasks}
+            <button
+              type="button"
+              class="w-[28px] h-[28px] p-0 border-none bg-transparent text-muted-foreground text-[0.65rem] leading-none cursor-pointer flex items-center justify-center transition-colors duration-150 hover:text-sidebar-foreground"
+              onclick={(e) => toggleChannelTasks(channel.name, e)}
+              title={isExpanded ? 'Collapse tasks' : 'Expand tasks'}
+            >
+              {isExpanded ? '▼' : '▶'}
+            </button>
+          {/if}
+        </div>
         <button
-          class="flex items-center justify-between flex-1 min-w-0 px-3 py-2 border-none bg-transparent text-sm font-mono cursor-pointer transition-all duration-150 text-left text-inherit {hasActiveTasks ? 'pl-1' : ''}"
+          class="flex items-center justify-between flex-1 min-w-0 pl-1 pr-3 py-2 border-none bg-transparent text-sm font-mono cursor-pointer transition-all duration-150 text-left text-inherit"
           aria-label="Select channel {channel.name}"
           onclick={() => selectChannel(channel.name)}
         >
-          <div class="flex-1 overflow-hidden text-ellipsis whitespace-nowrap">
+          <div class="flex-1 overflow-hidden text-ellipsis whitespace-nowrap {hasUnread ? 'font-bold' : ''}">
             {formatChannelName(channel.name)}
           </div>
           <div class="flex items-center gap-1.5">
-            {#if channel.unread > 0 && channel.name !== 'ops'}
-              <span class="text-xs px-1.5 py-0.5 rounded-[10px] bg-destructive text-destructive-foreground min-w-[1.5em] text-center font-semibold" title="{channel.unread} unread messages">{channel.unread}</span>
-            {/if}
-            {#if totalTasks > 0}
-              <span
-                class="text-xs px-1.5 py-0.5 rounded-[10px] min-w-[1.5em] text-center"
-                class:bg-sidebar-accent={!isActive}
-                class:text-sidebar-foreground={!isActive}
-                class:bg-sidebar-primary={isActive}
-                class:text-sidebar-primary-foreground={isActive}
-              >{totalTasks}</span>
-            {/if}
             {#if ciStatus === 'passed'}
               <span class="text-[0.7rem]" title="CI passing">🟢</span>
             {:else if ciStatus === 'failed'}
