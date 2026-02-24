@@ -1,28 +1,123 @@
-//! Tests for mouse wheel scroll accumulator behavior in the main chat and thread panels.
+//! Tests for mouse wheel scroll behavior in the main chat and thread panels.
+//!
+//! These tests cover two modes:
+//! - **Immediate mode**: Events arriving > MOUSE_INERTIA_THRESHOLD apart are treated as
+//!   deliberate mouse-wheel clicks and scroll SCROLL_STEP lines immediately.
+//! - **Inertia/accumulator mode**: Events arriving ≤ MOUSE_INERTIA_THRESHOLD apart (trackpad
+//!   or momentum scrolling) use the accumulator; MOUSE_SCROLL_THRESHOLD events = MOUSE_SCROLL_STEP.
+
+use std::time::{Duration, Instant};
 
 use midtown::Message;
 
 use super::tests::test_app;
-use super::{MOUSE_SCROLL_STEP, MOUSE_SCROLL_THRESHOLD, SCROLL_STEP};
+use super::{MOUSE_INERTIA_THRESHOLD, MOUSE_SCROLL_STEP, MOUSE_SCROLL_THRESHOLD, SCROLL_STEP};
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/// Make `app.last_scroll_event` look like it was set "just now" so subsequent
+/// mouse scroll calls enter inertia/accumulator mode (elapsed ≤ threshold).
+fn set_recent_scroll(app: &mut super::App) {
+    app.last_scroll_event = Some(Instant::now());
+}
+
+/// Make `app.last_thread_scroll_event` look like it was set "just now".
+fn set_recent_thread_scroll(app: &mut super::App) {
+    app.last_thread_scroll_event = Some(Instant::now());
+}
+
+/// Make `app.last_scroll_event` look like it happened long ago so subsequent
+/// mouse scroll calls enter immediate mode (elapsed > threshold).
+fn set_old_scroll(app: &mut super::App) {
+    app.last_scroll_event =
+        Some(Instant::now() - MOUSE_INERTIA_THRESHOLD - Duration::from_millis(10));
+}
+
+/// Make `app.last_thread_scroll_event` look like it happened long ago.
+fn set_old_thread_scroll(app: &mut super::App) {
+    app.last_thread_scroll_event =
+        Some(Instant::now() - MOUSE_INERTIA_THRESHOLD - Duration::from_millis(10));
+}
+
+// ---------------------------------------------------------------------------
+// Immediate mode (deliberate mouse-wheel click)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_mouse_scroll_immediate_when_no_recent_event() {
+    // First-ever scroll event (last_scroll_event = None): treated as deliberate → SCROLL_STEP.
+    let mut app = test_app();
+    for i in 0..30 {
+        app.messages
+            .push_back(Message::text("test", format!("msg {i}")));
+    }
+    app.scroll_offset = 0;
+    // last_scroll_event starts as None in test_app
+
+    app.mouse_scroll_up();
+    assert_eq!(
+        app.scroll_offset, SCROLL_STEP,
+        "First scroll event (no prior event) should scroll SCROLL_STEP immediately"
+    );
+}
+
+#[test]
+fn test_mouse_scroll_immediate_when_last_event_was_old() {
+    // Event arriving > MOUSE_INERTIA_THRESHOLD after the previous one → deliberate click.
+    let mut app = test_app();
+    for i in 0..30 {
+        app.messages
+            .push_back(Message::text("test", format!("msg {i}")));
+    }
+    app.scroll_offset = 0;
+    set_old_scroll(&mut app);
+
+    app.mouse_scroll_up();
+    assert_eq!(
+        app.scroll_offset, SCROLL_STEP,
+        "Slow event (> threshold apart) should scroll SCROLL_STEP immediately"
+    );
+}
+
+#[test]
+fn test_mouse_scroll_down_immediate() {
+    let mut app = test_app();
+    for i in 0..30 {
+        app.messages
+            .push_back(Message::text("test", format!("msg {i}")));
+    }
+    app.scroll_offset = SCROLL_STEP * 2;
+    set_old_scroll(&mut app);
+
+    app.mouse_scroll_down();
+    assert_eq!(
+        app.scroll_offset, SCROLL_STEP,
+        "Slow scroll-down event should decrease offset by SCROLL_STEP"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Inertia / accumulator mode (trackpad momentum)
+// ---------------------------------------------------------------------------
 
 #[test]
 fn test_inertia_scrolling_with_occasional_reversals() {
-    // Regression test: with threshold=8, trackpad inertia causes scroll to fail entirely.
+    // Regression test: with threshold=8, trackpad inertia caused scroll to fail entirely.
     // Inertia produces mostly up events but occasional small reversals (down). When a
     // reversal resets the accumulator mid-count before threshold is reached, scroll never fires.
-    // With MOUSE_SCROLL_THRESHOLD=3 this pattern produces multiple scrolls per cycle.
+    // With MOUSE_SCROLL_THRESHOLD=3 this pattern still produces scrolls per cycle.
     let mut app = test_app();
     for i in 0..30 {
         app.messages
             .push_back(Message::text("test", format!("msg {}", i)));
     }
     app.scroll_offset = 0;
+    set_recent_scroll(&mut app);
 
     // Simulate inertia: MOUSE_SCROLL_THRESHOLD+1 up events (fires once at event THRESHOLD,
     // then 1 more starts the next batch), then 1 reversal (resets that partial credit).
-    // This cycle is tightly coupled to MOUSE_SCROLL_THRESHOLD: the reversal happens after
-    // exactly one successful scroll per cycle, so increasing the threshold beyond
-    // MOUSE_SCROLL_THRESHOLD+1 would prevent any scroll from completing each cycle.
     let cycle_up = MOUSE_SCROLL_THRESHOLD as usize + 1;
     for _ in 0..5 {
         for _ in 0..cycle_up {
@@ -39,7 +134,7 @@ fn test_inertia_scrolling_with_occasional_reversals() {
 
 #[test]
 fn test_mouse_scroll_accumulator() {
-    // Mouse scrolling requires MOUSE_SCROLL_THRESHOLD same-direction events per step.
+    // Mouse scrolling in inertia mode requires MOUSE_SCROLL_THRESHOLD same-direction events.
     // Each step moves MOUSE_SCROLL_STEP lines (finer than keyboard SCROLL_STEP).
     let mut app = test_app();
     for i in 0..30 {
@@ -47,6 +142,7 @@ fn test_mouse_scroll_accumulator() {
             .push_back(Message::text("test", format!("Test message {}", i)));
     }
     app.scroll_offset = 0;
+    set_recent_scroll(&mut app);
 
     // (threshold - 1) events should not scroll
     let sub_threshold = MOUSE_SCROLL_THRESHOLD as usize - 1;
@@ -103,16 +199,13 @@ fn test_mouse_scroll_accumulator_resets_on_direction_change() {
     // When direction changes, up credits are discarded. The first down event resets the
     // positive accumulator to 0 and counts as -1 simultaneously. The scroll should fire
     // on exactly the MOUSE_SCROLL_THRESHOLD-th down event — not before.
-    //
-    // Without the reset: sub_threshold up credits would partially satisfy the down threshold,
-    // and the scroll would fire early (at sub_threshold + MOUSE_SCROLL_THRESHOLD events total
-    // instead of MOUSE_SCROLL_THRESHOLD).
     let mut app = test_app();
     for i in 0..30 {
         app.messages
             .push_back(Message::text("test", format!("msg {}", i)));
     }
     app.scroll_offset = 10;
+    set_recent_scroll(&mut app);
 
     let sub_threshold = MOUSE_SCROLL_THRESHOLD as usize - 1;
 
@@ -146,9 +239,9 @@ fn test_mouse_scroll_accumulator_resets_on_direction_change() {
 }
 
 #[test]
-fn test_mouse_wheel_scroll_is_slower_than_keyboard() {
-    // Mouse uses a finer step (MOUSE_SCROLL_STEP) and requires MOUSE_SCROLL_THRESHOLD
-    // events per step, vs keyboard which scrolls SCROLL_STEP per call.
+fn test_mouse_wheel_scroll_is_slower_than_keyboard_in_inertia_mode() {
+    // In inertia mode, mouse uses a finer step (MOUSE_SCROLL_STEP) and requires
+    // MOUSE_SCROLL_THRESHOLD events per step, vs keyboard which scrolls SCROLL_STEP per call.
     let mut app = test_app();
     for i in 0..30 {
         app.messages
@@ -166,7 +259,8 @@ fn test_mouse_wheel_scroll_is_slower_than_keyboard() {
     // Reset
     app.scroll_offset = 0;
 
-    // Mouse takes MOUSE_SCROLL_THRESHOLD events to move MOUSE_SCROLL_STEP lines
+    // Mouse in inertia mode takes MOUSE_SCROLL_THRESHOLD events to move MOUSE_SCROLL_STEP lines
+    set_recent_scroll(&mut app);
     let sub_threshold = MOUSE_SCROLL_THRESHOLD as usize - 1;
     for i in 1..=sub_threshold {
         app.mouse_scroll_up();
@@ -175,10 +269,32 @@ fn test_mouse_wheel_scroll_is_slower_than_keyboard() {
     app.mouse_scroll_up();
     assert_eq!(
         app.scroll_offset, MOUSE_SCROLL_STEP,
-        "{}th event should scroll MOUSE_SCROLL_STEP lines",
+        "{}th event should scroll MOUSE_SCROLL_STEP lines in inertia mode",
         MOUSE_SCROLL_THRESHOLD
     );
 }
+
+#[test]
+fn test_mouse_wheel_scroll_equals_keyboard_in_immediate_mode() {
+    // In immediate mode (slow events), mouse scrolls by SCROLL_STEP just like keyboard.
+    let mut app = test_app();
+    for i in 0..30 {
+        app.messages
+            .push_back(Message::text("test", format!("msg {}", i)));
+    }
+    app.scroll_offset = 0;
+
+    set_old_scroll(&mut app);
+    app.mouse_scroll_up();
+    assert_eq!(
+        app.scroll_offset, SCROLL_STEP,
+        "Immediate-mode mouse scroll should equal keyboard SCROLL_STEP"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Thread panel scroll
+// ---------------------------------------------------------------------------
 
 #[test]
 fn test_thread_scroll_up_moves_offset() {
@@ -187,6 +303,7 @@ fn test_thread_scroll_up_moves_offset() {
     let mut app = test_app();
     app.scroll_offset = 5;
     app.thread_scroll_offset = 0;
+    set_recent_thread_scroll(&mut app);
 
     for _ in 0..MOUSE_SCROLL_THRESHOLD as usize {
         app.thread_mouse_scroll_up();
@@ -206,6 +323,7 @@ fn test_thread_scroll_down_moves_offset() {
     // thread_mouse_scroll_down should decrease thread_scroll_offset (back toward newest)
     let mut app = test_app();
     app.thread_scroll_offset = MOUSE_SCROLL_STEP;
+    set_recent_thread_scroll(&mut app);
 
     for _ in 0..MOUSE_SCROLL_THRESHOLD as usize {
         app.thread_mouse_scroll_down();
@@ -227,6 +345,8 @@ fn test_thread_scroll_accumulator_independent_from_main() {
     }
     app.scroll_offset = 5;
     app.thread_scroll_offset = 0;
+    set_recent_scroll(&mut app);
+    set_recent_thread_scroll(&mut app);
 
     // Earn (threshold-1) up credits in main chat — not enough to fire
     let sub_threshold = MOUSE_SCROLL_THRESHOLD as usize - 1;
@@ -246,4 +366,125 @@ fn test_thread_scroll_accumulator_independent_from_main() {
         "1 thread event should not scroll; thread accumulator is independent"
     );
     assert_eq!(app.scroll_offset, 5, "Main chat must remain unchanged");
+}
+
+#[test]
+fn test_thread_immediate_mode() {
+    // Thread panel also uses immediate mode for slow events.
+    let mut app = test_app();
+    app.thread_scroll_offset = 0;
+    set_old_thread_scroll(&mut app);
+
+    app.thread_mouse_scroll_up();
+    assert_eq!(
+        app.thread_scroll_offset, SCROLL_STEP,
+        "Thread immediate-mode scroll should move by SCROLL_STEP"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Burst absorption after immediate scroll
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_burst_events_absorbed_after_immediate_scroll_up() {
+    // After an immediate scroll, burst follow-up events (< 50ms) should NOT trigger
+    // an extra MOUSE_SCROLL_STEP. A 4-event-per-notch device must still produce
+    // exactly SCROLL_STEP lines per physical notch.
+    let mut app = test_app();
+    for i in 0..30 {
+        app.messages
+            .push_back(Message::text("test", format!("msg {i}")));
+    }
+    app.scroll_offset = 0;
+    set_old_scroll(&mut app);
+
+    // Event 1: immediate scroll (elapsed > threshold)
+    app.mouse_scroll_up();
+    let after_immediate = app.scroll_offset;
+    assert_eq!(
+        after_immediate, SCROLL_STEP,
+        "Immediate event should scroll SCROLL_STEP"
+    );
+
+    // Events 2..=THRESHOLD: burst follow-ups (set recent so they're in inertia mode)
+    // These should be absorbed by the post-immediate sentinel, not fire again.
+    // With THRESHOLD=3, we send THRESHOLD burst events (one more than needed to fire
+    // in normal inertia mode) and verify no extra scroll fires.
+    set_recent_scroll(&mut app);
+    for _ in 0..MOUSE_SCROLL_THRESHOLD as usize {
+        app.mouse_scroll_up();
+    }
+    assert_eq!(
+        app.scroll_offset, after_immediate,
+        "Burst follow-up events after immediate scroll must not trigger extra fine scroll"
+    );
+}
+
+#[test]
+fn test_burst_events_absorbed_after_immediate_scroll_down() {
+    // Same burst-absorption guarantee for the down direction.
+    let mut app = test_app();
+    for i in 0..30 {
+        app.messages
+            .push_back(Message::text("test", format!("msg {i}")));
+    }
+    app.scroll_offset = SCROLL_STEP * 5;
+    set_old_scroll(&mut app);
+
+    // Event 1: immediate scroll down
+    app.mouse_scroll_down();
+    let after_immediate = app.scroll_offset;
+    assert_eq!(
+        after_immediate,
+        SCROLL_STEP * 4,
+        "Immediate down event should scroll SCROLL_STEP"
+    );
+
+    // Burst follow-ups
+    set_recent_scroll(&mut app);
+    for _ in 0..MOUSE_SCROLL_THRESHOLD as usize {
+        app.mouse_scroll_down();
+    }
+    assert_eq!(
+        app.scroll_offset, after_immediate,
+        "Burst follow-up events after immediate down scroll must not trigger extra fine scroll"
+    );
+}
+
+#[test]
+fn test_inertia_still_works_after_burst_absorption_window() {
+    // After burst absorption ends (enough events consumed), normal inertia accumulation
+    // should resume so that a sustained trackpad swipe continues to scroll.
+    let mut app = test_app();
+    for i in 0..60 {
+        app.messages
+            .push_back(Message::text("test", format!("msg {i}")));
+    }
+    app.scroll_offset = 0;
+    set_old_scroll(&mut app);
+
+    // Immediate scroll
+    app.mouse_scroll_up();
+    let after_immediate = app.scroll_offset;
+
+    // Absorb the burst (THRESHOLD events)
+    set_recent_scroll(&mut app);
+    for _ in 0..MOUSE_SCROLL_THRESHOLD as usize {
+        app.mouse_scroll_up();
+    }
+    assert_eq!(
+        app.scroll_offset, after_immediate,
+        "Burst absorbed: no extra scroll yet"
+    );
+
+    // After burst is fully absorbed, THRESHOLD more events should trigger one fine scroll
+    for _ in 0..MOUSE_SCROLL_THRESHOLD as usize {
+        app.mouse_scroll_up();
+    }
+    assert_eq!(
+        app.scroll_offset,
+        after_immediate + MOUSE_SCROLL_STEP,
+        "After burst absorbed, THRESHOLD more inertia events should produce one fine scroll"
+    );
 }

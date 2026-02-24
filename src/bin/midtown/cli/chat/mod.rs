@@ -496,9 +496,12 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                         return EventResult::Continue;
                     }
                     KeyCode::Char('u') => {
-                        // Ctrl+U: kill to beginning of line (only in InputBar,
-                        // not when channel switcher is open)
-                        if app.focused_pane == FocusedPane::InputBar && !app.channel_switcher.show {
+                        // Ctrl+U: kill to beginning of line when in InputBar with text,
+                        // otherwise half-page scroll up (vim Ctrl+U behavior).
+                        if app.focused_pane == FocusedPane::InputBar
+                            && !app.input_text.is_empty()
+                            && !app.channel_switcher.show
+                        {
                             if app.input_cursor > 0 {
                                 let byte_idx =
                                     char_index_to_byte_index(&app.input_text, app.input_cursor);
@@ -517,6 +520,9 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                             }
                             // Preserve kill chain even on no-op (cursor at pos 0)
                             app.last_was_kill = true;
+                        } else if !app.channel_switcher.show {
+                            // Input is empty or not in InputBar: half-page scroll up.
+                            app.half_page_up();
                         }
                         return EventResult::Continue;
                     }
@@ -579,14 +585,18 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                         return EventResult::Continue;
                     }
                     KeyCode::Char('d') => {
-                        // Ctrl+D: delete character under cursor (only in InputBar)
-                        if app.focused_pane == FocusedPane::InputBar
-                            && app.input_cursor < app.input_text.chars().count()
-                        {
-                            let byte_idx =
-                                char_index_to_byte_index(&app.input_text, app.input_cursor);
-                            app.input_text.remove(byte_idx);
-                            app.detect_autocomplete_trigger();
+                        // Ctrl+D: delete character under cursor when in InputBar with text,
+                        // otherwise half-page scroll down (vim Ctrl+D behavior).
+                        if app.focused_pane == FocusedPane::InputBar && !app.input_text.is_empty() {
+                            if app.input_cursor < app.input_text.chars().count() {
+                                let byte_idx =
+                                    char_index_to_byte_index(&app.input_text, app.input_cursor);
+                                app.input_text.remove(byte_idx);
+                                app.detect_autocomplete_trigger();
+                            }
+                        } else {
+                            // Input is empty or not in InputBar: half-page scroll down.
+                            app.half_page_down();
                         }
                         return EventResult::Continue;
                     }
@@ -965,6 +975,30 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                         app.thread_input_cursor += 1;
                         EventResult::Continue
                     } else {
+                        // Vim-style scroll bindings when there is no pending input text.
+                        // Guarded by input_text.is_empty() so a draft composed in the InputBar
+                        // is never lost if focus shifts to Chat/Board while the user is typing.
+                        if app.input_text.is_empty() {
+                            match c {
+                                'j' => {
+                                    app.scroll_down();
+                                    return EventResult::Continue;
+                                }
+                                'k' => {
+                                    app.scroll_up();
+                                    return EventResult::Continue;
+                                }
+                                'g' => {
+                                    app.scroll_to_top();
+                                    return EventResult::Continue;
+                                }
+                                'G' => {
+                                    app.scroll_to_bottom();
+                                    return EventResult::Continue;
+                                }
+                                _ => {}
+                            }
+                        }
                         auto_focus_and_insert_char(app, c);
                         EventResult::Continue
                     }
@@ -1669,6 +1703,284 @@ mod tests {
 
         handle_event(&mut app, key_press(KeyCode::PageDown));
         assert_eq!(app.focused_pane, FocusedPane::Chat);
+    }
+
+    // -----------------------------------------------------------------------
+    // Vim-style scroll bindings
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_vim_j_scrolls_down_when_unfocused() {
+        use app::FocusedPane;
+        use midtown::Message;
+        let mut app = test_app();
+        for i in 0..30 {
+            app.messages
+                .push_back(Message::text("test", format!("msg {i}")));
+        }
+        app.focused_pane = FocusedPane::Chat;
+        app.scroll_offset = 10;
+
+        handle_event(&mut app, key_press(KeyCode::Char('j')));
+        assert!(
+            app.scroll_offset < 10,
+            "j should scroll down (decrease offset)"
+        );
+        // Focus should not move to InputBar
+        assert_eq!(
+            app.focused_pane,
+            FocusedPane::Chat,
+            "j should not focus InputBar"
+        );
+        assert_eq!(app.input_text, "", "j should not insert into input");
+    }
+
+    #[test]
+    fn test_vim_k_scrolls_up_when_unfocused() {
+        use app::FocusedPane;
+        use midtown::Message;
+        let mut app = test_app();
+        for i in 0..30 {
+            app.messages
+                .push_back(Message::text("test", format!("msg {i}")));
+        }
+        app.focused_pane = FocusedPane::Chat;
+        app.scroll_offset = 0;
+
+        handle_event(&mut app, key_press(KeyCode::Char('k')));
+        assert!(
+            app.scroll_offset > 0,
+            "k should scroll up (increase offset)"
+        );
+        assert_eq!(
+            app.focused_pane,
+            FocusedPane::Chat,
+            "k should not focus InputBar"
+        );
+        assert_eq!(app.input_text, "", "k should not insert into input");
+    }
+
+    #[test]
+    fn test_vim_g_scrolls_to_top_when_unfocused() {
+        use app::FocusedPane;
+        use midtown::Message;
+        let mut app = test_app();
+        for i in 0..30 {
+            app.messages
+                .push_back(Message::text("test", format!("msg {i}")));
+        }
+        app.focused_pane = FocusedPane::Chat;
+        app.scroll_offset = 0;
+
+        handle_event(&mut app, key_press(KeyCode::Char('g')));
+        assert!(app.scroll_offset > 0, "g should scroll to top (offset > 0)");
+        assert_eq!(
+            app.focused_pane,
+            FocusedPane::Chat,
+            "g should not focus InputBar"
+        );
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn test_vim_G_scrolls_to_bottom_when_unfocused() {
+        use app::FocusedPane;
+        use midtown::Message;
+        let mut app = test_app();
+        for i in 0..30 {
+            app.messages
+                .push_back(Message::text("test", format!("msg {i}")));
+        }
+        app.focused_pane = FocusedPane::Chat;
+        app.scroll_offset = 20;
+        // 'G' with kitty protocol comes as Char('G') via the shift transform
+        handle_event(
+            &mut app,
+            Event::Key(crossterm::event::KeyEvent::new(
+                KeyCode::Char('g'),
+                crossterm::event::KeyModifiers::SHIFT,
+            )),
+        );
+        assert_eq!(app.scroll_offset, 0, "G should scroll to bottom");
+        assert_eq!(
+            app.focused_pane,
+            FocusedPane::Chat,
+            "G should not focus InputBar"
+        );
+    }
+
+    #[test]
+    fn test_vim_j_scrolls_when_input_is_empty_and_focused() {
+        // Even when InputBar is focused, j/k should scroll if input text is empty.
+        use app::FocusedPane;
+        use midtown::Message;
+        let mut app = test_app();
+        for i in 0..30 {
+            app.messages
+                .push_back(Message::text("test", format!("msg {i}")));
+        }
+        app.focused_pane = FocusedPane::InputBar;
+        app.input_text = String::new();
+        app.scroll_offset = 10;
+
+        handle_event(&mut app, key_press(KeyCode::Char('j')));
+        assert!(
+            app.scroll_offset < 10,
+            "j with empty input should scroll down"
+        );
+        assert_eq!(app.input_text, "", "j with empty input must not insert 'j'");
+    }
+
+    #[test]
+    fn test_vim_j_inserts_when_input_has_text() {
+        // When InputBar has content, j/k must NOT scroll — they should insert into the input.
+        use app::FocusedPane;
+        let mut app = test_app();
+        app.focused_pane = FocusedPane::InputBar;
+        app.input_text = "hello".to_string();
+        app.input_cursor = 5;
+
+        handle_event(&mut app, key_press(KeyCode::Char('j')));
+        assert_eq!(
+            app.input_text, "helloj",
+            "j with non-empty input should insert into the text"
+        );
+    }
+
+    #[test]
+    fn test_vim_j_inserts_when_chat_focused_but_draft_exists() {
+        // Regression: the original condition was `input_text.is_empty() || focused_pane !=
+        // InputBar`, which meant j/k would SCROLL when focus moved to Chat even if the user
+        // had a draft in the input bar — silently losing those keystrokes.
+        // The fix changes the gate to `input_text.is_empty()` only.
+        use app::FocusedPane;
+        use midtown::Message;
+        let mut app = test_app();
+        for i in 0..30 {
+            app.messages
+                .push_back(Message::text("test", format!("msg {i}")));
+        }
+        app.focused_pane = FocusedPane::Chat; // focus shifted away from InputBar
+        app.input_text = "draft message".to_string(); // but draft exists
+        app.input_cursor = 13;
+        app.scroll_offset = 5;
+
+        handle_event(&mut app, key_press(KeyCode::Char('j')));
+        // Should NOT scroll — should insert 'j' into the draft
+        assert_eq!(
+            app.input_text, "draft messagej",
+            "j with existing draft should insert even when focus is on Chat"
+        );
+        assert_eq!(
+            app.scroll_offset, 5,
+            "scroll_offset must not change when a draft exists"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Ctrl+U / Ctrl+D half-page scroll when input is empty
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_ctrl_u_half_page_up_when_input_empty() {
+        use app::FocusedPane;
+        use midtown::Message;
+        let mut app = test_app();
+        for i in 0..60 {
+            app.messages
+                .push_back(Message::text("test", format!("msg {i}")));
+        }
+        app.focused_pane = FocusedPane::InputBar;
+        app.input_text = String::new();
+        app.visible_height = 20;
+        app.scroll_offset = 0;
+
+        handle_event(
+            &mut app,
+            Event::Key(crossterm::event::KeyEvent::new(
+                KeyCode::Char('u'),
+                crossterm::event::KeyModifiers::CONTROL,
+            )),
+        );
+        let expected = 20 / 2; // half_page = visible_height / 2
+        assert_eq!(
+            app.scroll_offset, expected,
+            "Ctrl+U with empty input should scroll half-page up"
+        );
+        assert_eq!(
+            app.input_text, "",
+            "Ctrl+U should not modify empty input text"
+        );
+    }
+
+    #[test]
+    fn test_ctrl_u_kills_text_when_input_has_content() {
+        use app::FocusedPane;
+        let mut app = test_app();
+        app.focused_pane = FocusedPane::InputBar;
+        app.input_text = "hello world".to_string();
+        app.input_cursor = 5;
+
+        handle_event(
+            &mut app,
+            Event::Key(crossterm::event::KeyEvent::new(
+                KeyCode::Char('u'),
+                crossterm::event::KeyModifiers::CONTROL,
+            )),
+        );
+        assert_eq!(
+            app.input_text, " world",
+            "Ctrl+U should kill to beginning when input has text"
+        );
+    }
+
+    #[test]
+    fn test_ctrl_d_half_page_down_when_input_empty() {
+        use app::FocusedPane;
+        use midtown::Message;
+        let mut app = test_app();
+        for i in 0..60 {
+            app.messages
+                .push_back(Message::text("test", format!("msg {i}")));
+        }
+        app.focused_pane = FocusedPane::InputBar;
+        app.input_text = String::new();
+        app.visible_height = 20;
+        app.scroll_offset = 20;
+
+        handle_event(
+            &mut app,
+            Event::Key(crossterm::event::KeyEvent::new(
+                KeyCode::Char('d'),
+                crossterm::event::KeyModifiers::CONTROL,
+            )),
+        );
+        let expected = 20 - 20 / 2; // 20 - half_page
+        assert_eq!(
+            app.scroll_offset, expected,
+            "Ctrl+D with empty input should scroll half-page down"
+        );
+    }
+
+    #[test]
+    fn test_ctrl_d_deletes_char_when_input_has_content() {
+        use app::FocusedPane;
+        let mut app = test_app();
+        app.focused_pane = FocusedPane::InputBar;
+        app.input_text = "hello".to_string();
+        app.input_cursor = 0;
+
+        handle_event(
+            &mut app,
+            Event::Key(crossterm::event::KeyEvent::new(
+                KeyCode::Char('d'),
+                crossterm::event::KeyModifiers::CONTROL,
+            )),
+        );
+        assert_eq!(
+            app.input_text, "ello",
+            "Ctrl+D should delete char under cursor when input has text"
+        );
     }
 
     #[test]
