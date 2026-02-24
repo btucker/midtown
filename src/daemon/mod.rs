@@ -1401,7 +1401,7 @@ impl DaemonState {
                         .last_used_at = Some(chrono::Utc::now());
                     let _ = ps.save_for_repo(&self.repo_name);
                 }
-                c.auth_profile_dir = Some(crate::auth::profile_dir_for_email(&email));
+                c.auth_profile_dir = Some(crate::auth::profile_dir_for(c.auth_provider, &email));
             } else {
                 // No pool configured or all profiles limited — fall back to single profile.
                 c.auth_profile_dir =
