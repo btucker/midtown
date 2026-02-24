@@ -225,3 +225,123 @@ fn test_open_task_closes_thread() {
     );
     assert_eq!(app.open_task_id, Some("55".to_string()));
 }
+
+// ── open_task_as_thread lifecycle ─────────────────────────────────────────────
+
+/// open_task_as_thread sets thread_parent_id to the message_id and thread_task_id
+/// to the task_id, without requiring the message to exist in app.messages.
+#[test]
+fn test_open_task_as_thread_sets_ids() {
+    let mut app = test_app();
+    app.open_task_as_thread("42", "msg-uuid-123");
+
+    assert_eq!(
+        app.thread_parent_id,
+        Some("msg-uuid-123".to_string()),
+        "thread_parent_id should be set to message_id"
+    );
+    assert_eq!(
+        app.thread_task_id,
+        Some("42".to_string()),
+        "thread_task_id should be set to task_id"
+    );
+    assert_eq!(
+        app.focused_pane,
+        FocusedPane::Thread,
+        "focused_pane should be Thread after open_task_as_thread"
+    );
+}
+
+/// open_task_as_thread closes the static task panel (mutual exclusion).
+#[test]
+fn test_open_task_as_thread_closes_task_panel() {
+    let mut app = test_app();
+    app.open_task_id = Some("10".to_string());
+
+    app.open_task_as_thread("42", "msg-uuid-123");
+
+    assert!(
+        app.open_task_id.is_none(),
+        "open_task_as_thread should clear open_task_id"
+    );
+}
+
+/// open_task_as_thread works even when the creation message is not in app.messages.
+/// (Unlike open_thread, which returns early if the parent message isn't found.)
+#[test]
+fn test_open_task_as_thread_does_not_require_parent_message() {
+    let mut app = test_app();
+    // No messages loaded — message_id won't be found
+    assert!(app.messages.is_empty());
+
+    app.open_task_as_thread("99", "nonexistent-uuid");
+
+    // Should succeed and set thread state
+    assert_eq!(app.thread_parent_id, Some("nonexistent-uuid".to_string()));
+    assert_eq!(app.thread_task_id, Some("99".to_string()));
+}
+
+/// open_task_as_thread collects thread replies from loaded messages.
+#[test]
+fn test_open_task_as_thread_collects_replies() {
+    let mut app = test_app();
+    let message_id = "task-creation-msg".to_string();
+
+    // Add a reply in the thread
+    let mut reply = midtown::Message::text("user", "What's the progress?");
+    reply.thread_parent_id = Some(message_id.clone());
+    app.messages.push_back(reply.clone());
+
+    // Add an unrelated message
+    app.messages
+        .push_back(midtown::Message::text("user", "Hello"));
+
+    app.open_task_as_thread("42", &message_id);
+
+    assert_eq!(
+        app.thread_messages.len(),
+        1,
+        "should collect only the thread reply"
+    );
+    assert_eq!(app.thread_messages[0].id, reply.id);
+}
+
+/// close_thread clears thread_task_id.
+#[test]
+fn test_close_thread_clears_thread_task_id() {
+    let mut app = test_app();
+    app.thread_parent_id = Some("msg-1".to_string());
+    app.thread_task_id = Some("42".to_string());
+
+    app.close_thread();
+
+    assert!(
+        app.thread_task_id.is_none(),
+        "close_thread should clear thread_task_id"
+    );
+    assert!(
+        app.thread_parent_id.is_none(),
+        "close_thread should clear thread_parent_id"
+    );
+}
+
+/// open_thread (regular message thread) clears thread_task_id.
+#[test]
+fn test_open_thread_clears_thread_task_id() {
+    let mut app = test_app();
+    // Set up state as if a task thread was open
+    app.thread_task_id = Some("42".to_string());
+
+    // Add a parent message so open_thread can find it
+    let parent = midtown::Message::text("alice", "Hello");
+    let parent_id = parent.id.clone();
+    app.messages.push_back(parent);
+
+    app.open_thread(&parent_id);
+
+    assert!(
+        app.thread_task_id.is_none(),
+        "open_thread should clear thread_task_id"
+    );
+    assert_eq!(app.thread_parent_id, Some(parent_id));
+}

@@ -1,6 +1,6 @@
 <script>
   import { messages, messagesByChannel, activeChannel, channels, coworkers, kanbanData, repoStatus, repoStatuses, daemonStatus, detailPanelData, isWideScreen, agentToolItems, threadData } from './store.js'
-  import { sendMessage, uploadFile, closeThread, openThread } from './api.js'
+  import { sendMessage, uploadFile, closeThread, openThread, openTaskThread } from './api.js'
   import { tick, onMount } from 'svelte'
   import { fly } from 'svelte/transition'
   import MermaidDiagram from './MermaidDiagram.svelte'
@@ -281,11 +281,15 @@
         const taskId = target.dataset.task
         const task = findTask(taskId)
         if (task) {
-          // Desktop (>= 1025px): use DetailPanel; Mobile/tablet: use modal
-          if ($isWideScreen) {
+          if (task.message_id) {
+            // Task has a creation message ID — open as thread so the user can discuss it
+            openTaskThread(task, $activeChannel)
+          } else if ($isWideScreen) {
+            // No message_id (older task): fall back to static detail panel on desktop
             closeThread()
             detailPanelData.set({ type: 'task', data: task })
           } else {
+            // Mobile fallback: task modal
             selectedTask = task
           }
         }

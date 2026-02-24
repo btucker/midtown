@@ -9,7 +9,7 @@ use ratatui::{
 };
 use ratatui_themes::ThemePalette;
 
-use super::super::app::{App, FocusedPane};
+use super::super::app::{App, FocusedPane, TaskStatus};
 use super::chat::calculate_input_bar_height;
 use super::messages::{apply_mention_highlights, render_content_lines, render_message};
 use super::messages_mermaid::{render_header_content_segments, render_message_with_mermaid};
@@ -28,36 +28,42 @@ pub fn draw_thread_panel(f: &mut Frame, app: &mut App, area: Rect) {
     let content_width = area.width.saturating_sub(2) as usize;
     let content_style = Style::default().fg(palette.fg);
 
-    let use_light_theme = app.theme.palette().is_light();
-    let parent_msg_data: Option<(String, Vec<Line<'static>>)> = app
-        .messages
-        .iter()
-        .find(|m| m.id == *thread_parent_id)
-        .map(|m| {
-            // Skip rendering content at zero width: render_content_lines would wrap each
-            // character to its own line, inflating header_height to the 12-line cap and
-            // crowding out thread replies in narrow terminals.
-            if content_width == 0 {
-                return (m.from.clone(), vec![]);
-            }
-            let segments = mermaid::parse_content_segments(&m.content);
-            let has_special = segments
+    // When the thread was opened via a task click, render task metadata in the header
+    // instead of the raw "created task: ..." message content.
+    let parent_msg_data: Option<(String, Vec<Line<'static>>)> =
+        if let Some(ref task_id) = app.thread_task_id.clone() {
+            build_task_thread_header(task_id, app, content_width)
+        } else {
+            let use_light_theme = app.theme.palette().is_light();
+            app.messages
                 .iter()
-                .any(|s| !matches!(s, mermaid::ContentSegment::Text(_)));
-            let rendered = if has_special {
-                let lines = render_header_content_segments(
-                    &segments,
-                    content_width,
-                    content_style,
-                    use_light_theme,
-                );
-                apply_mention_highlights(lines)
-            } else {
-                let lines = render_content_lines(&m.content, content_width, content_style);
-                apply_mention_highlights(lines)
-            };
-            (m.from.clone(), rendered)
-        });
+                .find(|m| m.id == *thread_parent_id)
+                .map(|m| {
+                    // Skip rendering content at zero width: render_content_lines would wrap each
+                    // character to its own line, inflating header_height to the 12-line cap and
+                    // crowding out thread replies in narrow terminals.
+                    if content_width == 0 {
+                        return (m.from.clone(), vec![]);
+                    }
+                    let segments = mermaid::parse_content_segments(&m.content);
+                    let has_special = segments
+                        .iter()
+                        .any(|s| !matches!(s, mermaid::ContentSegment::Text(_)));
+                    let rendered = if has_special {
+                        let lines = render_header_content_segments(
+                            &segments,
+                            content_width,
+                            content_style,
+                            use_light_theme,
+                        );
+                        apply_mention_highlights(lines)
+                    } else {
+                        let lines = render_content_lines(&m.content, content_width, content_style);
+                        apply_mention_highlights(lines)
+                    };
+                    (m.from.clone(), rendered)
+                })
+        };
 
     // Header height: 2 borders + 1 sender line + rendered content line count, capped at 12.
     let header_height = if let Some((_, ref lines)) = parent_msg_data {
@@ -80,6 +86,77 @@ pub fn draw_thread_panel(f: &mut Frame, app: &mut App, area: Rect) {
     draw_thread_header(f, parent_msg_data, chunks[0], palette);
     draw_thread_messages(f, app, chunks[1]);
     draw_thread_input(f, app, chunks[2]);
+}
+
+/// Build the thread header data for a task thread.
+///
+/// Returns `(label, content_lines)` suitable for `draw_thread_header`:
+/// - label: "!{task_id}" used as the "sender" line (bold yellow)
+/// - content_lines: task subject + metadata fields (status, owner, channel, blocked_by)
+///
+/// Returns `None` if the task ID is not found in the loaded task list.
+fn build_task_thread_header(
+    task_id: &str,
+    app: &App,
+    _content_width: usize,
+) -> Option<(String, Vec<Line<'static>>)> {
+    use ratatui::style::Color;
+
+    let task = app.tasks.iter().find(|t| t.id == task_id)?;
+
+    let label = format!("!{}", task.id);
+
+    let mut lines: Vec<Line<'static>> = Vec::new();
+
+    // Subject line (bold)
+    lines.push(Line::from(Span::styled(
+        task.subject.clone(),
+        Style::default()
+            .fg(Color::White)
+            .add_modifier(Modifier::BOLD),
+    )));
+
+    // Status
+    let (status_str, status_color) = match task.status {
+        TaskStatus::Pending => ("pending", Color::Yellow),
+        TaskStatus::InProgress => ("in_progress", Color::Cyan),
+        TaskStatus::Completed => ("completed", Color::Green),
+    };
+    lines.push(Line::from(vec![
+        Span::styled("Status: ", Style::default().fg(Color::DarkGray)),
+        Span::styled(status_str, Style::default().fg(status_color)),
+    ]));
+
+    // Owner
+    let owner = task.owner.as_deref().unwrap_or("—");
+    lines.push(Line::from(vec![
+        Span::styled("Owner:  ", Style::default().fg(Color::DarkGray)),
+        Span::styled(owner.to_string(), Style::default().fg(Color::White)),
+    ]));
+
+    // Channel (only if present)
+    if let Some(ref channel) = task.channel {
+        lines.push(Line::from(vec![
+            Span::styled("Channel:", Style::default().fg(Color::DarkGray)),
+            Span::styled(format!(" #{channel}"), Style::default().fg(Color::Blue)),
+        ]));
+    }
+
+    // Blocked by (only if present)
+    if !task.blocked_by.is_empty() {
+        let blocked = task
+            .blocked_by
+            .iter()
+            .map(|id| format!("!{id}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        lines.push(Line::from(vec![
+            Span::styled("Blocked:", Style::default().fg(Color::DarkGray)),
+            Span::styled(format!(" {blocked}"), Style::default().fg(Color::Red)),
+        ]));
+    }
+
+    Some((label, lines))
 }
 
 /// Draw the thread header showing the full parent message with markdown formatting.

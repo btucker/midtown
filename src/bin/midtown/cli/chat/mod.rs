@@ -1119,10 +1119,15 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                         return EventResult::Continue;
                     }
 
-                    // Check if click is on a task line — open task detail panel
+                    // Check if click is on a task line — open as thread if message_id is known,
+                    // otherwise fall back to the static task detail panel
                     if let Some((task_id, _task_owner)) = app.task_line_map.get(&content_y) {
                         let task_id = task_id.clone();
-                        app.open_task(&task_id);
+                        if let Some(message_id) = get_task_message_id(&task_id) {
+                            app.open_task_as_thread(&task_id, &message_id);
+                        } else {
+                            app.open_task(&task_id);
+                        }
                         return EventResult::Continue;
                     }
 
@@ -1165,6 +1170,20 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
         }
         _ => EventResult::Continue,
     }
+}
+
+/// Look up the channel message ID for a task via daemon RPC.
+///
+/// Returns the message ID if the task has a recorded creation message,
+/// or `None` if the daemon is unavailable or no message ID is stored.
+/// Used to decide whether to open a task as a thread or as a static panel.
+fn get_task_message_id(task_id: &str) -> Option<String> {
+    let client = crate::client::DaemonClient::connect().ok()?;
+    let metadata = client.task_metadata(task_id).ok()?;
+    metadata
+        .get("message_id")
+        .and_then(|v| v.as_str())
+        .map(String::from)
 }
 
 /// Toggle mouse capture and bracketed paste for text selection mode.

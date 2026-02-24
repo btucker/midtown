@@ -744,6 +744,25 @@ export function openThread(parentMessage, channelName) {
   })
 }
 
+// Open a thread panel for a task, showing task metadata in the header.
+// The task object must have a `message_id` field (the UUID of the creation message).
+export function openTaskThread(task, channelName) {
+  // Close detail panel if open (mutually exclusive)
+  detailPanelData.set(null)
+  // Synthetic parent message: id is the real creation-message UUID for thread routing,
+  // but the panel will use `task` to render metadata instead of raw message content.
+  const parentMessage = { id: task.message_id, from: 'lead', content: task.subject }
+  threadData.set({ parentMessage, channelName, messages: [], task })
+  fetchThread(channelName, task.message_id).then((replies) => {
+    threadData.update((td) => {
+      if (!td || td.parentMessage.id !== task.message_id) return td
+      const fetchedIds = new Set(replies.map((r) => r.id))
+      const wsOnly = td.messages.filter((r) => !fetchedIds.has(r.id))
+      return { ...td, messages: [...replies, ...wsOnly] }
+    })
+  })
+}
+
 // Close the thread panel
 export function closeThread() {
   threadData.set(null)

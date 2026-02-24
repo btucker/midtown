@@ -237,6 +237,15 @@ pub struct DaemonPersistentState {
     #[serde(default)]
     pub task_thread_id: HashMap<String, String>,
 
+    /// Task-to-creation-message mapping for opening tasks as threads.
+    ///
+    /// Maps task ID → message ID (UUID of the "created task:" channel message).
+    /// When a task is created, the daemon posts a notification message and stores
+    /// its ID here. The TUI and web app use this to open a task as a thread,
+    /// showing the task metadata as the header and allowing discussion replies.
+    #[serde(default)]
+    pub task_message_id: HashMap<String, String>,
+
     /// Channel lead session IDs for resume-on-demand.
     ///
     /// Maps channel name → Claude Code session ID. One channel lead session
@@ -273,7 +282,7 @@ impl DaemonPersistentState {
                 // Migrate legacy headless_sessions → sessions (one-time)
                 state.migrate_headless_to_sessions();
                 debug!(
-                    "Loaded daemon state: {} PR reviewers, {} reminders, CI stats: {}, {} worktree assignments, {} task-channel mappings, {} task-model mappings, {} task-plan mappings, {} task-execution-skill mappings, {} task-thread-id mappings, {} channel-lead sessions",
+                    "Loaded daemon state: {} PR reviewers, {} reminders, CI stats: {}, {} worktree assignments, {} task-channel mappings, {} task-model mappings, {} task-plan mappings, {} task-execution-skill mappings, {} task-thread-id mappings, {} task-message-id mappings, {} channel-lead sessions",
                     state.github.pr_reviewers.len(),
                     state.reminders.reminders.len(),
                     state.ci_stats.summary(),
@@ -283,6 +292,7 @@ impl DaemonPersistentState {
                     state.task_plan.len(),
                     state.task_execution_skill.len(),
                     state.task_thread_id.len(),
+                    state.task_message_id.len(),
                     state.channel_lead_sessions.len()
                 );
                 Ok(state)
@@ -358,6 +368,7 @@ impl DaemonPersistentState {
             task_plan: HashMap::new(),
             task_execution_skill: HashMap::new(),
             task_thread_id: HashMap::new(),
+            task_message_id: HashMap::new(),
             channel_lead_sessions: HashMap::new(),
             sessions: HashMap::new(),
         };

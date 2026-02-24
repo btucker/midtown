@@ -456,6 +456,9 @@ pub struct App {
     pub last_was_kill: bool,
     /// Currently open task detail panel task ID (mutually exclusive with thread_parent_id)
     pub open_task_id: Option<String>,
+    /// When the thread was opened via a task click, stores the task ID.
+    /// Used to render task metadata in the thread header instead of raw message content.
+    pub thread_task_id: Option<String>,
     /// Currently open thread parent message ID
     pub thread_parent_id: Option<String>,
     /// Thread reply messages (messages with thread_parent_id matching the open thread)
@@ -667,6 +670,7 @@ impl App {
             kill_ring: None,
             last_was_kill: false,
             open_task_id: None,
+            thread_task_id: None,
             thread_parent_id: None,
             thread_messages: Vec::new(),
             thread_input_text: String::new(),
@@ -1313,6 +1317,7 @@ impl App {
 
         // Opening thread closes task panel (mutually exclusive)
         self.open_task_id = None;
+        self.thread_task_id = None;
         self.thread_parent_id = Some(parent_id.to_string());
 
         // Collect existing thread replies from loaded messages
@@ -1329,9 +1334,35 @@ impl App {
         self.focused_pane = FocusedPane::Thread;
     }
 
+    /// Open the thread for a task, showing task metadata in the header.
+    ///
+    /// Unlike `open_thread`, this does not require the creation message to be
+    /// present in the loaded message list — task metadata is rendered directly
+    /// from the task record. Any existing thread replies are collected normally.
+    pub fn open_task_as_thread(&mut self, task_id: &str, message_id: &str) {
+        // Opening thread closes task detail panel (mutually exclusive)
+        self.open_task_id = None;
+        self.thread_task_id = Some(task_id.to_string());
+        self.thread_parent_id = Some(message_id.to_string());
+
+        // Collect existing thread replies from loaded messages
+        self.thread_messages = self
+            .messages
+            .iter()
+            .filter(|m| m.thread_parent_id.as_deref() == Some(message_id))
+            .cloned()
+            .collect();
+
+        self.thread_input_text.clear();
+        self.thread_input_cursor = 0;
+        self.thread_scroll_offset = 0;
+        self.focused_pane = FocusedPane::Thread;
+    }
+
     /// Close the thread view and return focus to the main input bar.
     pub fn close_thread(&mut self) {
         self.thread_parent_id = None;
+        self.thread_task_id = None;
         self.thread_messages.clear();
         self.thread_input_text.clear();
         self.thread_input_cursor = 0;
@@ -3767,6 +3798,7 @@ pub(super) mod tests {
             kill_ring: None,
             last_was_kill: false,
             open_task_id: None,
+            thread_task_id: None,
             thread_parent_id: None,
             thread_messages: Vec::new(),
             thread_input_text: String::new(),
