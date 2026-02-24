@@ -22,15 +22,30 @@
 //! │       └── session-id    # Lead's Claude session ID
 //! └── projects/             # Project-specific runtime data
 //!     └── <repo>/
+//!         ├── workflow.py             # Project-level default workflow script (local, optional)
 //!         ├── channels/     # Per-channel directories
 //!         │   └── <name>/   # e.g., "midtown", "features"
 //!         │       ├── history/current.jsonl  # Active message log
 //!         │       ├── history/YYYY-MM-DD.jsonl # Rotated daily archives
 //!         │       ├── notes/                 # Channel lead knowledge files
-//!         │       └── cursors/               # Per-agent read cursors
+//!         │       ├── cursors/               # Per-agent read cursors
+//!         │       ├── workflow.py            # Channel-specific workflow script (local, optional)
+//!         │       └── workflow-state.json    # Persistent workflow state between invocations
 //!         ├── logs/         # Daemon logs
 //!         └── daemon.pid    # Daemon PID file
 //! ```
+//!
+//! ## Workflow Scripts
+//!
+//! Workflow scripts (`workflow.py`) are invoked by the daemon via `uv run` on
+//! relevant events. Resolution follows a 4-level priority order:
+//!
+//! 1. `<project_root>/.midtown/channels/<channel>/workflow.py` — channel-specific, in repo
+//! 2. `~/.midtown/projects/<repo>/channels/<channel>/workflow.py` — channel-specific, local
+//! 3. `<project_root>/.midtown/workflow.py` — project default, in repo
+//! 4. `~/.midtown/projects/<repo>/workflow.py` — project default, local
+//!
+//! See [`workflow_script_for_channel`] and [`workflow_state_file`].
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -437,6 +452,72 @@ pub fn hooks_log_file() -> PathBuf {
     hooks_log_file_for_repo(&repo)
 }
 
+/// Find a workflow script for a specific channel.
+///
+/// Implements a 4-level resolution order so scripts can be committed to the repo
+/// (shared with the team) or kept local (machine-specific overrides):
+///
+/// 1. `<project_root>/.midtown/channels/<channel>/workflow.py` — channel-specific, in repo
+/// 2. `~/.midtown/projects/<repo>/channels/<channel>/workflow.py` — channel-specific, local
+/// 3. `<project_root>/.midtown/workflow.py` — project default, in repo
+/// 4. `~/.midtown/projects/<repo>/workflow.py` — project default, local
+///
+/// Returns `None` if no workflow script is found at any level, meaning the daemon
+/// falls back to its compiled-in default behavior.
+pub fn workflow_script_for_channel(
+    channel: &str,
+    project_root: &Path,
+    repo: &str,
+) -> Option<PathBuf> {
+    // 1. Channel-specific, in repo
+    let path = project_root
+        .join(".midtown")
+        .join("channels")
+        .join(channel)
+        .join("workflow.py");
+    if path.exists() {
+        return Some(path);
+    }
+
+    // 2. Channel-specific, local
+    let path = projects_dir_for_repo(repo)
+        .join("channels")
+        .join(channel)
+        .join("workflow.py");
+    if path.exists() {
+        return Some(path);
+    }
+
+    // 3. Project default, in repo
+    let path = project_root.join(".midtown").join("workflow.py");
+    if path.exists() {
+        return Some(path);
+    }
+
+    // 4. Project default, local
+    let path = projects_dir_for_repo(repo).join("workflow.py");
+    if path.exists() {
+        return Some(path);
+    }
+
+    None
+}
+
+/// Get the workflow state file path for a channel.
+///
+/// Returns `~/.midtown/projects/<repo>/channels/<channel>/workflow-state.json`.
+///
+/// This file stores serialized workflow state between invocations. The
+/// subprocess-per-event model requires external persistence: the daemon passes
+/// this path to each `uv run` invocation so the script can load and save its
+/// state machine state transparently.
+pub fn workflow_state_file(channel: &str, repo: &str) -> PathBuf {
+    projects_dir_for_repo(repo)
+        .join("channels")
+        .join(channel)
+        .join("workflow-state.json")
+}
+
 /// Rename `tmp` to `target`, cleaning up `tmp` if the rename fails.
 ///
 /// This wraps `fs::rename` to ensure temp files are not leaked on disk when
@@ -572,181 +653,6 @@ pub fn auto_migrate(repo: &str) {
     let _ = migrate_directory_structure(repo);
 }
 
+#[path = "paths_tests.rs"]
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_daemon_socket_for_repo() {
-        let path = daemon_socket_for_repo("myproject");
-        assert!(path.to_string_lossy().contains("midtown"));
-        assert!(path.to_string_lossy().contains("myproject"));
-        assert!(path.to_string_lossy().ends_with("daemon.sock"));
-    }
-
-    #[test]
-    fn test_daemon_socket_different_repos() {
-        let path1 = daemon_socket_for_repo("project-a");
-        let path2 = daemon_socket_for_repo("project-b");
-        assert_ne!(path1, path2);
-    }
-
-    #[test]
-    fn test_daemon_pid_file_for_repo() {
-        let path = daemon_pid_file_for_repo("myproject");
-        assert!(path.to_string_lossy().contains(".midtown"));
-        assert!(path.to_string_lossy().contains("projects"));
-        assert!(path.to_string_lossy().contains("myproject"));
-        assert!(path.to_string_lossy().ends_with("daemon.pid"));
-    }
-
-    #[test]
-    fn test_daemon_pid_file_different_repos() {
-        let path1 = daemon_pid_file_for_repo("project-a");
-        let path2 = daemon_pid_file_for_repo("project-b");
-        assert_ne!(path1, path2);
-    }
-
-    #[test]
-    fn test_projects_dir_for_repo() {
-        let path = projects_dir_for_repo("myproject");
-        assert!(path.to_string_lossy().contains(".midtown"));
-        assert!(path.to_string_lossy().contains("projects"));
-        assert!(path.to_string_lossy().ends_with("myproject"));
-    }
-
-    #[test]
-    fn test_coworkers_dir_for_repo() {
-        let path = coworkers_dir_for_repo("myproject");
-        assert!(path.to_string_lossy().contains(".midtown"));
-        assert!(path.to_string_lossy().contains("coworkers"));
-        assert!(path.to_string_lossy().ends_with("myproject"));
-    }
-
-    #[test]
-    fn test_lead_dir_for_repo() {
-        let path = lead_dir_for_repo("myproject");
-        assert!(path.to_string_lossy().contains(".midtown"));
-        assert!(path.to_string_lossy().contains("lead"));
-        assert!(path.to_string_lossy().ends_with("myproject"));
-    }
-
-    #[test]
-    fn test_lead_session_file_for_repo() {
-        let path = lead_session_file_for_repo("myproject");
-        assert!(path.to_string_lossy().contains(".midtown"));
-        assert!(path.to_string_lossy().contains("lead"));
-        assert!(path.to_string_lossy().contains("myproject"));
-        assert!(path.to_string_lossy().ends_with("session-id"));
-    }
-
-    #[test]
-    fn test_task_list_id_for_repo() {
-        let id = task_list_id_for_repo("myproject");
-        assert_eq!(id, "midtown-myproject");
-    }
-
-    #[test]
-    fn test_channel_file_for_repo() {
-        let path = channel_file_for_repo("myproject");
-        assert!(path.to_string_lossy().contains(".midtown"));
-        assert!(path.to_string_lossy().contains("projects"));
-        assert!(path.to_string_lossy().contains("myproject"));
-        assert!(path.to_string_lossy().ends_with("current.jsonl"));
-    }
-
-    #[test]
-    fn test_cursors_dir_for_repo() {
-        let path = cursors_dir_for_repo("myproject");
-        assert!(path.to_string_lossy().contains(".midtown"));
-        assert!(path.to_string_lossy().contains("projects"));
-        assert!(path.to_string_lossy().contains("myproject"));
-        assert!(path.to_string_lossy().ends_with("cursors"));
-    }
-
-    #[test]
-    fn test_daemon_log_dir_for_repo() {
-        let path = daemon_log_dir_for_repo("myproject");
-        assert!(path.to_string_lossy().contains(".midtown"));
-        assert!(path.to_string_lossy().contains("projects"));
-        assert!(path.to_string_lossy().contains("myproject"));
-        assert!(path.to_string_lossy().ends_with("logs"));
-    }
-
-    #[test]
-    fn test_atomic_rename_succeeds() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let target = tmp.path().join("target.json");
-        let tmp_file = tmp.path().join("target.json.tmp");
-
-        fs::write(&tmp_file, r#"{"ok": true}"#).unwrap();
-        atomic_rename(&tmp_file, &target).unwrap();
-
-        assert!(!tmp_file.exists(), "temp file should be gone after rename");
-        assert!(target.exists(), "target should exist after rename");
-        assert_eq!(fs::read_to_string(&target).unwrap(), r#"{"ok": true}"#);
-    }
-
-    #[test]
-    fn test_atomic_rename_cleans_tmp_on_failure() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let target = tmp.path().join("target.json");
-        let tmp_file = tmp.path().join("target.json.tmp");
-
-        // Make target a directory so rename(file, dir) fails
-        fs::create_dir(&target).unwrap();
-        fs::write(&tmp_file, r#"{"ok": true}"#).unwrap();
-        assert!(tmp_file.exists());
-
-        let result = atomic_rename(&tmp_file, &target);
-        assert!(result.is_err(), "rename file → dir should fail");
-        assert!(
-            !tmp_file.exists(),
-            "temp file should be cleaned up after failed rename"
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn test_atomic_rename_leaks_tmp_when_cleanup_fails() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let tmp = tempfile::TempDir::new().unwrap();
-        let subdir = tmp.path().join("restricted");
-        fs::create_dir(&subdir).unwrap();
-
-        let tmp_file = subdir.join("target.json.tmp");
-        let target = subdir.join("target.json");
-
-        fs::write(&tmp_file, "data").unwrap();
-        // Make target a directory so rename would fail
-        fs::create_dir(&target).unwrap();
-        // Remove write permission on parent so remove_file also fails
-        fs::set_permissions(&subdir, fs::Permissions::from_mode(0o555)).unwrap();
-
-        let result = atomic_rename(&tmp_file, &target);
-        assert!(result.is_err(), "rename should fail");
-
-        // Restore permissions so we can inspect and clean up
-        fs::set_permissions(&subdir, fs::Permissions::from_mode(0o755)).unwrap();
-        assert!(
-            tmp_file.exists(),
-            "temp file should be leaked when cleanup fails"
-        );
-    }
-
-    #[test]
-    fn test_lead_worktree_path() {
-        let path = lead_worktree_path("myrepo");
-        assert!(path.ends_with("worktrees/myrepo/lead"));
-        assert_eq!(path, worktrees_dir_for_repo("myrepo").join("lead"));
-    }
-
-    #[test]
-    fn test_migrate_returns_false_when_nothing_to_migrate() {
-        // Non-existent repo should return false
-        let result = migrate_directory_structure("nonexistent-test-repo-xyz123");
-        assert!(result.is_ok());
-        assert!(!result.unwrap());
-    }
-}
+mod tests;
