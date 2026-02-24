@@ -1427,7 +1427,20 @@ impl DaemonState {
         }
         // Inject MIDTOWN_SESSION_ID so coworkers can call `midtown session fork`
         // without passing --session-id explicitly.
-        if let Some(ref sid) = session_id {
+        //
+        // Only inject for stable session IDs: Claude sessions adopt the pre-generated
+        // UUID via --session-id so the env var always matches the real session ID.
+        // Codex sessions use a provisional UUID that is replaced by the real ID on init,
+        // so we skip injection there to avoid a stale reference after migration.
+        // Resumed sessions have a real, stable ID regardless of provider.
+        let is_stable_id = matches!(
+            config.session_mode,
+            crate::launch::SessionMode::ResumeSession(_)
+        ) || crate::platform::Platform::from_provider(config.auth_provider)
+            == crate::platform::Platform::Claude;
+        if let Some(ref sid) = session_id
+            && is_stable_id
+        {
             crate::launch::inject_session_id_env(&mut headless_config.env, sid);
         }
         let persisted_session_id = session_id.clone().unwrap_or_default();

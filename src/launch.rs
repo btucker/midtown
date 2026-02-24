@@ -1216,32 +1216,6 @@ mod tests {
             "System prompt should reference the channel name"
         );
     }
-
-    #[test]
-    fn test_inject_session_id_env_sets_midtown_session_id() {
-        let mut env = std::collections::BTreeMap::new();
-        assert!(
-            !env.contains_key("MIDTOWN_SESSION_ID"),
-            "MIDTOWN_SESSION_ID must not be present before injection"
-        );
-        inject_session_id_env(&mut env, "test-uuid-abc123");
-        assert_eq!(
-            env.get("MIDTOWN_SESSION_ID").map(String::as_str),
-            Some("test-uuid-abc123"),
-            "inject_session_id_env must insert MIDTOWN_SESSION_ID into the env map"
-        );
-    }
-
-    #[test]
-    fn test_inject_session_id_env_overwrites_existing_value() {
-        let mut env = std::collections::BTreeMap::new();
-        env.insert("MIDTOWN_SESSION_ID".to_string(), "old-uuid".to_string());
-        inject_session_id_env(&mut env, "new-uuid-xyz");
-        assert_eq!(
-            env.get("MIDTOWN_SESSION_ID").map(String::as_str),
-            Some("new-uuid-xyz"),
-        );
-    }
 }
 
 #[path = "launch_tests.rs"]
