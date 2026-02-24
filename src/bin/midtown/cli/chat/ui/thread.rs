@@ -10,6 +10,7 @@ use ratatui::{
 use ratatui_themes::ThemePalette;
 
 use super::super::app::{App, FocusedPane};
+use super::chat::calculate_input_bar_height;
 use super::messages::{apply_mention_highlights, render_content_lines, render_message};
 use super::messages_mermaid::render_message_with_mermaid;
 use crate::cli::chat::mermaid;
@@ -50,12 +51,14 @@ pub fn draw_thread_panel(f: &mut Frame, app: &mut App, area: Rect) {
         4
     };
 
+    let thread_input_height = calculate_input_bar_height(&app.thread_input_text, area.width);
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(header_height), // Parent message header (dynamic)
             Constraint::Min(3),                // Thread replies
-            Constraint::Length(3),             // Thread input bar (1 content line + 2 border lines)
+            Constraint::Length(thread_input_height), // Thread input bar (dynamic, 1–6 content lines + 2 borders)
         ])
         .split(area);
 
