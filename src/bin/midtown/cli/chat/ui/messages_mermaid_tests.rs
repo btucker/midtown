@@ -875,3 +875,65 @@ fn test_code_block_lang_label_style_and_no_indent() {
         span.content
     );
 }
+
+/// When a code block with no language is the first content segment, the first
+/// code line must not be double-indented. The timestamp gutter IS the indent —
+/// the code should start at the same column as a language label would.
+#[test]
+fn test_code_block_empty_lang_first_line_not_double_indented() {
+    let msg = test_message("ignored");
+    let segments = vec![ContentSegment::CodeBlock {
+        language: "".to_string(),
+        source: "let x = 1;".to_string(),
+    }];
+
+    let cache = MermaidCache::new();
+    let current_tasks = HashMap::new();
+    let mut lines = Vec::new();
+    let mut diagram_sources = Vec::new();
+    let mut mermaid_to_render = Vec::new();
+
+    // Same sender suppresses the sender header so first line is the code line.
+    render_message_with_mermaid(
+        &msg,
+        &segments,
+        80,
+        Some("park"),
+        &current_tasks,
+        None,
+        &[],
+        &cache,
+        &mut lines,
+        &mut diagram_sources,
+        &mut mermaid_to_render,
+        false,
+    );
+
+    assert!(!lines.is_empty(), "Should produce at least one line");
+
+    // The first line is the code line carrying the timestamp gutter.
+    // Its first span must be the timestamp (has digits) — not a blank indent span.
+    let first_line = &lines[0];
+    let first_span_text = first_line
+        .spans
+        .first()
+        .map(|s| s.content.as_ref())
+        .unwrap_or("");
+
+    assert!(
+        first_span_text.chars().any(|c| c.is_ascii_digit()),
+        "First span of first line should be the timestamp gutter (contains digits), got: {:?}",
+        first_span_text
+    );
+
+    // The second span must NOT start with spaces — it should be the code content
+    // directly, not another indent block.
+    if let Some(second_span) = first_line.spans.get(1) {
+        let text = second_span.content.as_ref();
+        assert!(
+            !text.starts_with("       "),
+            "Second span should be code content, not a blank indent (double-indent bug), got: {:?}",
+            text
+        );
+    }
+}

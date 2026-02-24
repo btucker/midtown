@@ -210,12 +210,18 @@ fn render_code_block_segment(
             remaining = remaining.saturating_sub(span.content.chars().count());
             truncated_spans.push(Span::styled(text, span.style));
         }
-        let mut spans = vec![Span::raw(indent.clone())];
-        spans.extend(truncated_spans);
         if *is_first_content_line {
-            lines.push(build_first_content_line(msg, ctx, Line::from(spans)));
+            // build_first_content_line provides the timestamp gutter — don't
+            // prepend indent here or the first line ends up double-indented.
+            lines.push(build_first_content_line(
+                msg,
+                ctx,
+                Line::from(truncated_spans),
+            ));
             *is_first_content_line = false;
         } else {
+            let mut spans = vec![Span::raw(indent.clone())];
+            spans.extend(truncated_spans);
             lines.push(Line::from(spans));
         }
     }
