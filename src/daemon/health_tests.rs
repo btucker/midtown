@@ -1507,7 +1507,7 @@ fn test_idle_shutdown_emits_shutdown_session_when_mapping_exists() {
     use std::collections::{HashMap, HashSet};
 
     let now = chrono::Utc::now();
-    // started_at well before now so MINIMUM_COWORKER_LIFETIME (60s) is satisfied
+    // started_at well before now so MINIMUM_COWORKER_LIFETIME (90s) is satisfied
     let started_at = now - chrono::Duration::minutes(10);
 
     let coworker = Coworker {

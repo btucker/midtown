@@ -2223,6 +2223,10 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                                 });
                             record.current_name = Some(name.clone());
                             record.is_running = true;
+                            // Update working_dir to the actual path used for this spawn.
+                            // This clears any stale path that was overridden at dispatch time
+                            // (e.g., when the recorded working_dir no longer existed on disk).
+                            record.working_dir = working_dir.to_string_lossy().to_string();
                             if bound_thread_id.is_some() {
                                 record.bound_thread_id = bound_thread_id;
                             }
