@@ -533,8 +533,15 @@ const USAGE_RETRY_INTERVAL: Duration = Duration::from_secs(15);
 /// Interval between available channels list refreshes (30 seconds)
 const CHANNELS_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 
-/// Number of lines to scroll per mouse wheel event
+/// Number of lines to scroll per keyboard scroll event
 const SCROLL_STEP: usize = 3;
+
+/// Number of same-direction mouse events required to trigger one scroll step.
+/// Lower than 8 so inertia-scroll reversals don't block scrolling entirely.
+const MOUSE_SCROLL_THRESHOLD: i8 = 3;
+
+/// Lines scrolled per triggered mouse scroll step (finer than keyboard).
+const MOUSE_SCROLL_STEP: usize = 1;
 
 fn project_lead_provider_and_profile(project_name: &str) -> (midtown::auth::AuthProvider, String) {
     let provider = midtown::config::get_execution_provider_for_role(
@@ -1021,53 +1028,63 @@ impl App {
         }
     }
 
-    /// Mouse wheel scroll up (slower than keyboard - 8 events = 1 step)
+    /// Mouse wheel scroll up (MOUSE_SCROLL_THRESHOLD events = MOUSE_SCROLL_STEP lines)
     pub fn mouse_scroll_up(&mut self) {
         if self.mouse_scroll_accumulator < 0 {
             // Direction changed; discard down credits and start fresh
             self.mouse_scroll_accumulator = 0;
         }
         self.mouse_scroll_accumulator += 1;
-        if self.mouse_scroll_accumulator >= 8 {
+        if self.mouse_scroll_accumulator >= MOUSE_SCROLL_THRESHOLD {
             self.mouse_scroll_accumulator = 0;
-            self.scroll_up();
+            let max_scroll = self.max_scroll();
+            if self.scroll_offset < max_scroll {
+                self.scroll_offset = (self.scroll_offset + MOUSE_SCROLL_STEP).min(max_scroll);
+            }
+            if self.scroll_offset >= max_scroll {
+                self.intentionally_at_top = true;
+            }
+            self.maybe_load_more_history();
         }
     }
 
-    /// Mouse wheel scroll down (slower than keyboard - 8 events = 1 step)
+    /// Mouse wheel scroll down (MOUSE_SCROLL_THRESHOLD events = MOUSE_SCROLL_STEP lines)
     pub fn mouse_scroll_down(&mut self) {
         if self.mouse_scroll_accumulator > 0 {
             // Direction changed; discard up credits and start fresh
             self.mouse_scroll_accumulator = 0;
         }
         self.mouse_scroll_accumulator -= 1;
-        if self.mouse_scroll_accumulator <= -8 {
+        if self.mouse_scroll_accumulator <= -MOUSE_SCROLL_THRESHOLD {
             self.mouse_scroll_accumulator = 0;
-            self.scroll_down();
+            if self.scroll_offset > 0 {
+                self.scroll_offset = self.scroll_offset.saturating_sub(MOUSE_SCROLL_STEP);
+                self.intentionally_at_top = false;
+            }
         }
     }
 
-    /// Mouse wheel scroll up in the thread panel (8 events = 1 step toward older messages)
+    /// Mouse wheel scroll up in the thread panel (MOUSE_SCROLL_THRESHOLD events = 1 step toward older messages)
     pub fn thread_mouse_scroll_up(&mut self) {
         if self.thread_mouse_scroll_accumulator < 0 {
             self.thread_mouse_scroll_accumulator = 0;
         }
         self.thread_mouse_scroll_accumulator += 1;
-        if self.thread_mouse_scroll_accumulator >= 8 {
+        if self.thread_mouse_scroll_accumulator >= MOUSE_SCROLL_THRESHOLD {
             self.thread_mouse_scroll_accumulator = 0;
-            self.thread_scroll_offset = self.thread_scroll_offset.saturating_add(SCROLL_STEP);
+            self.thread_scroll_offset = self.thread_scroll_offset.saturating_add(MOUSE_SCROLL_STEP);
         }
     }
 
-    /// Mouse wheel scroll down in the thread panel (8 events = 1 step toward newer messages)
+    /// Mouse wheel scroll down in the thread panel (MOUSE_SCROLL_THRESHOLD events = 1 step toward newer messages)
     pub fn thread_mouse_scroll_down(&mut self) {
         if self.thread_mouse_scroll_accumulator > 0 {
             self.thread_mouse_scroll_accumulator = 0;
         }
         self.thread_mouse_scroll_accumulator -= 1;
-        if self.thread_mouse_scroll_accumulator <= -8 {
+        if self.thread_mouse_scroll_accumulator <= -MOUSE_SCROLL_THRESHOLD {
             self.thread_mouse_scroll_accumulator = 0;
-            self.thread_scroll_offset = self.thread_scroll_offset.saturating_sub(SCROLL_STEP);
+            self.thread_scroll_offset = self.thread_scroll_offset.saturating_sub(MOUSE_SCROLL_STEP);
         }
     }
 
@@ -4082,10 +4099,10 @@ pub(super) mod tests {
 
     #[test]
     fn test_mouse_wheel_scroll_is_slower_than_keyboard() {
-        // Mouse wheel scrolling should be slower than keyboard scrolling for smoother UX.
-        // Mouse wheels send multiple events per physical scroll, so we use fractional
-        // scrolling: 8 wheel events = SCROLL_STEP lines of movement.
-        // Keyboard scrolls SCROLL_STEP per call; mouse needs 8 events per SCROLL_STEP.
+        // Mouse wheel scrolling uses a finer step (MOUSE_SCROLL_STEP) and needs
+        // MOUSE_SCROLL_THRESHOLD events per step, while keyboard scrolls SCROLL_STEP per call.
+        // scrolling: MOUSE_SCROLL_THRESHOLD wheel events = MOUSE_SCROLL_STEP lines of movement.
+        // Keyboard scrolls SCROLL_STEP per call; mouse needs MOUSE_SCROLL_THRESHOLD events per MOUSE_SCROLL_STEP.
         let messages: VecDeque<Message> = (0..30)
             .map(|i| Message {
                 id: i.to_string(),
@@ -4118,33 +4135,35 @@ pub(super) mod tests {
         // Reset
         app.scroll_offset = 0;
 
-        // Mouse wheel scroll up: should take 8 events to move SCROLL_STEP lines
-        for i in 1..=7 {
+        // Mouse wheel scroll up: should take MOUSE_SCROLL_THRESHOLD events to move MOUSE_SCROLL_STEP lines
+        let sub_threshold = MOUSE_SCROLL_THRESHOLD as usize - 1;
+        for i in 1..=sub_threshold {
             app.mouse_scroll_up();
             assert_eq!(app.scroll_offset, 0, "Event {} shouldn't scroll yet", i);
         }
 
         app.mouse_scroll_up();
         assert_eq!(
-            app.scroll_offset, SCROLL_STEP,
-            "Eighth wheel event should complete SCROLL_STEP lines of scroll"
+            app.scroll_offset, MOUSE_SCROLL_STEP,
+            "{}th wheel event should complete MOUSE_SCROLL_STEP lines of scroll",
+            MOUSE_SCROLL_THRESHOLD
         );
 
-        // Ninth event starts accumulating for next batch
+        // Next event starts accumulating for next batch
         app.mouse_scroll_up();
         assert_eq!(
-            app.scroll_offset, SCROLL_STEP,
-            "Ninth wheel event accumulates"
+            app.scroll_offset, MOUSE_SCROLL_STEP,
+            "Post-threshold event accumulates without scrolling"
         );
 
         // Test mouse wheel scroll down
-        // The ninth up event left accumulator at 1 (up direction).
+        // The extra up event left accumulator at 1 (up direction).
         // First down event resets the accumulator (direction change), so
-        // now 8 full down events are needed to trigger scroll_down.
-        for i in 1..=7 {
+        // now MOUSE_SCROLL_THRESHOLD full down events are needed to trigger scroll_down.
+        for i in 1..=sub_threshold {
             app.mouse_scroll_down();
             assert_eq!(
-                app.scroll_offset, SCROLL_STEP,
+                app.scroll_offset, MOUSE_SCROLL_STEP,
                 "Down event {} should not scroll yet (direction reset clears up credit)",
                 i
             );
@@ -4153,7 +4172,8 @@ pub(super) mod tests {
         app.mouse_scroll_down();
         assert_eq!(
             app.scroll_offset, 0,
-            "Eighth down event triggers scroll after direction reset"
+            "{}th down event triggers scroll after direction reset",
+            MOUSE_SCROLL_THRESHOLD
         );
     }
 
