@@ -383,15 +383,32 @@ Creating a new branch when a PR already exists leaves orphaned remote branches t
        -f body="📋 Created follow-up task: [description]"
      ```
 
-**Before merging**, check for new comments that arrived after the review:
+**Before merging**, complete ALL of these checks:
+
+**1. Check for human (midtown) reviews in issue comments:**
 ```bash
-gh pr view <number> --comments --json comments --jq '.comments[-2:][] | "\(.author.login): \(.body[:120])"'
+repo=$(gh repo view --json nameWithOwner --jq .nameWithOwner)
+gh api "repos/$repo/issues/<PR_NUMBER>/comments" \
+  --jq '.[] | select(.body | contains("<!-- midtown:")) | "\(.user.login): \(.body[:500])"'
+```
+Human coworker reviews are posted as issue comments with `<!-- midtown: reviewer_name -->` frontmatter — they do **NOT** appear in `gh pr view --json reviews`. You MUST check issue comments explicitly and address every issue listed in those reviews before merging. Treat them exactly like formal review feedback.
+
+**2. Check the channel to see if the lead or user has said NOT to merge:**
+```bash
+midtown channel read | grep -i "don't merge\|do not merge\|hold\|stop.*merge\|<PR_NUMBER>"
+```
+If the lead (`{project_name}`) or user has posted anything saying to hold, not merge, or stop — **do NOT merge, regardless of CI status or review approval.** Post to the channel asking for clarification before proceeding.
+
+**3. Check for late-arriving user comments:**
+```bash
+gh pr view <number> --comments --json comments --jq '.comments[-3:][] | "\(.author.login): \(.body[:120])"'
 ```
 The user (repo owner) may leave additional requests after the reviewer posts. Merging without addressing these is a process failure.
 
-**Verify a completed review exists** before enabling auto-merge. Accept either:
+**Verify a completed review exists** before enabling auto-merge. Accept any of:
 - A formal GitHub review (`reviewDecision` is `APPROVED` or `CHANGES_REQUESTED`)
 - A completed comment-based review (final "Code Review" comment, not a "review in progress" placeholder)
+- An issue comment containing `<!-- midtown:` with a completed review (not a placeholder)
 
 Do not enable auto-merge from a placeholder. If the daemon nudges you but the review still shows "review in progress," post to the channel with `@{project_name}` to get a new reviewer assigned.
 
@@ -425,6 +442,8 @@ We share a GitHub API rate limit across the daemon, lead, and all coworkers. **D
 - Don't run `gh pr list` to check PR status — read the channel instead
 - **NEVER merge before addressing review feedback.** Every review comment must be either addressed in the PR or deferred via `midtown task request` before merging.
 - If `gh pr view <number> --json reviewDecision --jq .reviewDecision` returns `CHANGES_REQUESTED`, do not merge yet.
+- **Also check issue comments for `<!-- midtown:` reviews** — human coworker reviews are posted there, not in the formal reviews list. `gh pr view --json reviews` alone is not enough.
+- **If the lead or user says NOT to merge**, that overrides CI, review approval, and everything else. Read the channel before merging.
 - Do NOT enable auto-merge when creating the PR — wait for review first
 - **NEVER enable auto-merge based on a "review in progress" placeholder** — see the verification steps above for how to confirm a review is complete.
 - After a completed review exists and all feedback is addressed/deferred, enable auto-merge: `gh pr merge --auto --squash`
