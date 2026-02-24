@@ -299,10 +299,16 @@ impl CoworkerSession {
 ///
 /// Thread-safe: uses `RwLock` for concurrent access from the daemon's
 /// event loop, RPC handlers, and health checks.
+#[cfg(test)]
+type TestSendMessageToSessionIdHook =
+    std::sync::Arc<dyn Fn(&str, &str) -> crate::Result<()> + Send + Sync>;
+
 #[allow(dead_code)]
 pub struct SessionManager {
     sessions: RwLock<HashMap<String, CoworkerSession>>,
     repo_name: String,
+    #[cfg(test)]
+    test_send_message_to_session_id_hook: std::sync::Mutex<Option<TestSendMessageToSessionIdHook>>,
 }
 
 #[allow(dead_code)]
@@ -312,7 +318,21 @@ impl SessionManager {
         Self {
             sessions: RwLock::new(HashMap::new()),
             repo_name,
+            #[cfg(test)]
+            test_send_message_to_session_id_hook: std::sync::Mutex::new(None),
         }
+    }
+
+    #[cfg(test)]
+    pub(super) fn set_test_send_message_to_session_id_hook(
+        &self,
+        hook: Option<TestSendMessageToSessionIdHook>,
+    ) {
+        let mut guard = self
+            .test_send_message_to_session_id_hook
+            .lock()
+            .expect("session hook mutex poisoned");
+        *guard = hook;
     }
 
     fn is_session_live(cs: &CoworkerSession) -> bool {
@@ -639,6 +659,18 @@ impl SessionManager {
         session_id: &str,
         message: &str,
     ) -> Result<(), crate::Error> {
+        #[cfg(test)]
+        {
+            if let Some(hook) = self
+                .test_send_message_to_session_id_hook
+                .lock()
+                .expect("session hook mutex poisoned")
+                .clone()
+            {
+                return hook(session_id, message);
+            }
+        }
+
         let mut sessions = self.sessions.write().await;
         let live_slot_id = Self::select_slot_for_session_id(&sessions, session_id, true);
         let slot_id = if let Some(slot_id) = live_slot_id {

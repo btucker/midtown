@@ -211,6 +211,18 @@ async fn test_resolve_attach_target_multi_match_error_uses_verb() {
     );
 }
 
+#[test]
+fn test_fork_channel_lead_model_is_provider_aware_for_codex() {
+    let model = super::fork_channel_lead_model(crate::auth::AuthProvider::Codex, Some("web"));
+    assert_eq!(model, "gpt-5-codex");
+}
+
+#[test]
+fn test_fork_channel_lead_model_uses_default_for_claude() {
+    let model = super::fork_channel_lead_model(crate::auth::AuthProvider::Claude, None);
+    assert_eq!(model, "sonnet");
+}
+
 // ============================================================================
 // handle_session_clear tests
 // ============================================================================
