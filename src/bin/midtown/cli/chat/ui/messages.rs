@@ -272,7 +272,7 @@ fn split_span_at_mentions(span: Span<'static>, mention_style: Style) -> Vec<Span
         if word_end > 0 {
             result.push(Span::styled(
                 after_at[..word_end].to_string(),
-                mention_style,
+                base_style.patch(mention_style),
             ));
             remaining = &after_at[word_end..];
         } else {
