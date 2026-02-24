@@ -132,6 +132,15 @@ fn extract_url_host(url: &str) -> Option<&str> {
     if host.is_empty() { None } else { Some(host) }
 }
 
+fn json_value_to_string(value: &serde_json::Value) -> Option<String> {
+    match value {
+        serde_json::Value::String(s) => Some(s.clone()),
+        serde_json::Value::Number(n) => Some(n.to_string()),
+        serde_json::Value::Bool(b) => Some(b.to_string()),
+        _ => None,
+    }
+}
+
 /// Collect all `tool_use_id` values from `tool_result` blocks across all `User` events.
 ///
 /// Used by `extract_tool_events` to determine whether a `tool_use` call already has
@@ -145,7 +154,7 @@ fn collect_completed_call_ids(events: &[StreamEvent]) -> std::collections::HashS
         {
             for block in arr {
                 if block.get("type").and_then(|t| t.as_str()) == Some("tool_result")
-                    && let Some(id) = block.get("tool_use_id").and_then(|id| id.as_str())
+                    && let Some(id) = block.get("tool_use_id").and_then(json_value_to_string)
                 {
                     ids.insert(id.to_string());
                 }
@@ -195,9 +204,8 @@ pub fn extract_tool_events(
                                 .unwrap_or(serde_json::Value::Null);
                             let call_id = block
                                 .get("id")
-                                .and_then(|id| id.as_str())
-                                .unwrap_or("")
-                                .to_string();
+                                .and_then(json_value_to_string)
+                                .unwrap_or_default();
                             let header = semantic_header(&name, &input);
                             let status = if completed_ids.contains(&call_id) {
                                 ItemStatus::Completed
@@ -229,9 +237,8 @@ pub fn extract_tool_events(
                         if block.get("type").and_then(|t| t.as_str()) == Some("tool_result") {
                             let call_id = block
                                 .get("tool_use_id")
-                                .and_then(|id| id.as_str())
-                                .unwrap_or("")
-                                .to_string();
+                                .and_then(json_value_to_string)
+                                .unwrap_or_default();
                             let is_error = block
                                 .get("is_error")
                                 .and_then(|v| v.as_bool())

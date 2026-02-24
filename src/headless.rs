@@ -737,11 +737,38 @@ fn codex_command_text(item: &serde_json::Value) -> Option<String> {
         })
 }
 
+fn codex_json_value_to_string(value: &serde_json::Value) -> Option<String> {
+    match value {
+        serde_json::Value::String(s) => Some(s.clone()),
+        serde_json::Value::Number(n) => Some(n.to_string()),
+        serde_json::Value::Bool(b) => Some(b.to_string()),
+        _ => None,
+    }
+}
+
+fn codex_is_command_execution_item(item: &serde_json::Value) -> bool {
+    match item.get("type").and_then(|v| v.as_str()) {
+        Some("commandExecution") => true,
+        Some(_) => false,
+        None => {
+            item.get("command").is_some()
+                || item.get("commandActions").is_some()
+                || item.get("aggregatedOutput").is_some()
+        }
+    }
+}
+
 fn codex_command_call_id(item: &serde_json::Value) -> Option<String> {
     item.get("id")
-        .and_then(|v| v.as_str())
+        .and_then(codex_json_value_to_string)
+        .or_else(|| item.get("callId").and_then(codex_json_value_to_string))
+        .or_else(|| item.get("call_id").and_then(codex_json_value_to_string))
+        .or_else(|| {
+            item.get("commandExecutionId")
+                .and_then(codex_json_value_to_string)
+        })
+        .or_else(|| item.get("tool_use_id").and_then(codex_json_value_to_string))
         .filter(|id| !id.is_empty())
-        .map(str::to_string)
 }
 
 fn codex_command_is_error(item: &serde_json::Value) -> bool {
@@ -895,7 +922,7 @@ fn codex_translate_event(
         }
         "item/started" => {
             if let Some(item) = params.get("item")
-                && item.get("type").and_then(|t| t.as_str()) == Some("commandExecution")
+                && codex_is_command_execution_item(item)
                 && let Some(call_id) = codex_command_call_id(item)
             {
                 let command = codex_command_text(item).unwrap_or_default();
@@ -923,7 +950,7 @@ fn codex_translate_event(
         }
         "item/completed" => {
             if let Some(item) = params.get("item")
-                && item.get("type").and_then(|t| t.as_str()) == Some("commandExecution")
+                && codex_is_command_execution_item(item)
                 && let Some(call_id) = codex_command_call_id(item)
             {
                 let output = item

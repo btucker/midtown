@@ -244,6 +244,31 @@ fn test_extract_tool_events_single_tool_use() {
 }
 
 #[test]
+fn test_extract_tool_events_tool_call_with_numeric_id() {
+    let events = vec![StreamEvent::Assistant {
+        message: json!({
+            "content": [{
+                "type": "tool_use",
+                "id": 7,
+                "name": "Bash",
+                "input": {"command": "pwd"}
+            }]
+        }),
+        session_id: None,
+        extra: json!(null),
+    }];
+
+    let timestamp = Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap();
+    let items = extract_tool_events(&events, timestamp);
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].item_id, "7");
+    match &items[0].content[0] {
+        ContentPart::ToolCall { call_id, .. } => assert_eq!(call_id, "7"),
+        _ => panic!("Expected ToolCall"),
+    }
+}
+
+#[test]
 fn test_extract_tool_events_multiple_tool_uses() {
     let events = vec![StreamEvent::Assistant {
         message: json!({
@@ -299,6 +324,35 @@ fn test_extract_tool_events_multiple_tool_uses() {
             assert_eq!(header, "write /tmp/b.rs");
         }
         _ => panic!("Expected ToolCall"),
+    }
+}
+
+#[test]
+fn test_extract_tool_events_tool_result_with_numeric_id() {
+    let events = vec![StreamEvent::User {
+        message: json!({
+            "role": "user",
+            "content": [{
+                "type": "tool_result",
+                "tool_use_id": 42,
+                "content": "numeric id output"
+            }]
+        }),
+        extra: json!({}),
+    }];
+
+    let timestamp = Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap();
+    let items = extract_tool_events(&events, timestamp);
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].item_id, "result:42");
+    match &items[0].content[0] {
+        ContentPart::ToolResult {
+            call_id, output, ..
+        } => {
+            assert_eq!(call_id, "42");
+            assert_eq!(output, "numeric id output");
+        }
+        _ => panic!("Expected ToolResult"),
     }
 }
 
