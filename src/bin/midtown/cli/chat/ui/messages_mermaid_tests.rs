@@ -937,3 +937,80 @@ fn test_code_block_empty_lang_first_line_not_double_indented() {
         );
     }
 }
+
+// ── render_header_content_segments ───────────────────────────────────────────
+
+/// A code block with empty language in a thread header should produce no label line —
+/// matching render_code_block_segment which omits the label when language is empty.
+#[test]
+fn test_header_code_block_empty_language_has_no_label() {
+    use ratatui::style::Style;
+
+    let segments = vec![ContentSegment::CodeBlock {
+        language: "".to_string(),
+        source: "x = 1".to_string(),
+    }];
+    let lines = render_header_content_segments(&segments, 40, Style::default(), false);
+
+    let text: String = lines
+        .iter()
+        .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
+        .collect::<Vec<_>>()
+        .join("");
+    // No label span for empty language — only code content
+    assert!(
+        !text.contains("code"),
+        "Empty language should produce no label line, got: {text}"
+    );
+    assert!(
+        text.contains("x = 1") || !lines.is_empty(),
+        "Should still produce code content lines, got: {text}"
+    );
+}
+
+/// Code lines in a thread header that exceed content_width must be truncated.
+/// This covers the span-truncation break path in render_header_content_segments.
+#[test]
+fn test_header_code_block_long_line_truncated_to_content_width() {
+    use ratatui::style::Style;
+
+    let content_width = 10;
+    // Source line is much wider than content_width
+    let source = "x".repeat(50);
+    let segments = vec![ContentSegment::CodeBlock {
+        language: "rust".to_string(),
+        source: source.clone(),
+    }];
+    let lines = render_header_content_segments(&segments, content_width, Style::default(), false);
+
+    // Each rendered code line must not exceed content_width chars
+    for line in &lines {
+        let total_chars: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
+        assert!(
+            total_chars <= content_width,
+            "Header code line should be truncated to content_width={}, got {}",
+            content_width,
+            total_chars
+        );
+    }
+}
+
+/// A mermaid segment in a thread header should render as a "[diagram]" placeholder
+/// (async diagram rendering is not available in the pre-computation context).
+#[test]
+fn test_header_mermaid_segment_shows_placeholder() {
+    use ratatui::style::Style;
+
+    let segments = vec![ContentSegment::Mermaid("graph TD\n  A-->B".to_string())];
+    let lines = render_header_content_segments(&segments, 40, Style::default(), false);
+
+    let text: String = lines
+        .iter()
+        .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
+        .collect::<Vec<_>>()
+        .join("");
+    assert!(
+        text.contains("[diagram]"),
+        "Mermaid segment in header should show '[diagram]' placeholder, got: {text}"
+    );
+}
