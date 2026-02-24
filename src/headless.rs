@@ -273,11 +273,11 @@ struct CodexSharedRuntime {
     next_stderr_seq: AtomicU64,
 }
 
-static CODEX_RUNTIME: Lazy<tokio::sync::Mutex<Option<Arc<CodexSharedRuntime>>>> =
-    Lazy::new(|| tokio::sync::Mutex::new(None));
+static CODEX_RUNTIME: Lazy<tokio::sync::Mutex<HashMap<String, Arc<CodexSharedRuntime>>>> =
+    Lazy::new(|| tokio::sync::Mutex::new(HashMap::new()));
 
 impl CodexSharedRuntime {
-    async fn spawn() -> std::io::Result<Arc<Self>> {
+    async fn spawn(env: &std::collections::BTreeMap<String, String>) -> std::io::Result<Arc<Self>> {
         let binary = crate::platform::Platform::Codex.binary_name();
         let mut cmd = Command::new(binary);
 
@@ -289,6 +289,9 @@ impl CodexSharedRuntime {
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
         cmd.env("DISABLE_AUTOUPDATER", "1");
+        for (key, value) in env {
+            cmd.env(key, value);
+        }
 
         let mut child = cmd.spawn()?;
 
@@ -635,26 +638,44 @@ impl CodexSharedRuntime {
     }
 }
 
-async fn codex_shared_runtime() -> std::io::Result<Arc<CodexSharedRuntime>> {
+fn codex_runtime_key(env: &std::collections::BTreeMap<String, String>) -> String {
+    let agent = env
+        .get("MIDTOWN_AGENT")
+        .map(|value| value.as_str())
+        .unwrap_or("unknown");
+    let profile = env
+        .get("CODEX_HOME")
+        .map(|value| value.as_str())
+        .unwrap_or("default");
+    format!("{}|{}", agent, profile)
+}
+
+async fn codex_shared_runtime(
+    env: &std::collections::BTreeMap<String, String>,
+) -> std::io::Result<Arc<CodexSharedRuntime>> {
     let mut guard = CODEX_RUNTIME.lock().await;
+    let key = codex_runtime_key(env);
 
     // If the runtime exists but the process died, discard it and re-spawn.
-    if let Some(ref runtime) = *guard {
+    if let Some(runtime) = guard.get(&key) {
         if runtime.is_alive() {
             return Ok(Arc::clone(runtime));
         }
         warn!("Shared Codex app-server process died — re-spawning");
-        *guard = None;
+        guard.remove(&key);
     }
 
-    let runtime = CodexSharedRuntime::spawn().await?;
-    *guard = Some(Arc::clone(&runtime));
+    let runtime = CodexSharedRuntime::spawn(env).await?;
+    guard.insert(key, Arc::clone(&runtime));
     Ok(runtime)
 }
 
 pub(crate) async fn shutdown_codex_runtime() {
     let mut guard = CODEX_RUNTIME.lock().await;
-    if let Some(runtime) = guard.take() {
+    let runtimes: Vec<_> = guard.values().cloned().collect();
+    guard.clear();
+    drop(guard);
+    for runtime in runtimes {
         runtime.shutdown().await;
     }
 }
@@ -1432,7 +1453,7 @@ impl CodexHeadlessAdapter {
             _ => None,
         };
 
-        let runtime = codex_shared_runtime().await?;
+        let runtime = codex_shared_runtime(&config.env).await?;
         let codex_session = Some(runtime.register_session(resume_thread_id.as_deref()).await);
 
         info!(
