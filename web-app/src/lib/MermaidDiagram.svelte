@@ -92,7 +92,7 @@
 {:else}
   <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
   <div
-    class="group bg-accent rounded-md p-3 my-1.5 overflow-x-auto leading-none cursor-pointer relative hover:outline hover:outline-1 hover:outline-[hsl(var(--link-default))] [&>svg]:max-w-full [&>svg]:h-auto [&>svg]:block"
+    class="group bg-accent rounded-md p-3 my-1.5 overflow-x-auto leading-none cursor-pointer relative hover:outline hover:outline-1 hover:outline-link-default [&>svg]:max-w-full [&>svg]:h-auto [&>svg]:block"
     onclick={handleExpand}
     title="Click to expand"
   >

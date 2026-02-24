@@ -26,12 +26,12 @@
     switch (status?.toLowerCase()) {
       case 'running':
       case 'active':
-        return '#5faf5f'
+        return 'hsl(var(--status-green))'
       case 'idle':
-        return '#d7af5f'
+        return 'hsl(var(--status-amber))'
       case 'stopped':
       case 'failed':
-        return '#af5f5f'
+        return 'hsl(var(--status-red))'
       default:
         return 'hsl(var(--muted-foreground))'
     }
@@ -54,13 +54,13 @@
   function getHealthColor(health) {
     switch (health?.toLowerCase()) {
       case 'green':
-        return '#5faf5f'
+        return 'hsl(var(--status-green))'
       case 'yellow':
-        return '#d7af5f'
+        return 'hsl(var(--status-amber))'
       case 'red':
-        return '#af5f5f'
+        return 'hsl(var(--status-red))'
       default:
-        return '#5faf5f'
+        return 'hsl(var(--status-green))'
     }
   }
 
@@ -72,9 +72,9 @@
 <div class="p-4 overflow-y-auto h-full">
   <div class="mb-6">
     <div class="flex justify-between items-center mb-3">
-      <h2 class="text-base text-[hsl(var(--link-default))] mb-0">Daemon</h2>
+      <h2 class="text-base text-link-default mb-0">Daemon</h2>
       <button
-        class="px-3 py-1.5 border border-border rounded bg-transparent text-muted-foreground text-xs cursor-pointer hover:border-[hsl(var(--link-default))] hover:text-[hsl(var(--link-default))]"
+        class="px-3 py-1.5 border border-border rounded bg-transparent text-muted-foreground text-xs cursor-pointer hover:border-link-default hover:text-link-default"
         onclick={refresh}
       >
         Refresh
@@ -90,7 +90,7 @@
   </div>
 
   <div class="mb-6">
-    <h2 class="text-base text-[hsl(var(--link-default))] mb-3">Coworkers ({$coworkers.length})</h2>
+    <h2 class="text-base text-link-default mb-3">Coworkers ({$coworkers.length})</h2>
     {#if $coworkers.length === 0}
       <p class="text-muted-foreground italic p-3 bg-card rounded-lg">No active coworkers</p>
     {:else}
@@ -98,23 +98,23 @@
         {#each $coworkers as cw}
           <div class="flex flex-col gap-1 p-2 bg-card rounded-lg font-mono text-sm">
             <div class="flex items-center gap-2">
-              <span class="text-base text-sidebar-primary">{getSpinner()}</span>
+              <span class="text-base text-status-amber">{getSpinner()}</span>
               <span class="font-medium lowercase" style="color: {getHealthColor(cw.health)}">{cw.name}</span>
               {#if cw.phase}
                 <span class="text-[0.75rem] text-muted-foreground">{cw.phase}</span>
               {/if}
               <span class="flex-1"></span>
               {#if cw.time_estimate}
-                <span class="text-[0.7rem] text-[hsl(var(--link-default))]">{cw.time_estimate}</span>
+                <span class="text-[0.7rem] text-primary">{cw.time_estimate}</span>
               {:else if cw.progress != null}
-                <span class="text-[0.7rem] text-[hsl(var(--link-default))]">{cw.progress}%</span>
+                <span class="text-[0.7rem] text-accent-teal">{cw.progress}%</span>
               {/if}
             </div>
             {#if cw.progress != null}
               <div class="flex items-center gap-2 ml-7">
                 <div class="flex-1 h-1.5 bg-muted rounded-full overflow-hidden">
                   <div
-                    class="h-full bg-[hsl(var(--link-default))] rounded-full transition-all duration-500"
+                    class="h-full bg-accent-teal rounded-full transition-all duration-500"
                     style="width: {cw.progress}%"
                   ></div>
                 </div>
@@ -127,7 +127,7 @@
   </div>
 
   <div class="mb-6">
-    <h2 class="text-base text-[hsl(var(--link-default))] mb-3">Tasks</h2>
+    <h2 class="text-base text-link-default mb-3">Tasks</h2>
     {#if !$daemonStatus?.tasks || $daemonStatus.tasks.length === 0}
       <p class="text-muted-foreground italic p-3 bg-card rounded-lg">No tasks</p>
     {:else}
@@ -145,7 +145,7 @@
               <div class="flex items-center gap-2 ml-[38px]">
                 <div class="flex-1 h-1.5 bg-muted rounded-full overflow-hidden">
                   <div
-                    class="h-full bg-[hsl(var(--link-default))] rounded-full transition-all duration-300"
+                    class="h-full bg-accent-teal rounded-full transition-all duration-300"
                     style="width: {progress}%"
                   ></div>
                 </div>

@@ -41,6 +41,10 @@
   --insight: 300 50% 35%;
   --accent-teal: 188 45% 32%;
   --chip-foreground: 0 0% 10%;
+  /* Status indicator colors — visible on light backgrounds */
+  --status-green: 120 45% 38%;
+  --status-amber: 40 70% 38%;
+  --status-red: 0 50% 42%;
   /* Semantic link colors for message content — accessible on light backgrounds.
      Stored as bare HSL channels (h s% l%) for shadcn opacity composition. */
   --link-default: 180 65% 29%;
@@ -81,6 +85,10 @@
   --insight: 300 29.4% 52.9%;
   --accent-teal: 188 45% 65%;
   --chip-foreground: 0 0% 96%;
+  /* Status indicator colors — match terminal palette on dark backgrounds */
+  --status-green: 120 43% 53%;
+  --status-amber: 40 55% 62%;
+  --status-red: 0 43% 53%;
   /* Semantic link colors for message content — designed for dark backgrounds.
      Stored as bare HSL channels (h s% l%) for shadcn opacity composition. */
   --link-default: 180 33% 53%;
@@ -123,6 +131,9 @@
   --color-insight: hsl(var(--insight));
   --color-accent-teal: hsl(var(--accent-teal));
   --color-chip-foreground: hsl(var(--chip-foreground));
+  --color-status-green: hsl(var(--status-green));
+  --color-status-amber: hsl(var(--status-amber));
+  --color-status-red: hsl(var(--status-red));
   --color-link-default: hsl(var(--link-default));
   --color-link-task: hsl(var(--link-task));
   --color-link-pr: hsl(var(--link-pr));

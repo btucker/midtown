@@ -35,13 +35,13 @@
   function getHealthColor(health) {
     switch (health?.toLowerCase()) {
       case 'green':
-        return '#5faf5f'
+        return 'hsl(var(--status-green))'
       case 'yellow':
-        return '#d7af5f'
+        return 'hsl(var(--status-amber))'
       case 'red':
-        return '#af5f5f'
+        return 'hsl(var(--status-red))'
       default:
-        return '#5faf5f' // default to green
+        return 'hsl(var(--status-green))'
     }
   }
 
@@ -97,7 +97,7 @@
       {#each activeCoworkers as cw}
         <div class="flex flex-col gap-0.5 px-1.5 py-1 font-mono text-sm leading-normal">
           <div class="flex items-center gap-1.5">
-            <span class="shrink-0 text-base leading-none text-sidebar-primary">{getSpinner()}</span>
+            <span class="shrink-0 text-base leading-none text-status-amber">{getSpinner()}</span>
             <span class="shrink-0 font-medium lowercase" style="color: {getHealthColor(cw.health)}">{cw.name}</span>
             {#if cw.phase}
               <span class="hidden text-[0.75rem] text-muted-foreground sm:inline">{cw.phase}</span>

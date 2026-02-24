@@ -76,7 +76,7 @@
 {#if availableProviders.length > 0}
   <div class="relative">
     <button
-      class="flex items-center gap-1 bg-sidebar-accent border border-sidebar-border rounded-md px-2 py-1 text-muted-foreground text-[0.75rem] cursor-pointer transition-all duration-150 hover:bg-sidebar-accent/80 hover:text-sidebar-foreground hover:border-[hsl(var(--link-default))] disabled:opacity-60 disabled:cursor-wait"
+      class="flex items-center gap-1 bg-sidebar-accent border border-sidebar-border rounded-md px-2 py-1 text-muted-foreground text-[0.75rem] cursor-pointer transition-all duration-150 hover:bg-sidebar-accent/80 hover:text-sidebar-foreground hover:border-link-default disabled:opacity-60 disabled:cursor-wait"
       class:opacity-60={$authSwitching}
       class:cursor-wait={$authSwitching}
       onclick={toggle}
@@ -84,7 +84,7 @@
       title={$authSwitching ? 'Switching profile...' : 'Switch auth profile'}
     >
       {#if $authSwitching}
-        <span class="inline-block w-2.5 h-2.5 border-[1.5px] border-muted-foreground border-t-[hsl(var(--link-default))] rounded-full animate-spin"></span>
+        <span class="inline-block w-2.5 h-2.5 border-[1.5px] border-muted-foreground border-t-link-default rounded-full animate-spin"></span>
       {:else}
         <span class="before:content-['🔑'] before:text-[0.7rem]"></span>
       {/if}
@@ -105,7 +105,7 @@
           <div class="flex border-b border-sidebar-border pt-1 px-1">
             {#each availableProviders as provider}
               <button
-                class="flex-1 px-2 py-1 border-none bg-transparent text-muted-foreground text-[0.7rem] cursor-pointer border-b-2 border-transparent transition-all duration-150 hover:text-sidebar-foreground {provider === $selectedAuthProvider ? 'text-[hsl(var(--link-default))] border-b-[hsl(var(--link-default))]' : ''}"
+                class="flex-1 px-2 py-1 border-none bg-transparent text-muted-foreground text-[0.7rem] cursor-pointer border-b-2 border-transparent transition-all duration-150 hover:text-sidebar-foreground {provider === $selectedAuthProvider ? 'text-link-default border-b-link-default' : ''}"
                 onclick={() => selectProvider(provider)}
               >
                 {providerNames[provider]}
@@ -117,7 +117,7 @@
         <div class="overflow-hidden">
           {#each currentProviderProfiles as profile}
             <button
-              class="flex items-center gap-1.5 w-full px-2.5 py-2 border-none bg-transparent text-muted-foreground text-[0.75rem] cursor-pointer text-left transition-colors duration-100 hover:bg-sidebar-accent hover:text-sidebar-foreground disabled:cursor-default {profile.is_current ? 'text-[hsl(var(--link-default))]' : ''} {!profile.has_credentials ? 'opacity-50' : ''}"
+              class="flex items-center gap-1.5 w-full px-2.5 py-2 border-none bg-transparent text-muted-foreground text-[0.75rem] cursor-pointer text-left transition-colors duration-100 hover:bg-sidebar-accent hover:text-sidebar-foreground disabled:cursor-default {profile.is_current ? 'text-link-default' : ''} {!profile.has_credentials ? 'opacity-50' : ''}"
               disabled={profile.is_current}
               title={!profile.has_credentials ? 'No credentials — run midtown auth login' : ''}
               onclick={() => selectProfile(profile, $selectedAuthProvider)}

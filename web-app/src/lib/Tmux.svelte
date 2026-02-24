@@ -105,7 +105,7 @@
     <div class="flex-1 flex flex-col items-center justify-center gap-4 p-6">
       <div class="text-destructive text-[0.85rem] text-center">{error}</div>
       <button
-        class="px-4 py-2 bg-accent border border-border rounded text-[hsl(var(--link-default))] text-[0.8rem] cursor-pointer hover:bg-accent/80"
+        class="px-4 py-2 bg-accent border border-border rounded text-link-default text-[0.8rem] cursor-pointer hover:bg-accent/80"
         onclick={retry}
       >
         Retry
@@ -127,21 +127,21 @@
 
   <div class="flex items-center gap-1.5 px-2 py-2 bg-card border-t border-border" style="padding-bottom: calc(0.5rem + env(safe-area-inset-bottom, 0px));">
     <input
-      class="flex-1 px-2.5 py-2 bg-background border border-border rounded text-foreground font-['SF_Mono',Monaco,Menlo,Consolas,monospace] text-[0.8rem] outline-none focus:border-[hsl(var(--link-default))] placeholder:text-muted-foreground"
+      class="flex-1 px-2.5 py-2 bg-background border border-border rounded text-foreground font-['SF_Mono',Monaco,Menlo,Consolas,monospace] text-[0.8rem] outline-none focus:border-link-default placeholder:text-muted-foreground"
       type="text"
       placeholder="Message lead"
       bind:value={nudgeText}
       onkeydown={handleNudgeKeydown}
     />
     <button
-      class="px-3 py-2 bg-accent border border-border rounded text-[hsl(var(--link-default))] text-[0.75rem] cursor-pointer whitespace-nowrap hover:bg-accent/80 disabled:opacity-40 disabled:cursor-default"
+      class="px-3 py-2 bg-accent border border-border rounded text-link-default text-[0.75rem] cursor-pointer whitespace-nowrap hover:bg-accent/80 disabled:opacity-40 disabled:cursor-default"
       onclick={sendNudge}
       disabled={!nudgeText.trim()}
     >
       Send
     </button>
     {#if nudgeStatus === 'sent'}
-      <span class="text-[hsl(var(--link-default))] text-[0.7rem] whitespace-nowrap animate-[fade-out_2s_forwards]">Sent</span>
+      <span class="text-link-default text-[0.7rem] whitespace-nowrap animate-[fade-out_2s_forwards]">Sent</span>
     {/if}
     {#if nudgeError}
       <span class="text-destructive text-[0.7rem] whitespace-nowrap animate-[fade-out_4s_forwards]">{nudgeError}</span>

@@ -92,7 +92,7 @@
   }
 
   function getStatusColor(status) {
-    return status === 'in_progress' ? 'text-[#4ade80]' : 'text-muted-foreground'
+    return status === 'in_progress' ? 'text-primary' : 'text-muted-foreground'
   }
 </script>
 

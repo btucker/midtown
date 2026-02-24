@@ -76,7 +76,7 @@
           {#if isError(entry)}
             <span class="text-destructive">✗</span>
           {:else if isCompleted(entry)}
-            <span class="text-[hsl(var(--link-default))]">✓</span>
+            <span class="text-link-default">✓</span>
           {:else}
             <span class="text-muted-foreground">›</span>
           {/if}
@@ -86,14 +86,14 @@
     {/each}
     {#if hasMore}
       <button
-        class="text-[hsl(var(--link-default))] hover:text-[hsl(var(--link-hover))] text-[0.78rem] mt-[1px] bg-transparent border-none cursor-pointer p-0"
+        class="text-link-default hover:text-link-hover text-[0.78rem] mt-[1px] bg-transparent border-none cursor-pointer p-0"
         onclick={() => { expanded = true }}
       >
         ▼ {merged.length - 1} more
       </button>
     {:else if expanded && merged.length > 1}
       <button
-        class="text-[hsl(var(--link-default))] hover:text-[hsl(var(--link-hover))] text-[0.78rem] mt-[1px] bg-transparent border-none cursor-pointer p-0"
+        class="text-link-default hover:text-link-hover text-[0.78rem] mt-[1px] bg-transparent border-none cursor-pointer p-0"
         onclick={() => { expanded = false }}
       >
         ▲ less

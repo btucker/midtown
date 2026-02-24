@@ -10,10 +10,10 @@
 
   function ciInfo(status) {
     switch (status) {
-      case 'passed': return { char: '●', color: '#5faf5f' }
-      case 'failed': return { char: '●', color: '#ff5f5f' }
+      case 'passed': return { char: '●', color: 'hsl(var(--status-green))' }
+      case 'failed': return { char: '●', color: 'hsl(var(--status-red))' }
       case 'running':
-      case 'pending': return { char: '●', color: '#d7af5f' }
+      case 'pending': return { char: '●', color: 'hsl(var(--status-amber))' }
       default: return { char: '○', color: 'hsl(var(--muted-foreground))' }
     }
   }
@@ -30,17 +30,17 @@
       {#if totalTasks > 0 || channelPrs.length > 0}
         <div class="flex items-center gap-1.5 flex-wrap">
           {#if channelPrs.length > 0}
-            <span class="text-[0.75rem] px-2 py-[3px] rounded-xl font-semibold whitespace-nowrap bg-accent text-[hsl(var(--link-pr))]" title="{channelPrs.length} active PR{channelPrs.length === 1 ? '' : 's'}">
+            <span class="text-[0.75rem] px-2 py-[3px] rounded-xl font-semibold whitespace-nowrap bg-blue-100 dark:bg-blue-950/80 text-link-pr" title="{channelPrs.length} active PR{channelPrs.length === 1 ? '' : 's'}">
               {channelPrs.length} PR{channelPrs.length === 1 ? '' : 's'}
             </span>
           {/if}
           {#if channelCounts.inProgress > 0}
-            <span class="text-[0.75rem] px-2 py-[3px] rounded-xl font-semibold whitespace-nowrap bg-accent text-[hsl(var(--link-default))]" title="{channelCounts.inProgress} in progress">
+            <span class="text-[0.75rem] px-2 py-[3px] rounded-xl font-semibold whitespace-nowrap bg-green-100 dark:bg-green-950/80 text-link-default" title="{channelCounts.inProgress} in progress">
               {channelCounts.inProgress} in progress
             </span>
           {/if}
           {#if channelCounts.pending > 0}
-            <span class="text-[0.75rem] px-2 py-[3px] rounded-xl font-semibold whitespace-nowrap bg-accent text-[hsl(var(--link-task))]" title="{channelCounts.pending} pending">
+            <span class="text-[0.75rem] px-2 py-[3px] rounded-xl font-semibold whitespace-nowrap bg-purple-100 dark:bg-purple-950/80 text-link-task" title="{channelCounts.pending} pending">
               {channelCounts.pending} pending
             </span>
           {/if}
@@ -56,7 +56,7 @@
           <span class="text-muted-foreground">{$repoStatus.repoName}</span>
         {/if}
         {#if $repoStatus.commitHash}
-          <span class="text-[hsl(var(--link-default))]">{$repoStatus.commitHash}</span>
+          <span class="text-link-default">{$repoStatus.commitHash}</span>
         {/if}
         {#if $repoStatus.commitTime}
           <span class="text-muted-foreground">{formatRelativeTime($repoStatus.commitTime)}</span>
@@ -64,7 +64,7 @@
         <span style="color: {ci.color}">{ci.char}</span>
         {#if $repoStatus.releaseTag}
           <span class="text-muted-foreground">Releases:</span>
-          <span class="text-[hsl(var(--link-default))]">{$repoStatus.releaseTag}</span>
+          <span class="text-link-default">{$repoStatus.releaseTag}</span>
           {#if $repoStatus.releaseTime}
             <span class="text-muted-foreground">{formatRelativeTime($repoStatus.releaseTime)}</span>
           {/if}
@@ -80,7 +80,7 @@
       <div class="flex items-center gap-2 px-4 pb-2 text-[0.7rem] font-mono border-t border-border">
         <span class="text-muted-foreground">{repo.label || repo.fullName || ''}</span>
         {#if repo.commitHash}
-          <span class="text-[hsl(var(--link-default))]">{repo.commitHash}</span>
+          <span class="text-link-default">{repo.commitHash}</span>
         {/if}
         {#if repo.commitTime}
           <span class="text-muted-foreground">{formatRelativeTime(repo.commitTime)}</span>
@@ -90,7 +90,7 @@
         {/if}
         {#if repo.releaseTag}
           <span class="text-muted-foreground">Releases:</span>
-          <span class="text-[hsl(var(--link-default))]">{repo.releaseTag}</span>
+          <span class="text-link-default">{repo.releaseTag}</span>
           {#if repo.releaseTime}
             <span class="text-muted-foreground">{formatRelativeTime(repo.releaseTime)}</span>
           {/if}

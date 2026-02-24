@@ -162,7 +162,7 @@
                 href={panelData.data.url}
                 target="_blank"
                 rel="noopener"
-                class="text-[hsl(var(--link-default))] no-underline transition-colors duration-150 hover:text-[hsl(var(--link-hover))] hover:underline"
+                class="text-link-default no-underline transition-colors duration-150 hover:text-link-hover hover:underline"
               >
                 View on GitHub &rarr;
               </a>
