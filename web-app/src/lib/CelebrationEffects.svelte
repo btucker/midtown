@@ -424,7 +424,7 @@
     top: -140%;
     font-family: 'IBM Plex Mono', monospace;
     font-size: 0.85rem;
-    color: hsl(var(--color-link-coworker));
+    color: var(--color-link-coworker);
     text-shadow: 0 0 6px rgba(0, 0, 0, 0.5);
     animation: matrix-fall var(--duration) linear forwards;
     animation-delay: var(--delay);
