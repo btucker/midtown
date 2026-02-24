@@ -125,10 +125,17 @@
     <div class="flex items-center justify-between px-[18px] py-4 bg-[#1a1a1a] border-b-2 border-[#2a2a2a] shrink-0">
       <div class="flex-1 min-w-0">
         <h2 class="text-[0.85rem] font-bold text-[#d0d0d0] m-0">Thread</h2>
-        <p class="text-[0.75rem] text-[#808080] m-0 mt-0.5 break-words">
-          <span style="color: {getSenderColor($threadData.parentMessage.from)}">{$threadData.parentMessage.from}</span>:
-          {$threadData.parentMessage.content || ''}
-        </p>
+        {#if $threadData.task}
+          <p class="text-[0.75rem] text-[#808080] m-0 mt-0.5 break-words">
+            <span class="text-[#d7d787] font-bold">!{$threadData.task.id}</span>
+            <span class="text-[#d0d0d0]"> {$threadData.task.subject}</span>
+          </p>
+        {:else}
+          <p class="text-[0.75rem] text-[#808080] m-0 mt-0.5 break-words">
+            <span style="color: {getSenderColor($threadData.parentMessage.from)}">{$threadData.parentMessage.from}</span>:
+            {$threadData.parentMessage.content || ''}
+          </p>
+        {/if}
       </div>
       <button
         class="w-8 h-8 flex items-center justify-center bg-transparent border border-[#2a2a2a] rounded-md text-[#808080] text-[1.3rem] cursor-pointer transition-all duration-150 leading-none hover:bg-[#1a1a1a] hover:border-[#af5f5f] hover:text-[#ff5f5f] ml-2 shrink-0 self-start mt-1"
@@ -142,13 +149,35 @@
       class="flex-1 min-h-0 overflow-y-auto overflow-x-hidden font-[SF_Mono,Menlo,Consolas,Monaco,'Courier_New',monospace] text-[1rem] leading-[1.55] px-[14px] pt-[10px] pb-[10px]"
       bind:this={desktopScrollArea}
     >
-      <!-- Parent message (highlighted) — Slack-style: name + timestamp on one line -->
+      <!-- Parent message / task metadata (highlighted) -->
       <div class="pb-2 mb-2 border-b border-[#2a2a2a]">
-        <div class="whitespace-nowrap overflow-hidden text-ellipsis flex items-center gap-[7px] mb-[2px]">
-          <span class="font-bold text-[0.82rem]" style="color: {getSenderColor($threadData.parentMessage.from)}">{$threadData.parentMessage.from}</span>
-          <span class="text-muted-foreground/50 text-[0.72rem] select-none">{formatTime($threadData.parentMessage.timestamp)}</span>
-        </div>
-        <div class="text-[#d0d0d0] break-words">{@html renderContent($threadData.parentMessage.content || '')}</div>
+        {#if $threadData.task}
+          <!-- Task metadata header -->
+          <div class="font-bold text-[0.82rem] text-[#d7d787]">!{$threadData.task.id}</div>
+          <div class="text-[#d0d0d0] font-bold break-words mb-1">{$threadData.task.subject}</div>
+          <div class="text-[0.78rem] flex flex-wrap gap-x-4 gap-y-0.5">
+            <span>
+              <span class="text-[#606060]">Status:</span>
+              <span class={$threadData.task.status === 'pending' ? 'text-[#d7d787]' : $threadData.task.status === 'in_progress' ? 'text-[#5fafaf]' : 'text-[#5faf5f]'}>
+                {$threadData.task.status}
+              </span>
+            </span>
+            {#if $threadData.task.assignee}
+              <span>
+                <span class="text-[#606060]">Owner:</span>
+                <span class="text-[#d0d0d0]"> {$threadData.task.assignee}</span>
+              </span>
+            {/if}
+          </div>
+        {:else}
+          <!-- Slack-style parent message (name + timestamp on one line) -->
+          <div class="whitespace-nowrap overflow-hidden text-ellipsis flex items-center gap-[7px] mb-[2px]">
+            <span class="font-bold text-[0.82rem]" style="color: {getSenderColor($threadData.parentMessage.from)}">{$threadData.parentMessage.from}</span>
+            <span class="text-muted-foreground/50 text-[0.72rem] select-none">{formatTime($threadData.parentMessage.timestamp)}</span>
+          </div>
+          <div class="text-[#d0d0d0] break-words">{@html renderContent($threadData.parentMessage.content || '')}</div>
+        {/if}
+      </div>
       </div>
 
       <!-- Thread replies — Slack-style: group header shows name+timestamp, gutter only on minute change -->
@@ -203,10 +232,17 @@
       >&larr;</button>
       <div class="flex-1 min-w-0">
         <h2 class="text-[0.85rem] font-bold text-[#d0d0d0] m-0">Thread</h2>
-        <p class="text-[0.75rem] text-[#808080] m-0 mt-0.5 break-words">
-          <span style="color: {getSenderColor($threadData.parentMessage.from)}">{$threadData.parentMessage.from}</span>:
-          {$threadData.parentMessage.content || ''}
-        </p>
+        {#if $threadData.task}
+          <p class="text-[0.75rem] text-[#808080] m-0 mt-0.5 break-words">
+            <span class="text-[#d7d787] font-bold">!{$threadData.task.id}</span>
+            <span class="text-[#d0d0d0]"> {$threadData.task.subject}</span>
+          </p>
+        {:else}
+          <p class="text-[0.75rem] text-[#808080] m-0 mt-0.5 break-words">
+            <span style="color: {getSenderColor($threadData.parentMessage.from)}">{$threadData.parentMessage.from}</span>:
+            {$threadData.parentMessage.content || ''}
+          </p>
+        {/if}
       </div>
     </div>
 
@@ -215,6 +251,34 @@
       class="flex-1 min-h-0 overflow-y-auto overflow-x-hidden font-[SF_Mono,Menlo,Consolas,Monaco,'Courier_New',monospace] text-[1rem] leading-[1.55] px-[14px] pt-[10px] pb-[10px]"
       bind:this={mobileScrollArea}
     >
+<<<<<<< HEAD
+      <!-- Parent message / task metadata -->
+      <div class="pb-2 mb-2 border-b border-[#2a2a2a]">
+        {#if $threadData.task}
+          <div class="font-bold text-[0.82rem] text-[#d7d787]">!{$threadData.task.id}</div>
+          <div class="text-[#d0d0d0] font-bold break-words mb-1">{$threadData.task.subject}</div>
+          <div class="text-[0.78rem] flex flex-wrap gap-x-4 gap-y-0.5">
+            <span>
+              <span class="text-[#606060]">Status:</span>
+              <span class={$threadData.task.status === 'pending' ? 'text-[#d7d787]' : $threadData.task.status === 'in_progress' ? 'text-[#5fafaf]' : 'text-[#5faf5f]'}>
+                {$threadData.task.status}
+              </span>
+            </span>
+            {#if $threadData.task.assignee}
+              <span>
+                <span class="text-[#606060]">Owner:</span>
+                <span class="text-[#d0d0d0]"> {$threadData.task.assignee}</span>
+              </span>
+            {/if}
+          </div>
+        {:else}
+          <div class="font-bold text-[0.82rem]" style="color: {getSenderColor($threadData.parentMessage.from)}">
+            {$threadData.parentMessage.from}
+          </div>
+          <div class="text-[#d0d0d0] break-words">{@html renderContent($threadData.parentMessage.content || '')}</div>
+          <div class="text-[#4a4a4a] text-[0.75rem] mt-1">{formatTime($threadData.parentMessage.timestamp)}</div>
+        {/if}
+=======
       <!-- Parent message — Slack-style: name + timestamp on one line -->
       <div class="pb-2 mb-2 border-b border-[#2a2a2a]">
         <div class="whitespace-nowrap overflow-hidden text-ellipsis flex items-center gap-[7px] mb-[2px]">
@@ -222,6 +286,7 @@
           <span class="text-muted-foreground/50 text-[0.72rem] select-none">{formatTime($threadData.parentMessage.timestamp)}</span>
         </div>
         <div class="text-[#d0d0d0] break-words">{@html renderContent($threadData.parentMessage.content || '')}</div>
+>>>>>>> origin/main
       </div>
 
       <!-- Replies — Slack-style: group header shows name+timestamp, gutter only on minute change -->
