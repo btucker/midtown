@@ -153,6 +153,9 @@ pub mod usage;
 // Universal event types for provider-agnostic session event processing
 pub mod universal_events;
 
+// Workflow event types for customizable channel workflow scripts
+pub mod workflow;
+
 // Test utilities
 // Note: Always available for use in both library and binary tests.
 // The retry_with_backoff function is small and has no dependencies,
