@@ -3,10 +3,11 @@
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Wrap},
 };
+use ratatui_themes::ThemePalette;
 
 use super::super::app::{App, FocusedPane};
 use super::messages::{apply_mention_highlights, render_content_lines, render_message};
@@ -17,10 +18,12 @@ pub fn draw_thread_panel(f: &mut Frame, app: &mut App, area: Rect) {
         return;
     };
 
+    let palette = app.theme.palette();
+
     // Pre-render parent message content upfront to get actual line count and avoid
     // borrow conflicts with &mut App. Content width is area width minus 2 (for borders).
     let content_width = area.width.saturating_sub(2) as usize;
-    let content_style = Style::default().fg(Color::White);
+    let content_style = Style::default().fg(palette.fg);
 
     let parent_msg_data: Option<(String, Vec<Line<'static>>)> = app
         .messages
@@ -54,7 +57,7 @@ pub fn draw_thread_panel(f: &mut Frame, app: &mut App, area: Rect) {
         ])
         .split(area);
 
-    draw_thread_header(f, parent_msg_data, chunks[0]);
+    draw_thread_header(f, parent_msg_data, chunks[0], palette);
     draw_thread_messages(f, app, chunks[1]);
     draw_thread_input(f, app, chunks[2]);
 }
@@ -68,16 +71,17 @@ fn draw_thread_header(
     f: &mut Frame,
     parent_msg_data: Option<(String, Vec<Line<'static>>)>,
     area: Rect,
+    palette: ThemePalette,
 ) {
     let block = Block::default()
         .title(" Thread ")
         .title_style(
             Style::default()
-                .fg(Color::Cyan)
+                .fg(palette.accent)
                 .add_modifier(Modifier::BOLD),
         )
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::DarkGray));
+        .border_style(Style::default().fg(palette.muted));
 
     let inner = block.inner(area);
 
@@ -85,7 +89,7 @@ fn draw_thread_header(
         let mut lines = vec![Line::from(Span::styled(
             from,
             Style::default()
-                .fg(Color::Yellow)
+                .fg(palette.warning)
                 .add_modifier(Modifier::BOLD),
         ))];
         lines.extend(content_lines);
@@ -93,7 +97,7 @@ fn draw_thread_header(
     } else {
         vec![Line::from(Span::styled(
             "Thread (parent not found)",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(palette.muted),
         ))]
     };
 
@@ -103,10 +107,11 @@ fn draw_thread_header(
 
 /// Draw thread reply messages
 fn draw_thread_messages(f: &mut Frame, app: &mut App, area: Rect) {
+    let palette = app.theme.palette();
     let border_color = if app.focused_pane == FocusedPane::Thread {
-        Color::Yellow
+        palette.accent
     } else {
-        Color::DarkGray
+        palette.muted
     };
 
     let block = Block::default()
@@ -118,7 +123,7 @@ fn draw_thread_messages(f: &mut Frame, app: &mut App, area: Rect) {
     if app.thread_messages.is_empty() {
         let empty = Paragraph::new(Line::from(Span::styled(
             " No replies yet",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(palette.muted),
         )));
         f.render_widget(block, area);
         f.render_widget(empty, inner);
@@ -174,10 +179,11 @@ fn draw_thread_input(f: &mut Frame, app: &mut App, area: Rect) {
     // Store for click-to-focus detection
     app.thread_input_area = Some(area);
     let is_focused = app.focused_pane == FocusedPane::Thread;
+    let palette = app.theme.palette();
     let border_color = if is_focused {
-        Color::Yellow
+        palette.accent
     } else {
-        Color::DarkGray
+        palette.muted
     };
 
     let block = Block::default()
@@ -188,11 +194,15 @@ fn draw_thread_input(f: &mut Frame, app: &mut App, area: Rect) {
 
     let prompt = "\u{21b3} "; // ↳
     let char_count = app.thread_input_text.chars().count();
-    let cursor_style = Style::default().fg(Color::Black).bg(Color::Yellow);
+    // `█` (FULL BLOCK) fills the entire cell with the foreground color — use palette.fg
+    // (light in dark themes) so the block cursor is visible. The char cursor uses inverted
+    // colors so the highlighted background (palette.fg) shows around the character glyph.
+    let block_cursor_style = Style::default().fg(palette.fg).bg(palette.bg);
+    let char_cursor_style = Style::default().fg(palette.bg).bg(palette.fg);
     let mut spans: Vec<Span> = vec![Span::raw(prompt)];
     if is_focused && app.thread_input_cursor == char_count {
         spans.push(Span::raw(app.thread_input_text.clone()));
-        spans.push(Span::styled("\u{2588}", cursor_style)); // █
+        spans.push(Span::styled("\u{2588}", block_cursor_style)); // █
     } else if is_focused {
         let byte_idx = app
             .thread_input_text
@@ -204,7 +214,7 @@ fn draw_thread_input(f: &mut Frame, app: &mut App, area: Rect) {
         let cursor_char = after_str.chars().next().unwrap_or(' ');
         let rest = &after_str[cursor_char.len_utf8()..];
         spans.push(Span::raw(before.to_string()));
-        spans.push(Span::styled(cursor_char.to_string(), cursor_style));
+        spans.push(Span::styled(cursor_char.to_string(), char_cursor_style));
         spans.push(Span::raw(rest.to_string()));
     } else {
         spans.push(Span::raw(app.thread_input_text.clone()));
