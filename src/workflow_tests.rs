@@ -206,8 +206,8 @@ fn test_pr_ci_failed_optional_check_name_absent() {
         check_name: None,
     };
     let json: serde_json::Value = serde_json::to_value(&event).unwrap();
-    // None serializes as null
-    assert!(json["check_name"].is_null());
+    // None: key is omitted entirely, not serialized as null
+    assert!(json.get("check_name").is_none());
 }
 
 #[test]
@@ -219,7 +219,8 @@ fn test_coworker_idle_without_task() {
     };
     let json: serde_json::Value = serde_json::to_value(&event).unwrap();
     assert_eq!(json["channel"], "proj-workflows");
-    assert!(json["task_id"].is_null());
+    // None: key is omitted entirely, not serialized as null
+    assert!(json.get("task_id").is_none());
     assert_eq!(json["coworker"], "lexington");
 }
 
@@ -230,6 +231,28 @@ fn test_timer_tick_fields() {
     };
     let json: serde_json::Value = serde_json::to_value(&event).unwrap();
     assert_eq!(json["channel"], "proj-workflows");
+}
+
+#[test]
+fn test_timer_tick_no_task_id_key() {
+    // TimerTick has no task_id field — the key must be absent, not null.
+    let event = WorkflowEvent::TimerTick {
+        channel: "proj-workflows".into(),
+    };
+    let json: serde_json::Value = serde_json::to_value(&event).unwrap();
+    assert!(json.get("task_id").is_none());
+}
+
+#[test]
+fn test_channel_message_no_task_id_key() {
+    // ChannelMessage has no task_id field — the key must be absent, not null.
+    let event = WorkflowEvent::ChannelMessage {
+        channel: "proj-workflows".into(),
+        sender: "user".into(),
+        message: "hey".into(),
+    };
+    let json: serde_json::Value = serde_json::to_value(&event).unwrap();
+    assert!(json.get("task_id").is_none());
 }
 
 // ── channel() accessor ────────────────────────────────────────────────────────

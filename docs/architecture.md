@@ -392,6 +392,26 @@ StreamEvent (NDJSON drain) → extract_tool_events() → Vec<UniversalItem>
 - **TUI rendering**: The TUI polls `coworkers.status` (at 2s intervals) which calls `collect_tool_activity()` to serialize `recent_tool_items`. The TUI renders a compact activity strip at the bottom of the chat pane showing the most recent tool calls per active agent, using `semantic_header` for tool call labels and "✓ ok" / "✗ error" for tool results.
 - **Lifecycle**: Tool activity for a coworker is cleared from `recent_tool_items` when the coworker shuts down (in `shutdown_coworker_impl()`), preventing ghost activity from persisting when the avenue name is reused.
 
+## Workflow Events
+
+The `workflow` module (`src/workflow.rs`) defines the `WorkflowEvent` enum — the event taxonomy passed to per-channel `workflow.py` scripts when invoked by the daemon.
+
+**Event taxonomy:**
+
+| Group | Events |
+|-------|--------|
+| task | `task.created`, `task.assigned`, `task.completed` |
+| pr | `pr.opened`, `pr.approved`, `pr.changes_requested`, `pr.merged`, `pr.ci_passed`, `pr.ci_failed`, `pr.conflict` |
+| coworker | `coworker.idle`, `coworker.stuck`, `coworker.message` |
+| channel | `channel.message` |
+| timer | `timer.tick` |
+
+**Serialization contract:** Events are serialized as JSON objects with a `"type"` discriminant (dotted name), a `"channel"` field (always present), and event-specific fields. `task_id` is a `String` matching `Task { id: String }` in `src/tasks.rs`. Optional fields (`task_id` on coworker events, `check_name` on `pr.ci_failed`) are **omitted entirely** when absent — not serialized as `null` — following the `#[serde(skip_serializing_if = "Option::is_none")]` pattern used throughout the codebase. Python scripts should use `event.get("task_id")` to test presence.
+
+**Accessors:** `WorkflowEvent::channel() -> &str` and `WorkflowEvent::task_id() -> Option<&str>` provide typed access without deserializing JSON.
+
+**Invocation:** The daemon will emit `Effect::EmitWorkflowEvent` at the same detection points where it produces effects in `pr.rs`, `health.rs`, and `dispatch.rs`. The script is invoked via `uv run workflow.py --event '{...}' --state /path/to/state.json --socket /path/to/daemon.sock`. Script path resolution uses `workflow_script_for_channel()` from `src/paths.rs` (4-level priority: channel-specific local → project default local → channel-specific repo → project default repo).
+
 ## Headed Intercom RPC
 
 Headed wrappers are adapter-neutral shims around interactive agent processes.

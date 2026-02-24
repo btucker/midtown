@@ -35,12 +35,14 @@ use serde::Serialize;
 /// ```json
 /// {"type": "pr.opened", "channel": "proj-workflows", "task_id": "42", "pr_number": 123, "coworker": "lexington"}
 /// {"type": "coworker.idle", "channel": "proj-workflows", "task_id": "37", "coworker": "lexington"}
-/// {"type": "timer.tick", "channel": "proj-workflows", "task_id": null}
+/// {"type": "coworker.idle", "channel": "proj-workflows", "coworker": "lexington"}
+/// {"type": "timer.tick", "channel": "proj-workflows"}
 /// ```
 ///
 /// The `channel` field is always present. `task_id` is present for events that
-/// are associated with a specific task, and absent (serialized as `null`) for
-/// channel-wide events like `channel.message` and `timer.tick`.
+/// are associated with a specific task, and **omitted entirely** (not serialized
+/// as `null`) when absent. Use `event.get("task_id")` in Python to test
+/// presence; `event["task_id"]` will raise `KeyError` when the field is absent.
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type")]
 pub enum WorkflowEvent {
@@ -124,7 +126,8 @@ pub enum WorkflowEvent {
         channel: String,
         task_id: String,
         pr_number: u64,
-        /// Name of the failing check, if available.
+        /// Name of the failing check, if available. Omitted when absent.
+        #[serde(skip_serializing_if = "Option::is_none")]
         check_name: Option<String>,
     },
 
@@ -144,7 +147,8 @@ pub enum WorkflowEvent {
     #[serde(rename = "coworker.idle")]
     CoworkerIdle {
         channel: String,
-        /// Task the coworker was working on, if any.
+        /// Task the coworker was working on, if any. Omitted when absent.
+        #[serde(skip_serializing_if = "Option::is_none")]
         task_id: Option<String>,
         coworker: String,
     },
@@ -153,6 +157,7 @@ pub enum WorkflowEvent {
     #[serde(rename = "coworker.stuck")]
     CoworkerStuck {
         channel: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
         task_id: Option<String>,
         coworker: String,
     },
@@ -161,6 +166,7 @@ pub enum WorkflowEvent {
     #[serde(rename = "coworker.message")]
     CoworkerMessage {
         channel: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
         task_id: Option<String>,
         coworker: String,
         /// The message content.
