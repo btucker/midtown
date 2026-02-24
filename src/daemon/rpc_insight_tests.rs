@@ -204,15 +204,17 @@ async fn test_insight_routes_to_task_channel_when_no_explicit_channel() {
 /// When a channel lead session reports an insight, the RPC should return early
 /// with posted=false and reason="channel_lead" — their output already reaches
 /// the channel via the normal auto-posting path.
+///
+/// Suppression is driven solely by the `sessions` map (coworker_type == "channel-lead"),
+/// not by `channel_lead_sessions`.
 #[tokio::test]
 async fn test_insight_channel_lead_suppressed() {
     let (state, _temp_dir, _guard) = make_test_state("testrepo");
 
-    // Register a channel lead session for the "ops" channel
+    // Register a channel lead session via `sessions` — this is what the
+    // implementation checks. `channel_lead_sessions` is NOT consulted.
     {
         let mut ps = state.persistent_state.lock().await;
-        ps.channel_lead_sessions
-            .insert("ops".to_string(), "cl-session-abc".to_string());
         ps.sessions.insert(
             "cl-session-abc".to_string(),
             super::super::state::SessionRecord {
@@ -237,6 +239,82 @@ async fn test_insight_channel_lead_suppressed() {
     let result = response.result.expect("should return success result");
     assert_eq!(result["posted"], false);
     assert_eq!(result["reason"], "channel_lead");
+}
+
+/// Suppression does NOT fire when only `channel_lead_sessions` is populated
+/// but the agent's `sessions` entry is missing. The check reads `sessions`,
+/// not `channel_lead_sessions`.
+#[tokio::test]
+async fn test_insight_channel_lead_sessions_alone_does_not_suppress() {
+    let (state, _temp_dir, _guard) = make_test_state("testrepo");
+
+    // Populate channel_lead_sessions but leave `sessions` empty.
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.channel_lead_sessions
+            .insert("ops".to_string(), "cl-session-abc".to_string());
+        // Intentionally NOT inserting into ps.sessions
+    }
+
+    let response = handle_insight_report(
+        RequestId::Number(10),
+        "ops-lead",
+        "An insight that should not be suppressed",
+        None,
+        &state,
+    )
+    .await;
+
+    // Without a matching `sessions` entry, suppression does not fire.
+    let result = response.result.expect("should return success result");
+    assert_eq!(result["posted"], true);
+}
+
+/// A channel lead reporting an insight still records the hash, so a non-lead
+/// coworker reporting the same insight text afterwards is correctly deduplicated.
+#[tokio::test]
+async fn test_insight_channel_lead_hash_recorded_for_dedup() {
+    let (state, _temp_dir, _guard) = make_test_state("testrepo");
+
+    // Register a channel lead session
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.sessions.insert(
+            "cl-session-abc".to_string(),
+            super::super::state::SessionRecord {
+                session_id: "cl-session-abc".to_string(),
+                current_name: Some("ops-lead".to_string()),
+                coworker_type: "channel-lead".to_string(),
+                working_dir: "/tmp/test".to_string(),
+                ..Default::default()
+            },
+        );
+    }
+
+    // Channel lead reports the insight first (suppressed, not posted)
+    let lead_response = handle_insight_report(
+        RequestId::Number(1),
+        "ops-lead",
+        "Shared insight text",
+        None,
+        &state,
+    )
+    .await;
+    let lead_result = lead_response.result.expect("should succeed");
+    assert_eq!(lead_result["reason"], "channel_lead");
+
+    // Non-lead coworker reports the same insight text → should be deduplicated
+    let coworker_response = handle_insight_report(
+        RequestId::Number(2),
+        "coworker1",
+        "Shared insight text",
+        None,
+        &state,
+    )
+    .await;
+    let coworker_result = coworker_response.result.expect("should succeed");
+    assert_eq!(coworker_result["posted"], false);
+    assert_eq!(coworker_result["reason"], "duplicate");
 }
 
 /// Duplicate insights should be deduplicated and return posted=false.
