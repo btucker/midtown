@@ -502,10 +502,16 @@ fn draw_input_bar(f: &mut Frame, app: &App, area: Rect) {
                 .add_modifier(Modifier::DIM),
         ));
     }
-    let cursor_style = Style::default().fg(palette.bg).bg(palette.fg);
+    // Two cursor styles: `█` fills the entire cell with the *foreground* color, so using
+    // fg=palette.bg (dark in dark themes) makes the block invisible. The block cursor
+    // uses fg=palette.fg (light in dark themes) to appear as a solid visible block.
+    // The character cursor (mid-text) uses inverted colors so the background highlights
+    // the character position — the background (palette.fg) is visible around the char glyph.
+    let block_cursor_style = Style::default().fg(palette.fg).bg(palette.bg);
+    let char_cursor_style = Style::default().fg(palette.bg).bg(palette.fg);
     if is_focused && app.input_cursor == char_count {
         spans.push(Span::raw(app.input_text.clone()));
-        spans.push(Span::styled("█", cursor_style));
+        spans.push(Span::styled("█", block_cursor_style));
     } else if is_focused {
         let byte_idx = app
             .input_text
@@ -517,7 +523,7 @@ fn draw_input_bar(f: &mut Frame, app: &App, area: Rect) {
         let cursor_char = after_str.chars().next().unwrap_or(' ');
         let rest = &after_str[cursor_char.len_utf8()..];
         spans.push(Span::raw(before.to_string()));
-        spans.push(Span::styled(cursor_char.to_string(), cursor_style));
+        spans.push(Span::styled(cursor_char.to_string(), char_cursor_style));
         spans.push(Span::raw(rest.to_string()));
     } else {
         spans.push(Span::raw(app.input_text.clone()));

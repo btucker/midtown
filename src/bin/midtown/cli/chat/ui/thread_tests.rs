@@ -1,3 +1,4 @@
+use super::super::super::app::FocusedPane;
 use super::super::super::app::tests::test_app;
 use super::draw_thread_panel;
 
@@ -39,6 +40,67 @@ fn test_draw_thread_panel_narrow_terminal_header_height() {
     // (the Min(3) constraint). If the header inflated to 12, there'd be no space.
     // With a 20-row terminal: 12 header + 3 replies_min + 3 input = 18 minimum needed.
     // We verify the panel renders without panic — a panic means the layout overflowed.
+}
+
+/// Thread input cursor must use theme palette colors rather than hardcoded black/yellow.
+///
+/// The `█` (FULL BLOCK) cursor in draw_thread_input previously used
+/// `fg(Color::Black).bg(Color::Yellow)` — a solid black block that is invisible on dark
+/// backgrounds. The cursor must use `fg(palette.fg)` so it appears light/white in dark themes.
+#[test]
+fn test_thread_cursor_uses_palette_not_hardcoded_colors() {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use ratatui::layout::Rect;
+    use ratatui::style::Color;
+
+    // 40-wide, 12-tall terminal.
+    // Layout: header(4) + replies(5) + input(3) = 12 rows.
+    let backend = TestBackend::new(40, 12);
+    let mut terminal = Terminal::new(backend).unwrap();
+
+    let mut app = test_app();
+    // Set up a parent message so draw_thread_panel renders the full panel.
+    let parent_msg = midtown::Message::text("park", "hello");
+    let parent_id = parent_msg.id.clone();
+    app.messages.push_back(parent_msg);
+    app.thread_parent_id = Some(parent_id);
+    app.focused_pane = FocusedPane::Thread;
+    app.thread_input_text = "hi".to_string();
+    app.thread_input_cursor = 2; // at end of "hi" — renders the █ cursor
+
+    let palette = app.theme.palette();
+
+    terminal
+        .draw(|f| {
+            let area = Rect::new(0, 0, 40, 12);
+            draw_thread_panel(f, &mut app, area);
+        })
+        .unwrap();
+
+    let buffer = terminal.backend().buffer();
+    // Input chunk starts at y=9 (header=4, replies=5).
+    // Inside the input block: border at y=9, content at y=10, border at y=11.
+    // Content at y=10: left_border(x=0) + ↳(x=1) + space(x=2) + h(x=3) + i(x=4) + cursor(x=5).
+    let cursor_cell = buffer.cell((5, 10)).unwrap();
+
+    assert_eq!(
+        cursor_cell.symbol(),
+        "█",
+        "Thread cursor at end of text should show '█'"
+    );
+    assert_ne!(
+        cursor_cell.fg,
+        Color::Black,
+        "Thread cursor must NOT use hardcoded Color::Black — invisible in dark themes. Got fg={:?}",
+        cursor_cell.fg
+    );
+    assert_eq!(
+        cursor_cell.fg, palette.fg,
+        "Thread cursor must use palette.fg so it's visible in any theme. \
+         Got fg={:?}, expected palette.fg={:?}",
+        cursor_cell.fg, palette.fg
+    );
 }
 
 /// When content_width is zero, header renders with minimum height (4), not maximum (12).

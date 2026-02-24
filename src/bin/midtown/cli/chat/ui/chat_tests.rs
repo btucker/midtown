@@ -5,6 +5,59 @@ use super::super::super::app::tests::test_app;
 use super::*;
 
 #[test]
+fn test_block_cursor_uses_palette_fg_not_palette_bg() {
+    // The `█` (FULL BLOCK) end-of-text cursor must use palette.fg as its foreground color.
+    // U+2588 FULL BLOCK fills the entire character cell with the *foreground* color,
+    // so using palette.bg (dark in dark themes) makes the cursor invisible.
+    // The cursor must be styled with fg=palette.fg so it appears light/white in dark themes.
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use ratatui::layout::Rect;
+
+    let backend = TestBackend::new(40, 3);
+    let mut terminal = Terminal::new(backend).unwrap();
+
+    let mut app = test_app();
+    app.focused_pane = FocusedPane::InputBar;
+    app.input_text = "hi".to_string();
+    app.input_cursor = 2; // at end of "hi" — renders █
+
+    let palette = app.theme.palette();
+
+    terminal
+        .draw(|f| {
+            let area = Rect {
+                x: 0,
+                y: 0,
+                width: 40,
+                height: 3,
+            };
+            draw_input_bar(f, &app, area);
+        })
+        .unwrap();
+
+    let buffer = terminal.backend().buffer();
+    // border(x=0) + prompt "› "(x=1,2) + "hi"(x=3,4) + cursor(x=5), content row y=1
+    let cursor_cell = buffer.cell((5, 1)).unwrap();
+
+    assert_eq!(
+        cursor_cell.symbol(),
+        "█",
+        "Cursor at end of text should show '█'"
+    );
+    assert_eq!(
+        cursor_cell.fg, palette.fg,
+        "Block cursor '█' must use palette.fg as foreground — '█' fills the entire cell with fg, \
+         so using palette.bg (dark in dark themes) makes it invisible. Got fg={:?}, expected palette.fg={:?}",
+        cursor_cell.fg, palette.fg
+    );
+    assert_ne!(
+        cursor_cell.fg, palette.bg,
+        "Block cursor must NOT use palette.bg as foreground — that makes '█' invisible in dark themes"
+    );
+}
+
+#[test]
 fn test_cursor_renders_over_character_not_before_it() {
     // When cursor is in the middle of text, it should overlay the character
     // at the cursor position (with highlighting), not insert '█' before it.
