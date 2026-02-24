@@ -12,7 +12,12 @@ into your project (or a channel subdirectory) and customise to taste:
 
 .. code-block:: bash
 
+    # Project-level default (applies to all channels):
     cp $(python -c "import midtown; import os; print(os.path.dirname(midtown.__file__))")/default_workflow.py .midtown/workflow.py
+
+    # Channel-specific (overrides the project default for one channel):
+    mkdir -p .midtown/channels/<channel>
+    cp $(python -c "import midtown; import os; print(os.path.dirname(midtown.__file__))")/default_workflow.py .midtown/channels/<channel>/workflow.py
 
 State machine
 -------------
