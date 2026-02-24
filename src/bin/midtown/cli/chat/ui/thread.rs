@@ -11,6 +11,8 @@ use ratatui_themes::ThemePalette;
 
 use super::super::app::{App, FocusedPane};
 use super::messages::{apply_mention_highlights, render_content_lines, render_message};
+use super::messages_mermaid::render_message_with_mermaid;
+use crate::cli::chat::mermaid;
 
 /// Draw the thread panel showing a parent message's thread replies.
 pub fn draw_thread_panel(f: &mut Frame, app: &mut App, area: Rect) {
@@ -132,27 +134,61 @@ fn draw_thread_messages(f: &mut Frame, app: &mut App, area: Rect) {
 
     let current_tasks = app.current_tasks().clone();
     let user_display_name = app.user_display_name.clone();
+    let use_light_theme = app.theme.palette().is_light();
 
     let lead_names: Vec<String> = std::iter::once(app.project_name.clone())
         .chain(app.channel_lead_names.iter().cloned())
         .collect();
 
+    // Clone to avoid borrow conflicts between iterating thread_messages and
+    // accessing app.mermaid_cache during render_message_with_mermaid.
+    let thread_messages = app.thread_messages.clone();
+
     let mut lines: Vec<Line> = Vec::new();
-    for (idx, msg) in app.thread_messages.iter().enumerate() {
+    let mut mermaid_to_render: Vec<String> = Vec::new();
+    let mut diagram_sources: Vec<String> = Vec::new();
+
+    for (idx, msg) in thread_messages.iter().enumerate() {
         let prev = if idx > 0 {
-            Some(app.thread_messages[idx - 1].from.as_str())
+            Some(thread_messages[idx - 1].from.as_str())
         } else {
             None
         };
-        let msg_lines = render_message(
-            msg,
-            inner.width as usize,
-            prev,
-            &current_tasks,
-            user_display_name.as_deref(),
-            &lead_names,
-        );
-        lines.extend(msg_lines);
+        let segments = mermaid::parse_content_segments(&msg.content);
+        let has_special = segments
+            .iter()
+            .any(|s| !matches!(s, mermaid::ContentSegment::Text(_)));
+
+        if has_special {
+            render_message_with_mermaid(
+                msg,
+                &segments,
+                inner.width as usize,
+                prev,
+                &current_tasks,
+                user_display_name.as_deref(),
+                &lead_names,
+                &app.mermaid_cache,
+                &mut lines,
+                &mut diagram_sources,
+                &mut mermaid_to_render,
+                use_light_theme,
+            );
+        } else {
+            let msg_lines = render_message(
+                msg,
+                inner.width as usize,
+                prev,
+                &current_tasks,
+                user_display_name.as_deref(),
+                &lead_names,
+            );
+            lines.extend(msg_lines);
+        }
+    }
+
+    for source in mermaid_to_render {
+        app.mermaid_cache.get_or_render(&source);
     }
 
     // Show N lines based on scroll offset (0 = bottom/newest, higher = older)

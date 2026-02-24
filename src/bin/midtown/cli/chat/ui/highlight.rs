@@ -17,16 +17,21 @@ static THEME_SET: Lazy<ThemeSet> = Lazy::new(ThemeSet::load_defaults);
 
 /// Highlight source code and return ratatui Lines with colored spans.
 ///
-/// Uses syntect with the base16-ocean.dark theme. Falls back to plain text
-/// syntax highlighting if the language is unknown.
-pub fn highlight_code(language: &str, source: &str) -> Vec<Line<'static>> {
+/// Selects `InspiredGitHub` for light TUI themes and `base16-ocean.dark` for dark
+/// themes. Falls back to plain text syntax highlighting if the language is unknown.
+pub fn highlight_code(language: &str, source: &str, use_light_theme: bool) -> Vec<Line<'static>> {
     if source.is_empty() {
         return Vec::new();
     }
 
     let syntax = find_syntax(language);
 
-    let theme = &THEME_SET.themes["base16-ocean.dark"];
+    let theme_name = if use_light_theme {
+        "InspiredGitHub"
+    } else {
+        "base16-ocean.dark"
+    };
+    let theme = &THEME_SET.themes[theme_name];
     let mut h = HighlightLines::new(syntax, theme);
 
     let mut result = Vec::new();

@@ -55,6 +55,7 @@ fn test_cached_diagram_shows_inline_ascii_art() {
         &mut lines,
         &mut diagram_sources,
         &mut mermaid_to_render,
+        false,
     );
 
     let all_text: String = lines
@@ -115,6 +116,7 @@ fn test_pending_diagram_shows_rendering_placeholder() {
         &mut lines,
         &mut diagram_sources,
         &mut mermaid_to_render,
+        false,
     );
 
     let placeholder_text: String = lines
@@ -165,6 +167,7 @@ fn test_unqueued_diagram_shows_plain_placeholder_and_queues() {
         &mut lines,
         &mut diagram_sources,
         &mut mermaid_to_render,
+        false,
     );
 
     let placeholder_text: String = lines
@@ -217,6 +220,7 @@ fn test_diagram_numbering_sequential() {
         &mut lines,
         &mut diagram_sources,
         &mut mermaid_to_render,
+        false,
     );
 
     assert_eq!(diagram_sources.len(), 3);
@@ -264,6 +268,7 @@ fn test_diagram_cap_at_9_shortcuts() {
         &mut lines,
         &mut diagram_sources,
         &mut mermaid_to_render,
+        false,
     );
 
     assert_eq!(diagram_sources.len(), 11);
@@ -319,6 +324,7 @@ fn test_mixed_text_and_mermaid_segments() {
         &mut lines,
         &mut diagram_sources,
         &mut mermaid_to_render,
+        false,
     );
 
     let all_text: String = lines
@@ -365,6 +371,7 @@ fn test_diagram_type_extracted_from_first_line() {
             &mut lines,
             &mut diagram_sources,
             &mut mermaid_to_render,
+            false,
         );
 
         let all_text: String = lines
@@ -416,6 +423,7 @@ fn test_action_message_mermaid_placeholder_extra_indent() {
         &mut lines,
         &mut diagram_sources,
         &mut mermaid_to_render,
+        false,
     );
 
     let action_indent = " ".repeat(TIMESTAMP_GUTTER_WIDTH + 2);
@@ -474,6 +482,7 @@ fn test_action_message_mermaid_placeholder_extra_indent() {
         &mut normal_lines,
         &mut normal_diagram_sources,
         &mut normal_mermaid_to_render,
+        false,
     );
 
     let normal_indent = " ".repeat(TIMESTAMP_GUTTER_WIDTH);
@@ -543,6 +552,7 @@ fn test_narrow_terminal_does_not_panic_on_unicode_ascii_art() {
             &mut lines,
             &mut diagram_sources,
             &mut mermaid_to_render,
+            false,
         );
 
         assert!(!lines.is_empty(), "Should produce lines at width {}", width);
@@ -580,6 +590,7 @@ fn test_code_block_first_segment_has_timestamp_gutter() {
         &mut lines,
         &mut diagram_sources,
         &mut mermaid_to_render,
+        false,
     );
 
     assert!(!lines.is_empty(), "Should produce at least one line");
@@ -635,6 +646,7 @@ fn test_code_block_long_line_truncated_to_content_width() {
         &mut lines,
         &mut diagram_sources,
         &mut mermaid_to_render,
+        false,
     );
 
     // Find the line that contains the code content (not borders)
