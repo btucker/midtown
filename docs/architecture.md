@@ -217,6 +217,8 @@ Channel leads can fork themselves into thread-specific sessions via the `session
 
 **Root session as router:** The root session stays lightweight — it handles top-level messages and decides when to fork. Once a fork exists for a thread, subsequent replies in that thread bypass the root session entirely and route directly to the fork.
 
+**Instant ack + fork pattern:** The channel lead prompt (`agents/channel-lead.md`) instructs the root session to always post a brief thread acknowledgment *before* calling `session fork`. This ensures the user sees immediate feedback even though `session fork` blocks for a few seconds while the daemon spawns the new session. For simple questions that don't need a fork, the ack is the complete response. For deeper work, the ack comes first, then the fork takes over.
+
 **Thread routing priority:** When a message arrives with `thread_parent_id` set, `handle_channel_post` checks `topic_sessions[thread_parent_id]` first. If a fork exists, it receives the message. If no fork exists, the message routes to the root channel lead session — spawning it on-demand if it isn't already running (standard channel lead lifecycle).
 
 **Data flow:**
