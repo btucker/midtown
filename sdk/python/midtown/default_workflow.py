@@ -35,10 +35,15 @@ Each task moves through five states driven by daemon events:
                                                                ▼
                                                             merged
 
+Events that drive state transitions are registered in ``TRANSITIONS``:
+``task.assigned``, ``pr.opened``, ``pr.approved``, ``pr.changes_requested``,
+``pr.merged``, and ``task_completed`` (internal trigger).
+
 Side effects
 ------------
 
 * ``task.created``       — call ``daemon.check-pending`` for immediate dispatch
+                           (side-effect only; no state transition)
 * ``pr.opened``          — post to channel that review is needed; spawn a reviewer
 * ``pr.approved``        — nudge author: PR approved, please merge
 * ``pr.changes_requested``— nudge author: please address review feedback
@@ -47,12 +52,14 @@ Side effects
 * ``pr.ci_passed``       — nudge author if in ``in_review`` or ``approved``: CI green, please merge
 * ``pr.merged``          — complete the associated task
 * ``coworker.idle``      — call ``daemon.check-pending`` so pending tasks start immediately;
-                           also advance the associated task to ``merged`` if not yet merged
+                           also advance ``in_progress`` tasks to ``merged`` and call
+                           ``complete_task`` so the daemon unblocks downstream tasks
+                           (side-effect only; no registered transition in ``TRANSITIONS``)
 * ``coworker.stuck``     — post a warning to the channel
 
-Events without registered transitions (``channel.message``, ``coworker.message``,
-``timer.tick``, etc.) are silently ignored because the machine is created with
-``ignore_invalid_triggers=True``.
+Events with no registered transitions and no explicit side-effect handler
+(``channel.message``, ``coworker.message``, ``timer.tick``, etc.) are silently
+ignored because the machine is created with ``ignore_invalid_triggers=True``.
 """
 
 from __future__ import annotations
@@ -168,14 +175,18 @@ def handle(event: dict, rpc: MidtownRPC, state: dict) -> None:  # noqa: C901
         if hasattr(wf, trigger):
             getattr(wf, trigger)()
 
-        # Persist state; also capture author when a PR is opened.
+        # Persist state + any metadata that arrived with this event.
+        # Only save when something actually changed to avoid a redundant
+        # write that would interfere with the coworker.idle side-effects block
+        # doing its own targeted load/save below.
         extra: dict = {}
         if event_type == "pr.opened" and coworker:
             extra["pr_author"] = coworker
         elif event_type == "task.assigned" and coworker:
             extra["coworker"] = coworker
 
-        _save_task(state, task_id, wf, **extra)
+        if wf.state != prev_state or extra:
+            _save_task(state, task_id, wf, **extra)
         new_state = wf.state
     else:
         prev_state = new_state = None
@@ -270,14 +281,16 @@ def handle(event: dict, rpc: MidtownRPC, state: dict) -> None:  # noqa: C901
         except Exception:
             pass
         # If the coworker had a non-PR task still in_progress (i.e. it was
-        # completed without going through pr.merged), advance it to merged now.
+        # completed without going through pr.merged), advance it to merged now
+        # and tell the daemon so downstream blocked_by tasks are unblocked.
         # Only fire from in_progress: PR tasks in in_review/approved go idle
         # while waiting for review/CI and must NOT be prematurely merged.
         if task_id:
             wf = _load_task(state, task_id)
-            if wf.state == "in_progress" and hasattr(wf, "task_completed"):
-                getattr(wf, "task_completed")()
+            if wf.state == "in_progress":
+                wf.task_completed()  # type: ignore[attr-defined]  # injected by Machine
                 _save_task(state, task_id, wf)
+                rpc.complete_task(task_id)
 
     elif event_type == "coworker.stuck":
         rpc.post_to_channel(

@@ -440,7 +440,7 @@ if __name__ == "__main__":
     run(handle)
 ```
 
-`MidtownRPC` methods: `post_to_channel()`, `spawn_coworker()`, `nudge_coworker()`, `create_task()`, `update_task()`, `complete_task()`, `list_tasks()`.
+`MidtownRPC` methods: `post_to_channel()`, `spawn_coworker()`, `nudge_coworker()`, `create_task()`, `update_task()`, `complete_task()`, `list_tasks()`, `check_pending()`.
 
 ### Reference Implementation
 
