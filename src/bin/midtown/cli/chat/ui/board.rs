@@ -559,7 +559,8 @@ fn draw_coworker_status(f: &mut Frame, app: &mut App, area: Rect) {
         .enumerate()
         .map(|(row_index, cw)| {
             let health_color = coworker_health_color(cw, palette);
-            let name_style = app.coworker_name_style(health_color, row_index);
+            let has_change = app.is_coworker_name_pulsing(&cw.name);
+            let name_style = app.coworker_name_style(health_color, row_index, has_change);
             coworker_table_row(
                 cw,
                 name_style,

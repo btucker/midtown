@@ -1,9 +1,9 @@
 //! Tests for time-based spinner animation.
 
-use super::CHANNEL_LEAD_THINKING_TIMEOUT;
+use super::tests::test_app;
 use super::CoworkerInfo;
 use super::ToolActivityEntry;
-use super::tests::test_app;
+use super::CHANNEL_LEAD_THINKING_TIMEOUT;
 use std::time::Duration;
 
 #[test]
@@ -63,22 +63,12 @@ fn test_any_spinner_visible_true_when_lead_working() {
 }
 
 #[test]
-fn test_any_spinner_visible_true_when_active_coworker() {
+fn test_any_spinner_visible_true_when_coworker_status_change_is_active() {
     let mut app = test_app();
-    app.coworkers = vec![CoworkerInfo {
-        name: "lexington".to_string(),
-        task_id: Some(42),
-        phase: Some("dev".to_string()),
-        pr_number: None,
-        health: "green".to_string(),
-        provider: "claude".to_string(),
-        profile: "default".to_string(),
-        progress: None,
-        time_estimate: None,
-    }];
+    app.coworker_pulse_frames.insert("lexington".to_string(), 2);
     assert!(
         app.any_spinner_visible(),
-        "Spinner should be visible when coworker is active"
+        "Spinner should be visible when a coworker status change is pulsing"
     );
 }
 
@@ -183,14 +173,14 @@ fn test_coworker_name_style_fades_over_time() {
     let mut app = test_app();
 
     app.spinner_frame = 0;
-    let dim_style = app.coworker_name_style(Color::Yellow, 0);
+    let dim_style = app.coworker_name_style(Color::Yellow, 0, true);
     assert!(
         dim_style.add_modifier.contains(Modifier::DIM),
         "Coworker names should start dimmed"
     );
 
     app.spinner_frame = 2;
-    let normal_style = app.coworker_name_style(Color::Yellow, 0);
+    let normal_style = app.coworker_name_style(Color::Yellow, 0, true);
     assert!(
         !normal_style.add_modifier.contains(Modifier::DIM)
             && !normal_style.add_modifier.contains(Modifier::BOLD),
@@ -198,7 +188,7 @@ fn test_coworker_name_style_fades_over_time() {
     );
 
     app.spinner_frame = 5;
-    let bold_style = app.coworker_name_style(Color::Yellow, 0);
+    let bold_style = app.coworker_name_style(Color::Yellow, 0, true);
     assert!(
         bold_style.add_modifier.contains(Modifier::BOLD),
         "Coworker names should reach bold at wave peak"
@@ -210,13 +200,115 @@ fn test_coworker_name_style_fades_over_time() {
 fn test_coworker_name_style_is_waved_by_row_index() {
     let mut app = test_app();
     app.spinner_frame = 0;
-    let row0 = app.coworker_name_style(ratatui::style::Color::Yellow, 0);
+    let row0 = app.coworker_name_style(ratatui::style::Color::Yellow, 0, true);
 
     app.spinner_frame = 2;
-    let row1_delayed = app.coworker_name_style(ratatui::style::Color::Yellow, 1);
+    let row1_delayed = app.coworker_name_style(ratatui::style::Color::Yellow, 1, true);
     assert_eq!(
         row0, row1_delayed,
         "Row index should advance the same animation by 2-frame steps"
+    );
+}
+
+#[test]
+fn test_coworker_name_style_does_not_animate_without_status_change() {
+    use ratatui::style::{Color, Modifier};
+    let app = test_app();
+    let static_style = app.coworker_name_style(Color::Yellow, 0, false);
+
+    assert_eq!(static_style.fg, Some(Color::Yellow));
+    assert!(
+        !static_style
+            .add_modifier
+            .contains(Modifier::DIM | Modifier::BOLD),
+        "Coworker names should stay static when no change is active"
+    );
+}
+
+#[test]
+fn test_any_spinner_visible_false_without_active_coworker_change() {
+    let mut app = test_app();
+    app.coworkers = vec![CoworkerInfo {
+        name: "lexington".to_string(),
+        task_id: Some(42),
+        phase: Some("dev".to_string()),
+        pr_number: None,
+        health: "green".to_string(),
+        provider: "claude".to_string(),
+        profile: "default".to_string(),
+        progress: None,
+        time_estimate: None,
+    }];
+    assert!(
+        !app.any_spinner_visible(),
+        "Coworker list changes only should not keep spinner active without an explicit pulse"
+    );
+}
+
+#[test]
+fn test_update_coworker_status_marks_pulse_on_status_line_change() {
+    let mut app = test_app();
+    let mut first = CoworkerInfo {
+        name: "park".to_string(),
+        task_id: Some(1),
+        phase: Some("dev".to_string()),
+        pr_number: None,
+        health: "green".to_string(),
+        provider: "claude".to_string(),
+        profile: "default".to_string(),
+        progress: Some(10),
+        time_estimate: None,
+    };
+    app.update_coworker_status(vec![first.clone()]);
+    assert!(
+        !app.is_coworker_name_pulsing("park"),
+        "First coworker status snapshot should not pulse"
+    );
+
+    first.phase = Some("test".to_string());
+    app.update_coworker_status(vec![first]);
+    assert!(
+        app.is_coworker_name_pulsing("park"),
+        "Status-line changes should trigger a pulse for that coworker"
+    );
+}
+
+#[test]
+fn test_update_coworker_status_drops_pulse_after_ticks() {
+    let mut app = test_app();
+    let coworker = CoworkerInfo {
+        name: "york".to_string(),
+        task_id: Some(2),
+        phase: Some("dev".to_string()),
+        pr_number: None,
+        health: "green".to_string(),
+        provider: "claude".to_string(),
+        profile: "default".to_string(),
+        progress: None,
+        time_estimate: None,
+    };
+
+    app.update_coworker_status(vec![CoworkerInfo {
+        name: "york".to_string(),
+        task_id: Some(2),
+        phase: Some("idle".to_string()),
+        pr_number: None,
+        health: "green".to_string(),
+        provider: "claude".to_string(),
+        profile: "default".to_string(),
+        progress: None,
+        time_estimate: None,
+    }]);
+    app.update_coworker_status(vec![coworker]);
+    assert!(app.is_coworker_name_pulsing("york"));
+
+    for _ in 0..super::App::COWORKER_PULSE_CYCLE_FRAMES {
+        app.advance_coworker_pulse_frames();
+    }
+
+    assert!(
+        !app.is_coworker_name_pulsing("york"),
+        "Pulse should expire after the configured cycle"
     );
 }
 

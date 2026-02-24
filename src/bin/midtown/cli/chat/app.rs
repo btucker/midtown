@@ -124,6 +124,16 @@ pub struct CoworkerInfo {
     pub time_estimate: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct CoworkerStatusLine {
+    task_id: Option<u32>,
+    phase: Option<String>,
+    pr_number: Option<u64>,
+    health: String,
+    progress: Option<u8>,
+    time_estimate: Option<String>,
+}
+
 /// Info about a repo in a multi-repo project
 #[derive(Debug, Clone)]
 pub struct RepoInfo {
@@ -304,6 +314,12 @@ pub struct App {
     pub merged_prs: Vec<MergedPr>,
     /// Active coworkers with their current status
     pub coworkers: Vec<CoworkerInfo>,
+    /// Last observed status line snapshot per coworker name.
+    coworker_status_lines: HashMap<String, CoworkerStatusLine>,
+    /// Remaining pulse frames for coworkers whose status line changed.
+    coworker_pulse_frames: HashMap<String, usize>,
+    /// Whether we have applied an initial baseline status snapshot.
+    coworker_status_snapshot_ready: bool,
     /// Whether the headless lead session is actively working
     pub lead_working: bool,
     /// Recent tool call activity per agent, keyed by lowercase agent name.
@@ -628,6 +644,9 @@ impl App {
             prs: Vec::new(),
             merged_prs: Vec::new(),
             coworkers: Vec::new(),
+            coworker_status_lines: HashMap::new(),
+            coworker_pulse_frames: HashMap::new(),
+            coworker_status_snapshot_ready: false,
             lead_working: false,
             tool_activity: HashMap::new(),
             channel_lead_thinking: HashMap::new(),
@@ -842,7 +861,7 @@ impl App {
         if let Some(ref receiver) = self.coworker_status_receiver {
             match receiver.try_recv() {
                 Ok(data) => {
-                    self.coworkers = data.coworkers;
+                    self.update_coworker_status(data.coworkers);
                     self.lead_working = data.lead_working;
                     self.tool_activity = merge_tool_activity(
                         std::mem::take(&mut self.tool_activity),
@@ -2720,7 +2739,16 @@ impl App {
     /// The pulse is a gentle triangular wave (dim -> normal -> bold) over
     /// 10 animation frames and each row is shifted by 2 frames to create a
     /// staggered wave effect downward through the coworker box.
-    pub fn coworker_name_style(&self, base_color: Color, row_index: usize) -> Style {
+    pub fn coworker_name_style(
+        &self,
+        base_color: Color,
+        row_index: usize,
+        has_active_change: bool,
+    ) -> Style {
+        if !has_active_change {
+            return Style::default().fg(base_color);
+        }
+
         let wave_step = self.coworker_pulse_wave_step(row_index);
         let style = Style::default().fg(base_color);
 
@@ -2802,7 +2830,8 @@ impl App {
         visible
     }
 
-    /// Returns true if any animation frame is needed (lead working, in-progress tool entries, or active coworkers).
+    /// Returns true if any animation frame is needed (lead working, in-progress tool entries,
+    /// or an active coworker status change pulse).
     ///
     /// Controls whether `tick_spinner()` advances the frame — which drives name pulsing
     /// via `pulse_name_style()`. Returns false when everything is idle so the frame clock stops.
@@ -2813,9 +2842,9 @@ impl App {
                 .values()
                 .any(|entries| entries.iter().any(|e| e.completed_at.is_none()))
             || self
-                .coworkers
-                .iter()
-                .any(|cw| cw.phase.as_deref() != Some("idle") && cw.phase.is_some())
+                .coworker_pulse_frames
+                .values()
+                .any(|frames| *frames > 0)
             || self
                 .channel_lead_thinking
                 .values()
@@ -2827,7 +2856,65 @@ impl App {
         if self.spinner_last_tick.elapsed() >= Self::COWORKER_PULSE_INTERVAL {
             self.spinner_frame = self.spinner_frame.wrapping_add(1);
             self.spinner_last_tick = Instant::now();
+            self.advance_coworker_pulse_frames();
         }
+    }
+
+    fn coworker_status_line_signature(cw: &CoworkerInfo) -> CoworkerStatusLine {
+        CoworkerStatusLine {
+            task_id: cw.task_id,
+            phase: cw.phase.clone(),
+            pr_number: cw.pr_number,
+            health: cw.health.clone(),
+            progress: cw.progress,
+            time_estimate: cw.time_estimate.clone(),
+        }
+    }
+
+    pub(crate) fn is_coworker_name_pulsing(&self, coworker_name: &str) -> bool {
+        self.coworker_pulse_frames
+            .get(coworker_name)
+            .is_some_and(|frames| *frames > 0)
+    }
+
+    fn advance_coworker_pulse_frames(&mut self) {
+        for remaining in self.coworker_pulse_frames.values_mut() {
+            *remaining = remaining.saturating_sub(1);
+        }
+        self.coworker_pulse_frames.retain(|_, remaining| *remaining > 0);
+    }
+
+    fn update_coworker_status(&mut self, coworkers: Vec<CoworkerInfo>) {
+        if self.coworker_status_snapshot_ready {
+            let mut next_status_lines = HashMap::with_capacity(coworkers.len());
+            for cw in &coworkers {
+                let name = cw.name.clone();
+                let signature = Self::coworker_status_line_signature(cw);
+
+                let should_pulse = self
+                    .coworker_status_lines
+                    .get(&name)
+                    .is_none_or(|prev| *prev != signature);
+                if should_pulse {
+                    self.coworker_pulse_frames
+                        .insert(name.clone(), Self::COWORKER_PULSE_CYCLE_FRAMES);
+                }
+
+                next_status_lines.insert(name, signature);
+            }
+            self.coworker_pulse_frames
+                .retain(|name, _| next_status_lines.contains_key(name));
+            self.coworker_status_lines = next_status_lines;
+        } else {
+            self.coworker_pulse_frames.clear();
+            self.coworker_status_snapshot_ready = true;
+            self.coworker_status_lines = coworkers
+                .iter()
+                .map(|cw| (cw.name.clone(), Self::coworker_status_line_signature(cw)))
+                .collect();
+        }
+
+        self.coworkers = coworkers;
     }
 }
 
@@ -3904,6 +3991,9 @@ pub(super) mod tests {
             prs: Vec::new(),
             merged_prs: Vec::new(),
             coworkers: Vec::new(),
+            coworker_status_lines: HashMap::new(),
+            coworker_pulse_frames: HashMap::new(),
+            coworker_status_snapshot_ready: false,
             lead_working: false,
             tool_activity: HashMap::new(),
             channel_lead_thinking: HashMap::new(),
