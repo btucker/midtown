@@ -26,12 +26,45 @@ export const AVENUE_COLORS = {
 // Senders whose content is rendered in DarkGray (system infrastructure actors)
 export const DIM_SENDERS = new Set(['daemon', 'github', 'system'])
 
-export function getSenderColor(name) {
-  return AVENUE_COLORS[name?.toLowerCase()] || '#d0d0d0'
+function normalizeName(name) {
+  return typeof name === 'string' ? name.toLowerCase() : ''
 }
 
-export function isDimSender(sender) {
-  return DIM_SENDERS.has(sender?.toLowerCase())
+function getOverride(overrides, key) {
+  if (!overrides || !key) return undefined
+  if (overrides instanceof Map) {
+    return overrides.get(key)
+  }
+  if (typeof overrides === 'object') {
+    return overrides[key]
+  }
+  return undefined
+}
+
+export function getSenderColor(name, overrides) {
+  const normalized = normalizeName(name)
+  return getOverride(overrides, normalized) || AVENUE_COLORS[normalized] || '#d0d0d0'
+}
+
+function hasExtraDim(extraDimSenders, normalized) {
+  if (!extraDimSenders || !normalized) return false
+  if (extraDimSenders instanceof Set) {
+    return extraDimSenders.has(normalized)
+  }
+  if (Array.isArray(extraDimSenders)) {
+    return extraDimSenders.some((sender) => normalizeName(sender) === normalized)
+  }
+  if (typeof extraDimSenders === 'object') {
+    return Boolean(extraDimSenders[normalized])
+  }
+  return false
+}
+
+export function isDimSender(sender, extraDimSenders) {
+  const normalized = normalizeName(sender)
+  if (!normalized) return false
+  if (DIM_SENDERS.has(normalized)) return true
+  return hasExtraDim(extraDimSenders, normalized)
 }
 
 export function formatTime(timestamp) {

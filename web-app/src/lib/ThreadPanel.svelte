@@ -5,6 +5,11 @@
   import { tick, onMount } from 'svelte'
   import { getSenderColor, isDimSender, formatTime, senderChanged, timeChanged } from './messageUtils.js'
 
+  const THREAD_SENDER_OVERRIDES = {
+    midtown: '#585858',
+  }
+  const THREAD_DIM_SENDERS = ['midtown']
+
   let replyText = $state('')
   let desktopScrollArea = $state(null)
   let mobileScrollArea = $state(null)
@@ -80,10 +85,17 @@
     <div class="flex items-center justify-between px-[18px] py-4 bg-card border-b-2 border-border shrink-0">
       <div class="flex-1 min-w-0">
         <h2 class="text-[0.85rem] font-bold text-foreground m-0">Thread</h2>
-        <p class="text-[0.75rem] text-muted-foreground m-0 mt-0.5 break-words">
-          <span style="color: {getSenderColor($threadData.parentMessage.from)}">{$threadData.parentMessage.from}</span>:
-          {$threadData.parentMessage.content || ''}
-        </p>
+        {#if $threadData.task}
+          <p class="text-[0.75rem] text-muted-foreground m-0 mt-0.5 break-words">
+            <span class="text-[hsl(var(--link-task))] font-bold">!{$threadData.task.id}</span>
+            <span class="text-foreground"> {$threadData.task.subject}</span>
+          </p>
+        {:else}
+          <p class="text-[0.75rem] text-muted-foreground m-0 mt-0.5 break-words">
+            <span style="color: {getSenderColor($threadData.parentMessage.from, THREAD_SENDER_OVERRIDES)}">{$threadData.parentMessage.from}</span>:
+            {$threadData.parentMessage.content || ''}
+          </p>
+        {/if}
       </div>
       <button
         class="w-8 h-8 flex items-center justify-center bg-transparent border border-border rounded-md text-muted-foreground text-[1.3rem] cursor-pointer transition-all duration-150 leading-none hover:bg-accent hover:border-destructive hover:text-destructive ml-2 shrink-0 self-start mt-1"
@@ -97,13 +109,34 @@
       class="flex-1 min-h-0 overflow-y-auto overflow-x-hidden font-[SF_Mono,Menlo,Consolas,Monaco,'Courier_New',monospace] text-[1rem] leading-[1.55] px-[14px] pt-[10px] pb-[10px]"
       bind:this={desktopScrollArea}
     >
-      <!-- Parent message (highlighted) -->
+      <!-- Parent message / task metadata (highlighted) -->
       <div class="pb-2 mb-2 border-b border-border">
-        <div class="font-bold text-[0.82rem]" style="color: {getSenderColor($threadData.parentMessage.from)}">
-          {$threadData.parentMessage.from}
-        </div>
-        <div class="text-foreground break-words">{@html renderContent($threadData.parentMessage.content || '')}</div>
-        <div class="text-muted-foreground text-[0.75rem] mt-1">{formatTime($threadData.parentMessage.timestamp)}</div>
+        {#if $threadData.task}
+          <!-- Task metadata header -->
+          <div class="font-bold text-[0.82rem] text-[hsl(var(--link-task))]">!{$threadData.task.id}</div>
+          <div class="text-foreground font-bold break-words mb-1">{$threadData.task.subject}</div>
+          <div class="text-[0.78rem] flex flex-wrap gap-x-4 gap-y-0.5">
+            <span>
+              <span class="text-muted-foreground/60">Status:</span>
+              <span class={$threadData.task.status === 'pending' ? 'text-[#d7d787]' : $threadData.task.status === 'in_progress' ? 'text-[#5fafaf]' : 'text-[#5faf5f]'}>
+                {$threadData.task.status}
+              </span>
+            </span>
+            {#if $threadData.task.assignee}
+              <span>
+                <span class="text-muted-foreground/60">Owner:</span>
+                <span class="text-foreground"> {$threadData.task.assignee}</span>
+              </span>
+            {/if}
+          </div>
+        {:else}
+          <!-- Slack-style parent message (name + timestamp on one line) -->
+          <div class="whitespace-nowrap overflow-hidden text-ellipsis flex items-center gap-[7px] mb-[2px]">
+            <span class="font-bold text-[0.82rem]" style="color: {getSenderColor($threadData.parentMessage.from, THREAD_SENDER_OVERRIDES)}">{$threadData.parentMessage.from}</span>
+            <span class="text-muted-foreground/50 text-[0.72rem] select-none">{formatTime($threadData.parentMessage.timestamp)}</span>
+          </div>
+          <div class="text-foreground break-words">{@html renderContent($threadData.parentMessage.content || '')}</div>
+        {/if}
       </div>
 
       <!-- Thread replies -->
@@ -111,13 +144,16 @@
         <div class="text-center text-muted-foreground py-4 text-[1rem]">No replies yet</div>
       {:else}
         {#each $threadData.messages as msg, i}
-          {#if i === 0 || $threadData.messages[i - 1].from !== msg.from}
-            {#if i > 0}<div class="h-[0.5em]"></div>{/if}
-            <div class="font-bold text-[0.82rem]" style="color: {getSenderColor(msg.from)}">{msg.from}</div>
+          {#if senderChanged($threadData.messages, i)}
+            {#if i > 0}<div class="h-[0.8em]"></div>{/if}
+            <div class="whitespace-nowrap overflow-hidden text-ellipsis flex items-center gap-[7px] mb-[2px]">
+              <span class="font-bold text-[0.82rem]" style="color: {getSenderColor(msg.from, THREAD_SENDER_OVERRIDES)}">{msg.from}</span>
+              <span class="text-muted-foreground/50 text-[0.72rem] select-none">{formatTime(msg.timestamp)}</span>
+            </div>
           {/if}
           <div class="flex gap-0 break-words">
-            <span class="text-muted-foreground flex-shrink-0 w-[3.2em] text-right mr-[0.4em] select-none text-[0.78rem]">{formatTime(msg.timestamp)}</span>
-            <span class="flex-1 min-w-0 {isDimSender(msg.from) ? 'text-muted-foreground' : 'text-foreground'}">{@html renderContent(msg.content || '')}</span>
+            <span class="text-muted-foreground/50 flex-shrink-0 w-[3.2em] text-right mr-[0.4em] select-none text-[0.78rem]">{timeChanged($threadData.messages, i) ? formatTime(msg.timestamp) : ''}</span>
+            <span class="flex-1 min-w-0 {isDimSender(msg.from, THREAD_DIM_SENDERS) ? 'text-muted-foreground' : 'text-foreground'}">{@html renderContent(msg.content || '')}</span>
           </div>
         {/each}
       {/if}
@@ -155,10 +191,17 @@
       >&larr;</button>
       <div class="flex-1 min-w-0">
         <h2 class="text-[0.85rem] font-bold text-foreground m-0">Thread</h2>
-        <p class="text-[0.75rem] text-muted-foreground m-0 mt-0.5 break-words">
-          <span style="color: {getSenderColor($threadData.parentMessage.from)}">{$threadData.parentMessage.from}</span>:
-          {$threadData.parentMessage.content || ''}
-        </p>
+        {#if $threadData.task}
+          <p class="text-[0.75rem] text-muted-foreground m-0 mt-0.5 break-words">
+            <span class="text-[hsl(var(--link-task))] font-bold">!{$threadData.task.id}</span>
+            <span class="text-foreground"> {$threadData.task.subject}</span>
+          </p>
+        {:else}
+          <p class="text-[0.75rem] text-muted-foreground m-0 mt-0.5 break-words">
+            <span style="color: {getSenderColor($threadData.parentMessage.from, THREAD_SENDER_OVERRIDES)}">{$threadData.parentMessage.from}</span>:
+            {$threadData.parentMessage.content || ''}
+          </p>
+        {/if}
       </div>
     </div>
 
@@ -167,13 +210,34 @@
       class="flex-1 min-h-0 overflow-y-auto overflow-x-hidden font-[SF_Mono,Menlo,Consolas,Monaco,'Courier_New',monospace] text-[1rem] leading-[1.55] px-[14px] pt-[10px] pb-[10px]"
       bind:this={mobileScrollArea}
     >
-      <!-- Parent message -->
+      <!-- Parent message / task metadata -->
       <div class="pb-2 mb-2 border-b border-border">
-        <div class="font-bold text-[0.82rem]" style="color: {getSenderColor($threadData.parentMessage.from)}">
-          {$threadData.parentMessage.from}
-        </div>
-        <div class="text-foreground break-words">{@html renderContent($threadData.parentMessage.content || '')}</div>
-        <div class="text-muted-foreground text-[0.75rem] mt-1">{formatTime($threadData.parentMessage.timestamp)}</div>
+        {#if $threadData.task}
+          <div class="font-bold text-[0.82rem] text-[hsl(var(--link-task))]">!{$threadData.task.id}</div>
+          <div class="text-foreground font-bold break-words mb-1">{$threadData.task.subject}</div>
+          <div class="text-[0.78rem] flex flex-wrap gap-x-4 gap-y-0.5">
+            <span>
+              <span class="text-muted-foreground/60">Status:</span>
+              <span class={$threadData.task.status === 'pending' ? 'text-[#d7d787]' : $threadData.task.status === 'in_progress' ? 'text-[#5fafaf]' : 'text-[#5faf5f]'}>
+                {$threadData.task.status}
+              </span>
+            </span>
+            {#if $threadData.task.assignee}
+              <span>
+                <span class="text-muted-foreground/60">Owner:</span>
+                <span class="text-foreground"> {$threadData.task.assignee}</span>
+              </span>
+            {/if}
+          </div>
+        {:else}
+          <!-- Slack-style parent message (name + timestamp on one line) -->
+          <div class="whitespace-nowrap overflow-hidden text-ellipsis flex items-center gap-[7px] mb-[2px]">
+            <span class="font-bold text-[0.82rem]" style="color: {getSenderColor($threadData.parentMessage.from, THREAD_SENDER_OVERRIDES)}">{$threadData.parentMessage.from}</span>
+            <span class="text-muted-foreground/50 text-[0.72rem] select-none">{formatTime($threadData.parentMessage.timestamp)}</span>
+          </div>
+          <div class="text-foreground break-words">{@html renderContent($threadData.parentMessage.content || '')}</div>
+          <div class="text-muted-foreground text-[0.75rem] mt-1">{formatTime($threadData.parentMessage.timestamp)}</div>
+        {/if}
       </div>
 
       <!-- Replies -->
@@ -181,13 +245,16 @@
         <div class="text-center text-muted-foreground py-4 text-[1rem]">No replies yet</div>
       {:else}
         {#each $threadData.messages as msg, i}
-          {#if i === 0 || $threadData.messages[i - 1].from !== msg.from}
-            {#if i > 0}<div class="h-[0.5em]"></div>{/if}
-            <div class="font-bold text-[0.82rem]" style="color: {getSenderColor(msg.from)}">{msg.from}</div>
+          {#if senderChanged($threadData.messages, i)}
+            {#if i > 0}<div class="h-[0.8em]"></div>{/if}
+            <div class="whitespace-nowrap overflow-hidden text-ellipsis flex items-center gap-[7px] mb-[2px]">
+              <span class="font-bold text-[0.82rem]" style="color: {getSenderColor(msg.from, THREAD_SENDER_OVERRIDES)}">{msg.from}</span>
+              <span class="text-muted-foreground/50 text-[0.72rem] select-none">{formatTime(msg.timestamp)}</span>
+            </div>
           {/if}
           <div class="flex gap-0 break-words">
-            <span class="text-muted-foreground flex-shrink-0 w-[3.2em] text-right mr-[0.4em] select-none text-[0.78rem]">{formatTime(msg.timestamp)}</span>
-            <span class="flex-1 min-w-0 {isDimSender(msg.from) ? 'text-muted-foreground' : 'text-foreground'}">{@html renderContent(msg.content || '')}</span>
+            <span class="text-muted-foreground/50 flex-shrink-0 w-[3.2em] text-right mr-[0.4em] select-none text-[0.78rem]">{timeChanged($threadData.messages, i) ? formatTime(msg.timestamp) : ''}</span>
+            <span class="flex-1 min-w-0 {isDimSender(msg.from, THREAD_DIM_SENDERS) ? 'text-muted-foreground' : 'text-foreground'}">{@html renderContent(msg.content || '')}</span>
           </div>
         {/each}
       {/if}
