@@ -4,60 +4,6 @@
   let { channelName = '' } = $props()
 
   /**
-   * Compute indentation level for each task based on dependency structure.
-   * Returns a Map of task ID to indentation level (0 = no indent, 1+ = nested)
-   *
-   * This mirrors the TUI implementation in src/bin/midtown/cli/chat/ui/board.rs
-   */
-  function computeTaskIndentation(tasks) {
-    const indentation = new Map()
-    const processed = new Set()
-    const taskMap = new Map(tasks.map(t => [t.id, t]))
-
-    function computeIndentationRecursive(taskId) {
-      // If already computed, return cached value
-      if (indentation.has(taskId)) {
-        return indentation.get(taskId)
-      }
-
-      // Guard against cycles
-      if (processed.has(taskId)) {
-        return 0
-      }
-      processed.add(taskId)
-
-      const task = taskMap.get(taskId)
-      if (!task) {
-        indentation.set(taskId, 0)
-        return 0
-      }
-
-      // If no dependencies, no indentation
-      if (!task.blocked_by || task.blocked_by.length === 0) {
-        indentation.set(taskId, 0)
-        return 0
-      }
-
-      // Find the first unresolved dependency in the current task list
-      const firstBlocker = task.blocked_by.find(blockerId => taskMap.has(blockerId))
-
-      const level = firstBlocker
-        ? computeIndentationRecursive(firstBlocker) + 1
-        : 0
-
-      indentation.set(taskId, level)
-      return level
-    }
-
-    // Process all tasks
-    for (const task of tasks) {
-      computeIndentationRecursive(task.id)
-    }
-
-    return indentation
-  }
-
-  /**
    * Filter tasks by channel field.
    * For 'midtown' channel, return all tasks.
    * For topic channels, only return tasks explicitly assigned to that channel.
@@ -84,8 +30,6 @@
     return filterTasksByChannel(allTasks, channelName)
   })
 
-  const indentMap = $derived(computeTaskIndentation(channelTasks))
-
   // Status marker for each task
   function getStatusMarker(status) {
     return status === 'in_progress' ? '\u2022' : '\u25CB'
@@ -98,14 +42,13 @@
 
 <div class="flex flex-col gap-px py-1">
   {#each channelTasks as task}
-    {@const indentLevel = indentMap.get(task.id) || 0}
-    {@const indentStyle = `padding-left: ${indentLevel * 16}px`}
-
     <div
       class="flex items-baseline gap-1.5 px-2 py-[3px] text-[0.75rem] leading-snug cursor-pointer transition-colors duration-100 rounded hover:bg-sidebar-accent"
-      style={indentStyle}
     >
       <span class="shrink-0 text-[0.6rem] {getStatusColor(task.status)}">{getStatusMarker(task.status)}</span>
+      {#if task.blocked_by?.length > 0}
+        <span class="shrink-0 text-[0.65rem] text-[#505050]">↳!{task.blocked_by[0]}</span>
+      {/if}
       <span class="shrink-0 text-muted-foreground font-medium">!{task.id}</span>
       <span class="flex-1 text-muted-foreground truncate {task.status === 'in_progress' ? 'text-foreground' : ''}">{task.subject}</span>
       {#if task.owner}
