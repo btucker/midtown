@@ -439,7 +439,7 @@ fn draw_chat_messages(f: &mut Frame, app: &mut App, area: Rect) {
 /// Calculate the required height for the input bar based on wrapped text
 ///
 /// Returns total height including borders (2) and content lines (1 minimum, 6 maximum).
-fn calculate_input_bar_height(input_text: &str, area_width: u16) -> u16 {
+pub(super) fn calculate_input_bar_height(input_text: &str, area_width: u16) -> u16 {
     const PROMPT_WIDTH: usize = 3; // "› "
     const CURSOR_WIDTH: usize = 1; // "█"
     const MIN_CONTENT_LINES: u16 = 1;

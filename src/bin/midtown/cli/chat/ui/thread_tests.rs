@@ -103,6 +103,56 @@ fn test_thread_cursor_uses_palette_not_hardcoded_colors() {
     );
 }
 
+/// Thread input bar must expand to multiple lines for long input text,
+/// matching the behavior of the main channel input bar.
+///
+/// The thread input height was previously hardcoded to 3 (1 content line + 2 borders).
+/// With long input text that wraps to multiple lines, it must grow dynamically
+/// using the same calculate_input_bar_height logic as the main input.
+#[test]
+fn test_thread_input_expands_to_multiple_lines() {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use ratatui::layout::Rect;
+
+    // 80-wide, 25-tall terminal — enough space for header + replies + tall input.
+    let backend = TestBackend::new(80, 25);
+    let mut terminal = Terminal::new(backend).unwrap();
+
+    let mut app = test_app();
+    let parent_msg = midtown::Message::text("park", "hello");
+    let parent_id = parent_msg.id.clone();
+    app.messages.push_back(parent_msg);
+    app.thread_parent_id = Some(parent_id);
+
+    // 150 'a' chars should wrap to 3 content lines at 80-wide terminal
+    // (available inner width 78, minus prompt 3, minus cursor 1 = 74 chars/line → 3 lines)
+    app.thread_input_text = "a".repeat(150);
+
+    terminal
+        .draw(|f| {
+            let area = Rect::new(0, 0, 80, 25);
+            draw_thread_panel(f, &mut app, area);
+        })
+        .unwrap();
+
+    // The thread input area (including borders) must be > 3 rows for multi-line text.
+    // With 3 content lines + 2 border rows = 5 total.
+    let input_area = app
+        .thread_input_area
+        .expect("thread_input_area must be set");
+    assert!(
+        input_area.height > 3,
+        "Thread input height should expand beyond 3 for long text, got {}",
+        input_area.height
+    );
+    assert_eq!(
+        input_area.height, 5,
+        "150-char input should give 3 content lines + 2 borders = height 5, got {}",
+        input_area.height
+    );
+}
+
 /// When content_width is zero, header renders with minimum height (4), not maximum (12).
 /// This is the direct regression check: we measure the layout split produces a valid
 /// replies area rather than an overflowed/zero-height one.
