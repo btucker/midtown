@@ -692,6 +692,29 @@
                 </div>
               {/if}
             {/each}
+          {:else if isInsight(msg)}
+            <div class="rounded-md border border-insight/40 bg-insight/8 px-3 py-2 my-1 ml-[0.5em]">
+              <div
+                class="flex items-center gap-1.5 mb-1.5 text-insight text-[0.72rem] font-bold uppercase tracking-wide"
+                aria-label="Insight"
+              >
+                <span aria-hidden="true">★</span>
+                <span>Insight</span>
+              </div>
+              {#if hasMermaid(msg.content || '')}
+                <div class="flex flex-col gap-2">
+                  {#each parseSegments(msg.content || '') as segment}
+                    {#if segment.type === 'mermaid'}
+                      <MermaidDiagram code={segment.content} />
+                    {:else}
+                      <div class="message-text text-foreground">{@html renderContent(segment.content)}</div>
+                    {/if}
+                  {/each}
+                </div>
+              {:else}
+                <div class="message-text text-foreground">{@html renderContent(msg.content || '')}</div>
+              {/if}
+            </div>
           {:else if hasMermaid(msg.content)}
             <!-- Message with mermaid diagram(s): gutter shows time only on minute change -->
             {#each parseSegments(msg.content) as segment, si}
