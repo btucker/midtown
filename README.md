@@ -521,6 +521,29 @@ When a forked session creates a task, it can pass `--thread-id <message-id>` to 
 
 Coworkers use `@{channel-name}` for domain questions (e.g., `@auth-refactor can you explain the token expiry logic?`) and reserve `@lead` for coordination and priority questions.
 
+### Workflow Scripts
+
+Each channel can have a `workflow.py` script that customizes how the daemon responds to events — PR lifecycle, coworker status changes, task transitions, CI results, and more. Scripts are invoked by the daemon via `uv run` using the [Midtown Python SDK](sdk/python/).
+
+**Script resolution order** (first file found wins):
+
+1. `<project_root>/.midtown/channels/<channel>/workflow.py` — channel-specific, committed to repo
+2. `~/.midtown/projects/<repo>/channels/<channel>/workflow.py` — channel-specific, local only
+3. `<project_root>/.midtown/workflow.py` — project default, committed to repo
+4. `~/.midtown/projects/<repo>/workflow.py` — project default, local only
+
+If no script is found, the daemon falls back to its compiled-in default behavior. **Changes take effect on the next daemon tick** — no restart needed.
+
+To bootstrap a channel-specific script from the reference implementation:
+
+```bash
+mkdir -p .midtown/channels/<channel>
+cp $(python -c "import midtown, os; print(os.path.dirname(midtown.__file__))")/default_workflow.py \
+   .midtown/channels/<channel>/workflow.py
+```
+
+The reference implementation (`sdk/python/midtown/default_workflow.py`) replicates the built-in PR lifecycle using a state machine. Customize it to add channel-specific automation.
+
 ### Channel Sync
 
 Coworkers stay synchronized via a Claude Code Stop hook. When Claude pauses, the hook reads new channel messages and checks for unclaimed tasks. This means coworkers automatically receive updates at natural pause points.
