@@ -237,7 +237,7 @@ impl DaemonPersistentState {
                 // Rebuild reverse indexes that aren't serialized
                 state.worktree_registry.rebuild_indexes();
                 debug!(
-                    "Loaded daemon state: {} PR reviewers, {} reminders, CI stats: {}, {} worktree assignments, {} task-channel mappings, {} task-model mappings, {} task-plan mappings, {} task-execution-skill mappings, {} task-thread-id mappings, {} task-message-id mappings, {} channel-lead sessions",
+                    "Loaded daemon state: {} PR reviewers, {} reminders, CI stats: {}, {} worktree assignments, {} task-channel mappings, {} task-model mappings, {} task-plan mappings, {} task-execution-skill mappings, {} task-thread-id mappings, {} task-message-id mappings, {} channel-lead sessions, {} profile-pool entries",
                     state.github.pr_reviewers.len(),
                     state.reminders.reminders.len(),
                     state.ci_stats.summary(),
@@ -248,7 +248,8 @@ impl DaemonPersistentState {
                     state.task_execution_skill.len(),
                     state.task_thread_id.len(),
                     state.task_message_id.len(),
-                    state.channel_lead_sessions.len()
+                    state.channel_lead_sessions.len(),
+                    state.profile_pool_state.len()
                 );
                 Ok(state)
             }
@@ -271,7 +272,7 @@ impl DaemonPersistentState {
         fs::write(&tmp_path, &contents)?;
         crate::paths::atomic_rename(&tmp_path, &path)?;
         debug!(
-            "Saved daemon state: {} PR reviewers, {} reminders, CI stats: {}, {} worktree assignments, {} task-channel mappings, {} task-model mappings, {} task-plan mappings, {} task-execution-skill mappings, {} channel-lead sessions",
+            "Saved daemon state: {} PR reviewers, {} reminders, CI stats: {}, {} worktree assignments, {} task-channel mappings, {} task-model mappings, {} task-plan mappings, {} task-execution-skill mappings, {} channel-lead sessions, {} profile-pool entries",
             self.github.pr_reviewers.len(),
             self.reminders.reminders.len(),
             self.ci_stats.summary(),
@@ -280,7 +281,8 @@ impl DaemonPersistentState {
             self.task_model.len(),
             self.task_plan.len(),
             self.task_execution_skill.len(),
-            self.channel_lead_sessions.len()
+            self.channel_lead_sessions.len(),
+            self.profile_pool_state.len()
         );
         Ok(())
     }

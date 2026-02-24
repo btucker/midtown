@@ -1,5 +1,4 @@
 use super::*;
-use std::collections::HashMap;
 use tempfile::tempdir;
 
 #[test]
@@ -741,7 +740,3 @@ fn profile_state_default_is_not_limited() {
     assert!(state.usage_limit_reset_at.is_none());
     assert!(state.last_used_at.is_none());
 }
-
-// Ensure HashMap import is used to suppress dead_code warning in test context
-#[allow(dead_code)]
-fn _use_hashmap(_: HashMap<String, ProfileState>) {}
