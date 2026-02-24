@@ -591,6 +591,46 @@ async fn test_recover_from_session_records_uses_lead_config_for_lead() {
 }
 
 #[tokio::test]
+async fn test_recover_from_session_records_uses_lead_config_for_codex_lead_record() {
+    let persistent_state = tokio::sync::Mutex::new(DaemonPersistentState::default());
+    {
+        let mut state = persistent_state.lock().await;
+        // Newer sessions can persist coworker_type == "lead" even when the
+        // runtime name is a provider/session artifact.
+        let record = test_session_record("sess-lead-codex", "codex-session-1", "lead");
+        state.sessions.insert("sess-lead-codex".to_string(), record);
+    }
+
+    let (effects, recovered_ids) =
+        recover_from_session_records(&persistent_state, "test-repo").await;
+
+    assert_eq!(effects.len(), 1);
+    assert!(recovered_ids.contains("sess-lead-codex"));
+    let expected_provider = crate::config::get_execution_provider_for_role(
+        "test-repo",
+        crate::config::ExecutionRole::Lead,
+    );
+    let expected_model = crate::daemon::helpers::default_model_for_provider_role(
+        expected_provider,
+        &crate::launch::CoworkerRole::Lead,
+    );
+
+    match &effects[0] {
+        Effect::ResumeCoworker {
+            name,
+            session_id,
+            config,
+        } => {
+            assert_eq!(name, "codex-session-1");
+            assert_eq!(session_id, "sess-lead-codex");
+            assert_eq!(config.role, crate::launch::CoworkerRole::Lead);
+            assert_eq!(config.model, expected_model);
+        }
+        other => panic!("Expected ResumeCoworker, got {:?}", other),
+    }
+}
+
+#[tokio::test]
 async fn test_recovering_coworker_names_deduplicates() {
     let persistent_state = tokio::sync::Mutex::new(DaemonPersistentState::default());
 
