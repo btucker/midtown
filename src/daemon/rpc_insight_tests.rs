@@ -141,8 +141,10 @@ async fn test_insight_routes_to_task_channel_when_no_explicit_channel() {
             "test-session-id".to_string(),
             super::super::state::SessionRecord {
                 session_id: "test-session-id".to_string(),
-                task_id: Some("42".to_string()),
                 current_name: Some("coworker1".to_string()),
+                coworker_type: "dev".to_string(),
+                task_id: Some("42".to_string()),
+                purpose: "task !42: some task".to_string(),
                 ..Default::default()
             },
         );
