@@ -45,25 +45,31 @@ function filterPrsByChannel(prs, channelName, taskChannelMap) {
  * This matches the TUI implementation which groups tasks by task.channel.
  */
 export function getChannelTaskCount(channelName, kanban) {
-  if (channelName === 'midtown') {
-    // Main channel shows all tasks, including those with no explicit channel assignment
-    return {
-      inProgress: kanban.inProgress.length,
-      pending: kanban.backlog.length,
-      review: kanban.review.length,
+  // Tasks with no channel field default to the main channel (matches TUI's unwrap_or(main_channel))
+  const filterTasks = (list) => {
+    if (channelName === 'midtown') {
+      return list.filter((task) => !task.channel || task.channel === 'midtown')
     }
+    return list.filter((task) => task.channel === channelName)
   }
 
-  // Topic channels filter by the task's channel field
-  const filterTasks = (list) => list.filter((task) => task.channel === channelName)
-
-  // For PRs, look up channel via task_id → channel map (consistent with task filtering)
+  // For PRs, look up channel via task_id → channel map (consistent with task filtering).
+  // PRs with no task_id default to the main channel.
   const taskChannelMap = buildTaskChannelMap(kanban)
+  const filterPrs = (prs) => {
+    if (channelName === 'midtown') {
+      return prs.filter((pr) => {
+        const ch = getPrChannel(pr, taskChannelMap)
+        return ch === null || ch === 'midtown'
+      })
+    }
+    return filterPrsByChannel(prs, channelName, taskChannelMap)
+  }
 
   return {
     inProgress: filterTasks(kanban.inProgress).length,
     pending: filterTasks(kanban.backlog).length,
-    review: filterPrsByChannel(kanban.review, channelName, taskChannelMap).length,
+    review: filterPrs(kanban.review).length,
   }
 }
 
@@ -106,9 +112,13 @@ export function getChannelHasActiveTasks(channelName, kanban) {
  * Main channel shows all PRs, topic channels filter by task channel.
  */
 export function getChannelPrs(channelName, kanban) {
-  if (channelName === 'midtown') {
-    return kanban.review
-  }
   const taskChannelMap = buildTaskChannelMap(kanban)
+  if (channelName === 'midtown') {
+    // Main channel shows PRs with no task, or whose task has no channel (or channel='midtown')
+    return kanban.review.filter((pr) => {
+      const ch = getPrChannel(pr, taskChannelMap)
+      return ch === null || ch === 'midtown'
+    })
+  }
   return filterPrsByChannel(kanban.review, channelName, taskChannelMap)
 }

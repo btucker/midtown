@@ -14,8 +14,10 @@
    */
   function filterTasksByChannel(tasks, channel) {
     if (channel === 'midtown') {
-      // Main channel shows all tasks, including those with no explicit channel assignment
-      return tasks
+      // Main channel shows only tasks with no channel (or channel='midtown').
+      // Tasks assigned to other channels appear there only, not duplicated here.
+      // Matches TUI's unwrap_or(main_channel) grouping.
+      return tasks.filter(task => !task.channel || task.channel === 'midtown')
     }
 
     // Topic channels only show tasks explicitly assigned to that channel via the channel field
