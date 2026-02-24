@@ -66,8 +66,11 @@ TRANSITIONS = [
     {"trigger": "task_assigned", "source": "pending", "dest": "in_progress"},
     # PR opened: coworker pushed their branch and opened a PR
     {"trigger": "pr_opened", "source": "in_progress", "dest": "in_review"},
-    # Review outcomes
-    {"trigger": "pr_approved", "source": "in_review", "dest": "approved"},
+    # Review outcomes — also allow approval from in_progress so a re-review
+    # after pr.changes_requested can still reach approved without requiring
+    # a new pr.opened event (the reviewer approves the updated commits on the
+    # same PR while the task is in in_progress).
+    {"trigger": "pr_approved", "source": ["in_review", "in_progress"], "dest": "approved"},
     {
         "trigger": "pr_changes_requested",
         "source": ["in_review", "approved"],
@@ -174,19 +177,21 @@ def handle(event: dict, rpc: MidtownRPC, state: dict) -> None:  # noqa: C901
     # ------------------------------------------------------------------
 
     if event_type == "pr.opened" and pr_number:
-        # Post to channel so the team knows a review is needed, then spawn a
-        # reviewer coworker.  The spawned coworker will receive the review task
-        # via normal task dispatch once it connects to the daemon.
-        rpc.post_to_channel(
-            f"PR #{pr_number} opened by {coworker} — assigning reviewer"
-        )
-        rpc.spawn_coworker(
-            prompt=(
-                f"Please review PR #{pr_number} opened by {coworker}. "
-                "Use the `code-review` skill to analyze it, then post your "
-                "review as a GitHub comment on the PR."
+        # Only post and spawn a reviewer when this event caused a real
+        # in_progress → in_review transition.  Skipping when prev_state is
+        # already in_review (or further) prevents duplicate channel posts and
+        # duplicate reviewer sessions on event replay or retries.
+        if prev_state == "in_progress" and new_state == "in_review":
+            rpc.post_to_channel(
+                f"PR #{pr_number} opened by {coworker} — assigning reviewer"
             )
-        )
+            rpc.spawn_coworker(
+                prompt=(
+                    f"Please review PR #{pr_number} opened by {coworker}. "
+                    "Use the `code-review` skill to analyze it, then post your "
+                    "review as a GitHub comment on the PR."
+                )
+            )
 
     elif event_type == "pr.approved" and pr_number:
         # The reviewer approved.  Nudge the PR author so they can decide to merge.
