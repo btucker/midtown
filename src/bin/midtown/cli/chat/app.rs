@@ -342,9 +342,9 @@ pub struct App {
     /// When true AND at max_scroll, line truncation shows oldest content.
     /// When false, always use normal truncation (LAST N lines) for smooth scrolling.
     intentionally_at_top: bool,
-    /// Accumulator for mouse wheel scroll events (-7 to +7) in the main chat panel.
+    /// Accumulator for mouse wheel scroll events (-2 to +2) in the main chat panel.
     /// Mouse wheels send multiple events per physical scroll, so we accumulate
-    /// fractional scrolls: 8 events in one direction = 1 scroll step.
+    /// fractional scrolls: MOUSE_SCROLL_THRESHOLD events in one direction = MOUSE_SCROLL_STEP lines.
     /// Positive = up credits, negative = down credits.
     /// Resets to 0 when direction changes to prevent cross-direction bleed.
     mouse_scroll_accumulator: i8,
@@ -4094,86 +4094,6 @@ pub(super) mod tests {
         assert!(
             app.is_at_max_scroll(),
             "page_up to max should set intentionally_at_top"
-        );
-    }
-
-    #[test]
-    fn test_mouse_wheel_scroll_is_slower_than_keyboard() {
-        // Mouse wheel scrolling uses a finer step (MOUSE_SCROLL_STEP) and needs
-        // MOUSE_SCROLL_THRESHOLD events per step, while keyboard scrolls SCROLL_STEP per call.
-        // scrolling: MOUSE_SCROLL_THRESHOLD wheel events = MOUSE_SCROLL_STEP lines of movement.
-        // Keyboard scrolls SCROLL_STEP per call; mouse needs MOUSE_SCROLL_THRESHOLD events per MOUSE_SCROLL_STEP.
-        let messages: VecDeque<Message> = (0..30)
-            .map(|i| Message {
-                id: i.to_string(),
-                from: "user".to_string(),
-                content: format!("message {}", i),
-                timestamp: Utc::now(),
-                message_type: midtown::MessageType::Text,
-                channel: None,
-                session_id: None,
-                thread_parent_id: None,
-            })
-            .collect();
-
-        let mut app = App {
-            messages,
-            visible_height: 10,
-            ..test_app()
-        };
-
-        // Start at bottom
-        assert_eq!(app.scroll_offset, 0);
-
-        // Keyboard scroll up: should move SCROLL_STEP lines per call
-        app.scroll_up();
-        assert_eq!(
-            app.scroll_offset, SCROLL_STEP,
-            "Keyboard scroll should move SCROLL_STEP lines"
-        );
-
-        // Reset
-        app.scroll_offset = 0;
-
-        // Mouse wheel scroll up: should take MOUSE_SCROLL_THRESHOLD events to move MOUSE_SCROLL_STEP lines
-        let sub_threshold = MOUSE_SCROLL_THRESHOLD as usize - 1;
-        for i in 1..=sub_threshold {
-            app.mouse_scroll_up();
-            assert_eq!(app.scroll_offset, 0, "Event {} shouldn't scroll yet", i);
-        }
-
-        app.mouse_scroll_up();
-        assert_eq!(
-            app.scroll_offset, MOUSE_SCROLL_STEP,
-            "{}th wheel event should complete MOUSE_SCROLL_STEP lines of scroll",
-            MOUSE_SCROLL_THRESHOLD
-        );
-
-        // Next event starts accumulating for next batch
-        app.mouse_scroll_up();
-        assert_eq!(
-            app.scroll_offset, MOUSE_SCROLL_STEP,
-            "Post-threshold event accumulates without scrolling"
-        );
-
-        // Test mouse wheel scroll down
-        // The extra up event left accumulator at 1 (up direction).
-        // First down event resets the accumulator (direction change), so
-        // now MOUSE_SCROLL_THRESHOLD full down events are needed to trigger scroll_down.
-        for i in 1..=sub_threshold {
-            app.mouse_scroll_down();
-            assert_eq!(
-                app.scroll_offset, MOUSE_SCROLL_STEP,
-                "Down event {} should not scroll yet (direction reset clears up credit)",
-                i
-            );
-        }
-
-        app.mouse_scroll_down();
-        assert_eq!(
-            app.scroll_offset, 0,
-            "{}th down event triggers scroll after direction reset",
-            MOUSE_SCROLL_THRESHOLD
         );
     }
 

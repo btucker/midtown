@@ -9,8 +9,8 @@ use super::{MOUSE_SCROLL_STEP, MOUSE_SCROLL_THRESHOLD, SCROLL_STEP};
 fn test_inertia_scrolling_with_occasional_reversals() {
     // Regression test: with threshold=8, trackpad inertia causes scroll to fail entirely.
     // Inertia produces mostly up events but occasional small reversals (down). When a
-    // reversal resets the accumulator mid-count, 7 up + 1 down + 7 up + 1 down = no scroll.
-    // With threshold=3 this pattern produces multiple scrolls.
+    // reversal resets the accumulator mid-count before threshold is reached, scroll never fires.
+    // With MOUSE_SCROLL_THRESHOLD=3 this pattern produces multiple scrolls per cycle.
     let mut app = test_app();
     for i in 0..30 {
         app.messages
@@ -18,11 +18,14 @@ fn test_inertia_scrolling_with_occasional_reversals() {
     }
     app.scroll_offset = 0;
 
-    // Simulate inertia: 7 up events, then 1 reversal, repeated 5 times.
-    // With threshold=8 this never scrolls (accumulator resets to 0 on every reversal at count 7).
-    // With threshold<=7 we complete at least one scroll despite the reversals.
+    // Simulate inertia: MOUSE_SCROLL_THRESHOLD+1 up events (fires once at event THRESHOLD,
+    // then 1 more starts the next batch), then 1 reversal (resets that partial credit).
+    // This cycle is tightly coupled to MOUSE_SCROLL_THRESHOLD: the reversal happens after
+    // exactly one successful scroll per cycle, so increasing the threshold beyond
+    // MOUSE_SCROLL_THRESHOLD+1 would prevent any scroll from completing each cycle.
+    let cycle_up = MOUSE_SCROLL_THRESHOLD as usize + 1;
     for _ in 0..5 {
-        for _ in 0..7 {
+        for _ in 0..cycle_up {
             app.mouse_scroll_up();
         }
         app.mouse_scroll_down(); // inertia reversal resets accumulator
@@ -30,7 +33,7 @@ fn test_inertia_scrolling_with_occasional_reversals() {
 
     assert!(
         app.scroll_offset > 0,
-        "Should have scrolled despite inertia reversals (7 up + 1 down, repeated)"
+        "Should have scrolled despite inertia reversals (MOUSE_SCROLL_THRESHOLD+1 up + 1 down, repeated)"
     );
 }
 
@@ -97,8 +100,13 @@ fn test_mouse_scroll_accumulator() {
 
 #[test]
 fn test_mouse_scroll_accumulator_resets_on_direction_change() {
-    // When direction changes mid-batch, credits in the old direction are discarded.
-    // (threshold-1) up + (threshold-1) down should NOT fire a scroll.
+    // When direction changes, up credits are discarded. The first down event resets the
+    // positive accumulator to 0 and counts as -1 simultaneously. The scroll should fire
+    // on exactly the MOUSE_SCROLL_THRESHOLD-th down event — not before.
+    //
+    // Without the reset: sub_threshold up credits would partially satisfy the down threshold,
+    // and the scroll would fire early (at sub_threshold + MOUSE_SCROLL_THRESHOLD events total
+    // instead of MOUSE_SCROLL_THRESHOLD).
     let mut app = test_app();
     for i in 0..30 {
         app.messages
@@ -108,23 +116,32 @@ fn test_mouse_scroll_accumulator_resets_on_direction_change() {
 
     let sub_threshold = MOUSE_SCROLL_THRESHOLD as usize - 1;
 
-    // sub_threshold up events — not enough to trigger
+    // Accumulate sub_threshold up credits (not enough to fire)
     for _ in 0..sub_threshold {
         app.mouse_scroll_up();
     }
     assert_eq!(
         app.scroll_offset, 10,
-        "sub_threshold up events should not scroll yet"
+        "sub_threshold up events should not scroll"
     );
 
-    // sub_threshold down events — direction changed on first, so accumulator resets to 0,
-    // then accumulates sub_threshold-1 more. Still not enough to trigger.
-    for _ in 0..sub_threshold {
+    // Down events: first resets the up credits and counts as -1; subsequent events
+    // continue accumulating. Scroll fires exactly at the MOUSE_SCROLL_THRESHOLD-th event.
+    for i in 1..MOUSE_SCROLL_THRESHOLD as usize {
         app.mouse_scroll_down();
+        assert_eq!(
+            app.scroll_offset, 10,
+            "Down event {} should not scroll yet (need {} total to fire)",
+            i, MOUSE_SCROLL_THRESHOLD
+        );
     }
+    // The MOUSE_SCROLL_THRESHOLD-th down event completes a full batch and fires
+    app.mouse_scroll_down();
     assert_eq!(
-        app.scroll_offset, 10,
-        "Direction change must reset accumulator; sub_threshold down after sub_threshold up should not scroll"
+        app.scroll_offset,
+        10 - MOUSE_SCROLL_STEP,
+        "Scroll must fire on exactly the {}th down event after direction reset",
+        MOUSE_SCROLL_THRESHOLD
     );
 }
 
