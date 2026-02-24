@@ -244,13 +244,18 @@ fn test_thread_panel_renders_code_block_with_syntax_highlighting_borders() {
     let all_text = rendered_lines.join("\n");
 
     assert!(
-        all_text.contains("--- rust ---"),
-        "Thread panel should render code blocks with '--- rust ---' border, got:\n{}",
+        all_text.contains("rust"),
+        "Thread panel should render code blocks with bare language label 'rust', got:\n{}",
         all_text
     );
     assert!(
-        all_text.contains("--- end ---"),
-        "Thread panel should render code blocks with '--- end ---' border, got:\n{}",
+        !all_text.contains("--- rust ---"),
+        "Thread panel should NOT show '--- rust ---' border, got:\n{}",
+        all_text
+    );
+    assert!(
+        !all_text.contains("--- end ---"),
+        "Thread panel should NOT show '--- end ---' border, got:\n{}",
         all_text
     );
     // Should NOT show raw backtick fences
