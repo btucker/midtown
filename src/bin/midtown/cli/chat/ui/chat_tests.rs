@@ -308,16 +308,14 @@ fn test_draw_lead_indicator_no_ellipsis_truncation() {
 }
 
 #[test]
-fn test_draw_lead_indicator_spinner_shows_without_lead_working() {
+fn test_draw_lead_indicator_name_shown_without_lead_working() {
     // When lead_working is false but tool entries are in-progress,
-    // the spinner glyph must still appear (not a space). This ensures the visual
-    // state is consistent with any_spinner_visible(), which fires the animation
-    // timer for in-progress entries regardless of lead_working.
+    // the agent name must still appear (pulsing bold/normal). This ensures visual
+    // activity is shown even when lead_working is stale, consistent with
+    // any_spinner_visible() which fires the animation timer for in-progress entries.
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::layout::Rect;
-
-    const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
     let backend = TestBackend::new(80, 1);
     let mut terminal = Terminal::new(backend).unwrap();
@@ -344,10 +342,9 @@ fn test_draw_lead_indicator_spinner_shows_without_lead_working() {
     let buffer = terminal.backend().buffer();
     let row = buffer_row(buffer, 0, 80);
 
-    let has_spinner = SPINNER_FRAMES.iter().any(|&frame| row.contains(frame));
     assert!(
-        has_spinner,
-        "Spinner glyph should appear when tool entries are in-progress, even if lead_working=false. Got: {row:?}",
+        row.contains("midtown"),
+        "Agent name 'midtown' should appear when tool entries are in-progress, even if lead_working=false. Got: {row:?}",
     );
 }
 
@@ -435,13 +432,12 @@ fn test_draw_lead_indicator_shows_agent_name_when_channel_thinking() {
 }
 
 #[test]
-fn test_draw_lead_indicator_shows_spinner_when_channel_thinking() {
-    // The spinner glyph should appear when channel_lead_thinking is active.
+fn test_draw_lead_indicator_name_pulsed_when_channel_thinking() {
+    // The agent name should appear (pulsing bold/normal) when channel_lead_thinking is active.
+    // Frame 0 → pulse_bold=true → BOLD modifier applied to the name.
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::layout::Rect;
-
-    const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
     let backend = TestBackend::new(80, 1);
     let mut terminal = Terminal::new(backend).unwrap();
@@ -465,10 +461,9 @@ fn test_draw_lead_indicator_shows_spinner_when_channel_thinking() {
     let buffer = terminal.backend().buffer();
     let row = buffer_row(buffer, 0, 80);
 
-    let has_spinner = SPINNER_FRAMES.iter().any(|&frame| row.contains(frame));
     assert!(
-        has_spinner,
-        "Spinner glyph should appear when channel_lead_thinking is active. Got: {row:?}",
+        row.contains("myproject"),
+        "Agent name 'myproject' should appear (pulsing) when channel_lead_thinking is active. Got: {row:?}",
     );
 }
 

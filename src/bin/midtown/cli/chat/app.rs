@@ -10,6 +10,7 @@ use chrono::{DateTime, Utc};
 use midtown::tasks::extract_task_id_from_pr_title;
 use midtown::{Channel, Message};
 
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Line;
 use ratatui_themes::Theme;
 #[cfg(test)]
@@ -2561,12 +2562,33 @@ impl App {
         self.channel_switcher.selected_index = 0;
     }
 
-    /// Get the current spinner character without advancing the frame.
-    /// Returns a braille spinner character (⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏).
-    /// Frame advancement is time-based via `tick_spinner()`.
+    /// Get the current frame index mapped to a braille spinner character.
+    /// Used in tests to verify that `tick_spinner()` advances the frame.
+    #[cfg(test)]
     pub fn spinner_char(&self) -> &'static str {
         const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
         SPINNER_FRAMES[self.spinner_frame % SPINNER_FRAMES.len()]
+    }
+
+    /// Returns true when active names should be rendered BOLD (vs. normal) for the pulse effect.
+    ///
+    /// Uses `spinner_frame` to alternate every 5 frames (~500ms on, ~500ms off = ~1s cycle).
+    pub fn pulse_bold(&self) -> bool {
+        (self.spinner_frame / 5).is_multiple_of(2)
+    }
+
+    /// Return a style that pulses the given color between bold and normal.
+    ///
+    /// Uses `spinner_frame` (advanced by `tick_spinner()` at 100ms intervals) to
+    /// alternate BOLD ↔ normal every 5 frames (~500ms on, ~500ms off = ~1s cycle).
+    /// Applied to active coworker names and the lead indicator name instead of
+    /// braille spinner glyphs.
+    pub fn pulse_name_style(&self, base_color: Color) -> Style {
+        if self.pulse_bold() {
+            Style::default().fg(base_color).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(base_color)
+        }
     }
 
     /// Set optimistic thinking state for a topic channel after user submits a message.
@@ -2622,7 +2644,10 @@ impl App {
         visible
     }
 
-    /// Returns true if any spinner is currently visible (lead working, in-progress tool entries, or active coworkers).
+    /// Returns true if any animation frame is needed (lead working, in-progress tool entries, or active coworkers).
+    ///
+    /// Controls whether `tick_spinner()` advances the frame — which drives name pulsing
+    /// via `pulse_name_style()`. Returns false when everything is idle so the frame clock stops.
     pub fn any_spinner_visible(&self) -> bool {
         self.lead_working
             || self

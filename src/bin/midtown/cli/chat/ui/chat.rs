@@ -76,7 +76,7 @@ fn lead_indicator_height(app: &App) -> u16 {
 /// Draw the lead working indicator area between chat messages and the input bar.
 ///
 /// Shows up to 3 tool entries in chronological order (oldest at top, newest at bottom).
-/// The last line (newest entry) includes a yellow braille spinner and the agent name in yellow.
+/// The last line (newest entry) shows the agent name pulsing bold/normal in yellow.
 /// Completed (✓/✗) entries age out after 30 seconds, collapsing the area to 0.
 /// Descriptions are not explicitly truncated — ratatui clips at the terminal edge naturally.
 fn draw_lead_indicator(f: &mut Frame, app: &mut App, area: Rect) {
@@ -97,16 +97,10 @@ fn draw_lead_indicator(f: &mut Frame, app: &mut App, area: Rect) {
 
     if entries.is_empty() {
         if channel_thinking {
-            // Show just the spinner with agent name, no tool entries
-            let spinner = app.spinner_char();
+            // Show agent name with pulsing bold to indicate activity (no tool entries yet)
             let line = Line::from(vec![
-                Span::styled(format!(" {} ", spinner), Style::default().fg(Color::Yellow)),
-                Span::styled(
-                    agent_key.to_string(),
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::BOLD),
-                ),
+                Span::raw(" "),
+                Span::styled(agent_key.to_string(), app.pulse_name_style(Color::Yellow)),
             ]);
             f.render_widget(Paragraph::new(vec![line]), area);
         } else {
@@ -123,13 +117,8 @@ fn draw_lead_indicator(f: &mut Frame, app: &mut App, area: Rect) {
         return;
     }
 
-    // Show spinner when any entry is still in-progress.
-    // We don't require lead_working because tool entries can be in-progress even when
-    // lead_working is false (stale RPC data), and the spinner should still animate.
-    let has_in_progress = entries.iter().any(|e| e.header.starts_with('›'));
-    let show_spinner = has_in_progress;
-    // Width of " ⠋ lead " prefix: 1 space + 1 spinner + 1 space + agent_name + 1 space
-    let prefix_width = 3 + agent_key.chars().count() + 1;
+    // Width of " lead " prefix: 1 space + agent_name + 1 space
+    let prefix_width = 1 + agent_key.chars().count() + 1;
 
     let mut lines: Vec<Line<'static>> = Vec::new();
     let n = entries.len();
@@ -154,20 +143,10 @@ fn draw_lead_indicator(f: &mut Frame, app: &mut App, area: Rect) {
 
         let is_last = i == n - 1; // last rendered = newest entry = agent name line
         if is_last {
-            // Last line (newest): " ⠋ lead › Read foo.rs" — spinner and agent name in yellow
-            let spinner = if show_spinner {
-                app.spinner_char()
-            } else {
-                " "
-            };
+            // Last line (newest): " lead › Read foo.rs" — agent name pulses bold in yellow
             lines.push(Line::from(vec![
-                Span::styled(format!(" {} ", spinner), Style::default().fg(Color::Yellow)),
-                Span::styled(
-                    format!("{agent_key} "),
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::BOLD),
-                ),
+                Span::raw(" "),
+                Span::styled(format!("{agent_key} "), app.pulse_name_style(Color::Yellow)),
                 Span::styled(prefix_char.to_string(), Style::default().fg(prefix_color)),
                 Span::styled(format!(" {description}"), Style::default().fg(text_color)),
             ]));
