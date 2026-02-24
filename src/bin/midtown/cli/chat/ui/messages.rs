@@ -224,10 +224,7 @@ pub fn apply_mention_highlights(lines: Vec<Line<'static>>) -> Vec<Line<'static>>
         return lines;
     }
 
-    let mention_style = Style::default()
-        .bg(Color::Blue)
-        .fg(Color::White)
-        .add_modifier(Modifier::BOLD);
+    let mention_style = Style::default().add_modifier(Modifier::BOLD);
 
     lines
         .into_iter()
@@ -275,7 +272,7 @@ fn split_span_at_mentions(span: Span<'static>, mention_style: Style) -> Vec<Span
         if word_end > 0 {
             result.push(Span::styled(
                 after_at[..word_end].to_string(),
-                mention_style,
+                base_style.patch(mention_style),
             ));
             remaining = &after_at[word_end..];
         } else {
@@ -1292,9 +1289,16 @@ mod tests {
             mention_span.is_some(),
             "@park should be its own span for highlighting"
         );
+        let span = mention_span.unwrap();
         assert!(
-            mention_span.unwrap().style.bg.is_some(),
-            "@park span should have a background color applied"
+            span.style.bg.is_none(),
+            "@park span should have no background color"
+        );
+        assert!(
+            span.style
+                .add_modifier
+                .contains(ratatui::style::Modifier::BOLD),
+            "@park span should have BOLD modifier"
         );
     }
 
@@ -1356,7 +1360,7 @@ mod tests {
 
     #[test]
     fn test_multiple_mentions_all_highlighted() {
-        // All @mentions in a message should be highlighted
+        // All @mentions in a message should be bold with no background
         let msg = test_message("@park and @lexington please review");
         let tasks = HashMap::new();
         let lines = render_message(&msg, 80, None, &tasks, None, &[]);
@@ -1370,12 +1374,22 @@ mod tests {
         let lex_span = find_span(content_line, "@lexington");
 
         assert!(
-            park_span.is_some_and(|s| s.style.bg.is_some()),
-            "@park should be highlighted"
+            park_span.is_some_and(|s| {
+                s.style.bg.is_none()
+                    && s.style
+                        .add_modifier
+                        .contains(ratatui::style::Modifier::BOLD)
+            }),
+            "@park should be bold with no background"
         );
         assert!(
-            lex_span.is_some_and(|s| s.style.bg.is_some()),
-            "@lexington should be highlighted"
+            lex_span.is_some_and(|s| {
+                s.style.bg.is_none()
+                    && s.style
+                        .add_modifier
+                        .contains(ratatui::style::Modifier::BOLD)
+            }),
+            "@lexington should be bold with no background"
         );
     }
 
@@ -1415,9 +1429,12 @@ mod tests {
         let tasks = HashMap::new();
         let lines = render_message(&msg, 80, None, &tasks, None, &[]);
 
-        // No span should have both content "@" and a background style
+        // No span should have the mention style (bold) applied to a bare "@"
         let has_highlighted_bare_at = lines.iter().flat_map(|l| &l.spans).any(|s| {
-            (s.content.as_ref() == "@" || s.content.as_ref() == "@ ") && s.style.bg.is_some()
+            (s.content.as_ref() == "@" || s.content.as_ref() == "@ ")
+                && s.style
+                    .add_modifier
+                    .contains(ratatui::style::Modifier::BOLD)
         });
         assert!(
             !has_highlighted_bare_at,
