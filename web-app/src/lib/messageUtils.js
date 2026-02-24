@@ -16,11 +16,11 @@ export const AVENUE_COLORS = {
   spring: '#afff87',      // light green (Indexed 156)
   prince: '#d7afff',      // lavender (Indexed 183)
   mercer: '#ffaf87',      // salmon (Indexed 216)
-  lead: '#d7d787',        // LightYellow
+  lead: '#E3BD3F',         // Gold/Amber
   github: '#585858',      // DarkGray
   system: '#585858',      // DarkGray
   daemon: '#585858',      // DarkGray
-  midtown: '#d7d787',     // LightYellow (project lead)
+  midtown: '#E3BD3F',     // Gold/Amber (project lead)
 }
 
 // Senders whose content is rendered in DarkGray (system infrastructure actors)
