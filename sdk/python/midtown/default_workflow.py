@@ -269,12 +269,13 @@ def handle(event: dict, rpc: MidtownRPC, state: dict) -> None:  # noqa: C901
             rpc.check_pending()
         except Exception:
             pass
-        # If the coworker had an active task that hasn't transitioned to merged
-        # yet (e.g. a non-PR task completed without going through pr.merged),
-        # advance it now.
+        # If the coworker had a non-PR task still in_progress (i.e. it was
+        # completed without going through pr.merged), advance it to merged now.
+        # Only fire from in_progress: PR tasks in in_review/approved go idle
+        # while waiting for review/CI and must NOT be prematurely merged.
         if task_id:
             wf = _load_task(state, task_id)
-            if wf.state != "merged" and hasattr(wf, "task_completed"):
+            if wf.state == "in_progress" and hasattr(wf, "task_completed"):
                 getattr(wf, "task_completed")()
                 _save_task(state, task_id, wf)
 
