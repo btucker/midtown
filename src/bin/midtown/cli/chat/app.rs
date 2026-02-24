@@ -594,6 +594,7 @@ impl App {
     const COWORKER_PULSE_WAVE_OFFSET_FRAMES: usize = 2;
     const COWORKER_PULSE_DIM_MAX: usize = 1;
     const COWORKER_PULSE_BOLD_MIN: usize = 4;
+    const COWORKER_PULSE_INTERVAL: Duration = Duration::from_millis(180);
 
     pub fn new() -> Self {
         // Use detect_repo_name() which correctly handles worktrees by using
@@ -2694,15 +2695,15 @@ impl App {
 
     /// Returns true when active names should be rendered BOLD (vs. normal) for the pulse effect.
     ///
-    /// Uses `spinner_frame` to alternate every 5 frames (~500ms on, ~500ms off = ~1s cycle).
+    /// Uses `spinner_frame` to alternate every 5 frames.
     pub fn pulse_bold(&self) -> bool {
         (self.spinner_frame / 5).is_multiple_of(2)
     }
 
     /// Return a style that pulses the given color between bold and normal.
     ///
-    /// Uses `spinner_frame` (advanced by `tick_spinner()` at 100ms intervals) to
-    /// alternate BOLD ↔ normal every 5 frames (~500ms on, ~500ms off = ~1s cycle).
+    /// Uses `spinner_frame` (advanced by `tick_spinner()`) to
+    /// alternate BOLD ↔ normal every 5 frames.
     /// Applied to active coworker names and the lead indicator name instead of
     /// braille spinner glyphs.
     pub fn pulse_name_style(&self, base_color: Color) -> Style {
@@ -2718,7 +2719,7 @@ impl App {
     ///
     /// The pulse is a gentle triangular wave (dim -> normal -> bold) over
     /// 10 animation frames and each row is shifted by 2 frames to create a
-    /// staggered wave effect across the coworking box.
+    /// staggered wave effect downward through the coworker box.
     pub fn coworker_name_style(&self, base_color: Color, row_index: usize) -> Style {
         let wave_step = self.coworker_pulse_wave_step(row_index);
         let style = Style::default().fg(base_color);
@@ -2733,8 +2734,12 @@ impl App {
     }
 
     fn coworker_pulse_wave_step(&self, row_index: usize) -> usize {
-        let phase = (self.spinner_frame
-            + row_index.saturating_mul(Self::COWORKER_PULSE_WAVE_OFFSET_FRAMES))
+        let row_offset = row_index.saturating_mul(Self::COWORKER_PULSE_WAVE_OFFSET_FRAMES)
+            % Self::COWORKER_PULSE_CYCLE_FRAMES;
+        let phase = (self
+            .spinner_frame
+            .wrapping_add(Self::COWORKER_PULSE_CYCLE_FRAMES)
+            .wrapping_sub(row_offset))
             % Self::COWORKER_PULSE_CYCLE_FRAMES;
 
         if phase <= Self::COWORKER_PULSE_HALF_CYCLE {
@@ -2819,8 +2824,7 @@ impl App {
 
     /// Advance the spinner frame if enough time has elapsed since the last tick.
     pub fn tick_spinner(&mut self) {
-        const SPINNER_INTERVAL: Duration = Duration::from_millis(100);
-        if self.spinner_last_tick.elapsed() >= SPINNER_INTERVAL {
+        if self.spinner_last_tick.elapsed() >= Self::COWORKER_PULSE_INTERVAL {
             self.spinner_frame = self.spinner_frame.wrapping_add(1);
             self.spinner_last_tick = Instant::now();
         }
