@@ -15,11 +15,11 @@ export const AVENUE_COLORS = {
   spring: '#afff87',
   prince: '#d7afff',
   mercer: '#ffaf87',
-  lead: '#d7d787',
+  lead: '#E3BD3F',
   github: '#585858',
   system: '#585858',
   daemon: '#585858',
-  midtown: '#d7d787',
+  midtown: '#E3BD3F',
 }
 
 export function getAvenueColor(name, fallback = '#d0d0d0') {
