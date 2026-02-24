@@ -317,6 +317,8 @@ fn draw_chat_messages(f: &mut Frame, app: &mut App, area: Rect) {
         .chain(app.channel_lead_names.iter().cloned())
         .collect();
 
+    let use_light_theme = palette.is_light();
+
     for (idx, msg) in visible.iter().enumerate() {
         let segments = mermaid::parse_content_segments(&msg.content);
         let has_special = segments
@@ -353,6 +355,7 @@ fn draw_chat_messages(f: &mut Frame, app: &mut App, area: Rect) {
                 &mut lines,
                 &mut app.diagram_sources,
                 &mut mermaid_to_render,
+                use_light_theme,
             );
         }
 

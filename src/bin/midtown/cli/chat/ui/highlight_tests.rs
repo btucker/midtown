@@ -5,7 +5,7 @@ use super::highlight_code;
 #[test]
 fn test_highlight_rust_code() {
     let source = "fn main() {\n    let x = 42;\n    println!(\"{}\", x);\n}";
-    let lines = highlight_code("rust", source);
+    let lines = highlight_code("rust", source, false);
 
     assert!(!lines.is_empty(), "Should produce at least one line");
 
@@ -37,7 +37,7 @@ fn test_highlight_rust_code() {
 fn test_highlight_unknown_language_fallback() {
     let source = "some unknown language content\nwith multiple lines";
     // Should not panic; produces plain output
-    let lines = highlight_code("unknownlanguagexyz", source);
+    let lines = highlight_code("unknownlanguagexyz", source, false);
 
     assert!(
         !lines.is_empty(),
@@ -59,9 +59,37 @@ fn test_highlight_unknown_language_fallback() {
 
 #[test]
 fn test_highlight_empty_source() {
-    let lines = highlight_code("rust", "");
+    let lines = highlight_code("rust", "", false);
     // Empty source should produce empty lines without panicking
     assert!(lines.is_empty(), "Empty source should produce no lines");
+}
+
+#[test]
+fn test_highlight_light_theme_produces_different_colors_than_dark() {
+    // InspiredGitHub (light) and base16-ocean.dark use different color palettes,
+    // so the same source should produce visually distinct foreground colors.
+    let source = "fn main() {\n    let x = 42;\n    println!(\"{}\", x);\n}";
+    let dark_lines = highlight_code("rust", source, false);
+    let light_lines = highlight_code("rust", source, true);
+
+    assert!(!dark_lines.is_empty(), "Dark theme should produce lines");
+    assert!(!light_lines.is_empty(), "Light theme should produce lines");
+
+    let dark_colors: Vec<_> = dark_lines
+        .iter()
+        .flat_map(|l| l.spans.iter())
+        .filter_map(|s| s.style.fg)
+        .collect();
+    let light_colors: Vec<_> = light_lines
+        .iter()
+        .flat_map(|l| l.spans.iter())
+        .filter_map(|s| s.style.fg)
+        .collect();
+
+    assert_ne!(
+        dark_colors, light_colors,
+        "InspiredGitHub (light) and base16-ocean.dark should produce different span colors"
+    );
 }
 
 #[test]
@@ -107,6 +135,7 @@ fn test_code_block_segment_renders_with_borders() {
         &mut lines,
         &mut diagram_sources,
         &mut mermaid_to_render,
+        false,
     );
 
     // Collect all text per line to check content

@@ -1,3 +1,5 @@
+use midtown::MessageType;
+
 use super::super::super::app::FocusedPane;
 use super::super::super::app::tests::test_app;
 use super::draw_thread_panel;
@@ -133,4 +135,78 @@ fn test_draw_thread_panel_zero_content_width_does_not_inflate_header() {
         .unwrap();
 
     // Rendered without panic — the layout was valid (no overflow from inflated header)
+}
+
+/// Thread messages containing fenced code blocks must be syntax-highlighted,
+/// not shown as raw backtick fences. The rendered thread panel must contain
+/// "--- rust ---" (code block border) when a reply has a rust code block.
+///
+/// Before the fix: draw_thread_messages used render_message() which passed the
+/// raw content through minimad_ratatui::inline, showing "```rust" as plain text.
+/// After the fix: it calls parse_content_segments() + render_message_with_mermaid()
+/// which routes code blocks through highlight_code(), producing "--- lang ---" borders.
+#[test]
+fn test_thread_panel_renders_code_block_with_syntax_highlighting_borders() {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use ratatui::layout::Rect;
+
+    let mut app = test_app();
+
+    // Add a parent message (thread header)
+    let parent_msg = midtown::Message::text("park", "Here is some code");
+    let parent_id = parent_msg.id.clone();
+    app.messages.push_back(parent_msg);
+    app.thread_parent_id = Some(parent_id.clone());
+
+    // Add a thread reply with a fenced rust code block
+    let reply = midtown::Message {
+        id: "reply-1".to_string(),
+        from: "madison".to_string(),
+        content: "```rust\nfn hello() {}\n```".to_string(),
+        timestamp: chrono::Utc::now(),
+        message_type: MessageType::Text,
+        channel: None,
+        session_id: None,
+        thread_parent_id: Some(parent_id),
+    };
+    app.thread_messages.push(reply);
+
+    let backend = TestBackend::new(80, 30);
+    let mut terminal = Terminal::new(backend).unwrap();
+
+    terminal
+        .draw(|f| {
+            let area = Rect::new(0, 0, 80, 30);
+            draw_thread_panel(f, &mut app, area);
+        })
+        .unwrap();
+
+    // Collect rendered buffer as text lines
+    let buf = terminal.backend().buffer();
+    let rendered_lines: Vec<String> = (0..30)
+        .map(|row| {
+            (0..80)
+                .filter_map(|col| buf.cell((col, row)).map(|c| c.symbol().to_string()))
+                .collect()
+        })
+        .collect();
+    let all_text = rendered_lines.join("\n");
+
+    assert!(
+        all_text.contains("--- rust ---"),
+        "Thread panel should render code blocks with '--- rust ---' border, got:\n{}",
+        all_text
+    );
+    assert!(
+        all_text.contains("--- end ---"),
+        "Thread panel should render code blocks with '--- end ---' border, got:\n{}",
+        all_text
+    );
+    // Should NOT show raw backtick fences
+    assert!(
+        !all_text.contains("```rust"),
+        "Thread panel should NOT show raw backtick fences, got:\n{}",
+        all_text
+    );
 }

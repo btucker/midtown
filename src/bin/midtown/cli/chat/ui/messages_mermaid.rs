@@ -34,6 +34,7 @@ pub fn render_message_with_mermaid(
     lines: &mut Vec<Line<'static>>,
     diagram_sources: &mut Vec<String>,
     mermaid_to_render: &mut Vec<String>,
+    use_light_theme: bool,
 ) {
     let ctx = MessageRenderContext::new(msg, prev_sender, user_display_name, channel_lead_names);
 
@@ -83,6 +84,7 @@ pub fn render_message_with_mermaid(
                     content_width,
                     &mut is_first_content_line,
                     lines,
+                    use_light_theme,
                 );
             }
         }
@@ -167,6 +169,7 @@ fn render_mermaid_segment(
 /// Handles the timestamp gutter for the first line of the message when
 /// `is_first_content_line` is true (sets it to false after emitting the first line).
 /// Long code lines are truncated to `content_width` to prevent overflow on narrow terminals.
+#[allow(clippy::too_many_arguments)]
 fn render_code_block_segment(
     msg: &midtown::Message,
     language: &str,
@@ -175,6 +178,7 @@ fn render_code_block_segment(
     content_width: usize,
     is_first_content_line: &mut bool,
     lines: &mut Vec<Line<'static>>,
+    use_light_theme: bool,
 ) {
     let indent = " ".repeat(ctx.indent_width());
 
@@ -195,7 +199,7 @@ fn render_code_block_segment(
     }
 
     // Highlighted code lines, truncated to content_width
-    let highlighted = highlight_code(language, source);
+    let highlighted = highlight_code(language, source, use_light_theme);
     for hl_line in highlighted {
         let mut truncated_spans = Vec::new();
         let mut remaining = content_width;
