@@ -29,7 +29,7 @@ Escalate when the situation requires something only the Project Lead can do:
 
 **Escalation format** (post to #midtown):
 ```bash
-midtown channel post "@{project_name} [from #ops] PR #N is stuck — coworker hasn't responded to nudges for X minutes. Needs reassignment." --channel midtown
+midtown channel post "@{project_name} PR #N is stuck — coworker hasn't responded to nudges for X minutes. Needs reassignment." --channel midtown
 ```
 
 ### What You Do NOT Own

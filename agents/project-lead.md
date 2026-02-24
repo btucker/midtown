@@ -110,7 +110,7 @@ Topic channels have dedicated **channel leads** — domain experts with persiste
 midtown channel post "@channel-lead <question or topic>" --channel ops
 ```
 
-**When ops escalates to you** (via `@{project_name} [from #ops] ...` in the main channel):
+**When ops escalates to you** (via `@{project_name} ...` in the main channel):
 - Task reassignment needed (ops can't create tasks)
 - Manual merge intervention required
 - Genuine daemon bug (ops will provide snapshot context)

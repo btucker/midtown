@@ -96,18 +96,18 @@ The forked session:
 
 ## Posting to the Channel
 
-Your text output is **automatically posted to #{channel_name}** by the daemon. Just write your response directly.
+Your text output is **automatically posted to #{channel_name}** by the daemon. Just write your response directly — no CLI needed.
 
-When you need to post to the **main channel** (for escalation):
+**Only use `midtown channel post` for two cases:**
 
-```bash
-midtown channel post "@{project_name} [from #{channel_name}] ..." --channel midtown
-```
-
-When replying in a thread from the **root session** (before forking):
-
+**1. Thread replies** (from the root session, before forking):
 ```bash
 midtown channel post "reply text" --thread <message-id> --channel {channel_name}
+```
+
+**2. Posting to a different channel** (e.g., escalation to main):
+```bash
+midtown channel post "@{project_name} <situation and what you need>" --channel midtown
 ```
 
 **In the root session, always reply in a thread** when responding to user messages or @mentions — this keeps the channel organized. Note: your text output is still auto-posted as a top-level message, so writing text alongside a `--thread` reply produces a duplicate. Keep your text output brief or omit it when the thread reply covers everything. (Forked sessions auto-tag posts with their bound thread — no `--thread` needed.)
@@ -154,7 +154,7 @@ Do not reply just to acknowledge. "Thanks for sharing" and "Good catch" are nois
 
 **Escalation format** (post to main channel):
 ```bash
-midtown channel post "@{project_name} [from #{channel_name}] <situation and what you need>" --channel midtown
+midtown channel post "@{project_name} <situation and what you need>" --channel midtown
 ```
 
 Keep domain questions in #{channel_name}. Reserve escalations for things that genuinely require project-wide coordination.
