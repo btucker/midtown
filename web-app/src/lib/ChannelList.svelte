@@ -31,13 +31,14 @@
     // channel-scoped and should not carry over to a different channel.
     closeThread()
 
-    activeChannel.set(channelName)
-
-    // Auto-expand task list when selecting a channel that has active tasks.
-    // Never auto-collapse — preserve any manual expansions the user has set.
-    if (getChannelHasActiveTasks(channelName, $kanbanData)) {
+    // Auto-expand task list only when switching to a different channel that has
+    // active tasks. Guard against re-click of the already-active channel, which
+    // would override a manual collapse the user performed.
+    if (channelName !== $activeChannel && getChannelHasActiveTasks(channelName, $kanbanData)) {
       expandedChannels.add(channelName)
     }
+
+    activeChannel.set(channelName)
 
     // Clear unread count for this channel
     channels.update((channelList) =>
