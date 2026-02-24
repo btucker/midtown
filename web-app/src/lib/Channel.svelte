@@ -4,6 +4,7 @@
   import { sendMessage, uploadFile, closeThread, openThread, openTaskThread } from './api.js'
   import { tick, onMount } from 'svelte'
   import { fly } from 'svelte/transition'
+  import ReplyIcon from '@lucide/svelte/icons/reply'
   import MermaidDiagram from './MermaidDiagram.svelte'
   import { parseSegments, hasMermaid, renderContent } from './markdown.js'
   import Autocomplete from './Autocomplete.svelte'
@@ -668,17 +669,17 @@
         {#each channelMessages as msg, i}
           <div
             in:fly={{ y: 16, duration: isNewMessage($activeChannel, i) ? 180 : 0, opacity: 0 }}
-            class="group relative"
+            class="group relative -mx-[18px] px-[18px] rounded-sm hover:bg-accent/30"
             class:mobile-thread-tappable={!$isWideScreen && !msg.thread_parent_id}
             onclick={(event) => handleMessageTap(event, msg)}
           >
           {#if !msg.thread_parent_id}
             <button
-              class="hidden lg:flex absolute right-0 top-[1px] items-center gap-1 px-2 py-[1px] rounded border border-border bg-card/95 text-[0.68rem] text-muted-foreground cursor-pointer opacity-0 pointer-events-none transition-opacity duration-150 group-hover:opacity-100 group-hover:pointer-events-auto focus:opacity-100 focus:pointer-events-auto hover:text-foreground hover:border-ring"
+              class="hidden lg:flex absolute right-2 top-[1px] items-center gap-1 px-1.5 py-[1px] rounded text-[0.68rem] text-muted-foreground cursor-pointer opacity-0 pointer-events-none transition-opacity duration-150 group-hover:opacity-100 group-hover:pointer-events-auto focus:opacity-100 focus:pointer-events-auto hover:text-foreground"
               onclick={() => openThread(msg, $activeChannel)}
               aria-label="Reply in thread"
             >
-              Reply
+              <ReplyIcon size={13} />
             </button>
           {/if}
           {#if needsBlankLine(channelMessages, i)}
