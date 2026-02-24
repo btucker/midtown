@@ -1,5 +1,6 @@
 <script>
   import { messages, messagesByChannel, activeChannel, channels, coworkers, kanbanData, repoStatus, repoStatuses, daemonStatus, detailPanelData, isWideScreen, agentToolItems, threadData } from './store.js'
+  import { AVENUE_COLORS, getAvenueColor } from './avenue-colors.js'
   import { sendMessage, uploadFile, closeThread, openThread, openTaskThread } from './api.js'
   import { tick, onMount } from 'svelte'
   import { fly } from 'svelte/transition'
@@ -377,35 +378,11 @@
     }
   })
 
-  // Muted avenue colors matching terminal TUI palette (AVENUE_COLORS from ui.rs)
-  const AVENUE_COLORS = {
-    lexington: '#5fafaf',   // Cyan
-    park: '#5faf5f',        // Green
-    madison: '#ff5f5f',     // LightRed
-    broadway: '#af5faf',    // Magenta
-    amsterdam: '#5f87af',   // Blue
-    columbus: '#af5f5f',    // Red
-    riverside: '#87d7d7',   // LightCyan
-    york: '#87d787',        // LightGreen
-    pleasant: '#d7afd7',    // LightMagenta
-    vernon: '#87afd7',      // LightBlue
-    bleecker: '#d7875f',    // orange (Indexed 208)
-    houston: '#ff87d7',     // pink (Indexed 213)
-    canal: '#87d7ff',       // light blue (Indexed 117)
-    spring: '#afff87',      // light green (Indexed 156)
-    prince: '#d7afff',      // lavender (Indexed 183)
-    mercer: '#ffaf87',      // salmon (Indexed 216)
-    lead: '#d7d787',        // LightYellow
-    github: '#585858',      // DarkGray
-    system: '#585858',      // DarkGray
-    midtown: '#d7d787',     // LightYellow (project lead)
-  }
-
   // Senders whose content is rendered in DarkGray (system infrastructure actors)
   const DIM_SENDERS = new Set(['daemon', 'github', 'system'])
 
   function getSenderColor(name) {
-    return AVENUE_COLORS[name?.toLowerCase()] || '#d0d0d0'
+    return getAvenueColor(name, '#d0d0d0')
   }
 
   function isDimSender(sender) {
