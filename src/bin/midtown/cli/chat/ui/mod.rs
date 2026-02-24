@@ -10,7 +10,7 @@
 //! - `task_panel`: Task detail panel (subject, status, description, metadata)
 //! - `text`: Markdown parsing and line wrapping utilities
 //! - `thread`: Thread reply panel
-//! - `usage`: Usage progress bars (session + weekly utilization)
+//! - `usage`: Inline usage spans for the repo status bar
 
 mod board;
 mod chat;
@@ -69,33 +69,13 @@ fn repo_status_height(app: &App) -> u16 {
 /// bypassing ratatui's buffer system (which doesn't support hyperlinks).
 pub fn draw(f: &mut Frame, app: &mut App) -> Vec<Hyperlink> {
     let status_height = repo_status_height(app);
-    // Calculate height dynamically: 4 lines per account with data, 2 lines per account without
-    let usage_height = if !app.usage_data.is_empty() {
-        app.usage_data
-            .iter()
-            .map(|u| {
-                if u.session_resets.is_some() || u.week_resets.is_some() {
-                    4 // label + session + week + blank
-                } else {
-                    2 // label + "no data"
-                }
-            })
-            .sum::<u16>()
-            + 2 // border
-    } else {
-        0
-    };
 
     let vertical_chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(status_height),
-            Constraint::Min(10),
-            Constraint::Length(usage_height),
-        ])
+        .constraints([Constraint::Length(status_height), Constraint::Min(10)])
         .split(f.area());
 
-    draw_repo_status_lines(f, app, vertical_chunks[0]);
+    draw_repo_status_lines(f, app, vertical_chunks[0], &app.usage_data.clone());
 
     let sidebar_pct = app.sidebar_width_pct;
     let main_area = vertical_chunks[1];
@@ -149,10 +129,6 @@ pub fn draw(f: &mut Frame, app: &mut App) -> Vec<Hyperlink> {
         chat::draw_chat_panel(f, app, horizontal_chunks[1]);
     }
 
-    if !app.usage_data.is_empty() {
-        usage::draw_usage_bars(f, app, vertical_chunks[2]);
-    }
-
     // Draw channel switcher overlay last so it appears on top
     if app.channel_switcher.show {
         chat::draw_channel_switcher_overlay(f, app, f.area());
@@ -193,29 +169,48 @@ pub(super) fn format_relative_time(time: DateTime<Utc>) -> String {
 }
 
 /// Draw stacked repo status lines (one per repo, or single line for single-repo)
-fn draw_repo_status_lines(f: &mut Frame, app: &App, area: Rect) {
+///
+/// Usage data is appended inline to the last (or only) status line.
+fn draw_repo_status_lines(
+    f: &mut Frame,
+    app: &App,
+    area: Rect,
+    usage_data: &[midtown::usage::UsageData],
+) {
     let palette = app.theme.palette();
     if app.repo_statuses.len() > 1 {
+        let last_idx = app.repo_statuses.len() - 1;
         let lines: Vec<Line> = app
             .repo_statuses
             .iter()
-            .map(|(info, status)| build_repo_status_line(&info.label, status, area.width, palette))
+            .enumerate()
+            .map(|(i, (info, status))| {
+                let u = if i == last_idx { usage_data } else { &[] };
+                build_repo_status_line(&info.label, status, area.width, palette, u)
+            })
             .collect();
         let paragraph = Paragraph::new(lines);
         f.render_widget(paragraph, area);
     } else {
-        let line = build_repo_status_line(&app.repo_name, &app.repo_status, area.width, palette);
+        let line = build_repo_status_line(
+            &app.repo_name,
+            &app.repo_status,
+            area.width,
+            palette,
+            usage_data,
+        );
         let paragraph = Paragraph::new(line);
         f.render_widget(paragraph, area);
     }
 }
 
-/// Build a single repo status line with commit, CI, and release info
+/// Build a single repo status line with commit, CI, release info, and optional inline usage.
 fn build_repo_status_line(
     repo_label: &str,
     status: &RepoStatus,
     width: u16,
     palette: ThemePalette,
+    usage_data: &[midtown::usage::UsageData],
 ) -> Line<'static> {
     let bg = Color::Indexed(236);
     let mut spans = Vec::new();
@@ -268,6 +263,9 @@ fn build_repo_status_line(
             ));
         }
     }
+
+    // Append inline usage percentages before the padding span
+    spans.extend(usage::build_usage_inline_spans(usage_data));
 
     let content_len: usize = spans.iter().map(|s| s.content.len()).sum();
     if content_len < width as usize {

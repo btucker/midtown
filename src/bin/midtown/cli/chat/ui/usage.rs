@@ -1,129 +1,96 @@
-//! Usage progress bars (session + weekly utilization).
+//! Usage inline spans for the repo status bar.
 
-use chrono::{DateTime, Local, Utc};
 use ratatui::{
-    Frame,
-    layout::Rect,
     style::{Color, Style},
-    text::{Line, Span},
-    widgets::{Block, Borders, Paragraph},
+    text::Span,
 };
 
-use super::super::app::App;
+use midtown::usage::UsageData;
 
-/// Draw the usage progress bars (session + weekly utilization) for all active accounts.
+/// Background color matching the repo status bar.
+const STATUS_BAR_BG: Color = Color::Indexed(236);
+
+/// Build inline usage spans for the repo status bar.
 ///
-/// Renders stacked pairs of progress bars (session + weekly) for each account.
-/// Accounts with no usage data (e.g., z.ai) show "No usage data available".
-pub fn draw_usage_bars(f: &mut Frame, app: &App, area: Rect) {
-    if app.usage_data.is_empty() {
-        return;
+/// Returns an empty vec when `usage_data` is empty.
+/// Single account: `  │  S:42% W:15%`
+/// Multiple accounts: `  │  CLAUDE 42%/15%  ·  BEDROCK 30%/5%`
+pub fn build_usage_inline_spans(usage_data: &[UsageData]) -> Vec<Span<'static>> {
+    if usage_data.is_empty() {
+        return vec![];
     }
 
-    let block = Block::default()
-        .title(" Usage ")
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::DarkGray));
+    let bg = STATUS_BAR_BG;
+    let mut spans = Vec::new();
 
-    let inner = block.inner(area);
-    f.render_widget(block, area);
+    spans.push(Span::styled(
+        "  │  ",
+        Style::default().fg(Color::DarkGray).bg(bg),
+    ));
 
-    let mut lines = Vec::new();
+    let multi = usage_data.len() > 1;
 
-    for usage in &app.usage_data {
-        // Account label line
-        let label = if let Some(ref email) = usage.account_email {
-            format!("{} ({})", usage.provider.as_str().to_uppercase(), email)
-        } else {
-            format!(
-                "{} ({})",
-                usage.provider.as_str().to_uppercase(),
-                usage.profile_name
+    for (i, usage) in usage_data.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::styled(
+                "  ·  ",
+                Style::default().fg(Color::DarkGray).bg(bg),
+            ));
+        }
+
+        // For multiple accounts, prefix with the provider name to distinguish them
+        if multi {
+            let label = usage.provider.as_str().to_uppercase();
+            spans.push(Span::styled(
+                format!("{label} "),
+                Style::default().fg(Color::DarkGray).bg(bg),
+            ));
+        }
+
+        // Check each window independently — a missing reset means that window is unavailable.
+        let s_span = if usage.session_resets.is_some() {
+            let pct = usage.session_util.round() as u32;
+            Span::styled(
+                format!("{pct}%"),
+                Style::default().fg(usage_color(usage.session_util)).bg(bg),
             )
-        };
-        lines.push(Line::from(vec![Span::styled(
-            label,
-            Style::default().fg(Color::Cyan),
-        )]));
-
-        // Session + weekly bars (or "no data" message)
-        if usage.session_resets.is_some() || usage.week_resets.is_some() {
-            lines.push(render_usage_line(
-                "  Session",
-                usage.session_util,
-                usage.session_resets.as_ref(),
-                true,
-            ));
-            lines.push(render_usage_line(
-                "  Week   ",
-                usage.week_util,
-                usage.week_resets.as_ref(),
-                false,
-            ));
         } else {
-            lines.push(Line::from(vec![Span::styled(
-                "  No usage data available",
-                Style::default().fg(Color::DarkGray),
-            )]));
-        }
+            Span::styled("—", Style::default().fg(Color::DarkGray).bg(bg))
+        };
+        let w_span = if usage.week_resets.is_some() {
+            let pct = usage.week_util.round() as u32;
+            Span::styled(
+                format!("{pct}%"),
+                Style::default().fg(usage_color(usage.week_util)).bg(bg),
+            )
+        } else {
+            Span::styled("—", Style::default().fg(Color::DarkGray).bg(bg))
+        };
 
-        // Blank line between accounts (if not the last)
-        // Compare by profile and provider since UsageData doesn't implement PartialEq
-        let is_last = app
-            .usage_data
-            .last()
-            .map(|last| usage.provider == last.provider && usage.profile_name == last.profile_name)
-            .unwrap_or(false);
-        if !is_last {
-            lines.push(Line::from(""));
+        if multi {
+            // Compact slash-separated format for multiple accounts
+            spans.push(s_span);
+            spans.push(Span::styled(
+                "/",
+                Style::default().fg(Color::DarkGray).bg(bg),
+            ));
+            spans.push(w_span);
+        } else {
+            // Labeled format for single account: S:42% W:15%
+            spans.push(Span::styled(
+                "S:",
+                Style::default().fg(Color::DarkGray).bg(bg),
+            ));
+            spans.push(s_span);
+            spans.push(Span::styled(
+                " W:",
+                Style::default().fg(Color::DarkGray).bg(bg),
+            ));
+            spans.push(w_span);
         }
     }
 
-    let paragraph = Paragraph::new(lines);
-    f.render_widget(paragraph, inner);
-}
-
-/// Render a single usage progress bar line.
-///
-/// Format: `Label ████████░░░░░░░░░░ XX%  ~Xh remaining  ↻ reset_time`
-fn render_usage_line(
-    label: &str,
-    utilization: f64,
-    resets_at: Option<&DateTime<Utc>>,
-    is_session: bool,
-) -> Line<'static> {
-    let color = usage_color(utilization);
-    let pct = utilization.round() as u32;
-
-    let bar_width: usize = 20;
-    let filled = ((utilization / 100.0) * bar_width as f64).round() as usize;
-    let empty = bar_width.saturating_sub(filled);
-
-    let bar_filled: String = "█".repeat(filled);
-    let bar_empty: String = "░".repeat(empty);
-
-    let (estimate_text, reset_text) = match resets_at {
-        Some(r) => (
-            estimate_time_to_full(utilization, r, is_session),
-            format_reset_time(r, is_session),
-        ),
-        None => ("—".to_string(), "—".to_string()),
-    };
-
-    Line::from(vec![
-        Span::styled(format!(" {label} "), Style::default().fg(Color::DarkGray)),
-        Span::styled(bar_filled, Style::default().fg(color)),
-        Span::styled(bar_empty, Style::default().fg(Color::DarkGray)),
-        Span::styled(format!(" {:>3}%", pct), Style::default().fg(color)),
-        Span::styled(
-            format!("  {estimate_text}"),
-            Style::default().fg(Color::DarkGray),
-        ),
-        Span::styled(
-            format!("  ↻ {reset_text}"),
-            Style::default().fg(Color::DarkGray),
-        ),
-    ])
+    spans
 }
 
 /// Choose bar color based on utilization threshold.
@@ -137,84 +104,51 @@ fn usage_color(utilization: f64) -> Color {
     }
 }
 
-/// Estimate time until utilization reaches 100% based on current consumption rate.
-///
-/// Uses the known window duration (5h session, 7d weekly) and current utilization
-/// to extrapolate when usage will hit the limit. Returns "—" if rate is zero
-/// (no consumption) or utilization is already at/above 100%.
-fn estimate_time_to_full(utilization: f64, resets_at: &DateTime<Utc>, is_session: bool) -> String {
-    if utilization <= 0.0 || utilization >= 100.0 {
-        return "—".to_string();
-    }
-
-    let now = Utc::now();
-    let time_until_reset = resets_at.signed_duration_since(now);
-    let secs_until_reset = time_until_reset.num_seconds();
-
-    if secs_until_reset <= 0 {
-        return "—".to_string();
-    }
-
-    // Total window duration in seconds
-    let window_secs: f64 = if is_session {
-        5.0 * 3600.0 // 5 hours
-    } else {
-        7.0 * 24.0 * 3600.0 // 7 days
-    };
-
-    // Elapsed time in this window = total_window - time_remaining
-    let elapsed_secs = window_secs - secs_until_reset as f64;
-    if elapsed_secs <= 0.0 {
-        return "—".to_string();
-    }
-
-    // Rate = utilization percentage per second
-    let rate = utilization / elapsed_secs;
-    // Time to reach 100% from current utilization
-    let remaining_pct = 100.0 - utilization;
-    let secs_to_full = remaining_pct / rate;
-
-    format_duration_estimate(secs_to_full)
-}
-
-/// Format a duration in seconds as a human-readable estimate string.
-fn format_duration_estimate(secs: f64) -> String {
-    let minutes = (secs / 60.0).round() as i64;
-    if minutes < 1 {
-        "~<1m left".to_string()
-    } else if minutes < 60 {
-        format!("~{minutes}m left")
-    } else {
-        let hours = minutes / 60;
-        let remaining_mins = minutes % 60;
-        if remaining_mins == 0 {
-            format!("~{hours}h left")
-        } else {
-            format!("~{hours}h{remaining_mins}m left")
-        }
-    }
-}
-
-/// Format reset time for display.
-///
-/// Session: "H:MMam/pm" (e.g., "4:59pm")
-/// Weekly: "Mon DD" (e.g., "Feb 11")
-/// Returns "now" if the reset time is in the past.
-fn format_reset_time(resets_at: &DateTime<Utc>, is_session: bool) -> String {
-    if *resets_at <= Utc::now() {
-        return "now".to_string();
-    }
-    let local = resets_at.with_timezone(&Local);
-    if is_session {
-        local.format("%-I:%M%P").to_string()
-    } else {
-        local.format("%b %-d").to_string()
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    use chrono::Utc;
+    use midtown::auth::AuthProvider;
+
     use super::*;
+
+    fn make_usage(session_util: f64, week_util: f64, with_resets: bool) -> UsageData {
+        let resets = if with_resets {
+            Some(Utc::now() + chrono::Duration::hours(3))
+        } else {
+            None
+        };
+        UsageData {
+            session_util,
+            session_resets: resets,
+            week_util,
+            week_resets: resets,
+            account_email: None,
+            provider: AuthProvider::Claude,
+            profile_name: "default".to_string(),
+            cache_age_seconds: None,
+            cache_stale: false,
+        }
+    }
+
+    fn make_usage_partial(
+        session_util: f64,
+        week_util: f64,
+        session_reset: bool,
+        week_reset: bool,
+    ) -> UsageData {
+        let future = Some(Utc::now() + chrono::Duration::hours(3));
+        UsageData {
+            session_util,
+            session_resets: if session_reset { future } else { None },
+            week_util,
+            week_resets: if week_reset { future } else { None },
+            account_email: None,
+            provider: AuthProvider::Claude,
+            profile_name: "default".to_string(),
+            cache_age_seconds: None,
+            cache_stale: false,
+        }
+    }
 
     #[test]
     fn test_usage_color_green() {
@@ -235,132 +169,124 @@ mod tests {
     }
 
     #[test]
-    fn test_render_usage_line_produces_spans() {
-        let resets_at = Utc::now() + chrono::Duration::hours(3);
-        let line = render_usage_line("Session", 50.0, Some(&resets_at), true);
-        assert_eq!(line.spans.len(), 6);
+    fn test_build_usage_inline_spans_empty() {
+        let spans = build_usage_inline_spans(&[]);
+        assert!(spans.is_empty());
     }
 
     #[test]
-    fn test_render_usage_line_bar_proportions() {
-        let resets_at = Utc::now();
-        let line = render_usage_line("Test   ", 50.0, Some(&resets_at), true);
-        let filled_content = &line.spans[1].content;
-        let empty_content = &line.spans[2].content;
-        assert_eq!(filled_content.chars().count(), 10);
-        assert_eq!(empty_content.chars().count(), 10);
-    }
-
-    #[test]
-    fn test_render_usage_line_zero_percent() {
-        let resets_at = Utc::now();
-        let line = render_usage_line("Test   ", 0.0, Some(&resets_at), true);
-        let filled_content = &line.spans[1].content;
-        let empty_content = &line.spans[2].content;
-        assert_eq!(filled_content.chars().count(), 0);
-        assert_eq!(empty_content.chars().count(), 20);
-    }
-
-    #[test]
-    fn test_render_usage_line_full_percent() {
-        let resets_at = Utc::now();
-        let line = render_usage_line("Test   ", 100.0, Some(&resets_at), true);
-        let filled_content = &line.spans[1].content;
-        let empty_content = &line.spans[2].content;
-        assert_eq!(filled_content.chars().count(), 20);
-        assert_eq!(empty_content.chars().count(), 0);
-    }
-
-    #[test]
-    fn test_render_usage_line_none_resets_at() {
-        let line = render_usage_line("Session", 0.0, None, true);
-        assert_eq!(line.spans.len(), 6);
-        let estimate = &line.spans[4].content;
-        let reset = &line.spans[5].content;
+    fn test_build_usage_inline_spans_single_account() {
+        let usage = make_usage(42.0, 15.0, true);
+        let spans = build_usage_inline_spans(&[usage]);
+        let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.contains("│"), "Should contain separator: {text}");
+        assert!(text.contains("S:"), "Should contain S: label: {text}");
+        assert!(text.contains("W:"), "Should contain W: label: {text}");
+        assert!(text.contains("42%"), "Should contain session pct: {text}");
+        assert!(text.contains("15%"), "Should contain weekly pct: {text}");
+        // Single account should NOT have provider prefix
         assert!(
-            estimate.contains('—'),
-            "Estimate should contain em-dash when resets_at is None: {:?}",
-            estimate
-        );
-        assert!(
-            reset.contains('—'),
-            "Reset should contain em-dash when resets_at is None: {:?}",
-            reset
+            !text.contains("CLAUDE"),
+            "Single account should not show provider: {text}"
         );
     }
 
     #[test]
-    fn test_format_reset_time_past_returns_now() {
-        let past = Utc::now() - chrono::Duration::hours(1);
-        assert_eq!(format_reset_time(&past, true), "now");
-        assert_eq!(format_reset_time(&past, false), "now");
-    }
-
-    #[test]
-    fn test_format_reset_time_future_returns_formatted() {
-        let future = Utc::now() + chrono::Duration::hours(2);
-        let result = format_reset_time(&future, true);
-        assert_ne!(result, "now");
+    fn test_build_usage_inline_spans_no_data() {
+        let usage = make_usage(0.0, 0.0, false);
+        let spans = build_usage_inline_spans(&[usage]);
+        let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(
-            result.contains(':'),
-            "Session format should contain colon: {}",
-            result
+            text.contains("S:—"),
+            "Should show em-dash when no resets: {text}"
         );
-
-        let result = format_reset_time(&future, false);
-        assert_ne!(result, "now");
+        assert!(
+            text.contains("W:—"),
+            "Should show em-dash when no resets: {text}"
+        );
     }
 
     #[test]
-    fn test_estimate_time_to_full_zero_utilization() {
-        let resets_at = Utc::now() + chrono::Duration::hours(3);
-        assert_eq!(estimate_time_to_full(0.0, &resets_at, true), "—");
+    fn test_build_usage_inline_spans_multiple_accounts() {
+        let mut u1 = make_usage(42.0, 15.0, true);
+        u1.provider = AuthProvider::Claude;
+        let mut u2 = make_usage(30.0, 5.0, true);
+        u2.provider = AuthProvider::Codex;
+        let spans = build_usage_inline_spans(&[u1, u2]);
+        let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(
+            text.contains("CLAUDE"),
+            "Multiple accounts should show provider: {text}"
+        );
+        assert!(
+            text.contains("CODEX"),
+            "Multiple accounts should show provider: {text}"
+        );
+        assert!(
+            text.contains("42%"),
+            "Should contain first account session pct: {text}"
+        );
+        assert!(
+            text.contains("30%"),
+            "Should contain second account session pct: {text}"
+        );
+        assert!(
+            text.contains("·"),
+            "Multiple accounts should have dot separator: {text}"
+        );
+        // Multi-account format uses / not S:/W: labels
+        assert!(
+            !text.contains("S:"),
+            "Multi-account should not have S: labels: {text}"
+        );
     }
 
     #[test]
-    fn test_estimate_time_to_full_already_full() {
-        let resets_at = Utc::now() + chrono::Duration::hours(3);
-        assert_eq!(estimate_time_to_full(100.0, &resets_at, true), "—");
+    fn test_build_usage_inline_spans_partial_data_session_only() {
+        // Only session window present — week should show em-dash, not 0%
+        let usage = make_usage_partial(42.0, 0.0, true, false);
+        let spans = build_usage_inline_spans(&[usage]);
+        let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.contains("42%"), "Session pct should appear: {text}");
+        assert!(
+            !text.contains("0%"),
+            "Missing week should not appear as 0%: {text}"
+        );
+        // The W: label followed by em-dash means week is shown as unavailable
+        assert!(
+            text.contains("W:—") || (text.contains("W:") && text.contains('—')),
+            "Missing week should render as em-dash: {text}"
+        );
     }
 
     #[test]
-    fn test_estimate_time_to_full_past_reset() {
-        let resets_at = Utc::now() - chrono::Duration::hours(1);
-        assert_eq!(estimate_time_to_full(50.0, &resets_at, true), "—");
+    fn test_build_usage_inline_spans_partial_data_week_only() {
+        // Only week window present — session should show em-dash, not 0%
+        let usage = make_usage_partial(0.0, 25.0, false, true);
+        let spans = build_usage_inline_spans(&[usage]);
+        let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.contains("25%"), "Week pct should appear: {text}");
+        assert!(
+            !text.contains("0%"),
+            "Missing session should not appear as 0%: {text}"
+        );
+        assert!(
+            text.contains("S:—") || (text.contains("S:") && text.contains('—')),
+            "Missing session should render as em-dash: {text}"
+        );
     }
 
     #[test]
-    fn test_estimate_time_to_full_session_midpoint() {
-        let resets_at = Utc::now() + chrono::Duration::minutes(150);
-        let result = estimate_time_to_full(50.0, &resets_at, true);
-        assert!(result.contains("left"), "Expected 'left' in: {result}");
-        assert!(result.starts_with('~'), "Expected '~' prefix in: {result}");
-    }
-
-    #[test]
-    fn test_estimate_time_to_full_high_utilization() {
-        let resets_at = Utc::now() + chrono::Duration::minutes(30);
-        let result = estimate_time_to_full(90.0, &resets_at, true);
-        assert!(result.contains("left"), "Expected 'left' in: {result}");
-    }
-
-    #[test]
-    fn test_format_duration_estimate_minutes() {
-        assert_eq!(format_duration_estimate(1800.0), "~30m left");
-    }
-
-    #[test]
-    fn test_format_duration_estimate_hours() {
-        assert_eq!(format_duration_estimate(7200.0), "~2h left");
-    }
-
-    #[test]
-    fn test_format_duration_estimate_hours_and_minutes() {
-        assert_eq!(format_duration_estimate(5400.0), "~1h30m left");
-    }
-
-    #[test]
-    fn test_format_duration_estimate_less_than_one_minute() {
-        assert_eq!(format_duration_estimate(10.0), "~<1m left");
+    fn test_build_usage_inline_spans_all_have_status_bar_bg() {
+        let usage = make_usage(50.0, 25.0, true);
+        let spans = build_usage_inline_spans(&[usage]);
+        for span in &spans {
+            assert_eq!(
+                span.style.bg,
+                Some(STATUS_BAR_BG),
+                "All spans must carry the status bar background: {:?}",
+                span.content
+            );
+        }
     }
 }
