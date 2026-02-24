@@ -1065,9 +1065,14 @@ impl App {
     /// Uses time-based detection to distinguish deliberate mouse-wheel clicks from
     /// trackpad inertia:
     /// - Events arriving > MOUSE_INERTIA_THRESHOLD apart → deliberate click → scroll
-    ///   immediately by SCROLL_STEP (same as a keyboard arrow key press).
+    ///   immediately by SCROLL_STEP (same as a keyboard arrow key press). The accumulator
+    ///   is set to the burst-absorption sentinel (-MOUSE_SCROLL_THRESHOLD) so that
+    ///   follow-up events from the same hardware notch are absorbed rather than
+    ///   triggering an extra fine scroll.
     /// - Events arriving ≤ MOUSE_INERTIA_THRESHOLD apart → inertia/trackpad burst →
     ///   use the accumulator (MOUSE_SCROLL_THRESHOLD events = MOUSE_SCROLL_STEP lines).
+    ///   If the accumulator is at the post-immediate sentinel, each burst event
+    ///   decrements it toward 0 (absorbing the event) before normal accumulation resumes.
     pub fn mouse_scroll_up(&mut self) {
         let elapsed = self
             .last_scroll_event
@@ -1077,7 +1082,8 @@ impl App {
 
         if elapsed > MOUSE_INERTIA_THRESHOLD {
             // Deliberate mouse-wheel click: scroll immediately, same as a key press.
-            self.mouse_scroll_accumulator = 0;
+            // Set sentinel so burst follow-ups are absorbed rather than accumulated.
+            self.mouse_scroll_accumulator = -MOUSE_SCROLL_THRESHOLD;
             let max_scroll = self.max_scroll();
             if self.scroll_offset < max_scroll {
                 self.scroll_offset = (self.scroll_offset + SCROLL_STEP).min(max_scroll);
@@ -1088,7 +1094,14 @@ impl App {
             self.maybe_load_more_history();
         } else {
             // Inertia/trackpad burst: accumulate until threshold.
+            if self.mouse_scroll_accumulator <= -MOUSE_SCROLL_THRESHOLD {
+                // Post-immediate burst absorption: move sentinel toward 0 one step at a time,
+                // discarding this event rather than counting it toward the next scroll.
+                self.mouse_scroll_accumulator += 1;
+                return;
+            }
             if self.mouse_scroll_accumulator < 0 {
+                // Direction changed; discard down credits and start fresh.
                 self.mouse_scroll_accumulator = 0;
             }
             self.mouse_scroll_accumulator += 1;
@@ -1108,7 +1121,7 @@ impl App {
 
     /// Mouse wheel scroll down in the main chat panel.
     ///
-    /// Same time-based detection as mouse_scroll_up.
+    /// Same time-based detection and burst-absorption logic as mouse_scroll_up.
     pub fn mouse_scroll_down(&mut self) {
         let elapsed = self
             .last_scroll_event
@@ -1118,14 +1131,21 @@ impl App {
 
         if elapsed > MOUSE_INERTIA_THRESHOLD {
             // Deliberate mouse-wheel click: scroll immediately.
-            self.mouse_scroll_accumulator = 0;
+            // Set sentinel so burst follow-ups are absorbed.
+            self.mouse_scroll_accumulator = MOUSE_SCROLL_THRESHOLD;
             if self.scroll_offset > 0 {
                 self.scroll_offset = self.scroll_offset.saturating_sub(SCROLL_STEP);
                 self.intentionally_at_top = false;
             }
         } else {
             // Inertia/trackpad burst: accumulate until threshold.
+            if self.mouse_scroll_accumulator >= MOUSE_SCROLL_THRESHOLD {
+                // Post-immediate burst absorption.
+                self.mouse_scroll_accumulator -= 1;
+                return;
+            }
             if self.mouse_scroll_accumulator > 0 {
+                // Direction changed; discard up credits and start fresh.
                 self.mouse_scroll_accumulator = 0;
             }
             self.mouse_scroll_accumulator -= 1;
@@ -1141,7 +1161,7 @@ impl App {
 
     /// Mouse wheel scroll up in the thread panel.
     ///
-    /// Same time-based detection as mouse_scroll_up.
+    /// Same time-based detection and burst-absorption logic as mouse_scroll_up.
     pub fn thread_mouse_scroll_up(&mut self) {
         let elapsed = self
             .last_thread_scroll_event
@@ -1150,9 +1170,13 @@ impl App {
         self.last_thread_scroll_event = Some(Instant::now());
 
         if elapsed > MOUSE_INERTIA_THRESHOLD {
-            self.thread_mouse_scroll_accumulator = 0;
+            self.thread_mouse_scroll_accumulator = -MOUSE_SCROLL_THRESHOLD;
             self.thread_scroll_offset = self.thread_scroll_offset.saturating_add(SCROLL_STEP);
         } else {
+            if self.thread_mouse_scroll_accumulator <= -MOUSE_SCROLL_THRESHOLD {
+                self.thread_mouse_scroll_accumulator += 1;
+                return;
+            }
             if self.thread_mouse_scroll_accumulator < 0 {
                 self.thread_mouse_scroll_accumulator = 0;
             }
@@ -1167,7 +1191,7 @@ impl App {
 
     /// Mouse wheel scroll down in the thread panel.
     ///
-    /// Same time-based detection as mouse_scroll_up.
+    /// Same time-based detection and burst-absorption logic as mouse_scroll_up.
     pub fn thread_mouse_scroll_down(&mut self) {
         let elapsed = self
             .last_thread_scroll_event
@@ -1176,9 +1200,13 @@ impl App {
         self.last_thread_scroll_event = Some(Instant::now());
 
         if elapsed > MOUSE_INERTIA_THRESHOLD {
-            self.thread_mouse_scroll_accumulator = 0;
+            self.thread_mouse_scroll_accumulator = MOUSE_SCROLL_THRESHOLD;
             self.thread_scroll_offset = self.thread_scroll_offset.saturating_sub(SCROLL_STEP);
         } else {
+            if self.thread_mouse_scroll_accumulator >= MOUSE_SCROLL_THRESHOLD {
+                self.thread_mouse_scroll_accumulator -= 1;
+                return;
+            }
             if self.thread_mouse_scroll_accumulator > 0 {
                 self.thread_mouse_scroll_accumulator = 0;
             }

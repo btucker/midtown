@@ -381,3 +381,110 @@ fn test_thread_immediate_mode() {
         "Thread immediate-mode scroll should move by SCROLL_STEP"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Burst absorption after immediate scroll
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_burst_events_absorbed_after_immediate_scroll_up() {
+    // After an immediate scroll, burst follow-up events (< 50ms) should NOT trigger
+    // an extra MOUSE_SCROLL_STEP. A 4-event-per-notch device must still produce
+    // exactly SCROLL_STEP lines per physical notch.
+    let mut app = test_app();
+    for i in 0..30 {
+        app.messages
+            .push_back(Message::text("test", format!("msg {i}")));
+    }
+    app.scroll_offset = 0;
+    set_old_scroll(&mut app);
+
+    // Event 1: immediate scroll (elapsed > threshold)
+    app.mouse_scroll_up();
+    let after_immediate = app.scroll_offset;
+    assert_eq!(
+        after_immediate, SCROLL_STEP,
+        "Immediate event should scroll SCROLL_STEP"
+    );
+
+    // Events 2..=THRESHOLD: burst follow-ups (set recent so they're in inertia mode)
+    // These should be absorbed by the post-immediate sentinel, not fire again.
+    // With THRESHOLD=3, we send THRESHOLD burst events (one more than needed to fire
+    // in normal inertia mode) and verify no extra scroll fires.
+    set_recent_scroll(&mut app);
+    for _ in 0..MOUSE_SCROLL_THRESHOLD as usize {
+        app.mouse_scroll_up();
+    }
+    assert_eq!(
+        app.scroll_offset, after_immediate,
+        "Burst follow-up events after immediate scroll must not trigger extra fine scroll"
+    );
+}
+
+#[test]
+fn test_burst_events_absorbed_after_immediate_scroll_down() {
+    // Same burst-absorption guarantee for the down direction.
+    let mut app = test_app();
+    for i in 0..30 {
+        app.messages
+            .push_back(Message::text("test", format!("msg {i}")));
+    }
+    app.scroll_offset = SCROLL_STEP * 5;
+    set_old_scroll(&mut app);
+
+    // Event 1: immediate scroll down
+    app.mouse_scroll_down();
+    let after_immediate = app.scroll_offset;
+    assert_eq!(
+        after_immediate,
+        SCROLL_STEP * 4,
+        "Immediate down event should scroll SCROLL_STEP"
+    );
+
+    // Burst follow-ups
+    set_recent_scroll(&mut app);
+    for _ in 0..MOUSE_SCROLL_THRESHOLD as usize {
+        app.mouse_scroll_down();
+    }
+    assert_eq!(
+        app.scroll_offset, after_immediate,
+        "Burst follow-up events after immediate down scroll must not trigger extra fine scroll"
+    );
+}
+
+#[test]
+fn test_inertia_still_works_after_burst_absorption_window() {
+    // After burst absorption ends (enough events consumed), normal inertia accumulation
+    // should resume so that a sustained trackpad swipe continues to scroll.
+    let mut app = test_app();
+    for i in 0..60 {
+        app.messages
+            .push_back(Message::text("test", format!("msg {i}")));
+    }
+    app.scroll_offset = 0;
+    set_old_scroll(&mut app);
+
+    // Immediate scroll
+    app.mouse_scroll_up();
+    let after_immediate = app.scroll_offset;
+
+    // Absorb the burst (THRESHOLD events)
+    set_recent_scroll(&mut app);
+    for _ in 0..MOUSE_SCROLL_THRESHOLD as usize {
+        app.mouse_scroll_up();
+    }
+    assert_eq!(
+        app.scroll_offset, after_immediate,
+        "Burst absorbed: no extra scroll yet"
+    );
+
+    // After burst is fully absorbed, THRESHOLD more events should trigger one fine scroll
+    for _ in 0..MOUSE_SCROLL_THRESHOLD as usize {
+        app.mouse_scroll_up();
+    }
+    assert_eq!(
+        app.scroll_offset,
+        after_immediate + MOUSE_SCROLL_STEP,
+        "After burst absorbed, THRESHOLD more inertia events should produce one fine scroll"
+    );
+}

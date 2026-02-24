@@ -975,9 +975,10 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                         app.thread_input_cursor += 1;
                         EventResult::Continue
                     } else {
-                        // Vim-style scroll bindings when the chat input is empty or unfocused.
-                        // Only fires when there is no pending text to protect against eating input.
-                        if app.input_text.is_empty() || app.focused_pane != FocusedPane::InputBar {
+                        // Vim-style scroll bindings when there is no pending input text.
+                        // Guarded by input_text.is_empty() so a draft composed in the InputBar
+                        // is never lost if focus shifts to Chat/Board while the user is typing.
+                        if app.input_text.is_empty() {
                             match c {
                                 'j' => {
                                     app.scroll_down();
@@ -1843,6 +1844,36 @@ mod tests {
         assert_eq!(
             app.input_text, "helloj",
             "j with non-empty input should insert into the text"
+        );
+    }
+
+    #[test]
+    fn test_vim_j_inserts_when_chat_focused_but_draft_exists() {
+        // Regression: the original condition was `input_text.is_empty() || focused_pane !=
+        // InputBar`, which meant j/k would SCROLL when focus moved to Chat even if the user
+        // had a draft in the input bar — silently losing those keystrokes.
+        // The fix changes the gate to `input_text.is_empty()` only.
+        use app::FocusedPane;
+        use midtown::Message;
+        let mut app = test_app();
+        for i in 0..30 {
+            app.messages
+                .push_back(Message::text("test", format!("msg {i}")));
+        }
+        app.focused_pane = FocusedPane::Chat; // focus shifted away from InputBar
+        app.input_text = "draft message".to_string(); // but draft exists
+        app.input_cursor = 13;
+        app.scroll_offset = 5;
+
+        handle_event(&mut app, key_press(KeyCode::Char('j')));
+        // Should NOT scroll — should insert 'j' into the draft
+        assert_eq!(
+            app.input_text, "draft messagej",
+            "j with existing draft should insert even when focus is on Chat"
+        );
+        assert_eq!(
+            app.scroll_offset, 5,
+            "scroll_offset must not change when a draft exists"
         );
     }
 
