@@ -1812,6 +1812,39 @@ impl HeadlessSession {
         self.backend.drain_stderr(self).await
     }
 
+    /// Final stderr drain called when the session exits (stdout closed).
+    ///
+    /// For Claude sessions, waits for the background stderr reader task to
+    /// finish forwarding any remaining OS-pipe data into the channel before
+    /// the session is dropped.  Without this, lines emitted at shutdown
+    /// (e.g. "Tool names must be unique") can be lost because the receiver
+    /// is dropped while the reader task is still mid-read.
+    pub async fn drain_stderr_final(&mut self) -> Vec<String> {
+        match self.backend {
+            HeadlessSessionBackend::Claude => {
+                let rx = match self.stderr_rx.as_mut() {
+                    Some(rx) => rx,
+                    None => return Vec::new(),
+                };
+                let mut lines = Vec::new();
+                // Collect whatever is already buffered (non-blocking).
+                while let Ok(line) = rx.try_recv() {
+                    lines.push(line);
+                }
+                // Then wait up to 200 ms for the background reader to drain
+                // the remaining OS pipe data and close the channel.
+                let _ = tokio::time::timeout(Duration::from_millis(200), async {
+                    while let Some(line) = rx.recv().await {
+                        lines.push(line);
+                    }
+                })
+                .await;
+                lines
+            }
+            HeadlessSessionBackend::Codex => self.drain_stderr().await,
+        }
+    }
+
     /// Wait for the process to exit and return the exit status.
     pub async fn wait(&mut self) -> std::io::Result<std::process::ExitStatus> {
         self.backend.wait(self).await

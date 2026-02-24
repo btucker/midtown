@@ -997,8 +997,10 @@ impl SessionManager {
                     }
                     Ok(None) => {
                         // stdout closed — session has exited
-                        // Drain stderr before dropping the session
-                        let stderr_lines = session.drain_stderr().await;
+                        // Use drain_stderr_final() so the background stderr
+                        // reader task has a chance to forward any OS-pipe data
+                        // that arrived after the last tick drain.
+                        let stderr_lines = session.drain_stderr_final().await;
                         cs.status = SessionStatus::Stopped;
                         cs.session = None;
                         stopped.push(name.clone());
