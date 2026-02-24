@@ -98,6 +98,9 @@ where
         .map_err(|e| format!("Failed to create tokio runtime: {}", e))?
         .block_on(run_app_async(&mut terminal, &mut app));
 
+    // Persist in-memory cursor to disk on exit so unread counts are accurate next session.
+    app.save_cursor_to_disk();
+
     // Restore terminal (always attempt cleanup)
     let _ = disable_raw_mode();
     let _ = execute!(
