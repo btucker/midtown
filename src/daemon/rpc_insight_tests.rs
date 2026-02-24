@@ -201,6 +201,44 @@ async fn test_insight_routes_to_task_channel_when_no_explicit_channel() {
     );
 }
 
+/// When a channel lead session reports an insight, the RPC should return early
+/// with posted=false and reason="channel_lead" — their output already reaches
+/// the channel via the normal auto-posting path.
+#[tokio::test]
+async fn test_insight_channel_lead_suppressed() {
+    let (state, _temp_dir, _guard) = make_test_state("testrepo");
+
+    // Register a channel lead session for the "ops" channel
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.channel_lead_sessions
+            .insert("ops".to_string(), "cl-session-abc".to_string());
+        ps.sessions.insert(
+            "cl-session-abc".to_string(),
+            super::super::state::SessionRecord {
+                session_id: "cl-session-abc".to_string(),
+                current_name: Some("ops-lead".to_string()),
+                coworker_type: "channel-lead".to_string(),
+                working_dir: "/tmp/test".to_string(),
+                ..Default::default()
+            },
+        );
+    }
+
+    let response = handle_insight_report(
+        RequestId::Number(10),
+        "ops-lead",
+        "An insight from the channel lead",
+        None,
+        &state,
+    )
+    .await;
+
+    let result = response.result.expect("should return success result");
+    assert_eq!(result["posted"], false);
+    assert_eq!(result["reason"], "channel_lead");
+}
+
 /// Duplicate insights should be deduplicated and return posted=false.
 #[tokio::test]
 async fn test_insight_deduplication() {
