@@ -968,6 +968,33 @@ fn test_header_code_block_empty_language_has_no_label() {
     );
 }
 
+/// Code lines in a thread header that exceed content_width must be truncated.
+/// This covers the span-truncation break path in render_header_content_segments.
+#[test]
+fn test_header_code_block_long_line_truncated_to_content_width() {
+    use ratatui::style::Style;
+
+    let content_width = 10;
+    // Source line is much wider than content_width
+    let source = "x".repeat(50);
+    let segments = vec![ContentSegment::CodeBlock {
+        language: "rust".to_string(),
+        source: source.clone(),
+    }];
+    let lines = render_header_content_segments(&segments, content_width, Style::default(), false);
+
+    // Each rendered code line must not exceed content_width chars
+    for line in &lines {
+        let total_chars: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
+        assert!(
+            total_chars <= content_width,
+            "Header code line should be truncated to content_width={}, got {}",
+            content_width,
+            total_chars
+        );
+    }
+}
+
 /// A mermaid segment in a thread header should render as a "[diagram]" placeholder
 /// (async diagram rendering is not available in the pre-computation context).
 #[test]
