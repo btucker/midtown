@@ -112,7 +112,7 @@
             {:else}
               <!-- System: "source message" -->
               <span class="flex-shrink-0 font-medium" style="color: {getSenderColor(msg.from)}">{getSenderLabel(msg)}</span>
-              <span class="flex-1 min-w-0 text-muted-foreground">{msg.content}</span>
+              <span class="flex-1 min-w-0 text-muted-foreground/60">{msg.content}</span>
             {/if}
           </div>
         {/each}

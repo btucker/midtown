@@ -123,14 +123,14 @@
             {#if cw.time_estimate}
               <span class="text-[0.7rem] text-primary">{cw.time_estimate}</span>
             {:else if cw.progress !== undefined && cw.progress !== null}
-              <span class="text-[0.7rem] text-[#5fafaf]">{cw.progress}%</span>
+              <span class="text-[0.7rem] text-accent-teal">{cw.progress}%</span>
             {/if}
           </div>
           {#if cw.progress !== undefined && cw.progress !== null}
             <div class="ml-[26px] flex items-center gap-1.5">
               <div class="flex-1 h-1 bg-sidebar-accent rounded-full overflow-hidden">
                 <div
-                  class="h-full bg-sidebar-primary rounded-full transition-all duration-500"
+                  class="h-full bg-accent-teal rounded-full transition-all duration-500"
                   style="width: {cw.progress}%"
                 ></div>
               </div>

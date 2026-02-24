@@ -12,7 +12,7 @@
       }
 
       <div class="mt-0 first:mt-0 first:pt-0 first:border-t-0 {index > 0 ? 'mt-3 pt-3 border-t border-sidebar-border' : ''}">
-        <div class="text-[0.7rem] text-[#7ec4cf] mb-2 truncate">{label}</div>
+        <div class="text-[0.7rem] text-accent-teal mb-2 truncate">{label}</div>
 
         {#if account.session_resets || account.week_resets}
           {#each [
@@ -49,7 +49,7 @@
   </div>
 {:else}
   <div class="px-3 py-1">
-    <div class="text-[0.7rem] text-sidebar-foreground mb-2">Usage</div>
+    <div class="text-[0.7rem] text-accent-teal mb-2">Usage</div>
     <div class="text-[0.7rem] text-muted-foreground">Loading...</div>
   </div>
 {/if}
