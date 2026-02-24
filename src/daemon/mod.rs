@@ -2392,163 +2392,6 @@ fn acquire_pid_lock(pid_path: &PathBuf, workdir: &Path) -> crate::Result<File> {
     }
 }
 
-/// Persist session info for all running coworkers before daemon shutdown.
-///
-/// Collects session data from SessionManager and enriches it with task/PR/purpose
-/// info from CoworkerManager and persistent state, then saves to daemon-state.json.
-#[cfg(test)]
-fn merge_headless_sessions(
-    persisted: &mut HashMap<String, crate::daemon::state::HeadlessSessionInfo>,
-    running: HashMap<String, crate::daemon::state::HeadlessSessionInfo>,
-) -> usize {
-    // Mark existing entries as historical by default. Running entries below are
-    // overwritten with fresh metadata and `resume_on_startup=true`.
-    for info in persisted.values_mut() {
-        info.resume_on_startup = false;
-        info.pid = None;
-    }
-
-    let running_count = running.len();
-    for (name, mut info) in running {
-        info.resume_on_startup = true;
-        persisted.insert(name, info);
-    }
-
-    running_count
-}
-
-#[cfg(test)]
-fn parse_task_id_from_workdir(working_dir: &str) -> Option<u64> {
-    let task_component = working_dir
-        .split('/')
-        .find(|segment| segment.starts_with("task-"))?;
-    let id_part = task_component
-        .strip_prefix("task-")
-        .and_then(|rest| rest.split('-').next())?;
-    id_part.parse::<u64>().ok()
-}
-
-#[cfg(test)]
-fn infer_provider_from_model(model: Option<&str>) -> Option<crate::auth::AuthProvider> {
-    let model = model?.to_ascii_lowercase();
-    if model.contains("gpt")
-        || model.contains("codex")
-        || model.contains("o1")
-        || model.contains("o3")
-    {
-        Some(crate::auth::AuthProvider::Codex)
-    } else {
-        Some(crate::auth::AuthProvider::Claude)
-    }
-}
-
-#[cfg(test)]
-fn parse_historical_session_info_from_log(
-    path: &std::path::Path,
-    coworker_name: &str,
-) -> Option<crate::daemon::state::HeadlessSessionInfo> {
-    use std::io::BufRead;
-    let file = std::fs::File::open(path).ok()?;
-    let reader = std::io::BufReader::new(file);
-
-    let mut session_id: Option<String> = None;
-    let mut working_dir: Option<String> = None;
-    let mut provider: Option<crate::auth::AuthProvider> = None;
-
-    // Init event should be at the start, but scan a small prefix for resilience.
-    for line in reader.lines().take(32).flatten() {
-        let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else {
-            continue;
-        };
-        let is_init = value.get("type").and_then(|v| v.as_str()) == Some("system")
-            && value.get("subtype").and_then(|v| v.as_str()) == Some("init");
-        if !is_init {
-            continue;
-        }
-        session_id = value
-            .get("session_id")
-            .and_then(|v| v.as_str())
-            .map(ToString::to_string);
-        working_dir = value
-            .get("cwd")
-            .and_then(|v| v.as_str())
-            .map(ToString::to_string);
-        provider = infer_provider_from_model(value.get("model").and_then(|v| v.as_str()));
-        break;
-    }
-
-    let session_id = session_id?;
-    let metadata = std::fs::metadata(path).ok();
-    let last_active = metadata
-        .and_then(|m| m.modified().ok())
-        .map(chrono::DateTime::<chrono::Utc>::from)
-        .unwrap_or_else(chrono::Utc::now);
-    let task_id = working_dir.as_deref().and_then(parse_task_id_from_workdir);
-    let purpose = task_id
-        .map(|id| format!("task !{}", id))
-        .unwrap_or_else(|| format!("historical session for {}", coworker_name));
-
-    Some(crate::daemon::state::HeadlessSessionInfo {
-        session_id,
-        last_active,
-        purpose,
-        pid: None,
-        coworker_type: Some("dev".to_string()),
-        task_id,
-        pr_number: None,
-        channel: None,
-        working_dir,
-        provider,
-        profile: None,
-        resume_on_startup: false,
-        initial_prompt: None,
-    })
-}
-
-#[cfg(test)]
-fn backfill_headless_sessions_from_dir(
-    project_dir: &std::path::Path,
-    persisted: &mut HashMap<String, crate::daemon::state::HeadlessSessionInfo>,
-) -> usize {
-    if !persisted.is_empty() {
-        return 0;
-    }
-
-    let Ok(entries) = std::fs::read_dir(project_dir) else {
-        return 0;
-    };
-
-    let mut recovered = 0usize;
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if !path.is_file() {
-            continue;
-        }
-
-        let Some(file_name) = path.file_name().and_then(|f| f.to_str()) else {
-            continue;
-        };
-        if !(file_name.starts_with("headless-") && file_name.ends_with(".jsonl")) {
-            continue;
-        }
-
-        let name = file_name
-            .trim_start_matches("headless-")
-            .trim_end_matches(".jsonl")
-            .to_lowercase();
-        if name.is_empty() {
-            continue;
-        }
-
-        if let Some(info) = parse_historical_session_info_from_log(&path, &name) {
-            persisted.insert(name, info);
-            recovered += 1;
-        }
-    }
-
-    recovered
-}
-
 async fn persist_sessions_for_restart(state: &DaemonState) -> crate::Result<()> {
     // Collect base session info (session_id, pid, last_active) from SessionManager
     let mut session_info = state.session_manager.collect_session_info().await;
@@ -2994,10 +2837,8 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
     // Gives immediate feedback in the log if auth is expired/missing.
     startup::check_claude_auth_status(&repo_name);
 
-    // Recover coworker sessions from session records (session-centric map).
-    // The legacy headless_sessions map is no longer used for recovery — all
-    // running sessions are tracked in session records since the session-centric
-    // model was introduced. Channel leads are recovered separately below.
+    // Recover coworker sessions from session records. Channel leads are recovered
+    // separately below.
     let (session_recovery_effects, recovered_session_ids) =
         startup::recover_from_session_records(&state.persistent_state, &repo_name).await;
     if !session_recovery_effects.is_empty() {
@@ -3460,7 +3301,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                         {
                             let mut ps = state.persistent_state.lock().await;
                             // Look up the previous session_id from the SessionRecord
-                            // (via name_to_session reverse map) instead of headless_sessions.
+                            // via the name_to_session reverse map.
                             let previous_sid = state
                                 .name_to_session
                                 .lock()

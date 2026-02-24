@@ -676,8 +676,8 @@ async fn test_fresh_spawn_registers_channel_lead_sessions() {
     }
 }
 
-/// Verify that when `headless_sessions` has an empty session_id (indicating a prior
-/// crash/failed resume), the resume path is skipped even if `channel_lead_sessions`
+/// Verify that when a channel lead session is marked stopped (session record with
+/// is_running=false), the resume path is skipped even if `channel_lead_sessions`
 /// still has a stale session ID. This prevents crash loops.
 #[tokio::test]
 async fn test_crash_loop_guard_skips_resume_when_headless_cleared() {
@@ -694,31 +694,25 @@ async fn test_crash_loop_guard_skips_resume_when_headless_cleared() {
 
     // Set up the crash-loop scenario:
     // - channel_lead_sessions has a stale session ID
-    // - headless_sessions has an empty session_id (cleared by death handler)
+    // - the corresponding SessionRecord is marked as not running (death handler cleared it)
     {
         let mut ps = state.persistent_state.lock().await;
         ps.channel_lead_sessions.insert(
             "auth-refactor".to_string(),
             "stale-session-id-xyz".to_string(),
         );
-
-        let session = crate::daemon::state::HeadlessSessionInfo {
-            session_id: String::new(), // cleared by death handler after crash
-            last_active: chrono::Utc::now(),
-            purpose: "channel lead for auth-refactor".to_string(),
-            pid: None,
-            coworker_type: Some("channel-lead".to_string()),
-            task_id: None,
-            pr_number: None,
-            channel: Some("auth-refactor".to_string()),
-            working_dir: None,
-            provider: None,
-            profile: None,
-            resume_on_startup: false,
-            initial_prompt: None,
-        };
-        ps.headless_sessions
-            .insert("auth-refactor".to_string(), session);
+        ps.sessions.insert(
+            "stale-session-id-xyz".to_string(),
+            crate::daemon::state::SessionRecord {
+                session_id: "stale-session-id-xyz".to_string(),
+                current_name: Some("auth-refactor".to_string()),
+                coworker_type: "channel-lead".to_string(),
+                channel: Some("auth-refactor".to_string()),
+                is_running: false,
+                resume_on_startup: false,
+                ..Default::default()
+            },
+        );
     }
 
     // Post to topic channel — should NOT attempt resume with stale ID,
@@ -974,7 +968,7 @@ async fn test_handle_channel_archive_rejects_midtown() {
     );
 }
 
-/// Verify that channel.archive cleans up channel_lead_sessions and headless_sessions.
+/// Verify that channel.archive cleans up channel_lead_sessions and session records.
 ///
 /// Bug: archiving via CLI (`midtown channel archive`) didn't remove channel lead
 /// session state. On-demand triggers (NudgeChannelLead) could then respawn the
