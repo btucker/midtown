@@ -1,4 +1,6 @@
-// Muted avenue colors matching terminal TUI palette (AVENUE_COLORS from ui.rs)
+// Avenue colors for the web UI. Most match the terminal TUI palette (AVENUE_COLORS from ui.rs),
+// but the lead/midtown color intentionally diverges: the TUI uses Color::LightYellow (#d7d787)
+// while the web uses a richer gold (#E3BD3F) for better visual weight on screen.
 export const AVENUE_COLORS = {
   lexington: '#5fafaf',   // Cyan
   park: '#5faf5f',        // Green

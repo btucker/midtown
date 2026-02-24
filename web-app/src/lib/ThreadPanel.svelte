@@ -118,6 +118,9 @@
           <div class="text-[0.78rem] flex flex-wrap gap-x-4 gap-y-0.5">
             <span>
               <span class="text-muted-foreground/60">Status:</span>
+              <!-- Status indicator colors are semantic (pending=yellow, in_progress=cyan, done=green),
+                   not tied to lead/avenue identity colors. #d7d787 here is intentionally separate from
+                   the lead session color (#E3BD3F) even though they were once the same value. -->
               <span class={$threadData.task.status === 'pending' ? 'text-[#d7d787]' : $threadData.task.status === 'in_progress' ? 'text-[#5fafaf]' : 'text-[#5faf5f]'}>
                 {$threadData.task.status}
               </span>
@@ -218,6 +221,9 @@
           <div class="text-[0.78rem] flex flex-wrap gap-x-4 gap-y-0.5">
             <span>
               <span class="text-muted-foreground/60">Status:</span>
+              <!-- Status indicator colors are semantic (pending=yellow, in_progress=cyan, done=green),
+                   not tied to lead/avenue identity colors. #d7d787 here is intentionally separate from
+                   the lead session color (#E3BD3F) even though they were once the same value. -->
               <span class={$threadData.task.status === 'pending' ? 'text-[#d7d787]' : $threadData.task.status === 'in_progress' ? 'text-[#5fafaf]' : 'text-[#5faf5f]'}>
                 {$threadData.task.status}
               </span>
