@@ -786,17 +786,20 @@
   </div>
 
   <!-- Activity strip: always rendered at fixed height to prevent layout shift.
-       Shows [dots?] [lead name] [icon] [tool description] on one line. -->
+       Shows [dots?] [lead name] [icon] [tool description] on one line.
+       In the main channel ('midtown'), dots are driven by lead_working (same signal as
+       the TUI braille spinner). In topic channels, InProgress tool items drive the dots —
+       channel leads don't have a separate lead_working signal. -->
   <div class="h-[1.5em] flex items-center gap-[6px] px-[18px] text-[0.82rem] overflow-hidden whitespace-nowrap shrink-0">
     {#if showActivity}
       {#if showDots}
         <span class="typing-dots flex gap-[3px] items-center">
-          <span class="dot w-[5px] h-[5px] rounded-full" style="background-color: #d7d787"></span>
-          <span class="dot w-[5px] h-[5px] rounded-full" style="background-color: #d7d787"></span>
-          <span class="dot w-[5px] h-[5px] rounded-full" style="background-color: #d7d787"></span>
+          <span class="dot w-[5px] h-[5px] rounded-full" style="background-color: {AVENUE_COLORS.lead}"></span>
+          <span class="dot w-[5px] h-[5px] rounded-full" style="background-color: {AVENUE_COLORS.lead}"></span>
+          <span class="dot w-[5px] h-[5px] rounded-full" style="background-color: {AVENUE_COLORS.lead}"></span>
         </span>
       {/if}
-      <span class="font-mono font-semibold" style="color: #d7d787">{$activeChannel}</span>
+      <span class="font-mono font-semibold" style="color: {AVENUE_COLORS.lead}">{$activeChannel}</span>
       {#if mostRecentToolCallEntry}
         <span class="text-muted-foreground/60 select-none">{getToolCallStatusIcon(mostRecentToolCallEntry)}</span>
         <span class="font-mono text-muted-foreground truncate">{describeToolCall(mostRecentToolCallEntry)}</span>
