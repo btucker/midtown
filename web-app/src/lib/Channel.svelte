@@ -858,7 +858,7 @@
           {/if}
           <button
             type="button"
-            class="absolute top-1 right-1 w-6 h-6 p-0 rounded-full bg-[rgba(0,0,0,0.7)] text-white text-[1.2rem] leading-none flex items-center justify-center cursor-pointer border border-[#3a3a3a] hover:bg-[rgba(255,87,87,0.8)] hover:border-[#ff5f5f]"
+            class="absolute top-1 right-1 w-6 h-6 p-0 rounded-full bg-[rgba(0,0,0,0.7)] text-white text-[1.2rem] leading-none flex items-center justify-center cursor-pointer border border-white/20 hover:bg-[rgba(255,87,87,0.8)] hover:border-[#ff5f5f]"
             onclick={clearPendingFile}
             aria-label="Remove file"
           >
@@ -880,7 +880,7 @@
         <button
           type="submit"
           disabled={!inputText.trim() && !pendingFile || uploading}
-          class="py-[13px] px-[22px] border-none rounded-[26px] bg-[#5faf5f] text-[#0a0a0a] font-bold cursor-pointer transition-all duration-200 text-[0.95rem] tracking-[0.01em] disabled:opacity-40 disabled:cursor-not-allowed hover:bg-[#6fc57f] hover:-translate-y-[1px] active:translate-y-0 not-disabled:hover:bg-[#6fc57f]"
+          class="py-[13px] px-[22px] border-none rounded-[26px] bg-primary text-primary-foreground font-bold cursor-pointer transition-all duration-200 text-[0.95rem] tracking-[0.01em] disabled:opacity-40 disabled:cursor-not-allowed hover:bg-primary/90 hover:-translate-y-[1px] active:translate-y-0 not-disabled:hover:bg-primary/90"
         >
           {uploading ? 'Uploading...' : 'Send'}
         </button>

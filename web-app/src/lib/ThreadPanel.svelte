@@ -41,14 +41,6 @@
       return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })
     } catch { return '' }
   }
-  function senderChanged(msgs, index) {
-    if (index === 0) return true
-    return msgs[index].from !== msgs[index - 1].from
-  }
-  function timeChanged(msgs, index) {
-    if (index === 0 || senderChanged(msgs, index)) return false
-    return formatTime(msgs[index].timestamp) !== formatTime(msgs[index - 1].timestamp)
-  }
 
   let replyText = $state('')
   let desktopScrollArea = $state(null)
@@ -120,25 +112,18 @@
 
 {#if $threadData}
   <!-- Desktop: side panel -->
-  <div class="hidden lg:flex flex-col h-full bg-[#0f0f0f] border-l-2 border-[#2a2a2a] w-[380px] shrink-0">
+  <div class="hidden lg:flex flex-col h-full bg-background border-l-2 border-border w-[380px] shrink-0">
     <!-- Header -->
-    <div class="flex items-center justify-between px-[18px] py-4 bg-[#1a1a1a] border-b-2 border-[#2a2a2a] shrink-0">
+    <div class="flex items-center justify-between px-[18px] py-4 bg-card border-b-2 border-border shrink-0">
       <div class="flex-1 min-w-0">
-        <h2 class="text-[0.85rem] font-bold text-[#d0d0d0] m-0">Thread</h2>
-        {#if $threadData.task}
-          <p class="text-[0.75rem] text-[#808080] m-0 mt-0.5 break-words">
-            <span class="text-[#d7d787] font-bold">!{$threadData.task.id}</span>
-            <span class="text-[#d0d0d0]"> {$threadData.task.subject}</span>
-          </p>
-        {:else}
-          <p class="text-[0.75rem] text-[#808080] m-0 mt-0.5 break-words">
-            <span style="color: {getSenderColor($threadData.parentMessage.from)}">{$threadData.parentMessage.from}</span>:
-            {$threadData.parentMessage.content || ''}
-          </p>
-        {/if}
+        <h2 class="text-[0.85rem] font-bold text-foreground m-0">Thread</h2>
+        <p class="text-[0.75rem] text-muted-foreground m-0 mt-0.5 break-words">
+          <span style="color: {getSenderColor($threadData.parentMessage.from)}">{$threadData.parentMessage.from}</span>:
+          {$threadData.parentMessage.content || ''}
+        </p>
       </div>
       <button
-        class="w-8 h-8 flex items-center justify-center bg-transparent border border-[#2a2a2a] rounded-md text-[#808080] text-[1.3rem] cursor-pointer transition-all duration-150 leading-none hover:bg-[#1a1a1a] hover:border-[#af5f5f] hover:text-[#ff5f5f] ml-2 shrink-0 self-start mt-1"
+        class="w-8 h-8 flex items-center justify-center bg-transparent border border-border rounded-md text-muted-foreground text-[1.3rem] cursor-pointer transition-all duration-150 leading-none hover:bg-accent hover:border-destructive hover:text-destructive ml-2 shrink-0 self-start mt-1"
         onclick={handleClose}
         aria-label="Close thread"
       >&times;</button>
@@ -149,52 +134,27 @@
       class="flex-1 min-h-0 overflow-y-auto overflow-x-hidden font-[SF_Mono,Menlo,Consolas,Monaco,'Courier_New',monospace] text-[1rem] leading-[1.55] px-[14px] pt-[10px] pb-[10px]"
       bind:this={desktopScrollArea}
     >
-      <!-- Parent message / task metadata (highlighted) -->
-      <div class="pb-2 mb-2 border-b border-[#2a2a2a]">
-        {#if $threadData.task}
-          <!-- Task metadata header -->
-          <div class="font-bold text-[0.82rem] text-[#d7d787]">!{$threadData.task.id}</div>
-          <div class="text-[#d0d0d0] font-bold break-words mb-1">{$threadData.task.subject}</div>
-          <div class="text-[0.78rem] flex flex-wrap gap-x-4 gap-y-0.5">
-            <span>
-              <span class="text-[#606060]">Status:</span>
-              <span class={$threadData.task.status === 'pending' ? 'text-[#d7d787]' : $threadData.task.status === 'in_progress' ? 'text-[#5fafaf]' : 'text-[#5faf5f]'}>
-                {$threadData.task.status}
-              </span>
-            </span>
-            {#if $threadData.task.assignee}
-              <span>
-                <span class="text-[#606060]">Owner:</span>
-                <span class="text-[#d0d0d0]"> {$threadData.task.assignee}</span>
-              </span>
-            {/if}
-          </div>
-        {:else}
-          <!-- Slack-style parent message (name + timestamp on one line) -->
-          <div class="whitespace-nowrap overflow-hidden text-ellipsis flex items-center gap-[7px] mb-[2px]">
-            <span class="font-bold text-[0.82rem]" style="color: {getSenderColor($threadData.parentMessage.from)}">{$threadData.parentMessage.from}</span>
-            <span class="text-muted-foreground/50 text-[0.72rem] select-none">{formatTime($threadData.parentMessage.timestamp)}</span>
-          </div>
-          <div class="text-[#d0d0d0] break-words">{@html renderContent($threadData.parentMessage.content || '')}</div>
-        {/if}
-      </div>
+      <!-- Parent message (highlighted) -->
+      <div class="pb-2 mb-2 border-b border-border">
+        <div class="font-bold text-[0.82rem]" style="color: {getSenderColor($threadData.parentMessage.from)}">
+          {$threadData.parentMessage.from}
+        </div>
+        <div class="text-foreground break-words">{@html renderContent($threadData.parentMessage.content || '')}</div>
+        <div class="text-muted-foreground text-[0.75rem] mt-1">{formatTime($threadData.parentMessage.timestamp)}</div>
       </div>
 
-      <!-- Thread replies — Slack-style: group header shows name+timestamp, gutter only on minute change -->
+      <!-- Thread replies -->
       {#if $threadData.messages.length === 0}
-        <div class="text-center text-[#606060] py-4 text-[1rem]">No replies yet</div>
+        <div class="text-center text-muted-foreground py-4 text-[1rem]">No replies yet</div>
       {:else}
         {#each $threadData.messages as msg, i}
-          {#if senderChanged($threadData.messages, i)}
-            {#if i > 0}<div class="h-[0.8em]"></div>{/if}
-            <div class="whitespace-nowrap overflow-hidden text-ellipsis flex items-center gap-[7px] mb-[2px]">
-              <span class="font-bold text-[0.82rem]" style="color: {getSenderColor(msg.from)}">{msg.from}</span>
-              <span class="text-muted-foreground/50 text-[0.72rem] select-none">{formatTime(msg.timestamp)}</span>
-            </div>
+          {#if i === 0 || $threadData.messages[i - 1].from !== msg.from}
+            {#if i > 0}<div class="h-[0.5em]"></div>{/if}
+            <div class="font-bold text-[0.82rem]" style="color: {getSenderColor(msg.from)}">{msg.from}</div>
           {/if}
           <div class="flex gap-0 break-words">
-            <span class="text-muted-foreground/50 flex-shrink-0 w-[3.2em] text-right mr-[0.4em] select-none text-[0.78rem]">{timeChanged($threadData.messages, i) ? formatTime(msg.timestamp) : ''}</span>
-            <span class="flex-1 min-w-0 {isDimSender(msg.from) ? 'text-[#606060]' : 'text-[#d0d0d0]'}">{@html renderContent(msg.content || '')}</span>
+            <span class="text-muted-foreground flex-shrink-0 w-[3.2em] text-right mr-[0.4em] select-none text-[0.78rem]">{formatTime(msg.timestamp)}</span>
+            <span class="flex-1 min-w-0 {isDimSender(msg.from) ? 'text-muted-foreground' : 'text-foreground'}">{@html renderContent(msg.content || '')}</span>
           </div>
         {/each}
       {/if}
@@ -207,42 +167,35 @@
         bind:value={replyText}
         placeholder="Reply in thread..."
         rows="1"
-        class="flex-1 py-[10px] px-[14px] border-2 border-[#2a2a2a] rounded-[14px] bg-[#0f0f0f] text-[#d0d0d0] text-[0.9rem] font-inherit outline-none resize-none min-h-[1.6em] max-h-[6em] overflow-y-auto focus:border-[#5faf5f] placeholder:text-[#606060]"
+        class="flex-1 py-[10px] px-[14px] border-2 border-input rounded-[14px] bg-background text-foreground text-[0.9rem] font-inherit outline-none resize-none min-h-[1.6em] max-h-[6em] overflow-y-auto focus:border-primary placeholder:text-muted-foreground"
         onkeydown={handleTextareaKeyDown}
         oninput={resizeTextarea}
       ></textarea>
       <button
         type="submit"
         disabled={!replyText.trim()}
-        class="py-[10px] px-[16px] border-none rounded-[18px] bg-[#5faf5f] text-[#0a0a0a] font-bold cursor-pointer transition-all duration-200 text-[0.85rem] disabled:opacity-40 disabled:cursor-not-allowed hover:bg-[#6fc57f]"
+        class="py-[10px] px-[16px] border-none rounded-[18px] bg-primary text-primary-foreground font-bold cursor-pointer transition-all duration-200 text-[0.85rem] disabled:opacity-40 disabled:cursor-not-allowed hover:bg-primary/90"
       >Send</button>
     </form>
   </div>
 
   <!-- Mobile: slide-in pane (inside board content area) -->
-  <div class="lg:hidden absolute inset-0 z-20 bg-[#0f0f0f] flex flex-col thread-mobile-pane">
+  <div class="lg:hidden absolute inset-0 z-20 bg-background flex flex-col thread-mobile-pane">
     <!-- Mobile header with back button -->
     <!-- No top safe-area padding here: this pane is inside board content, below
          App.svelte's mobile header which already applies pt-safe-offset-* -->
-    <div class="flex items-center gap-2 px-3 py-3 bg-[#1a1a1a] border-b-2 border-[#2a2a2a] shrink-0">
+    <div class="flex items-center gap-2 px-3 py-3 bg-card border-b-2 border-border shrink-0">
       <button
-        class="w-8 h-8 flex items-center justify-center bg-transparent border border-[#2a2a2a] rounded-md text-[#808080] text-[1.1rem] cursor-pointer transition-all duration-150 leading-none hover:text-[#d0d0d0] shrink-0"
+        class="w-8 h-8 flex items-center justify-center bg-transparent border border-border rounded-md text-muted-foreground text-[1.1rem] cursor-pointer transition-all duration-150 leading-none hover:text-foreground shrink-0"
         onclick={handleClose}
         aria-label="Back to channel"
       >&larr;</button>
       <div class="flex-1 min-w-0">
-        <h2 class="text-[0.85rem] font-bold text-[#d0d0d0] m-0">Thread</h2>
-        {#if $threadData.task}
-          <p class="text-[0.75rem] text-[#808080] m-0 mt-0.5 break-words">
-            <span class="text-[#d7d787] font-bold">!{$threadData.task.id}</span>
-            <span class="text-[#d0d0d0]"> {$threadData.task.subject}</span>
-          </p>
-        {:else}
-          <p class="text-[0.75rem] text-[#808080] m-0 mt-0.5 break-words">
-            <span style="color: {getSenderColor($threadData.parentMessage.from)}">{$threadData.parentMessage.from}</span>:
-            {$threadData.parentMessage.content || ''}
-          </p>
-        {/if}
+        <h2 class="text-[0.85rem] font-bold text-foreground m-0">Thread</h2>
+        <p class="text-[0.75rem] text-muted-foreground m-0 mt-0.5 break-words">
+          <span style="color: {getSenderColor($threadData.parentMessage.from)}">{$threadData.parentMessage.from}</span>:
+          {$threadData.parentMessage.content || ''}
+        </p>
       </div>
     </div>
 
@@ -251,59 +204,27 @@
       class="flex-1 min-h-0 overflow-y-auto overflow-x-hidden font-[SF_Mono,Menlo,Consolas,Monaco,'Courier_New',monospace] text-[1rem] leading-[1.55] px-[14px] pt-[10px] pb-[10px]"
       bind:this={mobileScrollArea}
     >
-<<<<<<< HEAD
-      <!-- Parent message / task metadata -->
-      <div class="pb-2 mb-2 border-b border-[#2a2a2a]">
-        {#if $threadData.task}
-          <div class="font-bold text-[0.82rem] text-[#d7d787]">!{$threadData.task.id}</div>
-          <div class="text-[#d0d0d0] font-bold break-words mb-1">{$threadData.task.subject}</div>
-          <div class="text-[0.78rem] flex flex-wrap gap-x-4 gap-y-0.5">
-            <span>
-              <span class="text-[#606060]">Status:</span>
-              <span class={$threadData.task.status === 'pending' ? 'text-[#d7d787]' : $threadData.task.status === 'in_progress' ? 'text-[#5fafaf]' : 'text-[#5faf5f]'}>
-                {$threadData.task.status}
-              </span>
-            </span>
-            {#if $threadData.task.assignee}
-              <span>
-                <span class="text-[#606060]">Owner:</span>
-                <span class="text-[#d0d0d0]"> {$threadData.task.assignee}</span>
-              </span>
-            {/if}
-          </div>
-        {:else}
-          <div class="font-bold text-[0.82rem]" style="color: {getSenderColor($threadData.parentMessage.from)}">
-            {$threadData.parentMessage.from}
-          </div>
-          <div class="text-[#d0d0d0] break-words">{@html renderContent($threadData.parentMessage.content || '')}</div>
-          <div class="text-[#4a4a4a] text-[0.75rem] mt-1">{formatTime($threadData.parentMessage.timestamp)}</div>
-        {/if}
-=======
-      <!-- Parent message — Slack-style: name + timestamp on one line -->
-      <div class="pb-2 mb-2 border-b border-[#2a2a2a]">
-        <div class="whitespace-nowrap overflow-hidden text-ellipsis flex items-center gap-[7px] mb-[2px]">
-          <span class="font-bold text-[0.82rem]" style="color: {getSenderColor($threadData.parentMessage.from)}">{$threadData.parentMessage.from}</span>
-          <span class="text-muted-foreground/50 text-[0.72rem] select-none">{formatTime($threadData.parentMessage.timestamp)}</span>
+      <!-- Parent message -->
+      <div class="pb-2 mb-2 border-b border-border">
+        <div class="font-bold text-[0.82rem]" style="color: {getSenderColor($threadData.parentMessage.from)}">
+          {$threadData.parentMessage.from}
         </div>
-        <div class="text-[#d0d0d0] break-words">{@html renderContent($threadData.parentMessage.content || '')}</div>
->>>>>>> origin/main
+        <div class="text-foreground break-words">{@html renderContent($threadData.parentMessage.content || '')}</div>
+        <div class="text-muted-foreground text-[0.75rem] mt-1">{formatTime($threadData.parentMessage.timestamp)}</div>
       </div>
 
-      <!-- Replies — Slack-style: group header shows name+timestamp, gutter only on minute change -->
+      <!-- Replies -->
       {#if $threadData.messages.length === 0}
-        <div class="text-center text-[#606060] py-4 text-[1rem]">No replies yet</div>
+        <div class="text-center text-muted-foreground py-4 text-[1rem]">No replies yet</div>
       {:else}
         {#each $threadData.messages as msg, i}
-          {#if senderChanged($threadData.messages, i)}
-            {#if i > 0}<div class="h-[0.8em]"></div>{/if}
-            <div class="whitespace-nowrap overflow-hidden text-ellipsis flex items-center gap-[7px] mb-[2px]">
-              <span class="font-bold text-[0.82rem]" style="color: {getSenderColor(msg.from)}">{msg.from}</span>
-              <span class="text-muted-foreground/50 text-[0.72rem] select-none">{formatTime(msg.timestamp)}</span>
-            </div>
+          {#if i === 0 || $threadData.messages[i - 1].from !== msg.from}
+            {#if i > 0}<div class="h-[0.5em]"></div>{/if}
+            <div class="font-bold text-[0.82rem]" style="color: {getSenderColor(msg.from)}">{msg.from}</div>
           {/if}
           <div class="flex gap-0 break-words">
-            <span class="text-muted-foreground/50 flex-shrink-0 w-[3.2em] text-right mr-[0.4em] select-none text-[0.78rem]">{timeChanged($threadData.messages, i) ? formatTime(msg.timestamp) : ''}</span>
-            <span class="flex-1 min-w-0 {isDimSender(msg.from) ? 'text-[#606060]' : 'text-[#d0d0d0]'}">{@html renderContent(msg.content || '')}</span>
+            <span class="text-muted-foreground flex-shrink-0 w-[3.2em] text-right mr-[0.4em] select-none text-[0.78rem]">{formatTime(msg.timestamp)}</span>
+            <span class="flex-1 min-w-0 {isDimSender(msg.from) ? 'text-muted-foreground' : 'text-foreground'}">{@html renderContent(msg.content || '')}</span>
           </div>
         {/each}
       {/if}
@@ -316,14 +237,14 @@
         bind:value={replyText}
         placeholder="Reply in thread..."
         rows="1"
-        class="flex-1 py-[10px] px-[14px] border-2 border-[#2a2a2a] rounded-[14px] bg-[#0f0f0f] text-[#d0d0d0] text-[0.9rem] font-inherit outline-none resize-none min-h-[1.6em] max-h-[6em] overflow-y-auto focus:border-[#5faf5f] placeholder:text-[#606060]"
+        class="flex-1 py-[10px] px-[14px] border-2 border-input rounded-[14px] bg-background text-foreground text-[0.9rem] font-inherit outline-none resize-none min-h-[1.6em] max-h-[6em] overflow-y-auto focus:border-primary placeholder:text-muted-foreground"
         onkeydown={handleTextareaKeyDown}
         oninput={resizeTextarea}
       ></textarea>
       <button
         type="submit"
         disabled={!replyText.trim()}
-        class="py-[10px] px-[16px] border-none rounded-[18px] bg-[#5faf5f] text-[#0a0a0a] font-bold cursor-pointer transition-all duration-200 text-[0.85rem] disabled:opacity-40 disabled:cursor-not-allowed hover:bg-[#6fc57f]"
+        class="py-[10px] px-[16px] border-none rounded-[18px] bg-primary text-primary-foreground font-bold cursor-pointer transition-all duration-200 text-[0.85rem] disabled:opacity-40 disabled:cursor-not-allowed hover:bg-primary/90"
       >Send</button>
     </form>
   </div>

@@ -81,15 +81,15 @@
   }
 </script>
 
-<div class="overflow-hidden rounded-md border-2 border-[#2a2a2a] bg-[#0a0a0a]">
+<div class="overflow-hidden rounded-md border-2 border-sidebar-border bg-sidebar">
   <!-- Header with collapse toggle -->
   <button
-    class="flex w-full items-center justify-between border-b border-[#1a1a1a] px-3 py-2 text-left bg-transparent cursor-pointer hover:bg-[#111]"
+    class="flex w-full items-center justify-between border-b border-sidebar-border px-3 py-2 text-left bg-transparent cursor-pointer hover:bg-sidebar-accent"
     onclick={() => collapsed = !collapsed}
     aria-label="Toggle Midtown Ops"
   >
-    <span class="text-[0.7rem] font-bold tracking-wide text-[#606060]">MIDTOWN OPS</span>
-    <span class="text-[0.6rem] text-[#3a3a3a]">{collapsed ? '▶' : '▼'}</span>
+    <span class="text-[0.7rem] font-bold tracking-wide text-muted-foreground">MIDTOWN OPS</span>
+    <span class="text-[0.6rem] text-muted-foreground">{collapsed ? '▶' : '▼'}</span>
   </button>
 
   {#if !collapsed}
@@ -99,20 +99,20 @@
       onscroll={handleScroll}
     >
       {#if opsMessages.length === 0}
-        <div class="text-[#3a3a3a] text-center py-4">No ops messages</div>
+        <div class="text-muted-foreground text-center py-4">No ops messages</div>
       {:else}
         {#each opsMessages as msg}
           <div class="flex gap-1 break-words min-w-0">
-            <span class="text-[#333] flex-shrink-0 w-[3.2em] text-right">{formatTime(msg.timestamp)}</span>
+            <span class="text-muted-foreground flex-shrink-0 w-[3.2em] text-right">{formatTime(msg.timestamp)}</span>
             {#if msg.msg_type === 'action' || msg.content?.startsWith('/me ')}
               <!-- Action: "* name content" -->
               <span class="flex-shrink-0" style="color: {getSenderColor(msg.from)}">*</span>
               <span class="flex-shrink-0 font-medium" style="color: {getSenderColor(msg.from)}">{getSenderLabel(msg)}</span>
-              <span class="flex-1 min-w-0 text-[#5a5a5a]">{getContent(msg)}</span>
+              <span class="flex-1 min-w-0 text-muted-foreground">{getContent(msg)}</span>
             {:else}
               <!-- System: "source message" -->
               <span class="flex-shrink-0 font-medium" style="color: {getSenderColor(msg.from)}">{getSenderLabel(msg)}</span>
-              <span class="flex-1 min-w-0 text-[#4a4a4a]">{msg.content}</span>
+              <span class="flex-1 min-w-0 text-muted-foreground">{msg.content}</span>
             {/if}
           </div>
         {/each}

@@ -27,10 +27,10 @@
   }
 </script>
 
-<div class="flex h-full flex-col border-r-2 border-[#2a2a2a] bg-[#0f0f0f]">
+<div class="flex h-full flex-col border-r-2 border-sidebar-border bg-sidebar">
   <!-- Channels section -->
-  <Collapsible class="border-b border-[#1a1a1a]" bind:open={channelsExpanded}>
-    <CollapsibleTrigger class="flex w-full items-center justify-between bg-transparent px-3.5 py-2.5 text-left text-[0.7rem] font-bold tracking-wide text-[#606060] transition-all duration-150 hover:bg-[#1a1a1a] hover:text-[#a0a0a0]">
+  <Collapsible class="border-b border-sidebar-border" bind:open={channelsExpanded}>
+    <CollapsibleTrigger class="flex w-full items-center justify-between bg-transparent px-3.5 py-2.5 text-left text-[0.7rem] font-bold tracking-wide text-muted-foreground transition-all duration-150 hover:bg-sidebar-accent hover:text-sidebar-foreground">
       <span class="flex-1 text-left">CHANNELS</span>
       {#if channelsExpanded}
         <ChevronDown class="size-3 opacity-60" />
@@ -46,7 +46,7 @@
   </Collapsible>
 
   <!-- Footer section with ops channel, coworker status, usage bars, and controls -->
-  <div class="mt-auto flex flex-col gap-2 border-t-2 border-[#2a2a2a] bg-[#0a0a0a] p-2 pb-safe-offset-2">
+  <div class="mt-auto flex flex-col gap-2 border-t-2 border-sidebar-border bg-sidebar p-2 pb-safe-offset-2">
     <OpsChannel />
     <CoworkerStatus />
     <UsageBars />

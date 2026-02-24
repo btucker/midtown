@@ -126,22 +126,22 @@
   }
 </script>
 
-<div class="flex flex-col gap-1 p-3 bg-[#1c1c1c] border-r border-[#3a3a3a] overflow-y-auto">
+<div class="flex flex-col gap-1 p-3 bg-sidebar border-r border-sidebar-border overflow-y-auto">
   <div class="flex items-center justify-between px-3 pt-2 pb-1">
-    <div class="text-xs font-bold text-[#585858] uppercase tracking-wide">Channels</div>
+    <div class="text-xs font-bold text-muted-foreground uppercase tracking-wide">Channels</div>
     <div class="flex gap-1">
       <button
-        class="w-6 h-6 p-0 border-none rounded bg-transparent text-[#585858] text-sm leading-none cursor-pointer transition-all duration-150 flex items-center justify-center hover:bg-[#2a2a2a] hover:text-[#d0d0d0]"
+        class="w-6 h-6 p-0 border-none rounded bg-transparent text-muted-foreground text-sm leading-none cursor-pointer transition-all duration-150 flex items-center justify-center hover:bg-sidebar-accent hover:text-sidebar-foreground"
         aria-label="Toggle archived channels"
-        class:bg-[#3a3a3a]={$showArchivedChannels}
-        class:text-[#5fafaf]={$showArchivedChannels}
+        class:bg-sidebar-accent={$showArchivedChannels}
+        class:text-primary={$showArchivedChannels}
         onclick={() => showArchivedChannels.update(v => !v)}
         title={$showArchivedChannels ? "Hide archived channels" : "Show archived channels"}
       >
         <ArchiveIcon size={14} />
       </button>
       <button
-        class="w-6 h-6 p-0 border-none rounded bg-transparent text-[#585858] text-xl leading-none cursor-pointer transition-all duration-150 flex items-center justify-center hover:bg-[#2a2a2a] hover:text-[#d0d0d0]"
+        class="w-6 h-6 p-0 border-none rounded bg-transparent text-muted-foreground text-xl leading-none cursor-pointer transition-all duration-150 flex items-center justify-center hover:bg-sidebar-accent hover:text-sidebar-foreground"
         onclick={toggleCreateInput}
         title="Create new channel"
       >
@@ -151,10 +151,10 @@
   </div>
 
   {#if showCreateInput}
-    <div class="px-3 py-2 mb-2 bg-[#242424] rounded-md">
+    <div class="px-3 py-2 mb-2 bg-sidebar-accent rounded-md">
       <input
         type="text"
-        class="w-full px-2 py-1.5 border border-[#3a3a3a] rounded bg-[#1c1c1c] text-[#d0d0d0] text-sm font-mono outline-none focus:border-[#5fafaf] disabled:opacity-50"
+        class="w-full px-2 py-1.5 border border-sidebar-border rounded bg-sidebar text-sidebar-foreground text-sm font-mono outline-none focus:border-primary disabled:opacity-50"
         placeholder="channel-name"
         bind:value={newChannelName}
         onkeydown={handleKeyDown}
@@ -162,18 +162,18 @@
         autofocus
       />
       {#if createError}
-        <div class="mt-1 text-xs text-[#ff6b6b]">{createError}</div>
+        <div class="mt-1 text-xs text-destructive">{createError}</div>
       {/if}
       <div class="flex gap-1.5 mt-2">
         <button
-          class="flex-1 px-3 py-1.5 border-none rounded text-xs font-medium cursor-pointer transition-all duration-150 bg-[#5fafaf] text-[#1c1c1c] hover:bg-[#6fc5c5] disabled:opacity-50 disabled:cursor-not-allowed"
+          class="flex-1 px-3 py-1.5 border-none rounded text-xs font-medium cursor-pointer transition-all duration-150 bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed"
           onclick={createChannel}
           disabled={isCreating || !newChannelName.trim()}
         >
           {isCreating ? 'Creating...' : 'Create'}
         </button>
         <button
-          class="flex-1 px-3 py-1.5 border-none rounded text-xs font-medium cursor-pointer transition-all duration-150 bg-[#3a3a3a] text-[#d0d0d0] hover:bg-[#4a4a4a] disabled:opacity-50"
+          class="flex-1 px-3 py-1.5 border-none rounded text-xs font-medium cursor-pointer transition-all duration-150 bg-sidebar-accent text-sidebar-foreground hover:bg-sidebar-accent/80 disabled:opacity-50"
           onclick={toggleCreateInput}
           disabled={isCreating}
         >
@@ -192,11 +192,11 @@
     {@const hasActiveTasks = counts.inProgress > 0 || counts.pending > 0}
 
     <div class="mb-0.5">
-      <div class="flex items-center rounded-md {isActive ? 'bg-accent text-primary' : 'text-muted-foreground hover:bg-[#262626] hover:text-foreground'}">
+      <div class="flex items-center rounded-md {isActive ? 'bg-accent text-primary' : 'text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground'}">
         {#if hasActiveTasks}
           <button
             type="button"
-            class="w-[28px] h-[28px] shrink-0 p-0 border-none bg-transparent text-[#606060] text-[0.65rem] leading-none cursor-pointer flex items-center justify-center transition-colors duration-150 hover:text-[#a0a0a0] ml-1"
+            class="w-[28px] h-[28px] shrink-0 p-0 border-none bg-transparent text-muted-foreground text-[0.65rem] leading-none cursor-pointer flex items-center justify-center transition-colors duration-150 hover:text-sidebar-foreground ml-1"
             onclick={(e) => toggleChannelTasks(channel.name, e)}
             title={isExpanded ? 'Collapse tasks' : 'Expand tasks'}
           >
@@ -213,15 +213,15 @@
           </div>
           <div class="flex items-center gap-1.5">
             {#if channel.unread > 0 && channel.name !== 'ops'}
-              <span class="text-xs px-1.5 py-0.5 rounded-[10px] bg-[#ff6b6b] text-white min-w-[1.5em] text-center font-semibold" title="{channel.unread} unread messages">{channel.unread}</span>
+              <span class="text-xs px-1.5 py-0.5 rounded-[10px] bg-destructive text-destructive-foreground min-w-[1.5em] text-center font-semibold" title="{channel.unread} unread messages">{channel.unread}</span>
             {/if}
             {#if totalTasks > 0}
               <span
                 class="text-xs px-1.5 py-0.5 rounded-[10px] min-w-[1.5em] text-center"
-                class:bg-[#3a3a3a]={!isActive}
-                class:text-[#d0d0d0]={!isActive}
-                class:bg-[#5fafaf]={isActive}
-                class:text-[#1c1c1c]={isActive}
+                class:bg-sidebar-accent={!isActive}
+                class:text-sidebar-foreground={!isActive}
+                class:bg-sidebar-primary={isActive}
+                class:text-sidebar-primary-foreground={isActive}
               >{totalTasks}</span>
             {/if}
             {#if ciStatus === 'passed'}
@@ -236,7 +236,7 @@
       </div>
 
       {#if isExpanded && hasActiveTasks}
-        <div class="ml-6 py-1 pb-2 pl-3 border-l-2 border-[#2a2a2a]">
+        <div class="ml-6 py-1 pb-2 pl-3 border-l-2 border-sidebar-border">
           <TaskList channelName={channel.name} />
         </div>
       {/if}
