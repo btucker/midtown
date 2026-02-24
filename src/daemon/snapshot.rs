@@ -398,6 +398,14 @@ pub struct WorldSnapshot {
     /// Enables O(1) lookup: "which session currently holds name X?"
     #[serde(default)]
     pub name_session_map: HashMap<String, String>,
+
+    /// Session IDs whose `working_dir` path no longer exists on disk.
+    ///
+    /// Pre-evaluated during snapshot collection (filesystem I/O) so that
+    /// decision functions in `dispatch.rs` can check staleness without
+    /// performing `Path::exists()` calls themselves.
+    #[serde(default)]
+    pub stale_working_dir_sessions: HashSet<String>,
 }
 
 /// Read the last N lines from the daemon log file.
@@ -961,6 +969,18 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
             .collect()
     };
 
+    // ── Pre-evaluate stale working directories ──────────────────────────
+    // Check which sessions have a non-empty working_dir that no longer exists
+    // on disk. This moves the filesystem I/O out of decision functions so
+    // dispatch_via_sessions can remain pure.
+    let stale_working_dir_sessions: HashSet<String> = sessions
+        .iter()
+        .filter(|(_, record)| {
+            !record.working_dir.is_empty() && !std::path::Path::new(&record.working_dir).exists()
+        })
+        .map(|(session_id, _)| session_id.clone())
+        .collect();
+
     let snapshot = WorldSnapshot {
         active_coworkers,
         running_coworkers,
@@ -1034,6 +1054,7 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
         session_dispatch_cooldown_active,
         spawn_failure_cooldown_names,
         recently_recovered_session_ids,
+        stale_working_dir_sessions,
     };
 
     // Log full snapshot at trace level for debugging and test case generation
@@ -1123,6 +1144,7 @@ pub(super) fn minimal_snapshot_for_test() -> WorldSnapshot {
         session_dispatch_cooldown_active: false,
         spawn_failure_cooldown_names: HashSet::new(),
         recently_recovered_session_ids: HashSet::new(),
+        stale_working_dir_sessions: HashSet::new(),
     }
 }
 

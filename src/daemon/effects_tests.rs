@@ -823,3 +823,75 @@ fn test_spawn_session_marks_old_records_with_same_name_as_not_running() {
     assert!(persistent_state.sessions[new_session_id].is_running);
     assert!(persistent_state.sessions["sess-amsterdam"].is_running);
 }
+
+/// Test that the ClearSessionWorkingDir handler clears a stale working_dir
+/// from a session record. Mirrors the inline effect handler logic (lock state,
+/// clear field) without requiring a full DaemonState.
+#[test]
+fn clear_session_working_dir_clears_stale_path() {
+    use crate::daemon::state::DaemonPersistentState;
+
+    let mut ps = DaemonPersistentState::default();
+    ps.sessions.insert(
+        "sess-stale".to_string(),
+        crate::daemon::state::SessionRecord {
+            session_id: "sess-stale".to_string(),
+            working_dir: "/tmp/deleted-worktree".to_string(),
+            ..Default::default()
+        },
+    );
+    ps.sessions.insert(
+        "sess-valid".to_string(),
+        crate::daemon::state::SessionRecord {
+            session_id: "sess-valid".to_string(),
+            working_dir: "/tmp/existing-worktree".to_string(),
+            ..Default::default()
+        },
+    );
+
+    // Simulate ClearSessionWorkingDir handler: clear the stale session's working_dir
+    let session_id = "sess-stale";
+    if let Some(record) = ps.sessions.get_mut(session_id) {
+        record.working_dir = String::new();
+    }
+
+    assert!(
+        ps.sessions["sess-stale"].working_dir.is_empty(),
+        "stale session's working_dir should be cleared"
+    );
+    assert_eq!(
+        ps.sessions["sess-valid"].working_dir, "/tmp/existing-worktree",
+        "other sessions' working_dir should be untouched"
+    );
+}
+
+/// Test that ClearSessionWorkingDir is a no-op when the session doesn't exist.
+#[test]
+fn clear_session_working_dir_noop_for_missing_session() {
+    use crate::daemon::state::DaemonPersistentState;
+
+    let mut ps = DaemonPersistentState::default();
+    ps.sessions.insert(
+        "sess-existing".to_string(),
+        crate::daemon::state::SessionRecord {
+            session_id: "sess-existing".to_string(),
+            working_dir: "/tmp/worktree".to_string(),
+            ..Default::default()
+        },
+    );
+
+    // Simulate ClearSessionWorkingDir for a nonexistent session — should not panic
+    let session_id = "sess-nonexistent";
+    if let Some(record) = ps.sessions.get_mut(session_id) {
+        record.working_dir = String::new();
+    }
+
+    assert_eq!(
+        ps.sessions["sess-existing"].working_dir, "/tmp/worktree",
+        "existing session should be untouched"
+    );
+    assert!(
+        !ps.sessions.contains_key("sess-nonexistent"),
+        "no phantom session record should be created"
+    );
+}

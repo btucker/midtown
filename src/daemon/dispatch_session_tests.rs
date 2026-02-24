@@ -974,15 +974,8 @@ fn test_session_dispatch_on_success_includes_session_recovered_cooldown() {
 #[test]
 fn test_pending_task_stale_working_dir_falls_back_and_clears() {
     use crate::tasks::{Task, TaskStatus};
-    use tempfile::TempDir;
 
-    // Create a real temp dir then delete it so we have a known-missing path.
-    let stale_dir = TempDir::new().expect("temp dir").keep();
-    std::fs::remove_dir_all(&stale_dir).expect("remove stale dir");
-    assert!(
-        !stale_dir.exists(),
-        "stale_dir must not exist for this test"
-    );
+    let stale_path = "/tmp/nonexistent-worktree-for-test";
 
     let mut session = make_session_record(
         "sess-stale-wd-123",
@@ -990,7 +983,7 @@ fn test_pending_task_stale_working_dir_falls_back_and_clears() {
         Some("pleasantville"),
         false,
     );
-    session.working_dir = stale_dir.to_string_lossy().to_string();
+    session.working_dir = stale_path.to_string();
 
     let snap = snapshot::WorldSnapshot {
         pending_tasks_without_owners: vec![Task {
@@ -1010,6 +1003,7 @@ fn test_pending_task_stale_working_dir_falls_back_and_clears() {
         session_task_map: [("99".to_string(), "sess-stale-wd-123".to_string())]
             .into_iter()
             .collect(),
+        stale_working_dir_sessions: ["sess-stale-wd-123".to_string()].into_iter().collect(),
         recently_recovered_session_ids: HashSet::new(),
         ..snapshot::minimal_snapshot_for_test()
     };
@@ -1047,8 +1041,8 @@ fn test_pending_task_stale_working_dir_falls_back_and_clears() {
     // The SpawnSession working_dir must NOT be the stale path
     if let Some(Effect::SpawnSession { working_dir, .. }) = spawn_eff {
         assert_ne!(
-            working_dir.as_os_str(),
-            stale_dir.as_os_str(),
+            working_dir.to_string_lossy(),
+            stale_path,
             "SpawnSession must use fresh worktree, not the stale path"
         );
     }
@@ -1059,18 +1053,10 @@ fn test_pending_task_stale_working_dir_falls_back_and_clears() {
 /// path and include ClearSessionWorkingDir in the effects.
 #[test]
 fn test_session_dispatch_stale_working_dir_falls_back_and_clears() {
-    use tempfile::TempDir;
-
-    // Create then delete a temp dir to produce a known-stale path.
-    let stale_dir = TempDir::new().expect("temp dir").keep();
-    std::fs::remove_dir_all(&stale_dir).expect("remove stale dir");
-    assert!(
-        !stale_dir.exists(),
-        "stale_dir must not exist for this test"
-    );
+    let stale_path = "/tmp/nonexistent-worktree-for-test";
 
     let mut session = make_session_record("sess-stale-p1-abc", Some("1740"), Some("park"), false);
-    session.working_dir = stale_dir.to_string_lossy().to_string();
+    session.working_dir = stale_path.to_string();
 
     let task = in_progress_task_for_lookup("1740", "Stale worktree test", "park");
 
@@ -1086,6 +1072,7 @@ fn test_session_dispatch_stale_working_dir_falls_back_and_clears() {
         session_task_map: [("1740".to_string(), "sess-stale-p1-abc".to_string())]
             .into_iter()
             .collect(),
+        stale_working_dir_sessions: ["sess-stale-p1-abc".to_string()].into_iter().collect(),
         recently_recovered_session_ids: HashSet::new(),
         ..snapshot::minimal_snapshot_for_test()
     };
