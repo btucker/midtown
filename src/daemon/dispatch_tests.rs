@@ -5457,3 +5457,85 @@ fn test_pending_task_with_running_session_skips_dispatch() {
         spawn_effects
     );
 }
+
+/// Regression test for task !1728: Path 2 recovery loop — pending task with stopped session
+/// retries without cooldown check.
+///
+/// Bug: `spawn_for_pending_tasks` (Path 2) resumes stopped sessions for pending tasks WITHOUT
+/// checking `recently_recovered_session_ids`. This causes infinite retry loops every 5s when
+/// a session dies repeatedly after recovery.
+///
+/// Path 1 (`dispatch_via_sessions_with_task_lookup`) checks this cooldown at lines 817-826.
+/// Path 2 had no such check — fixed by adding the same guard before the SpawnSession emit.
+///
+/// Fix: add `recently_recovered_session_ids` check before spawning in Path 2, and record
+/// the `session_recovered` cooldown in the SpawnSession success handler in effects.rs.
+#[test]
+fn test_pending_task_with_recently_recovered_session_skips_dispatch() {
+    // Given: pending task !99 has stopped session "sess-cool-1" that was recently recovered
+    // (recently_recovered_session_ids contains the session_id).
+    use crate::tasks::{Task, TaskStatus};
+    use std::time::SystemTime;
+
+    let session = make_test_session_record(
+        "sess-cool-1",
+        Some("99"),
+        Some("lexington"),
+        "/tmp/worktree-99",
+        false, // stopped — session died after previous recovery spawn
+    );
+    let sessions = [("sess-cool-1".to_string(), session)].into_iter().collect();
+    let session_task_map = [("99".to_string(), "sess-cool-1".to_string())]
+        .into_iter()
+        .collect();
+
+    let snap = snapshot::WorldSnapshot {
+        pending_tasks_without_owners: vec![Task {
+            id: "99".to_string(),
+            subject: "Implement caching layer".to_string(),
+            status: TaskStatus::Pending,
+            owner: None,
+            blocked_by: vec![],
+            description: None,
+            channel: None,
+            pr: None,
+            created_at: Some(SystemTime::now()),
+        }],
+        sessions,
+        session_task_map,
+        // Recovery was recently attempted — cooldown is active for this session_id.
+        // Without the fix, this check is missing in Path 2 and the task is re-spawned
+        // on every 5s tick, causing infinite retry loops when sessions die repeatedly.
+        recently_recovered_session_ids: ["sess-cool-1".to_string()].into_iter().collect(),
+        is_at_dev_limit: false,
+        is_at_coworker_limit: false,
+        ..make_session_dispatch_snapshot(vec![], HashMap::new(), HashMap::new())
+    };
+
+    let (state, _tmp, _guard) = make_test_state();
+
+    let effects = spawn_for_pending_tasks(&snap, &state);
+
+    // Then: must NOT emit SpawnSession or any other spawn — session was recently recovered.
+    // Without the fix, this fires on every tick causing an infinite loop.
+    let spawn_effects: Vec<_> = effects
+        .iter()
+        .filter(|e| {
+            matches!(
+                e,
+                Effect::SpawnSession { .. }
+                    | Effect::AssignAndSpawn { .. }
+                    | Effect::SpawnCoworkerWithCallbacks { .. }
+            )
+        })
+        .collect();
+    assert!(
+        spawn_effects.is_empty(),
+        "Should NOT re-spawn a pending task whose session was recently recovered (cooldown active). \
+         This causes an infinite retry loop every 5s. Got: {:?}",
+        spawn_effects
+            .iter()
+            .map(|e| format!("{:?}", e))
+            .collect::<Vec<_>>()
+    );
+}

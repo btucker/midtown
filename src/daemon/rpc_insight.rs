@@ -1,8 +1,7 @@
 //! Insight reporting RPC handler.
 //!
-//! Handles the `insight.report` method: deduplicates via in-memory hashing,
-//! posts insights to the channel, and spawns architect sessions for optional
-//! diagram generation.
+//! Handles the `insight.report` method: deduplicates via in-memory hashing
+//! and posts insights to the channel.
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -12,7 +11,6 @@ use tracing::{debug, info, warn};
 use crate::rpc::{RequestId, Response, RpcError};
 
 use super::DaemonState;
-use super::helpers::*;
 
 // ============================================================================
 // Handler
@@ -21,7 +19,7 @@ use super::helpers::*;
 /// Handle insight.report RPC method.
 ///
 /// Deduplicates via in-memory hash set, posts the insight to the channel,
-/// and spawns a headless architect session to optionally generate a diagram.
+/// and nudges the channel lead.
 pub(super) async fn handle_insight_report(
     id: RequestId,
     agent: &str,
@@ -94,50 +92,6 @@ pub(super) async fn handle_insight_report(
         },
     };
     crate::daemon::effects::execute_effects(vec![nudge_effect], state).await;
-
-    // Determine working directory for the architect session.
-    let cwd = if is_coworker_sender(agent, &state.repo_name) {
-        let worktree = crate::paths::coworkers_dir_for_repo(&state.repo_name).join(agent);
-        if worktree.exists() {
-            worktree
-        } else {
-            state.all_repo_paths.first().cloned().unwrap_or_default()
-        }
-    } else {
-        state.all_repo_paths.first().cloned().unwrap_or_default()
-    };
-
-    // Resolve auth for the architect session
-    let auth_provider = crate::config::get_execution_provider_for_role(
-        &state.repo_name,
-        crate::config::ExecutionRole::Architect,
-    );
-    let auth_profile_dir =
-        crate::auth::active_profile_dir_for_project_with_provider(&state.repo_name, auth_provider);
-
-    // Spawn the architect task asynchronously
-    let repo_name = state.repo_name.clone();
-    let insight_owned = insight.to_string();
-    // Pass None when posting to the main channel so the architect skips diagram
-    // generation there (noise guard). For topic channels — whether explicitly
-    // provided or auto-resolved from the coworker's task — pass Some so diagrams
-    // are posted to the correct channel.
-    let channel_owned = if channel_name != state.channel_router.default_channel_name() {
-        Some(channel_name.to_string())
-    } else {
-        None
-    };
-    tokio::spawn(async move {
-        super::architect::generate_insight_diagram(
-            insight_owned,
-            cwd,
-            repo_name,
-            channel_owned,
-            auth_provider,
-            auth_profile_dir,
-        )
-        .await;
-    });
 
     Response::success(
         id,

@@ -2200,6 +2200,7 @@ pub(super) fn spawn_for_pending_tasks_excluding(
                     );
                     continue;
                 }
+
                 info!(
                     "Pending task !{} has stopped session {} — resuming instead of spawning fresh",
                     task.id, record.session_id

@@ -5,7 +5,6 @@
 //! runs a webhook server to receive GitHub events, and polls PRs for
 //! actionable issues.
 
-mod architect;
 mod chat;
 mod constants;
 mod dispatch;
