@@ -96,55 +96,55 @@
   })
 </script>
 
-<div class="flex-1 flex flex-col overflow-hidden bg-[#0d0d0d]">
+<div class="flex-1 flex flex-col overflow-hidden bg-background">
   {#if loading}
-    <div class="flex-1 flex items-center justify-center text-[#585858] text-[0.85rem]">
+    <div class="flex-1 flex items-center justify-center text-muted-foreground text-[0.85rem]">
       Loading Zellij web client...
     </div>
   {:else if error}
     <div class="flex-1 flex flex-col items-center justify-center gap-4 p-6">
-      <div class="text-[#e94560] text-[0.85rem] text-center">{error}</div>
+      <div class="text-destructive text-[0.85rem] text-center">{error}</div>
       <button
-        class="px-4 py-2 bg-[#2a3a3a] border border-[#3a3a3a] rounded text-[#5fafaf] text-[0.8rem] cursor-pointer hover:bg-[#3a4a4a]"
+        class="px-4 py-2 bg-accent border border-border rounded text-[hsl(var(--link-default))] text-[0.8rem] cursor-pointer hover:bg-accent/80"
         onclick={retry}
       >
         Retry
       </button>
-      <div class="text-[#585858] text-[0.75rem] text-center max-w-sm leading-relaxed">
+      <div class="text-muted-foreground text-[0.75rem] text-center max-w-sm leading-relaxed">
         Make sure the Zellij web client is enabled:
-        <code class="block mt-2 px-3 py-1.5 bg-[#1a1a1a] rounded text-[#d4d4d4] text-[0.7rem]">zellij options --enable-web-client</code>
+        <code class="block mt-2 px-3 py-1.5 bg-card rounded text-foreground text-[0.7rem]">zellij options --enable-web-client</code>
       </div>
     </div>
   {:else if zellijUrl}
     <iframe
       src={zellijUrl}
       title="Zellij Terminal"
-      class="flex-1 w-full border-none bg-[#0d0d0d]"
+      class="flex-1 w-full border-none bg-background"
       sandbox="allow-same-origin allow-scripts allow-popups allow-forms"
       allow="clipboard-read; clipboard-write"
     ></iframe>
   {/if}
 
-  <div class="flex items-center gap-1.5 px-2 py-2 bg-[#1a1a1a] border-t border-[#3a3a3a]" style="padding-bottom: calc(0.5rem + env(safe-area-inset-bottom, 0px));">
+  <div class="flex items-center gap-1.5 px-2 py-2 bg-card border-t border-border" style="padding-bottom: calc(0.5rem + env(safe-area-inset-bottom, 0px));">
     <input
-      class="flex-1 px-2.5 py-2 bg-[#0d0d0d] border border-[#3a3a3a] rounded text-[#d4d4d4] font-['SF_Mono',Monaco,Menlo,Consolas,monospace] text-[0.8rem] outline-none focus:border-[#5fafaf] placeholder:text-[#585858]"
+      class="flex-1 px-2.5 py-2 bg-background border border-border rounded text-foreground font-['SF_Mono',Monaco,Menlo,Consolas,monospace] text-[0.8rem] outline-none focus:border-[hsl(var(--link-default))] placeholder:text-muted-foreground"
       type="text"
       placeholder="Message lead"
       bind:value={nudgeText}
       onkeydown={handleNudgeKeydown}
     />
     <button
-      class="px-3 py-2 bg-[#2a3a3a] border border-[#3a3a3a] rounded text-[#5fafaf] text-[0.75rem] cursor-pointer whitespace-nowrap hover:bg-[#3a4a4a] disabled:opacity-40 disabled:cursor-default"
+      class="px-3 py-2 bg-accent border border-border rounded text-[hsl(var(--link-default))] text-[0.75rem] cursor-pointer whitespace-nowrap hover:bg-accent/80 disabled:opacity-40 disabled:cursor-default"
       onclick={sendNudge}
       disabled={!nudgeText.trim()}
     >
       Send
     </button>
     {#if nudgeStatus === 'sent'}
-      <span class="text-[#5faf5f] text-[0.7rem] whitespace-nowrap animate-[fade-out_2s_forwards]">Sent</span>
+      <span class="text-[hsl(var(--link-default))] text-[0.7rem] whitespace-nowrap animate-[fade-out_2s_forwards]">Sent</span>
     {/if}
     {#if nudgeError}
-      <span class="text-[#e94560] text-[0.7rem] whitespace-nowrap animate-[fade-out_4s_forwards]">{nudgeError}</span>
+      <span class="text-destructive text-[0.7rem] whitespace-nowrap animate-[fade-out_4s_forwards]">{nudgeError}</span>
     {/if}
   </div>
 </div>

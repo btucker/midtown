@@ -70,15 +70,15 @@
       <div
         class="tool-item flex items-center gap-[0.4em] py-[1px] overflow-hidden"
         class:text-red-400={isError(entry)}
-        class:text-[#4a4a4a]={isInProgress(entry)}
+        class:text-muted-foreground={isInProgress(entry)}
       >
         <span class="tool-icon flex-shrink-0 select-none">
           {#if isError(entry)}
-            <span class="text-[#af3a3a]">✗</span>
+            <span class="text-destructive">✗</span>
           {:else if isCompleted(entry)}
-            <span class="text-[#3a5a3a]">✓</span>
+            <span class="text-[hsl(var(--link-default))]">✓</span>
           {:else}
-            <span class="text-[#3a6a3a]">›</span>
+            <span class="text-muted-foreground">›</span>
           {/if}
         </span>
         <span class="font-mono min-w-0 overflow-hidden whitespace-nowrap">{describeItem(entry.item)}</span>
@@ -86,14 +86,14 @@
     {/each}
     {#if hasMore}
       <button
-        class="text-[#3a5a5a] hover:text-[#5fafaf] text-[0.78rem] mt-[1px] bg-transparent border-none cursor-pointer p-0"
+        class="text-[hsl(var(--link-default))] hover:text-[hsl(var(--link-hover))] text-[0.78rem] mt-[1px] bg-transparent border-none cursor-pointer p-0"
         onclick={() => { expanded = true }}
       >
         ▼ {merged.length - 1} more
       </button>
     {:else if expanded && merged.length > 1}
       <button
-        class="text-[#3a5a5a] hover:text-[#5fafaf] text-[0.78rem] mt-[1px] bg-transparent border-none cursor-pointer p-0"
+        class="text-[hsl(var(--link-default))] hover:text-[hsl(var(--link-hover))] text-[0.78rem] mt-[1px] bg-transparent border-none cursor-pointer p-0"
         onclick={() => { expanded = false }}
       >
         ▲ less

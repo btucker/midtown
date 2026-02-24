@@ -14,7 +14,7 @@
       case 'failed': return { char: '●', color: '#ff5f5f' }
       case 'running':
       case 'pending': return { char: '●', color: '#d7af5f' }
-      default: return { char: '○', color: '#585858' }
+      default: return { char: '○', color: 'hsl(var(--muted-foreground))' }
     }
   }
 </script>
@@ -30,17 +30,17 @@
       {#if totalTasks > 0 || channelPrs.length > 0}
         <div class="flex items-center gap-1.5 flex-wrap">
           {#if channelPrs.length > 0}
-            <span class="text-[0.75rem] px-2 py-[3px] rounded-xl font-semibold whitespace-nowrap bg-blue-100 text-blue-700 dark:bg-blue-950/80 dark:text-blue-400" title="{channelPrs.length} active PR{channelPrs.length === 1 ? '' : 's'}">
+            <span class="text-[0.75rem] px-2 py-[3px] rounded-xl font-semibold whitespace-nowrap bg-accent text-[hsl(var(--link-pr))]" title="{channelPrs.length} active PR{channelPrs.length === 1 ? '' : 's'}">
               {channelPrs.length} PR{channelPrs.length === 1 ? '' : 's'}
             </span>
           {/if}
           {#if channelCounts.inProgress > 0}
-            <span class="text-[0.75rem] px-2 py-[3px] rounded-xl font-semibold whitespace-nowrap bg-green-100 text-green-700 dark:bg-green-950/80 dark:text-green-500" title="{channelCounts.inProgress} in progress">
+            <span class="text-[0.75rem] px-2 py-[3px] rounded-xl font-semibold whitespace-nowrap bg-accent text-[hsl(var(--link-default))]" title="{channelCounts.inProgress} in progress">
               {channelCounts.inProgress} in progress
             </span>
           {/if}
           {#if channelCounts.pending > 0}
-            <span class="text-[0.75rem] px-2 py-[3px] rounded-xl font-semibold whitespace-nowrap bg-purple-100 text-purple-700 dark:bg-purple-950/80 dark:text-purple-400" title="{channelCounts.pending} pending">
+            <span class="text-[0.75rem] px-2 py-[3px] rounded-xl font-semibold whitespace-nowrap bg-accent text-[hsl(var(--link-task))]" title="{channelCounts.pending} pending">
               {channelCounts.pending} pending
             </span>
           {/if}
@@ -53,20 +53,20 @@
       {@const ci = ciInfo($repoStatus.ciStatus)}
       <div class="flex items-center gap-2 shrink-0 text-[0.75rem] font-mono">
         {#if $repoStatus.repoName}
-          <span class="text-[#585858]">{$repoStatus.repoName}</span>
+          <span class="text-muted-foreground">{$repoStatus.repoName}</span>
         {/if}
         {#if $repoStatus.commitHash}
-          <span class="text-[#5f87af]">{$repoStatus.commitHash}</span>
+          <span class="text-[hsl(var(--link-default))]">{$repoStatus.commitHash}</span>
         {/if}
         {#if $repoStatus.commitTime}
-          <span class="text-[#585858]">{formatRelativeTime($repoStatus.commitTime)}</span>
+          <span class="text-muted-foreground">{formatRelativeTime($repoStatus.commitTime)}</span>
         {/if}
         <span style="color: {ci.color}">{ci.char}</span>
         {#if $repoStatus.releaseTag}
-          <span class="text-[#585858]">Releases:</span>
-          <span class="text-[#5f87af]">{$repoStatus.releaseTag}</span>
+          <span class="text-muted-foreground">Releases:</span>
+          <span class="text-[hsl(var(--link-default))]">{$repoStatus.releaseTag}</span>
           {#if $repoStatus.releaseTime}
-            <span class="text-[#585858]">{formatRelativeTime($repoStatus.releaseTime)}</span>
+            <span class="text-muted-foreground">{formatRelativeTime($repoStatus.releaseTime)}</span>
           {/if}
         {/if}
       </div>
@@ -77,22 +77,22 @@
   {#if isMultiRepo}
     {#each $repoStatuses as repo}
       {@const ci = ciInfo(repo.ciStatus)}
-      <div class="flex items-center gap-2 px-4 pb-2 text-[0.7rem] font-mono border-t border-[#2a2a2a]">
-        <span class="text-[#585858]">{repo.label || repo.fullName || ''}</span>
+      <div class="flex items-center gap-2 px-4 pb-2 text-[0.7rem] font-mono border-t border-border">
+        <span class="text-muted-foreground">{repo.label || repo.fullName || ''}</span>
         {#if repo.commitHash}
-          <span class="text-[#5f87af]">{repo.commitHash}</span>
+          <span class="text-[hsl(var(--link-default))]">{repo.commitHash}</span>
         {/if}
         {#if repo.commitTime}
-          <span class="text-[#585858]">{formatRelativeTime(repo.commitTime)}</span>
+          <span class="text-muted-foreground">{formatRelativeTime(repo.commitTime)}</span>
         {/if}
         {#if repo.commitHash || repo.ciStatus}
           <span style="color: {ci.color}">{ci.char}</span>
         {/if}
         {#if repo.releaseTag}
-          <span class="text-[#585858]">Releases:</span>
-          <span class="text-[#5f87af]">{repo.releaseTag}</span>
+          <span class="text-muted-foreground">Releases:</span>
+          <span class="text-[hsl(var(--link-default))]">{repo.releaseTag}</span>
           {#if repo.releaseTime}
-            <span class="text-[#585858]">{formatRelativeTime(repo.releaseTime)}</span>
+            <span class="text-muted-foreground">{formatRelativeTime(repo.releaseTime)}</span>
           {/if}
         {/if}
       </div>

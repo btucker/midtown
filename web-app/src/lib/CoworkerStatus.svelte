@@ -97,7 +97,7 @@
       {#each activeCoworkers as cw}
         <div class="flex flex-col gap-0.5 px-1.5 py-1 font-mono text-sm leading-normal">
           <div class="flex items-center gap-1.5">
-            <span class="shrink-0 text-base leading-none text-[#d7af5f]">{getSpinner()}</span>
+            <span class="shrink-0 text-base leading-none text-sidebar-primary">{getSpinner()}</span>
             <span class="shrink-0 font-medium lowercase" style="color: {getHealthColor(cw.health)}">{cw.name}</span>
             {#if cw.phase}
               <span class="hidden text-[0.75rem] text-muted-foreground sm:inline">{cw.phase}</span>

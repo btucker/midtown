@@ -40,6 +40,7 @@
   --sidebar-ring: 217.2 91.2% 59.8%;
   --insight: 300 50% 35%;
   --accent-teal: 188 45% 32%;
+  --chip-foreground: 0 0% 10%;
   /* Semantic link colors for message content — accessible on light backgrounds.
      Stored as bare HSL channels (h s% l%) for shadcn opacity composition. */
   --link-default: 180 65% 29%;
@@ -79,6 +80,7 @@
   --sidebar-ring: 180 29.4% 52.9%;
   --insight: 300 29.4% 52.9%;
   --accent-teal: 188 45% 65%;
+  --chip-foreground: 0 0% 96%;
   /* Semantic link colors for message content — designed for dark backgrounds.
      Stored as bare HSL channels (h s% l%) for shadcn opacity composition. */
   --link-default: 180 33% 53%;
@@ -120,6 +122,7 @@
   --color-sidebar-ring: hsl(var(--sidebar-ring));
   --color-insight: hsl(var(--insight));
   --color-accent-teal: hsl(var(--accent-teal));
+  --color-chip-foreground: hsl(var(--chip-foreground));
   --color-link-default: hsl(var(--link-default));
   --color-link-task: hsl(var(--link-task));
   --color-link-pr: hsl(var(--link-pr));

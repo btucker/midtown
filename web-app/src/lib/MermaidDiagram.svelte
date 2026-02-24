@@ -83,20 +83,20 @@
 </script>
 
 {#if loading}
-  <div class="text-[#585858] text-[0.8rem] py-2">Loading diagram...</div>
+  <div class="text-muted-foreground text-[0.8rem] py-2">Loading diagram...</div>
 {:else if error}
-  <div class="bg-[#2a1a1a] border border-[#5a2a2a] rounded-md px-3 py-2 my-1.5 text-[0.8rem]">
-    <div class="text-[#ff5f5f] font-semibold mb-1">Diagram error</div>
-    <pre class="text-[#a0a0a0] m-0 whitespace-pre-wrap break-words">{error}</pre>
+  <div class="bg-destructive/10 border border-destructive rounded-md px-3 py-2 my-1.5 text-[0.8rem]">
+    <div class="text-destructive font-semibold mb-1">Diagram error</div>
+    <pre class="text-muted-foreground m-0 whitespace-pre-wrap break-words">{error}</pre>
   </div>
 {:else}
   <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
   <div
-    class="group bg-[#1a1a2e] rounded-md p-3 my-1.5 overflow-x-auto leading-none cursor-pointer relative hover:outline hover:outline-1 hover:outline-[#3a3a5e] [&>svg]:max-w-full [&>svg]:h-auto [&>svg]:block"
+    class="group bg-accent rounded-md p-3 my-1.5 overflow-x-auto leading-none cursor-pointer relative hover:outline hover:outline-1 hover:outline-[hsl(var(--link-default))] [&>svg]:max-w-full [&>svg]:h-auto [&>svg]:block"
     onclick={handleExpand}
     title="Click to expand"
   >
     {@html svgHtml}
-    <div class="absolute top-1.5 right-2 text-[0.7rem] text-[#585858] opacity-0 transition-opacity duration-150 pointer-events-none font-['SF_Mono',Menlo,Consolas,monospace] group-hover:opacity-100">Click to expand</div>
+    <div class="absolute top-1.5 right-2 text-[0.7rem] text-muted-foreground opacity-0 transition-opacity duration-150 pointer-events-none font-['SF_Mono',Menlo,Consolas,monospace] group-hover:opacity-100">Click to expand</div>
   </div>
 {/if}
