@@ -47,50 +47,46 @@ pub fn build_usage_inline_spans(usage_data: &[UsageData]) -> Vec<Span<'static>> 
             ));
         }
 
-        if usage.session_resets.is_some() || usage.week_resets.is_some() {
-            let s_pct = usage.session_util.round() as u32;
-            let w_pct = usage.week_util.round() as u32;
-            let s_color = usage_color(usage.session_util);
-            let w_color = usage_color(usage.week_util);
-
-            if multi {
-                // Compact slash-separated format for multiple accounts
-                spans.push(Span::styled(
-                    format!("{s_pct}%"),
-                    Style::default().fg(s_color).bg(bg),
-                ));
-                spans.push(Span::styled(
-                    "/",
-                    Style::default().fg(Color::DarkGray).bg(bg),
-                ));
-                spans.push(Span::styled(
-                    format!("{w_pct}%"),
-                    Style::default().fg(w_color).bg(bg),
-                ));
-            } else {
-                // Labeled format for single account: S:42% W:15%
-                spans.push(Span::styled(
-                    "S:".to_string(),
-                    Style::default().fg(Color::DarkGray).bg(bg),
-                ));
-                spans.push(Span::styled(
-                    format!("{s_pct}%"),
-                    Style::default().fg(s_color).bg(bg),
-                ));
-                spans.push(Span::styled(
-                    " W:".to_string(),
-                    Style::default().fg(Color::DarkGray).bg(bg),
-                ));
-                spans.push(Span::styled(
-                    format!("{w_pct}%"),
-                    Style::default().fg(w_color).bg(bg),
-                ));
-            }
+        // Check each window independently — a missing reset means that window is unavailable.
+        let s_span = if usage.session_resets.is_some() {
+            let pct = usage.session_util.round() as u32;
+            Span::styled(
+                format!("{pct}%"),
+                Style::default().fg(usage_color(usage.session_util)).bg(bg),
+            )
         } else {
+            Span::styled("—", Style::default().fg(Color::DarkGray).bg(bg))
+        };
+        let w_span = if usage.week_resets.is_some() {
+            let pct = usage.week_util.round() as u32;
+            Span::styled(
+                format!("{pct}%"),
+                Style::default().fg(usage_color(usage.week_util)).bg(bg),
+            )
+        } else {
+            Span::styled("—", Style::default().fg(Color::DarkGray).bg(bg))
+        };
+
+        if multi {
+            // Compact slash-separated format for multiple accounts
+            spans.push(s_span);
             spans.push(Span::styled(
-                "S:— W:—".to_string(),
+                "/",
                 Style::default().fg(Color::DarkGray).bg(bg),
             ));
+            spans.push(w_span);
+        } else {
+            // Labeled format for single account: S:42% W:15%
+            spans.push(Span::styled(
+                "S:",
+                Style::default().fg(Color::DarkGray).bg(bg),
+            ));
+            spans.push(s_span);
+            spans.push(Span::styled(
+                " W:",
+                Style::default().fg(Color::DarkGray).bg(bg),
+            ));
+            spans.push(w_span);
         }
     }
 
@@ -126,6 +122,26 @@ mod tests {
             session_resets: resets,
             week_util,
             week_resets: resets,
+            account_email: None,
+            provider: AuthProvider::Claude,
+            profile_name: "default".to_string(),
+            cache_age_seconds: None,
+            cache_stale: false,
+        }
+    }
+
+    fn make_usage_partial(
+        session_util: f64,
+        week_util: f64,
+        session_reset: bool,
+        week_reset: bool,
+    ) -> UsageData {
+        let future = Some(Utc::now() + chrono::Duration::hours(3));
+        UsageData {
+            session_util,
+            session_resets: if session_reset { future } else { None },
+            week_util,
+            week_resets: if week_reset { future } else { None },
             account_email: None,
             provider: AuthProvider::Claude,
             profile_name: "default".to_string(),
@@ -222,6 +238,41 @@ mod tests {
         assert!(
             !text.contains("S:"),
             "Multi-account should not have S: labels: {text}"
+        );
+    }
+
+    #[test]
+    fn test_build_usage_inline_spans_partial_data_session_only() {
+        // Only session window present — week should show em-dash, not 0%
+        let usage = make_usage_partial(42.0, 0.0, true, false);
+        let spans = build_usage_inline_spans(&[usage]);
+        let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.contains("42%"), "Session pct should appear: {text}");
+        assert!(
+            !text.contains("0%"),
+            "Missing week should not appear as 0%: {text}"
+        );
+        // The W: label followed by em-dash means week is shown as unavailable
+        assert!(
+            text.contains("W:—") || (text.contains("W:") && text.contains('—')),
+            "Missing week should render as em-dash: {text}"
+        );
+    }
+
+    #[test]
+    fn test_build_usage_inline_spans_partial_data_week_only() {
+        // Only week window present — session should show em-dash, not 0%
+        let usage = make_usage_partial(0.0, 25.0, false, true);
+        let spans = build_usage_inline_spans(&[usage]);
+        let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.contains("25%"), "Week pct should appear: {text}");
+        assert!(
+            !text.contains("0%"),
+            "Missing session should not appear as 0%: {text}"
+        );
+        assert!(
+            text.contains("S:—") || (text.contains("S:") && text.contains('—')),
+            "Missing session should render as em-dash: {text}"
         );
     }
 
