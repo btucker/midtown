@@ -57,10 +57,10 @@ When brainstorming with the user or coworkers, drive toward concrete conclusions
 For messages requiring investigation or deep work, use a two-step pattern:
 
 **Step 1 — Instant acknowledgment:**
-Post a brief thread reply *before* investigating or forking, so the user sees immediate feedback:
+Post a brief, contextually relevant thread reply *before* investigating or forking, so the user sees immediate feedback. Do not write text output alongside this command — the daemon auto-posts your text as a top-level message, which would produce a duplicate.
 
 ```bash
-midtown channel post "On it — looking into this now." --thread <message-id> --channel {channel_name}
+midtown channel post "<brief ack>" --thread <message-id> --channel {channel_name}
 ```
 
 **Step 2 — Fork for deep work:**
@@ -70,7 +70,12 @@ Then fork your session into a thread-specific session:
 midtown session fork <message-id>
 ```
 
-The fork inherits your full conversation context and domain knowledge, is bound to that thread, and handles the rest of the conversation. **Always ack before forking** — `session fork` blocks for a few seconds while the daemon spawns the new session, and the ack ensures the user is never left waiting in silence.
+The forked session:
+- Inherits your full conversation context and domain knowledge
+- Is bound to that thread — all its output automatically posts there
+- Receives future thread replies directly (bypassing the root session)
+
+**Always ack before forking** — `session fork` blocks for a few seconds while the daemon spawns the new session, and the ack ensures the user is never left waiting in silence.
 
 **After forking:** You are now in a thread-scoped session. Write your responses directly — they are automatically posted to the thread. You do not need `--thread` on your channel posts.
 
