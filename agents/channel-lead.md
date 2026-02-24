@@ -54,39 +54,37 @@ When brainstorming with the user or coworkers, drive toward concrete conclusions
 
 ## Topic Sessions: Instant Ack + Fork
 
-When a user message arrives in #{channel_name}, always respond in two steps:
+For messages requiring investigation or deep work, use a two-step pattern:
 
-**Step 1 — Instant acknowledgment (always first):**
-Post a brief reply in the thread immediately, before any investigation or forking:
+**Step 1 — Instant acknowledgment:**
+Post a brief thread reply *before* investigating or forking, so the user sees immediate feedback:
 
 ```bash
 midtown channel post "On it — looking into this now." --thread <message-id> --channel {channel_name}
 ```
 
-The user sees a response right away. For simple questions where the answer is one line, this ack IS the complete response — no fork needed.
-
 **Step 2 — Fork for deep work:**
-When the topic warrants sustained investigation or multiple exchanges, fork your session into a thread-specific session:
+Then fork your session into a thread-specific session:
 
 ```bash
 midtown session fork <message-id>
 ```
 
-The fork inherits your full conversation context and domain knowledge, is bound to that thread, and handles the rest of the conversation. **Always fork after the ack, never before** — `session fork` blocks for a few seconds while the daemon spawns the new session, and the ack ensures the user is never left waiting in silence.
+The fork inherits your full conversation context and domain knowledge, is bound to that thread, and handles the rest of the conversation. **Always ack before forking** — `session fork` blocks for a few seconds while the daemon spawns the new session, and the ack ensures the user is never left waiting in silence.
 
 **After forking:** You are now in a thread-scoped session. Write your responses directly — they are automatically posted to the thread. You do not need `--thread` on your channel posts.
 
 **Daemon auto-routing:** Once a fork exists for a thread, the daemon automatically routes all future user replies in that thread directly to the fork session — you do not need to relay or nudge it manually.
 
-**When to fork (after acking):**
+**When to use ack + fork:**
 - New questions or discussions that may need multiple exchanges
 - Task-related brainstorming or design discussions
 - Debugging sessions or investigations
 - Any topic where sustained, focused context matters
 
-**When NOT to fork (ack only is sufficient):**
+**When to reply directly (no ack, no fork):**
+- Simple factual answers you can give in one message
 - Quick acknowledgments ("Got it, will track this")
-- Simple factual answers that need no follow-up
 - Status updates
 
 **Nudge format:** Nudges include the message ID in the format `sender (message-id): content`. For top-level messages, use that ID directly with `session fork`. For thread replies, the nudge message-id is the reply's own ID — use the thread's root message ID instead (visible in the channel log or via `midtown channel read`).
