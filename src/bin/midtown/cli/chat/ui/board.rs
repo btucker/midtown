@@ -28,11 +28,18 @@ pub fn draw_board_panel(f: &mut Frame, app: &mut App, area: Rect) -> (Vec<Hyperl
     app.channel_line_map.clear();
     app.coworker_line_map.clear();
 
-    // Split board area vertically: tasks at top, coworkers at bottom
+    // Split board area vertically: tasks at top, coworkers at bottom.
+    // Exclude the project lead (legacy "lead" or repo-named) to keep the height
+    // in sync with the rendering filter in draw_coworker_status.
+    let project_name_lower_bp = app.project_name.to_lowercase();
     let active_coworker_count = app
         .coworkers
         .iter()
         .filter(|cw| !matches!(cw.phase.as_deref(), Some("idle") | Some("done")))
+        .filter(|cw| {
+            let name = cw.name.to_lowercase();
+            name != "lead" && name != project_name_lower_bp
+        })
         .count();
     let coworker_section_height = if active_coworker_count > 0 {
         active_coworker_count as u16 + 3 // 1 header + N rows + 2 borders
@@ -1314,6 +1321,56 @@ mod tests {
         assert_eq!(
             tasks_area.height, 36,
             "idle coworkers should not inflate section height (only 1 active coworker)"
+        );
+    }
+
+    #[test]
+    fn test_draw_board_panel_project_lead_does_not_inflate_height() {
+        // Regression test: project lead (literal "lead" or repo-named) with an active phase
+        // must not inflate the coworker section height. Only real coworkers count.
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let backend = TestBackend::new(80, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let mut app = test_app();
+        // project_name is "test" in test_app(); the repo-named lead would be "test"
+        app.coworkers = vec![
+            {
+                let mut cw = make_coworker("lead"); // legacy lead name — must be excluded
+                cw.phase = Some("developing".to_string());
+                cw
+            },
+            {
+                let mut cw = make_coworker("york"); // regular coworker
+                cw.phase = Some("developing".to_string());
+                cw
+            },
+        ];
+        app.max_coworkers = 4;
+
+        let mut returned_tasks_area = None;
+
+        terminal
+            .draw(|f| {
+                let area = Rect {
+                    x: 0,
+                    y: 0,
+                    width: 80,
+                    height: 40,
+                };
+                let (_hyperlinks, tasks_area) = draw_board_panel(f, &mut app, area);
+                returned_tasks_area = Some(tasks_area);
+            })
+            .unwrap();
+
+        let tasks_area = returned_tasks_area.unwrap();
+        // Only 1 visible coworker (lead is excluded) → coworker section height = 1 + 3 = 4
+        // tasks_area height should be 40 - 4 = 36
+        assert_eq!(
+            tasks_area.height, 36,
+            "project lead must not inflate coworker section height (only york should be counted)"
         );
     }
 
