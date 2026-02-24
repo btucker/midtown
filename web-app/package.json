@@ -23,7 +23,8 @@
     "vitest": "^4.0.18"
   },
   "dependencies": {
-    "@fontsource/lato": "^5.2.7",
+    "@fontsource/ibm-plex-mono": "^5.2.7",
+    "@fontsource/ibm-plex-sans": "^5.2.8",
     "@tailwindcss/vite": "^4.1.18",
     "bigger-picture": "^1.1.19",
     "clsx": "^2.1.1",

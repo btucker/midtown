@@ -624,7 +624,7 @@
 
 <div class="flex flex-col h-full min-h-0 overflow-hidden relative">
   <div
-    class="flex-1 min-h-0 overflow-y-auto overflow-x-hidden overscroll-contain font-[SF_Mono,Menlo,Consolas,Monaco,'Courier_New',monospace] text-[1rem] leading-[1.55] px-[18px] pt-[14px] pb-[18px]"
+    class="flex-1 min-h-0 overflow-y-auto overflow-x-hidden overscroll-contain font-mono text-[1rem] leading-[1.55] px-[18px] pt-[14px] pb-[18px]"
     bind:this={scrollAreaViewport}
     onscroll={handleScroll}
   >
@@ -658,7 +658,7 @@
             <div
               class="mt-1 whitespace-nowrap overflow-hidden text-ellipsis flex items-center gap-[7px]"
             >
-              <span class="font-bold text-[0.82rem]" style="color: {getSenderColor(msg.from)}">{msg.from}</span>
+              <span class="font-mono font-semibold text-[0.82rem]" style="color: {getSenderColor(msg.from)}">{msg.from}</span>
               {#if currentTasks[msg.from.toLowerCase()]}
                 <span class="text-muted-foreground"> - {currentTasks[msg.from.toLowerCase()]}</span>
               {/if}
@@ -867,10 +867,10 @@
 </Dialog.Root>
 
 <style>
-  /* Font for message prose — Lato for readability, monospace inherited for code */
+  /* Font for message content — IBM Plex Mono for terminal-refined aesthetic */
   :global(.message-text),
   :global(.action-text) {
-    font-family: 'Lato', system-ui, -apple-system, sans-serif;
+    font-family: 'IBM Plex Mono', 'SF Mono', 'Menlo', monospace;
   }
 
   /* Link styles - applied globally within message content */
@@ -920,7 +920,7 @@
     padding: 0.12em 0.45em;
     border-radius: 3px;
     font-size: 0.92em;
-    font-family: 'SF Mono', 'Menlo', 'Consolas', 'Monaco', 'Courier New', monospace;
+    font-family: 'IBM Plex Mono', 'SF Mono', 'Menlo', monospace;
   }
 
   /* Code blocks */
