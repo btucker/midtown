@@ -1,8 +1,12 @@
 <script>
   import { messagesByChannel } from './store.js'
-  import { AVENUE_COLORS as BASE_AVENUE_COLORS } from './avenue-colors.js'
   import { tick } from 'svelte'
   import { fetchHistory } from './api.js'
+  import { getSenderColor, formatTime } from './messageUtils.js'
+
+  const OPS_SENDER_OVERRIDES = {
+    midtown: '#585858',
+  }
 
   // Read directly from the ops channel (daemon system messages are routed there)
   let opsMessages = $derived(
@@ -13,15 +17,6 @@
   let autoScroll = $state(true)
   let collapsed = $state(false)
 
-  function formatTime(timestamp) {
-    try {
-      const date = new Date(timestamp)
-      return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })
-    } catch {
-      return ''
-    }
-  }
-
   function getSenderLabel(msg) {
     return msg.from || '?'
   }
@@ -31,13 +26,6 @@
       return msg.content.replace(/^\/me\s*/, '')
     }
     return msg.content
-  }
-
-  // Sender color palette — matches Channel.svelte with ops-specific overrides
-  const AVENUE_COLORS = { ...BASE_AVENUE_COLORS, midtown: '#585858' }
-
-  function getSenderColor(name) {
-    return AVENUE_COLORS[name?.toLowerCase()] || '#808080'
   }
 
   // Pre-populate ops history on mount so the sidebar shows existing messages
@@ -85,12 +73,12 @@
             <span class="text-muted-foreground/60 flex-shrink-0 w-[3.2em] text-right">{formatTime(msg.timestamp)}</span>
             {#if msg.msg_type === 'action' || msg.content?.startsWith('/me ')}
               <!-- Action: "* name content" -->
-              <span class="flex-shrink-0" style="color: {getSenderColor(msg.from)}">*</span>
-              <span class="flex-shrink-0 font-medium" style="color: {getSenderColor(msg.from)}">{getSenderLabel(msg)}</span>
+              <span class="flex-shrink-0" style="color: {getSenderColor(msg.from, OPS_SENDER_OVERRIDES)}">*</span>
+              <span class="flex-shrink-0 font-medium" style="color: {getSenderColor(msg.from, OPS_SENDER_OVERRIDES)}">{getSenderLabel(msg)}</span>
               <span class="flex-1 min-w-0 text-muted-foreground/80">{getContent(msg)}</span>
             {:else}
               <!-- System: "source message" -->
-              <span class="flex-shrink-0 font-medium" style="color: {getSenderColor(msg.from)}">{getSenderLabel(msg)}</span>
+              <span class="flex-shrink-0 font-medium" style="color: {getSenderColor(msg.from, OPS_SENDER_OVERRIDES)}">{getSenderLabel(msg)}</span>
               <span class="flex-1 min-w-0 text-muted-foreground/60">{msg.content}</span>
             {/if}
           </div>

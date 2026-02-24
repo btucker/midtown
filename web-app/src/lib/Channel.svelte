@@ -1,7 +1,7 @@
 <script>
   import { messages, messagesByChannel, activeChannel, channels, coworkers, kanbanData, repoStatus, repoStatuses, daemonStatus, detailPanelData, isWideScreen, agentToolItems, threadData } from './store.js'
-  import { AVENUE_COLORS, getAvenueColor } from './avenue-colors.js'
   import { sendMessage, uploadFile, closeThread, openThread, openTaskThread } from './api.js'
+  import { AVENUE_COLORS, getSenderColor, isDimSender, formatTime, senderChanged, timeChanged } from './messageUtils.js'
   import { tick, onMount } from 'svelte'
   import { fly } from 'svelte/transition'
   import ReplyIcon from '@lucide/svelte/icons/reply'
@@ -379,32 +379,12 @@
     }
   })
 
-  // Senders whose content is rendered in DarkGray (system infrastructure actors)
-  const DIM_SENDERS = new Set(['daemon', 'github', 'system'])
-
-  function getSenderColor(name) {
-    return getAvenueColor(name, '#d0d0d0')
-  }
-
-  function isDimSender(sender) {
-    return DIM_SENDERS.has(sender?.toLowerCase())
-  }
-
   function isAction(msg) {
     return msg.msg_type === 'action' || msg.content?.startsWith('/me ')
   }
 
   function isInsight(msg) {
     return msg.msg_type === 'insight' || msg.type === 'insight'
-  }
-
-  function formatTime(timestamp) {
-    try {
-      const date = new Date(timestamp)
-      return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })
-    } catch {
-      return ''
-    }
   }
 
   function getActionContent(msg) {
@@ -438,19 +418,6 @@
       }
     }
     return map
-  }
-
-  // Check if sender changed from the previous message
-  function senderChanged(msgs, index) {
-    if (index === 0) return true
-    return msgs[index].from !== msgs[index - 1].from
-  }
-
-  // Returns true if the minute ticked over from the previous message in the same group.
-  // Used to conditionally show a gutter timestamp on continuation messages.
-  function timeChanged(msgs, index) {
-    if (index === 0 || senderChanged(msgs, index)) return false
-    return formatTime(msgs[index].timestamp) !== formatTime(msgs[index - 1].timestamp)
   }
 
   // Blank line before every sender change for consistent visual separation
