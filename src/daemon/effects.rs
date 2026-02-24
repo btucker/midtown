@@ -434,6 +434,17 @@ pub enum Effect {
     /// Standalone effect for releasing a name without full shutdown. Used when
     /// a session is suspended (process stopped but session state preserved for later resume).
     ReleaseName { name: String },
+
+    /// Invoke the channel's workflow script with a domain event.
+    ///
+    /// When a workflow script exists for the event's channel (resolved via
+    /// `paths::workflow_script_for_channel`), the daemon spawns it as
+    /// `uv run <script> --event <json> --state <state_file> --socket <socket>`.
+    /// If no script is found, this effect is a no-op.
+    ///
+    /// On non-zero exit or spawn failure, the script's stderr is posted to the
+    /// channel as a system message so failures are visible in the chat log.
+    EmitWorkflowEvent(crate::workflow::WorkflowEvent),
 }
 
 impl Effect {
@@ -2578,6 +2589,10 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     warn!("Failed to post auto-detach message: {}", e);
                 }
             }
+
+            Effect::EmitWorkflowEvent(event) => {
+                invoke_workflow_script(state, event).await;
+            }
         }
     }
 }
@@ -2686,6 +2701,150 @@ async fn auto_merge_pr(state: &DaemonState, pr_number: u64, title: &str) {
         if let Err(e) = state.send_and_broadcast_async(&msg).await {
             warn!("Failed to post auto-merge failure message: {}", e);
         }
+    }
+}
+
+/// Invoke the channel's workflow script for a `WorkflowEvent`.
+///
+/// Resolves the script path using the 4-level priority order in `paths.rs`, then
+/// spawns `uv run <script> --event <json> --state <state_file> --socket <socket>`
+/// with a 30-second timeout. If no script is found, returns immediately (no-op).
+///
+/// On non-zero exit or I/O failure the script's stderr is posted to the event's
+/// channel as a system message so workflow errors surface in the chat log.
+async fn invoke_workflow_script(state: &DaemonState, event: crate::workflow::WorkflowEvent) {
+    let channel = event.channel().to_string();
+
+    // Resolve the workflow script path (4-level priority order).
+    let project_root = state.all_repo_paths.first().cloned().unwrap_or_default();
+    let script_path =
+        crate::paths::workflow_script_for_channel(&channel, &project_root, &state.repo_name);
+    let Some(script) = script_path else {
+        // No workflow script configured for this channel — silent no-op.
+        return;
+    };
+
+    // Serialize the event to JSON for the --event flag.
+    let event_json = match serde_json::to_string(&event) {
+        Ok(json) => json,
+        Err(e) => {
+            warn!(
+                "Failed to serialize WorkflowEvent for channel '{}': {}",
+                channel, e
+            );
+            return;
+        }
+    };
+
+    let state_file = crate::paths::workflow_state_file(&channel, &state.repo_name);
+    let socket = &state.socket_path;
+
+    debug!(
+        channel = %channel,
+        script = %script.display(),
+        "invoke_workflow_script: spawning uv run"
+    );
+
+    let child = tokio::process::Command::new("uv")
+        .args([
+            "run",
+            script.to_str().unwrap_or_default(),
+            "--event",
+            &event_json,
+            "--state",
+            state_file.to_str().unwrap_or_default(),
+            "--socket",
+            socket.to_str().unwrap_or_default(),
+        ])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn();
+
+    let child = match child {
+        Ok(c) => c,
+        Err(e) => {
+            warn!(
+                channel = %channel,
+                script = %script.display(),
+                "invoke_workflow_script: failed to spawn uv: {}",
+                e
+            );
+            post_workflow_error(state, &channel, &script, &format!("spawn error: {e}")).await;
+            return;
+        }
+    };
+
+    let result =
+        tokio::time::timeout(std::time::Duration::from_secs(30), child.wait_with_output()).await;
+
+    match result {
+        Err(_timeout) => {
+            // wait_with_output consumed `child`; the future was dropped by the timeout,
+            // which tokio translates to SIGKILL on the child process.
+            warn!(
+                channel = %channel,
+                script = %script.display(),
+                "invoke_workflow_script: timed out after 30s"
+            );
+            post_workflow_error(
+                state,
+                &channel,
+                &script,
+                "workflow script timed out after 30s",
+            )
+            .await;
+        }
+        Ok(Err(e)) => {
+            warn!(
+                channel = %channel,
+                script = %script.display(),
+                "invoke_workflow_script: wait_with_output error: {}",
+                e
+            );
+            post_workflow_error(state, &channel, &script, &format!("I/O error: {e}")).await;
+        }
+        Ok(Ok(output)) => {
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                let stderr = stderr.trim();
+                warn!(
+                    channel = %channel,
+                    script = %script.display(),
+                    exit = ?output.status,
+                    "invoke_workflow_script: non-zero exit"
+                );
+                let detail = if stderr.is_empty() {
+                    format!("exited with {}", output.status)
+                } else {
+                    format!("exited with {}: {}", output.status, stderr)
+                };
+                post_workflow_error(state, &channel, &script, &detail).await;
+            } else {
+                debug!(
+                    channel = %channel,
+                    script = %script.display(),
+                    "invoke_workflow_script: completed successfully"
+                );
+            }
+        }
+    }
+}
+
+/// Post a workflow script error to its channel as a system message.
+async fn post_workflow_error(
+    state: &DaemonState,
+    channel: &str,
+    script: &std::path::Path,
+    detail: &str,
+) {
+    let mut msg = crate::message::Message::system(format!(
+        "⚠️ Workflow script error ({}): {}",
+        script.file_name().unwrap_or_default().to_string_lossy(),
+        detail
+    ));
+    msg.channel = Some(channel.to_string());
+    if let Err(e) = state.send_and_broadcast_async(&msg).await {
+        warn!("Failed to post workflow error message: {}", e);
     }
 }
 
