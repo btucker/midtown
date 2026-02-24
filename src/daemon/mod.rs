@@ -1425,6 +1425,11 @@ impl DaemonState {
         {
             headless_config.session_id = session_id.clone();
         }
+        // Inject MIDTOWN_SESSION_ID so coworkers can call `midtown session fork`
+        // without passing --session-id explicitly.
+        if let Some(ref sid) = session_id {
+            crate::launch::inject_session_id_env(&mut headless_config.env, sid);
+        }
         let persisted_session_id = session_id.clone().unwrap_or_default();
         let initial_prompt = launch_config.initial_prompt.as_deref();
         self.session_manager
