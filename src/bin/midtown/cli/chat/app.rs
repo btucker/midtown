@@ -358,10 +358,14 @@ pub struct App {
     /// Positive = up credits, negative = down credits.
     /// Resets to 0 when direction changes to prevent cross-direction bleed.
     mouse_scroll_accumulator: i8,
-    /// Timestamp of the last main-chat mouse scroll event. Used to distinguish deliberate
+    /// Timestamp of the last main-chat mouse scroll-up event. Used to distinguish deliberate
     /// mouse-wheel clicks (> MOUSE_INERTIA_THRESHOLD apart → scroll immediately) from
     /// trackpad inertia bursts (< threshold apart → use accumulator).
-    pub(crate) last_scroll_event: Option<Instant>,
+    pub(crate) last_scroll_up_event: Option<Instant>,
+    /// Timestamp of the last main-chat mouse scroll-down event. Kept separate from
+    /// last_scroll_up_event so that a quick direction reversal (up then down within
+    /// 50ms) still enters immediate mode for the new direction rather than inertia mode.
+    pub(crate) last_scroll_down_event: Option<Instant>,
     /// Separate accumulator for mouse wheel scroll events in the thread panel.
     /// Kept independent of mouse_scroll_accumulator so partial credits earned
     /// while scrolling one panel cannot bleed into the other panel's scroll.
@@ -633,7 +637,8 @@ impl App {
             tasks_cache_hash: 0,
             intentionally_at_top: false,
             mouse_scroll_accumulator: 0,
-            last_scroll_event: None,
+            last_scroll_up_event: None,
+            last_scroll_down_event: None,
             thread_mouse_scroll_accumulator: 0,
             last_thread_scroll_event: None,
             mermaid_cache: MermaidCache::new(),
@@ -1102,10 +1107,10 @@ impl App {
     ///   decrements it toward 0 (absorbing the event) before normal accumulation resumes.
     pub fn mouse_scroll_up(&mut self) {
         let elapsed = self
-            .last_scroll_event
+            .last_scroll_up_event
             .map(|t| t.elapsed())
             .unwrap_or(Duration::MAX);
-        self.last_scroll_event = Some(Instant::now());
+        self.last_scroll_up_event = Some(Instant::now());
 
         if elapsed > MOUSE_INERTIA_THRESHOLD {
             // Deliberate mouse-wheel click: scroll immediately, same as a key press.
@@ -1151,10 +1156,10 @@ impl App {
     /// Same time-based detection and burst-absorption logic as mouse_scroll_up.
     pub fn mouse_scroll_down(&mut self) {
         let elapsed = self
-            .last_scroll_event
+            .last_scroll_down_event
             .map(|t| t.elapsed())
             .unwrap_or(Duration::MAX);
-        self.last_scroll_event = Some(Instant::now());
+        self.last_scroll_down_event = Some(Instant::now());
 
         if elapsed > MOUSE_INERTIA_THRESHOLD {
             // Deliberate mouse-wheel click: scroll immediately.
@@ -3803,7 +3808,8 @@ pub(super) mod tests {
             tasks_cache_hash: 0,
             intentionally_at_top: false,
             mouse_scroll_accumulator: 0,
-            last_scroll_event: None,
+            last_scroll_up_event: None,
+            last_scroll_down_event: None,
             thread_mouse_scroll_accumulator: 0,
             last_thread_scroll_event: None,
             mermaid_cache: MermaidCache::new(),
