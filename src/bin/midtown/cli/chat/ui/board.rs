@@ -435,11 +435,13 @@ fn draw_coworker_status(f: &mut Frame, app: &mut App, area: Rect) {
     // Get the spinner character before borrowing app.coworkers
     let spinner = app.spinner_char();
 
-    // Filter out idle/completed coworkers - show active and freshly-spawned (phase=None)
+    // Filter out idle/completed coworkers - show active and freshly-spawned (phase=None).
+    // Also exclude the project lead (name == "lead") and channel leads (excluded upstream).
     let active_coworkers: Vec<_> = app
         .coworkers
         .iter()
         .filter(|cw| !matches!(cw.phase.as_deref(), Some("idle") | Some("done")))
+        .filter(|cw| cw.name.to_lowercase() != "lead")
         .collect();
 
     // channel leads are already excluded upstream by build_coworkers_data

@@ -200,3 +200,38 @@ fn test_coworker_line_map_excludes_idle() {
         "active coworker 'york' should be in coworker_line_map"
     );
 }
+
+/// The project lead (name == "lead") should NOT appear in the coworkers sidebar,
+/// even when their phase is active (non-idle). Regression test for !1723.
+#[test]
+fn test_coworker_line_map_excludes_project_lead() {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    let mut app = test_app();
+    app.coworkers = vec![
+        make_active_coworker("lead", "developing"),
+        make_active_coworker("york", "developing"),
+    ];
+
+    let backend = TestBackend::new(80, 40);
+    let mut terminal = Terminal::new(backend).unwrap();
+
+    terminal
+        .draw(|f| {
+            let area = f.area();
+            draw_board_panel(f, &mut app, area);
+        })
+        .unwrap();
+
+    let names: Vec<&String> = app.coworker_line_map.values().collect();
+    assert!(
+        !names.iter().any(|n| n.as_str() == "lead"),
+        "project lead 'lead' should NOT be in coworker_line_map, got: {:?}",
+        names
+    );
+    assert!(
+        names.iter().any(|n| n.as_str() == "york"),
+        "active coworker 'york' should be in coworker_line_map"
+    );
+}
