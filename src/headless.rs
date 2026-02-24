@@ -639,15 +639,13 @@ impl CodexSharedRuntime {
 }
 
 fn codex_runtime_key(env: &std::collections::BTreeMap<String, String>) -> String {
-    let agent = env
-        .get("MIDTOWN_AGENT")
-        .map(|value| value.as_str())
-        .unwrap_or("unknown");
+    // Share a single app-server per Codex profile (CODEX_HOME), even across
+    // multiple coworkers/sessions, so we don't spin up one process per agent.
     let profile = env
         .get("CODEX_HOME")
         .map(|value| value.as_str())
         .unwrap_or("default");
-    format!("{}|{}", agent, profile)
+    format!("codex-runtime|{}", profile)
 }
 
 async fn codex_shared_runtime(
