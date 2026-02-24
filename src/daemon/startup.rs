@@ -693,6 +693,86 @@ pub async fn recover_from_session_records(
     (effects, recovered_session_ids)
 }
 
+/// Rebuild `channel_lead_sessions` from persisted SessionRecords.
+///
+/// Uses the canonical SessionRecord store instead of stale in-memory state.
+/// This is required after daemon restarts, because `channel_lead_sessions` was
+/// previously cleared on startup and never repopulated, which breaks channel lead
+/// routing and thinking indicators.
+pub async fn recover_channel_lead_session_mappings(
+    persistent_state: &tokio::sync::Mutex<DaemonPersistentState>,
+) -> usize {
+    let mut state = persistent_state.lock().await;
+    let mut recovered = 0usize;
+    let mut records_by_channel: HashMap<String, (chrono::DateTime<chrono::Utc>, SessionRecord)> =
+        HashMap::new();
+
+    // Start from a clean in-memory mapping and repopulate only from
+    // persisted sessions that should be recoverable and look like root channel
+    // leads (non-forked, running, resumable).
+    state.channel_lead_sessions.clear();
+
+    for record in state.sessions.values() {
+        if record.coworker_type != "channel-lead" {
+            continue;
+        }
+        if !record.resume_on_startup || !record.is_running {
+            continue;
+        }
+
+        // Only root channel leads (not forked topic sessions) are tracked in
+        // `channel_lead_sessions`. Forked leads use `fork_bound_channels`.
+        if record.bound_thread_id.is_some() {
+            continue;
+        }
+
+        if record.session_id.is_empty() {
+            continue;
+        }
+
+        let session_name = record
+            .preferred_name
+            .as_deref()
+            .or(record.current_name.as_deref())
+            .unwrap_or("");
+        if session_name.is_empty() {
+            continue;
+        }
+
+        let channel_name = record
+            .channel
+            .as_deref()
+            .filter(|name| !name.is_empty())
+            .unwrap_or(session_name);
+
+        let should_replace = records_by_channel
+            .get(channel_name)
+            .is_none_or(|(created_at, _)| record.created_at > *created_at);
+        if should_replace {
+            records_by_channel.insert(
+                channel_name.to_string(),
+                (record.created_at, record.clone()),
+            );
+        }
+    }
+
+    for (channel_name, (_, record)) in records_by_channel {
+        state
+            .channel_lead_sessions
+            .insert(channel_name, record.session_id.clone());
+        recovered += 1;
+    }
+
+    if recovered > 0 {
+        info!(
+            "Recovered {} channel lead session mapping(s) from session records",
+            recovered
+        );
+    }
+
+    recovered
+}
+
 /// Clear is_running flags for sessions that were not recovered on startup.
 ///
 /// On restart, `recover_from_session_records` resumes sessions where both
