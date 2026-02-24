@@ -144,9 +144,9 @@
     >
       <!-- Parent message (highlighted) — Slack-style: name + timestamp on one line -->
       <div class="pb-2 mb-2 border-b border-[#2a2a2a]">
-        <div class="flex items-center gap-[7px] mb-[2px]">
+        <div class="whitespace-nowrap overflow-hidden text-ellipsis flex items-center gap-[7px] mb-[2px]">
           <span class="font-bold text-[0.82rem]" style="color: {getSenderColor($threadData.parentMessage.from)}">{$threadData.parentMessage.from}</span>
-          <span class="text-[#4a4a4a] text-[0.72rem] select-none">{formatTime($threadData.parentMessage.timestamp)}</span>
+          <span class="text-muted-foreground/50 text-[0.72rem] select-none">{formatTime($threadData.parentMessage.timestamp)}</span>
         </div>
         <div class="text-[#d0d0d0] break-words">{@html renderContent($threadData.parentMessage.content || '')}</div>
       </div>
@@ -158,13 +158,13 @@
         {#each $threadData.messages as msg, i}
           {#if senderChanged($threadData.messages, i)}
             {#if i > 0}<div class="h-[0.8em]"></div>{/if}
-            <div class="flex items-center gap-[7px] mb-[2px]">
+            <div class="whitespace-nowrap overflow-hidden text-ellipsis flex items-center gap-[7px] mb-[2px]">
               <span class="font-bold text-[0.82rem]" style="color: {getSenderColor(msg.from)}">{msg.from}</span>
-              <span class="text-[#4a4a4a] text-[0.72rem] select-none">{formatTime(msg.timestamp)}</span>
+              <span class="text-muted-foreground/50 text-[0.72rem] select-none">{formatTime(msg.timestamp)}</span>
             </div>
           {/if}
           <div class="flex gap-0 break-words">
-            <span class="text-[#4a4a4a] flex-shrink-0 w-[3.2em] text-right mr-[0.4em] select-none text-[0.78rem]">{timeChanged($threadData.messages, i) ? formatTime(msg.timestamp) : ''}</span>
+            <span class="text-muted-foreground/50 flex-shrink-0 w-[3.2em] text-right mr-[0.4em] select-none text-[0.78rem]">{timeChanged($threadData.messages, i) ? formatTime(msg.timestamp) : ''}</span>
             <span class="flex-1 min-w-0 {isDimSender(msg.from) ? 'text-[#606060]' : 'text-[#d0d0d0]'}">{@html renderContent(msg.content || '')}</span>
           </div>
         {/each}
@@ -217,9 +217,9 @@
     >
       <!-- Parent message — Slack-style: name + timestamp on one line -->
       <div class="pb-2 mb-2 border-b border-[#2a2a2a]">
-        <div class="flex items-center gap-[7px] mb-[2px]">
+        <div class="whitespace-nowrap overflow-hidden text-ellipsis flex items-center gap-[7px] mb-[2px]">
           <span class="font-bold text-[0.82rem]" style="color: {getSenderColor($threadData.parentMessage.from)}">{$threadData.parentMessage.from}</span>
-          <span class="text-[#4a4a4a] text-[0.72rem] select-none">{formatTime($threadData.parentMessage.timestamp)}</span>
+          <span class="text-muted-foreground/50 text-[0.72rem] select-none">{formatTime($threadData.parentMessage.timestamp)}</span>
         </div>
         <div class="text-[#d0d0d0] break-words">{@html renderContent($threadData.parentMessage.content || '')}</div>
       </div>
@@ -231,13 +231,13 @@
         {#each $threadData.messages as msg, i}
           {#if senderChanged($threadData.messages, i)}
             {#if i > 0}<div class="h-[0.8em]"></div>{/if}
-            <div class="flex items-center gap-[7px] mb-[2px]">
+            <div class="whitespace-nowrap overflow-hidden text-ellipsis flex items-center gap-[7px] mb-[2px]">
               <span class="font-bold text-[0.82rem]" style="color: {getSenderColor(msg.from)}">{msg.from}</span>
-              <span class="text-[#4a4a4a] text-[0.72rem] select-none">{formatTime(msg.timestamp)}</span>
+              <span class="text-muted-foreground/50 text-[0.72rem] select-none">{formatTime(msg.timestamp)}</span>
             </div>
           {/if}
           <div class="flex gap-0 break-words">
-            <span class="text-[#4a4a4a] flex-shrink-0 w-[3.2em] text-right mr-[0.4em] select-none text-[0.78rem]">{timeChanged($threadData.messages, i) ? formatTime(msg.timestamp) : ''}</span>
+            <span class="text-muted-foreground/50 flex-shrink-0 w-[3.2em] text-right mr-[0.4em] select-none text-[0.78rem]">{timeChanged($threadData.messages, i) ? formatTime(msg.timestamp) : ''}</span>
             <span class="flex-1 min-w-0 {isDimSender(msg.from) ? 'text-[#606060]' : 'text-[#d0d0d0]'}">{@html renderContent(msg.content || '')}</span>
           </div>
         {/each}
