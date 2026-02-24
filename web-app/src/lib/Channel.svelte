@@ -2,7 +2,7 @@
   import { messages, messagesByChannel, activeChannel, channels, coworkers, kanbanData, repoStatus, repoStatuses, daemonStatus, detailPanelData, isWideScreen, agentToolItems, threadData } from './store.js'
   import { AVENUE_COLORS, getAvenueColor } from './avenue-colors.js'
   import { sendMessage, uploadFile, closeThread, openThread, openTaskThread } from './api.js'
-  import { AVENUE_COLORS, DIM_SENDERS, getSenderColor, isDimSender, formatTime, senderChanged, timeChanged } from './messageUtils.js'
+  import { AVENUE_COLORS, getSenderColor, isDimSender, formatTime, senderChanged, timeChanged } from './messageUtils.js'
   import { tick, onMount } from 'svelte'
   import { fly } from 'svelte/transition'
   import MermaidDiagram from './MermaidDiagram.svelte'
