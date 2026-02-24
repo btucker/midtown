@@ -12,6 +12,7 @@
   import CoworkerStatus from '$lib/CoworkerStatus.svelte'
   import UsageBars from '$lib/UsageBars.svelte'
   import AuthSwitcher from '$lib/AuthSwitcher.svelte'
+  import CelebrationEffects from '$lib/CelebrationEffects.svelte'
   import { messages, connected, coworkers, projects, activeProject, activeChannel, detailPanelData, threadData, isWideScreen } from '$lib/store.js'
   import { connectWebSocket, fetchHistory, fetchStatus, fetchProjects, switchProject } from '$lib/api.js'
   import {
@@ -128,6 +129,7 @@
 </svelte:head>
 
 <div class="app-container flex h-dvh w-full overflow-hidden bg-background text-foreground">
+  <CelebrationEffects />
   {#if $activeProject}
     <SidebarProvider>
       <Sidebar>

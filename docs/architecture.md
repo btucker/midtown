@@ -390,6 +390,17 @@ The web interface is a Svelte 5 + Vite SPA served on port 47022:
   - **Desktop (≥1025px)**: Three-column Slack-inspired layout with sidebar, main channel, and toggleable detail panel for tasks, PRs, and coworker info
 - Clickable `@coworker` mentions in messages open coworker detail panel on desktop
 
+### Celebration effects
+
+Merged PRs animate across the UI once they land in `kanbanData.done`. `web-app/src/lib/CelebrationEffects.svelte` observes `$kanbanData.done` (only after `$daemonStatus` hydrates to avoid replaying historical merges), keeps a per-session set of celebrated PR keys (`repo#number`), and randomly selects one of ten short-lived CSS effects (confetti, emoji rain, matrix cascade, etc.). Effects render inside a fixed overlay with `pointer-events: none` so they never block interaction, and every particle color comes from `AVENUE_COLORS` or existing theme tokens to stay on brand.
+
+To add a new effect:
+
+1. Create a generator helper within `CelebrationEffects.svelte` that returns the data your effect needs (positions, characters, durations, etc.). Keep payloads serializable (no DOM references) so Svelte can diff cheaply.
+2. Append a `{ type, duration, generator }` entry to `EFFECT_DEFS`. Durations should stay under ~5 s and should match the CSS animation timing you introduce.
+3. Add a new markup branch inside the `{#each activeEffects}` block plus scoped styles/keyframes for the effect. Reuse the overlay semantics (absolute positioning, opacity fades, `pointer-events: none`) so rapid merges cannot degrade layout performance.
+4. Whenever possible, pull palette values from `COLOR_PALETTE`/`AVENUE_COLORS` instead of hardcoding new hex codes. This keeps dark/light themes and future recolors consistent.
+
 ## Universal Events Pipeline
 
 The `universal_events` module (`src/universal_events/`) provides a provider-agnostic event model for structured agent activity. It captures tool calls and tool results from Claude Code's `stream-json` output, stores them in daemon memory, and broadcasts them to WebSocket clients and TUI as structured data, parallel to the existing text pipeline.
