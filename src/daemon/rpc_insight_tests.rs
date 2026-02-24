@@ -201,6 +201,32 @@ async fn test_insight_routes_to_task_channel_when_no_explicit_channel() {
     );
 }
 
+/// Insights from channel lead sessions should be suppressed — they already
+/// auto-post their output to the channel, so insight.report is redundant.
+#[tokio::test]
+async fn test_insight_suppressed_for_channel_lead() {
+    let (state, _temp_dir, _guard) = make_test_state("testrepo");
+
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.channel_lead_sessions
+            .insert("auth".to_string(), "session-id-abc".to_string());
+    }
+
+    let response = handle_insight_report(
+        RequestId::Number(1),
+        "auth",
+        "An insight from channel lead",
+        None,
+        &state,
+    )
+    .await;
+
+    let result = response.result.expect("should return success result");
+    assert_eq!(result["posted"], false);
+    assert_eq!(result["reason"], "channel_lead");
+}
+
 /// Duplicate insights should be deduplicated and return posted=false.
 #[tokio::test]
 async fn test_insight_deduplication() {

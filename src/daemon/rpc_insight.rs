@@ -27,6 +27,25 @@ pub(super) async fn handle_insight_report(
     channel: Option<&str>,
     state: &DaemonState,
 ) -> Response {
+    // Channel leads auto-post all output to their channel already.
+    // Suppress insight.report from channel leads to avoid double-posting.
+    {
+        let ps = state.persistent_state.lock().await;
+        if ps.channel_lead_sessions.contains_key(agent) {
+            debug!(
+                "insight.report: suppressing insight from channel lead '{}' (auto-posted via output)",
+                agent
+            );
+            return Response::success(
+                id,
+                serde_json::json!({
+                    "posted": false,
+                    "reason": "channel_lead",
+                }),
+            );
+        }
+    }
+
     // Deduplicate: normalize and hash the insight content
     let hash = hash_insight(insight);
     {
