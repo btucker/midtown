@@ -135,6 +135,49 @@ fn test_any_spinner_visible_true_when_channel_thinking() {
 }
 
 #[test]
+fn test_pulse_bold_at_frame_zero_is_bold() {
+    // Frame 0: (0 / 5).is_multiple_of(2) → 0.is_multiple_of(2) → true → BOLD
+    let app = test_app();
+    assert!(app.pulse_bold(), "Frame 0 should be bold phase");
+}
+
+#[test]
+fn test_pulse_bold_at_frame_ten_is_normal() {
+    // Frame 10: (10 / 5).is_multiple_of(2) → 2.is_multiple_of(2) → true → BOLD
+    // Frame 5: (5 / 5).is_multiple_of(2) → 1.is_multiple_of(2) → false → normal
+    let mut app = test_app();
+    app.spinner_frame = 5;
+    assert!(!app.pulse_bold(), "Frame 5 should be normal phase");
+}
+
+#[test]
+fn test_pulse_name_style_bold_branch() {
+    use ratatui::style::{Color, Modifier};
+    // Frame 0 → pulse_bold = true → style has BOLD modifier
+    let app = test_app();
+    let style = app.pulse_name_style(Color::Yellow);
+    assert_eq!(style.fg, Some(Color::Yellow));
+    assert!(
+        style.add_modifier.contains(Modifier::BOLD),
+        "Frame 0 should produce BOLD style"
+    );
+}
+
+#[test]
+fn test_pulse_name_style_normal_branch() {
+    use ratatui::style::{Color, Modifier};
+    // Frame 5 → pulse_bold = false → style has no BOLD modifier
+    let mut app = test_app();
+    app.spinner_frame = 5;
+    let style = app.pulse_name_style(Color::Yellow);
+    assert_eq!(style.fg, Some(Color::Yellow));
+    assert!(
+        !style.add_modifier.contains(Modifier::BOLD),
+        "Frame 5 should produce normal (non-bold) style"
+    );
+}
+
+#[test]
 fn test_any_spinner_visible_false_when_channel_thinking_expired() {
     // Thinking state expires after CHANNEL_LEAD_THINKING_TIMEOUT seconds.
     // An expired entry should not make the spinner visible.

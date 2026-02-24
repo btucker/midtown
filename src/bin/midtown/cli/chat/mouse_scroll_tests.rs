@@ -17,10 +17,11 @@ use super::{MOUSE_INERTIA_THRESHOLD, MOUSE_SCROLL_STEP, MOUSE_SCROLL_THRESHOLD, 
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Make `app.last_scroll_event` look like it was set "just now" so subsequent
-/// mouse scroll calls enter inertia/accumulator mode (elapsed ≤ threshold).
+/// Make `app.last_scroll_up_event` and `app.last_scroll_down_event` look like they were set
+/// "just now" so subsequent mouse scroll calls enter inertia/accumulator mode (elapsed ≤ threshold).
 fn set_recent_scroll(app: &mut super::App) {
-    app.last_scroll_event = Some(Instant::now());
+    app.last_scroll_up_event = Some(Instant::now());
+    app.last_scroll_down_event = Some(Instant::now());
 }
 
 /// Make `app.last_thread_scroll_event` look like it was set "just now".
@@ -28,11 +29,12 @@ fn set_recent_thread_scroll(app: &mut super::App) {
     app.last_thread_scroll_event = Some(Instant::now());
 }
 
-/// Make `app.last_scroll_event` look like it happened long ago so subsequent
-/// mouse scroll calls enter immediate mode (elapsed > threshold).
+/// Make `app.last_scroll_up_event` and `app.last_scroll_down_event` look like they happened
+/// long ago so subsequent mouse scroll calls enter immediate mode (elapsed > threshold).
 fn set_old_scroll(app: &mut super::App) {
-    app.last_scroll_event =
-        Some(Instant::now() - MOUSE_INERTIA_THRESHOLD - Duration::from_millis(10));
+    let old = Some(Instant::now() - MOUSE_INERTIA_THRESHOLD - Duration::from_millis(10));
+    app.last_scroll_up_event = old;
+    app.last_scroll_down_event = old;
 }
 
 /// Make `app.last_thread_scroll_event` look like it happened long ago.
@@ -486,5 +488,70 @@ fn test_inertia_still_works_after_burst_absorption_window() {
         app.scroll_offset,
         after_immediate + MOUSE_SCROLL_STEP,
         "After burst absorbed, THRESHOLD more inertia events should produce one fine scroll"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Direction reversal — separate up/down timestamps
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_scroll_down_is_immediate_after_recent_scroll_up() {
+    // Regression: when last_scroll_event was shared between up and down, a quick
+    // direction reversal (up then down within 50ms) would enter accumulator mode
+    // for the down scroll instead of scrolling immediately.
+    // With separate last_scroll_up_event / last_scroll_down_event each direction
+    // tracks its own timestamp independently.
+    let mut app = test_app();
+    for i in 0..30 {
+        app.messages
+            .push_back(Message::text("test", format!("msg {i}")));
+    }
+    app.scroll_offset = SCROLL_STEP * 2;
+
+    // Simulate a deliberate scroll-up (no prior event → immediate)
+    app.mouse_scroll_up();
+    let after_up = app.scroll_offset;
+    assert_eq!(
+        after_up,
+        SCROLL_STEP * 3,
+        "scroll-up should be immediate (no prior up event)"
+    );
+
+    // Immediately after (within 50ms), scroll down.
+    // Since last_scroll_down_event is still None, this should ALSO be immediate.
+    app.mouse_scroll_down();
+    assert_eq!(
+        app.scroll_offset,
+        SCROLL_STEP * 2,
+        "scroll-down immediately after scroll-up should be immediate (separate timestamps)"
+    );
+}
+
+#[test]
+fn test_scroll_up_is_immediate_after_recent_scroll_down() {
+    // Symmetric: a scroll-up after a recent scroll-down is also immediate
+    // because last_scroll_up_event is independent of last_scroll_down_event.
+    let mut app = test_app();
+    for i in 0..30 {
+        app.messages
+            .push_back(Message::text("test", format!("msg {i}")));
+    }
+    app.scroll_offset = SCROLL_STEP * 3;
+
+    // Deliberate scroll-down (no prior down event → immediate)
+    app.mouse_scroll_down();
+    assert_eq!(
+        app.scroll_offset,
+        SCROLL_STEP * 2,
+        "scroll-down should be immediate (no prior down event)"
+    );
+
+    // Immediately after, scroll up — should also be immediate
+    app.mouse_scroll_up();
+    assert_eq!(
+        app.scroll_offset,
+        SCROLL_STEP * 3,
+        "scroll-up immediately after scroll-down should be immediate (separate timestamps)"
     );
 }

@@ -439,8 +439,8 @@ fn draw_coworker_status(f: &mut Frame, app: &mut App, area: Rect) {
         ])
         .split(area);
 
-    // Get the spinner character before borrowing app.coworkers
-    let spinner = app.spinner_char();
+    // Capture pulse state before borrowing app.coworkers (drives name pulsing)
+    let pulse_bold = app.pulse_bold();
 
     // Filter out idle/completed coworkers and the project lead. The project lead
     // and channel leads are both excluded upstream by build_coworkers_data
@@ -474,8 +474,7 @@ fn draw_coworker_status(f: &mut Frame, app: &mut App, area: Rect) {
     // Determine which columns to show based on available width.
     //
     // Column widths (fixed):
-    //   spinner : 2  (e.g. "⠋ ")
-    //   name    : max name length (variable, but bounded)
+    //   name    : max name length (variable, but bounded) — pulsed bold when active
     //   task_id : 5  (e.g. "!1418")
     //   phase   : 6  (e.g. "review", "debug")
     //   pr_num  : 5  (e.g. "#1207")
@@ -483,12 +482,12 @@ fn draw_coworker_status(f: &mut Frame, app: &mut App, area: Rect) {
     //   time    : 4  (e.g. "~3m")
     //
     // Degradation order (drop from right):
-    //   Full:    spinner | name | task_id | phase | pr_num | progress | time
-    //   Level 1: spinner | name | task_id | phase | pr_num | progress
-    //   Level 2: spinner | name | task_id | phase | pr_num
-    //   Level 3: spinner | name | task_id | phase
-    //   Level 4: spinner | name | task_id
-    //   Minimal: spinner | name
+    //   Full:    name | task_id | phase | pr_num | progress | time
+    //   Level 1: name | task_id | phase | pr_num | progress
+    //   Level 2: name | task_id | phase | pr_num
+    //   Level 3: name | task_id | phase
+    //   Level 4: name | task_id
+    //   Minimal: name
 
     let name_max = active_coworkers
         .iter()
@@ -497,8 +496,7 @@ fn draw_coworker_status(f: &mut Frame, app: &mut App, area: Rect) {
         .unwrap_or(6);
 
     // Column widths (each includes one space of padding on the right, handled by Cell)
-    let w_spinner: usize = 2; // "⠋ "
-    let w_name: usize = name_max; // right-padded to align
+    let w_name: usize = name_max; // right-padded to align; bold when active (pulsing)
     let w_task_id: usize = 5; // "!1418"
     let w_phase: usize = 6; // "review" (longest abbreviation)
     let w_pr: usize = 5; // "#1207"
@@ -509,7 +507,7 @@ fn draw_coworker_status(f: &mut Frame, app: &mut App, area: Rect) {
     let gap: usize = 1;
 
     // Cumulative widths for each layout level
-    let base = w_spinner + gap + w_name;
+    let base = w_name;
     let with_task = base + gap + w_task_id;
     let with_phase = with_task + gap + w_phase;
     let with_pr = with_phase + gap + w_pr;
@@ -523,10 +521,7 @@ fn draw_coworker_status(f: &mut Frame, app: &mut App, area: Rect) {
     let show_time = show_progress && with_time <= available_width;
 
     // Build column constraints
-    let mut constraints = vec![
-        Constraint::Length(w_spinner as u16),
-        Constraint::Length(w_name as u16),
-    ];
+    let mut constraints = vec![Constraint::Length(w_name as u16)];
     if show_task_id {
         constraints.push(Constraint::Length(w_task_id as u16));
     }
@@ -557,7 +552,7 @@ fn draw_coworker_status(f: &mut Frame, app: &mut App, area: Rect) {
         .map(|cw| {
             coworker_table_row(
                 cw,
-                spinner,
+                pulse_bold,
                 show_task_id,
                 show_phase,
                 show_pr,
@@ -583,7 +578,7 @@ fn draw_coworker_status(f: &mut Frame, app: &mut App, area: Rect) {
 #[allow(clippy::too_many_arguments)]
 fn coworker_table_row(
     cw: &CoworkerInfo,
-    spinner: &str,
+    pulse_bold: bool,
     show_task_id: bool,
     show_phase: bool,
     show_pr: bool,
@@ -598,10 +593,16 @@ fn coworker_table_row(
         _ => palette.success,
     };
 
-    let mut cells: Vec<Cell> = vec![
-        Cell::from(spinner.to_string()).style(Style::default().fg(palette.warning)),
-        Cell::from(cw.name.clone()).style(Style::default().fg(health_color)),
-    ];
+    // Pulse the name bold/normal (~500ms on, ~500ms off) to indicate activity
+    let name_style = if pulse_bold {
+        Style::default()
+            .fg(health_color)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(health_color)
+    };
+
+    let mut cells: Vec<Cell> = vec![Cell::from(cw.name.clone()).style(name_style)];
 
     if show_task_id {
         let task_text = cw.task_id.map(|id| format!("!{id}")).unwrap_or_default();
@@ -1027,7 +1028,7 @@ mod tests {
         cw.progress = Some(42);
         cw.time_estimate = Some("~3m".to_string());
 
-        let row = coworker_table_row(&cw, "⠋", true, true, true, true, true, palette);
+        let row = coworker_table_row(&cw, true, true, true, true, true, true, palette);
 
         // Verify all 7 columns are present by checking the row can be constructed
         // (Row doesn't expose cell count directly, but we verify data is correct
@@ -1041,7 +1042,7 @@ mod tests {
         let palette = Theme::new(ThemeName::CatppuccinMocha).palette();
         let cw = make_coworker("york");
         // Minimal: only spinner + name (all show_* = false)
-        let row = coworker_table_row(&cw, "⠙", false, false, false, false, false, palette);
+        let row = coworker_table_row(&cw, false, false, false, false, false, false, palette);
         let _ = row;
     }
 
@@ -1414,7 +1415,7 @@ mod tests {
         cw.phase = Some("review".to_string());
         cw.task_id = Some(42);
 
-        let row = coworker_table_row(&cw, "⠋", true, true, false, false, false, palette);
+        let row = coworker_table_row(&cw, true, true, true, false, false, false, palette);
         let _ = row; // Row builds successfully with the phase data
     }
 

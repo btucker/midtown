@@ -119,6 +119,7 @@ export function switchProject(projectName, webhookPort) {
     releaseTag: null,
     releaseTime: null,
   })
+  repoStatuses.set([])
   usageData.set([])
   agentToolItems.set({})
   threadData.set(null)
@@ -335,11 +336,8 @@ function updateRepoStatus(data) {
     releaseTime: rs.release_time || null,
   })
 
-  // Update multi-repo statuses if available
-  const repos = data.repo_statuses || []
-  if (repos.length > 0) {
-    repoStatuses.set(repos)
-  }
+  // Always update multi-repo statuses (empty array clears previous entries on project switch)
+  repoStatuses.set(data.repo_statuses || [])
 }
 
 // Connect to WebSocket for live updates

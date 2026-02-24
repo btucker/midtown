@@ -57,35 +57,6 @@ fn test_empty_json_uses_defaults() {
 }
 
 #[test]
-fn test_headless_session_info_roundtrip() {
-    let info = HeadlessSessionInfo {
-        session_id: "abc-123-def".to_string(),
-        last_active: Utc::now(),
-        purpose: "task !5: Add auth endpoint".to_string(),
-        pid: Some(12345),
-        coworker_type: Some("dev".to_string()),
-        task_id: Some(5),
-        pr_number: None,
-        channel: None,
-        working_dir: Some("/path/to/worktree".to_string()),
-        provider: Some(crate::auth::AuthProvider::Codex),
-        profile: Some("test-profile".to_string()),
-        resume_on_startup: true,
-        initial_prompt: None,
-    };
-    let json = serde_json::to_string(&info).unwrap();
-    let parsed: HeadlessSessionInfo = serde_json::from_str(&json).unwrap();
-    assert_eq!(parsed.session_id, "abc-123-def");
-    assert_eq!(parsed.purpose, "task !5: Add auth endpoint");
-    assert_eq!(parsed.pid, Some(12345));
-    assert_eq!(parsed.coworker_type, Some("dev".to_string()));
-    assert_eq!(parsed.task_id, Some(5));
-    assert_eq!(parsed.pr_number, None);
-    assert_eq!(parsed.working_dir, Some("/path/to/worktree".to_string()));
-    assert_eq!(parsed.provider, Some(crate::auth::AuthProvider::Codex));
-}
-
-#[test]
 fn test_sessions_in_persistent_state() {
     let mut state = DaemonPersistentState::default();
     state.sessions.insert(
@@ -113,34 +84,6 @@ fn test_sessions_in_persistent_state() {
     assert_eq!(park.purpose, "task !3: Fix login bug");
     assert_eq!(park.pid, Some(9999));
     assert_eq!(park.task_id, Some("3".to_string()));
-}
-
-#[test]
-fn test_headless_sessions_default_empty() {
-    // Existing state without headless_sessions should deserialize fine
-    let json = r#"{"github": {}, "reminders": {"reminders": []}}"#;
-    let state: DaemonPersistentState = serde_json::from_str(json).unwrap();
-    assert!(state.headless_sessions.is_empty());
-}
-
-#[test]
-fn test_headless_session_info_backward_compat() {
-    // Old format without new fields should deserialize with defaults
-    let json = r#"{
-        "session_id": "old-session",
-        "last_active": "2026-02-09T10:00:00Z",
-        "purpose": "task !1: Old task"
-    }"#;
-    let info: HeadlessSessionInfo = serde_json::from_str(json).unwrap();
-    assert_eq!(info.session_id, "old-session");
-    assert_eq!(info.purpose, "task !1: Old task");
-    assert_eq!(info.pid, None);
-    assert_eq!(info.coworker_type, None);
-    assert_eq!(info.task_id, None);
-    assert_eq!(info.pr_number, None);
-    assert_eq!(info.working_dir, None);
-    assert_eq!(info.provider, None); // Should default to None for old files
-    assert!(info.resume_on_startup);
 }
 
 #[test]
@@ -642,65 +585,24 @@ fn test_fork_bound_channels_rebuild_only_for_channel_leads() {
     let mut channel_lead_record = make_test_session_record_named("sess-fork", true, "channel-fork");
     channel_lead_record.coworker_type = "channel-lead".to_string();
     channel_lead_record.bound_thread_id = Some("thread-fork".to_string());
+    channel_lead_record.channel = Some("topic-fork".to_string());
     sessions.insert("sess-fork".to_string(), channel_lead_record);
 
     let mut dev_record = make_test_session_record_named("sess-task", true, "riverside");
     dev_record.coworker_type = "dev".to_string();
     dev_record.bound_thread_id = Some("thread-task".to_string());
+    dev_record.channel = Some("topic-task".to_string());
     sessions.insert("sess-task".to_string(), dev_record);
-
-    let mut headless_sessions: HashMap<String, HeadlessSessionInfo> = HashMap::new();
-    headless_sessions.insert(
-        "channel-fork".to_string(),
-        HeadlessSessionInfo {
-            session_id: "sess-fork".to_string(),
-            last_active: Utc::now(),
-            purpose: "forked channel lead".to_string(),
-            pid: None,
-            coworker_type: Some("channel-lead".to_string()),
-            task_id: None,
-            pr_number: None,
-            channel: Some("topic-fork".to_string()),
-            working_dir: Some("/tmp/fork".to_string()),
-            provider: None,
-            profile: None,
-            resume_on_startup: false,
-            initial_prompt: None,
-        },
-    );
-    headless_sessions.insert(
-        "riverside".to_string(),
-        HeadlessSessionInfo {
-            session_id: "sess-task".to_string(),
-            last_active: Utc::now(),
-            purpose: "task coworker".to_string(),
-            pid: None,
-            coworker_type: Some("dev".to_string()),
-            task_id: Some(1690),
-            pr_number: None,
-            channel: Some("topic-task".to_string()),
-            working_dir: Some("/tmp/task".to_string()),
-            provider: None,
-            profile: None,
-            resume_on_startup: false,
-            initial_prompt: None,
-        },
-    );
 
     let mut fork_bound_channels: HashMap<String, String> = HashMap::new();
     let mut fork_bound_threads: HashMap<String, String> = HashMap::new();
-    for (session_id, record) in sessions.iter() {
+    for (_session_id, record) in sessions.iter() {
         if let (Some(name), Some(tid)) = (&record.current_name, &record.bound_thread_id) {
             fork_bound_threads.insert(name.clone(), tid.clone());
             if record.coworker_type == "channel-lead"
-                && let Some(channel) = headless_sessions
-                    .values()
-                    .find_map(|info| {
-                        (info.session_id == *session_id).then_some(info.channel.clone())
-                    })
-                    .flatten()
+                && let Some(ref channel) = record.channel
             {
-                fork_bound_channels.insert(name.clone(), channel);
+                fork_bound_channels.insert(name.clone(), channel.clone());
             }
         }
     }

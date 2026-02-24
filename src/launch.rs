@@ -227,6 +227,18 @@ pub fn build_agent_env_vars(
     env
 }
 
+/// Inject `MIDTOWN_SESSION_ID` into a coworker env map.
+///
+/// Called by `spawn_coworker()` after the session UUID is pre-generated so
+/// coworkers can call `midtown session fork <thread_parent_id>` without
+/// needing to pass `--session-id` on every invocation.
+pub fn inject_session_id_env(
+    env: &mut std::collections::BTreeMap<String, String>,
+    session_id: &str,
+) {
+    env.insert("MIDTOWN_SESSION_ID".to_string(), session_id.to_string());
+}
+
 /// Compute the session name for a channel lead.
 ///
 /// Channel lead sessions are named after their channel directly (e.g., "web" for

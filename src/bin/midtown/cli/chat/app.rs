@@ -10,6 +10,7 @@ use chrono::{DateTime, Utc};
 use midtown::tasks::extract_task_id_from_pr_title;
 use midtown::{Channel, Message};
 
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Line;
 use ratatui_themes::Theme;
 #[cfg(test)]
@@ -274,6 +275,15 @@ pub struct App {
     session_id: String,
     /// Whether initial messages have been loaded
     initial_load_done: bool,
+    /// In-memory byte offset for the active channel's read cursor.
+    ///
+    /// Initialised from `set_cursor_to_end` on channel open; updated after each
+    /// successful read; persisted to disk on channel switch and app exit.
+    /// Avoids two disk I/Os (cursor load + cursor save) on every `tailf` tick.
+    cursor_position: u64,
+    /// Last message ID read from the active channel (mirrors the disk cursor's
+    /// `last_message_id` but kept in memory to avoid disk reads).
+    cursor_last_message_id: Option<String>,
     /// Byte position where loaded history starts (0 means all history loaded)
     history_start_position: u64,
     /// Whether all history has been loaded
@@ -349,10 +359,14 @@ pub struct App {
     /// Positive = up credits, negative = down credits.
     /// Resets to 0 when direction changes to prevent cross-direction bleed.
     mouse_scroll_accumulator: i8,
-    /// Timestamp of the last main-chat mouse scroll event. Used to distinguish deliberate
+    /// Timestamp of the last main-chat mouse scroll-up event. Used to distinguish deliberate
     /// mouse-wheel clicks (> MOUSE_INERTIA_THRESHOLD apart → scroll immediately) from
     /// trackpad inertia bursts (< threshold apart → use accumulator).
-    pub(crate) last_scroll_event: Option<Instant>,
+    pub(crate) last_scroll_up_event: Option<Instant>,
+    /// Timestamp of the last main-chat mouse scroll-down event. Kept separate from
+    /// last_scroll_up_event so that a quick direction reversal (up then down within
+    /// 50ms) still enters immediate mode for the new direction rather than inertia mode.
+    pub(crate) last_scroll_down_event: Option<Instant>,
     /// Separate accumulator for mouse wheel scroll events in the thread panel.
     /// Kept independent of mouse_scroll_accumulator so partial credits earned
     /// while scrolling one panel cannot bleed into the other panel's scroll.
@@ -593,6 +607,8 @@ impl App {
             channel,
             session_id: uuid::Uuid::new_v4().to_string(),
             initial_load_done: false,
+            cursor_position: 0,
+            cursor_last_message_id: None,
             history_start_position: 0,
             history_fully_loaded: false,
             test_mode: false,
@@ -625,7 +641,8 @@ impl App {
             tasks_cache_hash: 0,
             intentionally_at_top: false,
             mouse_scroll_accumulator: 0,
-            last_scroll_event: None,
+            last_scroll_up_event: None,
+            last_scroll_down_event: None,
             thread_mouse_scroll_accumulator: 0,
             last_thread_scroll_event: None,
             mermaid_cache: MermaidCache::new(),
@@ -703,38 +720,54 @@ impl App {
                     self.history_fully_loaded = start_pos == 0;
                     self.scroll_offset = 0; // Start at bottom (most recent)
                 }
-                // Position cursor at EOF so read_since_cursor only gets NEW messages
-                let _ = channel.set_cursor_to_end("chat-tui", &self.session_id);
+                // Position cursor at EOF so subsequent reads only get NEW messages.
+                // Capture the position in memory so we avoid a disk load on every tick.
+                if let Ok((pos, last_id)) = channel.set_cursor_to_end("chat-tui", &self.session_id)
+                {
+                    self.cursor_position = pos;
+                    self.cursor_last_message_id = last_id;
+                }
                 self.initial_load_done = true;
                 return;
             }
 
-            // Read new messages since cursor position
-            // On subsequent calls, cursor tracks new messages arriving
-            if let Ok(new_messages) = channel.read_since_cursor("chat-tui", &self.session_id)
-                && !new_messages.is_empty()
+            // Read new messages since our in-memory cursor position.
+            // No file lock is acquired — O_APPEND writes are atomic and we stop
+            // at the last complete newline, so reading is safe without locking.
+            if let Ok((new_messages, new_pos, new_last_id)) =
+                channel.read_messages_from_position(self.cursor_position)
             {
-                let added = new_messages.len();
-                let was_at_bottom = self.scroll_offset == 0;
-
-                // Route thread replies to thread_messages if a thread is open
-                if let Some(ref open_thread_id) = self.thread_parent_id {
-                    for msg in &new_messages {
-                        if msg.thread_parent_id.as_deref() == Some(open_thread_id) {
-                            self.thread_messages.push(msg.clone());
-                        }
-                    }
+                // Always advance the position — even past blank/malformed lines —
+                // so we don't re-parse them on the next tick. last_message_id is
+                // only updated when a valid message was actually parsed.
+                self.cursor_position = new_pos;
+                if let Some(id) = new_last_id {
+                    self.cursor_last_message_id = Some(id);
                 }
 
-                // Append new messages (they're already in chronological order)
-                self.messages.extend(new_messages);
+                if !new_messages.is_empty() {
+                    let added = new_messages.len();
+                    let was_at_bottom = self.scroll_offset == 0;
 
-                if was_at_bottom {
-                    // User was at bottom - stay at bottom (auto-scroll)
-                    self.scroll_offset = 0;
-                } else {
-                    // User had scrolled up - adjust offset to stay viewing same messages
-                    self.scroll_offset += added;
+                    // Route thread replies to thread_messages if a thread is open
+                    if let Some(ref open_thread_id) = self.thread_parent_id {
+                        for msg in &new_messages {
+                            if msg.thread_parent_id.as_deref() == Some(open_thread_id) {
+                                self.thread_messages.push(msg.clone());
+                            }
+                        }
+                    }
+
+                    // Append new messages (they're already in chronological order)
+                    self.messages.extend(new_messages);
+
+                    if was_at_bottom {
+                        // User was at bottom - stay at bottom (auto-scroll)
+                        self.scroll_offset = 0;
+                    } else {
+                        // User had scrolled up - adjust offset to stay viewing same messages
+                        self.scroll_offset += added;
+                    }
                 }
             }
         }
@@ -1079,10 +1112,10 @@ impl App {
     ///   decrements it toward 0 (absorbing the event) before normal accumulation resumes.
     pub fn mouse_scroll_up(&mut self) {
         let elapsed = self
-            .last_scroll_event
+            .last_scroll_up_event
             .map(|t| t.elapsed())
             .unwrap_or(Duration::MAX);
-        self.last_scroll_event = Some(Instant::now());
+        self.last_scroll_up_event = Some(Instant::now());
 
         if elapsed > MOUSE_INERTIA_THRESHOLD {
             // Deliberate mouse-wheel click: scroll immediately, same as a key press.
@@ -1128,10 +1161,10 @@ impl App {
     /// Same time-based detection and burst-absorption logic as mouse_scroll_up.
     pub fn mouse_scroll_down(&mut self) {
         let elapsed = self
-            .last_scroll_event
+            .last_scroll_down_event
             .map(|t| t.elapsed())
             .unwrap_or(Duration::MAX);
-        self.last_scroll_event = Some(Instant::now());
+        self.last_scroll_down_event = Some(Instant::now());
 
         if elapsed > MOUSE_INERTIA_THRESHOLD {
             // Deliberate mouse-wheel click: scroll immediately.
@@ -1568,6 +1601,20 @@ impl App {
         }
     }
 
+    /// Persist the in-memory cursor to disk.
+    ///
+    /// Called on channel switch and app exit so that the cursor file reflects
+    /// the current read position. This keeps unread counts accurate across
+    /// sessions without requiring a disk write on every `tailf` tick.
+    pub fn save_cursor_to_disk(&self) {
+        let Some(ref channel) = self.channel else {
+            return;
+        };
+        let mut cursor = midtown::Cursor::new("chat-tui", &self.session_id);
+        cursor.update(self.cursor_position, self.cursor_last_message_id.clone());
+        let _ = cursor.save(channel.base_dir(), channel.channel_name());
+    }
+
     /// Load messages from the currently selected channel
     fn load_channel_messages(&mut self) {
         #[cfg(test)]
@@ -1580,6 +1627,10 @@ impl App {
         if self.test_mode {
             return;
         }
+
+        // Persist the current channel's cursor before switching so unread counts
+        // for the old channel remain accurate in the next session.
+        self.save_cursor_to_disk();
         // Defensive: clear coworker line map on channel switch so stale entries
         // from the previous render can't be clicked before the next draw pass.
         self.coworker_line_map.clear();
@@ -1608,9 +1659,12 @@ impl App {
                 // Update the channel reference for future refresh
                 self.channel = Some(channel);
 
-                // Set cursor to end for new messages
-                if let Some(ref ch) = self.channel {
-                    let _ = ch.set_cursor_to_end("chat-tui", &self.session_id);
+                // Set cursor to end for new messages, and capture position in memory.
+                if let Some(ref ch) = self.channel
+                    && let Ok((pos, last_id)) = ch.set_cursor_to_end("chat-tui", &self.session_id)
+                {
+                    self.cursor_position = pos;
+                    self.cursor_last_message_id = last_id;
                 }
             }
         }
@@ -2064,6 +2118,37 @@ impl App {
                 Ok(count) => count,
                 Err(_) => continue, // Skip channels we can't read
             };
+
+            // For the currently open channel, when the in-memory cursor has been
+            // set (i.e. the user has rendered at least one message), use it
+            // instead of the disk cursor — the disk cursor only updates on
+            // channel switch or app exit, so it would lag and show false unread
+            // counts for messages that were already rendered in the TUI.
+            //
+            // When cursor_last_message_id is None the channel was just opened
+            // and no messages have been rendered yet; fall through to the disk
+            // cursor path which may have a previously persisted position.
+            if self
+                .channel
+                .as_ref()
+                .is_some_and(|ch| ch.channel_name() == channel_info.name)
+                && let Some(ref last_id) = self.cursor_last_message_id
+            {
+                let all_messages = match channel.read_all() {
+                    Ok(msgs) => msgs,
+                    Err(_) => continue,
+                };
+                let last_read_idx = all_messages.iter().position(|m| &m.id == last_id);
+                let unread_count = match last_read_idx {
+                    Some(idx) => all_messages.len().saturating_sub(idx + 1),
+                    None => all_messages.len(),
+                };
+                if unread_count > 0 {
+                    self.channel_unread_counts
+                        .insert(channel_info.name, unread_count);
+                }
+                continue;
+            }
 
             // Calculate unread count:
             // First check the current session's cursor, then fall back to the most
@@ -2592,12 +2677,33 @@ impl App {
         self.channel_switcher.selected_index = 0;
     }
 
-    /// Get the current spinner character without advancing the frame.
-    /// Returns a braille spinner character (⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏).
-    /// Frame advancement is time-based via `tick_spinner()`.
+    /// Get the current frame index mapped to a braille spinner character.
+    /// Used in tests to verify that `tick_spinner()` advances the frame.
+    #[cfg(test)]
     pub fn spinner_char(&self) -> &'static str {
         const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
         SPINNER_FRAMES[self.spinner_frame % SPINNER_FRAMES.len()]
+    }
+
+    /// Returns true when active names should be rendered BOLD (vs. normal) for the pulse effect.
+    ///
+    /// Uses `spinner_frame` to alternate every 5 frames (~500ms on, ~500ms off = ~1s cycle).
+    pub fn pulse_bold(&self) -> bool {
+        (self.spinner_frame / 5).is_multiple_of(2)
+    }
+
+    /// Return a style that pulses the given color between bold and normal.
+    ///
+    /// Uses `spinner_frame` (advanced by `tick_spinner()` at 100ms intervals) to
+    /// alternate BOLD ↔ normal every 5 frames (~500ms on, ~500ms off = ~1s cycle).
+    /// Applied to active coworker names and the lead indicator name instead of
+    /// braille spinner glyphs.
+    pub fn pulse_name_style(&self, base_color: Color) -> Style {
+        if self.pulse_bold() {
+            Style::default().fg(base_color).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(base_color)
+        }
     }
 
     /// Set optimistic thinking state for a topic channel after user submits a message.
@@ -2653,7 +2759,10 @@ impl App {
         visible
     }
 
-    /// Returns true if any spinner is currently visible (lead working, in-progress tool entries, or active coworkers).
+    /// Returns true if any animation frame is needed (lead working, in-progress tool entries, or active coworkers).
+    ///
+    /// Controls whether `tick_spinner()` advances the frame — which drives name pulsing
+    /// via `pulse_name_style()`. Returns false when everything is idle so the frame clock stops.
     pub fn any_spinner_visible(&self) -> bool {
         self.lead_working
             || self
@@ -3721,6 +3830,8 @@ pub(super) mod tests {
             channel: None,
             session_id: "test-session".to_string(),
             initial_load_done: true,
+            cursor_position: 0,
+            cursor_last_message_id: None,
             history_start_position: 0,
             history_fully_loaded: true,
             test_mode: true, // Prevent daemon communication in tests
@@ -3753,7 +3864,8 @@ pub(super) mod tests {
             tasks_cache_hash: 0,
             intentionally_at_top: false,
             mouse_scroll_accumulator: 0,
-            last_scroll_event: None,
+            last_scroll_up_event: None,
+            last_scroll_down_event: None,
             thread_mouse_scroll_accumulator: 0,
             last_thread_scroll_event: None,
             mermaid_cache: MermaidCache::new(),

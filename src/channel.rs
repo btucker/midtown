@@ -861,61 +861,29 @@ impl Channel {
         Ok(messages)
     }
 
-    /// Read messages since the agent session's cursor position
+    /// Read new messages starting from `position` without acquiring a file lock.
     ///
-    /// Returns new messages and updates the cursor. Cursors are scoped to
-    /// `(agent, session_id)` so concurrent or successive sessions with the
-    /// same agent name don't share state.
+    /// Returns `(messages, new_position, last_message_id)`. Safe to call
+    /// concurrently with writers because `O_APPEND` writes are atomic and we
+    /// stop at the last complete newline, so partial lines are never returned.
     ///
-    /// Uses a non-blocking lock to avoid blocking when there's lock contention.
-    /// If the lock can't be acquired immediately, returns an error.
-    pub fn read_since_cursor(&self, agent: &str, session_id: &str) -> Result<Vec<Message>> {
+    /// This is the hot path called on every `tailf` event. No locking means no
+    /// 50 ms blocking sleep when the writer hasn't released its exclusive lock yet.
+    pub fn read_messages_from_position(
+        &self,
+        position: u64,
+    ) -> Result<(Vec<Message>, u64, Option<String>)> {
         if !self.channel_file.exists() {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), position, None));
         }
-
-        let mut cursor =
-            Cursor::load_or_create(&self.base_dir, &self.channel_name, agent, session_id)?;
 
         let file = File::open(&self.channel_file)?;
-
-        // Try to acquire shared lock with bounded retries to handle lock contention.
-        let mut acquired = false;
-        for attempt in 0..10 {
-            match file.try_lock_shared() {
-                Ok(()) => {
-                    acquired = true;
-                    break;
-                }
-                Err(_) if attempt < 9 => {
-                    std::thread::sleep(std::time::Duration::from_millis(50));
-                }
-                Err(e) => {
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::WouldBlock,
-                        format!("Failed to acquire shared lock after 500ms: {}", e),
-                    )
-                    .into());
-                }
-            }
-        }
-
-        if !acquired {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::TimedOut,
-                "Failed to acquire shared lock after 500ms",
-            )
-            .into());
-        }
-
         let mut reader = BufReader::new(file);
-
-        // Seek to cursor position
-        reader.seek(SeekFrom::Start(cursor.position))?;
+        reader.seek(SeekFrom::Start(position))?;
 
         let mut messages = Vec::new();
-        let mut last_id = cursor.last_message_id.clone();
-        let mut current_position = cursor.position;
+        let mut last_id: Option<String> = None;
+        let mut current_position = position;
         let mut line_buf = String::new();
 
         loop {
@@ -924,6 +892,14 @@ impl Channel {
             if bytes_read == 0 {
                 break; // EOF
             }
+
+            // Only process complete lines. A line without a trailing '\n' is a
+            // partial write in progress — leave the cursor before it so the next
+            // call re-reads it once the write completes.
+            if !line_buf.ends_with('\n') {
+                break;
+            }
+
             current_position += bytes_read as u64;
 
             let line = line_buf.trim();
@@ -934,8 +910,6 @@ impl Channel {
                         messages.push(message);
                     }
                     Err(e) => {
-                        // Skip malformed lines rather than failing completely.
-                        // This allows reading the channel even if some lines are corrupted.
                         tracing::warn!(
                             "Skipping malformed line at position {} in channel file: {}",
                             current_position - bytes_read as u64,
@@ -946,9 +920,33 @@ impl Channel {
             }
         }
 
-        // Update cursor position
-        cursor.update(current_position, last_id);
-        cursor.save(&self.base_dir, &self.channel_name)?;
+        Ok((messages, current_position, last_id))
+    }
+
+    /// Read messages since the agent session's cursor position.
+    ///
+    /// Returns new messages and updates the cursor on disk. Cursors are scoped
+    /// to `(agent, session_id)` so concurrent or successive sessions with the
+    /// same agent name don't share state.
+    ///
+    /// Uses [`read_messages_from_position`] internally — no file lock is
+    /// acquired. `O_APPEND` writes are atomic and we stop at the last complete
+    /// newline, so reads are safe without locking.
+    pub fn read_since_cursor(&self, agent: &str, session_id: &str) -> Result<Vec<Message>> {
+        if !self.channel_file.exists() {
+            return Ok(Vec::new());
+        }
+
+        let mut cursor =
+            Cursor::load_or_create(&self.base_dir, &self.channel_name, agent, session_id)?;
+
+        let (messages, new_position, last_id) =
+            self.read_messages_from_position(cursor.position)?;
+
+        if new_position != cursor.position {
+            cursor.update(new_position, last_id);
+            cursor.save(&self.base_dir, &self.channel_name)?;
+        }
 
         Ok(messages)
     }
@@ -967,23 +965,31 @@ impl Channel {
         Ok(())
     }
 
-    /// Set an agent session's cursor to the end of the file
+    /// Set an agent session's cursor to the end of the file.
     ///
     /// This is useful after initial load to ensure subsequent reads only
     /// pick up new messages. For new sessions that should not replay
     /// historical messages, call this before the first `read_since_cursor`.
-    pub fn set_cursor_to_end(&self, agent: &str, session_id: &str) -> Result<()> {
+    ///
+    /// Returns `(position, last_message_id)` so callers can initialise an
+    /// in-memory cursor cache without a separate disk read.
+    pub fn set_cursor_to_end(
+        &self,
+        agent: &str,
+        session_id: &str,
+    ) -> Result<(u64, Option<String>)> {
         // Read the last message ID so that unread-count calculations
         // (which key off last_message_id) correctly treat the channel as fully read.
         let last_message_id = self
             .read_last_n_messages(1)
             .ok()
             .and_then(|(msgs, _)| msgs.into_iter().next().map(|m| m.id));
+        let position = self.file_size();
         let mut cursor =
             Cursor::load_or_create(&self.base_dir, &self.channel_name, agent, session_id)?;
-        cursor.update(self.file_size(), last_message_id);
+        cursor.update(position, last_message_id.clone());
         cursor.save(&self.base_dir, &self.channel_name)?;
-        Ok(())
+        Ok((position, last_message_id))
     }
 
     /// Get the total number of messages in the channel
