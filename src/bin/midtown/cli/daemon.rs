@@ -1020,7 +1020,12 @@ pub fn handle_stop(keep_session: bool) -> Result<Response, String> {
     // (without going through `midtown stop`), processes may still be running.
     kill_orphaned_claude_processes(&mut messages);
 
-    // Step 5: Stop the standalone webserver
+    // Step 5: Kill any orphaned codex app-server processes.
+    // The Codex daemon-side app-server is shared and long-lived, so when the
+    // daemon exits without graceful shutdown it can remain orphaned.
+    kill_orphaned_codex_processes(&mut messages);
+
+    // Step 6: Stop the standalone webserver
     if webserver_is_running() {
         match stop_webserver() {
             Ok(true) => messages.push("Stopped webserver".to_string()),
@@ -1052,6 +1057,25 @@ fn kill_orphaned_claude_processes(messages: &mut Vec<String>) {
     let count = midtown::process::kill_orphaned_processes(pattern);
     if count > 0 {
         messages.push(format!("Killed {} orphaned claude process(es)", count));
+    }
+}
+
+/// Kill any orphaned Codex app-server processes that were started by midtown.
+///
+/// Codex app-server is a long-lived JSON-RPC process that can remain alive when
+/// its parent (midtown daemon) dies unexpectedly. We only kill orphaned
+/// processes here to avoid interrupting user-owned Codex invocations.
+fn kill_orphaned_codex_processes(messages: &mut Vec<String>) {
+    // Pattern matches the baseline codex app-server invocations used by midtown:
+    // `codex app-server` and `codex app-server --listen ...`.
+    let pattern = "codex app-server";
+
+    let count = midtown::process::kill_orphaned_processes(pattern);
+    if count > 0 {
+        messages.push(format!(
+            "Killed {} orphaned codex app-server process(es)",
+            count
+        ));
     }
 }
 
