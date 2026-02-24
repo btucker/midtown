@@ -502,3 +502,51 @@ fn test_draw_lead_indicator_shows_dim_placeholder_when_idle() {
         "Idle indicator should show agent name 'midtown' as dim placeholder. Got: {row:?}",
     );
 }
+
+#[test]
+fn test_draw_lead_indicator_name_bold_when_only_completed_entries() {
+    // When entries exist but none are in-progress (all ✓/✗), the name should still be
+    // rendered BOLD via static style (not pulse_name_style). The static style guarantees
+    // BOLD regardless of spinner_frame, preventing false animation when the frame advances
+    // due to active coworkers in other channels.
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use ratatui::layout::Rect;
+    use ratatui::style::Modifier;
+
+    let backend = TestBackend::new(80, 1);
+    let mut terminal = Terminal::new(backend).unwrap();
+
+    let mut app = test_app();
+    app.tool_activity = std::collections::HashMap::from([(
+        "midtown".to_string(),
+        vec![make_tool_entry("\u{2713} Read foo.rs", true)], // completed — no in-progress
+    )]);
+
+    terminal
+        .draw(|f| {
+            let area = Rect {
+                x: 0,
+                y: 0,
+                width: 80,
+                height: 1,
+            };
+            draw_lead_indicator(f, &mut app, area);
+        })
+        .unwrap();
+
+    let buffer = terminal.backend().buffer();
+
+    // At frame 0 the static bold style and pulse_name_style both produce BOLD.
+    // The key guard is in the code: has_in_progress=false → static style path taken.
+    let name_start_col = (0u16..80)
+        .find(|&x| buffer.cell((x, 0)).map(|c| c.symbol()) == Some("m"))
+        .expect("'midtown' should appear in the buffer");
+
+    let cell = buffer.cell((name_start_col, 0)).unwrap();
+    assert!(
+        cell.modifier.contains(Modifier::BOLD),
+        "Agent name should be BOLD when only completed entries exist. Got: {:?}",
+        cell.modifier
+    );
+}

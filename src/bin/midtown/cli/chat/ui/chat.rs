@@ -117,6 +117,18 @@ fn draw_lead_indicator(f: &mut Frame, app: &mut App, area: Rect) {
         return;
     }
 
+    // Pulse the lead name only when this channel has in-progress entries.
+    // Without this guard, a globally-advancing spinner_frame (from active coworkers elsewhere)
+    // would cause the name to falsely animate when the selected channel only has completed entries.
+    let has_in_progress = entries.iter().any(|e| e.header.starts_with('›'));
+    let name_style = if has_in_progress {
+        app.pulse_name_style(Color::Yellow)
+    } else {
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD)
+    };
+
     // Width of " lead " prefix: 1 space + agent_name + 1 space
     let prefix_width = 1 + agent_key.chars().count() + 1;
 
@@ -143,10 +155,10 @@ fn draw_lead_indicator(f: &mut Frame, app: &mut App, area: Rect) {
 
         let is_last = i == n - 1; // last rendered = newest entry = agent name line
         if is_last {
-            // Last line (newest): " lead › Read foo.rs" — agent name pulses bold in yellow
+            // Last line (newest): " lead › Read foo.rs" — name pulses when in progress
             lines.push(Line::from(vec![
                 Span::raw(" "),
-                Span::styled(format!("{agent_key} "), app.pulse_name_style(Color::Yellow)),
+                Span::styled(format!("{agent_key} "), name_style),
                 Span::styled(prefix_char.to_string(), Style::default().fg(prefix_color)),
                 Span::styled(format!(" {description}"), Style::default().fg(text_color)),
             ]));
