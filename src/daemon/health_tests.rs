@@ -2410,3 +2410,151 @@ fn unrecoverable_session_error_does_not_force_spawn_for_non_lead() {
         effects
     );
 }
+
+// ============================================================================
+// WorkflowEvent emission tests
+// ============================================================================
+
+/// Idle shutdown emits CoworkerIdle workflow event with correct channel/task.
+#[test]
+fn test_idle_shutdown_emits_coworker_idle_workflow_event() {
+    use crate::coworker::{Coworker, CoworkerStatus};
+    use crate::rules::CoworkerSnapshot;
+
+    let now = chrono::Utc::now();
+    let started_at = now - chrono::Duration::minutes(10);
+
+    let coworker = Coworker {
+        slot_id: uuid::Uuid::new_v4().to_string(),
+        name: "amsterdam".to_string(),
+        status: CoworkerStatus::Running,
+        working_dir: "/tmp/test".to_string(),
+        started_at,
+        current_task: None,
+        session_id: Some("sess-abc-123".to_string()),
+        model: "sonnet".to_string(),
+        provider: crate::auth::AuthProvider::Claude,
+        profile: crate::auth::DEFAULT_PROFILE.to_string(),
+    };
+
+    let cw_snap = CoworkerSnapshot {
+        name: "amsterdam".to_string(),
+        started_at,
+        session_id: Some("sess-abc-123".to_string()),
+    };
+
+    let mut snap = empty_snap();
+    snap.now_utc = now;
+    snap.active_coworkers = vec![coworker.clone()];
+    snap.running_coworkers = vec![coworker.clone()];
+    snap.coworker_snapshots = vec![cw_snap];
+    snap.name_session_map
+        .insert("amsterdam".to_string(), "sess-abc-123".to_string());
+    snap.repo_name = "test-repo".to_string();
+
+    // Give the coworker a task and channel
+    snap.in_progress_tasks = vec![(
+        "42".to_string(),
+        "Implement login".to_string(),
+        "amsterdam".to_string(),
+    )];
+    snap.task_channel
+        .insert("42".to_string(), "proj-auth".to_string());
+
+    let effects = check_and_shutdown_idle_coworkers(&snap);
+
+    let coworker_idle_event = effects.iter().find_map(|e| {
+        if let Effect::EmitWorkflowEvent(crate::workflow::WorkflowEvent::CoworkerIdle {
+            channel,
+            task_id,
+            coworker,
+        }) = e
+        {
+            Some((channel.clone(), task_id.clone(), coworker.clone()))
+        } else {
+            None
+        }
+    });
+
+    assert!(
+        coworker_idle_event.is_some(),
+        "Should emit CoworkerIdle workflow event, got: {:#?}",
+        effects
+    );
+    let (ch, tid, cw) = coworker_idle_event.unwrap();
+    assert_eq!(ch, "proj-auth");
+    assert_eq!(tid, Some("42".to_string()));
+    assert_eq!(cw, "amsterdam");
+}
+
+/// Stuck reviewer restart emits CoworkerStuck workflow event with PR task channel.
+#[test]
+fn test_stuck_reviewer_restart_emits_coworker_stuck_workflow_event() {
+    use crate::coworker::{Coworker, CoworkerStatus};
+
+    let now = chrono::Utc::now();
+    let mut snap = empty_snap();
+    snap.now_utc = now;
+
+    snap.active_coworkers.push(Coworker {
+        slot_id: uuid::Uuid::new_v4().to_string(),
+        name: "amsterdam".to_string(),
+        status: CoworkerStatus::Running,
+        working_dir: "/tmp/test".to_string(),
+        started_at: now - chrono::Duration::minutes(30),
+        current_task: None,
+        session_id: None,
+        model: "sonnet".to_string(),
+        provider: crate::auth::AuthProvider::Claude,
+        profile: crate::auth::DEFAULT_PROFILE.to_string(),
+    });
+
+    snap.headless_process_health.insert(
+        "amsterdam".to_string(),
+        snapshot::ProcessHealth {
+            is_alive: true,
+            last_event_at: Some(now - chrono::Duration::minutes(10)),
+            has_usage_limit: false,
+            usage_limit_reset_at: None,
+            has_api_error: false,
+            has_auth_error: false,
+            has_running_subagent: false,
+            has_pending_tool: false,
+            has_tool_name_conflict: false,
+            has_pending_api_call: false,
+            exit_code: None,
+        },
+    );
+
+    snap.reviewer_pr_assignments
+        .insert("amsterdam".to_string(), 99);
+    snap.pr_task_associations.insert(99u64, "55".to_string());
+    snap.task_channel
+        .insert("55".to_string(), "proj-reviews".to_string());
+    snap.repo_name = "test-repo".to_string();
+
+    let effects = check_and_restart_stuck_reviewers(&snap);
+
+    let stuck_event = effects.iter().find_map(|e| {
+        if let Effect::EmitWorkflowEvent(crate::workflow::WorkflowEvent::CoworkerStuck {
+            channel,
+            task_id,
+            coworker,
+        }) = e
+        {
+            Some((channel.clone(), task_id.clone(), coworker.clone()))
+        } else {
+            None
+        }
+    });
+
+    assert!(
+        stuck_event.is_some(),
+        "Should emit CoworkerStuck workflow event, got: {:#?}",
+        effects
+    );
+    let (ch, tid, cw) = stuck_event.unwrap();
+    assert_eq!(ch, "proj-reviews");
+    assert_eq!(tid, Some("55".to_string()));
+    assert_eq!(cw, "amsterdam");
+}

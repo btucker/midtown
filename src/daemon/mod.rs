@@ -3261,6 +3261,26 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                             "Auto-setting PR #{} association for task !{}",
                             pr_opened.pr_number, task_id
                         );
+
+                        // Emit PrOpened workflow event if we know the task's channel.
+                        if let Some(author) = &pr_opened.author_coworker {
+                            let task_channel = {
+                                let ps = state.persistent_state.try_lock().ok();
+                                ps.and_then(|ps| {
+                                    ps.task_channel.get(&task_id.to_string()).cloned()
+                                })
+                            };
+                            if let Some(ch) = task_channel {
+                                pr_effects.push(effects::Effect::EmitWorkflowEvent(
+                                    crate::workflow::WorkflowEvent::PrOpened {
+                                        channel: ch,
+                                        task_id: task_id.to_string(),
+                                        pr_number: pr_opened.pr_number,
+                                        coworker: author.clone(),
+                                    },
+                                ));
+                            }
+                        }
                     }
 
                     // NOTE: Task auto-completion has been moved to the PR merged handler
@@ -3293,10 +3313,19 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
 
                     // Auto-complete task when PR title contains [Midtown #XX]
                     if let Some(pr_merged_info) = webhook_event.pr_merged_info {
+                        // Look up the task's channel for workflow event routing.
+                        let task_channel = crate::tasks::extract_task_id_from_pr_title(
+                            &pr_merged_info.title,
+                        )
+                        .and_then(|task_id| {
+                            let ps = state.persistent_state.try_lock().ok()?;
+                            ps.task_channel.get(&task_id.to_string()).cloned()
+                        });
                         let completion_effects = dispatch::build_task_completion_effects(
                             &pr_merged_info.title,
                             pr_merged_info.pr_number,
                             &state.repo_name,
+                            task_channel,
                         );
                         if !completion_effects.is_empty() {
                             effects::execute_effects(completion_effects, &state).await;

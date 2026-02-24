@@ -1180,7 +1180,7 @@ fn pr_action_to_effects(
     // Look up topic channel for this PR's task (falls back to main if not found)
     let channel = ctx.get_channel(pr_number);
 
-    match action {
+    let mut effects = match action {
         PrAction::NudgeOwner { owner, message } => {
             vec![Effect::nudge_session_with_callbacks(
                 state.session_id_for_name(&owner),
@@ -1311,7 +1311,52 @@ fn pr_action_to_effects(
             debug!("{}", reason);
             vec![]
         }
+    };
+
+    // Emit a workflow event for PR issue conditions on task-linked PRs in a channel.
+    // Fires alongside the existing action effects so workflow scripts can respond to
+    // PR lifecycle events (approval, CI, conflicts) without modifying core logic.
+    if let (Some(channel), Some(task_id)) = (&channel, ctx.pr_task_associations.get(&pr_number)) {
+        let pr_event = match issue_type {
+            PrIssueType::Approved => Some(crate::workflow::WorkflowEvent::PrApproved {
+                channel: channel.clone(),
+                task_id: task_id.clone(),
+                pr_number,
+            }),
+            PrIssueType::ChangesRequested => {
+                Some(crate::workflow::WorkflowEvent::PrChangesRequested {
+                    channel: channel.clone(),
+                    task_id: task_id.clone(),
+                    pr_number,
+                })
+            }
+            PrIssueType::MergeConflict => Some(crate::workflow::WorkflowEvent::PrConflict {
+                channel: channel.clone(),
+                task_id: task_id.clone(),
+                pr_number,
+            }),
+            PrIssueType::CiFailed => Some(crate::workflow::WorkflowEvent::PrCiFailed {
+                channel: channel.clone(),
+                task_id: task_id.clone(),
+                pr_number,
+                check_name: None,
+            }),
+            PrIssueType::GreenWithFeedback => Some(crate::workflow::WorkflowEvent::PrCiPassed {
+                channel: channel.clone(),
+                task_id: task_id.clone(),
+                pr_number,
+            }),
+            // These issue types don't have direct WorkflowEvent counterparts.
+            PrIssueType::ReviewComment | PrIssueType::ReviewComplete | PrIssueType::NeedsReview => {
+                None
+            }
+        };
+        if let Some(event) = pr_event {
+            effects.push(Effect::EmitWorkflowEvent(event));
+        }
     }
+
+    effects
 }
 
 /// Check for stuck conditions and return effects to nudge the lead.

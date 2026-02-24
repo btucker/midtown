@@ -196,6 +196,25 @@ pub fn check_and_shutdown_idle_coworkers(snap: &snapshot::WorldSnapshot) -> Vec<
             continue;
         }
 
+        // Emit a workflow event so channel scripts can react to coworker going idle.
+        let idle_task_id = snap
+            .in_progress_tasks
+            .iter()
+            .find(|(_, _, owner)| owner.eq_ignore_ascii_case(name))
+            .map(|(id, _, _)| id.clone());
+        let idle_channel = idle_task_id
+            .as_deref()
+            .and_then(|id| snap.task_channel.get(id))
+            .cloned()
+            .unwrap_or_else(|| snap.repo_name.clone());
+        effects.push(Effect::EmitWorkflowEvent(
+            crate::workflow::WorkflowEvent::CoworkerIdle {
+                channel: idle_channel,
+                task_id: idle_task_id,
+                coworker: name.clone(),
+            },
+        ));
+
         // Post to ops channel, broadcast status, and shut down
         effects.push(Effect::PostToChannel {
             sender: "midtown".to_string(),
@@ -347,6 +366,15 @@ pub(super) async fn check_and_restart_stuck_coworkers(
             .iter()
             .find(|t| t.id == restart.task_id)
             .and_then(|t| t.channel.clone());
+
+        // Emit a workflow event so channel scripts can react to the stuck detection.
+        effects.push(Effect::EmitWorkflowEvent(
+            crate::workflow::WorkflowEvent::CoworkerStuck {
+                channel: channel.clone().unwrap_or_else(|| snap.repo_name.clone()),
+                task_id: Some(restart.task_id.clone()),
+                coworker: restart.name.clone(),
+            },
+        ));
 
         let mut config = crate::launch::LaunchConfig::coworker(
             restart.name.clone(),
@@ -544,6 +572,22 @@ pub fn check_and_restart_stuck_reviewers(snap: &snapshot::WorldSnapshot) -> Vec<
             on_success,
             on_failure,
         });
+
+        // Emit a workflow event so channel scripts can react to the stuck reviewer.
+        // Look up the PR's task and channel so the event is routed correctly.
+        let reviewer_task_id = snap.pr_task_associations.get(&restart.pr_number).cloned();
+        let reviewer_channel = reviewer_task_id
+            .as_deref()
+            .and_then(|id| snap.task_channel.get(id))
+            .cloned()
+            .unwrap_or_else(|| snap.repo_name.clone());
+        effects.push(Effect::EmitWorkflowEvent(
+            crate::workflow::WorkflowEvent::CoworkerStuck {
+                channel: reviewer_channel,
+                task_id: reviewer_task_id,
+                coworker: restart.name.clone(),
+            },
+        ));
 
         effects.push(Effect::PostToChannel {
             sender: "midtown".to_string(),
