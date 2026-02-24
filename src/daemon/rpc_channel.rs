@@ -289,9 +289,8 @@ pub(super) async fn handle_channel_post(
                 format!(
                     "{} mentioned @{} ({}): {}\n\nThis is a thread reply. To reply in the thread:\n  \
                      midtown channel post \"...\" --thread {parent_id} --channel {channel_name}\n\
-                     To read the thread:\n  \
-                     midtown channel read --last 50 --channel {channel_name}\n  \
-                     (look for messages with thread_parent_id: {parent_id})",
+                     To read recent thread context:\n  \
+                     midtown channel read --last 50 --channel {channel_name}",
                     from,
                     state.repo_name,
                     msg.thread_anchor_id(),

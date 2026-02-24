@@ -336,9 +336,8 @@ fn render_thread_context(msg: &Message) -> String {
         format!(
             "{base}\n\nThis is a thread reply. To reply in the thread:\n  \
              midtown channel post \"...\" --thread {parent_id} --channel {channel}\n\
-             To read the thread:\n  \
-             midtown channel read --last 50 --channel {channel}\n  \
-             (look for messages with thread_parent_id: {parent_id})"
+             To read recent thread context:\n  \
+             midtown channel read --last 50 --channel {channel}"
         )
     } else {
         base
