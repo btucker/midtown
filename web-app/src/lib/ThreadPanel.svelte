@@ -1,7 +1,8 @@
 <script>
   import { threadData } from './store.js'
   import { sendMessage, closeThread } from './api.js'
-  import { renderContent } from './markdown.js'
+  import { renderContent, hasMermaid, parseSegments } from './markdown.js'
+  import MermaidDiagram from './MermaidDiagram.svelte'
   import { tick, onMount } from 'svelte'
   import { getSenderColor, isDimSender, formatTime, senderChanged, timeChanged } from './messageUtils.js'
 
@@ -9,6 +10,10 @@
     midtown: '#585858',
   }
   const THREAD_DIM_SENDERS = ['midtown']
+
+  function isInsight(msg) {
+    return msg?.msg_type === 'insight' || msg?.type === 'insight'
+  }
 
   let replyText = $state('')
   let desktopScrollArea = $state(null)
@@ -79,6 +84,8 @@
 <svelte:window onkeydown={handleWindowKeydown} />
 
 {#if $threadData}
+  {@const parentMsg = $threadData.parentMessage}
+  {@const parentContent = parentMsg?.content || ''}
   <!-- Desktop: side panel -->
   <div class="hidden lg:flex flex-col h-full bg-background border-l-2 border-border w-[380px] shrink-0">
     <!-- Header -->
@@ -132,10 +139,35 @@
         {:else}
           <!-- Slack-style parent message (name + timestamp on one line) -->
           <div class="whitespace-nowrap overflow-hidden text-ellipsis flex items-center gap-[7px] mb-[2px]">
-            <span class="font-bold text-[0.82rem]" style="color: {getSenderColor($threadData.parentMessage.from, THREAD_SENDER_OVERRIDES)}">{$threadData.parentMessage.from}</span>
-            <span class="text-muted-foreground/50 text-[0.72rem] select-none">{formatTime($threadData.parentMessage.timestamp)}</span>
+            <span class="font-bold text-[0.82rem]" style="color: {getSenderColor(parentMsg?.from, THREAD_SENDER_OVERRIDES)}">{parentMsg?.from}</span>
+            <span class="text-muted-foreground/50 text-[0.72rem] select-none">{formatTime(parentMsg?.timestamp)}</span>
           </div>
-          <div class="text-foreground break-words">{@html renderContent($threadData.parentMessage.content || '')}</div>
+          {#if isInsight(parentMsg)}
+            <div class="rounded-md border border-insight/40 bg-insight/8 px-3 py-2 mt-1">
+              <div
+                class="flex items-center gap-1.5 mb-1.5 text-insight text-[0.72rem] font-bold uppercase tracking-wide"
+                aria-label="Insight"
+              >
+                <span aria-hidden="true">★</span>
+                <span>Insight</span>
+              </div>
+              {#if hasMermaid(parentContent)}
+                <div class="flex flex-col gap-2">
+                  {#each parseSegments(parentContent) as segment}
+                    {#if segment.type === 'mermaid'}
+                      <MermaidDiagram code={segment.content} />
+                    {:else}
+                      <div class="message-text text-foreground">{@html renderContent(segment.content)}</div>
+                    {/if}
+                  {/each}
+                </div>
+              {:else}
+                <div class="message-text text-foreground">{@html renderContent(parentContent)}</div>
+              {/if}
+            </div>
+          {:else}
+            <div class="text-foreground break-words">{@html renderContent(parentContent)}</div>
+          {/if}
         {/if}
       </div>
 
@@ -232,11 +264,36 @@
         {:else}
           <!-- Slack-style parent message (name + timestamp on one line) -->
           <div class="whitespace-nowrap overflow-hidden text-ellipsis flex items-center gap-[7px] mb-[2px]">
-            <span class="font-bold text-[0.82rem]" style="color: {getSenderColor($threadData.parentMessage.from, THREAD_SENDER_OVERRIDES)}">{$threadData.parentMessage.from}</span>
-            <span class="text-muted-foreground/50 text-[0.72rem] select-none">{formatTime($threadData.parentMessage.timestamp)}</span>
+            <span class="font-bold text-[0.82rem]" style="color: {getSenderColor(parentMsg?.from, THREAD_SENDER_OVERRIDES)}">{parentMsg?.from}</span>
+            <span class="text-muted-foreground/50 text-[0.72rem] select-none">{formatTime(parentMsg?.timestamp)}</span>
           </div>
-          <div class="text-foreground break-words">{@html renderContent($threadData.parentMessage.content || '')}</div>
-          <div class="text-muted-foreground text-[0.75rem] mt-1">{formatTime($threadData.parentMessage.timestamp)}</div>
+          {#if isInsight(parentMsg)}
+            <div class="rounded-md border border-insight/40 bg-insight/8 px-3 py-2 mt-1">
+              <div
+                class="flex items-center gap-1.5 mb-1.5 text-insight text-[0.72rem] font-bold uppercase tracking-wide"
+                aria-label="Insight"
+              >
+                <span aria-hidden="true">★</span>
+                <span>Insight</span>
+              </div>
+              {#if hasMermaid(parentContent)}
+                <div class="flex flex-col gap-2">
+                  {#each parseSegments(parentContent) as segment}
+                    {#if segment.type === 'mermaid'}
+                      <MermaidDiagram code={segment.content} />
+                    {:else}
+                      <div class="message-text text-foreground">{@html renderContent(segment.content)}</div>
+                    {/if}
+                  {/each}
+                </div>
+              {:else}
+                <div class="message-text text-foreground">{@html renderContent(parentContent)}</div>
+              {/if}
+            </div>
+          {:else}
+            <div class="text-foreground break-words">{@html renderContent(parentContent)}</div>
+          {/if}
+          <div class="text-muted-foreground text-[0.75rem] mt-1">{formatTime(parentMsg?.timestamp)}</div>
         {/if}
       </div>
 
