@@ -714,34 +714,38 @@ impl App {
             // at the last complete newline, so reading is safe without locking.
             if let Ok((new_messages, new_pos, new_last_id)) =
                 channel.read_messages_from_position(self.cursor_position)
-                && !new_messages.is_empty()
             {
+                // Always advance the position — even past blank/malformed lines —
+                // so we don't re-parse them on the next tick. last_message_id is
+                // only updated when a valid message was actually parsed.
                 self.cursor_position = new_pos;
                 if let Some(id) = new_last_id {
                     self.cursor_last_message_id = Some(id);
                 }
 
-                let added = new_messages.len();
-                let was_at_bottom = self.scroll_offset == 0;
+                if !new_messages.is_empty() {
+                    let added = new_messages.len();
+                    let was_at_bottom = self.scroll_offset == 0;
 
-                // Route thread replies to thread_messages if a thread is open
-                if let Some(ref open_thread_id) = self.thread_parent_id {
-                    for msg in &new_messages {
-                        if msg.thread_parent_id.as_deref() == Some(open_thread_id) {
-                            self.thread_messages.push(msg.clone());
+                    // Route thread replies to thread_messages if a thread is open
+                    if let Some(ref open_thread_id) = self.thread_parent_id {
+                        for msg in &new_messages {
+                            if msg.thread_parent_id.as_deref() == Some(open_thread_id) {
+                                self.thread_messages.push(msg.clone());
+                            }
                         }
                     }
-                }
 
-                // Append new messages (they're already in chronological order)
-                self.messages.extend(new_messages);
+                    // Append new messages (they're already in chronological order)
+                    self.messages.extend(new_messages);
 
-                if was_at_bottom {
-                    // User was at bottom - stay at bottom (auto-scroll)
-                    self.scroll_offset = 0;
-                } else {
-                    // User had scrolled up - adjust offset to stay viewing same messages
-                    self.scroll_offset += added;
+                    if was_at_bottom {
+                        // User was at bottom - stay at bottom (auto-scroll)
+                        self.scroll_offset = 0;
+                    } else {
+                        // User had scrolled up - adjust offset to stay viewing same messages
+                        self.scroll_offset += added;
+                    }
                 }
             }
         }
@@ -1948,6 +1952,37 @@ impl App {
                 Ok(count) => count,
                 Err(_) => continue, // Skip channels we can't read
             };
+
+            // For the currently open channel, when the in-memory cursor has been
+            // set (i.e. the user has rendered at least one message), use it
+            // instead of the disk cursor — the disk cursor only updates on
+            // channel switch or app exit, so it would lag and show false unread
+            // counts for messages that were already rendered in the TUI.
+            //
+            // When cursor_last_message_id is None the channel was just opened
+            // and no messages have been rendered yet; fall through to the disk
+            // cursor path which may have a previously persisted position.
+            if self
+                .channel
+                .as_ref()
+                .is_some_and(|ch| ch.channel_name() == channel_info.name)
+                && let Some(ref last_id) = self.cursor_last_message_id
+            {
+                let all_messages = match channel.read_all() {
+                    Ok(msgs) => msgs,
+                    Err(_) => continue,
+                };
+                let last_read_idx = all_messages.iter().position(|m| &m.id == last_id);
+                let unread_count = match last_read_idx {
+                    Some(idx) => all_messages.len().saturating_sub(idx + 1),
+                    None => all_messages.len(),
+                };
+                if unread_count > 0 {
+                    self.channel_unread_counts
+                        .insert(channel_info.name, unread_count);
+                }
+                continue;
+            }
 
             // Calculate unread count:
             // First check the current session's cursor, then fall back to the most
