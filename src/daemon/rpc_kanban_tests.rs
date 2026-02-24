@@ -210,3 +210,33 @@ fn test_serialize_tool_activity_with_tool_result() {
     assert_eq!(content["call_id"], "call_002");
     assert!(!content["is_error"].as_bool().unwrap());
 }
+
+// ============================================================================
+// Tests for project lead filtering — the lead must not appear in the
+// coworker status list regardless of whether it uses the legacy "lead" name
+// or the canonical repo name. Regression tests for !1723.
+// ============================================================================
+
+#[test]
+fn test_is_project_lead_matches_legacy_name() {
+    assert!(is_project_lead("lead", "midtown"));
+    assert!(is_project_lead("Lead", "midtown"));
+    assert!(is_project_lead("LEAD", "midtown"));
+}
+
+#[test]
+fn test_is_project_lead_matches_repo_name() {
+    // Canonical: lead session is named after the repo
+    assert!(is_project_lead("midtown", "midtown"));
+    assert!(is_project_lead("Midtown", "midtown"));
+    assert!(is_project_lead("MIDTOWN", "MIDTOWN"));
+}
+
+#[test]
+fn test_is_project_lead_rejects_regular_coworkers() {
+    assert!(!is_project_lead("york", "midtown"));
+    assert!(!is_project_lead("park", "midtown"));
+    assert!(!is_project_lead("amsterdam", "midtown"));
+    // Channel lead names are NOT project leads
+    assert!(!is_project_lead("auth", "midtown"));
+}
