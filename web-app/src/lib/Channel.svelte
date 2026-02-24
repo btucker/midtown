@@ -629,7 +629,7 @@
     onscroll={handleScroll}
   >
       {#if channelMessages.length === 0}
-        <div class="text-center text-muted-foreground py-[50px] px-[22px] font-[system-ui,-apple-system,sans-serif]">
+        <div class="text-center text-muted-foreground py-[50px] px-[22px] font-sans">
           <p>No messages in #{$activeChannel}</p>
           <p class="text-[0.9rem] mt-[10px]">Messages posted to this channel will appear here</p>
         </div>
@@ -762,7 +762,7 @@
                 <span class="dot w-[5px] h-[5px] rounded-full" style="background-color: {stripColor}"></span>
               </span>
             {/if}
-            <span class="font-bold text-[0.85rem]" style="color: {stripColor}">{agentName}</span>
+            <span class="font-mono font-semibold text-[0.85rem]" style="color: {stripColor}">{agentName}</span>
           </div>
         </div>
       {/if}
@@ -867,12 +867,6 @@
 </Dialog.Root>
 
 <style>
-  /* Font for message content — IBM Plex Mono for terminal-refined aesthetic */
-  :global(.message-text),
-  :global(.action-text) {
-    font-family: 'IBM Plex Mono', 'SF Mono', 'Menlo', monospace;
-  }
-
   /* Link styles - applied globally within message content */
   :global(.message-text a),
   :global(.action-text a) {
