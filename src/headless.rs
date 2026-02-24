@@ -1675,8 +1675,9 @@ impl HeadlessSession {
     }
 
     async fn next_claude_event(&mut self) -> Option<StreamEvent> {
+        let mut line = String::new();
         loop {
-            let mut line = String::new();
+            line.clear();
             let reader = self
                 .stdout_reader
                 .as_mut()
