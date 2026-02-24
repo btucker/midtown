@@ -342,9 +342,9 @@ pub struct App {
     /// When true AND at max_scroll, line truncation shows oldest content.
     /// When false, always use normal truncation (LAST N lines) for smooth scrolling.
     intentionally_at_top: bool,
-    /// Accumulator for mouse wheel scroll events (-7 to +7) in the main chat panel.
+    /// Accumulator for mouse wheel scroll events (-2 to +2) in the main chat panel.
     /// Mouse wheels send multiple events per physical scroll, so we accumulate
-    /// fractional scrolls: 8 events in one direction = 1 scroll step.
+    /// fractional scrolls: MOUSE_SCROLL_THRESHOLD events in one direction = MOUSE_SCROLL_STEP lines.
     /// Positive = up credits, negative = down credits.
     /// Resets to 0 when direction changes to prevent cross-direction bleed.
     mouse_scroll_accumulator: i8,
@@ -533,8 +533,15 @@ const USAGE_RETRY_INTERVAL: Duration = Duration::from_secs(15);
 /// Interval between available channels list refreshes (30 seconds)
 const CHANNELS_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 
-/// Number of lines to scroll per mouse wheel event
+/// Number of lines to scroll per keyboard scroll event
 const SCROLL_STEP: usize = 3;
+
+/// Number of same-direction mouse events required to trigger one scroll step.
+/// Lower than 8 so inertia-scroll reversals don't block scrolling entirely.
+const MOUSE_SCROLL_THRESHOLD: i8 = 3;
+
+/// Lines scrolled per triggered mouse scroll step (finer than keyboard).
+const MOUSE_SCROLL_STEP: usize = 1;
 
 fn project_lead_provider_and_profile(project_name: &str) -> (midtown::auth::AuthProvider, String) {
     let provider = midtown::config::get_execution_provider_for_role(
@@ -1021,53 +1028,63 @@ impl App {
         }
     }
 
-    /// Mouse wheel scroll up (slower than keyboard - 8 events = 1 step)
+    /// Mouse wheel scroll up (MOUSE_SCROLL_THRESHOLD events = MOUSE_SCROLL_STEP lines)
     pub fn mouse_scroll_up(&mut self) {
         if self.mouse_scroll_accumulator < 0 {
             // Direction changed; discard down credits and start fresh
             self.mouse_scroll_accumulator = 0;
         }
         self.mouse_scroll_accumulator += 1;
-        if self.mouse_scroll_accumulator >= 8 {
+        if self.mouse_scroll_accumulator >= MOUSE_SCROLL_THRESHOLD {
             self.mouse_scroll_accumulator = 0;
-            self.scroll_up();
+            let max_scroll = self.max_scroll();
+            if self.scroll_offset < max_scroll {
+                self.scroll_offset = (self.scroll_offset + MOUSE_SCROLL_STEP).min(max_scroll);
+            }
+            if self.scroll_offset >= max_scroll {
+                self.intentionally_at_top = true;
+            }
+            self.maybe_load_more_history();
         }
     }
 
-    /// Mouse wheel scroll down (slower than keyboard - 8 events = 1 step)
+    /// Mouse wheel scroll down (MOUSE_SCROLL_THRESHOLD events = MOUSE_SCROLL_STEP lines)
     pub fn mouse_scroll_down(&mut self) {
         if self.mouse_scroll_accumulator > 0 {
             // Direction changed; discard up credits and start fresh
             self.mouse_scroll_accumulator = 0;
         }
         self.mouse_scroll_accumulator -= 1;
-        if self.mouse_scroll_accumulator <= -8 {
+        if self.mouse_scroll_accumulator <= -MOUSE_SCROLL_THRESHOLD {
             self.mouse_scroll_accumulator = 0;
-            self.scroll_down();
+            if self.scroll_offset > 0 {
+                self.scroll_offset = self.scroll_offset.saturating_sub(MOUSE_SCROLL_STEP);
+                self.intentionally_at_top = false;
+            }
         }
     }
 
-    /// Mouse wheel scroll up in the thread panel (8 events = 1 step toward older messages)
+    /// Mouse wheel scroll up in the thread panel (MOUSE_SCROLL_THRESHOLD events = 1 step toward older messages)
     pub fn thread_mouse_scroll_up(&mut self) {
         if self.thread_mouse_scroll_accumulator < 0 {
             self.thread_mouse_scroll_accumulator = 0;
         }
         self.thread_mouse_scroll_accumulator += 1;
-        if self.thread_mouse_scroll_accumulator >= 8 {
+        if self.thread_mouse_scroll_accumulator >= MOUSE_SCROLL_THRESHOLD {
             self.thread_mouse_scroll_accumulator = 0;
-            self.thread_scroll_offset = self.thread_scroll_offset.saturating_add(SCROLL_STEP);
+            self.thread_scroll_offset = self.thread_scroll_offset.saturating_add(MOUSE_SCROLL_STEP);
         }
     }
 
-    /// Mouse wheel scroll down in the thread panel (8 events = 1 step toward newer messages)
+    /// Mouse wheel scroll down in the thread panel (MOUSE_SCROLL_THRESHOLD events = 1 step toward newer messages)
     pub fn thread_mouse_scroll_down(&mut self) {
         if self.thread_mouse_scroll_accumulator > 0 {
             self.thread_mouse_scroll_accumulator = 0;
         }
         self.thread_mouse_scroll_accumulator -= 1;
-        if self.thread_mouse_scroll_accumulator <= -8 {
+        if self.thread_mouse_scroll_accumulator <= -MOUSE_SCROLL_THRESHOLD {
             self.thread_mouse_scroll_accumulator = 0;
-            self.thread_scroll_offset = self.thread_scroll_offset.saturating_sub(SCROLL_STEP);
+            self.thread_scroll_offset = self.thread_scroll_offset.saturating_sub(MOUSE_SCROLL_STEP);
         }
     }
 
@@ -4077,83 +4094,6 @@ pub(super) mod tests {
         assert!(
             app.is_at_max_scroll(),
             "page_up to max should set intentionally_at_top"
-        );
-    }
-
-    #[test]
-    fn test_mouse_wheel_scroll_is_slower_than_keyboard() {
-        // Mouse wheel scrolling should be slower than keyboard scrolling for smoother UX.
-        // Mouse wheels send multiple events per physical scroll, so we use fractional
-        // scrolling: 8 wheel events = SCROLL_STEP lines of movement.
-        // Keyboard scrolls SCROLL_STEP per call; mouse needs 8 events per SCROLL_STEP.
-        let messages: VecDeque<Message> = (0..30)
-            .map(|i| Message {
-                id: i.to_string(),
-                from: "user".to_string(),
-                content: format!("message {}", i),
-                timestamp: Utc::now(),
-                message_type: midtown::MessageType::Text,
-                channel: None,
-                session_id: None,
-                thread_parent_id: None,
-            })
-            .collect();
-
-        let mut app = App {
-            messages,
-            visible_height: 10,
-            ..test_app()
-        };
-
-        // Start at bottom
-        assert_eq!(app.scroll_offset, 0);
-
-        // Keyboard scroll up: should move SCROLL_STEP lines per call
-        app.scroll_up();
-        assert_eq!(
-            app.scroll_offset, SCROLL_STEP,
-            "Keyboard scroll should move SCROLL_STEP lines"
-        );
-
-        // Reset
-        app.scroll_offset = 0;
-
-        // Mouse wheel scroll up: should take 8 events to move SCROLL_STEP lines
-        for i in 1..=7 {
-            app.mouse_scroll_up();
-            assert_eq!(app.scroll_offset, 0, "Event {} shouldn't scroll yet", i);
-        }
-
-        app.mouse_scroll_up();
-        assert_eq!(
-            app.scroll_offset, SCROLL_STEP,
-            "Eighth wheel event should complete SCROLL_STEP lines of scroll"
-        );
-
-        // Ninth event starts accumulating for next batch
-        app.mouse_scroll_up();
-        assert_eq!(
-            app.scroll_offset, SCROLL_STEP,
-            "Ninth wheel event accumulates"
-        );
-
-        // Test mouse wheel scroll down
-        // The ninth up event left accumulator at 1 (up direction).
-        // First down event resets the accumulator (direction change), so
-        // now 8 full down events are needed to trigger scroll_down.
-        for i in 1..=7 {
-            app.mouse_scroll_down();
-            assert_eq!(
-                app.scroll_offset, SCROLL_STEP,
-                "Down event {} should not scroll yet (direction reset clears up credit)",
-                i
-            );
-        }
-
-        app.mouse_scroll_down();
-        assert_eq!(
-            app.scroll_offset, 0,
-            "Eighth down event triggers scroll after direction reset"
         );
     }
 
