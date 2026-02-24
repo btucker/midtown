@@ -137,8 +137,14 @@ fn build_plan_prompt_section(task_id: &str, snap: &snapshot::WorldSnapshot) -> S
 // ============================================================================
 
 /// Build the standard triple of effects for completing a task: CompleteTask + ClearBlockedBy + PostToChannel.
-fn task_completed_effects(task_id: &str, repo_name: &str, channel_message: String) -> Vec<Effect> {
-    vec![
+fn task_completed_effects(
+    task_id: &str,
+    repo_name: &str,
+    channel_message: String,
+    channel: Option<String>,
+    coworker: Option<String>,
+) -> Vec<Effect> {
+    let mut effects = vec![
         Effect::CompleteTask {
             task_id: task_id.to_string(),
             repo_name: repo_name.to_string(),
@@ -152,7 +158,18 @@ fn task_completed_effects(task_id: &str, repo_name: &str, channel_message: Strin
             message: channel_message,
             channel: None,
         },
-    ]
+    ];
+    // Emit workflow event when the task's channel is known.
+    if let Some(ch) = channel {
+        effects.push(Effect::EmitWorkflowEvent(
+            crate::workflow::WorkflowEvent::TaskCompleted {
+                channel: ch,
+                task_id: task_id.to_string(),
+                coworker,
+            },
+        ));
+    }
+    effects
 }
 
 // ============================================================================
@@ -2460,20 +2477,30 @@ pub(super) fn spawn_for_pending_tasks_excluding(
                 .get(&coworker_name.to_lowercase())
                 .cloned()
                 .unwrap_or_default();
+            let mut assign_callbacks = vec![
+                Effect::RecordTaskAssignment {
+                    coworker: coworker_name.clone(),
+                    task_id: task.id.clone(),
+                },
+                Effect::PostToChannel {
+                    sender: "midtown".to_string(),
+                    message: channel_msg,
+                    channel: Some(OPS_CHANNEL.to_string()),
+                },
+            ];
+            if let Some(ch) = &task.channel {
+                assign_callbacks.push(Effect::EmitWorkflowEvent(
+                    crate::workflow::WorkflowEvent::TaskAssigned {
+                        channel: ch.clone(),
+                        task_id: task.id.clone(),
+                        coworker: coworker_name.clone(),
+                    },
+                ));
+            }
             effects.push(Effect::nudge_session_with_callbacks(
                 session_id,
                 prompt,
-                vec![
-                    Effect::RecordTaskAssignment {
-                        coworker: coworker_name.clone(),
-                        task_id: task.id.clone(),
-                    },
-                    Effect::PostToChannel {
-                        sender: "midtown".to_string(),
-                        message: channel_msg,
-                        channel: Some(OPS_CHANNEL.to_string()),
-                    },
-                ],
+                assign_callbacks,
             ));
         } else {
             // Step 2b: Spawn a new coworker — assign ownership atomically with spawn
@@ -2501,7 +2528,7 @@ pub(super) fn spawn_for_pending_tasks_excluding(
             effects.extend(wt.pre_spawn_effects);
 
             // Post-spawn success effects
-            let on_success = vec![
+            let mut on_success = vec![
                 Effect::BindCoworkerToWorktree {
                     worktree_id: wt.worktree_id,
                     coworker: coworker_name.clone(),
@@ -2517,6 +2544,15 @@ pub(super) fn spawn_for_pending_tasks_excluding(
                     channel: Some(OPS_CHANNEL.to_string()),
                 },
             ];
+            if let Some(ch) = &task.channel {
+                on_success.push(Effect::EmitWorkflowEvent(
+                    crate::workflow::WorkflowEvent::TaskAssigned {
+                        channel: ch.clone(),
+                        task_id: task.id.clone(),
+                        coworker: coworker_name.clone(),
+                    },
+                ));
+            }
 
             effects.push(Effect::AssignAndSpawn {
                 task_id: task.id.clone(),
@@ -2551,19 +2587,35 @@ pub(super) fn build_task_completion_effects(
     pr_title: &str,
     pr_number: u64,
     repo_name: &str,
+    channel: Option<String>,
 ) -> Vec<Effect> {
     let Some(task_id) = crate::tasks::extract_task_id_from_pr_title(pr_title) else {
         return vec![];
     };
 
-    task_completed_effects(
+    let mut effects = task_completed_effects(
         &task_id.to_string(),
         repo_name,
         format!(
             "✅ Auto-completed task !{} (PR #{} merged)",
             task_id, pr_number
         ),
-    )
+        channel.clone(),
+        None,
+    );
+
+    // Emit PrMerged alongside task completion when channel is known.
+    if let Some(ch) = channel {
+        effects.push(Effect::EmitWorkflowEvent(
+            crate::workflow::WorkflowEvent::PrMerged {
+                channel: ch,
+                task_id: task_id.to_string(),
+                pr_number,
+            },
+        ));
+    }
+
+    effects
 }
 
 /// Build effects to auto-complete tasks when all PRs referenced in their subject are merged.
@@ -2590,6 +2642,8 @@ pub fn build_subject_based_completion_effects(snap: &snapshot::WorldSnapshot) ->
         // 1. Explicit PR field (preferred) - set via --pr flag or auto-detected from PR title
         // 2. Text extraction (fallback) - for meta-tasks like "Merge PRs: #901, #902, #903"
 
+        let task_channel = snap.task_channel.get(&task.id).cloned();
+
         if let Some(pr_number) = task.pr {
             // Path 1: Task has explicit PR association
             // This prevents false positives (e.g., task mentions "PR #940 fix insufficient" as context)
@@ -2601,6 +2655,8 @@ pub fn build_subject_based_completion_effects(snap: &snapshot::WorldSnapshot) ->
                         "✅ Auto-completed task !{} (PR #{} merged)",
                         task.id, pr_number
                     ),
+                    task_channel,
+                    task.owner.clone(),
                 ));
             }
         } else {
@@ -2639,6 +2695,8 @@ pub fn build_subject_based_completion_effects(snap: &snapshot::WorldSnapshot) ->
                         "✅ Auto-completed task !{} (all referenced PRs merged: {})",
                         task.id, pr_list
                     ),
+                    task_channel,
+                    task.owner.clone(),
                 ));
             }
         }

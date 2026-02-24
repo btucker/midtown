@@ -317,7 +317,7 @@ fn test_compute_orphans_for_reviewer_clearing_none_orphaned() {
 #[test]
 fn test_build_task_completion_effects_with_task_id() {
     let effects =
-        build_task_completion_effects("feat: Add auth endpoint [Midtown #42]", 123, "myrepo");
+        build_task_completion_effects("feat: Add auth endpoint [Midtown #42]", 123, "myrepo", None);
 
     assert_eq!(effects.len(), 3, "Should return 3 effects");
 
@@ -357,7 +357,7 @@ fn test_build_task_completion_effects_with_task_id() {
 
 #[test]
 fn test_build_task_completion_effects_without_task_id() {
-    let effects = build_task_completion_effects("feat: Add auth endpoint", 123, "myrepo");
+    let effects = build_task_completion_effects("feat: Add auth endpoint", 123, "myrepo", None);
 
     assert!(
         effects.is_empty(),
@@ -368,7 +368,7 @@ fn test_build_task_completion_effects_without_task_id() {
 #[test]
 fn test_build_task_completion_effects_message_says_merged() {
     let effects =
-        build_task_completion_effects("feat: Add auth endpoint [Midtown #42]", 123, "myrepo");
+        build_task_completion_effects("feat: Add auth endpoint [Midtown #42]", 123, "myrepo", None);
 
     // Verify the channel message says "merged" not "opened"
     match &effects[2] {
@@ -5634,5 +5634,137 @@ fn test_pending_task_with_stale_working_dir_uses_fresh_worktree() {
     assert_eq!(
         spawn_session, expected_worktree_dir,
         "Should fall back to fresh worktree when recorded working_dir is stale"
+    );
+}
+
+// ============================================================================
+// WorkflowEvent emission tests
+// ============================================================================
+
+#[test]
+fn test_build_task_completion_effects_emits_task_completed_workflow_event() {
+    let effects = build_task_completion_effects(
+        "feat: Add auth endpoint [Midtown #42]",
+        123,
+        "myrepo",
+        Some("proj-auth".to_string()),
+    );
+
+    // 3 base effects + 1 TaskCompleted + 1 PrMerged
+    assert_eq!(effects.len(), 5);
+
+    let workflow_events: Vec<_> = effects
+        .iter()
+        .filter_map(|e| {
+            if let Effect::EmitWorkflowEvent(ev) = e {
+                Some(ev)
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert_eq!(workflow_events.len(), 2, "Should emit 2 workflow events");
+
+    let has_task_completed = workflow_events.iter().any(|ev| {
+        matches!(
+            ev,
+            crate::workflow::WorkflowEvent::TaskCompleted {
+                channel,
+                task_id,
+                ..
+            } if channel == "proj-auth" && task_id == "42"
+        )
+    });
+    assert!(
+        has_task_completed,
+        "Should emit TaskCompleted workflow event"
+    );
+
+    let has_pr_merged = workflow_events.iter().any(|ev| {
+        matches!(
+            ev,
+            crate::workflow::WorkflowEvent::PrMerged {
+                channel,
+                task_id,
+                pr_number,
+            } if channel == "proj-auth" && task_id == "42" && *pr_number == 123
+        )
+    });
+    assert!(has_pr_merged, "Should emit PrMerged workflow event");
+}
+
+#[test]
+fn test_build_task_completion_effects_no_workflow_event_without_channel() {
+    let effects =
+        build_task_completion_effects("feat: Add auth endpoint [Midtown #42]", 123, "myrepo", None);
+
+    // Only the 3 base effects — no workflow events without a channel
+    assert_eq!(effects.len(), 3);
+    assert!(
+        effects
+            .iter()
+            .all(|e| !matches!(e, Effect::EmitWorkflowEvent(_))),
+        "Should not emit workflow events without a channel"
+    );
+}
+
+#[test]
+fn test_build_subject_based_completion_effects_emits_task_completed() {
+    use crate::tasks::{Task, TaskStatus};
+    use std::collections::{HashMap, HashSet};
+
+    let task = Task {
+        id: "55".to_string(),
+        subject: "Fix PR #901 review feedback".to_string(),
+        status: TaskStatus::InProgress,
+        owner: Some("amsterdam".to_string()),
+        description: None,
+        blocked_by: vec![],
+        channel: None,
+        pr: None,
+        created_at: None,
+    };
+
+    let mut merged = HashSet::new();
+    merged.insert(901u64);
+
+    let mut task_channel = HashMap::new();
+    task_channel.insert("55".to_string(), "proj-auth".to_string());
+
+    let snap = snapshot::WorldSnapshot {
+        all_tasks: vec![task],
+        merged_pr_numbers: merged,
+        task_channel,
+        ..snapshot::minimal_snapshot_for_test()
+    };
+
+    let effects = build_subject_based_completion_effects(&snap);
+
+    let workflow_events: Vec<_> = effects
+        .iter()
+        .filter_map(|e| {
+            if let Effect::EmitWorkflowEvent(ev) = e {
+                Some(ev)
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert_eq!(
+        workflow_events.len(),
+        1,
+        "Should emit 1 TaskCompleted workflow event"
+    );
+
+    assert!(
+        matches!(
+            workflow_events[0],
+            crate::workflow::WorkflowEvent::TaskCompleted {
+                channel,
+                task_id,
+                coworker,
+            } if channel == "proj-auth" && task_id == "55" && coworker.as_deref() == Some("amsterdam")
+        ),
+        "Should emit TaskCompleted with correct fields"
     );
 }
