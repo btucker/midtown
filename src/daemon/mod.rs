@@ -1703,6 +1703,16 @@ impl DaemonState {
             .is_some_and(|a| a.task_id == task_id)
     }
 
+    /// Get the task ID currently assigned to a coworker.
+    ///
+    /// Used by the insight nudge to attribute the insight to the agent's task.
+    pub(crate) fn get_task_id_for_coworker(&self, coworker: &str) -> Option<String> {
+        let assignments = self.coworker_task_assignments.lock().unwrap();
+        assignments
+            .get(&coworker.to_lowercase())
+            .map(|a| a.task_id.clone())
+    }
+
     /// Record a pending nudge sent to a coworker.
     ///
     /// Called after successfully sending a nudge via `NudgeSession` or

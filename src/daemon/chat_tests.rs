@@ -59,6 +59,45 @@ fn render_thread_context_uses_parent_id_for_thread_replies() {
 }
 
 #[test]
+fn render_thread_context_includes_reply_instructions_for_thread_replies() {
+    let parent_id = "parent-5678";
+    let msg = Message::thread_reply(
+        "daemon-core",
+        "amsterdam",
+        "Follow-up on auth",
+        parent_id,
+        MessageType::Text,
+    );
+    let label = super::render_thread_context(&msg);
+    assert!(
+        label.contains("--thread parent-5678"),
+        "Thread nudge should include --thread flag with parent_id"
+    );
+    assert!(
+        label.contains("--channel daemon-core"),
+        "Thread nudge should include --channel flag"
+    );
+    assert!(
+        label.contains("midtown channel read"),
+        "Thread nudge should include how to read the thread"
+    );
+}
+
+#[test]
+fn render_thread_context_no_instructions_for_top_level_messages() {
+    let msg = Message::for_channel("midtown", "amsterdam", "Regular post", MessageType::Text);
+    let label = super::render_thread_context(&msg);
+    assert!(
+        !label.contains("--thread"),
+        "Top-level messages should not include thread instructions"
+    );
+    assert!(
+        !label.contains("midtown channel read"),
+        "Top-level messages should not include thread read instructions"
+    );
+}
+
+#[test]
 fn mention_spawn_produces_spawn_with_callbacks() {
     let action = MentionAction::Spawn {
         name: "park".to_string(),

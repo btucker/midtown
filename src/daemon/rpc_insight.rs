@@ -83,12 +83,15 @@ pub(super) async fn handle_insight_report(
     // Nudge channel lead about the insight (works for both topic and main channels).
     // For topic channels: spawns-if-dead, resumes-if-idle, nudges-if-alive.
     // For main channel: nudges the project lead.
+    let task_id = state.get_task_id_for_coworker(agent);
     let nudge_effect = crate::daemon::effects::Effect::NudgeChannelLead {
         channel_name: channel_name.to_string(),
         reason: crate::daemon::wake_reason::WakeReason::InsightPosted {
             insight: insight.to_string(),
             agent: agent.to_string(),
             msg_id: msg.id.clone(),
+            task_id,
+            channel_name: channel_name.to_string(),
         },
     };
     crate::daemon::effects::execute_effects(vec![nudge_effect], state).await;

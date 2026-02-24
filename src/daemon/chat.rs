@@ -320,13 +320,29 @@ async fn route_at_all(state: &DaemonState, msg: &Message) {
 
 /// Human-friendly label for nudges that preserves thread context by using
 /// the parent message ID when the source message is a thread reply.
+///
+/// For thread replies, appends instructions for replying and reading the thread
+/// so the recipient knows how to participate in the conversation.
 fn render_thread_context(msg: &Message) -> String {
-    format!(
+    let base = format!(
         "{} said ({}): {}",
         msg.from,
         msg.thread_anchor_id(),
         msg.content
-    )
+    );
+
+    if let Some(parent_id) = &msg.thread_parent_id {
+        let channel = msg.channel_name();
+        format!(
+            "{base}\n\nThis is a thread reply. To reply in the thread:\n  \
+             midtown channel post \"...\" --thread {parent_id} --channel {channel}\n\
+             To read the thread:\n  \
+             midtown channel read --last 50 --channel {channel}\n  \
+             (look for messages with thread_parent_id: {parent_id})"
+        )
+    } else {
+        base
+    }
 }
 
 /// Convert a `MentionAction` decision into executable effects.
