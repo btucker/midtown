@@ -10,6 +10,39 @@ use super::constants::OPS_CHANNEL;
 use super::trackers::PrIssueType;
 use crate::message::Message;
 
+fn build_resume_handoff_prompt(
+    name: &str,
+    repo_name: &str,
+    previous_session_id: &str,
+    prior_prompt: Option<&str>,
+    working_dir: Option<&std::path::Path>,
+) -> String {
+    let history_file = crate::paths::headless_output_file(repo_name, name);
+    let worktree = working_dir
+        .map(|path| path.to_string_lossy().to_string())
+        .unwrap_or_else(|| "<current default worktree>".to_string());
+
+    let mut prompt = format!(
+        "Previous session resume for `{}` failed. Start a fresh continuation in the same worktree.\n\n",
+        previous_session_id
+    );
+    prompt.push_str("Context sources:\n");
+    prompt.push_str(&format!("- Worktree: {}\n", worktree));
+    prompt.push_str(&format!(
+        "- Prior history file: {}\n\n",
+        history_file.display()
+    ));
+
+    if let Some(prior_prompt) = prior_prompt {
+        prompt.push_str(prior_prompt);
+        prompt.push('\n');
+        prompt.push('\n');
+    }
+
+    prompt.push_str("Continue from the prior history, then resume work as if uninterrupted.");
+    prompt
+}
+
 /// A side effect that the daemon should execute.
 ///
 /// Pure evaluation functions return `Vec<Effect>` instead of performing side
@@ -803,7 +836,8 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     );
                     config.session_mode = crate::launch::SessionMode::Fresh;
                 } else {
-                    config.session_mode = crate::launch::SessionMode::ResumeSession(session_id);
+                    config.session_mode =
+                        crate::launch::SessionMode::ResumeSession(session_id.clone());
                 }
                 match state.spawn_coworker(&config).await {
                     Ok(_) => {
@@ -811,6 +845,41 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     }
                     Err(e) => {
                         warn!("Failed to resume coworker {}: {}", name, e);
+
+                        if !session_id.is_empty() {
+                            let prior_prompt = config
+                                .persisted_initial_prompt
+                                .clone()
+                                .or_else(|| config.initial_prompt.clone());
+
+                            if config.persisted_initial_prompt.is_none() {
+                                config.persisted_initial_prompt = prior_prompt.clone();
+                            }
+
+                            config.session_mode = crate::launch::SessionMode::Fresh;
+                            config.initial_prompt = Some(build_resume_handoff_prompt(
+                                &name,
+                                &state.repo_name,
+                                &session_id,
+                                prior_prompt.as_deref(),
+                                config.working_dir.as_deref(),
+                            ));
+
+                            match state.spawn_coworker(&config).await {
+                                Ok(_) => {
+                                    info!(
+                                        "Fell back to fresh resume handoff for coworker {}",
+                                        name
+                                    );
+                                }
+                                Err(fallback_error) => {
+                                    warn!(
+                                        "Failed to spawn fresh handoff for coworker {}: {}",
+                                        name, fallback_error
+                                    );
+                                }
+                            }
+                        }
                     }
                 }
             }
