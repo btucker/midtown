@@ -324,6 +324,9 @@ pub(crate) struct IdleShutdownContext<'a> {
     /// The lead session is named after the repo (e.g., "midtown") and must
     /// never be idle-shutdown.
     pub repo_name: &'a str,
+    /// Names of active channel lead sessions (lowercase). Channel leads maintain
+    /// domain context for topic channels and must not be idle-shutdown.
+    pub channel_lead_names: &'a HashSet<String>,
 }
 
 /// Decide which coworkers should be shut down due to idleness.
@@ -364,6 +367,13 @@ pub(crate) fn decide_idle_shutdowns(ctx: &IdleShutdownContext<'_>) -> Vec<Shutdo
             // literal "lead" is kept for backward compatibility with any
             // sessions that may still use that name.
             if name.eq_ignore_ascii_case("lead") || name.eq_ignore_ascii_case(ctx.repo_name) {
+                return false;
+            }
+
+            // Channel leads maintain domain context for topic channels and must
+            // not be idle-shutdown — they are long-running domain experts, not
+            // on-demand coworkers.
+            if ctx.channel_lead_names.contains(&name.to_lowercase()) {
                 return false;
             }
 
@@ -1522,6 +1532,7 @@ mod tests {
         pending_tasks: HashSet<String>,
         review_feedback: HashSet<String>,
         active_tools: HashSet<String>,
+        channel_leads: HashSet<String>,
         minimum_lifetime: Duration,
         repo_name: String,
     }
@@ -1541,6 +1552,7 @@ mod tests {
                 pending_tasks: HashSet::new(),
                 review_feedback: HashSet::new(),
                 active_tools: HashSet::new(),
+                channel_leads: HashSet::new(),
                 minimum_lifetime: Duration::default(),
                 repo_name: "test-repo".to_string(),
             }
@@ -1615,6 +1627,11 @@ mod tests {
             self
         }
 
+        fn with_channel_leads(mut self, names: &[&str]) -> Self {
+            self.channel_leads = set(names);
+            self
+        }
+
         fn run(&self) -> Vec<ShutdownDecision> {
             let ctx = IdleShutdownContext {
                 coworkers: &self.coworkers,
@@ -1632,6 +1649,7 @@ mod tests {
                 now_utc: Utc::now(),
                 minimum_lifetime: self.minimum_lifetime,
                 repo_name: &self.repo_name,
+                channel_lead_names: &self.channel_leads,
             };
             decide_idle_shutdowns(&ctx)
         }
@@ -1861,14 +1879,28 @@ mod tests {
     }
 
     #[test]
-    fn idle_shutdown_shuts_down_channel_leads() {
-        // Channel leads are on-demand — they should be shut down when idle,
-        // just like any other coworker. No special exemption.
+    fn idle_shutdown_protects_channel_leads() {
+        // Channel leads maintain persistent domain context — they must not be
+        // idle-shutdown even when no tasks are assigned to them.
+        let decisions = IdleShutdownCtx::one("ops")
+            .with_channel_leads(&["ops"])
+            .run();
+        assert!(
+            decisions.is_empty(),
+            "Channel leads should never be idle-shutdown"
+        );
+    }
+
+    #[test]
+    fn idle_shutdown_shuts_down_non_channel_lead_with_same_name() {
+        // A session named "ops" with no channel_lead_names entry IS eligible for
+        // idle shutdown — the exemption is keyed by the channel_lead_names set,
+        // not just the name pattern.
         let decisions = IdleShutdownCtx::one("ops").run();
         assert_eq!(
             decisions.len(),
             1,
-            "Channel leads should be idle-shutdown when idle (on-demand)"
+            "Sessions not in channel_lead_names are eligible for idle shutdown"
         );
     }
 

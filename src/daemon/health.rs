@@ -85,6 +85,11 @@ pub fn check_and_shutdown_idle_coworkers(snap: &snapshot::WorldSnapshot) -> Vec<
 
     // Pure decision: who should be shut down?
     let to_shutdown = {
+        let channel_lead_names: HashSet<String> = snap
+            .channel_lead_sessions
+            .keys()
+            .map(|k| k.to_lowercase())
+            .collect();
         let idle_ctx = crate::rules::IdleShutdownContext {
             coworkers: &snap.coworker_snapshots,
             busy_coworkers: &snap.busy_coworkers,
@@ -101,6 +106,7 @@ pub fn check_and_shutdown_idle_coworkers(snap: &snapshot::WorldSnapshot) -> Vec<
             now_utc: snap.now_utc,
             minimum_lifetime: MINIMUM_COWORKER_LIFETIME,
             repo_name: &snap.repo_name,
+            channel_lead_names: &channel_lead_names,
         };
         crate::rules::decide_idle_shutdowns(&idle_ctx)
     };
