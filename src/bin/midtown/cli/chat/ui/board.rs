@@ -435,9 +435,9 @@ fn draw_coworker_status(f: &mut Frame, app: &mut App, area: Rect) {
     // Get the spinner character before borrowing app.coworkers
     let spinner = app.spinner_char();
 
-    // Filter out idle/completed coworkers - show active and freshly-spawned (phase=None).
-    // Also exclude the project lead: either the legacy literal "lead" name or the canonical
-    // repo-named session (app.project_name). Channel leads are excluded upstream.
+    // Filter out idle/completed coworkers and the project lead. The project lead
+    // and channel leads are both excluded upstream by build_coworkers_data
+    // (via is_project_lead / is_channel_lead); this is a defensive guard.
     let project_name_lower = app.project_name.to_lowercase();
     let active_coworkers: Vec<_> = app
         .coworkers
@@ -449,7 +449,7 @@ fn draw_coworker_status(f: &mut Frame, app: &mut App, area: Rect) {
         })
         .collect();
 
-    // channel leads are already excluded upstream by build_coworkers_data
+    // project lead and channel leads are already excluded upstream by build_coworkers_data
     let active_count = active_coworkers.len();
     let header = format!("Coworkers ({}/{})", active_count, app.max_coworkers);
     let palette = app.theme.palette();
