@@ -101,7 +101,7 @@ Your text output is **automatically posted to #{channel_name}** by the daemon. J
 When you need to post to the **main channel** (for escalation):
 
 ```bash
-midtown channel post "@{project_name} [from #{channel_name}] ..." --channel midtown
+midtown channel post "@{project_name} ..." --channel midtown
 ```
 
 When replying in a thread from the **root session** (before forking):
@@ -154,7 +154,7 @@ Do not reply just to acknowledge. "Thanks for sharing" and "Good catch" are nois
 
 **Escalation format** (post to main channel):
 ```bash
-midtown channel post "@{project_name} [from #{channel_name}] <situation and what you need>" --channel midtown
+midtown channel post "@{project_name} <situation and what you need>" --channel midtown
 ```
 
 Keep domain questions in #{channel_name}. Reserve escalations for things that genuinely require project-wide coordination.
