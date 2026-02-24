@@ -880,8 +880,24 @@ where
         );
         // Prefer the session's recorded working_dir (actual location on disk).
         // Fall back to the computed worktree path from the registry.
+        // Validate the recorded path still exists — worktrees can be cleaned up
+        // between dispatch ticks. If stale, clear it so the next tick uses a fresh
+        // worktree instead of retrying the same missing path.
         let working_dir = if !record.working_dir.is_empty() {
-            std::path::PathBuf::from(&record.working_dir)
+            let recorded = std::path::PathBuf::from(&record.working_dir);
+            if recorded.exists() {
+                recorded
+            } else {
+                warn!(
+                    "Session {}: recorded working_dir {:?} no longer exists; \
+                     falling back to fresh worktree for task !{}",
+                    record.session_id, recorded, task_id
+                );
+                effects.push(effects::Effect::ClearSessionWorkingDir {
+                    session_id: record.session_id.clone(),
+                });
+                wt.path.clone()
+            }
         } else {
             wt.path.clone()
         };
@@ -2214,10 +2230,17 @@ pub(super) fn spawn_for_pending_tasks_excluding(
                     if recorded.exists() {
                         recorded
                     } else {
+                        // Stale path: worktree was cleaned up. Emit a cleanup effect
+                        // so the next tick doesn't retry the same missing path, then
+                        // fall through to the fresh worktree below.
                         warn!(
-                            "Session {} working_dir {:?} no longer exists — using fresh worktree {:?}",
-                            record.session_id, recorded, wt.path
+                            "Session {}: recorded working_dir {:?} no longer exists; \
+                             falling back to fresh worktree for task !{}",
+                            record.session_id, recorded, task.id
                         );
+                        effects.push(effects::Effect::ClearSessionWorkingDir {
+                            session_id: record.session_id.clone(),
+                        });
                         wt.path.clone()
                     }
                 } else {
