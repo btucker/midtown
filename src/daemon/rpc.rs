@@ -515,14 +515,24 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
 
         "task.request" => {
             let message = require_str!(params, "message", request.id);
-            let from = params.str_or("from", "unknown");
-            super::rpc_task::handle_task_request(request.id, from, message, state).await
+            let from = params
+                .str_param("from")
+                .filter(|from| !from.trim().is_empty())
+                .filter(|from| !from.eq_ignore_ascii_case("unknown"))
+                .map(str::to_string)
+                .unwrap_or_else(|| state.repo_name.clone());
+            super::rpc_task::handle_task_request(request.id, &from, message, state).await
         }
 
         "task.claim" => {
             let task_id = require_str!(params, "id", request.id);
-            let from = params.str_or("from", "unknown");
-            super::rpc_task::handle_task_claim(request.id, task_id, from, state)
+            let from = params
+                .str_param("from")
+                .filter(|from| !from.trim().is_empty())
+                .filter(|from| !from.eq_ignore_ascii_case("unknown"))
+                .map(str::to_string)
+                .unwrap_or_else(|| state.repo_name.clone());
+            super::rpc_task::handle_task_claim(request.id, task_id, &from, state)
         }
 
         // ---- Reminders ----

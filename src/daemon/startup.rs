@@ -624,7 +624,10 @@ pub async fn recover_from_session_records(
         );
 
         // Build launch config from SessionRecord
-        let mut config = if name == "lead" {
+        let is_main_lead_session =
+            record.coworker_type == "lead" || name == "lead" || name == repo_name;
+
+        let mut config = if is_main_lead_session {
             // Lead session — uses lead system prompt, provider-compatible model,
             // unrestricted settings.
             // Must match recover_from_session_records() which also special-cases the lead.

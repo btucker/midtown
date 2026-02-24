@@ -548,8 +548,9 @@ async fn test_recover_from_session_records_uses_lead_config_for_lead() {
     let persistent_state = tokio::sync::Mutex::new(DaemonPersistentState::default());
     {
         let mut state = persistent_state.lock().await;
-        // The lead's SessionRecord has coworker_type="dev", not "lead"
-        let record = test_session_record("sess-lead", "lead", "dev");
+        // The lead's SessionRecord is identified either by coworker_type=="lead"
+        // (new records) or by name==repo_name (legacy/newly-started records).
+        let record = test_session_record("sess-lead", "test-repo", "dev");
         state.sessions.insert("sess-lead".to_string(), record);
     }
 
@@ -573,7 +574,7 @@ async fn test_recover_from_session_records_uses_lead_config_for_lead() {
             session_id,
             config,
         } => {
-            assert_eq!(name, "lead");
+            assert_eq!(name, "test-repo");
             assert_eq!(session_id, "sess-lead");
             assert_eq!(
                 config.role,

@@ -1520,6 +1520,7 @@ impl DaemonState {
             let mut ps = self.persistent_state.lock().await;
             let coworker_type_str = match &config.role {
                 crate::launch::CoworkerRole::Reviewer => "reviewer".to_string(),
+                crate::launch::CoworkerRole::Lead => "lead".to_string(),
                 crate::launch::CoworkerRole::ChannelLead { .. } => "channel-lead".to_string(),
                 _ => "dev".to_string(),
             };
