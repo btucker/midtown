@@ -624,6 +624,10 @@ fn merge_callbacks_into_existing(
     Some(additional_callbacks)
 }
 
+fn should_resume_channel_lead_session(session_id: &str) -> bool {
+    !session_id.is_empty()
+}
+
 /// Perform the core shutdown operations for a coworker.
 ///
 /// Returns `Ok(())` if shutdown succeeds, `Err(())` if any step fails.
@@ -2449,13 +2453,13 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                             let ps = state.persistent_state.lock().await;
                             ps.channel_lead_sessions.get(&channel_name).cloned()
                         };
-                        match session_id {
-                            Some(ref id) if !id.is_empty() => {
+                        match session_id.as_deref() {
+                            Some(id) if should_resume_channel_lead_session(id) => {
                                 // Resume existing session from this daemon run
                                 let config = crate::launch::LaunchConfig::channel_lead(
                                     &channel_name,
                                     &state.repo_name,
-                                    crate::launch::SessionMode::ResumeSession(id.clone()),
+                                    crate::launch::SessionMode::ResumeSession(id.to_string()),
                                     "",
                                 );
                                 if let Err(e) = state.spawn_coworker(&config).await {
@@ -2477,69 +2481,51 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                                 }
                             }
                             _ => {
-                                // No session ID → spawn fresh with trigger in initial prompt.
-                                // Guard: if channel_lead_sessions already has an entry (even
-                                // empty from a prior in-flight spawn), skip to avoid duplicates.
-                                let already_spawning = {
-                                    let ps = state.persistent_state.lock().await;
-                                    ps.channel_lead_sessions.contains_key(&channel_name)
-                                };
-                                if already_spawning {
-                                    debug!(
-                                        "Channel lead for '{}' already spawning (placeholder exists), skipping duplicate",
-                                        channel_name
-                                    );
-                                } else {
-                                    let mut config = crate::launch::LaunchConfig::channel_lead(
-                                        &channel_name,
-                                        &state.repo_name,
-                                        crate::launch::SessionMode::Fresh,
-                                        "",
-                                    );
-                                    config.initial_prompt =
-                                        Some(reason.to_initial_prompt(&channel_name));
-                                    // Insert empty placeholder before spawning to guard against
-                                    // duplicate NudgeChannelLead effects in the same batch.
-                                    {
+                                let mut config = crate::launch::LaunchConfig::channel_lead(
+                                    &channel_name,
+                                    &state.repo_name,
+                                    crate::launch::SessionMode::Fresh,
+                                    "",
+                                );
+                                config.initial_prompt =
+                                    Some(reason.to_initial_prompt(&channel_name));
+                                // Insert empty placeholder before spawning to guard against
+                                // duplicate NudgeChannelLead effects in the same batch.
+                                {
+                                    let mut ps = state.persistent_state.lock().await;
+                                    ps.channel_lead_sessions
+                                        .insert(channel_name.clone(), String::new());
+                                    if let Err(e) = ps.save_for_repo(&state.repo_name) {
+                                        tracing::error!(
+                                            "Failed to save state before spawning channel lead: {}",
+                                            e
+                                        );
+                                    }
+                                }
+                                match state.spawn_coworker(&config).await {
+                                    Ok(session_id) => {
+                                        // Update channel_lead_sessions with the real session_id
+                                        // immediately (spawn_coworker generated it upfront),
+                                        // eliminating the race window before init event arrives.
                                         let mut ps = state.persistent_state.lock().await;
                                         ps.channel_lead_sessions
-                                            .insert(channel_name.clone(), String::new());
+                                            .insert(channel_name.clone(), session_id);
                                         if let Err(e) = ps.save_for_repo(&state.repo_name) {
                                             tracing::error!(
-                                                "Failed to save state before spawning channel lead: {}",
+                                                "Failed to save state after spawning channel lead: {}",
                                                 e
                                             );
                                         }
                                     }
-                                    match state.spawn_coworker(&config).await {
-                                        Ok(session_id) => {
-                                            // Update channel_lead_sessions with the real session_id
-                                            // immediately (spawn_coworker generated it upfront),
-                                            // eliminating the race window before init event arrives.
-                                            let mut ps = state.persistent_state.lock().await;
-                                            ps.channel_lead_sessions
-                                                .insert(channel_name.clone(), session_id);
-                                            if let Err(e) = ps.save_for_repo(&state.repo_name) {
-                                                tracing::error!(
-                                                    "Failed to save state after spawning channel lead: {}",
-                                                    e
-                                                );
-                                            }
-                                        }
-                                        Err(e) => {
-                                            tracing::error!(
-                                                "Failed to spawn channel lead '{}': {}",
-                                                channel_name,
-                                                e
-                                            );
-                                            // Keep the empty placeholder in channel_lead_sessions
-                                            // even on failure. An empty entry still triggers a
-                                            // fresh spawn on the next NudgeChannelLead (the
-                                            // session_mode matching code falls through to Fresh
-                                            // for empty IDs). More importantly, keeping it
-                                            // preserves daemon restart recovery — the channel is
-                                            // registered even if this spawn attempt failed.
-                                        }
+                                    Err(e) => {
+                                        tracing::error!(
+                                            "Failed to spawn channel lead '{}': {}",
+                                            channel_name,
+                                            e
+                                        );
+                                        // Keep the empty placeholder in channel_lead_sessions
+                                        // on failure. This allows a fresh spawn attempt on a
+                                        // later nudge and preserves restart visibility.
                                     }
                                 }
                             }

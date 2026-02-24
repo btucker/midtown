@@ -237,6 +237,18 @@ fn test_dedup_preserves_non_nudge_effects() {
 }
 
 #[test]
+fn test_should_resume_channel_lead_session() {
+    assert!(
+        !should_resume_channel_lead_session(""),
+        "Empty stored session ID should trigger fresh spawn"
+    );
+    assert!(
+        should_resume_channel_lead_session("session-123"),
+        "Non-empty stored session ID should resume"
+    );
+}
+
+#[test]
 fn test_dedup_session_id_based() {
     // Session IDs are exact match, not case-insensitive
     let effects = vec![
