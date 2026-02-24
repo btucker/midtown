@@ -2,7 +2,7 @@
   import { SvelteSet } from 'svelte/reactivity'
   import { channels, activeChannel, kanbanData, activeProject, messagesByChannel, showArchivedChannels } from './store.js'
   import { fetchHistory, fetchChannels, getApiBase, closeThread } from './api.js'
-  import { getChannelTaskCount, getChannelCiStatus } from './channelUtils.js'
+  import { getChannelTaskCount, getChannelCiStatus, getChannelHasActiveTasks } from './channelUtils.js'
   import TaskList from './TaskList.svelte'
   import ArchiveIcon from '@lucide/svelte/icons/archive'
 
@@ -30,6 +30,13 @@
     // Close thread panel when switching channels — thread context is
     // channel-scoped and should not carry over to a different channel.
     closeThread()
+
+    // Auto-expand task list only when switching to a different channel that has
+    // active tasks. Guard against re-click of the already-active channel, which
+    // would override a manual collapse the user performed.
+    if (channelName !== $activeChannel && getChannelHasActiveTasks(channelName, $kanbanData)) {
+      expandedChannels.add(channelName)
+    }
 
     activeChannel.set(channelName)
 
