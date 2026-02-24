@@ -12,7 +12,7 @@
     <div class="flex items-center gap-3 flex-1 min-w-0">
       <div class="flex items-baseline gap-1 shrink-0">
         <span class="text-[1.2rem] text-[#606060] font-bold">#</span>
-        <span class="text-[1.1rem] font-bold text-[#d0d0d0]">{$activeChannel}</span>
+        <span class="text-[1.1rem] font-bold font-mono text-[#d0d0d0]">{$activeChannel}</span>
       </div>
       {#if totalTasks > 0 || channelPrs.length > 0}
         <div class="flex items-center gap-1.5 flex-wrap">

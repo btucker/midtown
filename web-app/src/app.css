@@ -1,8 +1,12 @@
 @import 'tailwindcss';
 @import 'tw-animate-css';
 @import 'tailwindcss-safe-area';
-@import '@fontsource/lato/400.css';
-@import '@fontsource/lato/700.css';
+@import '@fontsource/ibm-plex-sans/300.css';
+@import '@fontsource/ibm-plex-sans/400.css';
+@import '@fontsource/ibm-plex-sans/500.css';
+@import '@fontsource/ibm-plex-sans/600.css';
+@import '@fontsource/ibm-plex-mono/400.css';
+@import '@fontsource/ibm-plex-mono/500.css';
 
 /* shadcn-svelte CSS variables for theming */
 :root {
@@ -83,6 +87,8 @@
 }
 
 @theme inline {
+  --font-sans: 'IBM Plex Sans', system-ui, sans-serif;
+  --font-mono: 'IBM Plex Mono', 'SF Mono', 'Menlo', monospace;
   --color-background: hsl(var(--background));
   --color-foreground: hsl(var(--foreground));
   --color-card: hsl(var(--card));
@@ -133,9 +139,14 @@ html, body {
 }
 
 body {
-  font-family: system-ui, -apple-system, sans-serif;
+  font-family: var(--font-sans);
   background-color: hsl(var(--card));
   color: hsl(var(--foreground));
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+
+/* Tabular numbers for mono content (timestamps, IDs) */
+.font-mono, [class*="font-mono"] {
+  font-feature-settings: "tnum" 1;
 }
