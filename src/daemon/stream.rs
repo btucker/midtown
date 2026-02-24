@@ -66,8 +66,7 @@ pub fn extract_lead_text(events: &[StreamEvent]) -> String {
 ///
 /// - The main lead's text is posted to the main channel (`channel: None`).
 /// - Each channel lead's text is posted to its respective topic channel.
-/// - Coworkers with active task assignments are posted to that task's channel.
-///   This uses the coworker → task channel map provided by the caller.
+/// - Coworker text is never posted.
 ///
 /// `channel_lead_sessions` maps channel name → session ID for active channel leads.
 pub fn process_lead_output(
@@ -75,7 +74,6 @@ pub fn process_lead_output(
     channel_lead_sessions: &HashMap<String, String>,
     main_lead_session_name: &str,
     fork_bound_channels: &HashMap<String, String>,
-    coworker_task_channels: &HashMap<String, String>,
 ) -> Vec<Effect> {
     let mut effects = Vec::new();
 
@@ -116,32 +114,6 @@ pub fn process_lead_output(
                     channel: Some(channel_name.clone()),
                 });
             }
-        }
-    }
-
-    // Active coworkers with task assignments -> route to their task's channel.
-    for (session_name, session_events) in events {
-        if session_name == main_lead_session_name
-            || channel_lead_sessions.contains_key(session_name)
-            || fork_bound_channels.contains_key(session_name)
-        {
-            continue;
-        }
-
-        let Some(channel_name) = coworker_task_channels.get(session_name) else {
-            continue;
-        };
-        if channel_name.is_empty() {
-            continue;
-        }
-
-        let trimmed = extract_lead_text(session_events).trim().to_string();
-        if !trimmed.is_empty() {
-            effects.push(Effect::PostToChannel {
-                sender: session_name.clone(),
-                message: trimmed,
-                channel: Some(channel_name.clone()),
-            });
         }
     }
 

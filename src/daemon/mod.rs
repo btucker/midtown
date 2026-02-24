@@ -3428,24 +3428,11 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                 let (lead_effects, universal_effects) = {
                     let ps = state.persistent_state.lock().await;
                     let fork_bound_channels = state.fork_bound_channels.lock().unwrap();
-                    let coworker_task_assignments =
-                        state.coworker_task_assignments.lock().unwrap();
-                    let coworker_task_channels: HashMap<String, String> =
-                        coworker_task_assignments
-                            .iter()
-                            .filter_map(|(coworker, assignment)| {
-                                ps.task_channel
-                                    .get(&assignment.task_id)
-                                    .filter(|channel| !channel.is_empty())
-                                    .map(|channel| (coworker.clone(), channel.clone()))
-                            })
-                            .collect();
                     let lead_effects = stream::process_lead_output(
                         &events,
                         &ps.channel_lead_sessions,
                         &state.repo_name,
                         &fork_bound_channels,
-                        &coworker_task_channels,
                     );
                     let universal_effects = stream::process_universal_events(
                         &events,
