@@ -289,6 +289,24 @@ class MidtownRPC:
             params["from"] = sender
         return self._call("coworker.nudge", params)
 
+    # ------------------------------------------------------------------
+    # Daemon methods
+    # ------------------------------------------------------------------
+
+    def check_pending(self) -> Any:
+        """Trigger immediate dispatch of pending tasks.
+
+        Asks the daemon to run its task-dispatch loop right now rather than
+        waiting for the next ``TaskDispatchTick``.  Useful after a new task is
+        created (``task.created``) or a coworker goes idle (``coworker.idle``)
+        so that pending work starts immediately.
+
+        This is an optimisation — the daemon will dispatch eventually on its
+        own.  Safe to call from ``try/except`` blocks; a failure here should
+        not interrupt the handler.
+        """
+        return self._call("daemon.check-pending")
+
 
 # ---------------------------------------------------------------------------
 # Entry point

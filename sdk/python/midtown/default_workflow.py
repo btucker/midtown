@@ -38,6 +38,7 @@ Each task moves through five states driven by daemon events:
 Side effects
 ------------
 
+* ``task.created``       — call ``daemon.check-pending`` for immediate dispatch
 * ``pr.opened``          — post to channel that review is needed; spawn a reviewer
 * ``pr.approved``        — nudge author: PR approved, please merge
 * ``pr.changes_requested``— nudge author: please address review feedback
@@ -45,11 +46,13 @@ Side effects
 * ``pr.conflict``        — nudge author: merge conflict, please rebase
 * ``pr.ci_passed``       — nudge author if in ``in_review`` or ``approved``: CI green, please merge
 * ``pr.merged``          — complete the associated task
+* ``coworker.idle``      — call ``daemon.check-pending`` so pending tasks start immediately;
+                           also advance the associated task to ``merged`` if not yet merged
 * ``coworker.stuck``     — post a warning to the channel
 
-Events without registered transitions (``task.created``, ``channel.message``,
-``coworker.message``, ``timer.tick``, etc.) are silently ignored because the
-machine is created with ``ignore_invalid_triggers=True``.
+Events without registered transitions (``channel.message``, ``coworker.message``,
+``timer.tick``, etc.) are silently ignored because the machine is created with
+``ignore_invalid_triggers=True``.
 """
 
 from __future__ import annotations
@@ -246,9 +249,34 @@ def handle(event: dict, rpc: MidtownRPC, state: dict) -> None:  # noqa: C901
                     "feedback and merge when ready",
                 )
 
+    elif event_type == "task.created":
+        # A new task arrived — kick off immediate dispatch so it starts right
+        # away instead of waiting for the next TaskDispatchTick.  Non-critical:
+        # the daemon dispatches on its own schedule; a failure here is harmless.
+        try:
+            rpc.check_pending()
+        except Exception:
+            pass
+
     elif event_type == "pr.merged" and task_id:
         # Mark the task done so downstream blocked tasks become unblocked.
         rpc.complete_task(task_id)
+
+    elif event_type == "coworker.idle":
+        # Coworker finished — dispatch pending tasks immediately so there's no
+        # gap between one task completing and the next one starting.
+        try:
+            rpc.check_pending()
+        except Exception:
+            pass
+        # If the coworker had an active task that hasn't transitioned to merged
+        # yet (e.g. a non-PR task completed without going through pr.merged),
+        # advance it now.
+        if task_id:
+            wf = _load_task(state, task_id)
+            if wf.state != "merged" and hasattr(wf, "task_completed"):
+                getattr(wf, "task_completed")()
+                _save_task(state, task_id, wf)
 
     elif event_type == "coworker.stuck":
         rpc.post_to_channel(
