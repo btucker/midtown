@@ -61,10 +61,10 @@ pub(super) const CHANNEL_ROTATION_RETAIN_MINUTES: i64 = 60;
 /// improving task assignment latency. With 5s interval, 10 orphaned worktrees take ~50s.
 pub(super) const ORPHAN_CHECK_INTERVAL_SECS: u64 = 5;
 
-/// Minimum time a coworker must be alive before being sent on a break (60 seconds).
-/// Reduced from 300s: the spawn storm concern that motivated the 5-min guard is less
-/// relevant now that dual-dispatch is fixed and worktree collision guards are in place.
-pub(super) const MINIMUM_COWORKER_LIFETIME: Duration = Duration::from_secs(60);
+/// Minimum time a coworker must be alive before being sent on a break (90 seconds).
+/// Increased from 60s: session startup + context loading takes 40-60s in practice,
+/// leaving no safety margin at 60s. 90s gives a 30s buffer after initialization.
+pub(super) const MINIMUM_COWORKER_LIFETIME: Duration = Duration::from_secs(90);
 
 /// How long an attached session can persist without a detach before being auto-detached (10 min).
 ///

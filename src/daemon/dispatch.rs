@@ -2210,7 +2210,16 @@ pub(super) fn spawn_for_pending_tasks_excluding(
                     crate::agents::coworker_recovery_prompt(&task.id, &task.subject, &plan_section);
                 let wt = prepare_task_worktree(&task.id, &task.subject, &snap.repo_name, snap);
                 let working_dir = if !record.working_dir.is_empty() {
-                    std::path::PathBuf::from(&record.working_dir)
+                    let recorded = std::path::PathBuf::from(&record.working_dir);
+                    if recorded.exists() {
+                        recorded
+                    } else {
+                        warn!(
+                            "Session {} working_dir {:?} no longer exists — using fresh worktree {:?}",
+                            record.session_id, recorded, wt.path
+                        );
+                        wt.path.clone()
+                    }
                 } else {
                     wt.path.clone()
                 };

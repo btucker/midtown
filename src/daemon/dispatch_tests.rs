@@ -5539,3 +5539,82 @@ fn test_pending_task_with_recently_recovered_session_skips_dispatch() {
             .collect::<Vec<_>>()
     );
 }
+
+#[test]
+fn test_pending_task_with_stale_working_dir_uses_fresh_worktree() {
+    // When a session's recorded working_dir no longer exists on disk (e.g.,
+    // the worktree was cleaned up), Path 2 should fall back to the fresh
+    // worktree path instead of passing the stale path to SpawnSession.
+    use crate::tasks::{Task, TaskStatus};
+    use std::time::SystemTime;
+
+    let stale_dir = "/tmp/midtown-test-NONEXISTENT-working-dir-12345";
+    // Confirm the stale path definitely doesn't exist
+    assert!(
+        !std::path::Path::new(stale_dir).exists(),
+        "Test precondition: stale_dir must not exist"
+    );
+
+    let session = make_test_session_record(
+        "sess-stale-wdir",
+        Some("77"),
+        Some("lexington"),
+        stale_dir, // non-existent working_dir
+        false,     // stopped
+    );
+    let sessions = [("sess-stale-wdir".to_string(), session)]
+        .into_iter()
+        .collect();
+    let session_task_map = [("77".to_string(), "sess-stale-wdir".to_string())]
+        .into_iter()
+        .collect();
+
+    let snap = snapshot::WorldSnapshot {
+        pending_tasks_without_owners: vec![Task {
+            id: "77".to_string(),
+            subject: "Implement caching layer".to_string(),
+            status: TaskStatus::Pending,
+            owner: None,
+            blocked_by: vec![],
+            description: None,
+            channel: None,
+            pr: None,
+            created_at: Some(SystemTime::now()),
+        }],
+        sessions,
+        session_task_map,
+        is_at_dev_limit: false,
+        is_at_coworker_limit: false,
+        ..make_session_dispatch_snapshot(vec![], HashMap::new(), HashMap::new())
+    };
+
+    let (state, _tmp, _guard) = make_test_state();
+
+    let effects = spawn_for_pending_tasks(&snap, &state);
+
+    let spawn_session = effects
+        .iter()
+        .find_map(|e| {
+            if let Effect::SpawnSession { working_dir, .. } = e {
+                Some(working_dir.clone())
+            } else {
+                None
+            }
+        })
+        .expect("Should emit SpawnSession for pending task with stopped session");
+
+    // The stale working_dir should not be used
+    assert_ne!(
+        spawn_session.to_string_lossy(),
+        stale_dir,
+        "Should not use stale (non-existent) working_dir"
+    );
+
+    // Should use the fresh worktree path derived from task subject
+    let expected_worktree_dir =
+        crate::paths::worktrees_dir_for_repo("test-repo").join("task-77-implement-caching-layer");
+    assert_eq!(
+        spawn_session, expected_worktree_dir,
+        "Should fall back to fresh worktree when recorded working_dir is stale"
+    );
+}

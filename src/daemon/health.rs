@@ -21,8 +21,8 @@ use super::{DaemonState, snapshot};
 /// Check for idle coworkers and send them on a break after the idle timeout.
 ///
 /// A coworker is considered idle if they have no tasks in "in_progress" status
-/// with their name as owner. After 30 seconds of continuous idle, they are
-/// automatically sent on a break.
+/// with their name as owner. After MINIMUM_COWORKER_LIFETIME (90 seconds) of
+/// being alive with no active work, they are automatically sent on a break.
 ///
 /// IMPORTANT: Coworkers are NEVER sent on a break if any of these apply:
 /// - They are the project lead session (named "lead")
@@ -186,7 +186,7 @@ pub fn check_and_shutdown_idle_coworkers(snap: &snapshot::WorldSnapshot) -> Vec<
             (true, daemon_messages::break_work_merged(name))
         } else {
             info!(
-                "Sending idle coworker {} on a break (idle for 30+ seconds)",
+                "Sending idle coworker {} on a break (idle for 90+ seconds)",
                 name
             );
             (true, daemon_messages::break_idle(name))
