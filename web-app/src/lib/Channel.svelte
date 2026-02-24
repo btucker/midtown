@@ -283,7 +283,7 @@
         if (task) {
           if (task.message_id) {
             // Task has a creation message ID — open as thread so the user can discuss it
-            openTaskThread(task, $activeChannel)
+            openTaskThread(task, task.channel || $activeChannel)
           } else if ($isWideScreen) {
             // No message_id (older task): fall back to static detail panel on desktop
             closeThread()

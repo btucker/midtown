@@ -301,19 +301,21 @@ pub(super) async fn handle_task_create(
         }
     }
 
-    // Post to channel so team is aware; capture message ID for task-as-thread feature
+    // Post to channel so team is aware; capture message ID for task-as-thread feature.
+    // Only store the mapping if the write succeeds — a failed write means no channel
+    // message exists, so storing the ID would create an orphan thread root.
     let msg = Message::text("lead", format!("created task: {}", subject));
     let message_id = msg.id.clone();
-    if let Err(e) = state.send_and_broadcast_async(&msg).await {
-        warn!("Failed to post task creation to channel: {}", e);
-    }
-
-    // Store creation message ID so the TUI/web app can open this task as a thread
-    {
-        let mut ps = state.persistent_state.lock().await;
-        ps.task_message_id.insert(task_id.clone(), message_id);
-        if let Err(e) = ps.save_for_repo(&repo_name) {
-            warn!("Failed to save task message_id mapping: {}", e);
+    match state.send_and_broadcast_async(&msg).await {
+        Ok(()) => {
+            let mut ps = state.persistent_state.lock().await;
+            ps.task_message_id.insert(task_id.clone(), message_id);
+            if let Err(e) = ps.save_for_repo(&repo_name) {
+                warn!("Failed to save task message_id mapping: {}", e);
+            }
+        }
+        Err(e) => {
+            warn!("Failed to post task creation to channel: {}", e);
         }
     }
 

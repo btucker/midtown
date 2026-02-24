@@ -243,6 +243,7 @@ fn get_all_tasks(
                 "subject": task.subject,
                 "status": status,
                 "assignee": task.owner,
+                "channel": task.channel,
                 "message_id": message_id,
             })
         })
