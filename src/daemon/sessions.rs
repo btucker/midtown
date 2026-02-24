@@ -383,7 +383,11 @@ impl SessionManager {
             if cs.session_id.as_deref() != Some(session_id) {
                 continue;
             }
-            let live_rank = if Self::is_session_live(cs) { 1 } else { 0 };
+            let live_rank = if cs.status != SessionStatus::Stopped {
+                1
+            } else {
+                0
+            };
             if live_only && live_rank == 0 {
                 continue;
             }

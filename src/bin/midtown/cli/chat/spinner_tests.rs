@@ -1,9 +1,9 @@
 //! Tests for time-based spinner animation.
 
-use super::tests::test_app;
+use super::CHANNEL_LEAD_THINKING_TIMEOUT;
 use super::CoworkerInfo;
 use super::ToolActivityEntry;
-use super::CHANNEL_LEAD_THINKING_TIMEOUT;
+use super::tests::test_app;
 use std::time::Duration;
 
 #[test]

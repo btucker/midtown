@@ -2881,7 +2881,8 @@ impl App {
         for remaining in self.coworker_pulse_frames.values_mut() {
             *remaining = remaining.saturating_sub(1);
         }
-        self.coworker_pulse_frames.retain(|_, remaining| *remaining > 0);
+        self.coworker_pulse_frames
+            .retain(|_, remaining| *remaining > 0);
     }
 
     fn update_coworker_status(&mut self, coworkers: Vec<CoworkerInfo>) {
