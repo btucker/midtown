@@ -436,12 +436,17 @@ fn draw_coworker_status(f: &mut Frame, app: &mut App, area: Rect) {
     let spinner = app.spinner_char();
 
     // Filter out idle/completed coworkers - show active and freshly-spawned (phase=None).
-    // Also exclude the project lead (name == "lead") and channel leads (excluded upstream).
+    // Also exclude the project lead: either the legacy literal "lead" name or the canonical
+    // repo-named session (app.project_name). Channel leads are excluded upstream.
+    let project_name_lower = app.project_name.to_lowercase();
     let active_coworkers: Vec<_> = app
         .coworkers
         .iter()
         .filter(|cw| !matches!(cw.phase.as_deref(), Some("idle") | Some("done")))
-        .filter(|cw| cw.name.to_lowercase() != "lead")
+        .filter(|cw| {
+            let name = cw.name.to_lowercase();
+            name != "lead" && name != project_name_lower
+        })
         .collect();
 
     // channel leads are already excluded upstream by build_coworkers_data

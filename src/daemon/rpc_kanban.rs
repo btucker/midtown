@@ -237,9 +237,10 @@ async fn build_coworkers_data(
         .filter_map(|cw| {
             // Skip channel lead sessions — they are scoped to a specific topic
             // channel and must not appear in the general coworker status panel.
-            // The lead session itself also uses a reserved name and is excluded.
+            // The lead session itself is also excluded: it uses either the legacy
+            // "lead" name or the canonical repo name (e.g., "midtown").
             if is_channel_lead(&cw.name, &channel_lead_names)
-                || cw.name.eq_ignore_ascii_case("lead")
+                || is_project_lead(&cw.name, &state.repo_name)
             {
                 return None;
             }
@@ -320,6 +321,14 @@ pub(crate) fn is_channel_lead(
     channel_lead_names: &std::collections::HashSet<String>,
 ) -> bool {
     channel_lead_names.contains(name)
+}
+
+/// Returns true if the session name is the project lead.
+///
+/// The canonical lead session is named after the repo (e.g., "midtown"). The legacy
+/// literal "lead" is kept for backward compatibility with older sessions.
+pub(crate) fn is_project_lead(name: &str, repo_name: &str) -> bool {
+    name.eq_ignore_ascii_case("lead") || name.eq_ignore_ascii_case(repo_name)
 }
 
 /// TTL for kanban data cache (60 seconds).
