@@ -895,3 +895,210 @@ fn clear_session_working_dir_noop_for_missing_session() {
         "no phantom session record should be created"
     );
 }
+
+// ── invoke_workflow_script ────────────────────────────────────────────────────
+
+/// Mutex to serialize tests that modify the PATH environment variable.
+static WORKFLOW_PATH_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Build a minimal DaemonState for workflow-script tests.
+///
+/// Returns the state, the project root temp dir (which becomes `all_repo_paths[0]`),
+/// and the midtown base dir guard (must stay alive for the test's duration).
+fn make_workflow_test_state(
+    repo_name: &str,
+) -> (
+    DaemonState,
+    tempfile::TempDir,
+    crate::paths::TestMidtownBaseDirGuard,
+) {
+    use std::process::Command;
+
+    // Redirect ~/.midtown/ to a temp dir so paths resolve under test.
+    let midtown_dir = tempfile::tempdir().expect("midtown temp dir");
+    let _guard = crate::paths::set_test_midtown_base_dir(midtown_dir.path().to_path_buf());
+
+    // Create a minimal git repo so DaemonState::new is happy.
+    let project_dir = tempfile::tempdir().expect("project temp dir");
+    Command::new("git")
+        .args(["init"])
+        .current_dir(project_dir.path())
+        .output()
+        .expect("git init");
+    Command::new("git")
+        .args(["config", "user.email", "test@example.com"])
+        .current_dir(project_dir.path())
+        .output()
+        .expect("git config email");
+    Command::new("git")
+        .args(["config", "user.name", "Test"])
+        .current_dir(project_dir.path())
+        .output()
+        .expect("git config name");
+    Command::new("git")
+        .args(["commit", "--allow-empty", "-m", "init"])
+        .current_dir(project_dir.path())
+        .output()
+        .expect("git commit");
+
+    let wm = crate::worktree::WorktreeManager::new(project_dir.path().to_path_buf()).expect("wm");
+    let cm = crate::coworker::CoworkerManager::new(wm);
+    let channel_router = crate::ChannelRouter::new(project_dir.path(), "midtown");
+    let (shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(1);
+    let state = DaemonState::new(
+        "/tmp/workflow-test.sock".into(),
+        cm,
+        repo_name.to_string(),
+        vec![project_dir.path().to_path_buf()],
+        channel_router,
+        None,
+        10,
+        None,
+        "main".to_string(),
+        shutdown_tx,
+    )
+    .expect("daemon state");
+
+    (state, project_dir, _guard)
+}
+
+#[tokio::test]
+async fn emit_workflow_event_noop_when_no_script_configured() {
+    let (state, _project_dir, _guard) = make_workflow_test_state("myrepo");
+
+    let event = crate::workflow::WorkflowEvent::TimerTick {
+        channel: "test-channel".into(),
+    };
+
+    // No workflow.py anywhere → function should return without posting anything.
+    invoke_workflow_script(&state, event).await;
+
+    // The channel JSONL should not exist (no messages were written).
+    let channel_file = crate::paths::projects_dir_for_repo("myrepo")
+        .join("channels")
+        .join("test-channel")
+        .join("history")
+        .join("current.jsonl");
+    assert!(
+        !channel_file.exists(),
+        "no channel message should be written when no workflow script is configured"
+    );
+}
+
+#[allow(clippy::await_holding_lock)] // Intentionally hold PATH_LOCK across await.
+#[tokio::test]
+async fn emit_workflow_event_posts_error_on_nonzero_exit() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let _path_guard = WORKFLOW_PATH_LOCK.lock().unwrap();
+    let (state, project_dir, _guard) = make_workflow_test_state("myrepo-err");
+
+    // Write a workflow script that exits non-zero with a stderr message.
+    let script_dir = project_dir
+        .path()
+        .join(".midtown")
+        .join("channels")
+        .join("err-channel");
+    std::fs::create_dir_all(&script_dir).unwrap();
+    let script = script_dir.join("workflow.py");
+    std::fs::write(
+        &script,
+        "#!/bin/sh\necho 'something went wrong' >&2\nexit 1",
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    // Write a fake `uv` that strips "run" and exec's the script directly.
+    let bin_dir = project_dir.path().join("fake-bin");
+    std::fs::create_dir_all(&bin_dir).unwrap();
+    let fake_uv = bin_dir.join("uv");
+    std::fs::write(&fake_uv, "#!/bin/sh\nshift\nexec \"$@\"").unwrap();
+    std::fs::set_permissions(&fake_uv, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let original_path = std::env::var("PATH").unwrap_or_default();
+    unsafe {
+        std::env::set_var("PATH", format!("{}:{}", bin_dir.display(), original_path));
+    }
+
+    let event = crate::workflow::WorkflowEvent::TimerTick {
+        channel: "err-channel".into(),
+    };
+    invoke_workflow_script(&state, event).await;
+
+    unsafe {
+        std::env::set_var("PATH", &original_path);
+    }
+
+    // A system message should have been written to the err-channel JSONL.
+    // The channel router uses project_dir as its base_dir, so messages land in
+    // project_dir/channels/<channel>/history/current.jsonl (not ~/.midtown/...).
+    let channel_file = project_dir
+        .path()
+        .join("channels")
+        .join("err-channel")
+        .join("history")
+        .join("current.jsonl");
+    assert!(
+        channel_file.exists(),
+        "error message should be written to the channel when the script fails"
+    );
+    let content = std::fs::read_to_string(&channel_file).unwrap();
+    assert!(
+        content.contains("workflow.py"),
+        "error message should identify the script; got: {content}"
+    );
+}
+
+#[allow(clippy::await_holding_lock)] // Intentionally hold PATH_LOCK across await.
+#[tokio::test]
+async fn emit_workflow_event_no_error_message_on_success() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let _path_guard = WORKFLOW_PATH_LOCK.lock().unwrap();
+    let (state, project_dir, _guard) = make_workflow_test_state("myrepo-ok");
+
+    // Write a workflow script that exits 0 (success).
+    let script_dir = project_dir
+        .path()
+        .join(".midtown")
+        .join("channels")
+        .join("ok-channel");
+    std::fs::create_dir_all(&script_dir).unwrap();
+    let script = script_dir.join("workflow.py");
+    std::fs::write(&script, "#!/bin/sh\nexit 0").unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    // Write a fake `uv` that strips "run" and exec's the script directly.
+    let bin_dir = project_dir.path().join("fake-bin");
+    std::fs::create_dir_all(&bin_dir).unwrap();
+    let fake_uv = bin_dir.join("uv");
+    std::fs::write(&fake_uv, "#!/bin/sh\nshift\nexec \"$@\"").unwrap();
+    std::fs::set_permissions(&fake_uv, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let original_path = std::env::var("PATH").unwrap_or_default();
+    unsafe {
+        std::env::set_var("PATH", format!("{}:{}", bin_dir.display(), original_path));
+    }
+
+    let event = crate::workflow::WorkflowEvent::TimerTick {
+        channel: "ok-channel".into(),
+    };
+    invoke_workflow_script(&state, event).await;
+
+    unsafe {
+        std::env::set_var("PATH", &original_path);
+    }
+
+    // No error message should have been written (success = silent).
+    // Channel router base_dir = project_dir.path(), so messages would be here.
+    let channel_file = project_dir
+        .path()
+        .join("channels")
+        .join("ok-channel")
+        .join("history")
+        .join("current.jsonl");
+    assert!(
+        !channel_file.exists(),
+        "no channel message should be written on successful script exit"
+    );
+}
