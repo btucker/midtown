@@ -787,7 +787,8 @@ pub async fn recover_channel_lead_session_mappings(
 /// - Is NOT in `recovered_session_ids` (was not recovered by `recover_from_session_records`)
 ///
 /// Channel lead sessions are included — they are on-demand and not recovered at startup.
-/// Their `channel_lead_sessions` map is cleared separately in `mod.rs`.
+/// Their `channel_lead_sessions` map is rebuilt in this module via
+/// `recover_channel_lead_session_mappings()` prior to this stale-flag pass.
 ///
 /// Call this after `recover_from_session_records` completes, before the event loop starts.
 /// The caller is responsible for saving persistent state after this call.

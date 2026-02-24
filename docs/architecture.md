@@ -343,6 +343,11 @@ The `midtown chat` command opens a split-panel interface with:
 - `open_task_id: Option<String>` — task currently shown in the detail panel; `None` when closed
 - `thread_parent_id: Option<String>` — message whose thread is open; `None` when closed
 - `focused_pane: FocusedPane` — `Board | Chat | InputBar | Thread`; controls keyboard routing
+- `coworker_status_snapshot_ready: bool` — indicates whether a baseline coworker status snapshot has been captured
+- `coworker_status_lines: HashMap<String, CoworkerStatusLine>` — memoized status signatures used to detect coworker changes
+- `coworker_pulse_frames: HashMap<String, usize>` — per-coworker countdowns for status-change pulse animations
+- `spinner_frame: usize` and `spinner_last_tick: Instant` — shared animation clock for lead spinner, channel-lead thinking, and coworker status pulses
+- `channel_lead_thinking: HashMap<String, Instant>` — per-topic thinking timers that can keep spinner activity alive
 
 **Task panel behavior**:
 - Click or Enter on a board task → `open_task()` → sets `open_task_id`, clears thread state, resets `focused_pane` to `InputBar` if thread was focused
@@ -378,6 +383,11 @@ The `midtown chat` command opens a split-panel interface with:
 - **PR data** (30s): `prs.status` RPC — GitHub GraphQL, daemon-cached for 60s.
 - **Repo status** (60s): Direct `gh` CLI calls for commit/CI/release info.
 
+**Coworker status pulse behavior**:
+- Coworker rows in the board side panel are animated only on real status changes.
+- `update_coworker_status()` stores a compact per-coworker signature in `coworker_status_lines` and opens a countdown in `coworker_pulse_frames` when any tracked field differs.
+- `tick_spinner()` advances `spinner_frame` every `COWORKER_PULSE_INTERVAL` when any spinner-relevant state is active (lead working, in-progress tool activity, or active coworker pulses) and simultaneously advances the wave counters used by `coworker_pulse_wave_step()`.
+
 The split-poll architecture ensures coworker phase changes appear in real-time (2s), task list updates within 5s, while expensive PR data is fetched at a rate that stays within the daemon's 60s cache TTL.
 
 ## Web UI
@@ -396,6 +406,8 @@ The web interface is a Svelte 5 + Vite SPA served on port 47022:
 - Mermaid diagram rendering in chat messages
 - Image and document paste support (clipboard → inline preview → upload to lead)
 - Coworker status monitoring
+  - `web-app/src/lib/CoworkerStatus.svelte` filters inactive rows only when phase explicitly indicates idle/done (or status indicates stopped/idle), and keeps rows whose phase is null/empty if `status` indicates active work.
+  - This is a defensive fix for mixed payloads where `/status` may omit `phase` but includes `status`.
 - Auth profile switching
 - Push notifications (W3C Push API with VAPID)
 - Responsive layout with three breakpoints:
