@@ -249,9 +249,10 @@ enum Commands {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
-    /// Run a headless Claude Code session via the daemon (JSON streaming)
+    /// Run a one-shot Claude Code session via the daemon (JSON streaming)
     #[command(hide = true)]
-    Headless {
+    #[command(alias = "headless")]
+    Oneshot {
         /// Prompt to send to Claude
         prompt: String,
 
@@ -944,14 +945,14 @@ fn main() {
         Commands::Status => cli::handle_status(&client),
         Commands::HeadedWrapper { command } => cli::handle_headed_wrapper(command, &client),
         Commands::Pr { command } => cli::handle_pr(command, &client),
-        Commands::Headless {
+        Commands::Oneshot {
             prompt,
             model,
             system_prompt,
             json_schema,
             max_budget_usd,
             allow_tools,
-        } => cli::handle_headless(
+        } => cli::handle_oneshot(
             &client,
             prompt,
             model,

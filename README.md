@@ -113,15 +113,17 @@ See the [full CLI reference](docs/cli.md) for all flags and options.
 
 These commands are not shown in `midtown --help` but remain fully functional. They are used internally by the daemon, coworker hooks, and agent prompts.
 
-#### Headless Execution
+#### One-shot Execution
 
 Run Claude Code sessions non-interactively with JSON streaming output:
 
 ```bash
-midtown headless "Summarize this codebase" --model sonnet
-midtown headless "Generate a report" --json-schema '{"type": "object", ...}'
-midtown headless "Fix the bug" --allow-tools --max-budget-usd 0.50
+midtown oneshot "Summarize this codebase" --model sonnet
+midtown oneshot "Generate a report" --json-schema '{"type": "object", ...}'
+midtown oneshot "Fix the bug" --allow-tools --max-budget-usd 0.50
 ```
+
+`midtown headless` remains as a compatibility alias.
 
 | Flag | Description |
 |------|-------------|
@@ -277,7 +279,8 @@ Execution provider resolution is role-based:
 - Reviewers: `execution.reviewer_provider` (default: `claude`)
 - Channel leads: `execution.channel_lead_provider` -> `execution.lead_provider` -> `claude`
 - Specialized workers:
-  - `headless.execute`: `execution.headless_execute_provider` -> `execution.specialized_provider` -> `claude`
+- `oneshot.execute`: `execution.headless_execute_provider` -> `execution.specialized_provider` -> `claude`
+  - (`headless.execute` remains supported as a compatibility alias)
 
 Review execution mode controls how PR reviews are sourced:
 

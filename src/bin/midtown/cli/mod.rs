@@ -199,8 +199,8 @@ pub fn handle_webserver_restart() -> Result<Response, String> {
     daemon::handle_webserver_restart()
 }
 
-/// Handle `midtown headless` command — execute a headless Claude Code session via the daemon.
-pub fn handle_headless(
+/// Handle `midtown oneshot` command — execute a one-shot Claude Code session via the daemon.
+pub fn handle_oneshot(
     client: &DaemonClient,
     prompt: &str,
     model: &str,
@@ -213,7 +213,7 @@ pub fn handle_headless(
         .map(|s| serde_json::from_str(s).map_err(|e| format!("Invalid JSON schema: {}", e)))
         .transpose()?;
 
-    let result = client.headless_execute(
+    let result = client.oneshot_execute(
         prompt,
         model,
         system_prompt,
@@ -242,6 +242,28 @@ pub fn handle_headless(
         }
         Ok(Response::Message { message })
     } else {
-        Err(format!("Headless execution failed: {}", result_text))
+        Err(format!("One-shot execution failed: {}", result_text))
     }
+}
+
+/// Backward-compatible handler for `midtown headless` alias.
+#[allow(dead_code)]
+pub fn handle_headless(
+    client: &DaemonClient,
+    prompt: &str,
+    model: &str,
+    system_prompt: &str,
+    json_schema: Option<&str>,
+    max_budget_usd: Option<f64>,
+    allow_tools: bool,
+) -> Result<Response, String> {
+    handle_oneshot(
+        client,
+        prompt,
+        model,
+        system_prompt,
+        json_schema,
+        max_budget_usd,
+        allow_tools,
+    )
 }

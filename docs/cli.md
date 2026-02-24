@@ -67,15 +67,17 @@ Attach to a headless coworker's session in an interactive terminal pane for debu
 |---------|-------------|
 | `midtown project list` | List all known projects and their status |
 
-## Headless Execution
+## One-shot Execution
 
 Run Claude Code sessions non-interactively with JSON streaming output:
 
 ```bash
-midtown headless "Summarize this codebase" --model sonnet
-midtown headless "Generate a report" --json-schema '{"type": "object", ...}'
-midtown headless "Fix the bug" --allow-tools --max-budget-usd 0.50
+midtown oneshot "Summarize this codebase" --model sonnet
+midtown oneshot "Generate a report" --json-schema '{"type": "object", ...}'
+midtown oneshot "Fix the bug" --allow-tools --max-budget-usd 0.50
 ```
+
+`midtown headless` remains as a compatibility alias for now.
 
 | Flag | Description |
 |------|-------------|

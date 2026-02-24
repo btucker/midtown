@@ -83,7 +83,8 @@ Execution provider resolution is role-based:
 - Channel leads: `execution.channel_lead_provider` -> `execution.lead_provider` -> `claude`
 - Specialized workers:
   - Architect: `execution.architect_provider` → `execution.specialized_provider` → `claude`
-  - `headless.execute`: `execution.headless_execute_provider` → `execution.specialized_provider` → `claude`
+  - `oneshot.execute`: `execution.headless_execute_provider` → `execution.specialized_provider` → `claude`
+  - (`headless.execute` remains supported as a compatibility alias)
 
 Model aliases are auto-normalized per provider at launch:
 
