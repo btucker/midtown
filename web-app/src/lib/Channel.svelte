@@ -693,11 +693,12 @@
             index={i}
             senderClass="mt-1"
             currentTask={currentTasks[msg.from.toLowerCase()]}
+            channelName={$activeChannel}
           >
             {#if isAction(msg) && !hasMermaid(msg.content)}
               <div class="flex gap-0 break-words">
-                <span class="flex-shrink-0 mr-[0.3em]" style="color: {getSenderColor(msg.from)}">*</span>
-                <span class="action-text flex-1 min-w-0" style="color: {getSenderColor(msg.from)}">{@html renderContent(getActionContent(msg), getApiBase())}</span>
+                <span class="flex-shrink-0 mr-[0.3em]" style="color: {getSenderColor(msg.from, undefined, $activeChannel)}">*</span>
+                <span class="action-text flex-1 min-w-0" style="color: {getSenderColor(msg.from, undefined, $activeChannel)}">{@html renderContent(getActionContent(msg), getApiBase())}</span>
               </div>
             {:else if isAction(msg) && hasMermaid(msg.content)}
               {#each parseSegments(getActionContent(msg)) as segment, si}
@@ -706,18 +707,18 @@
                 {:else}
                   <div class="flex gap-0 break-words">
                     {#if si === 0}
-                      <span class="flex-shrink-0 mr-[0.3em]" style="color: {getSenderColor(msg.from)}">*</span>
+                      <span class="flex-shrink-0 mr-[0.3em]" style="color: {getSenderColor(msg.from, undefined, $activeChannel)}">*</span>
                     {:else}
                       <span class="flex-shrink-0 mr-[0.3em] invisible">*</span>
                     {/if}
-                    <span class="action-text flex-1 min-w-0" style="color: {getSenderColor(msg.from)}">{@html renderContent(segment.content, getApiBase())}</span>
+                    <span class="action-text flex-1 min-w-0" style="color: {getSenderColor(msg.from, undefined, $activeChannel)}">{@html renderContent(segment.content, getApiBase())}</span>
                   </div>
                 {/if}
               {/each}
             {:else}
               {#each parseInsightSegments(msg.content) as segment}
                 {#if segment.type === 'insight'}
-                  <div class="border-l-2 pl-3 max-w-[85%] my-0.5" style="border-color: {getSenderColor(msg.from)}80">
+                  <div class="border-l-2 pl-3 max-w-[85%] my-0.5" style="border-color: {getSenderColor(msg.from, undefined, $activeChannel)}80">
                     {#if hasMermaid(segment.content)}
                       {#each parseSegments(segment.content) as mseg}
                         {#if mseg.type === 'mermaid'}
