@@ -2,6 +2,54 @@
 // Extracted from Channel.svelte for testability.
 
 import { marked, Renderer } from 'marked'
+import { markedHighlight } from 'marked-highlight'
+import hljs from 'highlight.js/lib/core'
+
+// Register only languages relevant to this project (tree-shakeable imports)
+import rust from 'highlight.js/lib/languages/rust'
+import javascript from 'highlight.js/lib/languages/javascript'
+import typescript from 'highlight.js/lib/languages/typescript'
+import python from 'highlight.js/lib/languages/python'
+import bash from 'highlight.js/lib/languages/bash'
+import json from 'highlight.js/lib/languages/json'
+import toml from 'highlight.js/lib/languages/ini' // hljs uses 'ini' for TOML
+import yaml from 'highlight.js/lib/languages/yaml'
+import css from 'highlight.js/lib/languages/css'
+import xml from 'highlight.js/lib/languages/xml'
+import diff from 'highlight.js/lib/languages/diff'
+
+hljs.registerLanguage('rust', rust)
+hljs.registerLanguage('javascript', javascript)
+hljs.registerLanguage('js', javascript)
+hljs.registerLanguage('typescript', typescript)
+hljs.registerLanguage('ts', typescript)
+hljs.registerLanguage('python', python)
+hljs.registerLanguage('py', python)
+hljs.registerLanguage('bash', bash)
+hljs.registerLanguage('sh', bash)
+hljs.registerLanguage('shell', bash)
+hljs.registerLanguage('json', json)
+hljs.registerLanguage('toml', toml)
+hljs.registerLanguage('yaml', yaml)
+hljs.registerLanguage('yml', yaml)
+hljs.registerLanguage('css', css)
+hljs.registerLanguage('xml', xml)
+hljs.registerLanguage('html', xml)
+hljs.registerLanguage('diff', diff)
+
+// Configure marked with syntax highlighting via marked-highlight
+marked.use(
+  markedHighlight({
+    langPrefix: 'hljs language-',
+    highlight(code, lang) {
+      if (lang && hljs.getLanguage(lang)) {
+        return hljs.highlight(code, { language: lang }).value
+      }
+      // For unknown/unspecified languages, try auto-detection
+      return hljs.highlightAuto(code).value
+    },
+  })
+)
 
 // Configure marked with a custom renderer that suppresses underscore-based
 // italic rendering. Identifiers like `function_name` should not become italic.
@@ -96,7 +144,25 @@ export function renderContent(text, apiBase = '') {
     return `\x01ATTACH${attachments.length - 1}\x01`
   })
 
-  // Escape &, <, and > for XSS defense-in-depth.
+  // Protect code blocks and inline code BEFORE XSS escaping.
+  // This prevents double-escaping: code containing <div> would otherwise become
+  // &lt;div&gt; after escaping, then render as literal "&lt;div&gt;" in the output.
+  // marked-highlight handles its own escaping for code content.
+  const preservedItems = []
+
+  // Preserve fenced code blocks first (before inline code spans)
+  text = text.replace(/```[\s\S]*?```/g, (m) => {
+    preservedItems.push(m)
+    return `\x02PRESERVE${preservedItems.length - 1}\x02`
+  })
+
+  // Preserve inline code spans
+  text = text.replace(/`[^`]+`/g, (m) => {
+    preservedItems.push(m)
+    return `\x02PRESERVE${preservedItems.length - 1}\x02`
+  })
+
+  // Escape &, <, and > for XSS defense-in-depth (on non-code text only).
   let safe = text
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
@@ -105,23 +171,7 @@ export function renderContent(text, apiBase = '') {
   // Restore > at line starts for markdown blockquotes.
   safe = safe.replace(/^(&gt;)+/gm, (m) => m.replace(/&gt;/g, '>'))
 
-  // Protect existing markdown links and inline code before converting special references
-  // This prevents conflicts when special references appear inside markdown syntax
-  const preservedItems = []
-
-  // Preserve fenced code blocks first (before inline code spans)
-  safe = safe.replace(/```[\s\S]*?```/g, (m) => {
-    preservedItems.push(m)
-    return `\x02PRESERVE${preservedItems.length - 1}\x02`
-  })
-
-  // Preserve inline code spans
-  safe = safe.replace(/`[^`]+`/g, (m) => {
-    preservedItems.push(m)
-    return `\x02PRESERVE${preservedItems.length - 1}\x02`
-  })
-
-  // Preserve markdown links
+  // Preserve markdown links before converting special references
   safe = safe.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (m) => {
     preservedItems.push(m)
     return `\x02PRESERVE${preservedItems.length - 1}\x02`

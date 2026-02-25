@@ -61,7 +61,36 @@ describe('renderContent', () => {
   it('renders fenced code blocks', () => {
     const result = renderContent('```js\nconst x = 1\n```')
     expect(result).toContain('<code')
-    expect(result).toContain('const x = 1')
+    // With syntax highlighting, tokens are wrapped in <span> tags
+    expect(result).toContain('const')
+    expect(result).toContain('x')
+  })
+
+  it('renders fenced code blocks with syntax highlighting classes', () => {
+    const result = renderContent('```rust\nfn main() {}\n```')
+    expect(result).toContain('hljs')
+    expect(result).toContain('<span class="hljs-')
+  })
+
+  it('does not double-escape HTML entities in code blocks', () => {
+    // Raw source code with <, >, and & — these should be escaped exactly once by hljs
+    const result = renderContent('```html\n<div class="test">a & b</div>\n```')
+    // Should NOT have double-escaped entities (the old bug)
+    expect(result).not.toContain('&amp;lt;')
+    expect(result).not.toContain('&amp;gt;')
+    expect(result).not.toContain('&amp;amp;')
+    // hljs escapes < and > once and wraps tokens in spans, so check for the
+    // entity-escaped angle brackets (they may be split across hljs spans)
+    expect(result).toContain('&lt;')
+    expect(result).toContain('&gt;')
+    expect(result).toContain('a &amp; b')
+  })
+
+  it('does not double-escape HTML entities in inline code', () => {
+    const result = renderContent('use `a < b && c > d` here')
+    expect(result).not.toContain('&amp;lt;')
+    expect(result).not.toContain('&amp;gt;')
+    expect(result).not.toContain('&amp;amp;')
   })
 
   // Links

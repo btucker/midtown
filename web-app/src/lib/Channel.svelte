@@ -934,12 +934,14 @@
     border-radius: 5px;
     overflow-x: auto;
     margin: 5px 0;
+    border: none;
   }
 
   :global(.message-text pre code),
   :global(.action-text pre code) {
-    background: none;
-    padding: 0;
+    background: none !important;
+    padding: 0 !important;
+    border: none;
     border-radius: 0;
     font-size: 0.88em;
   }
