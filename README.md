@@ -285,6 +285,19 @@ Review execution mode controls how PR reviews are sourced:
 - `execution.review_mode = "github_app"`: daemon does not spawn local reviewers; waits for formal GitHub App reviews
 - `execution.review_mode = "both"`: local reviewers are enabled and GitHub App/formal reviews also count
 
+#### Multi-Account Profile Pool
+
+To rotate across multiple Claude accounts and avoid usage-limit bottlenecks, configure profile pools per role:
+
+```toml
+[execution]
+coworker_profiles = ["alice@example.com", "bob@example.com", "team@example.com"]
+reviewer_profiles = ["alice@example.com", "bob@example.com"]
+channel_lead_profiles = ["alice@example.com"]
+```
+
+Midtown picks the least-recently-used available profile for each new coworker spawn. When a profile hits its usage limit, it's automatically skipped until the limit resets. Pool configuration takes precedence over `coworker_provider` for auth resolution.
+
 Model aliases are auto-normalized per provider at launch:
 
 - Generic sizes:

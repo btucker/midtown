@@ -151,9 +151,11 @@ On daemon startup, the `NamePool` is restored from persisted session records: na
 1. Filter profiles where `ProfileState.is_usage_limited` is `true` in `DaemonPersistentState.profile_pool_state`.
 2. Among available profiles, pick LRU by `ProfileState.last_used_at` (never-used profiles preferred with `last_used_at = None`).
 3. If all profiles are limited, fall back to the single-profile path (existing behavior).
-4. On success, update `last_used_at` in `profile_pool_state` and save state.
+4. On success, update `last_used_at` in `profile_pool_state`, record `session_name → profile_email` in `session_profile_map`, and save state.
 
-`DaemonPersistentState.profile_pool_state` (`HashMap<String, ProfileState>`) persists per-profile usage state across daemon restarts. `ProfileState` tracks `is_usage_limited`, `usage_limit_reset_at`, and `last_used_at`. Tasks 2 and 3 of the pool feature wire up limit detection and clearing (see tasks !1777, !1778).
+**Limit detection and clearing**: When `check_for_usage_limits()` detects a session has hit its usage limit, it looks up the session's profile in `session_profile_map` and emits a `MarkProfileLimited` effect — setting `is_usage_limited: true` and recording `usage_limit_reset_at` in `profile_pool_state`. Limit clearing is explicit: when the scheduled `UsageLimitNudge` handler fires (after the reset timer), it emits `ClearProfileLimit`, which sets `is_usage_limited: false` and clears `usage_limit_reset_at`. A profile with a past `reset_at` remains limited until this effect fires — the pool selection logic reads only `is_usage_limited`, never the timestamp directly.
+
+`DaemonPersistentState.profile_pool_state` (`HashMap<String, ProfileState>`) persists per-profile usage state across daemon restarts. `ProfileState` tracks `is_usage_limited`, `usage_limit_reset_at`, and `last_used_at`. The in-memory `session_profile_map` (`HashMap<String, String>`) tracks `session_name → profile_email` for limit attribution; it is not persisted (profiles become available again on daemon restart).
 
 ## Prompt Architecture
 
