@@ -3,7 +3,7 @@
 //! This module is the entry point for JSON-RPC dispatch. It routes requests to
 //! domain-specific handler modules:
 //!
-//! - `rpc_auth` — authentication switching
+//! - `rpc_auth` — authentication switching and coworker pool management
 //! - `rpc_channel` — channel post/read/create/archive/rename/list
 //! - `rpc_coworker` — coworker lifecycle (spawn, break, list, view, state, nudge)
 //! - `rpc_headless` — one-shot execution and snapshot
@@ -576,10 +576,7 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
         "auth.pool-toggle" => {
             let profile = params.str_param("profile");
             let enabled = params.bool_or("enabled", true);
-            let provider = params
-                .str_param("provider")
-                .map(str::parse::<crate::auth::AuthProvider>)
-                .transpose();
+            let provider = parse_optional_provider_param(params);
 
             match (profile, provider) {
                 (Some(name), Ok(provider)) => {

@@ -487,6 +487,11 @@ pub(super) async fn handle_auth_switch(
 ///
 /// When `enabled=true`, adds the profile to `execution.coworker_profiles`.
 /// When `enabled=false`, removes it. Idempotent — calling multiple times is safe.
+///
+/// The `provider` parameter is used to validate that the profile exists for that
+/// provider before adding it (profile existence is provider-specific). This endpoint
+/// always modifies `execution.coworker_profiles` regardless of provider — it manages
+/// the coworker spawn pool only, not reviewer or channel-lead pools.
 pub(super) async fn handle_auth_pool_toggle(
     id: RequestId,
     provider: crate::auth::AuthProvider,
@@ -551,6 +556,20 @@ pub(super) async fn handle_auth_pool_toggle(
         "Pool toggle: profile '{}' for {} -> {}",
         profile, provider, enabled
     );
+
+    // Broadcast to ops channel so web UI clients receive the update without polling.
+    let action = if enabled { "added to" } else { "removed from" };
+    let mut msg = Message::system(format!(
+        "Profile '{}' ({}) {} coworker pool. Pool: [{}]",
+        profile,
+        provider,
+        action,
+        updated_profiles.join(", ")
+    ));
+    msg.channel = Some(OPS_CHANNEL.to_string());
+    if let Err(e) = state.send_and_broadcast_async(&msg).await {
+        warn!("Failed to post pool toggle message: {}", e);
+    }
 
     Response::success(
         id,
