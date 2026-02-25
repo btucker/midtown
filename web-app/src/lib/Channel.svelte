@@ -1,5 +1,5 @@
 <script>
-  import { messages, messagesByChannel, activeChannel, channels, coworkers, kanbanData, repoStatus, repoStatuses, daemonStatus, detailPanelData, isWideScreen, agentToolItems, threadData } from './store.js'
+  import { messages, messagesByChannel, activeChannel, channels, coworkers, kanbanData, repoStatus, repoStatuses, daemonStatus, isWideScreen, agentToolItems, threadData } from './store.js'
   import { sendMessage, uploadFile, closeThread, openThread, openTaskThread, getApiBase } from './api.js'
   import { AVENUE_COLORS, getSenderColor, isDimSender, formatTime, timeChanged, parseInsightSegments } from './messageUtils.js'
   import { tick, onMount } from 'svelte'
@@ -331,64 +331,14 @@
         const taskId = target.dataset.task
         const task = findTask(taskId)
         if (task) {
-          if (task.message_id) {
-            // Task has a creation message ID — open as thread so the user can discuss it
-            openTaskThread(task, task.channel || $activeChannel)
-          } else if ($isWideScreen) {
-            // No message_id (older task): fall back to static detail panel on desktop
-            closeThread()
-            detailPanelData.set({ type: 'task', data: task })
-          } else {
-            // Mobile fallback: task modal
-            selectedTask = task
-          }
+          openTaskThread(task, task.channel || $activeChannel)
         }
       } else if (target.classList.contains('pr-link')) {
         e.preventDefault()
         const prNum = target.dataset.pr
         const url = getPrUrl(prNum)
         if (url) {
-          // Desktop (>= 1025px): use DetailPanel if PR data available, else open GitHub
-          if ($isWideScreen) {
-            const pr = findPr(prNum)
-            if (pr) {
-              closeThread()
-              detailPanelData.set({
-                type: 'pr',
-                data: {
-                  number: pr.number,
-                  title: pr.title,
-                  author: pr.author,
-                  reviewer: pr.reviewer,
-                  status: pr.status,
-                  url: url,
-                },
-              })
-            } else {
-              // PR not in kanban data — fall back to opening GitHub
-              window.open(url, '_blank', 'noopener')
-            }
-          } else {
-            window.open(url, '_blank', 'noopener')
-          }
-        }
-      } else if (target.classList.contains('coworker-link')) {
-        e.preventDefault()
-        const coworkerName = target.dataset.coworker
-        // Find the coworker in the store
-        const coworker = $coworkers.find((cw) => cw.name.toLowerCase() === coworkerName.toLowerCase())
-        if (coworker && $isWideScreen) {
-          closeThread()
-          detailPanelData.set({
-            type: 'coworker',
-            data: {
-              name: coworker.name,
-              status: coworker.status,
-              current_task: coworker.current_task,
-              model: coworker.model,
-              started_at: coworker.started_at,
-            },
-          })
+          window.open(url, '_blank', 'noopener')
         }
       }
     }

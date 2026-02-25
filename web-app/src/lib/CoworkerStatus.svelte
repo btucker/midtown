@@ -1,7 +1,6 @@
 <script>
-  import { coworkers, maxCoworkers, repoStatus, kanbanData, isWideScreen } from './store.js'
-  import { detailPanelData } from './store.js'
-  import { closeThread } from './api.js'
+  import { coworkers, maxCoworkers, repoStatus, kanbanData } from './store.js'
+  import { openTaskThread } from './api.js'
   import { getSenderColor } from './messageUtils.js'
   import * as Tooltip from '$lib/components/ui/tooltip/index.js'
 
@@ -48,30 +47,14 @@
   function openTaskDetail(taskId) {
     const allTasks = [...$kanbanData.inProgress, ...$kanbanData.backlog]
     const task = allTasks.find((t) => String(t.id) === String(taskId))
-    if (task && $isWideScreen) {
-      closeThread()
-      detailPanelData.set({ type: 'task', data: task })
+    if (task) {
+      openTaskThread(task, task.channel || 'midtown')
     }
   }
 
   function openPrDetail(prNumber) {
     const url = getPrUrl(prNumber)
-    if (!url) return
-    const pr = $kanbanData.review.find((p) => String(p.number) === String(prNumber))
-    if (pr && $isWideScreen) {
-      closeThread()
-      detailPanelData.set({
-        type: 'pr',
-        data: {
-          number: pr.number,
-          title: pr.title,
-          author: pr.author,
-          reviewer: pr.reviewer,
-          status: pr.status,
-          url,
-        },
-      })
-    } else {
+    if (url) {
       window.open(url, '_blank', 'noopener')
     }
   }
