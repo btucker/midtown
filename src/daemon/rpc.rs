@@ -573,6 +573,27 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
             }
         }
 
+        "auth.pool-toggle" => {
+            let profile = params.str_param("profile");
+            let enabled = params.bool_or("enabled", true);
+            let provider = params
+                .str_param("provider")
+                .map(str::parse::<crate::auth::AuthProvider>)
+                .transpose();
+
+            match (profile, provider) {
+                (Some(name), Ok(provider)) => {
+                    let provider = provider.unwrap_or_default();
+                    super::rpc_auth::handle_auth_pool_toggle(
+                        request.id, provider, name, enabled, state,
+                    )
+                    .await
+                }
+                (_, Err(e)) => Response::error(request.id, RpcError::new(-32602, e)),
+                (None, Ok(_)) => Response::error(request.id, RpcError::invalid_params()),
+            }
+        }
+
         // ---- Insight ----
         "insight.report" => {
             let agent = require_str!(params, "agent", request.id);
