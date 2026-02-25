@@ -420,13 +420,6 @@ struct CreateChannelRequest {
     name: String,
 }
 
-/// Create a new channel
-///
-/// Accepts a POST request with JSON body `{"name": "channel-name"}`.
-/// Returns 201 Created on success, 400 Bad Request if the name is invalid.
-///
-/// Channel names must:
-/// Validate a channel name for use in API endpoints.
 /// Validate a channel name for read operations (history, thread fetching).
 ///
 /// Accepts any non-empty name containing only alphanumeric characters, hyphens, and
@@ -477,6 +470,10 @@ fn validate_channel_name(name: &str) -> Result<(), (StatusCode, axum::Json<serde
     Ok(())
 }
 
+/// Create a new channel.
+///
+/// Accepts a POST request with JSON body `{"name": "channel-name"}`.
+/// Returns 201 Created on success, 400 Bad Request if the name is invalid.
 async fn api_channels_create(
     State(state): State<Arc<WebState>>,
     Json(body): Json<CreateChannelRequest>,
