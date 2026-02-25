@@ -358,6 +358,32 @@ fn test_workflow_script_project_default_repo_over_local() {
     assert_eq!(result, Some(project_default_repo));
 }
 
+// ── assets_dir_for_repo ───────────────────────────────────────────────
+
+#[test]
+fn test_assets_dir_for_repo_path_structure() {
+    let path = assets_dir_for_repo("myproject");
+    let s = path.to_string_lossy();
+    assert!(s.contains(".midtown"), "should be under .midtown: {s}");
+    assert!(s.contains("projects"), "should be under projects/: {s}");
+    assert!(s.contains("myproject"), "should include repo name: {s}");
+    assert!(s.ends_with("assets"), "should end with 'assets': {s}");
+}
+
+#[test]
+fn test_assets_dir_for_repo_is_under_projects_dir() {
+    let assets = assets_dir_for_repo("myproject");
+    let projects = projects_dir_for_repo("myproject");
+    assert_eq!(assets, projects.join("assets"));
+}
+
+#[test]
+fn test_assets_dir_different_repos_differ() {
+    let path_a = assets_dir_for_repo("repo-a");
+    let path_b = assets_dir_for_repo("repo-b");
+    assert_ne!(path_a, path_b);
+}
+
 // ── workflow_state_file ────────────────────────────────────────────────
 
 #[test]
