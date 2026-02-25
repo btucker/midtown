@@ -2,6 +2,8 @@
   import { onMount } from 'svelte'
   import { SidebarProvider, Sidebar, SidebarContent, SidebarHeader, SidebarFooter, SidebarTrigger } from '$lib/components/ui/sidebar'
   import Channel from '$lib/Channel.svelte'
+  import ChannelPrList from '$lib/ChannelPrList.svelte'
+  import ChannelNotes from '$lib/ChannelNotes.svelte'
   import ChannelList from '$lib/ChannelList.svelte'
   import ChannelHeader from '$lib/ChannelHeader.svelte'
   import DetailPanel from '$lib/DetailPanel.svelte'
@@ -14,7 +16,7 @@
   import AuthSwitcher from '$lib/AuthSwitcher.svelte'
   import CelebrationEffects from '$lib/CelebrationEffects.svelte'
   import SwipeGestures from '$lib/SwipeGestures.svelte'
-  import { messages, connected, coworkers, projects, activeProject, activeChannel, detailPanelData, threadData, isWideScreen } from '$lib/store.js'
+  import { messages, connected, coworkers, projects, activeProject, activeChannel, activeChannelTab, detailPanelData, threadData, isWideScreen } from '$lib/store.js'
   import { connectWebSocket, fetchHistory, fetchStatus, fetchProjects, switchProject } from '$lib/api.js'
   import {
     pushSupported,
@@ -247,8 +249,14 @@
           <div class="board-content flex flex-1 min-h-0 overflow-hidden" class:thread-open-mobile={!!$threadData}>
             <div class="channel-main">
               <ChannelHeader />
-              <PendingQuestions />
-              <Channel />
+              {#if ($activeChannelTab[$activeChannel] || 'messages') === 'messages'}
+                <PendingQuestions />
+                <Channel />
+              {:else if ($activeChannelTab[$activeChannel] || 'messages') === 'prs'}
+                <ChannelPrList />
+              {:else if ($activeChannelTab[$activeChannel] || 'messages') === 'notes'}
+                <ChannelNotes />
+              {/if}
             </div>
 
             <!-- Right panel: thread OR detail panel (mutually exclusive) -->
