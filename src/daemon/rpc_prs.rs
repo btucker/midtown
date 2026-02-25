@@ -599,10 +599,10 @@ pub(super) async fn handle_pr_review(
     // We use AssignmentSource::Manual which:
     //   - bypasses the webhook-deference guard (only active for PollingFallback)
     //   - is recorded in the assignment for observability
-    // We pass None for branch_owners_map to prevent orphan-skipping based on
-    // branch prefix: for a manual trigger the user wants a reviewer regardless.
+    // We pass the branch_owners_map so task-based branches (e.g. "task-42-...")
+    // can be resolved to their author — preserving the self-review guard.
     let effects = super::pr::collect_reviewer_effects_with_source(
-        None,
+        Some(&snap.worktree_branch_owners),
         &snap.worktree_registry,
         &snap.active_names,
         state,
@@ -651,42 +651,58 @@ pub(super) async fn handle_pr_review(
 /// Uses `gh pr view` to verify the PR exists and is open, then returns a JSON
 /// object with the fields the reviewer selection logic needs. `createdAt` is
 /// intentionally omitted so the PR age check is bypassed for manual triggers.
+///
+/// In multi-repo projects, tries each configured repo path in order and returns
+/// the first successful match so the command works regardless of which repo the
+/// PR belongs to.
 async fn fetch_pr_json_for_review(
     pr_number: u64,
     state: &DaemonState,
 ) -> Result<serde_json::Value, String> {
-    let repo_path = state
-        .all_repo_paths
-        .first()
-        .ok_or_else(|| "No repository path configured".to_string())?
-        .clone();
-
-    let output = tokio::task::spawn_blocking(move || {
-        std::process::Command::new("gh")
-            .current_dir(&repo_path)
-            .args([
-                "pr",
-                "view",
-                &pr_number.to_string(),
-                "--json",
-                "number,title,headRefName,isDraft,state,author",
-            ])
-            .output()
-    })
-    .await
-    .map_err(|e| format!("spawn_blocking error: {}", e))?
-    .map_err(|e| format!("Failed to run gh pr view: {}", e))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!(
-            "PR #{} not found or not accessible: {}",
-            pr_number,
-            stderr.trim()
-        ));
+    if state.all_repo_paths.is_empty() {
+        return Err("No repository path configured".to_string());
     }
 
-    let pr: serde_json::Value = serde_json::from_slice(&output.stdout)
+    let repo_paths = state.all_repo_paths.clone();
+
+    let result = tokio::task::spawn_blocking(move || {
+        let mut last_err = String::new();
+        for repo_path in &repo_paths {
+            let output = std::process::Command::new("gh")
+                .current_dir(repo_path)
+                .args([
+                    "pr",
+                    "view",
+                    &pr_number.to_string(),
+                    "--json",
+                    "number,title,headRefName,isDraft,state,author",
+                ])
+                .output();
+
+            match output {
+                Ok(o) if o.status.success() => {
+                    return Ok(o.stdout);
+                }
+                Ok(o) => {
+                    last_err = String::from_utf8_lossy(&o.stderr).trim().to_string();
+                    // Not found in this repo — try next
+                }
+                Err(e) => {
+                    last_err = format!("Failed to run gh pr view: {}", e);
+                }
+            }
+        }
+        Err(format!(
+            "PR #{} not found or not accessible: {}",
+            pr_number, last_err
+        ))
+    })
+    .await
+    .map_err(|e| format!("spawn_blocking error: {}", e))?;
+
+    let stdout = result?;
+
+    let pr: serde_json::Value = serde_json::from_slice(&stdout)
         .map_err(|e| format!("Failed to parse gh pr view output: {}", e))?;
 
     let state_str = pr
