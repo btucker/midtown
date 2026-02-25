@@ -1774,8 +1774,10 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                                     "WORKTREE COLLISION BLOCKED: Refusing to bind {} to worktree {} - already bound to ACTIVE coworker {}",
                                     coworker, worktree_id, current_coworker
                                 );
-                                // Do NOT bind - this would crash both Claude Code sessions
-                                return;
+                                // Do NOT bind - this would crash both Claude Code sessions.
+                                // Use `continue` (not `return`) so remaining effects in the
+                                // batch are still processed.
+                                continue;
                             } else {
                                 debug!(
                                     "Worktree {} was bound to {} but they're not active - allowing rebind to {}",

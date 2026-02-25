@@ -303,12 +303,17 @@ impl CoworkerSession {
 type TestSendMessageToSessionIdHook =
     std::sync::Arc<dyn Fn(&str, &str) -> crate::Result<()> + Send + Sync>;
 
+#[cfg(test)]
+type TestIsAliveHook = std::sync::Arc<dyn Fn(&str) -> bool + Send + Sync>;
+
 #[allow(dead_code)]
 pub struct SessionManager {
     sessions: RwLock<HashMap<String, CoworkerSession>>,
     repo_name: String,
     #[cfg(test)]
     test_send_message_to_session_id_hook: std::sync::Mutex<Option<TestSendMessageToSessionIdHook>>,
+    #[cfg(test)]
+    test_is_alive_hook: std::sync::Mutex<Option<TestIsAliveHook>>,
 }
 
 #[allow(dead_code)]
@@ -320,6 +325,8 @@ impl SessionManager {
             repo_name,
             #[cfg(test)]
             test_send_message_to_session_id_hook: std::sync::Mutex::new(None),
+            #[cfg(test)]
+            test_is_alive_hook: std::sync::Mutex::new(None),
         }
     }
 
@@ -332,6 +339,15 @@ impl SessionManager {
             .test_send_message_to_session_id_hook
             .lock()
             .expect("session hook mutex poisoned");
+        *guard = hook;
+    }
+
+    #[cfg(test)]
+    pub(super) fn set_test_is_alive_hook(&self, hook: Option<TestIsAliveHook>) {
+        let mut guard = self
+            .test_is_alive_hook
+            .lock()
+            .expect("is_alive hook mutex poisoned");
         *guard = hook;
     }
 
@@ -939,6 +955,15 @@ impl SessionManager {
 
     /// Check if a coworker has a running session (by name).
     pub async fn is_alive(&self, name: &str) -> bool {
+        #[cfg(test)]
+        if let Some(hook) = self
+            .test_is_alive_hook
+            .lock()
+            .expect("is_alive hook mutex poisoned")
+            .as_ref()
+        {
+            return hook(name);
+        }
         let sessions = self.sessions.read().await;
         sessions
             .values()
