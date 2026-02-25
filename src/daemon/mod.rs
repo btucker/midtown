@@ -3854,6 +3854,15 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
 // in `rules.rs` handle the full coworker set; these single-coworker variants
 // make individual test cases easier to write.
 
+/// Shared mutex for tests that modify the `PATH` environment variable.
+///
+/// All test modules (pr_tests, effects_tests, etc.) must use this single lock
+/// so that PATH-mocking tests in different files serialize against each other.
+/// Two separate per-file statics would allow tests from different files to run
+/// concurrently and corrupt each other's `gh` CLI mock.
+#[cfg(test)]
+pub(crate) static PATH_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[path = "mod_tests.rs"]
 #[cfg(test)]
 mod tests;
