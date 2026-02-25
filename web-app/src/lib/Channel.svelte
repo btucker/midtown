@@ -1,5 +1,5 @@
 <script>
-  import { messages, messagesByChannel, activeChannel, channels, coworkers, kanbanData, repoStatus, repoStatuses, daemonStatus, detailPanelData, isWideScreen, agentToolItems, threadData } from './store.js'
+  import { messages, messagesByChannel, activeChannel, channels, coworkers, kanbanData, repoStatus, repoStatuses, daemonStatus, isWideScreen, agentToolItems, threadData } from './store.js'
   import { sendMessage, uploadFile, closeThread, openThread, openTaskThread, getApiBase } from './api.js'
   import { AVENUE_COLORS, getSenderColor, isDimSender, formatTime, timeChanged, parseInsightSegments } from './messageUtils.js'
   import { tick, onMount } from 'svelte'
@@ -8,13 +8,11 @@
   import MermaidDiagram from './MermaidDiagram.svelte'
   import { parseSegments, hasMermaid, renderContent } from './markdown.js'
   import Autocomplete from './Autocomplete.svelte'
-  import * as Dialog from '$lib/components/ui/dialog'
   import MessageRow from './MessageRow.svelte'
 
   let inputText = $state('')
   let scrollAreaViewport = $state(null)
   let autoScroll = $state(true)
-  let selectedTask = $state(null)
   let pendingFile = $state(null)
   let uploading = $state(false)
   let textareaElement = $state(null)
@@ -312,10 +310,6 @@
     return tasks.find((t) => String(t.id) === String(taskId)) || null
   }
 
-  function closeTaskModal() {
-    selectedTask = null
-  }
-
   // Handle clicks on channel links, task links, PR links, and coworker links
   onMount(() => {
     function handleLinkClick(e) {
@@ -331,65 +325,18 @@
         const taskId = target.dataset.task
         const task = findTask(taskId)
         if (task) {
-          if (task.message_id) {
-            // Task has a creation message ID — open as thread so the user can discuss it
-            openTaskThread(task, task.channel || $activeChannel)
-          } else if ($isWideScreen) {
-            // No message_id (older task): fall back to static detail panel on desktop
-            closeThread()
-            detailPanelData.set({ type: 'task', data: task })
-          } else {
-            // Mobile fallback: task modal
-            selectedTask = task
-          }
+          openTaskThread(task, task.channel || $activeChannel)
         }
       } else if (target.classList.contains('pr-link')) {
         e.preventDefault()
         const prNum = target.dataset.pr
         const url = getPrUrl(prNum)
         if (url) {
-          // Desktop (>= 1025px): use DetailPanel if PR data available, else open GitHub
-          if ($isWideScreen) {
-            const pr = findPr(prNum)
-            if (pr) {
-              closeThread()
-              detailPanelData.set({
-                type: 'pr',
-                data: {
-                  number: pr.number,
-                  title: pr.title,
-                  author: pr.author,
-                  reviewer: pr.reviewer,
-                  status: pr.status,
-                  url: url,
-                },
-              })
-            } else {
-              // PR not in kanban data — fall back to opening GitHub
-              window.open(url, '_blank', 'noopener')
-            }
-          } else {
-            window.open(url, '_blank', 'noopener')
-          }
+          window.open(url, '_blank', 'noopener')
         }
       } else if (target.classList.contains('coworker-link')) {
+        // Prevent the browser from following the '#' href; no detail panel action.
         e.preventDefault()
-        const coworkerName = target.dataset.coworker
-        // Find the coworker in the store
-        const coworker = $coworkers.find((cw) => cw.name.toLowerCase() === coworkerName.toLowerCase())
-        if (coworker && $isWideScreen) {
-          closeThread()
-          detailPanelData.set({
-            type: 'coworker',
-            data: {
-              name: coworker.name,
-              status: coworker.status,
-              current_task: coworker.current_task,
-              model: coworker.model,
-              started_at: coworker.started_at,
-            },
-          })
-        }
       }
     }
 
@@ -407,6 +354,11 @@
     return msg.content.replace(/^\/me\s*/, '')
   }
 
+  // NOTE: Any new link type added to markdown.js (channel/task/PR/coworker/etc.) must be
+  // handled in BOTH handleLinkClick (desktop — fires on the scroll viewport) AND here in
+  // handleMessageTap (mobile — fires on the message row div). handleMessageTap calls
+  // stopPropagation(), so handleLinkClick never runs on mobile. They are NOT redundant;
+  // they are two separate entry points for the same click on different platforms.
   function handleMessageTap(event, msg) {
     // Mobile-only affordance: tap a top-level message to open its thread view.
     if ($isWideScreen || msg.thread_parent_id) return
@@ -418,7 +370,13 @@
     // so blocking all <a> elements effectively breaks tap-to-reply on nearly every message.
     const link = target?.closest('a')
     if (link && !link.dataset.channel && !link.dataset.task && !link.dataset.pr && !link.dataset.coworker) return
-    openThread(msg, $activeChannel)
+    // Task links open the task's thread (with task card); all other taps open the message thread.
+    if (link?.dataset.task) {
+      const task = findTask(link.dataset.task)
+      if (task) openTaskThread(task, task.channel || $activeChannel)
+    } else {
+      openThread(msg, $activeChannel)
+    }
     // Prevent the click from also triggering the internal link handler (handleLinkClick),
     // and prevent the browser from following href="#" which would scroll to page top.
     event.stopPropagation()
@@ -863,34 +821,6 @@
     </form>
   </div>
 </div>
-
-<!-- Task detail modal (opened by clicking !N task links in chat) -->
-<Dialog.Root open={selectedTask != null} onOpenChange={(open) => { if (!open) selectedTask = null }}>
-  <Dialog.Content class="bg-card rounded-[9px] p-[18px] max-w-[420px] max-h-[80vh] overflow-y-auto border border-border" data-testid="task-modal">
-    <Dialog.Header>
-      <div class="flex items-center gap-[9px]">
-        <span class="text-primary font-mono text-[0.88rem]">!{selectedTask?.id}</span>
-        <span class="text-[0.72rem] py-[3px] px-[9px] rounded-[13px] bg-accent text-muted-foreground capitalize">{selectedTask?.status}</span>
-      </div>
-      <Dialog.Title class="text-foreground text-[1.05rem] font-semibold m-0 leading-[1.45]">
-        {selectedTask?.subject}
-      </Dialog.Title>
-    </Dialog.Header>
-
-    {#if selectedTask?.description}
-      <p class="text-muted-foreground text-[0.88rem] leading-[1.55] m-0 mb-[13px] whitespace-pre-wrap">{selectedTask.description}</p>
-    {:else}
-      <p class="text-muted-foreground/60 text-[0.88rem] italic leading-[1.55] m-0 mb-[13px]">No description</p>
-    {/if}
-
-    {#if selectedTask?.owner}
-      <div class="flex gap-[9px] text-[0.85rem] mb-[5px]">
-        <span class="text-muted-foreground/60">Owner:</span>
-        <span class="text-foreground">{selectedTask.owner}</span>
-      </div>
-    {/if}
-  </Dialog.Content>
-</Dialog.Root>
 
 <style>
   /* Inline image attachments */

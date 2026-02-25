@@ -7,11 +7,73 @@
   import { parseSegments, hasMermaid, renderContent } from './markdown.js'
   import MessageRow from './MessageRow.svelte'
   import ThreadActivityDrawer from './ThreadActivityDrawer.svelte'
+  import TaskCard from './TaskCard.svelte'
 
   const THREAD_SENDER_OVERRIDES = {
     midtown: '#585858',
   }
   const THREAD_DIM_SENDERS = ['midtown']
+
+  // Thread panel resize state (desktop only)
+  const THREAD_PANEL_WIDTH_KEY = 'thread-panel:width'
+  const THREAD_PANEL_DEFAULT_WIDTH = 380
+  const THREAD_PANEL_MIN_WIDTH = 280
+  const THREAD_PANEL_MAX_WIDTH = 600
+
+  let panelWidth = $state((() => {
+    if (typeof localStorage === 'undefined') return THREAD_PANEL_DEFAULT_WIDTH
+    const saved = localStorage.getItem(THREAD_PANEL_WIDTH_KEY)
+    if (saved) {
+      const parsed = parseInt(saved, 10)
+      if (!isNaN(parsed) && parsed >= THREAD_PANEL_MIN_WIDTH && parsed <= THREAD_PANEL_MAX_WIDTH) {
+        return parsed
+      }
+    }
+    return THREAD_PANEL_DEFAULT_WIDTH
+  })())
+
+  let isResizing = $state(false)
+  let resizeStartX = 0
+  let resizeStartWidth = 0
+
+  function handleResizeMouseDown(e) {
+    e.preventDefault()
+    isResizing = true
+    resizeStartX = e.clientX
+    resizeStartWidth = panelWidth
+    document.addEventListener('mousemove', handleResizeMouseMove)
+    document.addEventListener('mouseup', handleResizeMouseUp)
+    document.body.style.cursor = 'ew-resize'
+    document.body.style.userSelect = 'none'
+  }
+
+  function handleResizeMouseMove(e) {
+    // Panel is on the right: drag left (negative delta) = wider
+    const delta = resizeStartX - e.clientX
+    const newWidth = Math.max(THREAD_PANEL_MIN_WIDTH, Math.min(THREAD_PANEL_MAX_WIDTH, resizeStartWidth + delta))
+    panelWidth = newWidth
+  }
+
+  function handleResizeMouseUp() {
+    isResizing = false
+    document.removeEventListener('mousemove', handleResizeMouseMove)
+    document.removeEventListener('mouseup', handleResizeMouseUp)
+    document.body.style.cursor = ''
+    document.body.style.userSelect = ''
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(THREAD_PANEL_WIDTH_KEY, String(panelWidth))
+    }
+  }
+
+  // Cleanup resize listeners if component is destroyed mid-drag
+  $effect(() => {
+    return () => {
+      document.removeEventListener('mousemove', handleResizeMouseMove)
+      document.removeEventListener('mouseup', handleResizeMouseUp)
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
+    }
+  })
 
   function isAction(msg) {
     return msg.msg_type === 'action' || msg.content?.startsWith('/me ')
@@ -92,7 +154,9 @@
   function handleSubmit(e) {
     e.preventDefault()
     if (!replyText.trim() || !$threadData) return
-    sendMessage(replyText.trim(), $threadData.channelName, $threadData.parentMessage.id)
+    // If no parentMessage (task without message_id), send as top-level channel message
+    const parentId = $threadData.parentMessage?.id ?? null
+    sendMessage(replyText.trim(), $threadData.channelName, parentId)
     replyText = ''
     // Optimistic: show the drawer immediately while waiting for tool calls to arrive
     thinking = true
@@ -141,47 +205,48 @@
 <svelte:window onkeydown={handleWindowKeydown} />
 
 {#if $threadData}
-  <!-- Desktop: side panel -->
+  <!-- Desktop: side panel with resize handle -->
   <div
-    class="hidden lg:flex flex-col h-full bg-background border-l-2 border-border w-[380px] shrink-0"
+    class="hidden lg:flex flex-col h-full bg-background border-l-2 border-border shrink-0 relative"
+    style="width: {panelWidth}px"
     data-testid="thread-panel"
   >
+    <!-- Resize handle on left edge -->
+    <div
+      role="separator"
+      aria-label="Resize thread panel"
+      onmousedown={handleResizeMouseDown}
+      class="absolute inset-y-0 -left-1 w-2 cursor-ew-resize hover:bg-primary/20 transition-colors z-30 hidden md:block"
+      class:bg-primary={isResizing}
+    >
+      <div class="absolute inset-y-0 left-0 w-full flex items-center justify-center transition-opacity {isResizing ? 'opacity-100' : 'opacity-0 hover:opacity-100'}">
+        <div class="w-0.5 h-12 bg-primary/60 rounded-full"></div>
+      </div>
+    </div>
+
     <!-- Header -->
     <div class="flex items-center justify-between px-[18px] py-4 bg-card border-b-2 border-border shrink-0">
-      <div class="flex-1 min-w-0">
-        <h2 class="text-[0.85rem] font-bold text-foreground m-0">Thread</h2>
-        {#if $threadData.task}
-          <p class="text-[0.75rem] text-muted-foreground m-0 mt-0.5 break-words" data-testid="thread-parent">
-            <span class="text-[hsl(var(--link-task))] font-bold">!{$threadData.task.id}</span>
-            <span class="text-foreground"> {$threadData.task.subject}</span>
-            {#if $threadData.task.status}
-              <span class="text-muted-foreground/60"> ·</span>
-              <span class={$threadData.task.status === 'pending' ? 'text-[#d7d787]' : $threadData.task.status === 'in_progress' ? 'text-[#5fafaf]' : 'text-[#5faf5f]'}> {$threadData.task.status}</span>
-            {/if}
-            {#if $threadData.task.assignee}
-              <span class="text-muted-foreground/60"> · {$threadData.task.assignee}</span>
-            {/if}
-          </p>
-        {:else}
-          <p class="text-[0.75rem] text-muted-foreground m-0 mt-0.5 break-words" data-testid="thread-parent">
-            <span style="color: {getSenderColor($threadData.parentMessage.from, THREAD_SENDER_OVERRIDES)}">{$threadData.parentMessage.from}</span>:
-            {$threadData.parentMessage.content || ''}
-          </p>
-        {/if}
-      </div>
+      <h2 class="text-[0.85rem] font-bold text-foreground m-0">Thread</h2>
       <button
-        class="w-8 h-8 flex items-center justify-center bg-transparent border border-border rounded-md text-muted-foreground text-[1.3rem] cursor-pointer transition-all duration-150 leading-none hover:bg-accent hover:border-destructive hover:text-destructive ml-2 shrink-0 self-start mt-1"
+        class="w-8 h-8 flex items-center justify-center bg-transparent border border-border rounded-md text-muted-foreground text-[1.3rem] cursor-pointer transition-all duration-150 leading-none hover:bg-accent hover:border-destructive hover:text-destructive ml-2 shrink-0"
         onclick={handleClose}
         aria-label="Close thread"
         data-testid="thread-close-button"
       >&times;</button>
     </div>
 
-    <!-- Messages -->
+    <!-- Scrollable content: task cards + parent message + replies -->
     <div
       class="flex-1 min-h-0 overflow-y-auto overflow-x-hidden text-[1rem] leading-[1.55] px-[14px] pt-[10px] pb-[10px]"
       bind:this={desktopScrollArea}
     >
+      <!-- Task cards at top (above parent message) -->
+      {#if $threadData.tasks?.length > 0}
+        {#each $threadData.tasks as task}
+          <TaskCard {task} />
+        {/each}
+      {/if}
+
       <!-- Thread replies -->
       {#if $threadData.messages.length === 0}
         <div class="text-center text-muted-foreground py-4 text-[1rem]">No replies yet</div>
@@ -306,27 +371,7 @@
         aria-label="Back to channel"
         data-testid="thread-back-button"
       >&larr;</button>
-      <div class="flex-1 min-w-0">
-        <h2 class="text-[0.85rem] font-bold text-foreground m-0">Thread</h2>
-        {#if $threadData.task}
-          <p class="text-[0.75rem] text-muted-foreground m-0 mt-0.5 break-words">
-            <span class="text-[hsl(var(--link-task))] font-bold">!{$threadData.task.id}</span>
-            <span class="text-foreground"> {$threadData.task.subject}</span>
-            {#if $threadData.task.status}
-              <span class="text-muted-foreground/60"> ·</span>
-              <span class={$threadData.task.status === 'pending' ? 'text-[#d7d787]' : $threadData.task.status === 'in_progress' ? 'text-[#5fafaf]' : 'text-[#5faf5f]'}> {$threadData.task.status}</span>
-            {/if}
-            {#if $threadData.task.assignee}
-              <span class="text-muted-foreground/60"> · {$threadData.task.assignee}</span>
-            {/if}
-          </p>
-        {:else}
-          <p class="text-[0.75rem] text-muted-foreground m-0 mt-0.5 break-words">
-            <span style="color: {getSenderColor($threadData.parentMessage.from, THREAD_SENDER_OVERRIDES)}">{$threadData.parentMessage.from}</span>:
-            {$threadData.parentMessage.content || ''}
-          </p>
-        {/if}
-      </div>
+      <h2 class="text-[0.85rem] font-bold text-foreground m-0">Thread</h2>
     </div>
 
     <!-- Mobile messages -->
@@ -334,6 +379,13 @@
       class="flex-1 min-h-0 overflow-y-auto overflow-x-hidden text-[1rem] leading-[1.55] px-[14px] pt-[10px] pb-[10px]"
       bind:this={mobileScrollArea}
     >
+      <!-- Task cards at top -->
+      {#if $threadData.tasks?.length > 0}
+        {#each $threadData.tasks as task}
+          <TaskCard {task} />
+        {/each}
+      {/if}
+
       <!-- Replies -->
       {#if $threadData.messages.length === 0}
         <div class="text-center text-muted-foreground py-4 text-[1rem]">No replies yet</div>

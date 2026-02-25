@@ -6,7 +6,6 @@
   import ChannelNotes from '$lib/ChannelNotes.svelte'
   import ChannelList from '$lib/ChannelList.svelte'
   import ChannelHeader from '$lib/ChannelHeader.svelte'
-  import DetailPanel from '$lib/DetailPanel.svelte'
   import ThreadPanel from '$lib/ThreadPanel.svelte'
   import PendingQuestions from '$lib/PendingQuestions.svelte'
   import Status from '$lib/Status.svelte'
@@ -15,7 +14,7 @@
   import AccountPanel from '$lib/AccountPanel.svelte'
   import CelebrationEffects from '$lib/CelebrationEffects.svelte'
   import SwipeGestures from '$lib/SwipeGestures.svelte'
-  import { messages, connected, coworkers, projects, activeProject, activeChannel, activeChannelTab, detailPanelData, threadData, isWideScreen } from '$lib/store.js'
+  import { messages, connected, coworkers, projects, activeProject, activeChannel, activeChannelTab, threadData, isWideScreen } from '$lib/store.js'
   import { connectWebSocket, fetchHistory, fetchStatus, fetchProjects, switchProject } from '$lib/api.js'
   import { theme, toggleTheme } from '$lib/theme.js'
   import { Sun, Moon } from 'lucide-svelte'
@@ -92,9 +91,7 @@
     }
   }
 
-  function closeDetailPanel() {
-    detailPanelData.set(null)
-  }
+
 </script>
 
 <svelte:head>
@@ -211,11 +208,9 @@
               {/if}
             </div>
 
-            <!-- Right panel: thread OR detail panel (mutually exclusive) -->
+            <!-- Right panel: thread panel -->
             {#if $threadData}
               <ThreadPanel />
-            {:else if $detailPanelData}
-              <DetailPanel panelData={$detailPanelData} onClose={closeDetailPanel} />
             {/if}
           </div>
         {:else if activeView === 'status'}

@@ -7,7 +7,7 @@ test.describe('Thread panel', () => {
     await loadApp(page)
   })
 
-  test('opens from reply button and shows parent content', async ({ page }) => {
+  test('opens from reply button and shows thread replies', async ({ page }) => {
     const message = page.getByTestId('message-row').first()
     const summary = message.getByTestId('thread-summary')
     await expect(summary).toBeVisible()
@@ -19,7 +19,7 @@ test.describe('Thread panel', () => {
 
     const panel = page.getByTestId('thread-panel')
     await expect(panel).toBeVisible()
-    await expect(panel.getByTestId('thread-parent')).toContainText('Starting the sprint')
+    await expect(panel).toContainText('Docs updated to include browser support.')
 
     await page.getByTestId('thread-close-button').click()
     await expect(panel).toBeHidden()

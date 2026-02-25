@@ -111,11 +111,9 @@ export const authSwitching = writable(false)
 // Format: Array of { provider, profile, session_util, session_resets, week_util, week_resets, account_email }
 export const usageData = writable([])
 
-// Detail panel state (desktop three-column layout)
-// Format: { type: 'task'|'pr'|'coworker', data: {...} } or null when closed
-export const detailPanelData = writable(null)
-
-// Active thread state: { parentMessage: {...}, channelName: string, messages: [...] } or null
+// Active thread state: { parentMessage: {...}|null, channelName: string, messages: [...], tasks: [] } or null
+// tasks: array of task objects to display as cards above the parent message
+// parentMessage: null when the thread has no backing channel message (task without message_id)
 export const threadData = writable(null)
 
 // Viewport width tracking for responsive breakpoints
