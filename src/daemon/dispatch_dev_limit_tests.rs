@@ -204,6 +204,7 @@ fn make_dev_limit_snapshot(
         recently_recovered_session_ids: std::collections::HashSet::new(),
         stale_working_dir_sessions: std::collections::HashSet::new(),
         session_profile_map: HashMap::new(),
+        limited_pool_profiles: std::collections::HashSet::new(),
     }
 }
 

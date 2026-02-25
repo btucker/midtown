@@ -874,14 +874,23 @@ pub fn check_for_usage_limits(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
         return vec![];
     }
 
-    // Find the first coworker with a usage limit flag and extract reset time
-    let (detected_coworker, reset_time_utc) = match snap
+    // Collect all coworkers with a usage limit flag. Usage limits are account-wide
+    // so multiple coworkers may hit the limit simultaneously.
+    let limited: Vec<_> = snap
         .headless_process_health
         .iter()
-        .find(|(_, health)| health.has_usage_limit)
-    {
-        Some((name, health)) => (name.clone(), health.usage_limit_reset_at),
-        None => return vec![],
+        .filter(|(_, health)| health.has_usage_limit)
+        .collect();
+
+    if limited.is_empty() {
+        return vec![];
+    }
+
+    // Use the first detected coworker for nudge scheduling and the channel message.
+    // The reset time is account-wide, so any coworker's value is representative.
+    let (detected_coworker, reset_time_utc) = {
+        let (name, health) = limited[0];
+        (name.clone(), health.usage_limit_reset_at)
     };
 
     // Calculate nudge time based on reset time or default to 15 minutes
@@ -929,20 +938,19 @@ pub fn check_for_usage_limits(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
         },
     ];
 
-    // If this coworker was spawned from a pool profile, mark it usage-limited
-    // so future spawns skip it until the limit clears.
-    if let Some(profile_email) = snap
-        .session_profile_map
-        .get(&detected_coworker.to_lowercase())
-    {
-        info!(
-            "Marking pool profile '{}' as usage-limited (via {})",
-            profile_email, detected_coworker
-        );
-        effects.push(Effect::MarkProfileLimited {
-            profile_email: profile_email.clone(),
-            reset_at: reset_time_utc,
-        });
+    // Mark pool profiles for ALL usage-limited coworkers, not just the first.
+    // Multiple coworkers may hit the limit simultaneously when they share an account.
+    for (coworker_name, health) in &limited {
+        if let Some(profile_email) = snap.session_profile_map.get(&coworker_name.to_lowercase()) {
+            info!(
+                "Marking pool profile '{}' as usage-limited (via {})",
+                profile_email, coworker_name
+            );
+            effects.push(Effect::MarkProfileLimited {
+                profile_email: profile_email.clone(),
+                reset_at: health.usage_limit_reset_at,
+            });
+        }
     }
 
     effects
@@ -995,19 +1003,20 @@ pub fn maybe_nudge_usage_limit_expiry(snap: &snapshot::WorldSnapshot) -> Vec<Eff
         }
     }
 
-    // Clear profile-level limits for any pool profiles that were associated
-    // with usage-limited coworkers. The usage limit has now expired, so these
-    // profiles are available for future coworker spawns again.
-    for (coworker_name, profile_email) in &snap.session_profile_map {
-        if snap.usage_limited_coworkers.contains(coworker_name) {
-            info!(
-                "Clearing usage-limit on pool profile '{}' (coworker: {})",
-                profile_email, coworker_name
-            );
-            effects.push(Effect::ClearProfileLimit {
-                profile_email: profile_email.clone(),
-            });
-        }
+    // Clear profile-level limits for ALL pool profiles currently marked
+    // is_usage_limited in persistent state. The usage limit has now expired.
+    //
+    // We iterate `limited_pool_profiles` (from DaemonPersistentState) rather
+    // than `session_profile_map` (from DaemonState) because session_profile_map
+    // is ephemeral: entries are removed when coworkers stop. If a coworker exited
+    // before the nudge timer fired, its profile would stay permanently excluded
+    // from pool selection. Persistent state survives both coworker exits and
+    // daemon restarts.
+    for profile_email in &snap.limited_pool_profiles {
+        info!("Clearing usage-limit on pool profile '{}'", profile_email);
+        effects.push(Effect::ClearProfileLimit {
+            profile_email: profile_email.clone(),
+        });
     }
 
     effects
