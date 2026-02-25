@@ -319,7 +319,7 @@ pub(super) async fn handle_task_create(
     // channel lead. Capture message ID for task-as-thread feature.
     // Only store the mapping if the write succeeds — a failed write means no channel
     // message exists, so storing the ID would create an orphan thread root.
-    let author = task_created_message_author(task_channel, &state.repo_name);
+    let author = task_created_message_author(task_channel, state.default_channel_name());
     let msg = Message::for_channel(
         task_channel,
         author,

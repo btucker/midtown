@@ -283,6 +283,24 @@ fn test_task_created_message_author_hyphenated_sub_channel() {
     assert_eq!(author, "web-interface");
 }
 
+/// The main_channel comparison must use the channel router's default ("midtown"),
+/// NOT the repo name. In repos whose name differs from "midtown", tasks created
+/// without an explicit channel still land in "midtown" (the hardcoded default),
+/// so comparing against the repo name would incorrectly treat them as topic channels.
+#[test]
+fn test_task_created_message_author_main_channel_non_midtown_repo() {
+    // Repo named "myrepo", default channel is "midtown" (hardcoded in channel router).
+    // A task with channel="midtown" should be attributed to "lead", not "midtown".
+    let author = task_created_message_author("midtown", "midtown");
+    assert_eq!(author, "lead");
+
+    // Sanity check: "myrepo" as main_channel with task_channel="midtown" would
+    // previously return "midtown" (wrong), but now callers pass the router's
+    // default ("midtown") instead of the repo name.
+    let wrong_author = task_created_message_author("midtown", "myrepo");
+    assert_eq!(wrong_author, "midtown"); // demonstrates the old bug
+}
+
 // ── task_created_message routing tests ───────────────────────────────────────
 
 /// For the main channel, the task-created Message should have channel=main
