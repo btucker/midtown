@@ -427,25 +427,17 @@ struct CreateChannelRequest {
 ///
 /// Channel names must:
 /// Validate a channel name for use in API endpoints.
+/// Validate a channel name for read operations (history, thread fetching).
 ///
-/// Channel names must:
-/// - Be non-empty
-/// - Contain only alphanumeric characters, hyphens, and underscores
-/// - Not be "midtown" (reserved for the main channel)
-fn validate_channel_name(name: &str) -> Result<(), (StatusCode, axum::Json<serde_json::Value>)> {
+/// Accepts any non-empty name containing only alphanumeric characters, hyphens, and
+/// underscores. This includes "midtown", which is a valid channel to read from.
+fn validate_channel_name_for_history(
+    name: &str,
+) -> Result<(), (StatusCode, axum::Json<serde_json::Value>)> {
     if name.is_empty() {
         return Err((
             StatusCode::BAD_REQUEST,
             axum::Json(serde_json::json!({ "error": "Channel name cannot be empty" })),
-        ));
-    }
-
-    if name == "midtown" {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            axum::Json(
-                serde_json::json!({ "error": "Cannot use reserved channel name 'midtown'" }),
-            ),
         ));
     }
 
@@ -464,9 +456,27 @@ fn validate_channel_name(name: &str) -> Result<(), (StatusCode, axum::Json<serde
     Ok(())
 }
 
+/// Validate a channel name for write/creation operations.
+///
+/// Channel names must:
 /// - Be non-empty
 /// - Contain only alphanumeric characters, hyphens, and underscores
-/// - Not be named "midtown" (reserved for the main channel)
+/// - Not be "midtown" (reserved for the main channel)
+fn validate_channel_name(name: &str) -> Result<(), (StatusCode, axum::Json<serde_json::Value>)> {
+    validate_channel_name_for_history(name)?;
+
+    if name == "midtown" {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            axum::Json(
+                serde_json::json!({ "error": "Cannot use reserved channel name 'midtown'" }),
+            ),
+        ));
+    }
+
+    Ok(())
+}
+
 async fn api_channels_create(
     State(state): State<Arc<WebState>>,
     Json(body): Json<CreateChannelRequest>,
@@ -518,8 +528,8 @@ async fn api_channel_history(
     Query(params): Query<ChannelHistoryQuery>,
 ) -> Result<impl IntoResponse, StatusCode> {
     let channel = if let Some(ref channel_name) = params.channel {
-        // Validate channel name to prevent path traversal
-        validate_channel_name(channel_name).map_err(|_| StatusCode::BAD_REQUEST)?;
+        // Validate channel name to prevent path traversal (allow "midtown" for reads)
+        validate_channel_name_for_history(channel_name).map_err(|_| StatusCode::BAD_REQUEST)?;
 
         // Load a specific channel by name
         Channel::for_repo_named(&state.config.repo, channel_name).map_err(|e| {

@@ -812,3 +812,38 @@ fn test_mobile_channel_post_without_thread_parent_id() {
     };
     assert_eq!(post.thread_parent_id, None);
 }
+
+/// validate_channel_name is used in channel creation and rejects "midtown" as reserved.
+/// But it must NOT be used to validate the ?channel= query parameter in the history
+/// endpoint, because reading from the "midtown" channel by name is valid.
+///
+/// Regression test for: thread panel showing "No replies yet" despite reply count badge.
+/// Root cause: GET /channels/history?channel=midtown&thread_parent_id=<uuid> returned
+/// 400 BAD_REQUEST because validate_channel_name("midtown") rejected it, causing
+/// fetchThread() to return [] and the panel to show "No replies yet".
+#[test]
+fn test_validate_channel_name_allows_midtown_for_history() {
+    // "midtown" is valid for history reads (it's the default/main channel name)
+    // The restriction against "midtown" should only apply when CREATING channels.
+    let result = validate_channel_name_for_history("midtown");
+    assert!(
+        result.is_ok(),
+        "validate_channel_name_for_history should accept 'midtown' as a valid channel to read from"
+    );
+}
+
+#[test]
+fn test_validate_channel_name_for_history_rejects_path_traversal() {
+    // Path traversal must still be blocked for the history endpoint
+    assert!(validate_channel_name_for_history("../secret").is_err());
+    assert!(validate_channel_name_for_history("foo/bar").is_err());
+    assert!(validate_channel_name_for_history("").is_err());
+}
+
+#[test]
+fn test_validate_channel_name_for_history_allows_valid_names() {
+    assert!(validate_channel_name_for_history("web").is_ok());
+    assert!(validate_channel_name_for_history("pr-42").is_ok());
+    assert!(validate_channel_name_for_history("auth_refactor").is_ok());
+    assert!(validate_channel_name_for_history("midtown").is_ok());
+}
