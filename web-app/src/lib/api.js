@@ -425,11 +425,18 @@ export function handleUpdate(update) {
         // main channel timeline.
         threadData.update((td) => {
           if (td && td.parentMessage?.id === msg.thread_parent_id) {
-            // Remove any pending optimistic reply with matching content before
-            // appending the real server-confirmed message.
-            const withoutPending = td.messages.filter(
-              (m) => !(m.pending && m.content === msg.content)
-            )
+            // Remove the first pending optimistic reply with matching content/sender before
+            // appending the real server-confirmed message. Only match when the confirmed
+            // message is from 'user' (guards against a different participant posting the
+            // same text and incorrectly consuming our placeholder).
+            let threadDeduplicated = false
+            const withoutPending = td.messages.filter((m) => {
+              if (!threadDeduplicated && m.pending && m.content === msg.content && msg.from === 'user') {
+                threadDeduplicated = true
+                return false
+              }
+              return true
+            })
             return { ...td, messages: [...withoutPending, msg] }
           }
           return td
@@ -464,9 +471,11 @@ export function handleUpdate(update) {
         // the server-confirmed message.
         messagesByChannel.update((byChannel) => {
           const channelMsgs = byChannel[channelName] || []
+          // Only dedup when the confirmed message is from 'user': prevents a different
+          // channel participant posting identical text from consuming our placeholder.
           let deduplicated = false
           const withoutPending = channelMsgs.filter((m) => {
-            if (!deduplicated && m.pending && m.content === msg.content) {
+            if (!deduplicated && m.pending && m.content === msg.content && msg.from === 'user') {
               deduplicated = true
               return false
             }

@@ -153,6 +153,56 @@ describe('handleUpdate — optimistic message deduplication', () => {
     expect(td.messages[0].pending).toBeUndefined()
   })
 
+  it('only removes the first matching pending thread reply when duplicates exist', () => {
+    const parentId = 'parent-msg-1'
+    threadData.set({
+      parentMessage: { id: parentId, from: 'lead', content: 'original' },
+      channelName: 'midtown',
+      messages: [
+        { id: 'pending-t1', from: 'user', content: 'same text', pending: true },
+        { id: 'pending-t2', from: 'user', content: 'same text', pending: true },
+      ],
+    })
+
+    handleUpdate({
+      type: 'channel_message',
+      data: {
+        id: 'real-thread-reply',
+        from: 'user',
+        content: 'same text',
+        channel: 'midtown',
+        thread_parent_id: parentId,
+        timestamp: '2026-01-01T00:00:00Z',
+      },
+    })
+
+    const td = get(threadData)
+    // First pending removed, second preserved, real appended
+    expect(td.messages).toHaveLength(2)
+    expect(td.messages[0].id).toBe('pending-t2')
+    expect(td.messages[1].id).toBe('real-thread-reply')
+  })
+
+  it('does not remove a pending message when a different user posts the same content', () => {
+    messagesByChannel.set({
+      midtown: [
+        { id: 'pending-mine', from: 'user', content: 'hello', channel: 'midtown', pending: true },
+      ],
+    })
+
+    // Another participant sends identical content before the user's echo arrives
+    handleUpdate({
+      type: 'channel_message',
+      data: { id: 'other-user-msg', from: 'alice', content: 'hello', channel: 'midtown', timestamp: '2026-01-01T00:00:00Z' },
+    })
+
+    const store = get(messagesByChannel)
+    // Pending placeholder must NOT be consumed by another user's message
+    expect(store['midtown']).toHaveLength(2)
+    expect(store['midtown'].some((m) => m.pending)).toBe(true)
+    expect(store['midtown'].some((m) => m.id === 'other-user-msg')).toBe(true)
+  })
+
   it('does not modify threadData when the panel is for a different parent', () => {
     const parentId = 'parent-msg-1'
     const otherParentId = 'parent-msg-2'
