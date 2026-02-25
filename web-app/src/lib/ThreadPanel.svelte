@@ -1,14 +1,28 @@
 <script>
   import { threadData } from './store.js'
-  import { sendMessage, closeThread } from './api.js'
+  import { sendMessage, closeThread, getApiBase } from './api.js'
   import { tick, onMount } from 'svelte'
-  import { getSenderColor } from './messageUtils.js'
+  import { getSenderColor, isDimSender, formatTime, timeChanged } from './messageUtils.js'
+  import MermaidDiagram from './MermaidDiagram.svelte'
+  import { parseSegments, hasMermaid, renderContent } from './markdown.js'
   import MessageRow from './MessageRow.svelte'
 
   const THREAD_SENDER_OVERRIDES = {
     midtown: '#585858',
   }
   const THREAD_DIM_SENDERS = ['midtown']
+
+  function isAction(msg) {
+    return msg.msg_type === 'action' || msg.content?.startsWith('/me ')
+  }
+
+  function isInsight(msg) {
+    return msg.msg_type === 'insight' || msg.type === 'insight'
+  }
+
+  function getActionContent(msg) {
+    return msg.content.replace(/^\/me\s*/, '')
+  }
 
   let replyText = $state('')
   let desktopScrollArea = $state(null)
@@ -117,7 +131,7 @@
 
     <!-- Messages -->
     <div
-      class="flex-1 min-h-0 overflow-y-auto overflow-x-hidden font-[SF_Mono,Menlo,Consolas,Monaco,'Courier_New',monospace] text-[1rem] leading-[1.55] px-[14px] pt-[10px] pb-[10px]"
+      class="flex-1 min-h-0 overflow-y-auto overflow-x-hidden text-[1rem] leading-[1.55] px-[14px] pt-[10px] pb-[10px]"
       bind:this={desktopScrollArea}
     >
       <!-- Thread replies -->
@@ -133,9 +147,77 @@
             dimSenders={THREAD_DIM_SENDERS}
             gutterWidth="3.2em"
             gutterMarginRight="0.4em"
-            senderSpacing="0.8em"
             senderClass="mb-[2px]"
-          />
+          >
+            {#if isAction(msg) && !hasMermaid(msg.content)}
+              <div class="flex gap-0 break-words">
+                <span class="text-muted-foreground/50 flex-shrink-0 w-[3.2em] text-right mr-[0.4em] select-none text-[0.78rem]">{timeChanged($threadData.messages, i) ? formatTime(msg.timestamp) : ''}</span>
+                <span class="flex-shrink-0 mr-[0.3em]" style="color: {getSenderColor(msg.from, THREAD_SENDER_OVERRIDES)}">*</span>
+                <span class="action-text flex-1 min-w-0" style="color: {getSenderColor(msg.from, THREAD_SENDER_OVERRIDES)}">{@html renderContent(getActionContent(msg), getApiBase())}</span>
+              </div>
+            {:else if isAction(msg) && hasMermaid(msg.content)}
+              {#each parseSegments(getActionContent(msg)) as segment, si}
+                {#if segment.type === 'mermaid'}
+                  <div class="ml-[3.6em]">
+                    <MermaidDiagram code={segment.content} />
+                  </div>
+                {:else}
+                  <div class="flex gap-0 break-words">
+                    {#if si === 0}
+                      <span class="text-muted-foreground/50 flex-shrink-0 w-[3.2em] text-right mr-[0.4em] select-none text-[0.78rem]">{timeChanged($threadData.messages, i) ? formatTime(msg.timestamp) : ''}</span>
+                      <span class="flex-shrink-0 mr-[0.3em]" style="color: {getSenderColor(msg.from, THREAD_SENDER_OVERRIDES)}">*</span>
+                    {:else}
+                      <span class="flex-shrink-0 w-[3.2em] mr-[0.4em]"></span>
+                      <span class="flex-shrink-0 mr-[0.3em] invisible">*</span>
+                    {/if}
+                    <span class="action-text flex-1 min-w-0" style="color: {getSenderColor(msg.from, THREAD_SENDER_OVERRIDES)}">{@html renderContent(segment.content, getApiBase())}</span>
+                  </div>
+                {/if}
+              {/each}
+            {:else if isInsight(msg)}
+              <div class="rounded-md border border-insight/40 bg-insight/8 px-3 py-2 my-1 ml-[0.5em]">
+                <div class="flex items-center gap-1.5 mb-1.5 text-insight text-[0.72rem] font-bold uppercase tracking-wide" aria-label="Insight">
+                  <span aria-hidden="true">★</span>
+                  <span>Insight</span>
+                </div>
+                {#if hasMermaid(msg.content || '')}
+                  <div class="flex flex-col gap-2">
+                    {#each parseSegments(msg.content || '') as segment}
+                      {#if segment.type === 'mermaid'}
+                        <MermaidDiagram code={segment.content} />
+                      {:else}
+                        <div class="message-text text-foreground">{@html renderContent(segment.content, getApiBase())}</div>
+                      {/if}
+                    {/each}
+                  </div>
+                {:else}
+                  <div class="message-text text-foreground">{@html renderContent(msg.content || '', getApiBase())}</div>
+                {/if}
+              </div>
+            {:else if hasMermaid(msg.content)}
+              {#each parseSegments(msg.content) as segment, si}
+                {#if segment.type === 'mermaid'}
+                  <div class="ml-[3.6em]">
+                    <MermaidDiagram code={segment.content} />
+                  </div>
+                {:else}
+                  <div class="flex gap-0 break-words">
+                    {#if si === 0}
+                      <span class="text-muted-foreground/50 flex-shrink-0 w-[3.2em] text-right mr-[0.4em] select-none text-[0.78rem]">{timeChanged($threadData.messages, i) ? formatTime(msg.timestamp) : ''}</span>
+                    {:else}
+                      <span class="flex-shrink-0 w-[3.2em] mr-[0.4em]"></span>
+                    {/if}
+                    <span class="message-text flex-1 min-w-0 {isDimSender(msg.from, THREAD_DIM_SENDERS) ? 'text-muted-foreground' : 'text-foreground'}">{@html renderContent(segment.content, getApiBase())}</span>
+                  </div>
+                {/if}
+              {/each}
+            {:else}
+              <div class="flex gap-0 break-words">
+                <span class="text-muted-foreground/50 flex-shrink-0 w-[3.2em] text-right mr-[0.4em] select-none text-[0.78rem]">{timeChanged($threadData.messages, i) ? formatTime(msg.timestamp) : ''}</span>
+                <span class="message-text flex-1 min-w-0 {isDimSender(msg.from, THREAD_DIM_SENDERS) ? 'text-muted-foreground' : 'text-foreground'}">{@html renderContent(msg.content, getApiBase())}</span>
+              </div>
+            {/if}
+          </MessageRow>
         {/each}
       {/if}
     </div>
@@ -198,7 +280,7 @@
 
     <!-- Mobile messages -->
     <div
-      class="flex-1 min-h-0 overflow-y-auto overflow-x-hidden font-[SF_Mono,Menlo,Consolas,Monaco,'Courier_New',monospace] text-[1rem] leading-[1.55] px-[14px] pt-[10px] pb-[10px]"
+      class="flex-1 min-h-0 overflow-y-auto overflow-x-hidden text-[1rem] leading-[1.55] px-[14px] pt-[10px] pb-[10px]"
       bind:this={mobileScrollArea}
     >
       <!-- Replies -->
@@ -214,9 +296,77 @@
             dimSenders={THREAD_DIM_SENDERS}
             gutterWidth="3.2em"
             gutterMarginRight="0.4em"
-            senderSpacing="0.8em"
             senderClass="mb-[2px]"
-          />
+          >
+            {#if isAction(msg) && !hasMermaid(msg.content)}
+              <div class="flex gap-0 break-words">
+                <span class="text-muted-foreground/50 flex-shrink-0 w-[3.2em] text-right mr-[0.4em] select-none text-[0.78rem]">{timeChanged($threadData.messages, i) ? formatTime(msg.timestamp) : ''}</span>
+                <span class="flex-shrink-0 mr-[0.3em]" style="color: {getSenderColor(msg.from, THREAD_SENDER_OVERRIDES)}">*</span>
+                <span class="action-text flex-1 min-w-0" style="color: {getSenderColor(msg.from, THREAD_SENDER_OVERRIDES)}">{@html renderContent(getActionContent(msg), getApiBase())}</span>
+              </div>
+            {:else if isAction(msg) && hasMermaid(msg.content)}
+              {#each parseSegments(getActionContent(msg)) as segment, si}
+                {#if segment.type === 'mermaid'}
+                  <div class="ml-[3.6em]">
+                    <MermaidDiagram code={segment.content} />
+                  </div>
+                {:else}
+                  <div class="flex gap-0 break-words">
+                    {#if si === 0}
+                      <span class="text-muted-foreground/50 flex-shrink-0 w-[3.2em] text-right mr-[0.4em] select-none text-[0.78rem]">{timeChanged($threadData.messages, i) ? formatTime(msg.timestamp) : ''}</span>
+                      <span class="flex-shrink-0 mr-[0.3em]" style="color: {getSenderColor(msg.from, THREAD_SENDER_OVERRIDES)}">*</span>
+                    {:else}
+                      <span class="flex-shrink-0 w-[3.2em] mr-[0.4em]"></span>
+                      <span class="flex-shrink-0 mr-[0.3em] invisible">*</span>
+                    {/if}
+                    <span class="action-text flex-1 min-w-0" style="color: {getSenderColor(msg.from, THREAD_SENDER_OVERRIDES)}">{@html renderContent(segment.content, getApiBase())}</span>
+                  </div>
+                {/if}
+              {/each}
+            {:else if isInsight(msg)}
+              <div class="rounded-md border border-insight/40 bg-insight/8 px-3 py-2 my-1 ml-[0.5em]">
+                <div class="flex items-center gap-1.5 mb-1.5 text-insight text-[0.72rem] font-bold uppercase tracking-wide" aria-label="Insight">
+                  <span aria-hidden="true">★</span>
+                  <span>Insight</span>
+                </div>
+                {#if hasMermaid(msg.content || '')}
+                  <div class="flex flex-col gap-2">
+                    {#each parseSegments(msg.content || '') as segment}
+                      {#if segment.type === 'mermaid'}
+                        <MermaidDiagram code={segment.content} />
+                      {:else}
+                        <div class="message-text text-foreground">{@html renderContent(segment.content, getApiBase())}</div>
+                      {/if}
+                    {/each}
+                  </div>
+                {:else}
+                  <div class="message-text text-foreground">{@html renderContent(msg.content || '', getApiBase())}</div>
+                {/if}
+              </div>
+            {:else if hasMermaid(msg.content)}
+              {#each parseSegments(msg.content) as segment, si}
+                {#if segment.type === 'mermaid'}
+                  <div class="ml-[3.6em]">
+                    <MermaidDiagram code={segment.content} />
+                  </div>
+                {:else}
+                  <div class="flex gap-0 break-words">
+                    {#if si === 0}
+                      <span class="text-muted-foreground/50 flex-shrink-0 w-[3.2em] text-right mr-[0.4em] select-none text-[0.78rem]">{timeChanged($threadData.messages, i) ? formatTime(msg.timestamp) : ''}</span>
+                    {:else}
+                      <span class="flex-shrink-0 w-[3.2em] mr-[0.4em]"></span>
+                    {/if}
+                    <span class="message-text flex-1 min-w-0 {isDimSender(msg.from, THREAD_DIM_SENDERS) ? 'text-muted-foreground' : 'text-foreground'}">{@html renderContent(segment.content, getApiBase())}</span>
+                  </div>
+                {/if}
+              {/each}
+            {:else}
+              <div class="flex gap-0 break-words">
+                <span class="text-muted-foreground/50 flex-shrink-0 w-[3.2em] text-right mr-[0.4em] select-none text-[0.78rem]">{timeChanged($threadData.messages, i) ? formatTime(msg.timestamp) : ''}</span>
+                <span class="message-text flex-1 min-w-0 {isDimSender(msg.from, THREAD_DIM_SENDERS) ? 'text-muted-foreground' : 'text-foreground'}">{@html renderContent(msg.content, getApiBase())}</span>
+              </div>
+            {/if}
+          </MessageRow>
         {/each}
       {/if}
     </div>
