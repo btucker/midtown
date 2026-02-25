@@ -660,7 +660,7 @@
               class="mt-1 whitespace-nowrap overflow-hidden text-ellipsis flex items-center gap-[7px]"
             >
               <span
-                class="font-mono font-semibold text-[0.82rem]"
+                class="font-mono font-semibold text-[0.93rem]"
                 style="color: {getSenderColor(msg.from)}"
                 data-testid="message-sender"
               >
