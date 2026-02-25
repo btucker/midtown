@@ -956,13 +956,15 @@ impl SessionManager {
     /// Check if a coworker has a running session (by name).
     pub async fn is_alive(&self, name: &str) -> bool {
         #[cfg(test)]
-        if let Some(hook) = self
-            .test_is_alive_hook
-            .lock()
-            .expect("is_alive hook mutex poisoned")
-            .as_ref()
         {
-            return hook(name);
+            if let Some(hook) = self
+                .test_is_alive_hook
+                .lock()
+                .expect("is_alive hook mutex poisoned")
+                .clone()
+            {
+                return hook(name);
+            }
         }
         let sessions = self.sessions.read().await;
         sessions
