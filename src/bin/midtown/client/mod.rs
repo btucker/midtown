@@ -595,6 +595,10 @@ impl DaemonClient {
         self.send("pr.list", None)
     }
 
+    pub fn pr_review(&self, pr_number: u64) -> Result<Response, String> {
+        self.send("pr.review", Some(serde_json::json!({ "pr": pr_number })))
+    }
+
     // Daemon commands
 
     pub fn check_pending(&self) -> Result<Response, String> {

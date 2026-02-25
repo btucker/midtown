@@ -217,7 +217,12 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
     //    would incorrectly return the first call's cached response without executing.
     let skip_rpc_cache = matches!(
         request_method.as_str(),
-        "kanban.data" | "prs.status" | "coworkers.status" | "auth.switch" | "auth.pool-toggle"
+        "kanban.data"
+            | "prs.status"
+            | "coworkers.status"
+            | "auth.switch"
+            | "auth.pool-toggle"
+            | "pr.review"
     );
 
     // Check cache for idempotent response (within 60 second TTL)
@@ -404,6 +409,13 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
         "kanban.data" => super::rpc_kanban::handle_kanban_data(request.id, state).await,
 
         "prs.status" => super::rpc_prs::handle_prs_status(request.id, state).await,
+
+        "pr.review" => {
+            let Some(pr_number) = params.u64_param("pr") else {
+                return Response::error(request.id, RpcError::invalid_params());
+            };
+            super::rpc_prs::handle_pr_review(request.id, pr_number, state).await
+        }
 
         "coworkers.status" => super::rpc_coworker::handle_coworkers_status(request.id, state).await,
 
