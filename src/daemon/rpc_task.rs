@@ -200,7 +200,7 @@ pub(super) async fn handle_task_request(
         state.repo_name, from, message
     );
 
-    let msg = Message::new("midtown", channel_message.clone(), MessageType::Text);
+    let msg = Message::new(&state.repo_name, channel_message.clone(), MessageType::Text);
 
     if let Err(e) = state.send_and_broadcast_async(&msg).await {
         warn!("Failed to post task request to channel: {}", e);
@@ -241,8 +241,8 @@ pub(super) async fn handle_task_create(
     // Generate active_form (present continuous) from subject for task UI spinner
     let active_form = generate_active_form(subject);
 
-    // Create the task with the specified channel (or the default "midtown" channel)
-    let task_channel = channel.unwrap_or("midtown");
+    // Create the task with the specified channel (or the repo name as default)
+    let task_channel = channel.unwrap_or(&repo_name);
 
     let task_id = match crate::tasks::create_task_for_repo(
         subject,
@@ -263,7 +263,7 @@ pub(super) async fn handle_task_create(
         }
     };
 
-    // Persist channel mapping (explicit --channel or default "midtown")
+    // Persist channel mapping (explicit --channel or default repo name)
     {
         let mut ps = state.persistent_state.lock().await;
         if apply_task_channel_mapping(&mut ps.task_channel, &task_id, Some(task_channel), false)

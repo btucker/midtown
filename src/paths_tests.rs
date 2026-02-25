@@ -80,6 +80,19 @@ fn test_channel_file_for_repo() {
 }
 
 #[test]
+fn test_channel_file_for_repo_uses_repo_as_channel_name() {
+    // The channel directory should be derived from the repo name, not hardcoded "midtown".
+    // For repo "myproject", the path should contain channels/myproject/, not channels/midtown/.
+    let path = channel_file_for_repo("myproject");
+    let path_str = path.to_string_lossy();
+    assert!(
+        path_str.contains("channels/myproject/"),
+        "Expected channel dir to be 'myproject', got: {}",
+        path_str
+    );
+}
+
+#[test]
 fn test_cursors_dir_for_repo() {
     let path = cursors_dir_for_repo("myproject");
     assert!(path.to_string_lossy().contains(".midtown"));
