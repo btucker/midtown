@@ -400,6 +400,22 @@ pub enum Effect {
         channel_name: String,
         session_id: String,
     },
+    /// Mark an auth profile as usage-limited in persistent `profile_pool_state`.
+    ///
+    /// Emitted by `check_for_usage_limits()` when a coworker with a pool-selected
+    /// profile hits its usage limit. The profile is skipped for future spawns until
+    /// a `ClearProfileLimit` effect fires (triggered by `maybe_nudge_usage_limit_expiry`).
+    MarkProfileLimited {
+        profile_email: String,
+        reset_at: Option<chrono::DateTime<chrono::Utc>>,
+    },
+    /// Clear usage-limited status for an auth profile in `profile_pool_state`.
+    ///
+    /// Emitted by `maybe_nudge_usage_limit_expiry()` when the usage limit reset
+    /// timer fires for a coworker that was spawned from a pool profile. Allows
+    /// the profile to be selected again for future coworker spawns.
+    ClearProfileLimit { profile_email: String },
+
     /// Remove a coworker from the attached set when their interactive session
     /// appears to have ended without a proper `midtown session detach`.
     ///
@@ -976,6 +992,37 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
             Effect::ClearUsageLimitNudge => {
                 let mut nudge_at = state.usage_limit_nudge_at.lock().await;
                 *nudge_at = None;
+            }
+            Effect::MarkProfileLimited {
+                profile_email,
+                reset_at,
+            } => {
+                let mut ps = state.persistent_state.lock().await;
+                let entry = ps
+                    .profile_pool_state
+                    .entry(profile_email.clone())
+                    .or_default();
+                entry.is_usage_limited = true;
+                entry.usage_limit_reset_at = reset_at;
+                if let Err(e) = ps.save_for_repo(&state.repo_name) {
+                    warn!(
+                        "Failed to persist MarkProfileLimited for {}: {}",
+                        profile_email, e
+                    );
+                }
+            }
+            Effect::ClearProfileLimit { profile_email } => {
+                let mut ps = state.persistent_state.lock().await;
+                if let Some(entry) = ps.profile_pool_state.get_mut(&profile_email) {
+                    entry.is_usage_limited = false;
+                    entry.usage_limit_reset_at = None;
+                }
+                if let Err(e) = ps.save_for_repo(&state.repo_name) {
+                    warn!(
+                        "Failed to persist ClearProfileLimit for {}: {}",
+                        profile_email, e
+                    );
+                }
             }
             Effect::ResetTaskToPending { task_id, repo_name } => {
                 if let Err(e) = crate::tasks::reset_task_to_pending_for_repo(&task_id, &repo_name) {

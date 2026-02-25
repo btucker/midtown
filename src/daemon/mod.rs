@@ -992,7 +992,8 @@ impl DaemonState {
         }
         // Clear profile pool mapping (prevents stale profile attribution on name reuse)
         {
-            self.session_profile_map.lock().unwrap().remove(name);
+            let mut map = self.session_profile_map.lock().unwrap();
+            map.remove(&name.to_lowercase());
         }
         // Clear the inbox for this name so the next session that gets
         // allocated this name does not inherit unread messages from this session.
@@ -1388,10 +1389,10 @@ impl DaemonState {
             if let Some(email) = self.select_profile_from_pool(&c).await {
                 tracing::debug!("Pool selected profile '{}' for coworker '{}'", email, name);
                 // Record session→profile mapping for usage-limit attribution.
-                self.session_profile_map
-                    .lock()
-                    .unwrap()
-                    .insert(name.clone(), email.clone());
+                {
+                    let mut map = self.session_profile_map.lock().unwrap();
+                    map.insert(name.to_lowercase(), email.clone());
+                }
                 // Mark last_used_at so future spawns use LRU ordering.
                 {
                     let mut ps = self.persistent_state.lock().await;

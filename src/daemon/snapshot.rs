@@ -406,6 +406,15 @@ pub struct WorldSnapshot {
     /// performing `Path::exists()` calls themselves.
     #[serde(default)]
     pub stale_working_dir_sessions: HashSet<String>,
+
+    // ── Auth profile pool ─────────────────────────────────────────────────
+    /// Maps coworker name (lowercase) → auth profile email.
+    ///
+    /// Populated from `DaemonState::session_profile_map` during snapshot collection.
+    /// Used by `check_for_usage_limits()` to attribute usage limits to specific
+    /// pool profiles and emit `MarkProfileLimited` effects.
+    #[serde(default)]
+    pub session_profile_map: HashMap<String, String>,
 }
 
 /// Read the last N lines from the daemon log file.
@@ -981,6 +990,15 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
         .map(|(session_id, _)| session_id.clone())
         .collect();
 
+    // ── Auth profile pool ─────────────────────────────────────────────────
+    // Snapshot the session→profile mapping so pure decision functions
+    // (check_for_usage_limits) can emit MarkProfileLimited effects without
+    // accessing DaemonState directly.
+    let session_profile_map: HashMap<String, String> = {
+        let map = state.session_profile_map.lock().unwrap();
+        map.clone()
+    };
+
     let snapshot = WorldSnapshot {
         active_coworkers,
         running_coworkers,
@@ -1055,6 +1073,7 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
         spawn_failure_cooldown_names,
         recently_recovered_session_ids,
         stale_working_dir_sessions,
+        session_profile_map,
     };
 
     // Log full snapshot at trace level for debugging and test case generation
@@ -1145,6 +1164,7 @@ pub(super) fn minimal_snapshot_for_test() -> WorldSnapshot {
         spawn_failure_cooldown_names: HashSet::new(),
         recently_recovered_session_ids: HashSet::new(),
         stale_working_dir_sessions: HashSet::new(),
+        session_profile_map: HashMap::new(),
     }
 }
 
