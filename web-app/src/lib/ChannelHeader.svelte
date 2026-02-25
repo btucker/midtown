@@ -1,5 +1,7 @@
 <script>
-  import { activeChannel, kanbanData, repoStatus, repoStatuses } from './store.js'
+  import { onDestroy } from 'svelte'
+  import { fade } from 'svelte/transition'
+  import { activeChannel, kanbanData, daemonStatus, repoStatus, repoStatuses } from './store.js'
   import { getChannelTaskCount, getChannelPrs } from './channelUtils.js'
   import { formatRelativeTime } from './utils.js'
 
@@ -17,6 +19,71 @@
       default: return { char: '○', color: 'hsl(var(--muted-foreground))' }
     }
   }
+
+  // "Just merged" banner — mirrors CelebrationEffects hydration-guard pattern
+  const BANNER_DURATION_MS = 2 * 60 * 1000 // 2 minutes
+  const seenPrs = new Set()
+  const bannerTimers = new Map()
+  let hydrated = false
+  let recentMerges = $state([])
+
+  function prKey(pr) {
+    return `${pr?.repo || 'default'}#${pr?.number ?? 'unknown'}`
+  }
+
+  function getPrUrl(pr) {
+    if (pr.repo && $repoStatuses.length > 0) {
+      const info = $repoStatuses.find((s) => s.label === pr.repo)
+      if (info?.fullName) return `https://github.com/${info.fullName}/pull/${pr.number}`
+    }
+    if ($repoStatus.fullName) return `https://github.com/${$repoStatus.fullName}/pull/${pr.number}`
+    return null
+  }
+
+  function addMergeBanner(pr) {
+    const key = prKey(pr)
+    if (bannerTimers.has(key)) return
+    const url = getPrUrl(pr)
+    recentMerges = [...recentMerges, { key, pr, url }]
+    const timer = setTimeout(() => {
+      recentMerges = recentMerges.filter((m) => m.key !== key)
+      bannerTimers.delete(key)
+    }, BANNER_DURATION_MS)
+    bannerTimers.set(key, timer)
+  }
+
+  $effect(() => {
+    const ready = Boolean($daemonStatus)
+    if (!ready) return
+    const done = $kanbanData.done || []
+    if (!hydrated) {
+      done.forEach((pr) => seenPrs.add(prKey(pr)))
+      hydrated = true
+      return
+    }
+    for (const pr of done) {
+      const key = prKey(pr)
+      if (!seenPrs.has(key)) {
+        seenPrs.add(key)
+        addMergeBanner(pr)
+      }
+    }
+  })
+
+  $effect(() => {
+    if (!$daemonStatus) {
+      recentMerges = []
+      bannerTimers.forEach((t) => clearTimeout(t))
+      bannerTimers.clear()
+      seenPrs.clear()
+      hydrated = false
+    }
+  })
+
+  onDestroy(() => {
+    bannerTimers.forEach((t) => clearTimeout(t))
+    bannerTimers.clear()
+  })
 </script>
 
 <div class="hidden md:block bg-card border-b-2 border-border shrink-0">
@@ -47,6 +114,18 @@
         </div>
       {/if}
     </div>
+
+    <!-- Center: just-merged banner (fades out after 2 min) -->
+    {#each recentMerges as merge (merge.key)}
+      <div class="just-merged shrink-0" transition:fade={{ duration: 400 }}>
+        <span class="label">Just merged:</span>
+        {#if merge.url}
+          <a href={merge.url} target="_blank" rel="noopener">{merge.pr.title}</a>
+        {:else}
+          <span>#{merge.pr.number} {merge.pr.title}</span>
+        {/if}
+      </div>
+    {/each}
 
     <!-- Right: repo status (single repo) -->
     {#if !isMultiRepo && ($repoStatus.commitHash || $repoStatus.ciStatus)}
@@ -99,3 +178,28 @@
     {/each}
   {/if}
 </div>
+
+<style>
+  .just-merged {
+    font-size: 0.78rem;
+    font-family: 'SF Mono', Menlo, Consolas, Monaco, 'Courier New', monospace;
+    color: var(--color-muted-foreground, #808080);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 36ch;
+  }
+
+  .just-merged .label {
+    margin-right: 0.35em;
+  }
+
+  .just-merged a {
+    color: var(--color-link-pr, #5f87af);
+    text-decoration: none;
+  }
+
+  .just-merged a:hover {
+    text-decoration: underline;
+  }
+</style>

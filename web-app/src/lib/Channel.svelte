@@ -623,7 +623,7 @@
 
 <div class="flex flex-col h-full min-h-0 overflow-hidden relative">
   <div
-    class="flex-1 min-h-0 overflow-y-auto overflow-x-hidden overscroll-contain font-mono text-[1rem] leading-[1.55] px-[18px] pt-[14px] pb-[18px]"
+    class="flex-1 min-h-0 overflow-y-auto overflow-x-hidden overscroll-contain text-[1rem] leading-[1.55] px-[18px] pt-[14px] pb-[18px]"
     bind:this={scrollAreaViewport}
     onscroll={handleScroll}
   >
@@ -652,7 +652,7 @@
             </button>
           {/if}
           {#if needsBlankLine(channelMessages, i)}
-            <div class="h-[1.4em]"></div>
+            <div class="h-[2.2em]"></div>
           {/if}
           {#if senderChanged(channelMessages, i)}
             <!-- Group header: bold name + dim timestamp + current task on one line (Slack-style) -->
