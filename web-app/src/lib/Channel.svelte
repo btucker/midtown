@@ -8,13 +8,11 @@
   import MermaidDiagram from './MermaidDiagram.svelte'
   import { parseSegments, hasMermaid, renderContent } from './markdown.js'
   import Autocomplete from './Autocomplete.svelte'
-  import * as Dialog from '$lib/components/ui/dialog'
   import MessageRow from './MessageRow.svelte'
 
   let inputText = $state('')
   let scrollAreaViewport = $state(null)
   let autoScroll = $state(true)
-  let selectedTask = $state(null)
   let pendingFile = $state(null)
   let uploading = $state(false)
   let textareaElement = $state(null)
@@ -312,10 +310,6 @@
     return tasks.find((t) => String(t.id) === String(taskId)) || null
   }
 
-  function closeTaskModal() {
-    selectedTask = null
-  }
-
   // Handle clicks on channel links, task links, PR links, and coworker links
   onMount(() => {
     function handleLinkClick(e) {
@@ -371,7 +365,13 @@
     // so blocking all <a> elements effectively breaks tap-to-reply on nearly every message.
     const link = target?.closest('a')
     if (link && !link.dataset.channel && !link.dataset.task && !link.dataset.pr && !link.dataset.coworker) return
-    openThread(msg, $activeChannel)
+    // Task links open the task's thread (with task card); all other taps open the message thread.
+    if (link?.dataset.task) {
+      const task = findTask(link.dataset.task)
+      if (task) openTaskThread(task, task.channel || $activeChannel)
+    } else {
+      openThread(msg, $activeChannel)
+    }
     // Prevent the click from also triggering the internal link handler (handleLinkClick),
     // and prevent the browser from following href="#" which would scroll to page top.
     event.stopPropagation()
@@ -816,34 +816,6 @@
     </form>
   </div>
 </div>
-
-<!-- Task detail modal (opened by clicking !N task links in chat) -->
-<Dialog.Root open={selectedTask != null} onOpenChange={(open) => { if (!open) selectedTask = null }}>
-  <Dialog.Content class="bg-card rounded-[9px] p-[18px] max-w-[420px] max-h-[80vh] overflow-y-auto border border-border" data-testid="task-modal">
-    <Dialog.Header>
-      <div class="flex items-center gap-[9px]">
-        <span class="text-primary font-mono text-[0.88rem]">!{selectedTask?.id}</span>
-        <span class="text-[0.72rem] py-[3px] px-[9px] rounded-[13px] bg-accent text-muted-foreground capitalize">{selectedTask?.status}</span>
-      </div>
-      <Dialog.Title class="text-foreground text-[1.05rem] font-semibold m-0 leading-[1.45]">
-        {selectedTask?.subject}
-      </Dialog.Title>
-    </Dialog.Header>
-
-    {#if selectedTask?.description}
-      <p class="text-muted-foreground text-[0.88rem] leading-[1.55] m-0 mb-[13px] whitespace-pre-wrap">{selectedTask.description}</p>
-    {:else}
-      <p class="text-muted-foreground/60 text-[0.88rem] italic leading-[1.55] m-0 mb-[13px]">No description</p>
-    {/if}
-
-    {#if selectedTask?.owner}
-      <div class="flex gap-[9px] text-[0.85rem] mb-[5px]">
-        <span class="text-muted-foreground/60">Owner:</span>
-        <span class="text-foreground">{selectedTask.owner}</span>
-      </div>
-    {/if}
-  </Dialog.Content>
-</Dialog.Root>
 
 <style>
   /* Inline image attachments */

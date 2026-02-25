@@ -215,7 +215,7 @@ export function renderContent(text, apiBase = '') {
     return `[!${taskId}](task:${taskId})`
   })
 
-  // @coworker mentions (only on desktop where we can show detail panel)
+  // @coworker mentions
   safe = preserveAndReplace(safe, /@([a-z][a-z0-9-]*)\b/gi, (match, name) => {
     return `[@${name}](coworker:${name})`
   })
