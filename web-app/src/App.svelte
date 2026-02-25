@@ -12,21 +12,11 @@
   import Status from '$lib/Status.svelte'
   import Tmux from '$lib/Tmux.svelte'
   import CoworkerStatus from '$lib/CoworkerStatus.svelte'
-  import UsageBars from '$lib/UsageBars.svelte'
-  import AuthSwitcher from '$lib/AuthSwitcher.svelte'
+  import AccountPanel from '$lib/AccountPanel.svelte'
   import CelebrationEffects from '$lib/CelebrationEffects.svelte'
   import SwipeGestures from '$lib/SwipeGestures.svelte'
   import { messages, connected, coworkers, projects, activeProject, activeChannel, activeChannelTab, detailPanelData, threadData, isWideScreen } from '$lib/store.js'
   import { connectWebSocket, fetchHistory, fetchStatus, fetchProjects, switchProject } from '$lib/api.js'
-  import {
-    pushSupported,
-    pushPermission,
-    pushSubscribed,
-    pushError,
-    subscribePush,
-    unsubscribePush,
-    checkPushSubscription,
-  } from '$lib/push.js'
   import { theme, toggleTheme } from '$lib/theme.js'
   import { Sun, Moon } from 'lucide-svelte'
 
@@ -67,9 +57,6 @@
     }
     // Refresh project list every 30s
     const projectInterval = setInterval(fetchProjects, 30000)
-    // Check push notification status
-    checkPushSubscription()
-
     // Initialize and listen for viewport width changes
     function updateViewportWidth() {
       isWideScreen.set(window.innerWidth > 1024)
@@ -105,22 +92,6 @@
     }
   }
 
-  async function togglePush() {
-    if ($pushSubscribed) {
-      await unsubscribePush()
-    } else {
-      await subscribePush()
-    }
-  }
-
-  // Auto-clear push errors after 5 seconds
-  $effect(() => {
-    if ($pushError) {
-      const timeout = setTimeout(() => pushError.set(null), 5000)
-      return () => clearTimeout(timeout)
-    }
-  })
-
   function closeDetailPanel() {
     detailPanelData.set(null)
   }
@@ -137,7 +108,7 @@
     <SidebarProvider>
       <SwipeGestures />
       <Sidebar>
-        <SidebarHeader class="p-3 pt-safe-offset-3 border-b border-sidebar-border">
+        <SidebarHeader class="p-3 pt-safe-offset-3">
           <div class="header-left">
             <img src="/logo.png" alt="Midtown" class="header-logo hidden md:block" />
             {#if $projects.length > 0}
@@ -171,9 +142,6 @@
             {:else}
               <h1>Midtown</h1>
             {/if}
-          </div>
-          <div class="header-controls">
-            <AuthSwitcher />
             <button
               data-testid="theme-toggle"
               class="theme-toggle"
@@ -186,32 +154,6 @@
                 <Moon size={16} />
               {/if}
             </button>
-            {#if $pushSupported}
-              <div class="push-wrapper">
-                <button
-                  class="push-toggle"
-                  class:subscribed={$pushSubscribed}
-                  class:denied={$pushPermission === 'denied'}
-                  onclick={togglePush}
-                  disabled={$pushPermission === 'denied'}
-                  title={$pushPermission === 'denied'
-                    ? 'Notifications blocked in browser settings'
-                    : $pushSubscribed
-                      ? 'Disable push notifications'
-                      : 'Enable push notifications'}
-                >
-                  {$pushSubscribed ? '\u{1F514}' : '\u{1F515}'}
-                </button>
-                {#if $pushError}
-                  <div class="push-error">{$pushError}</div>
-                {/if}
-              </div>
-            {/if}
-            <span
-              class="connection-dot"
-              class:connected={$connected}
-              title={$connected ? 'Connected' : 'Disconnected'}
-            ></span>
           </div>
         </SidebarHeader>
 
@@ -227,10 +169,10 @@
           {/if}
         </SidebarContent>
 
-        <SidebarFooter class="border-t border-sidebar-border p-2 pb-1">
+        <SidebarFooter class="p-2 pb-1">
           {#if activeView === 'board'}
             <CoworkerStatus />
-            <UsageBars />
+            <AccountPanel />
           {/if}
         </SidebarFooter>
       </Sidebar>
@@ -320,12 +262,6 @@
     border-radius: 6px;
   }
 
-  .header-controls {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-  }
-
   h1 {
     font-size: 1.3rem;
     font-weight: 700;
@@ -334,19 +270,6 @@
   }
 
   /* Connection indicator */
-  .connection-dot {
-    width: 9px;
-    height: 9px;
-    border-radius: 50%;
-    background: hsl(var(--destructive));
-    flex-shrink: 0;
-    box-shadow: 0 0 8px hsl(var(--destructive) / 0.4);
-  }
-
-  .connection-dot.connected {
-    background: hsl(var(--primary));
-    box-shadow: 0 0 8px hsl(var(--primary) / 0.5);
-  }
 
   /* Project selector */
   .project-selector {
@@ -451,24 +374,6 @@
     background: hsl(var(--primary));
   }
 
-  .push-wrapper {
-    position: relative;
-  }
-
-  .push-error {
-    position: absolute;
-    top: 100%;
-    right: 0;
-    margin-top: 4px;
-    padding: 4px 8px;
-    background: hsl(var(--destructive));
-    color: hsl(var(--destructive-foreground));
-    font-size: 0.7rem;
-    border-radius: 4px;
-    white-space: nowrap;
-    z-index: 100;
-  }
-
   .theme-toggle {
     background: none;
     border: none;
@@ -484,29 +389,6 @@
   .theme-toggle:hover {
     color: hsl(var(--foreground));
     background: hsl(var(--accent));
-  }
-
-  .push-toggle {
-    background: none;
-    border: none;
-    font-size: 1.15rem;
-    cursor: pointer;
-    padding: 5px;
-    opacity: 0.5;
-    transition: opacity 0.2s;
-  }
-
-  .push-toggle.subscribed {
-    opacity: 1;
-  }
-
-  .push-toggle.denied {
-    opacity: 0.25;
-    cursor: not-allowed;
-  }
-
-  .push-toggle:hover:not(.denied) {
-    opacity: 1;
   }
 
   /* Sidebar content */

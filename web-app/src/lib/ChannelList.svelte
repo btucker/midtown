@@ -153,7 +153,7 @@
   }
 </script>
 
-<div class="flex flex-col gap-1 p-3 bg-sidebar border-r border-sidebar-border overflow-y-auto">
+<div class="flex flex-col gap-1 p-3 overflow-y-auto">
   <div class="flex items-center justify-between px-3 pt-2 pb-1">
     <div class="text-xs font-bold text-muted-foreground uppercase tracking-wide">Channels</div>
     <div class="flex gap-1">
@@ -254,7 +254,7 @@
       </div>
 
       {#if isExpanded && hasActiveTasks}
-        <div class="ml-6 py-1 pb-2 pl-3 border-l-2 border-sidebar-border">
+        <div class="ml-6 py-1 pb-2 pl-3">
           <TaskList channelName={channel.name} />
         </div>
       {/if}

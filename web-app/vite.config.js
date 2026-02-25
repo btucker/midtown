@@ -55,7 +55,7 @@ export default defineConfig({
   server: {
     proxy: {
       '/api': {
-        target: 'http://localhost:8080',
+        target: `http://localhost:${process.env.MIDTOWN_WEBSERVER_PORT || 47022}`,
         ws: true,
       },
     },

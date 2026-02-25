@@ -70,7 +70,7 @@
       {:else}
         {#each opsMessages as msg}
           <div class="flex gap-1 break-words min-w-0">
-            <span class="text-muted-foreground/60 flex-shrink-0 w-[3.2em] text-right">{formatTime(msg.timestamp)}</span>
+            <span class="text-muted-foreground/60 flex-shrink-0 w-[5.2em] text-right">{formatTime(msg.timestamp)}</span>
             {#if msg.msg_type === 'action' || msg.content?.startsWith('/me ')}
               <!-- Action: "* name content" -->
               <span class="flex-shrink-0" style="color: {getSenderColor(msg.from, OPS_SENDER_OVERRIDES)}">*</span>

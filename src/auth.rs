@@ -44,6 +44,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::str::FromStr;
 
 use tracing::warn;
@@ -1017,6 +1018,66 @@ pub fn set_project_profile_override(
     if provider == AuthProvider::Claude {
         project.auth_profile = Some(profile);
     }
+}
+
+/// Start the OAuth login flow for a provider.
+///
+/// Spawns the provider's CLI which opens the default browser for OAuth
+/// authentication. The CLI handles the full flow (browser open → user
+/// authenticates → OAuth callback returns token).
+///
+/// When `inherit_stdio` is true, the child's stdin/stdout/stderr are inherited
+/// so the user sees CLI output in their terminal (used by `midtown auth login`).
+/// When false, stdio is suppressed for headless operation (used by the web API).
+///
+/// Returns the spawned child process. The caller can `.wait()` on it (CLI) or
+/// drop it to let it run detached (web).
+pub fn start_login(
+    provider: AuthProvider,
+    email: &str,
+    inherit_stdio: bool,
+) -> Result<std::process::Child, String> {
+    if provider == AuthProvider::Zai {
+        return Err(
+            "z.ai uses API keys, not OAuth. Use `midtown auth login --key <key>` instead."
+                .to_string(),
+        );
+    }
+
+    let profile_dir = ensure_profile_dir_for(provider, email)
+        .map_err(|e| format!("Failed to create profile directory: {}", e))?;
+
+    let mut cmd = Command::new(provider.cli_command());
+
+    match provider {
+        AuthProvider::Claude => {
+            cmd.args(["auth", "login", "--email", email])
+                .env("CLAUDE_CONFIG_DIR", &profile_dir);
+        }
+        AuthProvider::Codex => {
+            cmd.arg("login").env("CODEX_HOME", &profile_dir);
+        }
+        AuthProvider::Zai => unreachable!(),
+    }
+
+    if inherit_stdio {
+        cmd.stdin(Stdio::inherit())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit());
+    } else {
+        cmd.stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+    }
+
+    cmd.spawn().map_err(|e| {
+        format!(
+            "Failed to launch {}: {}. Is {} installed?",
+            provider.cli_command(),
+            e,
+            provider.cli_command()
+        )
+    })
 }
 
 #[path = "auth_tests.rs"]

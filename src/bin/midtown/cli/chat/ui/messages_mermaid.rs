@@ -88,6 +88,19 @@ pub fn render_message_with_mermaid(
                     use_light_theme,
                 );
             }
+            ContentSegment::Insight(text) => {
+                let insight_style = Style::default().fg(Color::Magenta);
+                let content_lines = wrap_content(text, content_width);
+                for content in &content_lines {
+                    let parsed = minimad_ratatui::inline(content, insight_style);
+                    if is_first_content_line {
+                        lines.push(build_first_content_line(msg, &ctx, parsed));
+                        is_first_content_line = false;
+                    } else {
+                        lines.push(build_continuation_line(&ctx, parsed));
+                    }
+                }
+            }
         }
     }
 }
@@ -278,6 +291,10 @@ pub fn render_header_content_segments(
                     "[diagram]",
                     Style::default().fg(Color::DarkGray),
                 )));
+            }
+            ContentSegment::Insight(text) => {
+                let insight_style = Style::default().fg(Color::Magenta);
+                lines.extend(render_content_lines(text, content_width, insight_style));
             }
         }
     }

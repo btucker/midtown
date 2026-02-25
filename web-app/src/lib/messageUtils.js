@@ -73,7 +73,18 @@ export function isDimSender(sender, extraDimSenders) {
 export function formatTime(timestamp) {
   try {
     const date = new Date(timestamp)
-    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })
+    return date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', hour12: true })
+  } catch {
+    return ''
+  }
+}
+
+export function formatTimeCompact(timestamp) {
+  try {
+    const date = new Date(timestamp)
+    const h = date.getHours()
+    const m = String(date.getMinutes()).padStart(2, '0')
+    return `${h}:${m}`
   } catch {
     return ''
   }
@@ -85,9 +96,75 @@ export function senderChanged(msgs, index) {
   return msgs[index].from !== msgs[index - 1].from
 }
 
+/**
+ * Parse message content into text and insight segments.
+ *
+ * Detects two insight formats:
+ * 1. Coworker insights: content starts with 💡 — entire message is one insight segment
+ * 2. Lead raw output: contains `★ Insight` blocks delimited by dash-lines
+ *
+ * Returns Array<{ type: 'text' | 'insight', content: string }>
+ */
+export function parseInsightSegments(content) {
+  if (!content) return [{ type: 'text', content: content || '' }]
+
+  // Format 1: whole-message insight (coworker 💡 prefix)
+  if (content.trimStart().startsWith('💡')) {
+    return [{ type: 'insight', content: content.trimStart().replace(/^💡\s*/, '') }]
+  }
+
+  // Format 2: ★ Insight blocks mixed with regular text
+  if (!content.includes('★ Insight')) {
+    return [{ type: 'text', content }]
+  }
+
+  const segments = []
+  const lines = content.split('\n')
+  let textBuf = []
+  let insightBuf = []
+  let inInsight = false
+
+  for (const line of lines) {
+    if (inInsight) {
+      // End marker: line of 10+ dashes with optional backtick wrapping
+      if (/^`?─{10,}`?$/.test(line.trim())) {
+        if (insightBuf.length > 0) {
+          segments.push({ type: 'insight', content: insightBuf.join('\n').trim() })
+          insightBuf = []
+        }
+        inInsight = false
+      } else {
+        insightBuf.push(line)
+      }
+    } else if (line.includes('★ Insight')) {
+      // Flush accumulated text
+      if (textBuf.length > 0) {
+        const text = textBuf.join('\n').trim()
+        if (text) segments.push({ type: 'text', content: text })
+        textBuf = []
+      }
+      inInsight = true
+      insightBuf = []
+    } else {
+      textBuf.push(line)
+    }
+  }
+
+  // Flush remaining buffers
+  if (inInsight && insightBuf.length > 0) {
+    segments.push({ type: 'insight', content: insightBuf.join('\n').trim() })
+  }
+  if (textBuf.length > 0) {
+    const text = textBuf.join('\n').trim()
+    if (text) segments.push({ type: 'text', content: text })
+  }
+
+  return segments.length > 0 ? segments : [{ type: 'text', content }]
+}
+
 // Returns true if the minute ticked over from the previous message in the same group.
 // Used to conditionally show a gutter timestamp on continuation messages.
 export function timeChanged(msgs, index) {
   if (index === 0 || senderChanged(msgs, index)) return false
-  return formatTime(msgs[index].timestamp) !== formatTime(msgs[index - 1].timestamp)
+  return formatTimeCompact(msgs[index].timestamp) !== formatTimeCompact(msgs[index - 1].timestamp)
 }

@@ -642,6 +642,29 @@ export async function fetchAllAuthProfiles() {
   return byProvider
 }
 
+// Start an OAuth login flow for a profile.
+// The backend spawns the CLI which opens the default browser for OAuth.
+// Returns { ok: true } on success, or { ok: false, error: string } on failure.
+export async function startAuthLogin(email, provider = 'claude') {
+  try {
+    const res = await fetch(`${getApiBase()}/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, provider }),
+    })
+    if (res.ok) return { ok: true }
+    let errorMsg = `Login failed (${res.status})`
+    try {
+      const body = await res.json()
+      if (body.error) errorMsg = body.error
+    } catch (_) { /* response not JSON */ }
+    return { ok: false, error: errorMsg }
+  } catch (err) {
+    console.error('Failed to start auth login:', err)
+    return { ok: false, error: 'Network error' }
+  }
+}
+
 // Switch to a different auth profile via the daemon RPC.
 // Parameters:
 //   - profile: Profile name to switch to (e.g., "work", "personal")

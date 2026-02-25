@@ -1,7 +1,7 @@
 <script>
   import { messages, messagesByChannel, activeChannel, channels, coworkers, kanbanData, repoStatus, repoStatuses, daemonStatus, detailPanelData, isWideScreen, agentToolItems, threadData } from './store.js'
   import { sendMessage, uploadFile, closeThread, openThread, openTaskThread, getApiBase } from './api.js'
-  import { AVENUE_COLORS, getSenderColor, isDimSender, formatTime, timeChanged } from './messageUtils.js'
+  import { AVENUE_COLORS, getSenderColor, isDimSender, formatTime, timeChanged, parseInsightSegments } from './messageUtils.js'
   import { tick, onMount } from 'svelte'
   import { fly } from 'svelte/transition'
   import ReplyIcon from '@lucide/svelte/icons/reply'
@@ -21,6 +21,8 @@
   let formWrapperElement = $state(null)
   let channelLeadThinking = $state(false)
   let channelLeadThinkingTimeout = null
+  let channelItemsActive = $state(false)
+  let channelItemsActiveTimeout = null
 
   // Autocomplete state
   let showAutocomplete = $state(false)
@@ -65,9 +67,26 @@
 
   // Activity strip computed values (always-rendered single line above input)
   let isLeadWorking = $derived($activeChannel === 'midtown' ? !!$daemonStatus?.lead_working : false)
-  let hasInProgressItems = $derived(activeChannelToolItems.some((item) => item.status === 'InProgress'))
+  // Correlate InProgress tool calls with received ToolResults: a ToolUse item stays
+  // InProgress in the store even after its ToolResult arrives in a later batch (items
+  // are appended, not updated). Only count a call as truly in-progress if no matching
+  // ToolResult exists in the store.
+  let hasInProgressItems = $derived.by(() => {
+    const completedCallIds = new Set()
+    for (const item of activeChannelToolItems) {
+      for (const part of item.content) {
+        if (part.ToolResult) completedCallIds.add(part.ToolResult.call_id)
+      }
+    }
+    return activeChannelToolItems.some((item) => {
+      if (item.status !== 'InProgress') return false
+      return item.content.some(
+        (part) => part.ToolCall && !completedCallIds.has(part.ToolCall.call_id)
+      )
+    })
+  })
   let showActivity = $derived(activeChannelToolItems.length > 0 || channelLeadThinking || isLeadWorking)
-  let showDots = $derived(isLeadWorking || hasInProgressItems || channelLeadThinking)
+  let showDots = $derived(isLeadWorking || (hasInProgressItems && channelItemsActive) || channelLeadThinking)
 
   // Most recent tool call entry for inline display in the activity strip.
   // Replicates ToolActivity's merge logic but returns only the last call.
@@ -384,10 +403,6 @@
     return msg.msg_type === 'action' || msg.content?.startsWith('/me ')
   }
 
-  function isInsight(msg) {
-    return msg.msg_type === 'insight' || msg.type === 'insight'
-  }
-
   function getActionContent(msg) {
     return msg.content.replace(/^\/me\s*/, '')
   }
@@ -457,12 +472,36 @@
     }
   })
 
-  // Ensure the timeout is cleared when the component is destroyed
+  // Track tool item activity freshness: mark active when new items arrive,
+  // mark stale after 8s of silence. This catches channel leads that stop
+  // mid-tool (no ToolResult or final message to clear InProgress items).
+  $effect(() => {
+    const items = activeChannelToolItems
+    if (channelItemsActiveTimeout) {
+      clearTimeout(channelItemsActiveTimeout)
+      channelItemsActiveTimeout = null
+    }
+    if (items.length > 0) {
+      channelItemsActive = true
+      channelItemsActiveTimeout = setTimeout(() => {
+        channelItemsActive = false
+        channelItemsActiveTimeout = null
+      }, 8000)
+    } else {
+      channelItemsActive = false
+    }
+  })
+
+  // Ensure the timeouts are cleared when the component is destroyed
   $effect(() => {
     return () => {
       if (channelLeadThinkingTimeout) {
         clearTimeout(channelLeadThinkingTimeout)
         channelLeadThinkingTimeout = null
+      }
+      if (channelItemsActiveTimeout) {
+        clearTimeout(channelItemsActiveTimeout)
+        channelItemsActiveTimeout = null
       }
     }
   })
@@ -632,18 +671,19 @@
           <div
             data-testid="message-row"
             in:fly={{ y: 16, duration: isNewMessage($activeChannel, i) ? 180 : 0, opacity: 0 }}
-            class="group relative -mx-[18px] px-[18px] rounded-sm hover:bg-accent/30"
+            class="group relative -mx-[18px] px-[18px] pb-[5px] rounded-sm hover:bg-accent/30"
             class:mobile-thread-tappable={!$isWideScreen && !msg.thread_parent_id}
             onclick={(event) => handleMessageTap(event, msg)}
           >
           {#if !msg.thread_parent_id}
             <button
               data-testid="thread-reply-button"
-              class="hidden lg:flex absolute right-2 top-[1px] items-center gap-1 px-1.5 py-[1px] rounded text-[0.68rem] text-muted-foreground cursor-pointer opacity-0 pointer-events-none transition-opacity duration-150 group-hover:opacity-100 group-hover:pointer-events-auto focus:opacity-100 focus:pointer-events-auto hover:text-foreground"
+              class="hidden lg:flex absolute right-6 -top-3.5 items-center gap-2 px-3.5 py-1.5 rounded-lg border border-border bg-card text-[0.85rem] font-bold text-foreground cursor-pointer opacity-0 pointer-events-none transition-all duration-150 shadow-sm group-hover:opacity-100 group-hover:pointer-events-auto focus:opacity-100 focus:pointer-events-auto hover:border-primary hover:shadow-md"
               onclick={() => openThread(msg, $activeChannel)}
               aria-label="Reply in thread"
             >
-              <ReplyIcon size={13} />
+              <ReplyIcon size={16} />
+              <span>Reply</span>
             </button>
           {/if}
 
@@ -655,90 +695,59 @@
             currentTask={currentTasks[msg.from.toLowerCase()]}
           >
             {#if isAction(msg) && !hasMermaid(msg.content)}
-              <!-- Action message: gutter shows time only on minute change, then * content -->
               <div class="flex gap-0 break-words">
-                <span class="text-muted-foreground/50 flex-shrink-0 w-[3.7em] text-right mr-[0.5em] select-none text-[0.78rem]">{timeChanged(channelMessages, i) ? formatTime(msg.timestamp) : ''}</span>
                 <span class="flex-shrink-0 mr-[0.3em]" style="color: {getSenderColor(msg.from)}">*</span>
                 <span class="action-text flex-1 min-w-0" style="color: {getSenderColor(msg.from)}">{@html renderContent(getActionContent(msg), getApiBase())}</span>
               </div>
             {:else if isAction(msg) && hasMermaid(msg.content)}
-              <!-- Action message with mermaid diagram(s): gutter shows time only on minute change -->
               {#each parseSegments(getActionContent(msg)) as segment, si}
                 {#if segment.type === 'mermaid'}
-                  <div class="ml-[4.2em]">
-                    <MermaidDiagram code={segment.content} />
-                  </div>
+                  <MermaidDiagram code={segment.content} />
                 {:else}
                   <div class="flex gap-0 break-words">
                     {#if si === 0}
-                      <span class="text-muted-foreground/50 flex-shrink-0 w-[3.7em] text-right mr-[0.5em] select-none text-[0.78rem]">{timeChanged(channelMessages, i) ? formatTime(msg.timestamp) : ''}</span>
                       <span class="flex-shrink-0 mr-[0.3em]" style="color: {getSenderColor(msg.from)}">*</span>
                     {:else}
-<<<<<<< HEAD
-                      <span class="flex-shrink-0 w-[3.7em] mr-[0.5em]"></span>
                       <span class="flex-shrink-0 mr-[0.3em] invisible">*</span>
-=======
-                      <div class="message-text text-foreground">{@html renderContent(segment.content, getApiBase())}</div>
->>>>>>> a0bfc8d (fix(web): pass getApiBase() to renderContent in insight message path)
                     {/if}
                     <span class="action-text flex-1 min-w-0" style="color: {getSenderColor(msg.from)}">{@html renderContent(segment.content, getApiBase())}</span>
                   </div>
                 {/if}
               {/each}
-            {:else if isInsight(msg)}
-              <div class="rounded-md border border-insight/40 bg-insight/8 px-3 py-2 my-1 ml-[0.5em]">
-                <div
-                  class="flex items-center gap-1.5 mb-1.5 text-insight text-[0.72rem] font-bold uppercase tracking-wide"
-                  aria-label="Insight"
-                >
-                  <span aria-hidden="true">★</span>
-                  <span>Insight</span>
-                </div>
-                {#if hasMermaid(msg.content || '')}
-                  <div class="flex flex-col gap-2">
-                    {#each parseSegments(msg.content || '') as segment}
-                      {#if segment.type === 'mermaid'}
-                        <MermaidDiagram code={segment.content} />
-                      {:else}
-                        <div class="message-text text-foreground">{@html renderContent(segment.content, getApiBase())}</div>
-                      {/if}
-                    {/each}
-                  </div>
-                {:else}
-                  <div class="message-text text-foreground">{@html renderContent(msg.content || '', getApiBase())}</div>
-                {/if}
-              </div>
-            {:else if hasMermaid(msg.content)}
-              <!-- Message with mermaid diagram(s): gutter shows time only on minute change -->
-              {#each parseSegments(msg.content) as segment, si}
-                {#if segment.type === 'mermaid'}
-                  <div class="ml-[4.2em]">
-                    <MermaidDiagram code={segment.content} />
-                  </div>
-                {:else}
-                  <div class="flex gap-0 break-words">
-                    {#if si === 0}
-                      <span class="text-muted-foreground/50 flex-shrink-0 w-[3.7em] text-right mr-[0.5em] select-none text-[0.78rem]">{timeChanged(channelMessages, i) ? formatTime(msg.timestamp) : ''}</span>
+            {:else}
+              {#each parseInsightSegments(msg.content) as segment}
+                {#if segment.type === 'insight'}
+                  <div class="border-l-2 pl-3 max-w-[85%] my-0.5" style="border-color: {getSenderColor(msg.from)}80">
+                    {#if hasMermaid(segment.content)}
+                      {#each parseSegments(segment.content) as mseg}
+                        {#if mseg.type === 'mermaid'}
+                          <MermaidDiagram code={mseg.content} />
+                        {:else}
+                          <div class="message-text text-foreground">{@html renderContent(mseg.content, getApiBase())}</div>
+                        {/if}
+                      {/each}
                     {:else}
-                      <span class="flex-shrink-0 w-[3.7em] mr-[0.5em]"></span>
+                      <div class="message-text text-foreground">{@html renderContent(segment.content, getApiBase())}</div>
                     {/if}
-                    <span class="message-text flex-1 min-w-0 {isDimSender(msg.from) ? 'text-muted-foreground' : 'text-foreground'}">{@html renderContent(segment.content, getApiBase())}</span>
                   </div>
+                {:else if hasMermaid(segment.content)}
+                  {#each parseSegments(segment.content) as mseg}
+                    {#if mseg.type === 'mermaid'}
+                      <MermaidDiagram code={mseg.content} />
+                    {:else}
+                      <div class="break-words message-text {isDimSender(msg.from) ? 'text-muted-foreground' : 'text-foreground'}">{@html renderContent(mseg.content, getApiBase())}</div>
+                    {/if}
+                  {/each}
+                {:else}
+                  <div class="break-words message-text {isDimSender(msg.from) ? 'text-muted-foreground' : 'text-foreground'}">{@html renderContent(segment.content, getApiBase())}</div>
                 {/if}
               {/each}
-            {:else}
-              <!-- Regular message: gutter shows time only on minute change -->
-              <div class="flex gap-0 break-words">
-                <span class="text-muted-foreground/50 flex-shrink-0 w-[3.7em] text-right mr-[0.5em] select-none text-[0.78rem]">{timeChanged(channelMessages, i) ? formatTime(msg.timestamp) : ''}</span>
-                <span class="message-text flex-1 min-w-0 {isDimSender(msg.from) ? 'text-muted-foreground' : 'text-foreground'}">{@html renderContent(msg.content, getApiBase())}</span>
-              </div>
             {/if}
           </MessageRow>
 
           <!-- Reply indicator for messages with thread replies -->
           {#if !msg.thread_parent_id && msg.reply_count}
-            <div class="flex gap-0">
-              <span class="flex-shrink-0 w-[3.7em] mr-[0.5em]"></span>
+            <div class="flex gap-0" style="padding-left: calc(2.4rem + 0.5rem);">
               <button
                 data-testid="thread-summary"
                 class="flex items-center gap-1.5 text-[0.75rem] text-link-default hover:text-link-hover cursor-pointer bg-transparent border-none p-0 mt-0.5"
@@ -965,12 +974,14 @@
     border-radius: 5px;
     overflow-x: auto;
     margin: 5px 0;
+    border: none;
   }
 
   :global(.message-text pre code),
   :global(.action-text pre code) {
-    background: none;
-    padding: 0;
+    background: none !important;
+    padding: 0 !important;
+    border: none;
     border-radius: 0;
     font-size: 0.88em;
   }
@@ -1033,6 +1044,12 @@
   :global(.message-text tr:nth-child(even) td),
   :global(.action-text tr:nth-child(even) td) {
     background: hsl(var(--secondary));
+  }
+
+  /* Paragraph spacing within messages */
+  :global(.message-text p + p),
+  :global(.action-text p + p) {
+    margin-top: 0.5em;
   }
 
   /* Typing indicator bounce animation */

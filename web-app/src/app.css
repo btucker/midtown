@@ -1,6 +1,7 @@
 @import 'tailwindcss';
 @import 'tw-animate-css';
 @import 'tailwindcss-safe-area';
+@import 'highlight.js/styles/github-dark.css';
 @import '@fontsource/ibm-plex-sans/300.css';
 @import '@fontsource/ibm-plex-sans/400.css';
 @import '@fontsource/ibm-plex-sans/500.css';
@@ -167,3 +168,52 @@ body {
 .font-mono, [class*="font-mono"] {
   font-feature-settings: "tnum" 1;
 }
+
+/* highlight.js — dark theme imported globally above; override for light mode.
+   Uses :root:not(.dark) to match the app's theme toggle on <html>. */
+:root:not(.dark) .hljs { color: #24292e; background: #ffffff }
+:root:not(.dark) .hljs-doctag,
+:root:not(.dark) .hljs-keyword,
+:root:not(.dark) .hljs-meta .hljs-keyword,
+:root:not(.dark) .hljs-template-tag,
+:root:not(.dark) .hljs-template-variable,
+:root:not(.dark) .hljs-type,
+:root:not(.dark) .hljs-variable.language_ { color: #d73a49 }
+:root:not(.dark) .hljs-title,
+:root:not(.dark) .hljs-title.class_,
+:root:not(.dark) .hljs-title.class_.inherited__,
+:root:not(.dark) .hljs-title.function_ { color: #6f42c1 }
+:root:not(.dark) .hljs-attr,
+:root:not(.dark) .hljs-attribute,
+:root:not(.dark) .hljs-literal,
+:root:not(.dark) .hljs-meta,
+:root:not(.dark) .hljs-number,
+:root:not(.dark) .hljs-operator,
+:root:not(.dark) .hljs-variable,
+:root:not(.dark) .hljs-selector-attr,
+:root:not(.dark) .hljs-selector-class,
+:root:not(.dark) .hljs-selector-id { color: #005cc5 }
+:root:not(.dark) .hljs-regexp,
+:root:not(.dark) .hljs-string,
+:root:not(.dark) .hljs-meta .hljs-string { color: #032f62 }
+:root:not(.dark) .hljs-built_in,
+:root:not(.dark) .hljs-symbol { color: #e36209 }
+:root:not(.dark) .hljs-comment,
+:root:not(.dark) .hljs-code,
+:root:not(.dark) .hljs-formula { color: #6a737d }
+:root:not(.dark) .hljs-name,
+:root:not(.dark) .hljs-quote,
+:root:not(.dark) .hljs-selector-tag,
+:root:not(.dark) .hljs-selector-pseudo { color: #22863a }
+:root:not(.dark) .hljs-subst { color: #24292e }
+:root:not(.dark) .hljs-section { color: #005cc5; font-weight: bold }
+:root:not(.dark) .hljs-bullet { color: #735c0f }
+:root:not(.dark) .hljs-emphasis { color: #24292e; font-style: italic }
+:root:not(.dark) .hljs-strong { color: #24292e; font-weight: bold }
+:root:not(.dark) .hljs-addition { color: #22863a; background-color: #f0fff4 }
+:root:not(.dark) .hljs-deletion { color: #b31d28; background-color: #ffeef0 }
+
+/* Let hljs blend with the app's existing code block styling.
+   The pre element already handles background, padding, and border-radius. */
+.hljs { background: transparent; padding: 0 }
+pre code.hljs { padding: 0 }
