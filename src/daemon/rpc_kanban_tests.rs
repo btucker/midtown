@@ -76,6 +76,87 @@ fn test_kanban_cache_misses_on_different_repo_hash() {
     assert_eq!(cache.get(repo_hash_b), None);
 }
 
+// ============================================================================
+// Tests for is_lead_health_active — bug regression: legacy "lead" key vs repo name
+//
+// is_lead_actively_working() used to hard-code the "lead" key, which always
+// returned false for modern sessions named after the repo (e.g., "midtown").
+// is_lead_health_active() takes an explicit health map + repo_name so it
+// can be tested without a full DaemonState.
+// ============================================================================
+
+#[test]
+fn test_is_lead_health_active_detects_by_repo_name() {
+    // Modern sessions use the repo name (not "lead") as the health map key.
+    // Bug: is_lead_actively_working() only looked up "lead", so this always returned false.
+    let mut health = HashMap::new();
+    health.insert(
+        "midtown".to_string(),
+        ProcessHealth {
+            is_alive: true,
+            last_event_at: Some(Utc::now()),
+            ..Default::default()
+        },
+    );
+    assert!(
+        is_lead_health_active(&health, "midtown"),
+        "Should detect activity via repo-name key (not just 'lead')"
+    );
+}
+
+#[test]
+fn test_is_lead_health_active_detects_by_legacy_lead_key() {
+    // Legacy sessions use "lead" as the health map key — still must work.
+    let mut health = HashMap::new();
+    health.insert(
+        "lead".to_string(),
+        ProcessHealth {
+            is_alive: true,
+            last_event_at: Some(Utc::now()),
+            ..Default::default()
+        },
+    );
+    assert!(
+        is_lead_health_active(&health, "midtown"),
+        "Should detect activity via legacy 'lead' key"
+    );
+}
+
+#[test]
+fn test_is_lead_health_active_returns_false_when_absent() {
+    // Neither "lead" nor repo-name key is present.
+    let health: HashMap<String, ProcessHealth> = HashMap::new();
+    assert!(!is_lead_health_active(&health, "midtown"));
+}
+
+#[test]
+fn test_is_lead_health_active_both_keys_stale_repo_name_active_legacy() {
+    // Regression: if repo_name entry is stale/dead but "lead" entry is active,
+    // we must still report the lead as active. The or_else() approach would
+    // stop at the dead repo_name entry and miss the active "lead" entry.
+    let mut health = HashMap::new();
+    health.insert(
+        "midtown".to_string(),
+        ProcessHealth {
+            is_alive: false, // stale/dead entry for repo_name
+            last_event_at: Some(Utc::now()),
+            ..Default::default()
+        },
+    );
+    health.insert(
+        "lead".to_string(),
+        ProcessHealth {
+            is_alive: true,
+            last_event_at: Some(Utc::now()),
+            ..Default::default()
+        },
+    );
+    assert!(
+        is_lead_health_active(&health, "midtown"),
+        "Should detect activity via legacy 'lead' key even when repo-name key is stale"
+    );
+}
+
 #[test]
 fn test_lead_activity_detection_no_health() {
     assert!(!is_session_actively_working(None));

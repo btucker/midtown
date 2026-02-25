@@ -323,13 +323,8 @@ pub(crate) fn is_channel_lead(
     channel_lead_names.contains(name)
 }
 
-/// Returns true if the session name is the project lead.
-///
-/// The canonical lead session is named after the repo (e.g., "midtown"). The legacy
-/// literal "lead" is kept for backward compatibility with older sessions.
-pub(crate) fn is_project_lead(name: &str, repo_name: &str) -> bool {
-    name.eq_ignore_ascii_case("lead") || name.eq_ignore_ascii_case(repo_name)
-}
+// Re-export from helpers so existing tests (use super::*) continue to work.
+pub(crate) use super::helpers::is_project_lead;
 
 /// TTL for kanban data cache (60 seconds).
 ///
@@ -353,8 +348,22 @@ const LEAD_ACTIVITY_TIMEOUT: Duration = Duration::from_secs(5);
 /// computing" from "running but idle at the prompt".
 fn is_lead_actively_working(state: &DaemonState) -> bool {
     let health_guard = state.headless_health.read().unwrap();
-    let lead_health = health_guard.get("lead");
-    is_session_actively_working(lead_health)
+    is_lead_health_active(&health_guard, &state.repo_name)
+}
+
+/// Core lead-activity lookup: checks both the canonical repo-name key and the
+/// legacy "lead" key, returning true if either session is actively working.
+///
+/// Extracted from `is_lead_actively_working` so it can be unit-tested
+/// without a full `DaemonState`.
+pub(crate) fn is_lead_health_active(
+    health: &std::collections::HashMap<String, ProcessHealth>,
+    repo_name: &str,
+) -> bool {
+    // Check both keys: modern sessions use repo_name, legacy use "lead".
+    // Either being active counts — handles stale entries or in-flight transitions.
+    is_session_actively_working(health.get(repo_name))
+        || is_session_actively_working(health.get("lead"))
 }
 
 /// Core logic for activity detection: returns `true` when a session is alive

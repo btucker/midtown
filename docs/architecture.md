@@ -181,12 +181,12 @@ The main lead session name equals the repo name (e.g. `"midtown"`), not the hard
 
 - **Spawn**: `LaunchConfig::lead()` sets `name = repo_name.clone()` (`src/launch.rs`)
 - **Health**: `ensure_lead_alive()` and `maybe_refresh_lead_session()` compare against `snap.repo_name` (`src/daemon/health.rs`)
-- **Dispatch**: coworker-limit checks use `snap.repo_name` (`src/daemon/dispatch.rs`)
+- **Dispatch**: coworker-limit checks use `is_project_lead()` (`src/daemon/dispatch.rs`)
 - **Effects**: auto-detach suffix check and skip-filter use `state.repo_name` (`src/daemon/effects.rs`)
 - **Stop-time key**: `coworker_stop_times` entries for the lead are keyed by `repo_name.to_lowercase()`
 - **Attached key**: `attached_coworkers` entries for the lead are keyed by `repo_name` (lowercase)
 
-Code that previously compared `name == "lead"` now compares `name.eq_ignore_ascii_case(&snap.repo_name)` or checks `coworker_type == Some("lead")` (for attach-path role detection).
+All lead-identity checks use `helpers::is_project_lead(name, repo_name)` (`src/daemon/helpers.rs`), which accepts both the canonical repo name and the legacy `"lead"` string for backward compatibility with older sessions. This single helper is used by `rpc_kanban.rs`, `dispatch.rs`, `mod.rs`, and `pr.rs` to ensure consistent behavior. The `coworkers.status` API uses `is_lead_health_active(health, repo_name)` to check both health-map keys.
 
 **Backward-compat guard — `is_project_lead()`**: In `rpc_kanban.rs`, `is_project_lead(name, repo_name)` encapsulates the two-condition check for lead sessions: it returns `true` if the name equals the repo name *or* the legacy literal `"lead"` (case-insensitive). All code that needs to identify or exclude the lead session should call this helper rather than inlining the two-condition check. Current callers: `handle_coworker_list()` (`rpc_coworker.rs`), `handle_status()` (`rpc_status.rs`), `handle_coworker_report_state()` (`rpc_coworker.rs`), and the kanban build path in `rpc_kanban.rs`.
 

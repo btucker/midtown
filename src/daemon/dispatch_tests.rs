@@ -14,6 +14,172 @@ fn in_progress_task_for_lookup(task_id: &str, subject: &str, owner: &str) -> cra
     }
 }
 
+// ============================================================================
+// Regression tests: legacy "lead" owner excluded from orphan recovery and
+// duplicate detection.
+//
+// Before the consolidation fix, orphan recovery and duplicate detection in
+// dispatch_via_sessions_with_task_lookup() and check_for_duplicate_task_workers()
+// only skipped tasks owned by snap.repo_name, NOT the legacy "lead" name.
+// ============================================================================
+
+/// Build a minimal WorldSnapshot for lead-guard tests.
+///
+/// Sets in_progress_tasks and repo_name; all other fields are empty/false.
+fn make_lead_guard_snapshot(
+    in_progress: Vec<(String, String, String)>,
+    repo_name: &str,
+) -> snapshot::WorldSnapshot {
+    snapshot::WorldSnapshot {
+        in_progress_tasks: in_progress,
+        repo_name: repo_name.to_string(),
+        default_channel: repo_name.to_string(),
+        session_name: format!("{}-test", repo_name),
+        active_names: HashSet::new(),
+        active_session_ids: HashSet::new(),
+        running_coworkers: vec![],
+        active_coworkers: vec![],
+        coworker_snapshots: vec![],
+        coworker_start_times: HashMap::new(),
+        coworker_stop_times: HashMap::new(),
+        headless_process_health: HashMap::new(),
+        attached_coworkers: HashMap::new(),
+        busy_coworkers: HashSet::new(),
+        coworker_task_assignments: HashMap::new(),
+        all_tasks: vec![],
+        pending_tasks_with_owners: vec![],
+        pending_tasks_without_owners: vec![],
+        task_channel: HashMap::new(),
+        task_model_map: HashMap::new(),
+        task_plan_map: HashMap::new(),
+        task_execution_skill_map: HashMap::new(),
+        channel_lead_sessions: HashMap::new(),
+        coworkers_with_open_prs: HashSet::new(),
+        coworkers_with_merged_prs: HashSet::new(),
+        merged_pr_numbers: HashSet::new(),
+        ci_passed_pr_coworkers: HashSet::new(),
+        review_feedback_pr_coworkers: HashSet::new(),
+        open_prs_data: vec![],
+        github_open_pr_task_ids: HashMap::new(),
+        pending_task_owners: HashSet::new(),
+        tasks_with_open_prs: HashMap::new(),
+        pr_task_associations: HashMap::new(),
+        active_reviewers: HashSet::new(),
+        reviewer_pr_assignments: HashMap::new(),
+        reviewer_in_progress_comment_ids: HashMap::new(),
+        reviewed_prs: HashSet::new(),
+        prs_needing_review: 0,
+        reviewer_restart_counts: HashMap::new(),
+        reviewer_escalations_posted: HashSet::new(),
+        orphaned_pr_lead_nudges_sent: HashSet::new(),
+        coworkers_with_unblocked_deps: HashSet::new(),
+        usage_limit_nudge_scheduled: false,
+        usage_limit_nudge_at: None,
+        usage_limited_coworkers: HashSet::new(),
+        api_error_coworkers: HashSet::new(),
+        auth_error_coworkers: HashSet::new(),
+        tool_name_conflict_coworkers: HashSet::new(),
+        coworkers_with_active_tools: HashSet::new(),
+        channel_messages: vec![],
+        archived_channels: HashSet::new(),
+        daemon_logs: vec![],
+        lead_session_refresh_interval_secs: 5400,
+        is_at_coworker_limit: false,
+        is_at_dev_limit: false,
+        now_utc: chrono::Utc::now(),
+        repo_owner: None,
+        github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
+        freshly_fetched_rate_limit: None,
+        sessions: HashMap::new(),
+        session_task_map: HashMap::new(),
+        session_name_map: HashMap::new(),
+        name_session_map: HashMap::new(),
+        orphan_spawn_cooldown_active: false,
+        session_dispatch_cooldown_active: false,
+        spawn_failure_cooldown_names: HashSet::new(),
+        recently_recovered_session_ids: HashSet::new(),
+        stale_working_dir_sessions: HashSet::new(),
+        tasks_with_worktrees: HashSet::new(),
+        task_worktree_map: HashMap::new(),
+        worktree_branch_owners: HashMap::new(),
+        merged_pr_branches: HashMap::new(),
+        worktree_registry: crate::worktree_registry::WorktreeRegistry::default(),
+        session_profile_map: HashMap::new(),
+        limited_pool_profiles: HashSet::new(),
+    }
+}
+
+/// check_for_duplicate_task_workers must skip tasks owned by legacy "lead".
+///
+/// Bug: legacy "lead" owner was included in duplicate detection, causing the
+/// daemon to incorrectly flag tasks as duplicated and attempt to kill sessions.
+#[test]
+fn test_duplicate_detection_skips_legacy_lead_owner() {
+    // Two owners: "lead" (legacy) and a coworker named "york".
+    // This looks like a duplicate, but "lead" must be skipped.
+    let snap = make_lead_guard_snapshot(
+        vec![
+            ("42".to_string(), "Fix bug".to_string(), "lead".to_string()),
+            ("42".to_string(), "Fix bug".to_string(), "york".to_string()),
+        ],
+        "my-repo",
+    );
+
+    let effects = check_for_duplicate_task_workers(&snap);
+
+    // "lead" should be excluded → only 1 real worker (york) → no duplicate detected
+    let kill_effects: Vec<_> = effects
+        .iter()
+        .filter(|e| {
+            matches!(
+                e,
+                crate::daemon::effects::Effect::ShutdownCoworker { .. }
+                    | crate::daemon::effects::Effect::ShutdownCoworkerWithCallbacks { .. }
+            )
+        })
+        .collect();
+    assert!(
+        kill_effects.is_empty(),
+        "Should not kill any session: 'lead' must be excluded from duplicate detection. \
+         Effects: {:?}",
+        effects
+    );
+}
+
+/// dispatch_via_sessions_snapshot_only must skip tasks owned by legacy "lead".
+///
+/// Bug: tasks with owner="lead" were not skipped in orphan recovery (only
+/// owner=repo_name was skipped), causing the daemon to try to recover lead tasks.
+#[test]
+fn test_orphan_recovery_skips_legacy_lead_owner() {
+    // Task !1 owned by "lead" (legacy) with no active session → looks like an orphan.
+    // After fix: must be skipped (lead is not a recoverable coworker).
+    let snap = make_lead_guard_snapshot(
+        vec![("1".to_string(), "Main task".to_string(), "lead".to_string())],
+        "my-repo",
+    );
+
+    let effects = dispatch_via_sessions_snapshot_only(&snap);
+
+    // No spawn/nudge effects should be emitted for the "lead"-owned task
+    let spawn_effects: Vec<_> = effects
+        .iter()
+        .filter(|e| {
+            matches!(
+                e,
+                crate::daemon::effects::Effect::AssignAndSpawn { .. }
+                    | crate::daemon::effects::Effect::SpawnCoworkerWithCallbacks { .. }
+                    | crate::daemon::effects::Effect::NudgeSessionWithCallbacks { .. }
+            )
+        })
+        .collect();
+    assert!(
+        spawn_effects.is_empty(),
+        "Should not spawn/nudge for 'lead'-owned task: it must be skipped. Effects: {:?}",
+        effects
+    );
+}
+
 #[test]
 fn test_duplicate_worker_sorting_by_start_time() {
     use chrono::{Duration, Utc};

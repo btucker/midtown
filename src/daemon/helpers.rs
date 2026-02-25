@@ -150,6 +150,18 @@ pub fn coworker_from_branch_with_map(
     branch_owners.and_then(|map| map.get(branch).cloned())
 }
 
+/// Returns true if the session name identifies the project lead.
+///
+/// The canonical lead session is named after the repo (e.g., "midtown"). The legacy
+/// literal "lead" is kept for backward compatibility with older sessions that may
+/// still use that name.
+///
+/// Use this helper everywhere a lead-identity check is needed so all call sites
+/// consistently handle both the canonical and legacy lead names.
+pub(crate) fn is_project_lead(name: &str, repo_name: &str) -> bool {
+    name.eq_ignore_ascii_case("lead") || name.eq_ignore_ascii_case(repo_name)
+}
+
 /// Check if a branch is a lead branch (starts with "lead/").
 ///
 /// Lead branches (e.g., "lead/fix-bug") indicate the PR is authored by the Lead,

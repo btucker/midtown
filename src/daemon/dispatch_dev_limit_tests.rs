@@ -540,3 +540,105 @@ fn test_dispatch_excludes_channel_leads_from_dev_count() {
         effects
     );
 }
+
+// ============================================================================
+// Regression tests: legacy "lead" session excluded from dev limit
+//
+// Before the consolidation fix, is_at_dev_limit() and is_at_coworker_limit()
+// only excluded sessions named after the repo (state.repo_name). Legacy
+// sessions named "lead" were incorrectly counted as dev slots.
+// ============================================================================
+
+/// Legacy "lead" sessions should not count against the dev limit.
+///
+/// Scenario: max_coworkers=3, 3 running sessions: "lead" (legacy), "york", "madison".
+/// Bug: "lead" counted as a dev coworker → at_dev_limit=true.
+/// Fix: "lead" is excluded like the repo-named lead → at_dev_limit=false.
+#[test]
+fn test_legacy_lead_does_not_count_against_dev_limit() {
+    let state = make_test_state_with_max(3);
+
+    for name in &["lead", "york", "madison"] {
+        state
+            .coworkers
+            .insert_for_testing(make_running_coworker(name));
+    }
+
+    let empty: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    // With fix: "lead" is excluded → 2 real devs < max=3 → not at dev limit
+    assert!(
+        !state.is_at_dev_limit(&empty),
+        "Legacy 'lead' session should not count toward dev limit; only york and madison are devs"
+    );
+}
+
+/// Legacy "lead" sessions should not count against the absolute coworker limit.
+///
+/// Scenario: max_coworkers=1, REVIEW_HEADROOM=2, absolute cap=3.
+/// 3 sessions: "lead" (legacy), "york" (dev), "amsterdam" (reviewer).
+/// Bug: "lead" counted → at_coworker_limit=true.
+/// Fix: "lead" excluded → 2 non-lead sessions < cap=3 → not at coworker limit.
+#[test]
+fn test_legacy_lead_does_not_count_against_coworker_limit() {
+    let state = make_test_state_with_max(1);
+
+    for name in &["lead", "york", "amsterdam"] {
+        state
+            .coworkers
+            .insert_for_testing(make_running_coworker(name));
+    }
+
+    let empty: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    // max=1 + REVIEW_HEADROOM=2 → absolute cap=3
+    // With fix: "lead" excluded → 2 real sessions (york + amsterdam) < cap=3 → not at limit
+    assert!(
+        !state.is_at_coworker_limit(&empty),
+        "Legacy 'lead' session should not count toward absolute coworker limit"
+    );
+}
+
+/// When a legacy "lead" session is running, spawn_for_pending_tasks should
+/// still dispatch work (lead does not inflate the running coworker count).
+#[test]
+fn test_dispatch_excludes_legacy_lead_from_dev_count() {
+    let state = make_test_state_with_max(3);
+
+    // Register 2 real coworkers in CoworkerManager
+    for name in &["york", "madison"] {
+        state
+            .coworkers
+            .insert_for_testing(make_running_coworker(name));
+    }
+
+    // 3 sessions in the snapshot: "lead" (legacy) + 2 devs
+    let running = vec![
+        make_running_coworker("lead"),
+        make_running_coworker("york"),
+        make_running_coworker("madison"),
+    ];
+
+    let pending = vec![make_pending_task("99")];
+
+    // is_at_dev_limit=false because (after fix) "lead" doesn't count
+    let snap = make_dev_limit_snapshot(running, pending, false);
+
+    let effects = crate::daemon::dispatch::spawn_for_pending_tasks(&snap, &state);
+
+    // Only 2 real dev coworkers < dev_cap=3 → task dispatch IS emitted.
+    // Without the fix: effective_count=3 ("lead" counted) ≥ dev_cap=3 → no dispatch.
+    let has_task_effect = effects.iter().any(|e| {
+        matches!(
+            e,
+            crate::daemon::effects::Effect::AssignAndSpawn { .. }
+                | crate::daemon::effects::Effect::SpawnCoworkerWithCallbacks { .. }
+                | crate::daemon::effects::Effect::NudgeSessionWithCallbacks { .. }
+        )
+    });
+    assert!(
+        has_task_effect,
+        "Expected task dispatch: legacy 'lead' must not count toward dev cap. Effects: {:?}",
+        effects
+    );
+}
