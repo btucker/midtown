@@ -24,7 +24,7 @@
   }
 
   // "Just merged" banner — mirrors CelebrationEffects hydration-guard pattern
-  const BANNER_DURATION_MS = 2 * 60 * 1000 // 2 minutes
+  const BANNER_DURATION_MS = 5 * 60 * 1000 // 5 minutes
   const seenPrs = new Set()
   const bannerTimers = new Map()
   let hydrated = false
@@ -97,7 +97,7 @@
       <span class="text-[1.1rem] font-bold font-mono text-foreground">{$activeChannel}</span>
     </div>
 
-    <!-- Center: just-merged banner (fades out after 2 min) -->
+    <!-- Center: just-merged banner (fades out after 5 min) -->
     {#each recentMerges as merge (merge.key)}
       <div class="just-merged shrink-0" transition:fade={{ duration: 400 }}>
         <span class="label">Just merged:</span>
@@ -176,21 +176,27 @@
 
 <style>
   .just-merged {
-    font-size: 0.78rem;
+    font-size: 0.75rem;
+    font-weight: 600;
     font-family: 'SF Mono', Menlo, Consolas, Monaco, 'Courier New', monospace;
-    color: var(--color-muted-foreground, #808080);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
     max-width: 36ch;
+    margin-right: 0.75rem;
+    padding: 3px 0.5rem;
+    border-radius: 0.75rem;
+    background: light-dark(#f3e8ff, rgba(88, 28, 135, 0.25));
+    color: light-dark(#7c3aed, #c4b5fd);
   }
 
   .just-merged .label {
     margin-right: 0.35em;
+    opacity: 0.7;
   }
 
   .just-merged a {
-    color: var(--color-link-pr, #5f87af);
+    color: inherit;
     text-decoration: none;
   }
 

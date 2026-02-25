@@ -21,6 +21,8 @@
   let formWrapperElement = $state(null)
   let channelLeadThinking = $state(false)
   let channelLeadThinkingTimeout = null
+  let channelItemsActive = $state(false)
+  let channelItemsActiveTimeout = null
 
   // Autocomplete state
   let showAutocomplete = $state(false)
@@ -65,9 +67,26 @@
 
   // Activity strip computed values (always-rendered single line above input)
   let isLeadWorking = $derived($activeChannel === 'midtown' ? !!$daemonStatus?.lead_working : false)
-  let hasInProgressItems = $derived(activeChannelToolItems.some((item) => item.status === 'InProgress'))
+  // Correlate InProgress tool calls with received ToolResults: a ToolUse item stays
+  // InProgress in the store even after its ToolResult arrives in a later batch (items
+  // are appended, not updated). Only count a call as truly in-progress if no matching
+  // ToolResult exists in the store.
+  let hasInProgressItems = $derived.by(() => {
+    const completedCallIds = new Set()
+    for (const item of activeChannelToolItems) {
+      for (const part of item.content) {
+        if (part.ToolResult) completedCallIds.add(part.ToolResult.call_id)
+      }
+    }
+    return activeChannelToolItems.some((item) => {
+      if (item.status !== 'InProgress') return false
+      return item.content.some(
+        (part) => part.ToolCall && !completedCallIds.has(part.ToolCall.call_id)
+      )
+    })
+  })
   let showActivity = $derived(activeChannelToolItems.length > 0 || channelLeadThinking || isLeadWorking)
-  let showDots = $derived(isLeadWorking || hasInProgressItems || channelLeadThinking)
+  let showDots = $derived(isLeadWorking || (hasInProgressItems && channelItemsActive) || channelLeadThinking)
 
   // Most recent tool call entry for inline display in the activity strip.
   // Replicates ToolActivity's merge logic but returns only the last call.
@@ -453,12 +472,36 @@
     }
   })
 
-  // Ensure the timeout is cleared when the component is destroyed
+  // Track tool item activity freshness: mark active when new items arrive,
+  // mark stale after 8s of silence. This catches channel leads that stop
+  // mid-tool (no ToolResult or final message to clear InProgress items).
+  $effect(() => {
+    const items = activeChannelToolItems
+    if (channelItemsActiveTimeout) {
+      clearTimeout(channelItemsActiveTimeout)
+      channelItemsActiveTimeout = null
+    }
+    if (items.length > 0) {
+      channelItemsActive = true
+      channelItemsActiveTimeout = setTimeout(() => {
+        channelItemsActive = false
+        channelItemsActiveTimeout = null
+      }, 8000)
+    } else {
+      channelItemsActive = false
+    }
+  })
+
+  // Ensure the timeouts are cleared when the component is destroyed
   $effect(() => {
     return () => {
       if (channelLeadThinkingTimeout) {
         clearTimeout(channelLeadThinkingTimeout)
         channelLeadThinkingTimeout = null
+      }
+      if (channelItemsActiveTimeout) {
+        clearTimeout(channelItemsActiveTimeout)
+        channelItemsActiveTimeout = null
       }
     }
   })

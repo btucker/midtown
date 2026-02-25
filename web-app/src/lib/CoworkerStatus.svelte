@@ -3,6 +3,7 @@
   import { detailPanelData } from './store.js'
   import { closeThread } from './api.js'
   import { getSenderColor } from './messageUtils.js'
+  import * as Tooltip from '$lib/components/ui/tooltip/index.js'
 
   // Filter to only active coworkers (matching TUI logic - skip idle/completed).
   // Phase may be missing (freshly spawned / not reporting), null (serialized absent
@@ -87,14 +88,19 @@
       {#each activeCoworkers as cw}
         <div class="flex flex-col gap-0.5 px-1.5 py-1 font-mono text-sm leading-normal">
           <div class="flex items-center gap-1.5">
-            <span class="relative shrink-0 w-5 h-5">
-              <span
-                class="flex items-center justify-center w-5 h-5 rounded text-[0.6rem] font-bold text-white select-none"
-                style="background-color: {getSenderColor(cw.name)}"
-              >{avatarLetter(cw.name)}</span>
-              <span class="absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full bg-status-green border-2 border-sidebar"></span>
-            </span>
-            <span class="shrink-0 font-medium lowercase" style="color: {getHealthColor(cw.health)}">{cw.name}</span>
+            <Tooltip.Root>
+              <Tooltip.Trigger>
+                <span class="relative shrink-0 w-5 h-5 inline-block">
+                  <span
+                    class="flex items-center justify-center w-5 h-5 rounded text-[0.6rem] font-bold text-white select-none"
+                    style="background-color: {getSenderColor(cw.name)}"
+                  >{avatarLetter(cw.name)}</span>
+                  <span class="absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full border-2 border-sidebar"
+                    style="background-color: {getHealthColor(cw.health)}"></span>
+                </span>
+              </Tooltip.Trigger>
+              <Tooltip.Content side="top">{cw.name}</Tooltip.Content>
+            </Tooltip.Root>
             {#if cw.phase}
               <span class="hidden text-[0.75rem] text-muted-foreground sm:inline">{cw.phase}</span>
             {/if}
