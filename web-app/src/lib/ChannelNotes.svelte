@@ -1,5 +1,4 @@
 <script>
-  import { onMount } from 'svelte'
   import { activeChannel, activeProject } from './store.js'
   import { renderContent } from './markdown.js'
 
@@ -10,27 +9,37 @@
   /** On mobile, whether we're showing the content pane (true) or the list (false). */
   let mobileShowContent = $state(false)
 
-  async function loadNotes(project, channel) {
+  // Reload whenever the active project or channel changes.
+  // AbortController cancels in-flight requests so a slow earlier response
+  // never overwrites state that was already updated by a faster later one.
+  $effect(() => {
+    const project = $activeProject
+    const channel = $activeChannel
     if (!project || !channel) return
+
+    const controller = new AbortController()
+
     loading = true
     notes = []
     selectedIndex = 0
     mobileShowContent = false
-    try {
-      const res = await fetch(`/api/projects/${encodeURIComponent(project)}/channels/${encodeURIComponent(channel)}/notes`)
-      if (res.ok) {
-        notes = await res.json()
-      }
-    } catch (e) {
-      console.error('Failed to fetch channel notes:', e)
-    } finally {
-      loading = false
-    }
-  }
 
-  // Reload whenever the active project or channel changes.
-  $effect(() => {
-    loadNotes($activeProject, $activeChannel)
+    fetch(
+      `/api/projects/${encodeURIComponent(project)}/channels/${encodeURIComponent(channel)}/notes`,
+      { signal: controller.signal },
+    )
+      .then((res) => (res.ok ? res.json() : []))
+      .then((data) => {
+        notes = data
+      })
+      .catch((e) => {
+        if (e.name !== 'AbortError') console.error('Failed to fetch channel notes:', e)
+      })
+      .finally(() => {
+        loading = false
+      })
+
+    return () => controller.abort()
   })
 
   function selectNote(index) {

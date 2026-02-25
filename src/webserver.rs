@@ -381,15 +381,23 @@ async fn project_zellij_web_url(Path(name): Path<String>) -> Json<serde_json::Va
 /// The title is taken from the first `# Heading` line in the file, falling
 /// back to the filename stem (`.md` stripped, `-` replaced with spaces,
 /// title-cased).
+/// Return true if a name is safe to embed in a filesystem path.
+///
+/// Allows alphanumeric characters, hyphens, and underscores only.
+/// This matches the channel name rules enforced by `Channel::new` and
+/// prevents path traversal attacks via either path segment.
+fn is_valid_path_segment(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+}
+
 async fn project_channel_notes(
     Path((name, channel_name)): Path<(String, String)>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    // Validate channel name to prevent path traversal attacks.
-    let valid = !channel_name.is_empty()
-        && channel_name
-            .chars()
-            .all(|c| c.is_alphanumeric() || c == '-' || c == '_');
-    if !valid {
+    // Validate both path segments to prevent path traversal attacks.
+    if !is_valid_path_segment(&name) || !is_valid_path_segment(&channel_name) {
         return Err(StatusCode::BAD_REQUEST);
     }
 
@@ -808,10 +816,31 @@ mod tests {
 
     // --- project_channel_notes handler tests ---
 
+    #[test]
+    fn test_is_valid_path_segment() {
+        assert!(is_valid_path_segment("midtown"));
+        assert!(is_valid_path_segment("my-project"));
+        assert!(is_valid_path_segment("my_channel"));
+        assert!(is_valid_path_segment("abc123"));
+        assert!(!is_valid_path_segment(""));
+        assert!(!is_valid_path_segment(".."));
+        assert!(!is_valid_path_segment("../etc"));
+        assert!(!is_valid_path_segment("foo/bar"));
+        assert!(!is_valid_path_segment("foo bar"));
+    }
+
     #[tokio::test]
     async fn test_channel_notes_rejects_invalid_channel_name() {
         let result =
             project_channel_notes(Path(("myproject".to_string(), "../etc/passwd".to_string())))
+                .await;
+        assert_eq!(result.unwrap_err(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_channel_notes_rejects_invalid_project_name() {
+        let result =
+            project_channel_notes(Path(("../../../etc".to_string(), "mychannel".to_string())))
                 .await;
         assert_eq!(result.unwrap_err(), StatusCode::BAD_REQUEST);
     }
