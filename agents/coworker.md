@@ -537,7 +537,7 @@ cd web-app && npx playwright test /tmp/screenshot-test.spec.ts \
   --project=chromium --video=on --output=/tmp/pw-results
 
 # Copy the video to the assets dir
-REPO=$(git rev-parse --show-toplevel | xargs basename)
+REPO=$(git worktree list --porcelain | awk '/^worktree/{print $2; exit}' | xargs basename)
 ASSETS=~/.midtown/projects/$REPO/assets
 mkdir -p "$ASSETS"
 cp /tmp/pw-results/*/video.webm "$ASSETS/recording-$(date +%s).webm"
