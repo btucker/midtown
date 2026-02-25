@@ -440,6 +440,66 @@ async fn test_pool_toggle_enable_is_idempotent_via_handler() {
     );
 }
 
+// ============================================================================
+// execution_role_for_coworker — canonical lead name
+// ============================================================================
+
+/// A session named after the repo (e.g., "midtown") must be identified as Lead.
+///
+/// Regression: before this fix, `execution_role_for_coworker` only checked for
+/// the legacy literal "lead", so a modern canonical session got `Coworker` role
+/// and was restarted with coworker credentials after an auth-profile switch.
+#[test]
+fn test_execution_role_for_canonical_lead_name() {
+    let reviewer_pr: HashMap<String, u64> = HashMap::new();
+    let channel_leads: HashSet<String> = HashSet::new();
+
+    let canonical_lead = crate::coworker::Coworker {
+        slot_id: "1".to_string(),
+        name: "midtown".to_string(), // canonical name — NOT the legacy "lead"
+        status: crate::coworker::CoworkerStatus::Running,
+        working_dir: "/tmp/midtown".to_string(),
+        started_at: chrono::Utc::now(),
+        current_task: None,
+        session_id: None,
+        model: "opus".to_string(),
+        provider: crate::auth::AuthProvider::Claude,
+        profile: "default".to_string(),
+    };
+
+    assert_eq!(
+        execution_role_for_coworker(&canonical_lead, &reviewer_pr, &channel_leads, "midtown"),
+        crate::config::ExecutionRole::Lead,
+        "canonical repo-named session must be classified as Lead, not Coworker"
+    );
+}
+
+/// Legacy "lead" name must still be identified as Lead after the refactor.
+#[test]
+fn test_execution_role_for_legacy_lead_name_still_works() {
+    let reviewer_pr: HashMap<String, u64> = HashMap::new();
+    let channel_leads: HashSet<String> = HashSet::new();
+
+    let legacy_lead = crate::coworker::Coworker {
+        slot_id: "1".to_string(),
+        name: "lead".to_string(),
+        status: crate::coworker::CoworkerStatus::Running,
+        working_dir: "/tmp/lead".to_string(),
+        started_at: chrono::Utc::now(),
+        current_task: None,
+        session_id: None,
+        model: "opus".to_string(),
+        provider: crate::auth::AuthProvider::Claude,
+        profile: "default".to_string(),
+    };
+
+    assert_eq!(
+        execution_role_for_coworker(&legacy_lead, &reviewer_pr, &channel_leads, "midtown"),
+        crate::config::ExecutionRole::Lead,
+        "legacy 'lead' session must still be classified as Lead"
+    );
+}
+
 /// After a successful toggle, the handler broadcasts to the ops channel so web
 /// UI clients receive the update without polling.
 #[tokio::test]
@@ -644,7 +704,12 @@ fn test_execution_role_for_coworker() {
         profile: "default".to_string(),
     };
     assert_eq!(
-        execution_role_for_coworker(&lead, &reviewer_pr_by_name, &channel_lead_session_names),
+        execution_role_for_coworker(
+            &lead,
+            &reviewer_pr_by_name,
+            &channel_lead_session_names,
+            "myrepo"
+        ),
         crate::config::ExecutionRole::Lead
     );
 
@@ -653,7 +718,12 @@ fn test_execution_role_for_coworker() {
         ..lead.clone()
     };
     assert_eq!(
-        execution_role_for_coworker(&reviewer, &reviewer_pr_by_name, &channel_lead_session_names),
+        execution_role_for_coworker(
+            &reviewer,
+            &reviewer_pr_by_name,
+            &channel_lead_session_names,
+            "myrepo"
+        ),
         crate::config::ExecutionRole::Reviewer
     );
 
@@ -665,7 +735,8 @@ fn test_execution_role_for_coworker() {
         execution_role_for_coworker(
             &channel_lead,
             &reviewer_pr_by_name,
-            &channel_lead_session_names
+            &channel_lead_session_names,
+            "myrepo"
         ),
         crate::config::ExecutionRole::ChannelLead
     );
@@ -675,7 +746,12 @@ fn test_execution_role_for_coworker() {
         ..lead
     };
     assert_eq!(
-        execution_role_for_coworker(&coworker, &reviewer_pr_by_name, &channel_lead_session_names),
+        execution_role_for_coworker(
+            &coworker,
+            &reviewer_pr_by_name,
+            &channel_lead_session_names,
+            "myrepo"
+        ),
         crate::config::ExecutionRole::Coworker
     );
 }

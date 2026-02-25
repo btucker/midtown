@@ -2807,13 +2807,8 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     let ps = state.persistent_state.lock().await;
                     ps.channel_lead_sessions.contains_key(name.as_str())
                 };
-                let suffix = if name.eq_ignore_ascii_case(&state.repo_name) {
-                    " Headless session will respawn on the next tick."
-                } else if is_channel_lead {
-                    " Channel lead session will be respawned for its channel."
-                } else {
-                    " Session will be reassigned via normal task dispatch."
-                };
+                let suffix =
+                    auto_detach_suffix_message(name.as_str(), &state.repo_name, is_channel_lead);
                 let mut msg = crate::message::Message::system(format!(
                     "⚠️ Auto-detached stale attached session for {} — interactive session ended without detach.{}",
                     name, suffix
@@ -3141,6 +3136,21 @@ async fn spawn_with_resume_fallback(
                 }
             }
         }
+    }
+}
+
+/// Choose the suffix for an auto-detach warning message.
+///
+/// The lead session (both canonical repo name and legacy "lead") gets a
+/// respawn notice; channel leads get a channel-respawn notice; everyone
+/// else gets a task-dispatch notice.
+fn auto_detach_suffix_message(name: &str, repo_name: &str, is_channel_lead: bool) -> &'static str {
+    if super::helpers::is_project_lead(name, repo_name) {
+        " Headless session will respawn on the next tick."
+    } else if is_channel_lead {
+        " Channel lead session will be respawned for its channel."
+    } else {
+        " Session will be reassigned via normal task dispatch."
     }
 }
 
