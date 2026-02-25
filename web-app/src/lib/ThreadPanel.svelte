@@ -186,12 +186,12 @@
                       {#if segment.type === 'mermaid'}
                         <MermaidDiagram code={segment.content} />
                       {:else}
-                        <div class="message-text text-foreground">{@html renderContent(segment.content)}</div>
+                        <div class="message-text text-foreground">{@html renderContent(segment.content, getApiBase())}</div>
                       {/if}
                     {/each}
                   </div>
                 {:else}
-                  <div class="message-text text-foreground">{@html renderContent(msg.content || '')}</div>
+                  <div class="message-text text-foreground">{@html renderContent(msg.content || '', getApiBase())}</div>
                 {/if}
               </div>
             {:else if hasMermaid(msg.content)}
@@ -335,12 +335,12 @@
                       {#if segment.type === 'mermaid'}
                         <MermaidDiagram code={segment.content} />
                       {:else}
-                        <div class="message-text text-foreground">{@html renderContent(segment.content)}</div>
+                        <div class="message-text text-foreground">{@html renderContent(segment.content, getApiBase())}</div>
                       {/if}
                     {/each}
                   </div>
                 {:else}
-                  <div class="message-text text-foreground">{@html renderContent(msg.content || '')}</div>
+                  <div class="message-text text-foreground">{@html renderContent(msg.content || '', getApiBase())}</div>
                 {/if}
               </div>
             {:else if hasMermaid(msg.content)}
