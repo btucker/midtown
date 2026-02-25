@@ -188,6 +188,8 @@ The main lead session name equals the repo name (e.g. `"midtown"`), not the hard
 
 Code that previously compared `name == "lead"` now compares `name.eq_ignore_ascii_case(&snap.repo_name)` or checks `coworker_type == Some("lead")` (for attach-path role detection).
 
+**Backward-compat guard — `is_project_lead()`**: In `rpc_kanban.rs`, `is_project_lead(name, repo_name)` encapsulates the two-condition check for lead sessions: it returns `true` if the name equals the repo name *or* the legacy literal `"lead"` (case-insensitive). All code that needs to identify or exclude the lead session should call this helper rather than inlining the two-condition check. Current callers: `handle_coworker_list()` (`rpc_coworker.rs`), `handle_status()` (`rpc_status.rs`), `handle_coworker_report_state()` (`rpc_coworker.rs`), and the kanban build path in `rpc_kanban.rs`.
+
 ## Provider Resolution
 
 Each session role resolves its AI provider via `get_execution_provider_for_role()` in `src/config.rs`. The resolution chains are:

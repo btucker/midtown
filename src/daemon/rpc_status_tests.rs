@@ -3,7 +3,7 @@
 use crate::rpc::RequestId;
 
 use super::super::DaemonState;
-use super::{filter_lead_session, handle_status, resolve_pr_number, tag_channel_leads_and_count};
+use super::{handle_status, resolve_pr_number, tag_channel_leads_and_count};
 
 // ============================================================================
 // Integration test helper
@@ -145,74 +145,6 @@ fn test_tag_channel_leads_all_are_leads() {
 }
 
 #[test]
-fn test_filter_lead_session_removes_repo_named_lead() {
-    // The lead session is named after the repo (e.g., "midtown") and must
-    // not appear in the coworkers list. This was a bug where the lead session
-    // appeared in the status display as a regular coworker.
-    let coworkers = vec![
-        serde_json::json!({"name": "midtown", "status": "running"}),
-        serde_json::json!({"name": "amsterdam", "status": "running"}),
-        serde_json::json!({"name": "park", "status": "running"}),
-    ];
-
-    let filtered = filter_lead_session(coworkers, "midtown");
-
-    assert_eq!(
-        filtered.len(),
-        2,
-        "Lead session should be excluded from coworkers list"
-    );
-    let names: Vec<&str> = filtered
-        .iter()
-        .filter_map(|v| v.get("name").and_then(|n| n.as_str()))
-        .collect();
-    assert!(
-        !names.contains(&"midtown"),
-        "Lead should not be in filtered list"
-    );
-    assert!(
-        names.contains(&"amsterdam"),
-        "Regular coworker should remain"
-    );
-    assert!(names.contains(&"park"), "Regular coworker should remain");
-}
-
-#[test]
-fn test_filter_lead_session_case_insensitive() {
-    let coworkers = vec![
-        serde_json::json!({"name": "MyProject", "status": "running"}),
-        serde_json::json!({"name": "amsterdam", "status": "running"}),
-    ];
-
-    let filtered = filter_lead_session(coworkers, "myproject");
-
-    assert_eq!(
-        filtered.len(),
-        1,
-        "Case-insensitive lead filtering should work"
-    );
-    assert_eq!(filtered[0]["name"], "amsterdam");
-}
-
-#[test]
-fn test_filter_lead_session_no_lead_present() {
-    // If the lead session is not registered (e.g., during startup), the
-    // filter should be a no-op.
-    let coworkers = vec![
-        serde_json::json!({"name": "amsterdam", "status": "running"}),
-        serde_json::json!({"name": "park", "status": "running"}),
-    ];
-
-    let filtered = filter_lead_session(coworkers, "midtown");
-
-    assert_eq!(
-        filtered.len(),
-        2,
-        "All coworkers should remain when no lead present"
-    );
-}
-
-#[test]
 fn test_tag_channel_leads_empty_coworkers() {
     let coworkers: Vec<serde_json::Value> = vec![];
     let leads: std::collections::HashSet<String> = ["tui-lead".to_string()].into_iter().collect();
@@ -243,27 +175,6 @@ fn test_tag_channel_leads_preserves_existing_fields() {
     assert_eq!(tagged[0]["current_task"], "!42 Fix auth bug");
     assert_eq!(tagged[0]["provider"], "claude");
     assert_eq!(tagged[0]["is_channel_lead"], false);
-}
-
-// ─── Tests for legacy "lead" string guard ───
-
-#[test]
-fn test_filter_lead_session_removes_legacy_lead_string() {
-    // Legacy sessions may use the literal name "lead" instead of the repo name.
-    // Both must be filtered from the coworkers list.
-    let coworkers = vec![
-        serde_json::json!({"name": "lead", "status": "running"}),
-        serde_json::json!({"name": "amsterdam", "status": "running"}),
-    ];
-
-    let filtered = filter_lead_session(coworkers, "midtown");
-
-    assert_eq!(
-        filtered.len(),
-        1,
-        "Legacy 'lead' session should be excluded from coworkers list"
-    );
-    assert_eq!(filtered[0]["name"], "amsterdam");
 }
 
 // Integration test: handle_status excludes legacy "lead" session

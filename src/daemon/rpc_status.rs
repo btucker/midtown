@@ -124,15 +124,13 @@ pub(super) async fn handle_status(id: RequestId, state: &DaemonState) -> Respons
         .count();
 
     // Get coworkers with their details, looking up current task from task storage.
-    // Exclude the lead session: either named after the repo (e.g., "midtown") or
-    // using the legacy literal "lead" name kept for backward compatibility.
+    // Exclude the lead session via is_project_lead() — covers both the canonical
+    // repo-name session and legacy sessions that used the literal "lead" name.
     let coworkers: Vec<serde_json::Value> = state
         .coworkers
         .list()
         .iter()
-        .filter(|cw| {
-            !cw.name.eq_ignore_ascii_case(&state.repo_name) && !cw.name.eq_ignore_ascii_case("lead")
-        })
+        .filter(|cw| !super::rpc_kanban::is_project_lead(&cw.name, &state.repo_name))
         .map(|cw| {
             // Look up current task from task storage (case-insensitive)
             let current_task = coworker_tasks.get(&cw.name.to_lowercase()).cloned();
@@ -297,29 +295,6 @@ fn get_recent_channel_activity() -> Vec<serde_json::Value> {
         }
         Err(_) => Vec::new(),
     }
-}
-
-/// Filter the project lead session from a coworker list.
-///
-/// The lead session uses either the repo name (e.g., "midtown") or the legacy
-/// literal "lead" name. Both must be excluded from the coworkers list.
-/// This function is extracted for testability.
-#[cfg(test)]
-pub(super) fn filter_lead_session(
-    coworkers: Vec<serde_json::Value>,
-    repo_name: &str,
-) -> Vec<serde_json::Value> {
-    coworkers
-        .into_iter()
-        .filter(|cw| {
-            cw.get("name")
-                .and_then(|v| v.as_str())
-                .map(|name| {
-                    !name.eq_ignore_ascii_case(repo_name) && !name.eq_ignore_ascii_case("lead")
-                })
-                .unwrap_or(true)
-        })
-        .collect()
 }
 
 /// Tag each coworker JSON value with `is_channel_lead` and return the count

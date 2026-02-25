@@ -243,9 +243,7 @@ pub(super) async fn handle_coworker_list(id: RequestId, state: &DaemonState) -> 
         .coworkers
         .list()
         .iter()
-        .filter(|cw| {
-            !cw.name.eq_ignore_ascii_case(&state.repo_name) && !cw.name.eq_ignore_ascii_case("lead")
-        })
+        .filter(|cw| !super::rpc_kanban::is_project_lead(&cw.name, &state.repo_name))
         .map(|cw| {
             // Look up current task from task storage (case-insensitive)
             let current_task = coworker_tasks.get(&cw.name.to_lowercase()).cloned();
@@ -360,7 +358,7 @@ pub(super) async fn handle_coworker_report_state(
     if phase == crate::coworker_state::WorkflowPhase::Idle && state.coworkers.get(name).is_some() {
         // Project lead must remain available for user interaction; ignore idle
         // self-reports instead of sending it on break.
-        if name.eq_ignore_ascii_case(&state.repo_name) || name.eq_ignore_ascii_case("lead") {
+        if super::rpc_kanban::is_project_lead(name, &state.repo_name) {
             info!(
                 "Project lead {} reported idle; keeping lead session active",
                 name
