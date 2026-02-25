@@ -187,24 +187,20 @@
           </div>
         </header>
 
-        <!-- Mobile tab bar (desktop tabs live in ChannelHeader which is md:block only) -->
-        {#if activeView === 'board'}
-          <div class="mobile-tab-bar md:hidden">
-            {#each [['messages', 'Messages'], ['prs', 'PRs'], ['notes', 'Notes']] as [tab, label]}
-              {@const isActive = ($activeChannelTab[$activeChannel] || 'messages') === tab}
-              <button
-                class="mobile-tab"
-                class:active={isActive}
-                onclick={() => activeChannelTab.update((t) => ({ ...t, [$activeChannel]: tab }))}
-              >{label}</button>
-            {/each}
-          </div>
-        {/if}
-
         {#if activeView === 'board'}
           <div class="board-content flex flex-1 min-h-0 overflow-hidden" class:thread-open-mobile={!!$threadData}>
             <div class="channel-main">
               <ChannelHeader />
+              <div class="channel-tab-bar">
+                {#each [['messages', 'Messages'], ['prs', 'PRs'], ['notes', 'Notes']] as [tab, label]}
+                  {@const isActive = ($activeChannelTab[$activeChannel] || 'messages') === tab}
+                  <button
+                    class="channel-tab"
+                    class:active={isActive}
+                    onclick={() => activeChannelTab.update((t) => ({ ...t, [$activeChannel]: tab }))}
+                  >{label}</button>
+                {/each}
+              </div>
               {#if ($activeChannelTab[$activeChannel] || 'messages') === 'messages'}
                 <PendingQuestions />
                 <Channel />
@@ -397,17 +393,16 @@
     overflow-y: auto;
   }
 
-  /* Mobile tab bar */
-  .mobile-tab-bar {
+  /* Unified channel tab bar */
+  .channel-tab-bar {
     display: flex;
     border-bottom: 1px solid hsl(var(--border));
     background: hsl(var(--card));
     flex-shrink: 0;
   }
 
-  .mobile-tab {
-    flex: 1;
-    padding: 8px 4px;
+  .channel-tab {
+    padding: 6px 16px;
     font-size: 0.8rem;
     font-weight: 500;
     background: none;
@@ -419,11 +414,11 @@
     margin-bottom: -1px;
   }
 
-  .mobile-tab:hover {
+  .channel-tab:hover {
     color: hsl(var(--foreground));
   }
 
-  .mobile-tab.active {
+  .channel-tab.active {
     color: hsl(var(--foreground));
     border-bottom-color: hsl(var(--primary));
   }
