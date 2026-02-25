@@ -14,15 +14,15 @@ use crate::auth::AuthProvider;
 /// Mirrors the logic in `handle_auth_pool_toggle` without requiring a
 /// `DaemonState` — lets us unit-test the core mutation in isolation.
 fn apply_pool_toggle(config: &mut crate::config::FullProjectConfig, profile: &str, enabled: bool) {
-    let profiles = config
-        .execution
-        .coworker_profiles
-        .get_or_insert_with(Vec::new);
     if enabled {
+        let profiles = config
+            .execution
+            .coworker_profiles
+            .get_or_insert_with(Vec::new);
         if !profiles.contains(&profile.to_string()) {
             profiles.push(profile.to_string());
         }
-    } else {
+    } else if let Some(profiles) = config.execution.coworker_profiles.as_mut() {
         profiles.retain(|p| p != profile);
     }
 }
@@ -83,6 +83,21 @@ fn test_pool_toggle_remove_profile() {
     assert_eq!(
         config.execution.coworker_profiles,
         Some(vec!["bob@example.com".to_string()])
+    );
+}
+
+#[test]
+fn test_pool_toggle_disable_on_unset_leaves_none() {
+    // Regression for P1: disabling when coworker_profiles is None must not
+    // create Some([]), which would shadow inherited global pool entries.
+    let mut config = crate::config::FullProjectConfig::default();
+    assert!(config.execution.coworker_profiles.is_none());
+
+    apply_pool_toggle(&mut config, "alice@example.com", false);
+
+    assert!(
+        config.execution.coworker_profiles.is_none(),
+        "disabling a profile when the list is unset must not initialize it to Some([])"
     );
 }
 

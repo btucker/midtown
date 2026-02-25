@@ -501,18 +501,36 @@ pub(super) async fn handle_auth_pool_toggle(
         );
     }
 
+    // Validate the profile exists before adding it to the pool (P2).
+    if enabled && !crate::auth::profile_exists_for(provider, profile) {
+        return Response::error(
+            id,
+            RpcError::new(
+                -32602,
+                format!(
+                    "Profile '{}' does not exist for {}. Create it with: midtown auth --provider {} login {}",
+                    profile, provider, provider, profile
+                ),
+            ),
+        );
+    }
+
     let path = crate::config::project_config_path(&state.repo_name);
     let mut config = crate::config::FullProjectConfig::load_from(&path).unwrap_or_default();
 
-    let profiles = config
-        .execution
-        .coworker_profiles
-        .get_or_insert_with(Vec::new);
+    // P1: Only initialize the list when enabling. When disabling, operate on
+    // the existing list only — if it's None there's nothing to remove, and
+    // creating Some([]) would unintentionally shadow any inherited global pool
+    // entries via ExecutionSection::merge().
     if enabled {
+        let profiles = config
+            .execution
+            .coworker_profiles
+            .get_or_insert_with(Vec::new);
         if !profiles.contains(&profile.to_string()) {
             profiles.push(profile.to_string());
         }
-    } else {
+    } else if let Some(profiles) = config.execution.coworker_profiles.as_mut() {
         profiles.retain(|p| p != profile);
     }
 
