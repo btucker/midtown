@@ -1485,22 +1485,31 @@ fn should_skip_orphan_flagging(pr_poll_initialized: bool) -> bool {
 /// Compute which orphaned coworkers should have their reviewer assignments cleared.
 ///
 /// Returns `None` if we should skip clearing (PR poll not yet initialized).
-/// Returns `Some(vec)` with the filtered list of orphans (excluding those with open PRs).
+/// Returns `Some(vec)` with the filtered list of orphans (excluding those with
+/// open PRs and those with active reviewer assignments).
 ///
 /// During startup, we don't have accurate PR data, so we can't safely clear
 /// reviewer assignments without risking clearing assignments for coworkers who
 /// legitimately have open PRs and are just "on break".
+///
+/// `active_reviewer_names`: coworkers that currently have a PR review assignment.
+/// These are excluded from clearing even when their worktree appears orphaned —
+/// the reviewer may have died mid-review and should be respawned, not cleared.
 ///
 /// Pure function for testability.
 fn compute_orphans_for_reviewer_clearing(
     pr_poll_initialized: bool,
     all_orphaned: Vec<String>,
     open_pr_owners: &HashSet<String>,
+    active_reviewer_names: &HashSet<String>,
 ) -> Option<Vec<String>> {
     if !pr_poll_initialized {
         return None;
     }
-    let filtered = filter_orphans_with_open_prs(all_orphaned, open_pr_owners);
+    let filtered = filter_orphans_with_open_prs(all_orphaned, open_pr_owners)
+        .into_iter()
+        .filter(|name| !active_reviewer_names.contains(name))
+        .collect::<Vec<_>>();
     if filtered.is_empty() {
         None
     } else {
@@ -1575,6 +1584,12 @@ pub(super) struct OrphanCleanupData {
     pub pr_poll_initialized: bool,
     /// Coworkers who have open PRs (excluded from cleanup/clearing).
     pub open_pr_owners: HashSet<String>,
+    /// Coworkers with an active PR review assignment (excluded from clearing).
+    ///
+    /// A reviewer whose worktree is orphaned (session died) must NOT have their
+    /// assignment cleared — they should be respawned instead. Populated from
+    /// `pr_reviewers` regardless of timeout so dead reviewers remain protected.
+    pub active_reviewer_names: HashSet<String>,
     /// Worktrees auto-cleaned via gh CLI fallback (squash-merged PRs not in cache).
     pub gh_cleaned: Vec<String>,
     /// Worktrees due for a warning (orphan tracker determined they need alerting).
@@ -1631,6 +1646,18 @@ pub(super) async fn gather_orphan_cleanup_data(
             cache.open_pr_owners.clone(),
             cache.merged_pr_branches.clone(),
         )
+    };
+
+    // Collect all names that have a reviewer assignment (timeout-independent).
+    // Used to protect active reviewers from having their assignments cleared when
+    // their worktree appears orphaned (session died mid-review).
+    let active_reviewer_names: HashSet<String> = {
+        let ps = state.persistent_state.lock().await;
+        ps.github
+            .pr_reviewers
+            .values()
+            .map(|a| a.reviewer.clone())
+            .collect()
     };
     if should_skip_orphan_flagging(pr_poll_initialized) {
         debug!("Skipping orphan flagging - PR poll not yet initialized");
@@ -1770,6 +1797,7 @@ pub(super) async fn gather_orphan_cleanup_data(
         merged_worktrees_to_cleanup: merged_pr_worktrees,
         pr_poll_initialized,
         open_pr_owners,
+        active_reviewer_names,
         gh_cleaned,
         due_for_warning,
         stale_branch_cleanup_due,
@@ -1788,6 +1816,7 @@ pub fn decide_orphan_cleanup(data: &OrphanCleanupData) -> Vec<Effect> {
         data.pr_poll_initialized,
         data.all_orphaned.clone(),
         &data.open_pr_owners,
+        &data.active_reviewer_names,
     ) {
         effects.push(Effect::ClearOrphanedReviewerAssignments {
             orphaned_coworkers: orphans,

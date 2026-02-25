@@ -267,7 +267,12 @@ fn test_compute_orphans_for_reviewer_clearing_skips_before_pr_poll() {
     let open_pr_owners: HashSet<String> = HashSet::new(); // Empty during startup
 
     // Before PR poll initialized, should return None (skip clearing)
-    let result = compute_orphans_for_reviewer_clearing(false, all_orphaned, &open_pr_owners);
+    let result = compute_orphans_for_reviewer_clearing(
+        false,
+        all_orphaned,
+        &open_pr_owners,
+        &HashSet::new(),
+    );
     assert!(
         result.is_none(),
         "Should skip reviewer clearing before PR poll initializes"
@@ -281,7 +286,8 @@ fn test_compute_orphans_for_reviewer_clearing_filters_open_pr_owners() {
     let all_orphaned = vec!["amsterdam".to_string(), "york".to_string()];
     let open_pr_owners: HashSet<String> = ["amsterdam".to_string()].into_iter().collect();
 
-    let result = compute_orphans_for_reviewer_clearing(true, all_orphaned, &open_pr_owners);
+    let result =
+        compute_orphans_for_reviewer_clearing(true, all_orphaned, &open_pr_owners, &HashSet::new());
     assert_eq!(
         result,
         Some(vec!["york".to_string()]),
@@ -297,7 +303,8 @@ fn test_compute_orphans_for_reviewer_clearing_all_have_open_prs() {
         .into_iter()
         .collect();
 
-    let result = compute_orphans_for_reviewer_clearing(true, all_orphaned, &open_pr_owners);
+    let result =
+        compute_orphans_for_reviewer_clearing(true, all_orphaned, &open_pr_owners, &HashSet::new());
     assert!(
         result.is_none(),
         "Should return None when all orphans have open PRs"
@@ -310,8 +317,60 @@ fn test_compute_orphans_for_reviewer_clearing_none_orphaned() {
     let all_orphaned: Vec<String> = vec![];
     let open_pr_owners: HashSet<String> = HashSet::new();
 
-    let result = compute_orphans_for_reviewer_clearing(true, all_orphaned, &open_pr_owners);
+    let result =
+        compute_orphans_for_reviewer_clearing(true, all_orphaned, &open_pr_owners, &HashSet::new());
     assert!(result.is_none(), "Should return None when no orphans");
+}
+
+/// Issue 1: A coworker whose worktree is orphaned should NOT have their reviewer
+/// assignment cleared if they currently have an active PR review assignment.
+///
+/// Regression test for: reviewer assignment dropped when PR flagged as orphaned.
+/// park was spawned to review PR #1515, but when their worktree was detected as
+/// orphaned (session died), ClearOrphanedReviewerAssignments fired and cleared
+/// park's assignment — even though they were mid-review.
+#[test]
+fn test_compute_orphans_for_reviewer_clearing_protects_active_reviewers() {
+    // park's worktree is orphaned but park has an active reviewer assignment.
+    // amsterdam is also orphaned and has no reviewer assignment.
+    let all_orphaned = vec!["park".to_string(), "amsterdam".to_string()];
+    let open_pr_owners: HashSet<String> = HashSet::new(); // Neither has their own open PR
+    let active_reviewer_names: HashSet<String> = ["park".to_string()].into_iter().collect();
+
+    let result = compute_orphans_for_reviewer_clearing(
+        true,
+        all_orphaned,
+        &open_pr_owners,
+        &active_reviewer_names,
+    );
+
+    // Only amsterdam should have their assignment cleared; park is protected.
+    assert_eq!(
+        result,
+        Some(vec!["amsterdam".to_string()]),
+        "park should NOT be cleared — they have an active reviewer assignment"
+    );
+}
+
+/// Issue 1 edge case: all orphans are active reviewers → no clearing should happen.
+#[test]
+fn test_compute_orphans_for_reviewer_clearing_all_are_active_reviewers() {
+    let all_orphaned = vec!["park".to_string(), "amsterdam".to_string()];
+    let open_pr_owners: HashSet<String> = HashSet::new();
+    let active_reviewer_names: HashSet<String> = ["park".to_string(), "amsterdam".to_string()]
+        .into_iter()
+        .collect();
+
+    let result = compute_orphans_for_reviewer_clearing(
+        true,
+        all_orphaned,
+        &open_pr_owners,
+        &active_reviewer_names,
+    );
+    assert!(
+        result.is_none(),
+        "Should return None when all orphans are active reviewers"
+    );
 }
 
 #[test]
@@ -859,6 +918,7 @@ fn test_decide_orphan_cleanup_empty_data() {
         merged_worktrees_to_cleanup: vec![],
         pr_poll_initialized: true,
         open_pr_owners: HashSet::new(),
+        active_reviewer_names: HashSet::new(),
         gh_cleaned: vec![],
         due_for_warning: vec![],
         stale_branch_cleanup_due: false,
@@ -874,6 +934,7 @@ fn test_decide_orphan_cleanup_clears_reviewer_assignments() {
         merged_worktrees_to_cleanup: vec![],
         pr_poll_initialized: true,
         open_pr_owners: ["amsterdam".to_string()].into_iter().collect(),
+        active_reviewer_names: HashSet::new(),
         gh_cleaned: vec![],
         due_for_warning: vec![],
         stale_branch_cleanup_due: false,
@@ -895,6 +956,7 @@ fn test_decide_orphan_cleanup_force_deletes_merged_worktrees() {
         merged_worktrees_to_cleanup: vec!["york".to_string(), "park".to_string()],
         pr_poll_initialized: true,
         open_pr_owners: HashSet::new(),
+        active_reviewer_names: HashSet::new(),
         gh_cleaned: vec![],
         due_for_warning: vec![],
         stale_branch_cleanup_due: false,
@@ -916,6 +978,7 @@ fn test_decide_orphan_cleanup_warns_about_unmerged() {
         merged_worktrees_to_cleanup: vec![],
         pr_poll_initialized: true,
         open_pr_owners: HashSet::new(),
+        active_reviewer_names: HashSet::new(),
         gh_cleaned: vec![],
         due_for_warning: vec!["amsterdam".to_string()],
         stale_branch_cleanup_due: false,
@@ -944,6 +1007,7 @@ fn test_decide_orphan_cleanup_full_scenario() {
         merged_worktrees_to_cleanup: vec!["york".to_string()],
         pr_poll_initialized: true,
         open_pr_owners: ["amsterdam".to_string()].into_iter().collect(),
+        active_reviewer_names: HashSet::new(),
         gh_cleaned: vec![],
         due_for_warning: vec!["park".to_string()],
         stale_branch_cleanup_due: false,
@@ -969,6 +1033,7 @@ fn test_decide_orphan_cleanup_gh_cleaned_posts_to_channel() {
         merged_worktrees_to_cleanup: vec![],
         pr_poll_initialized: true,
         open_pr_owners: HashSet::new(),
+        active_reviewer_names: HashSet::new(),
         gh_cleaned: vec!["york".to_string(), "park".to_string()],
         due_for_warning: vec![],
         stale_branch_cleanup_due: false,
@@ -987,6 +1052,7 @@ fn test_decide_orphan_cleanup_stale_branch_cleanup() {
         merged_worktrees_to_cleanup: vec![],
         pr_poll_initialized: true,
         open_pr_owners: HashSet::new(),
+        active_reviewer_names: HashSet::new(),
         gh_cleaned: vec![],
         due_for_warning: vec![],
         stale_branch_cleanup_due: true,
