@@ -82,6 +82,31 @@ mod tests {
         }
     }
 
+    /// Test that when a PR's linked task is completed, a follow-up task should
+    /// be created instead of trying to spawn/resume the original coworker.
+    ///
+    /// Bug !1794: Review comments on PRs with completed tasks were silently dropped
+    /// because the daemon tried to spawn/resume the original coworker with stale
+    /// session context. The correct behavior is to create a new follow-up task.
+    #[test]
+    fn test_completed_task_requires_followup_task() {
+        use crate::rules::review_comment_creates_followup;
+        use crate::tasks::TaskStatus;
+
+        assert!(
+            review_comment_creates_followup(&TaskStatus::Completed),
+            "A completed task's PR receiving review feedback should trigger a follow-up task"
+        );
+        assert!(
+            !review_comment_creates_followup(&TaskStatus::InProgress),
+            "An in-progress task's PR should handle review feedback via normal dispatch"
+        );
+        assert!(
+            !review_comment_creates_followup(&TaskStatus::Pending),
+            "A pending task's PR should handle review feedback via normal dispatch"
+        );
+    }
+
     /// Test that when the task owner is inactive, the decision function
     /// spawns them (assuming dev limit allows).
     #[test]

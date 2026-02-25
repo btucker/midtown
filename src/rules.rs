@@ -1090,6 +1090,17 @@ pub fn decide_review_complete_action(
     )
 }
 
+/// Returns true if a review comment on this PR's task should create a follow-up
+/// task rather than trying to dispatch to the original coworker.
+///
+/// When a task is `Completed`, the coworker session has ended and the worktree
+/// may be cleaned up. Trying to spawn or resume the original coworker with stale
+/// session context is unreliable. Creating a new follow-up task lets the normal
+/// dispatch system assign it to an available coworker with full context.
+pub fn review_comment_creates_followup(task_status: &crate::tasks::TaskStatus) -> bool {
+    matches!(task_status, crate::tasks::TaskStatus::Completed)
+}
+
 // ---------------------------------------------------------------------------
 // Task assignment decision types and functions
 // ---------------------------------------------------------------------------
