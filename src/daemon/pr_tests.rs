@@ -1,11 +1,11 @@
 use super::*;
 use serde_json::json;
-use std::sync::Mutex;
 
-// Global mutex to serialize tests that modify PATH environment variable.
-// Without this, parallel test execution causes gh CLI mocks to interfere
-// with each other (one test's mock returns data to a different test).
-static PATH_LOCK: Mutex<()> = Mutex::new(());
+// Use the shared PATH_LOCK from daemon/mod.rs so that PATH-mocking tests in
+// pr_tests.rs and effects_tests.rs serialize against each other.  Two
+// separate per-file statics would allow them to run concurrently and corrupt
+// each other's gh CLI mock.
+use crate::daemon::PATH_LOCK;
 
 /// Helper to create minimal DaemonState for testing
 fn make_test_state(

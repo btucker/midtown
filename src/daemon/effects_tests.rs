@@ -963,9 +963,6 @@ fn clear_session_working_dir_noop_for_missing_session() {
 
 // ── invoke_workflow_script ────────────────────────────────────────────────────
 
-/// Mutex to serialize tests that modify the PATH environment variable.
-static WORKFLOW_PATH_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
 /// Build a minimal DaemonState for workflow-script tests.
 ///
 /// Returns the state, the project root temp dir (which becomes `all_repo_paths[0]`),
@@ -1055,7 +1052,7 @@ async fn emit_workflow_event_noop_when_no_script_configured() {
 async fn emit_workflow_event_posts_error_on_nonzero_exit() {
     use std::os::unix::fs::PermissionsExt;
 
-    let _path_guard = WORKFLOW_PATH_LOCK.lock().unwrap();
+    let _path_guard = crate::daemon::PATH_LOCK.lock().unwrap();
     let (state, project_dir, _guard) = make_workflow_test_state("myrepo-err");
 
     // Write a workflow script that exits non-zero with a stderr message.
@@ -1119,7 +1116,7 @@ async fn emit_workflow_event_posts_error_on_nonzero_exit() {
 async fn emit_workflow_event_no_error_message_on_success() {
     use std::os::unix::fs::PermissionsExt;
 
-    let _path_guard = WORKFLOW_PATH_LOCK.lock().unwrap();
+    let _path_guard = crate::daemon::PATH_LOCK.lock().unwrap();
     let (state, project_dir, _guard) = make_workflow_test_state("myrepo-ok");
 
     // Write a workflow script that exits 0 (success).
