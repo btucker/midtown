@@ -1,55 +1,58 @@
 <script>
   import { usageData } from './store.js'
   import { estimateTimeToFull, formatResetTime, usageColor } from './usage-utils.js'
+
+  let expandedAccount = $state(null)
+
+  function toggleAccount(label) {
+    expandedAccount = expandedAccount === label ? null : label
+  }
 </script>
 
 {#if $usageData && $usageData.length > 0}
-  <div class="px-3 py-1">
+  <div class="px-3 py-1 flex flex-col gap-0.5">
     {#each $usageData as account, index}
       {@const label = account.account_email
         ? `${account.provider.toUpperCase()} (${account.account_email})`
         : `${account.provider.toUpperCase()} (${account.profile})`
       }
+      {@const isExpanded = expandedAccount === label}
+      {@const hasData = account.session_resets || account.week_resets}
 
-      <div class="mt-0 first:mt-0 first:pt-0 first:border-t-0 {index > 0 ? 'mt-3 pt-3 border-t border-sidebar-border' : ''}">
-        <div class="text-[0.7rem] text-accent-teal mb-2 truncate">{label}</div>
+      <div class="{index > 0 ? 'mt-1' : ''}">
+        <button
+          type="button"
+          class="w-full flex items-center gap-2 bg-transparent border-none p-0 cursor-pointer text-left"
+          onclick={() => hasData && toggleAccount(label)}
+        >
+          <span class="text-[0.65rem] text-accent-teal truncate flex-1 min-w-0">{label}</span>
+          {#if hasData}
+            <span class="text-[0.65rem] tabular-nums shrink-0" style="color: {usageColor(account.session_util)}">S {Math.round(account.session_util)}%</span>
+            <span class="text-[0.65rem] tabular-nums shrink-0" style="color: {usageColor(account.week_util)}">W {Math.round(account.week_util)}%</span>
+          {:else}
+            <span class="text-[0.65rem] text-muted-foreground shrink-0">—</span>
+          {/if}
+        </button>
 
-        {#if account.session_resets || account.week_resets}
-          {#each [
-            { label: 'Session', util: account.session_util, resets: account.session_resets, isSession: true },
-            { label: 'Week', util: account.week_util, resets: account.week_resets, isSession: false },
-          ] as bar}
-            {@const pct = Math.round(bar.util)}
-            {@const color = usageColor(bar.util)}
-            {@const estimate = estimateTimeToFull(bar.util, bar.resets, bar.isSession)}
-            {@const resetText = formatResetTime(bar.resets, bar.isSession)}
-
-            <div class="flex items-center gap-1.5">
-              <span class="text-[0.7rem] text-muted-foreground min-w-[42px]">{bar.label}</span>
-              <div class="flex-1 h-1.5 bg-sidebar-accent rounded overflow-hidden">
-                <div
-                  class="h-full rounded transition-all duration-500 ease-in-out"
-                  style="width: {Math.min(bar.util, 100)}%; background: {color}"
-                ></div>
+        {#if isExpanded && hasData}
+          <div class="mt-1 ml-2 flex flex-col gap-0.5">
+            {#each [
+              { label: 'Session', util: account.session_util, resets: account.session_resets, isSession: true },
+              { label: 'Week', util: account.week_util, resets: account.week_resets, isSession: false },
+            ] as bar}
+              {@const estimate = estimateTimeToFull(bar.util, bar.resets, bar.isSession)}
+              {@const resetText = formatResetTime(bar.resets, bar.isSession)}
+              <div class="flex gap-1.5 text-[0.62rem] text-muted-foreground">
+                <span class="shrink-0" style="color: {usageColor(bar.util)}">{bar.label}</span>
+                {#if estimate}<span>{estimate}</span>{/if}
+                <span>· resets {resetText}</span>
               </div>
-              <span class="text-[0.7rem] min-w-[28px] text-right tabular-nums" style="color: {color}">{pct}%</span>
-            </div>
-            <div class="flex gap-2 text-[0.65rem] text-muted-foreground pl-12 mb-1">
-              {#if estimate}
-                <span class="text-muted-foreground">{estimate}</span>
-              {/if}
-              <span>resets {resetText}</span>
-            </div>
-          {/each}
-        {:else}
-          <div class="text-[0.7rem] text-muted-foreground py-1">No usage data available</div>
+            {/each}
+          </div>
         {/if}
       </div>
     {/each}
   </div>
 {:else}
-  <div class="px-3 py-1">
-    <div class="text-[0.7rem] text-accent-teal mb-2">Usage</div>
-    <div class="text-[0.7rem] text-muted-foreground">Loading...</div>
-  </div>
+  <div class="px-3 py-1 text-[0.65rem] text-muted-foreground">Loading usage...</div>
 {/if}

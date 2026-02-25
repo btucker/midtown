@@ -13,6 +13,7 @@
   import UsageBars from '$lib/UsageBars.svelte'
   import AuthSwitcher from '$lib/AuthSwitcher.svelte'
   import CelebrationEffects from '$lib/CelebrationEffects.svelte'
+  import SwipeGestures from '$lib/SwipeGestures.svelte'
   import { messages, connected, coworkers, projects, activeProject, activeChannel, detailPanelData, threadData, isWideScreen } from '$lib/store.js'
   import { connectWebSocket, fetchHistory, fetchStatus, fetchProjects, switchProject } from '$lib/api.js'
   import {
@@ -132,6 +133,7 @@
   <CelebrationEffects />
   {#if $activeProject}
     <SidebarProvider>
+      <SwipeGestures />
       <Sidebar>
         <SidebarHeader class="p-3 pt-safe-offset-3 border-b border-sidebar-border">
           <div class="header-left">

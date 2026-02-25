@@ -19,13 +19,37 @@ describe('getChannelTaskCount', () => {
     ],
   }
 
-  it('returns all tasks for midtown channel', () => {
+  it('returns only midtown-owned tasks for midtown channel', () => {
+    // mockKanban has 3 inProgress: channel='auth-refactor', 'ui-improvements', null
+    // and 2 pending: channel='auth-refactor', null
+    // midtown should only see tasks with no channel (or channel==='midtown')
     const counts = getChannelTaskCount('midtown', mockKanban)
     expect(counts).toEqual({
-      inProgress: 3,
-      pending: 2,
-      review: 1,
+      inProgress: 1, // only the channel:null task
+      pending: 1,    // only the channel:null task
+      review: 0,     // PR's task is in 'auth-refactor', not midtown
     })
+  })
+
+  it('does not show tasks assigned to other channels in midtown', () => {
+    // Regression: tasks with an explicit channel field were appearing in both
+    // midtown AND their assigned channel, causing duplicates in the sidebar.
+    const kanban = {
+      inProgress: [
+        { id: 1778, title: 'Auth profile pool', channel: 'multi-platform' },
+        { id: 1779, title: 'Auth profile pool: integrati...', channel: 'multi-platform' },
+        { id: 1780, title: 'Midtown task', channel: null },
+      ],
+      backlog: [
+        { id: 1781, title: 'Another multi-platform task', channel: 'multi-platform' },
+        { id: 1782, title: 'Unassigned task', channel: null },
+      ],
+      review: [],
+    }
+    const counts = getChannelTaskCount('midtown', kanban)
+    // Only tasks with no channel (or channel==='midtown') should appear
+    expect(counts.inProgress).toBe(1)
+    expect(counts.pending).toBe(1)
   })
 
   it('filters tasks by channel field for topic channels', () => {
@@ -156,9 +180,13 @@ describe('getChannelPrs', () => {
     ],
   }
 
-  it('returns all PRs for midtown channel', () => {
+  it('returns only midtown-owned PRs for midtown channel', () => {
+    // PR #44 has no task_id → goes to midtown
+    // PR #42 has task_id:101 (channel:'auth-refactor') → not midtown
+    // PR #43 has task_id:102 (channel:'ui-improvements') → not midtown
     const prs = getChannelPrs('midtown', mockKanban)
-    expect(prs).toHaveLength(3)
+    expect(prs).toHaveLength(1)
+    expect(prs[0].number).toBe(44)
   })
 
   it('filters PRs by task channel for topic channels', () => {

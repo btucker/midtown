@@ -1,8 +1,7 @@
 <script>
   import { threadData } from './store.js'
   import { sendMessage, closeThread, getApiBase } from './api.js'
-  import { renderContent, hasMermaid, parseSegments } from './markdown.js'
-  import MermaidDiagram from './MermaidDiagram.svelte'
+  import { renderContent } from './markdown.js'
   import { tick, onMount } from 'svelte'
   import { getSenderColor, isDimSender, formatTime, senderChanged, timeChanged } from './messageUtils.js'
 
@@ -10,10 +9,6 @@
     midtown: '#585858',
   }
   const THREAD_DIM_SENDERS = ['midtown']
-
-  function isInsight(msg) {
-    return msg?.msg_type === 'insight' || msg?.type === 'insight'
-  }
 
   let replyText = $state('')
   let desktopScrollArea = $state(null)
@@ -84,8 +79,6 @@
 <svelte:window onkeydown={handleWindowKeydown} />
 
 {#if $threadData}
-  {@const parentMsg = $threadData.parentMessage}
-  {@const parentContent = parentMsg?.content || ''}
   <!-- Desktop: side panel -->
   <div
     class="hidden lg:flex flex-col h-full bg-background border-l-2 border-border w-[380px] shrink-0"
@@ -96,12 +89,19 @@
       <div class="flex-1 min-w-0">
         <h2 class="text-[0.85rem] font-bold text-foreground m-0">Thread</h2>
         {#if $threadData.task}
-          <p class="text-[0.75rem] text-muted-foreground m-0 mt-0.5 break-words">
+          <p class="text-[0.75rem] text-muted-foreground m-0 mt-0.5 break-words" data-testid="thread-parent">
             <span class="text-[hsl(var(--link-task))] font-bold">!{$threadData.task.id}</span>
             <span class="text-foreground"> {$threadData.task.subject}</span>
+            {#if $threadData.task.status}
+              <span class="text-muted-foreground/60"> ·</span>
+              <span class={$threadData.task.status === 'pending' ? 'text-[#d7d787]' : $threadData.task.status === 'in_progress' ? 'text-[#5fafaf]' : 'text-[#5faf5f]'}> {$threadData.task.status}</span>
+            {/if}
+            {#if $threadData.task.assignee}
+              <span class="text-muted-foreground/60"> · {$threadData.task.assignee}</span>
+            {/if}
           </p>
         {:else}
-          <p class="text-[0.75rem] text-muted-foreground m-0 mt-0.5 break-words">
+          <p class="text-[0.75rem] text-muted-foreground m-0 mt-0.5 break-words" data-testid="thread-parent">
             <span style="color: {getSenderColor($threadData.parentMessage.from, THREAD_SENDER_OVERRIDES)}">{$threadData.parentMessage.from}</span>:
             {$threadData.parentMessage.content || ''}
           </p>
@@ -120,64 +120,6 @@
       class="flex-1 min-h-0 overflow-y-auto overflow-x-hidden font-[SF_Mono,Menlo,Consolas,Monaco,'Courier_New',monospace] text-[1rem] leading-[1.55] px-[14px] pt-[10px] pb-[10px]"
       bind:this={desktopScrollArea}
     >
-      <!-- Parent message / task metadata (highlighted) -->
-      <div class="pb-2 mb-2 border-b border-border" data-testid="thread-parent">
-        {#if $threadData.task}
-          <!-- Task metadata header -->
-          <div class="font-bold text-[0.82rem] text-[hsl(var(--link-task))]">!{$threadData.task.id}</div>
-          <div class="text-foreground font-bold break-words mb-1">{$threadData.task.subject}</div>
-          <div class="text-[0.78rem] flex flex-wrap gap-x-4 gap-y-0.5">
-            <span>
-              <span class="text-muted-foreground/60">Status:</span>
-              <!-- Status indicator colors are semantic (pending=yellow, in_progress=cyan, done=green),
-                   not tied to lead/avenue identity colors. #d7d787 here is intentionally separate from
-                   the lead session color (#E3BD3F) even though they were once the same value. -->
-              <span class={$threadData.task.status === 'pending' ? 'text-[#d7d787]' : $threadData.task.status === 'in_progress' ? 'text-[#5fafaf]' : 'text-[#5faf5f]'}>
-                {$threadData.task.status}
-              </span>
-            </span>
-            {#if $threadData.task.assignee}
-              <span>
-                <span class="text-muted-foreground/60">Owner:</span>
-                <span class="text-foreground"> {$threadData.task.assignee}</span>
-              </span>
-            {/if}
-          </div>
-        {:else}
-          <!-- Slack-style parent message (name + timestamp on one line) -->
-          <div class="whitespace-nowrap overflow-hidden text-ellipsis flex items-center gap-[7px] mb-[2px]">
-            <span class="font-bold text-[0.82rem]" style="color: {getSenderColor(parentMsg?.from, THREAD_SENDER_OVERRIDES)}">{parentMsg?.from}</span>
-            <span class="text-muted-foreground/50 text-[0.72rem] select-none">{formatTime(parentMsg?.timestamp)}</span>
-          </div>
-          {#if isInsight(parentMsg)}
-            <div class="rounded-md border border-insight/40 bg-insight/8 px-3 py-2 mt-1">
-              <div
-                class="flex items-center gap-1.5 mb-1.5 text-insight text-[0.72rem] font-bold uppercase tracking-wide"
-                aria-label="Insight"
-              >
-                <span aria-hidden="true">★</span>
-                <span>Insight</span>
-              </div>
-              {#if hasMermaid(parentContent)}
-                <div class="flex flex-col gap-2">
-                  {#each parseSegments(parentContent) as segment}
-                    {#if segment.type === 'mermaid'}
-                      <MermaidDiagram code={segment.content} />
-                    {:else}
-                      <div class="message-text text-foreground">{@html renderContent(segment.content, getApiBase())}</div>
-                    {/if}
-                  {/each}
-                </div>
-              {:else}
-                <div class="message-text text-foreground">{@html renderContent(parentContent, getApiBase())}</div>
-              {/if}
-            </div>
-          {:else}
-            <div class="text-foreground break-words">{@html renderContent(parentContent, getApiBase())}</div>
-          {/if}
-        {/if}
-      </div>
-
       <!-- Thread replies -->
       {#if $threadData.messages.length === 0}
         <div class="text-center text-muted-foreground py-4 text-[1rem]">No replies yet</div>
@@ -237,6 +179,13 @@
           <p class="text-[0.75rem] text-muted-foreground m-0 mt-0.5 break-words">
             <span class="text-[hsl(var(--link-task))] font-bold">!{$threadData.task.id}</span>
             <span class="text-foreground"> {$threadData.task.subject}</span>
+            {#if $threadData.task.status}
+              <span class="text-muted-foreground/60"> ·</span>
+              <span class={$threadData.task.status === 'pending' ? 'text-[#d7d787]' : $threadData.task.status === 'in_progress' ? 'text-[#5fafaf]' : 'text-[#5faf5f]'}> {$threadData.task.status}</span>
+            {/if}
+            {#if $threadData.task.assignee}
+              <span class="text-muted-foreground/60"> · {$threadData.task.assignee}</span>
+            {/if}
           </p>
         {:else}
           <p class="text-[0.75rem] text-muted-foreground m-0 mt-0.5 break-words">
@@ -252,64 +201,6 @@
       class="flex-1 min-h-0 overflow-y-auto overflow-x-hidden font-[SF_Mono,Menlo,Consolas,Monaco,'Courier_New',monospace] text-[1rem] leading-[1.55] px-[14px] pt-[10px] pb-[10px]"
       bind:this={mobileScrollArea}
     >
-      <!-- Parent message / task metadata -->
-      <div class="pb-2 mb-2 border-b border-border" data-testid="thread-parent">
-        {#if $threadData.task}
-          <div class="font-bold text-[0.82rem] text-[hsl(var(--link-task))]">!{$threadData.task.id}</div>
-          <div class="text-foreground font-bold break-words mb-1">{$threadData.task.subject}</div>
-          <div class="text-[0.78rem] flex flex-wrap gap-x-4 gap-y-0.5">
-            <span>
-              <span class="text-muted-foreground/60">Status:</span>
-              <!-- Status indicator colors are semantic (pending=yellow, in_progress=cyan, done=green),
-                   not tied to lead/avenue identity colors. #d7d787 here is intentionally separate from
-                   the lead session color (#E3BD3F) even though they were once the same value. -->
-              <span class={$threadData.task.status === 'pending' ? 'text-[#d7d787]' : $threadData.task.status === 'in_progress' ? 'text-[#5fafaf]' : 'text-[#5faf5f]'}>
-                {$threadData.task.status}
-              </span>
-            </span>
-            {#if $threadData.task.assignee}
-              <span>
-                <span class="text-muted-foreground/60">Owner:</span>
-                <span class="text-foreground"> {$threadData.task.assignee}</span>
-              </span>
-            {/if}
-          </div>
-        {:else}
-          <!-- Slack-style parent message (name + timestamp on one line) -->
-          <div class="whitespace-nowrap overflow-hidden text-ellipsis flex items-center gap-[7px] mb-[2px]">
-            <span class="font-bold text-[0.82rem]" style="color: {getSenderColor(parentMsg?.from, THREAD_SENDER_OVERRIDES)}">{parentMsg?.from}</span>
-            <span class="text-muted-foreground/50 text-[0.72rem] select-none">{formatTime(parentMsg?.timestamp)}</span>
-          </div>
-          {#if isInsight(parentMsg)}
-            <div class="rounded-md border border-insight/40 bg-insight/8 px-3 py-2 mt-1">
-              <div
-                class="flex items-center gap-1.5 mb-1.5 text-insight text-[0.72rem] font-bold uppercase tracking-wide"
-                aria-label="Insight"
-              >
-                <span aria-hidden="true">★</span>
-                <span>Insight</span>
-              </div>
-              {#if hasMermaid(parentContent)}
-                <div class="flex flex-col gap-2">
-                  {#each parseSegments(parentContent) as segment}
-                    {#if segment.type === 'mermaid'}
-                      <MermaidDiagram code={segment.content} />
-                    {:else}
-                      <div class="message-text text-foreground">{@html renderContent(segment.content, getApiBase())}</div>
-                    {/if}
-                  {/each}
-                </div>
-              {:else}
-                <div class="message-text text-foreground">{@html renderContent(parentContent, getApiBase())}</div>
-              {/if}
-            </div>
-          {:else}
-            <div class="text-foreground break-words">{@html renderContent(parentContent, getApiBase())}</div>
-          {/if}
-          <div class="text-muted-foreground text-[0.75rem] mt-1">{formatTime(parentMsg?.timestamp)}</div>
-        {/if}
-      </div>
-
       <!-- Replies -->
       {#if $threadData.messages.length === 0}
         <div class="text-center text-muted-foreground py-4 text-[1rem]">No replies yet</div>

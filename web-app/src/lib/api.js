@@ -221,7 +221,10 @@ export async function fetchHistory(channelName = null) {
         // stays consistent with messagesByChannel and the WS handler.
         messages.set(Object.values(byChannel).flat())
 
-        messagesByChannel.set(byChannel)
+        // Merge rather than replace: preserve messages for channels not in this
+        // response (e.g. channels with no recent history). Using .set() would
+        // wipe them on WS reconnect, causing blank channels until re-tapped.
+        messagesByChannel.update((existing) => ({ ...existing, ...byChannel }))
 
         // Channels are already populated by fetchChannels() which calls the
         // backend's Channel::list(). We no longer derive channels from message
