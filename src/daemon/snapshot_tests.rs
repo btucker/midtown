@@ -880,6 +880,31 @@ fn test_build_reviewer_pr_assignments_includes_expired_for_dead_reviewer_respawn
     assert_eq!(assignments["park"], 1515);
 }
 
+/// When a reviewer has two entries (stale + fresh for different PRs), the most recently
+/// assigned entry must win — the result must be deterministic regardless of HashMap
+/// iteration order.
+#[test]
+fn test_build_reviewer_pr_assignments_prefers_newest_when_duplicate_reviewer() {
+    use crate::github_state::{AssignmentSource, GitHubState};
+
+    let mut github = GitHubState::default();
+    // Assign park to PR 1515 with a stale timestamp.
+    github.assign_reviewer(1515, "park", AssignmentSource::PollingFallback);
+    if let Some(a) = github.pr_reviewers.get_mut(&1515) {
+        a.assigned_at = chrono::Utc::now() - chrono::Duration::seconds(3600);
+    }
+    // Assign park again to PR 1520 with a fresh timestamp (newer).
+    github.assign_reviewer(1520, "park", AssignmentSource::PollingFallback);
+
+    let assignments = super::build_reviewer_pr_assignments(&github);
+
+    assert_eq!(
+        assignments.get("park"),
+        Some(&1520),
+        "should keep the most recently assigned PR (1520), not the stale one (1515)"
+    );
+}
+
 /// Test that recently_recovered_session_ids is correctly populated from CooldownTracker.
 ///
 /// The collect_world_snapshot() function builds this set by checking the

@@ -1207,13 +1207,28 @@ pub(super) fn minimal_snapshot_for_test() -> WorldSnapshot {
 /// `decide_dead_reviewer_respawns` and cause the review to be permanently lost.
 /// Use `active_reviewers()` when you need the timeout-filtered list for display
 /// or logging.
+///
+/// When a reviewer has multiple entries in `pr_reviewers` (e.g., a stale assignment
+/// from one PR and a fresh assignment for another), the most recently assigned entry
+/// is kept to ensure the map is deterministic regardless of `HashMap` iteration order.
 pub(crate) fn build_reviewer_pr_assignments(
     github: &crate::github_state::GitHubState,
 ) -> HashMap<String, u64> {
-    github
-        .pr_reviewers
-        .iter()
-        .map(|(&pr_number, assignment)| (assignment.reviewer.clone(), pr_number))
+    let mut result: HashMap<String, (u64, chrono::DateTime<chrono::Utc>)> = HashMap::new();
+    for (&pr_number, assignment) in &github.pr_reviewers {
+        let is_newer = result
+            .get(&assignment.reviewer)
+            .is_none_or(|(_, existing_at)| assignment.assigned_at > *existing_at);
+        if is_newer {
+            result.insert(
+                assignment.reviewer.clone(),
+                (pr_number, assignment.assigned_at),
+            );
+        }
+    }
+    result
+        .into_iter()
+        .map(|(reviewer, (pr, _))| (reviewer, pr))
         .collect()
 }
 
