@@ -13,6 +13,7 @@ use crate::daemon_messages;
 
 use super::constants::*;
 use super::effects::{self, Effect};
+use super::helpers::is_project_lead;
 use super::{DaemonState, snapshot};
 
 // ============================================================================
@@ -774,10 +775,10 @@ where
     let mut tasks_without_sessions: Vec<(String, String, String)> = Vec::new();
 
     for (task_id, task_subject, owner) in &snap.in_progress_tasks {
-        // Skip empty owners, Lead, or channel leads — these are not managed by
-        // the coworker dispatch loop and must not be recovered as regular coworkers.
+        // Skip empty owners, lead (repo-named or legacy "lead"), or channel leads —
+        // these are not managed by the coworker dispatch loop.
         if owner.is_empty()
-            || owner.eq_ignore_ascii_case(&snap.repo_name)
+            || is_project_lead(owner, &snap.repo_name)
             || snap
                 .channel_lead_sessions
                 .contains_key(&owner.to_lowercase())
@@ -1370,10 +1371,10 @@ pub fn check_for_duplicate_task_workers(snap: &snapshot::WorldSnapshot) -> Vec<e
     // Build a map of task_id -> list of owners
     let mut task_workers: HashMap<String, Vec<String>> = HashMap::new();
     for (task_id, _subject, owner) in &snap.in_progress_tasks {
-        // Skip empty owners, Lead, or channel leads — these are not managed by
-        // the coworker dispatch loop and should not trigger duplicate detection.
+        // Skip empty owners, lead (repo-named or legacy "lead"), or channel leads —
+        // these are not managed by the coworker dispatch loop.
         if owner.is_empty()
-            || owner.eq_ignore_ascii_case(&snap.repo_name)
+            || is_project_lead(owner, &snap.repo_name)
             || snap
                 .channel_lead_sessions
                 .contains_key(&owner.to_lowercase())
@@ -2180,7 +2181,7 @@ pub(super) fn spawn_for_pending_tasks_excluding(
         .running_coworkers
         .iter()
         .filter(|cw| {
-            !cw.name.eq_ignore_ascii_case(&snap.repo_name)
+            !is_project_lead(&cw.name, &snap.repo_name)
                 && !channel_lead_names.contains(cw.name.as_str())
         })
         .count();

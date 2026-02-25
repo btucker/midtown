@@ -1094,15 +1094,15 @@ impl DaemonState {
     /// so the absolute cap is `max_coworkers + REVIEW_HEADROOM`. This allows
     /// reviewer spawning to proceed even when the dev cap is fully used.
     ///
-    /// The lead and channel leads are excluded: they register in CoworkerManager
-    /// but are not dev/reviewer slots and must not consume capacity.
+    /// The lead (repo-named or legacy "lead") and channel leads are excluded:
+    /// they register in CoworkerManager but are not dev/reviewer slots.
     fn is_at_coworker_limit(&self, channel_lead_names: &std::collections::HashSet<String>) -> bool {
         let non_lead_count = self
             .coworkers
             .list_running()
             .iter()
             .filter(|cw| {
-                !cw.name.eq_ignore_ascii_case(&self.repo_name)
+                !helpers::is_project_lead(&cw.name, &self.repo_name)
                     && !channel_lead_names.contains(&cw.name)
             })
             .count();
@@ -1115,15 +1115,15 @@ impl DaemonState {
     /// Instead, `is_at_coworker_limit()` uses `max_coworkers + REVIEW_HEADROOM`
     /// so reviewers can exceed the normal dev cap by up to REVIEW_HEADROOM slots.
     ///
-    /// The lead and channel leads are excluded: they register in CoworkerManager
-    /// but are not dev/reviewer slots and must not consume capacity.
+    /// The lead (repo-named or legacy "lead") and channel leads are excluded:
+    /// they register in CoworkerManager but are not dev/reviewer slots.
     fn is_at_dev_limit(&self, channel_lead_names: &std::collections::HashSet<String>) -> bool {
         let non_lead_count = self
             .coworkers
             .list_running()
             .iter()
             .filter(|cw| {
-                !cw.name.eq_ignore_ascii_case(&self.repo_name)
+                !helpers::is_project_lead(&cw.name, &self.repo_name)
                     && !channel_lead_names.contains(&cw.name)
             })
             .count();

@@ -1419,7 +1419,7 @@ async fn collect_stuck_condition_effects(
                             let mut busy: Vec<String> = running
                                 .iter()
                                 .filter(|cw| {
-                                    !cw.name.eq_ignore_ascii_case("lead")
+                                    !is_project_lead(&cw.name, &state.repo_name)
                                         && !channel_lead_names.contains(&cw.name)
                                 })
                                 .map(|cw| cw.name.clone())
@@ -1450,7 +1450,7 @@ async fn collect_stuck_condition_effects(
                             let mut busy: Vec<String> = running
                                 .iter()
                                 .filter(|cw| {
-                                    !cw.name.eq_ignore_ascii_case("lead")
+                                    !is_project_lead(&cw.name, &state.repo_name)
                                         && !channel_lead_names.contains(&cw.name)
                                 })
                                 .map(|cw| cw.name.clone())
