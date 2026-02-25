@@ -2171,6 +2171,24 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 description,
                 pr,
             } => {
+                // If a PR number is associated, skip creation if a non-completed task
+                // already exists for that PR. This prevents duplicate follow-up tasks
+                // when multiple review comments arrive in quick succession (e.g., after
+                // a daemon restart resets the in-memory cooldown).
+                if let Some(pr_num) = pr {
+                    let existing = crate::tasks::read_tasks_for_repo(Some(&repo_name));
+                    let already_has_task = existing.iter().any(|t| {
+                        t.pr == Some(pr_num) && t.status != crate::tasks::TaskStatus::Completed
+                    });
+                    if already_has_task {
+                        debug!(
+                            "Skipping CreateTask for PR #{}: non-completed task already exists",
+                            pr_num
+                        );
+                        return;
+                    }
+                }
+
                 // Derive active_form from subject (simple present progressive form)
                 let active_form = if subject.starts_with("Merge") {
                     subject.replace("Merge", "Merging")

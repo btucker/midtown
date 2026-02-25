@@ -1932,6 +1932,36 @@ async fn collect_comment_notification_effects(
             (PrContext::from_persistent_state(&ps, pr_number), cl_names)
         };
 
+        // If the linked task is completed, create a follow-up task rather than
+        // trying to spawn/resume the original coworker with stale session context.
+        if let Some(task_id) = pr_ctx.pr_task_associations.get(&pr_number)
+            && let Some(task) = crate::tasks::read_task(task_id)
+            && crate::rules::review_comment_creates_followup(&task.status)
+        {
+            let subject = format!("Address review feedback on PR #{}", pr_number);
+            let description = format!(
+                "PR #{} ({}) received review feedback after task !{} was completed. Please check the PR and address the feedback.",
+                pr_number,
+                truncate_str(title, 40),
+                task_id
+            );
+            debug!(
+                "Polling: PR #{} linked to completed task !{} — creating follow-up task",
+                pr_number, task_id
+            );
+            effects.push(Effect::CreateTask {
+                repo_name: state.repo_name.clone(),
+                subject,
+                description,
+                pr: Some(pr_number),
+            });
+            effects.push(Effect::RecordPrNudge {
+                pr_number,
+                issue_type: PrIssueType::ReviewComment,
+            });
+            continue;
+        }
+
         // Decide action using handoff-aware decision function (preserves session
         // resume and idle-coworker handoff capabilities)
         let action = crate::rules::decide_pr_comment_action_with_handoff(
@@ -3294,10 +3324,7 @@ pub(super) async fn handle_pr_comment_nudge(
         return;
     };
 
-    // Check if this PR is linked to a task with an active owner.
-    // If so, route the review feedback to the task owner instead of the PR owner.
-    // This handles cases where a task was reassigned (e.g., via orphan recovery)
-    // and the PR metadata still shows the original author.
+    // Check if this PR is linked to a task, and handle based on task status.
     if let Some(task_id) = {
         let ps = state.persistent_state.lock().await;
         ps.github
@@ -3305,26 +3332,64 @@ pub(super) async fn handle_pr_comment_nudge(
             .get(&pr_number)
             .and_then(|session| session.task_id.as_ref())
             .cloned()
-    } {
-        // Check if the task has an active owner in_progress
-        if let Some(task) = crate::tasks::read_task(&task_id)
-            && task.status == crate::tasks::TaskStatus::InProgress
-            && let Some(task_owner) = task.owner
-        {
-            // Check if the task owner is active
-            let task_owner_active = state
-                .coworkers
-                .list()
-                .iter()
-                .any(|c| c.name.eq_ignore_ascii_case(&task_owner));
+    } && let Some(task) = crate::tasks::read_task(&task_id)
+    {
+        if task.status == crate::tasks::TaskStatus::InProgress {
+            // Route the review feedback to the task owner instead of the PR owner.
+            // This handles cases where a task was reassigned (e.g., via orphan recovery)
+            // and the PR metadata still shows the original author.
+            if let Some(task_owner) = task.owner {
+                let task_owner_active = state
+                    .coworkers
+                    .list()
+                    .iter()
+                    .any(|c| c.name.eq_ignore_ascii_case(&task_owner));
 
-            if task_owner_active {
-                debug!(
-                    "PR #{} linked to task !{} with active owner {} — routing review feedback to task owner instead of PR owner {}",
-                    pr_number, task_id, task_owner, owner
-                );
-                owner = task_owner;
+                if task_owner_active {
+                    debug!(
+                        "PR #{} linked to task !{} with active owner {} — routing review feedback to task owner instead of PR owner {}",
+                        pr_number, task_id, task_owner, owner
+                    );
+                    owner = task_owner;
+                }
             }
+        } else if crate::rules::review_comment_creates_followup(&task.status) {
+            // Task is completed — the original coworker session is gone.
+            // Create a follow-up task so normal dispatch handles it cleanly
+            // instead of trying to resume a stale session.
+            {
+                let tracker = state.pr_issue_tracker.lock().await;
+                if !tracker.should_nudge(pr_number, PrIssueType::ReviewComment) {
+                    debug!(
+                        "PR #{} review comment nudge on cooldown (completed task), skipping",
+                        pr_number
+                    );
+                    return;
+                }
+            }
+            let subject = format!("Address review feedback on PR #{}", pr_number);
+            let description = format!(
+                "PR #{} received review feedback from {} after task !{} was completed. Please check the PR and address the feedback.",
+                pr_number, activity.actor, task_id
+            );
+            debug!(
+                "PR #{} linked to completed task !{} — creating follow-up task for review feedback from {}",
+                pr_number, task_id, activity.actor
+            );
+            let effects = vec![
+                Effect::CreateTask {
+                    repo_name: state.repo_name.clone(),
+                    subject,
+                    description,
+                    pr: Some(pr_number),
+                },
+                Effect::RecordPrNudge {
+                    pr_number,
+                    issue_type: PrIssueType::ReviewComment,
+                },
+            ];
+            super::effects::execute_effects(effects, state).await;
+            return;
         }
     }
 
