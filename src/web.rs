@@ -427,49 +427,11 @@ struct CreateChannelRequest {
 ///
 /// Channel names must:
 /// Validate a channel name for use in API endpoints.
-///
-/// Channel names must:
-/// - Be non-empty
-/// - Contain only alphanumeric characters, hyphens, and underscores
-/// - Not be "midtown" (reserved for the main channel)
-fn validate_channel_name(name: &str) -> Result<(), (StatusCode, axum::Json<serde_json::Value>)> {
-    if name.is_empty() {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            axum::Json(serde_json::json!({ "error": "Channel name cannot be empty" })),
-        ));
-    }
-
-    if name == "midtown" {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            axum::Json(
-                serde_json::json!({ "error": "Cannot use reserved channel name 'midtown'" }),
-            ),
-        ));
-    }
-
-    if !name
-        .chars()
-        .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
-    {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            axum::Json(
-                serde_json::json!({ "error": "Channel name must contain only alphanumeric characters, hyphens, and underscores" }),
-            ),
-        ));
-    }
-
-    Ok(())
-}
-
 /// Validate a channel name for read operations (history, thread fetching).
 ///
-/// Unlike `validate_channel_name` (used for channel creation), this allows "midtown"
-/// since it is valid to read from the main channel by name. It still prevents path
-/// traversal by requiring only alphanumeric characters, hyphens, and underscores.
-pub(crate) fn validate_channel_name_for_history(
+/// Accepts any non-empty name containing only alphanumeric characters, hyphens, and
+/// underscores. This includes "midtown", which is a valid channel to read from.
+fn validate_channel_name_for_history(
     name: &str,
 ) -> Result<(), (StatusCode, axum::Json<serde_json::Value>)> {
     if name.is_empty() {
@@ -494,9 +456,27 @@ pub(crate) fn validate_channel_name_for_history(
     Ok(())
 }
 
+/// Validate a channel name for write/creation operations.
+///
+/// Channel names must:
 /// - Be non-empty
 /// - Contain only alphanumeric characters, hyphens, and underscores
-/// - Not be named "midtown" (reserved for the main channel)
+/// - Not be "midtown" (reserved for the main channel)
+fn validate_channel_name(name: &str) -> Result<(), (StatusCode, axum::Json<serde_json::Value>)> {
+    validate_channel_name_for_history(name)?;
+
+    if name == "midtown" {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            axum::Json(
+                serde_json::json!({ "error": "Cannot use reserved channel name 'midtown'" }),
+            ),
+        ));
+    }
+
+    Ok(())
+}
+
 async fn api_channels_create(
     State(state): State<Arc<WebState>>,
     Json(body): Json<CreateChannelRequest>,
