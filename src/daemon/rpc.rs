@@ -3,7 +3,7 @@
 //! This module is the entry point for JSON-RPC dispatch. It routes requests to
 //! domain-specific handler modules:
 //!
-//! - `rpc_auth` — authentication switching
+//! - `rpc_auth` — authentication switching and coworker pool management
 //! - `rpc_channel` — channel post/read/create/archive/rename/list
 //! - `rpc_coworker` — coworker lifecycle (spawn, break, list, view, state, nudge)
 //! - `rpc_headless` — one-shot execution and snapshot
@@ -567,6 +567,24 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
                     let provider = provider.unwrap_or_default();
                     super::rpc_auth::handle_auth_switch(request.id, name, all, provider, state)
                         .await
+                }
+                (_, Err(e)) => Response::error(request.id, RpcError::new(-32602, e)),
+                (None, Ok(_)) => Response::error(request.id, RpcError::invalid_params()),
+            }
+        }
+
+        "auth.pool-toggle" => {
+            let profile = params.str_param("profile");
+            let enabled = params.bool_or("enabled", true);
+            let provider = parse_optional_provider_param(params);
+
+            match (profile, provider) {
+                (Some(name), Ok(provider)) => {
+                    let provider = provider.unwrap_or_default();
+                    super::rpc_auth::handle_auth_pool_toggle(
+                        request.id, provider, name, enabled, state,
+                    )
+                    .await
                 }
                 (_, Err(e)) => Response::error(request.id, RpcError::new(-32602, e)),
                 (None, Ok(_)) => Response::error(request.id, RpcError::invalid_params()),

@@ -298,6 +298,8 @@ channel_lead_profiles = ["alice@example.com"]
 
 Midtown picks the least-recently-used available profile for each new coworker spawn. When a profile hits its usage limit, it's automatically skipped until the limit resets. Pool configuration takes precedence over `coworker_provider` for auth resolution.
 
+The web UI's AccountPanel lets you toggle profiles in/out of the coworker pool without editing the config file directly. This calls `POST /api/auth/pool-toggle` (`{ profile, enabled, provider? }`), which updates `execution.coworker_profiles` in the project config and broadcasts the change to all connected clients.
+
 Model aliases are auto-normalized per provider at launch:
 
 - Generic sizes:

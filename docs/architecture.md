@@ -157,6 +157,8 @@ On daemon startup, the `NamePool` is restored from persisted session records: na
 
 `DaemonPersistentState.profile_pool_state` (`HashMap<String, ProfileState>`) persists per-profile usage state across daemon restarts. `ProfileState` tracks `is_usage_limited`, `usage_limit_reset_at`, and `last_used_at`. The in-memory `session_profile_map` (`HashMap<String, String>`) tracks `session_name → profile_email` for limit attribution; it is not persisted (profiles become available again on daemon restart).
 
+**Pool management API**: The web UI can toggle profiles in and out of the coworker pool via `POST /api/auth/pool-toggle` (REST) or the `auth.pool-toggle` RPC method. Request: `{ profile, enabled, provider? }`. When `enabled=true`, the profile is added to `execution.coworker_profiles` in project config (validates that the profile exists first). When `enabled=false`, it is removed. If `coworker_profiles` is unset (`None`) and `enabled=false`, the config is not modified — this avoids creating an explicit empty list that would shadow inherited global pool entries. After mutation, an ops-channel broadcast notifies WebSocket clients of the change.
+
 ## Prompt Architecture
 
 Prompts are assembled from composable markdown files in `agents/` and loaded at runtime by `src/agents.rs`. The file-based approach allows customization without recompilation: the binary embeds defaults, but `agents/` in the git repo root (or `~/.midtown/agents/`) takes precedence.

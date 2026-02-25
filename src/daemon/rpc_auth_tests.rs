@@ -5,6 +5,149 @@ use std::collections::{HashMap, HashSet};
 use super::*;
 use crate::auth::AuthProvider;
 
+// ============================================================================
+// Pool toggle config logic tests
+// ============================================================================
+
+/// Apply a pool toggle (add/remove) to a `FullProjectConfig` in memory.
+///
+/// Mirrors the logic in `handle_auth_pool_toggle` without requiring a
+/// `DaemonState` — lets us unit-test the core mutation in isolation.
+fn apply_pool_toggle(config: &mut crate::config::FullProjectConfig, profile: &str, enabled: bool) {
+    if enabled {
+        let profiles = config
+            .execution
+            .coworker_profiles
+            .get_or_insert_with(Vec::new);
+        if !profiles.contains(&profile.to_string()) {
+            profiles.push(profile.to_string());
+        }
+    } else if let Some(profiles) = config.execution.coworker_profiles.as_mut() {
+        profiles.retain(|p| p != profile);
+    }
+}
+
+#[test]
+fn test_pool_toggle_add_to_none_initializes_list() {
+    let mut config = crate::config::FullProjectConfig::default();
+    assert!(config.execution.coworker_profiles.is_none());
+
+    apply_pool_toggle(&mut config, "alice@example.com", true);
+
+    assert_eq!(
+        config.execution.coworker_profiles,
+        Some(vec!["alice@example.com".to_string()])
+    );
+}
+
+#[test]
+fn test_pool_toggle_add_is_idempotent() {
+    let mut config = crate::config::FullProjectConfig::default();
+    config.execution.coworker_profiles = Some(vec!["alice@example.com".to_string()]);
+
+    apply_pool_toggle(&mut config, "alice@example.com", true);
+    apply_pool_toggle(&mut config, "alice@example.com", true);
+
+    assert_eq!(
+        config.execution.coworker_profiles,
+        Some(vec!["alice@example.com".to_string()])
+    );
+}
+
+#[test]
+fn test_pool_toggle_add_multiple_profiles() {
+    let mut config = crate::config::FullProjectConfig::default();
+
+    apply_pool_toggle(&mut config, "alice@example.com", true);
+    apply_pool_toggle(&mut config, "bob@example.com", true);
+
+    assert_eq!(
+        config.execution.coworker_profiles,
+        Some(vec![
+            "alice@example.com".to_string(),
+            "bob@example.com".to_string(),
+        ])
+    );
+}
+
+#[test]
+fn test_pool_toggle_remove_profile() {
+    let mut config = crate::config::FullProjectConfig::default();
+    config.execution.coworker_profiles = Some(vec![
+        "alice@example.com".to_string(),
+        "bob@example.com".to_string(),
+    ]);
+
+    apply_pool_toggle(&mut config, "alice@example.com", false);
+
+    assert_eq!(
+        config.execution.coworker_profiles,
+        Some(vec!["bob@example.com".to_string()])
+    );
+}
+
+#[test]
+fn test_pool_toggle_disable_on_unset_leaves_none() {
+    // Regression for P1: disabling when coworker_profiles is None must not
+    // create Some([]), which would shadow inherited global pool entries.
+    let mut config = crate::config::FullProjectConfig::default();
+    assert!(config.execution.coworker_profiles.is_none());
+
+    apply_pool_toggle(&mut config, "alice@example.com", false);
+
+    assert!(
+        config.execution.coworker_profiles.is_none(),
+        "disabling a profile when the list is unset must not initialize it to Some([])"
+    );
+}
+
+#[test]
+fn test_pool_toggle_remove_is_idempotent() {
+    let mut config = crate::config::FullProjectConfig::default();
+    config.execution.coworker_profiles = Some(vec!["alice@example.com".to_string()]);
+
+    apply_pool_toggle(&mut config, "bob@example.com", false);
+    apply_pool_toggle(&mut config, "bob@example.com", false);
+
+    // alice is still there; bob was never in the list
+    assert_eq!(
+        config.execution.coworker_profiles,
+        Some(vec!["alice@example.com".to_string()])
+    );
+}
+
+#[test]
+fn test_pool_toggle_remove_last_leaves_empty_vec() {
+    let mut config = crate::config::FullProjectConfig::default();
+    config.execution.coworker_profiles = Some(vec!["alice@example.com".to_string()]);
+
+    apply_pool_toggle(&mut config, "alice@example.com", false);
+
+    assert_eq!(config.execution.coworker_profiles, Some(vec![]));
+}
+
+#[test]
+fn test_pool_toggle_config_round_trip() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("config.toml");
+
+    // Write initial config with one profile
+    let mut config = crate::config::FullProjectConfig::default();
+    config.execution.coworker_profiles = Some(vec!["alice@example.com".to_string()]);
+    config.save_to(&path).expect("save_to");
+
+    // Load, toggle in bob, save again
+    let mut loaded = crate::config::FullProjectConfig::load_from(&path).unwrap();
+    apply_pool_toggle(&mut loaded, "bob@example.com", true);
+    loaded.save_to(&path).expect("save_to after toggle");
+
+    // Reload and verify both profiles are present
+    let reloaded = crate::config::FullProjectConfig::load_from(&path).unwrap();
+    let profiles = reloaded.execution.coworker_profiles.unwrap_or_default();
+    assert!(profiles.contains(&"alice@example.com".to_string()));
+    assert!(profiles.contains(&"bob@example.com".to_string()));
+}
+
 #[test]
 fn test_filter_coworkers_by_provider() {
     let coworkers = vec![

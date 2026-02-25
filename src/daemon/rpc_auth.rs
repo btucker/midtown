@@ -480,6 +480,110 @@ pub(super) async fn handle_auth_switch(
 }
 
 // ============================================================================
+// Pool toggle
+// ============================================================================
+
+/// Toggle whether an auth profile is included in the coworker spawn pool.
+///
+/// When `enabled=true`, adds the profile to `execution.coworker_profiles`.
+/// When `enabled=false`, removes it. Idempotent — calling multiple times is safe.
+///
+/// The `provider` parameter is used to validate that the profile exists for that
+/// provider before adding it (profile existence is provider-specific). This endpoint
+/// always modifies `execution.coworker_profiles` regardless of provider — it manages
+/// the coworker spawn pool only, not reviewer or channel-lead pools.
+pub(super) async fn handle_auth_pool_toggle(
+    id: RequestId,
+    provider: crate::auth::AuthProvider,
+    profile: &str,
+    enabled: bool,
+    state: &DaemonState,
+) -> Response {
+    if let Err(e) = crate::auth::validate_profile_name(profile) {
+        return Response::error(
+            id,
+            RpcError::new(-32602, format!("Invalid profile name: {}", e)),
+        );
+    }
+
+    // Validate the profile exists before adding it to the pool (P2).
+    if enabled && !crate::auth::profile_exists_for(provider, profile) {
+        return Response::error(
+            id,
+            RpcError::new(
+                -32602,
+                format!(
+                    "Profile '{}' does not exist for {}. Create it with: midtown auth --provider {} login {}",
+                    profile, provider, provider, profile
+                ),
+            ),
+        );
+    }
+
+    let path = crate::config::project_config_path(&state.repo_name);
+    let mut config = crate::config::FullProjectConfig::load_from(&path).unwrap_or_default();
+
+    // P1: Only initialize the list when enabling. When disabling, operate on
+    // the existing list only — if it's None there's nothing to remove, and
+    // creating Some([]) would unintentionally shadow any inherited global pool
+    // entries via ExecutionSection::merge().
+    if enabled {
+        let profiles = config
+            .execution
+            .coworker_profiles
+            .get_or_insert_with(Vec::new);
+        if !profiles.contains(&profile.to_string()) {
+            profiles.push(profile.to_string());
+        }
+    } else if let Some(profiles) = config.execution.coworker_profiles.as_mut() {
+        profiles.retain(|p| p != profile);
+    }
+
+    let updated_profiles = config
+        .execution
+        .coworker_profiles
+        .clone()
+        .unwrap_or_default();
+
+    if let Err(e) = config.save_to(&path) {
+        return Response::error(
+            id,
+            RpcError::new(-32603, format!("Failed to save project config: {}", e)),
+        );
+    }
+
+    info!(
+        "Pool toggle: profile '{}' for {} -> {}",
+        profile, provider, enabled
+    );
+
+    // Broadcast to ops channel so web UI clients receive the update without polling.
+    let action = if enabled { "added to" } else { "removed from" };
+    let mut msg = Message::system(format!(
+        "Profile '{}' ({}) {} coworker pool. Pool: [{}]",
+        profile,
+        provider,
+        action,
+        updated_profiles.join(", ")
+    ));
+    msg.channel = Some(OPS_CHANNEL.to_string());
+    if let Err(e) = state.send_and_broadcast_async(&msg).await {
+        warn!("Failed to post pool toggle message: {}", e);
+    }
+
+    Response::success(
+        id,
+        serde_json::json!({
+            "success": true,
+            "profile": profile,
+            "provider": provider.as_str(),
+            "enabled": enabled,
+            "coworker_profiles": updated_profiles,
+        }),
+    )
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 
