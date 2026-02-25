@@ -2492,8 +2492,9 @@ pub(crate) async fn collect_reviewer_effects_with_source(
         // Also exclude the PR author from reviewer selection to prevent self-review.
         // The author is identified by the branch prefix (e.g., "riverside" from "riverside/feature").
         let mut excluded_names = channel_lead_names.clone();
-        if let Some(author) = coworker_from_branch_with_map(head_ref, branch_owners_map) {
-            excluded_names.insert(author);
+        let pr_author = coworker_from_branch_with_map(head_ref, branch_owners_map);
+        if let Some(ref author) = pr_author {
+            excluded_names.insert(author.clone());
         }
 
         let reviewer_name = match state
@@ -2568,7 +2569,7 @@ pub(crate) async fn collect_reviewer_effects_with_source(
             reviewer_session_id: None,
         });
 
-        let on_success = vec![
+        let mut on_success = vec![
             // Register the review worktree assignment
             Effect::RegisterWorktreeAssignment {
                 assignment: crate::worktree_registry::WorktreeAssignment {
@@ -2597,6 +2598,21 @@ pub(crate) async fn collect_reviewer_effects_with_source(
                 channel: Some(OPS_CHANNEL.to_string()),
             },
         ];
+
+        // Warn the PR author not to enable auto-merge while the review is in progress.
+        // Without this warning, the author may run `gh pr merge --auto --squash` before
+        // the reviewer finishes, causing the PR to merge as soon as CI passes — bypassing
+        // the review entirely (as happened with PR #1523).
+        if let Some(ref author) = pr_author {
+            on_success.push(Effect::DeliverMailboxMessage {
+                name: author.clone(),
+                message: daemon_messages::reviewer_spawned_author_warning(
+                    &reviewer_name,
+                    pr_number,
+                ),
+                summary: Some(format!("Review in progress on PR #{}", pr_number)),
+            });
+        }
 
         let on_failure = vec![
             // Clean up the optimistic assignment we made before spawning
