@@ -10,6 +10,7 @@
 //! - `GET /api/projects/:name/status` - Proxy to per-project daemon status
 //! - `GET /api/projects/:name/channel` - Proxy to per-project channel data
 //! - `GET /api/projects/:name/zellij-web-url` - Get Zellij web client URL for project
+//! - `GET /api/projects/:name/assets/*path` - Serve per-project asset files (screenshots, videos)
 //! - `GET /api/health` - Health check
 //! - `GET /` - Serve static web UI (SPA)
 
@@ -21,9 +22,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::Router;
+use axum::body::Body;
 use axum::extract::{Path, State};
-use axum::http::StatusCode;
-use axum::response::Json;
+use axum::http::{HeaderValue, StatusCode, header};
+use axum::response::{Json, Response};
 use axum::routing::get;
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
@@ -281,6 +283,80 @@ async fn project_channel(
     Ok(Json(serde_json::Value::Array(data)))
 }
 
+/// Serve a static asset file from the per-project assets directory.
+///
+/// Path: `/api/projects/:name/assets/*path`
+///
+/// Serves files from `~/.midtown/projects/<name>/assets/<path>`.
+/// Includes path traversal protection: the resolved file path must remain
+/// within the assets directory.
+async fn project_asset(
+    Path((name, asset_path)): Path<(String, String)>,
+) -> Result<Response<Body>, StatusCode> {
+    let assets_dir = crate::paths::assets_dir_for_repo(&name);
+
+    // Strip any leading slashes from the requested path component
+    let asset_path = asset_path.trim_start_matches('/');
+
+    // Reject paths containing ".." components before joining
+    if asset_path.contains("..") {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    let file_path = assets_dir.join(asset_path);
+
+    // Verify the resolved path stays within the assets directory.
+    // Use canonicalize on the assets dir (create it first if needed) and
+    // compare prefixes on the non-symlink-resolved joined path for the
+    // existence check, then canonicalize the actual file path once we
+    // confirm it exists.
+    let canonical_assets = match std::fs::canonicalize(&assets_dir) {
+        Ok(p) => p,
+        Err(_) => {
+            // Assets dir doesn't exist yet — no files to serve
+            return Err(StatusCode::NOT_FOUND);
+        }
+    };
+
+    if !file_path.exists() {
+        return Err(StatusCode::NOT_FOUND);
+    }
+
+    let canonical_file = std::fs::canonicalize(&file_path).map_err(|_| StatusCode::NOT_FOUND)?;
+
+    if !canonical_file.starts_with(&canonical_assets) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    let content = tokio::fs::read(&canonical_file)
+        .await
+        .map_err(|_| StatusCode::NOT_FOUND)?;
+
+    let content_type = mime_type_for_path(&canonical_file);
+
+    Ok(Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, HeaderValue::from_static(content_type))
+        .body(Body::from(content))
+        .unwrap())
+}
+
+/// Return a best-effort MIME type for a file path based on its extension.
+fn mime_type_for_path(path: &std::path::Path) -> &'static str {
+    match path.extension().and_then(|e| e.to_str()) {
+        Some("png") => "image/png",
+        Some("jpg") | Some("jpeg") => "image/jpeg",
+        Some("gif") => "image/gif",
+        Some("webp") => "image/webp",
+        Some("mp4") => "video/mp4",
+        Some("webm") => "video/webm",
+        Some("svg") => "image/svg+xml",
+        Some("json") => "application/json",
+        Some("txt") | Some("log") => "text/plain",
+        _ => "application/octet-stream",
+    }
+}
+
 /// Get the Zellij web client URL for a project.
 ///
 /// Returns the URL and session name for the Zellij web client embed.
@@ -320,7 +396,8 @@ pub async fn run(config: WebserverConfig) -> std::result::Result<(), Box<dyn std
         .route(
             "/projects/{name}/zellij-web-url",
             get(project_zellij_web_url),
-        );
+        )
+        .route("/projects/{name}/assets/{*path}", get(project_asset));
 
     let mut app = Router::new().nest("/api", api).layer(cors);
 
@@ -522,5 +599,77 @@ mod tests {
 
         let json = serde_json::to_string(&info).unwrap();
         assert!(json.contains("\"status\":\"stopped\""));
+    }
+
+    #[test]
+    fn test_mime_type_for_path() {
+        let cases = [
+            ("screenshot.png", "image/png"),
+            ("photo.jpg", "image/jpeg"),
+            ("photo.jpeg", "image/jpeg"),
+            ("anim.gif", "image/gif"),
+            ("anim.webp", "image/webp"),
+            ("clip.mp4", "video/mp4"),
+            ("clip.webm", "video/webm"),
+            ("icon.svg", "image/svg+xml"),
+            ("data.json", "application/json"),
+            ("notes.txt", "text/plain"),
+            ("daemon.log", "text/plain"),
+            ("unknown.xyz", "application/octet-stream"),
+        ];
+        for (filename, expected) in cases {
+            let path = std::path::Path::new(filename);
+            assert_eq!(
+                mime_type_for_path(path),
+                expected,
+                "wrong MIME type for {filename}"
+            );
+        }
+    }
+
+    /// Test that the path traversal check rejects ".." in the path component.
+    #[tokio::test]
+    async fn test_project_asset_rejects_path_traversal() {
+        // A path with ".." should return BAD_REQUEST before touching the filesystem
+        let result =
+            project_asset(Path(("myproject".to_string(), "../etc/passwd".to_string()))).await;
+        assert_eq!(result.unwrap_err(), StatusCode::BAD_REQUEST);
+    }
+
+    /// Test that requesting a non-existent asset returns NOT_FOUND.
+    #[tokio::test]
+    async fn test_project_asset_not_found_for_missing_file() {
+        // Use a repo name that definitely has no assets dir
+        let result = project_asset(Path((
+            "nonexistent-repo-xyz-test-123".to_string(),
+            "image.png".to_string(),
+        )))
+        .await;
+        assert_eq!(result.unwrap_err(), StatusCode::NOT_FOUND);
+    }
+
+    /// Test that a valid asset file is served with the correct content type.
+    #[tokio::test]
+    async fn test_project_asset_serves_existing_file() {
+        use crate::paths::{assets_dir_for_repo, set_test_midtown_base_dir};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let _guard = set_test_midtown_base_dir(tmp.path().to_path_buf());
+
+        let assets_dir = assets_dir_for_repo("test-proj");
+        std::fs::create_dir_all(&assets_dir).unwrap();
+
+        let content = b"\x89PNG\r\n\x1a\n"; // minimal PNG header
+        std::fs::write(assets_dir.join("shot.png"), content).unwrap();
+
+        let result = project_asset(Path(("test-proj".to_string(), "shot.png".to_string())))
+            .await
+            .unwrap();
+
+        assert_eq!(result.status(), StatusCode::OK);
+        assert_eq!(
+            result.headers().get(header::CONTENT_TYPE).unwrap(),
+            "image/png"
+        );
     }
 }

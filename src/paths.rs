@@ -32,7 +32,8 @@
 //!         │       ├── workflow.py            # Channel-specific workflow script (local, optional)
 //!         │       └── workflow-state.json    # Persistent workflow state between invocations
 //!         ├── logs/         # Daemon logs
-//!         └── daemon.pid    # Daemon PID file
+//!         ├── daemon.pid    # Daemon PID file
+//!         └── assets/       # Coworker-generated screenshots and videos
 //! ```
 //!
 //! ## Workflow Scripts
@@ -215,6 +216,18 @@ pub fn midtown_base_dir() -> PathBuf {
 pub fn projects_dir_for_repo(repo: &str) -> PathBuf {
     auto_migrate(repo);
     midtown_base_dir().join("projects").join(repo)
+}
+
+/// Get the assets directory for a specific repository.
+///
+/// Returns `~/.midtown/projects/<repo>/assets/`.
+///
+/// This is where coworker-generated screenshots and videos are stored.
+/// It lives outside `web-app/dist/` so it persists across rebuilds and
+/// worktree recreations. Files here are served by the webserver at
+/// `/api/projects/<repo>/assets/<path>`.
+pub fn assets_dir_for_repo(repo: &str) -> PathBuf {
+    projects_dir_for_repo(repo).join("assets")
 }
 
 /// Get the coworkers directory for a specific repository.

@@ -486,3 +486,65 @@ midtown channel post "@{project_name} should I handle the error case here, or le
 # Another coworker actively working on something related
 midtown channel post "@amsterdam you're working on the auth module - does it export a validate function?"
 ```
+
+## Visual Documentation
+
+For web-based tasks, capture screenshots and videos of your work and share them inline in the channel. This gives the team and user a clear view of what you've built.
+
+### Setup (once per worktree)
+
+```bash
+cd web-app && npm install && npx playwright install chromium
+```
+
+### Capturing a screenshot
+
+```bash
+# 1. Start the dev server if it isn't running yet
+cd web-app && npm run dev &
+
+# 2. Take a screenshot of the running app
+REPO=$(midtown channel read 2>/dev/null | head -1 | true; git rev-parse --show-toplevel | xargs basename)
+npx playwright screenshot --browser chromium http://localhost:5173 /tmp/screenshot.png
+
+# 3. Save to the shared per-project assets directory
+ASSETS=~/.midtown/projects/$REPO/assets
+mkdir -p "$ASSETS"
+cp /tmp/screenshot.png "$ASSETS/screenshot-$(date +%s).png"
+
+# 4. Post inline to the channel — the web UI renders markdown images
+FILENAME=$(basename /tmp/screenshot.png)
+midtown channel post "/me here's the result: ![screenshot](http://localhost:47022/api/projects/$REPO/assets/$FILENAME)"
+```
+
+The assets directory (`~/.midtown/projects/<repo>/assets/`) is served by the webserver at `/api/projects/<repo>/assets/<path>`, so any file you copy there is immediately accessible via URL.
+
+### Capturing a video (optional)
+
+Use `playwright test` with `--video on` for recorded interactions:
+
+```bash
+# Write a quick test that navigates to the page
+cat > /tmp/screenshot-test.spec.ts << 'EOF'
+import { test } from '@playwright/test';
+test('capture', async ({ page }) => {
+  await page.goto('http://localhost:5173');
+  await page.waitForTimeout(2000);
+});
+EOF
+
+cd web-app && npx playwright test /tmp/screenshot-test.spec.ts \
+  --project=chromium --video=on --output=/tmp/pw-results
+
+# Copy the video to the assets dir
+REPO=$(git rev-parse --show-toplevel | xargs basename)
+ASSETS=~/.midtown/projects/$REPO/assets
+mkdir -p "$ASSETS"
+cp /tmp/pw-results/*/video.webm "$ASSETS/recording-$(date +%s).webm"
+```
+
+### Tips
+
+- Screenshots go stale — take a new one after each significant change
+- Use descriptive filenames (e.g. `sidebar-collapsed.png`) rather than timestamps when posting multiple views
+- The dev server is usually at `http://localhost:5173` (Vite default); check `web-app/package.json` scripts if it differs
