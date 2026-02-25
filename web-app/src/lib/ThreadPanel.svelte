@@ -1,11 +1,12 @@
 <script>
-  import { threadData } from './store.js'
+  import { threadData, agentToolItems } from './store.js'
   import { sendMessage, closeThread, getApiBase } from './api.js'
-  import { tick, onMount } from 'svelte'
+  import { tick, onMount, onDestroy } from 'svelte'
   import { getSenderColor, isDimSender, formatTime, timeChanged } from './messageUtils.js'
   import MermaidDiagram from './MermaidDiagram.svelte'
   import { parseSegments, hasMermaid, renderContent } from './markdown.js'
   import MessageRow from './MessageRow.svelte'
+  import ThreadActivityDrawer from './ThreadActivityDrawer.svelte'
 
   const THREAD_SENDER_OVERRIDES = {
     midtown: '#585858',
@@ -31,6 +32,46 @@
   let mobileTextareaEl = $state(null)
   let isDesktop = $state(typeof window !== 'undefined' && window.matchMedia('(min-width: 1024px)').matches)
 
+  // Optimistic thinking state: true from the moment the user sends a reply until
+  // real InProgress tool items arrive (or 30s timeout).
+  let thinking = $state(false)
+  let thinkingTimeout = null
+
+  // Stable thread identity: changes only when a different thread is opened or closed.
+  // Using $derived ensures the clearing effect below re-runs only on actual thread switches,
+  // not on every message-array update (which reassigns $threadData but keeps the same id).
+  let currentThreadId = $derived($threadData?.parentMessage?.id ?? null)
+
+  // Clear thinking when the thread is closed or switched to a different thread.
+  $effect(() => {
+    currentThreadId // track dependency — re-runs only when thread identity changes
+    thinking = false
+    if (thinkingTimeout) {
+      clearTimeout(thinkingTimeout)
+      thinkingTimeout = null
+    }
+  })
+
+  // Clear thinking when real InProgress tool items arrive for this thread's channel.
+  $effect(() => {
+    const channelName = $threadData?.channelName ?? 'midtown'
+    const items = $agentToolItems[channelName] || []
+    if (items.some((item) => item.status === 'InProgress')) {
+      thinking = false
+      if (thinkingTimeout) {
+        clearTimeout(thinkingTimeout)
+        thinkingTimeout = null
+      }
+    }
+  })
+
+  onDestroy(() => {
+    if (thinkingTimeout) {
+      clearTimeout(thinkingTimeout)
+      thinkingTimeout = null
+    }
+  })
+
   // Track viewport changes to know which panel is active
   onMount(() => {
     const mql = window.matchMedia('(min-width: 1024px)')
@@ -53,6 +94,13 @@
     if (!replyText.trim() || !$threadData) return
     sendMessage(replyText.trim(), $threadData.channelName, $threadData.parentMessage.id)
     replyText = ''
+    // Optimistic: show the drawer immediately while waiting for tool calls to arrive
+    thinking = true
+    if (thinkingTimeout) clearTimeout(thinkingTimeout)
+    thinkingTimeout = setTimeout(() => {
+      thinking = false
+      thinkingTimeout = null
+    }, 30000)
   }
 
   function handleTextareaKeyDown(e) {
@@ -221,6 +269,9 @@
       {/if}
     </div>
 
+    <!-- Activity drawer: slides up from the input when lead is working -->
+    <ThreadActivityDrawer channelName={$threadData?.channelName} {thinking} />
+
     <!-- Input -->
     <form class="flex gap-2 px-3 pt-2 pb-2 bg-card border-t border-border shrink-0" onsubmit={handleSubmit}>
       <textarea
@@ -368,6 +419,9 @@
         {/each}
       {/if}
     </div>
+
+    <!-- Activity drawer: slides up from the input when lead is working -->
+    <ThreadActivityDrawer channelName={$threadData?.channelName} {thinking} />
 
     <!-- Mobile input -->
     <form class="flex gap-2 px-3 pt-2 pb-safe-offset-2 bg-card border-t border-border shrink-0" onsubmit={handleSubmit}>
