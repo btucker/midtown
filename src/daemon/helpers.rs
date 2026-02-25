@@ -25,15 +25,9 @@ pub fn truncate_str(s: &str, max_len: usize) -> String {
 }
 
 /// Truncate a message for summary display.
-/// Uses `floor_char_boundary` to avoid panicking on multi-byte UTF-8 characters.
+/// Takes the first line, then truncates to `max_len` with ellipsis.
 pub fn truncate_message(msg: &str, max_len: usize) -> String {
-    let first_line = msg.lines().next().unwrap_or(msg);
-    if first_line.len() <= max_len {
-        first_line.to_string()
-    } else {
-        let end = first_line.floor_char_boundary(max_len.saturating_sub(3));
-        format!("{}...", &first_line[..end])
-    }
+    truncate_str(msg.lines().next().unwrap_or(msg), max_len)
 }
 
 // ---------------------------------------------------------------------------
@@ -238,13 +232,7 @@ fn normalize_size_alias_for_provider(
     };
 
     let normalized = match provider {
-        crate::auth::AuthProvider::Claude => match size {
-            "small" => "haiku",
-            "medium" => "sonnet",
-            "large" => "opus",
-            _ => unreachable!(),
-        },
-        crate::auth::AuthProvider::Zai => match size {
+        crate::auth::AuthProvider::Claude | crate::auth::AuthProvider::Zai => match size {
             "small" => "haiku",
             "medium" => "sonnet",
             "large" => "opus",

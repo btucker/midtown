@@ -212,16 +212,11 @@ pub(super) async fn route_mentions(state: &DaemonState, msg: &Message) {
 
         // Deduplicate: skip if we've already nudged the actual target for this message.
         // Keyed on target_name (the resolved recipient) to correctly handle task-based rerouting.
-        let should_nudge = {
-            let mut cooldowns = state.cooldowns.lock().unwrap();
-            let key = format!("chat_mention_{}", target_name);
-            if cooldowns.check(&key, &msg.id, Duration::from_secs(3600)) {
-                cooldowns.record(&key, &msg.id);
-                true
-            } else {
-                false
-            }
-        };
+        let should_nudge = state.cooldowns.lock().unwrap().check_and_record(
+            &format!("chat_mention_{}", target_name),
+            &msg.id,
+            Duration::from_secs(3600),
+        );
         if !should_nudge {
             debug!(
                 "Skipping duplicate @mention nudge for {} (msg {})",
@@ -265,15 +260,11 @@ async fn route_at_all(state: &DaemonState, msg: &Message) {
 
     // Nudge the lead (unless the lead sent the message)
     if !msg.from.eq_ignore_ascii_case(&state.repo_name) {
-        let should_nudge_lead = {
-            let mut cooldowns = state.cooldowns.lock().unwrap();
-            if cooldowns.check("chat_at_all_lead", &msg.id, Duration::from_secs(3600)) {
-                cooldowns.record("chat_at_all_lead", &msg.id);
-                true
-            } else {
-                false
-            }
-        };
+        let should_nudge_lead = state.cooldowns.lock().unwrap().check_and_record(
+            "chat_at_all_lead",
+            &msg.id,
+            Duration::from_secs(3600),
+        );
         if should_nudge_lead {
             state.nudge_lead(&nudge_text).await;
             info!("Nudged lead for @all from {}", msg.from);
@@ -287,17 +278,11 @@ async fn route_at_all(state: &DaemonState, msg: &Message) {
         }
 
         // Deduplicate: skip if we've already nudged this coworker for this message.
-        // Check and record in a single lock scope to avoid TOCTOU races.
-        let should_nudge = {
-            let mut cooldowns = state.cooldowns.lock().unwrap();
-            let key = format!("chat_at_all_{}", coworker.name);
-            if cooldowns.check(&key, &msg.id, Duration::from_secs(3600)) {
-                cooldowns.record(&key, &msg.id);
-                true
-            } else {
-                false
-            }
-        };
+        let should_nudge = state.cooldowns.lock().unwrap().check_and_record(
+            &format!("chat_at_all_{}", coworker.name),
+            &msg.id,
+            Duration::from_secs(3600),
+        );
         if !should_nudge {
             debug!(
                 "Skipping duplicate @all nudge for {} (msg {})",

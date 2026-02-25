@@ -80,6 +80,19 @@ impl CooldownTracker {
             .insert((rule_name.to_owned(), key.to_owned()), Instant::now());
     }
 
+    /// Returns `true` and records the current instant if the cooldown has expired (or was never
+    /// recorded). Returns `false` without mutating state if the cooldown is still active.
+    ///
+    /// Equivalent to `if check(…) { record(…); true } else { false }`.
+    pub fn check_and_record(&mut self, rule_name: &str, key: &str, duration: Duration) -> bool {
+        if self.check(rule_name, key, duration) {
+            self.record(rule_name, key);
+            true
+        } else {
+            false
+        }
+    }
+
     /// Removes entries whose cooldown has long expired (2× duration),
     /// preventing unbounded growth.
     pub fn cleanup(&mut self, max_age: Duration) {
