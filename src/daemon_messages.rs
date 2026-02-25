@@ -27,6 +27,16 @@ pub fn called_in_reviewer(name: &str, pr_number: u64) -> String {
     format!("\u{1f50d} Called in {} to review PR #{}", name, pr_number)
 }
 
+/// Warning sent to PR author when a reviewer is spawned for their PR.
+///
+/// The author must not enable auto-merge until the review is complete.
+pub fn reviewer_spawned_author_warning(reviewer_name: &str, pr_number: u64) -> String {
+    format!(
+        "\u{26a0}\u{fe0f} {} is now reviewing your PR #{}. Do NOT enable auto-merge (`gh pr merge --auto --squash`) until the review is complete.",
+        reviewer_name, pr_number
+    )
+}
+
 /// Called in coworker {name} for pending task !{task_id}.
 pub fn called_in_pending_task(name: &str, task_id: &str) -> String {
     format!(
@@ -155,6 +165,12 @@ mod tests {
         assert!(
             msg.contains("waiting"),
             "idle message must contain 'waiting' keyword: {msg}"
+        );
+
+        let msg = reviewer_spawned_author_warning("columbus", 1523);
+        assert!(
+            msg.contains("columbus") && msg.contains("1523"),
+            "reviewer warning must contain reviewer name and PR number: {msg}"
         );
     }
 }

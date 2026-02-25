@@ -2774,3 +2774,86 @@ async fn test_review_mode_both_allows_local_reviewer_spawn() {
         "execution.review_mode=both should keep local reviewer spawning enabled"
     );
 }
+
+/// Bug (task !1793): When a reviewer is spawned for a coworker's PR, the PR author
+/// receives no warning and can enable auto-merge before the review completes.
+///
+/// Root cause: `collect_reviewer_effects_with_source` builds `on_success` effects
+/// for the reviewer spawn but never notifies the PR author that review is starting.
+/// The coworker system prompt says not to enable auto-merge before review completes,
+/// but without an explicit notification the warning can be missed.
+///
+/// Fix: Add a `DeliverMailboxMessage` to `on_success` warning the PR author not to
+/// enable auto-merge until the review is complete.
+#[tokio::test]
+async fn test_reviewer_spawn_warns_pr_author_via_mailbox() {
+    // PR authored by "madison" (branch: madison/fix-polling)
+    let pr_number = 99994u64;
+    let pr_json = serde_json::json!({
+        "number": pr_number,
+        "headRefName": "madison/fix-polling",
+        "title": "Fix polling reconciliation [Midtown !200]",
+        "mergeable": "MERGEABLE",
+        "statusCheckRollup": null,
+        "reviewDecision": null,
+        "isDraft": false,
+        "createdAt": "2026-01-01T00:00:00Z",
+        "state": "OPEN",
+    });
+
+    let branch_owners: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let registry = crate::worktree_registry::WorktreeRegistry::new();
+    // madison is active (owns the PR) so the PR is not orphaned
+    let active_names: std::collections::HashSet<String> =
+        ["madison".to_string()].into_iter().collect();
+
+    let (state, _tmp, _guard) = make_test_state("test-repo");
+
+    let effects = collect_reviewer_effects_with_source(
+        Some(&branch_owners),
+        &registry,
+        &active_names,
+        &state,
+        &[pr_json],
+        crate::github_state::AssignmentSource::PollingFallback,
+    )
+    .await;
+
+    // Find the SpawnCoworkerWithCallbacks effect and inspect its on_success effects
+    let spawn_effect = effects.iter().find_map(|e| {
+        if let Effect::SpawnCoworkerWithCallbacks { on_success, .. } = e {
+            Some(on_success)
+        } else {
+            None
+        }
+    });
+
+    assert!(
+        spawn_effect.is_some(),
+        "Expected a SpawnCoworkerWithCallbacks effect for PR #{}. Effects: {:#?}",
+        pr_number,
+        effects
+    );
+
+    let on_success = spawn_effect.unwrap();
+
+    // The on_success effects must include a DeliverMailboxMessage to "madison" warning
+    // them not to enable auto-merge while the review is in progress.
+    let has_author_warning = on_success.iter().any(|e| {
+        if let Effect::DeliverMailboxMessage { name, message, .. } = e {
+            name == "madison" && message.contains(&pr_number.to_string())
+        } else {
+            false
+        }
+    });
+
+    assert!(
+        has_author_warning,
+        "on_success effects must include a DeliverMailboxMessage to 'madison' warning \
+         them not to enable auto-merge while review is in progress. \
+         Before fix: no such warning was sent, allowing the author to merge while \
+         the reviewer was still working (as happened with PR #1523). \
+         on_success effects: {:#?}",
+        on_success
+    );
+}
