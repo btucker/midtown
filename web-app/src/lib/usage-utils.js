@@ -51,7 +51,9 @@ export function formatResetTime(resetsAt, isSession) {
   if (isSession) {
     return reset.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
   }
-  return reset.toLocaleDateString([], { month: 'short', day: 'numeric' })
+  const day = reset.toLocaleDateString([], { month: 'short', day: 'numeric' })
+  const time = reset.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+  return `${day} ${time}`
 }
 
 /**

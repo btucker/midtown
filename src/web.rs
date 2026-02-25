@@ -376,6 +376,7 @@ pub fn create_web_router(state: Arc<WebState>) -> Router {
         .route("/api/push/subscribe", post(api_push_subscribe))
         .route("/api/push/unsubscribe", post(api_push_unsubscribe))
         .route("/api/auth/profiles", get(api_auth_profiles))
+        .route("/api/auth/login", post(api_auth_login))
         .route("/api/auth/switch", post(api_auth_switch))
         .route("/api/auth/pool-toggle", post(api_auth_pool_toggle))
         .route("/api/usage", get(api_usage))
@@ -1290,6 +1291,73 @@ async fn api_auth_profiles(
     })?;
 
     Ok(axum::Json(profiles))
+}
+
+/// Request body for starting OAuth login.
+#[derive(Debug, Deserialize)]
+struct AuthLoginRequest {
+    email: String,
+    /// Provider to log in with ("claude" or "codex"). Defaults to "claude".
+    provider: Option<String>,
+}
+
+/// Start an OAuth login flow.
+///
+/// Spawns the provider CLI which opens the default browser for OAuth. The CLI
+/// handles the full flow autonomously (browser open → authenticate → callback).
+async fn api_auth_login(
+    Json(body): Json<AuthLoginRequest>,
+) -> Result<impl IntoResponse, (StatusCode, axum::Json<serde_json::Value>)> {
+    // Validate email
+    if !body.email.contains('@') {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            axum::Json(serde_json::json!({ "error": "Invalid email address" })),
+        ));
+    }
+
+    let provider = body
+        .provider
+        .as_deref()
+        .map(str::parse::<crate::auth::AuthProvider>)
+        .transpose()
+        .map_err(|e| {
+            (
+                StatusCode::BAD_REQUEST,
+                axum::Json(serde_json::json!({ "error": e })),
+            )
+        })?
+        .unwrap_or_default();
+
+    let email = body.email;
+
+    let result =
+        tokio::task::spawn_blocking(move || crate::auth::start_login(provider, &email, false))
+            .await
+            .map_err(|e| {
+                error!("spawn_blocking panic in auth login: {}", e);
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    axum::Json(serde_json::json!({ "error": "Internal server error" })),
+                )
+            })?;
+
+    match result {
+        Ok(_child) => {
+            // Child is dropped — the CLI process runs detached in the background,
+            // opens the browser, handles the OAuth callback, and exits on its own.
+            Ok(axum::Json(
+                serde_json::json!({ "message": "Login started — check your browser" }),
+            ))
+        }
+        Err(msg) => {
+            warn!("Auth login failed: {}", msg);
+            Err((
+                StatusCode::BAD_REQUEST,
+                axum::Json(serde_json::json!({ "error": msg })),
+            ))
+        }
+    }
 }
 
 /// Request body for switching auth profiles.
