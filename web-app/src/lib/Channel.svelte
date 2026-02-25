@@ -340,6 +340,9 @@
         if (url) {
           window.open(url, '_blank', 'noopener')
         }
+      } else if (target.classList.contains('coworker-link')) {
+        // Prevent the browser from following the '#' href; no detail panel action.
+        e.preventDefault()
       }
     }
 

@@ -423,7 +423,7 @@ function handleUpdate(update) {
         // bump reply_count on the parent message, but do NOT add to the
         // main channel timeline.
         threadData.update((td) => {
-          if (td && td.parentMessage.id === msg.thread_parent_id) {
+          if (td && td.parentMessage?.id === msg.thread_parent_id) {
             return { ...td, messages: [...td.messages, msg] }
           }
           return td
@@ -760,7 +760,7 @@ export function openThread(parentMessage, channelName) {
     // than overwrite so any WS-delivered replies that arrived during the fetch
     // are preserved (append them after the fetched history).
     threadData.update((td) => {
-      if (!td || td.parentMessage.id !== parentMessage.id) return td
+      if (!td || td.parentMessage?.id !== parentMessage.id) return td
       // Deduplicate: WS may have already appended some replies
       const fetchedIds = new Set(replies.map((r) => r.id))
       const wsOnly = td.messages.filter((r) => !fetchedIds.has(r.id))
