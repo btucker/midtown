@@ -15,13 +15,20 @@
   const AGE_OUT_MS = 3000
   const MAX_VISIBLE = 10
 
-  // Map<item_id, completedAtMs> — tracks when each completed item finished
-  let agedOut = $state(new Map())
+  // Two-phase age-out:
+  //   completedAt  Map<item_id, timestampMs> — when each item finished (never deleted)
+  //   expired      Set<item_id>              — items hidden after AGE_OUT_MS has elapsed
+  // Keeping them separate ensures completed items remain visible for 3s before hiding,
+  // and prevents the re-appear loop that occurs when a single map is both populated and
+  // deleted (deletion causes the entry to be re-added on the next interval tick).
+  let completedAt = $state(new Map())
+  let expired = $state(new Set())
 
-  // Reset age-out map when channelName changes (switching threads)
+  // Reset both maps when channelName changes (switching threads clears stale state)
   $effect(() => {
     channelName // track dependency
-    agedOut = new Map()
+    completedAt = new Map()
+    expired = new Set()
   })
 
   // Build merged view: fold ToolResults into their ToolCalls
@@ -45,35 +52,40 @@
     return out
   })
 
-  // Interval: mark newly completed items in agedOut; expire items older than AGE_OUT_MS
+  // Interval: record completion timestamps; move items to `expired` after AGE_OUT_MS
   const intervalId = setInterval(() => {
     const now = Date.now()
-    let changed = false
-    const newMap = new Map(agedOut)
+    let changedCompleted = false
+    let changedExpired = false
+    const newCompleted = new Map(completedAt)
+    const newExpired = new Set(expired)
 
+    // Phase 1: stamp newly completed items
     for (const entry of merged) {
-      if (entry.status !== null && !newMap.has(entry.item.item_id)) {
-        newMap.set(entry.item.item_id, now)
-        changed = true
+      if (entry.status !== null && !newCompleted.has(entry.item.item_id)) {
+        newCompleted.set(entry.item.item_id, now)
+        changedCompleted = true
       }
     }
 
-    for (const [id, completedAt] of newMap) {
-      if (now - completedAt >= AGE_OUT_MS) {
-        newMap.delete(id)
-        changed = true
+    // Phase 2: move stale completed items to the expired set
+    for (const [id, ts] of newCompleted) {
+      if (!newExpired.has(id) && now - ts >= AGE_OUT_MS) {
+        newExpired.add(id)
+        changedExpired = true
       }
     }
 
-    if (changed) agedOut = newMap
+    if (changedCompleted) completedAt = newCompleted
+    if (changedExpired) expired = newExpired
   }, 500)
 
   onDestroy(() => clearInterval(intervalId))
 
-  // Visible list: exclude aged-out items, cap at MAX_VISIBLE newest
+  // Visible list: exclude expired items, cap at MAX_VISIBLE newest
   let visibleItems = $derived(
     merged
-      .filter((entry) => !agedOut.has(entry.item.item_id))
+      .filter((entry) => !expired.has(entry.item.item_id))
       .slice(-MAX_VISIBLE)
   )
 
