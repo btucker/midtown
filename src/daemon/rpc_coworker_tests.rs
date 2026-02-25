@@ -394,6 +394,48 @@ async fn test_coworker_list_excludes_lead_session() {
 }
 
 #[tokio::test]
+async fn test_coworker_list_excludes_legacy_lead_session() {
+    // A session registered with the literal name "lead" (legacy backward-compat
+    // name) must not appear in the coworker.list response, just like a session
+    // named after the repo.
+    let (state, _tmp, _guard) = make_test_state();
+
+    let inserted = state
+        .coworkers
+        .insert_for_testing(crate::coworker::Coworker {
+            slot_id: uuid::Uuid::new_v4().to_string(),
+            name: "lead".to_string(),
+            status: crate::coworker::CoworkerStatus::Running,
+            working_dir: "/tmp".to_string(),
+            started_at: chrono::Utc::now(),
+            current_task: None,
+            session_id: None,
+            model: "gpt-5-codex".to_string(),
+            provider: crate::auth::AuthProvider::Codex,
+            profile: crate::auth::DEFAULT_PROFILE.to_string(),
+        });
+    assert!(inserted, "legacy lead coworker should be inserted for test");
+
+    let response = handle_coworker_list(RequestId::Number(1), &state).await;
+    assert!(!response.is_error(), "coworker.list should succeed");
+
+    let result = response.result.expect("should have result");
+    let coworkers = result["coworkers"]
+        .as_array()
+        .expect("should have coworkers array");
+
+    let names: Vec<&str> = coworkers
+        .iter()
+        .filter_map(|cw| cw.get("name").and_then(|n| n.as_str()))
+        .collect();
+
+    assert!(
+        !names.contains(&"lead"),
+        "legacy 'lead' session should be excluded from coworker.list"
+    );
+}
+
+#[tokio::test]
 async fn test_coworker_list_tags_channel_leads() {
     // Registers a channel lead in persistent state and verifies that
     // handle_coworker_list sets is_channel_lead: true for that coworker.
