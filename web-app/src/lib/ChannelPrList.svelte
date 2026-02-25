@@ -43,7 +43,7 @@
         </tr>
       </thead>
       <tbody>
-        {#each openPrs as pr (pr.number)}
+        {#each openPrs as pr (`${pr.repo || ''}#${pr.number}`)}
           {@const url = getPrUrl(pr)}
           {@const si = statusInfo(pr.status)}
           <tr>
@@ -99,7 +99,7 @@
           </tr>
         </thead>
         <tbody>
-          {#each mergedPrs as pr (pr.number)}
+          {#each mergedPrs as pr (`${pr.repo || ''}#${pr.number}`)}
             {@const url = getPrUrl(pr)}
             <tr class="merged-row">
               <td class="pr-number">

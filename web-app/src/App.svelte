@@ -245,6 +245,20 @@
           </div>
         </header>
 
+        <!-- Mobile tab bar (desktop tabs live in ChannelHeader which is md:block only) -->
+        {#if activeView === 'board'}
+          <div class="mobile-tab-bar md:hidden">
+            {#each [['messages', 'Messages'], ['prs', 'PRs'], ['notes', 'Notes']] as [tab, label]}
+              {@const isActive = ($activeChannelTab[$activeChannel] || 'messages') === tab}
+              <button
+                class="mobile-tab"
+                class:active={isActive}
+                onclick={() => activeChannelTab.update((t) => ({ ...t, [$activeChannel]: tab }))}
+              >{label}</button>
+            {/each}
+          </div>
+        {/if}
+
         {#if activeView === 'board'}
           <div class="board-content flex flex-1 min-h-0 overflow-hidden" class:thread-open-mobile={!!$threadData}>
             <div class="channel-main">
@@ -499,6 +513,37 @@
   .sidebar-scroll {
     flex: 1;
     overflow-y: auto;
+  }
+
+  /* Mobile tab bar */
+  .mobile-tab-bar {
+    display: flex;
+    border-bottom: 1px solid hsl(var(--border));
+    background: hsl(var(--card));
+    flex-shrink: 0;
+  }
+
+  .mobile-tab {
+    flex: 1;
+    padding: 8px 4px;
+    font-size: 0.8rem;
+    font-weight: 500;
+    background: none;
+    border: none;
+    border-bottom: 2px solid transparent;
+    color: hsl(var(--muted-foreground));
+    cursor: pointer;
+    transition: color 0.15s, border-color 0.15s;
+    margin-bottom: -1px;
+  }
+
+  .mobile-tab:hover {
+    color: hsl(var(--foreground));
+  }
+
+  .mobile-tab.active {
+    color: hsl(var(--foreground));
+    border-bottom-color: hsl(var(--primary));
   }
 
   /* Channel main area */
