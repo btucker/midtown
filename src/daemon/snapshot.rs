@@ -1211,15 +1211,22 @@ pub(super) fn minimal_snapshot_for_test() -> WorldSnapshot {
 /// When a reviewer has multiple entries in `pr_reviewers` (e.g., a stale assignment
 /// from one PR and a fresh assignment for another), the most recently assigned entry
 /// is kept to ensure the map is deterministic regardless of `HashMap` iteration order.
+/// Ties on `assigned_at` (e.g., when `cleanup_expired_preserving` refreshes multiple
+/// entries to the same `now`) are broken by PR number (higher wins), providing a stable
+/// secondary ordering.
 pub(crate) fn build_reviewer_pr_assignments(
     github: &crate::github_state::GitHubState,
 ) -> HashMap<String, u64> {
     let mut result: HashMap<String, (u64, chrono::DateTime<chrono::Utc>)> = HashMap::new();
     for (&pr_number, assignment) in &github.pr_reviewers {
-        let is_newer = result
-            .get(&assignment.reviewer)
-            .is_none_or(|(_, existing_at)| assignment.assigned_at > *existing_at);
-        if is_newer {
+        let supersedes =
+            result
+                .get(&assignment.reviewer)
+                .is_none_or(|(existing_pr, existing_at)| {
+                    assignment.assigned_at > *existing_at
+                        || (assignment.assigned_at == *existing_at && pr_number > *existing_pr)
+                });
+        if supersedes {
             result.insert(
                 assignment.reviewer.clone(),
                 (pr_number, assignment.assigned_at),

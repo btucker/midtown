@@ -905,6 +905,37 @@ fn test_build_reviewer_pr_assignments_prefers_newest_when_duplicate_reviewer() {
     );
 }
 
+/// When two assignments have identical `assigned_at` timestamps (e.g., refreshed by
+/// `cleanup_expired_preserving` in the same tick), the higher PR number wins as a
+/// stable tie-breaker — result must be deterministic regardless of iteration order.
+#[test]
+fn test_build_reviewer_pr_assignments_tie_broken_by_pr_number() {
+    use crate::github_state::{AssignmentSource, GitHubState};
+
+    let mut github = GitHubState::default();
+    let same_time = chrono::Utc::now();
+
+    // Assign park to two PRs with identical timestamps (simulates cleanup_expired_preserving
+    // refreshing multiple stale assignments to the same `now`).
+    github.assign_reviewer(1515, "park", AssignmentSource::PollingFallback);
+    github.assign_reviewer(1520, "park", AssignmentSource::PollingFallback);
+    // Force both to the exact same timestamp.
+    if let Some(a) = github.pr_reviewers.get_mut(&1515) {
+        a.assigned_at = same_time;
+    }
+    if let Some(a) = github.pr_reviewers.get_mut(&1520) {
+        a.assigned_at = same_time;
+    }
+
+    let assignments = super::build_reviewer_pr_assignments(&github);
+
+    assert_eq!(
+        assignments.get("park"),
+        Some(&1520),
+        "higher PR number (1520) must win the tie over 1515"
+    );
+}
+
 /// Test that recently_recovered_session_ids is correctly populated from CooldownTracker.
 ///
 /// The collect_world_snapshot() function builds this set by checking the
