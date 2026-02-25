@@ -472,6 +472,11 @@ impl WorldSnapshot {
         map
     }
 
+    /// Returns the set of active channel lead names (keys of `channel_lead_sessions`).
+    pub fn channel_lead_names(&self) -> HashSet<String> {
+        self.channel_lead_sessions.keys().cloned().collect()
+    }
+
     /// Populate debug context fields (channel messages and daemon logs).
     ///
     /// This is only called when capturing a snapshot for debugging, NOT during
@@ -648,29 +653,7 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
     // ── PR author sessions (task → PR mapping) ────────────────────────
     let (tasks_with_open_prs, pr_task_associations) = {
         let ps = state.persistent_state.lock().await;
-        let tasks_to_prs: HashMap<String, u64> = ps
-            .github
-            .pr_author_sessions
-            .iter()
-            .filter_map(|(pr_number, session)| {
-                session
-                    .task_id
-                    .as_ref()
-                    .map(|tid| (tid.clone(), *pr_number))
-            })
-            .collect();
-        let prs_to_tasks: HashMap<u64, String> = ps
-            .github
-            .pr_author_sessions
-            .iter()
-            .filter_map(|(pr_number, session)| {
-                session
-                    .task_id
-                    .as_ref()
-                    .map(|tid| (*pr_number, tid.clone()))
-            })
-            .collect();
-        (tasks_to_prs, prs_to_tasks)
+        (ps.github.task_to_pr_map(), ps.github.pr_to_task_map())
     };
 
     // ── Reviewer state ──────────────────────────────────────────────────

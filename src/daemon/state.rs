@@ -390,6 +390,11 @@ impl DaemonPersistentState {
             false
         }
     }
+
+    /// Returns the set of active channel lead names (keys of `channel_lead_sessions`).
+    pub fn channel_lead_names(&self) -> std::collections::HashSet<String> {
+        self.channel_lead_sessions.keys().cloned().collect()
+    }
 }
 
 #[path = "state_tests.rs"]

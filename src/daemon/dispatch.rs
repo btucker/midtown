@@ -454,8 +454,7 @@ where
         .collect();
 
     // Decide which orphan (if any) to recover using pure decision function
-    let channel_lead_names: std::collections::HashSet<String> =
-        snap.channel_lead_sessions.keys().cloned().collect();
+    let channel_lead_names = snap.channel_lead_names();
     let orphan_ctx = crate::rules::OrphanRecoveryContext {
         in_progress: &in_progress_tasks_active,
         active_names: &snap.active_names,
@@ -1033,8 +1032,7 @@ where
     // Use the same pure decision function from rules.rs that orphan recovery used.
     // This ensures identical filtering behavior (active check, attached check,
     // recently-stopped grace period, open PR without feedback check).
-    let channel_lead_names: std::collections::HashSet<String> =
-        snap.channel_lead_sessions.keys().cloned().collect();
+    let channel_lead_names = snap.channel_lead_names();
     let orphan_ctx = crate::rules::OrphanRecoveryContext {
         in_progress: &tasks_without_sessions,
         active_names: &snap.active_names,
@@ -2350,8 +2348,7 @@ pub(super) fn spawn_for_pending_tasks_excluding(
         let coworker_name = if let Some(name) = grouped_name {
             name
         } else {
-            let channel_lead_names: std::collections::HashSet<String> =
-                snap.channel_lead_sessions.keys().cloned().collect();
+            let channel_lead_names = snap.channel_lead_names();
             let Some(name) = state
                 .coworkers
                 .next_available_name_excluding(&channel_lead_names)

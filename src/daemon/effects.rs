@@ -2232,9 +2232,9 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 mut config,
             } => {
                 // 1. Allocate name from NamePool
-                let channel_lead_names: std::collections::HashSet<String> = {
+                let channel_lead_names = {
                     let ps = state.persistent_state.lock().await;
-                    ps.channel_lead_sessions.keys().cloned().collect()
+                    ps.channel_lead_names()
                 };
                 let name = {
                     let mut pool = state.name_pool.lock().unwrap();

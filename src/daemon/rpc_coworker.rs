@@ -24,9 +24,9 @@ pub(super) async fn handle_coworker_spawn(
     provider: crate::auth::AuthProvider,
 ) -> Response {
     // Check dev coworkers limit (reserve slots for reviewers)
-    let channel_lead_names: std::collections::HashSet<String> = {
+    let channel_lead_names = {
         let ps = state.persistent_state.lock().await;
-        ps.channel_lead_sessions.keys().cloned().collect()
+        ps.channel_lead_names()
     };
     if state.is_at_dev_limit(&channel_lead_names) {
         return Response::error(
@@ -234,9 +234,9 @@ pub(super) async fn handle_coworker_list(id: RequestId, state: &DaemonState) -> 
             })
             .collect();
 
-    let channel_lead_names: std::collections::HashSet<String> = {
+    let channel_lead_names = {
         let ps = state.persistent_state.lock().await;
-        ps.channel_lead_sessions.keys().cloned().collect()
+        ps.channel_lead_names()
     };
 
     let coworkers: Vec<serde_json::Value> = state
