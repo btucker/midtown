@@ -674,8 +674,12 @@
                       <span class="text-muted-foreground/50 flex-shrink-0 w-[3.7em] text-right mr-[0.5em] select-none text-[0.78rem]">{timeChanged(channelMessages, i) ? formatTime(msg.timestamp) : ''}</span>
                       <span class="flex-shrink-0 mr-[0.3em]" style="color: {getSenderColor(msg.from)}">*</span>
                     {:else}
+<<<<<<< HEAD
                       <span class="flex-shrink-0 w-[3.7em] mr-[0.5em]"></span>
                       <span class="flex-shrink-0 mr-[0.3em] invisible">*</span>
+=======
+                      <div class="message-text text-foreground">{@html renderContent(segment.content, getApiBase())}</div>
+>>>>>>> a0bfc8d (fix(web): pass getApiBase() to renderContent in insight message path)
                     {/if}
                     <span class="action-text flex-1 min-w-0" style="color: {getSenderColor(msg.from)}">{@html renderContent(segment.content, getApiBase())}</span>
                   </div>
@@ -696,12 +700,12 @@
                       {#if segment.type === 'mermaid'}
                         <MermaidDiagram code={segment.content} />
                       {:else}
-                        <div class="message-text text-foreground">{@html renderContent(segment.content)}</div>
+                        <div class="message-text text-foreground">{@html renderContent(segment.content, getApiBase())}</div>
                       {/if}
                     {/each}
                   </div>
                 {:else}
-                  <div class="message-text text-foreground">{@html renderContent(msg.content || '')}</div>
+                  <div class="message-text text-foreground">{@html renderContent(msg.content || '', getApiBase())}</div>
                 {/if}
               </div>
             {:else if hasMermaid(msg.content)}

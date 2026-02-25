@@ -19,7 +19,8 @@
 
   const celebratedPrs = new Set()
   const timers = new Map()
-  let hydrated = false
+  let destroyed = false
+  let hydrated = $state(false)
   let activeEffects = $state([])
 
   const EFFECT_DEFS = [
@@ -77,6 +78,7 @@
   }
 
   function removeEffect(id) {
+    if (destroyed) return
     activeEffects = activeEffects.filter((effect) => effect.id !== id)
     const timer = timers.get(id)
     if (timer) {
@@ -86,6 +88,7 @@
   }
 
   onDestroy(() => {
+    destroyed = true
     timers.forEach((timer) => clearTimeout(timer))
     timers.clear()
   })
@@ -543,7 +546,7 @@
   }
 
   @keyframes pixel-burst {
-    0% { opacity: 0; transform: translate(-50%, -50%) scale(0.4); }
+    0% { opacity: 0; transform: translate(-50%, -50%) rotate(0deg) translateY(0px) scale(0.4); }
     20% { opacity: 1; }
     100% { opacity: 0; transform: translate(-50%, -50%) rotate(var(--angle)) translateY(calc(-1 * var(--distance))) scale(0.2); }
   }

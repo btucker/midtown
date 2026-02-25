@@ -132,8 +132,8 @@
 </svelte:head>
 
 <div class="app-container flex h-dvh w-full overflow-hidden bg-background text-foreground">
-  <CelebrationEffects />
   {#if $activeProject}
+    <CelebrationEffects />
     <SidebarProvider>
       <SwipeGestures />
       <Sidebar>

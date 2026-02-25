@@ -1,3 +1,9 @@
+// Muted avenue colors matching the terminal TUI palette (AVENUE_COLORS from ui.rs).
+// Non-avenue senders (lead, github, system, daemon, midtown) are listed here for
+// centralised color management; they are NOT part of the TUI avenue palette.
+// Note: daemon/github/system intentionally use #585858 (dim gray) — previously
+// daemon fell back to the #d0d0d0 getAvenueColor fallback, but muted is correct
+// since daemon output is infrastructure noise, not a human voice.
 export const AVENUE_COLORS = {
   lexington: '#5fafaf',
   park: '#5faf5f',
