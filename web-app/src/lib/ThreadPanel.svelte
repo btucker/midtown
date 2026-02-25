@@ -145,8 +145,7 @@
             index={i}
             senderOverrides={THREAD_SENDER_OVERRIDES}
             dimSenders={THREAD_DIM_SENDERS}
-            gutterWidth="3.2em"
-            gutterMarginRight="0.4em"
+            senderSpacing="0.8em"
             senderClass="mb-[2px]"
           >
             {#if isAction(msg) && !hasMermaid(msg.content)}
@@ -294,8 +293,7 @@
             index={i}
             senderOverrides={THREAD_SENDER_OVERRIDES}
             dimSenders={THREAD_DIM_SENDERS}
-            gutterWidth="3.2em"
-            gutterMarginRight="0.4em"
+            senderSpacing="0.8em"
             senderClass="mb-[2px]"
           >
             {#if isAction(msg) && !hasMermaid(msg.content)}
