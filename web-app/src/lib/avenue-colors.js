@@ -1,3 +1,9 @@
+// Avenue color palette for non-DOM contexts (confetti, canvas, etc.).
+// All values must be static hex strings — CSS custom properties like
+// hsl(var(--foreground)) are not resolved outside a browser stylesheet.
+//
+// This object intentionally diverges from AVENUE_COLORS in messageUtils.js,
+// which may use CSS variables for theme-adaptive entries (e.g. the user sender).
 export const AVENUE_COLORS = {
   lexington: '#5fafaf',
   park: '#5faf5f',

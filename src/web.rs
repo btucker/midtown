@@ -128,12 +128,16 @@ const REPO_STATUS_CACHE_TTL: Duration = Duration::from_secs(300);
 pub struct WebConfig {
     /// Repository name for channel access
     pub repo: String,
+    /// User display name from config (e.g. "Ben"). Used to identify user-sent
+    /// messages when the display name differs from the default "user" sender.
+    pub user_display_name: Option<String>,
 }
 
 impl Default for WebConfig {
     fn default() -> Self {
         Self {
             repo: "default".to_string(),
+            user_display_name: None,
         }
     }
 }
@@ -1101,6 +1105,7 @@ async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoRespo
         "repo_status": repo_status,
         "repo_statuses": repo_statuses,
         "max_coworkers": state.max_coworkers,
+        "user_display_name": state.config.user_display_name,
     });
 
     Ok(axum::Json(status))

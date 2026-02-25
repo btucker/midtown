@@ -23,11 +23,18 @@ export const AVENUE_COLORS = {
   system: '#585858',      // DarkGray
   daemon: '#585858',      // DarkGray
   midtown: '#E3BD3F',     // Gold/Amber (project lead)
-  user: 'hsl(var(--foreground))', // Human user — always use the foreground color (black in light, white in dark)
 }
 
 // Senders whose content is rendered in DarkGray (system infrastructure actors)
 export const DIM_SENDERS = new Set(['daemon', 'github', 'system'])
+
+// CSS value used for the human user's sender name. A CSS custom property is used
+// intentionally here (not a hex literal) so the color adapts to the active theme:
+// black in light mode, white/near-white in dark mode. This value is only consumed
+// in inline style attributes on the page — it is NOT added to AVENUE_COLORS because
+// that object must stay hex-only for use in non-DOM contexts (e.g. confetti in
+// CelebrationEffects.svelte, avenue-colors.js).
+const USER_SENDER_COLOR = 'hsl(var(--foreground))'
 
 function normalizeName(name) {
   return typeof name === 'string' ? name.toLowerCase() : ''
@@ -44,9 +51,28 @@ function getOverride(overrides, key) {
   return undefined
 }
 
-export function getSenderColor(name, overrides) {
+/**
+ * Returns true if `from` identifies the human user.
+ * Matches the literal "user" sender and also the configured display name
+ * (e.g. "ben" when user_display_name = "ben" in config.toml), mirroring
+ * the daemon's is_user_sender() check.
+ *
+ * @param {string} from - The message sender name
+ * @param {string|null} userDisplayName - The configured user display name from /api/status
+ */
+export function isUserSender(from, userDisplayName) {
+  const normalized = normalizeName(from)
+  if (normalized === 'user') return true
+  if (userDisplayName && normalized === normalizeName(userDisplayName)) return true
+  return false
+}
+
+export function getSenderColor(name, overrides, userDisplayName) {
   const normalized = normalizeName(name)
-  return getOverride(overrides, normalized) || AVENUE_COLORS[normalized] || '#d0d0d0'
+  const override = getOverride(overrides, normalized)
+  if (override) return override
+  if (isUserSender(name, userDisplayName)) return USER_SENDER_COLOR
+  return AVENUE_COLORS[normalized] || '#d0d0d0'
 }
 
 function hasExtraDim(extraDimSenders, normalized) {

@@ -300,6 +300,7 @@ pub async fn start_webhook_server(
     // Create web state for mobile app
     let web_config = WebConfig {
         repo: config.repo.clone(),
+        user_display_name: crate::config::get_user_display_name_for_project(&config.repo),
     };
 
     let push_manager: Option<Arc<crate::push::PushManager>> = match crate::push::PushManager::new()

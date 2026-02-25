@@ -1,5 +1,5 @@
 <script>
-  import { threadData } from './store.js'
+  import { threadData, daemonStatus } from './store.js'
   import { sendMessage, closeThread, getApiBase } from './api.js'
   import { renderContent } from './markdown.js'
   import { tick, onMount } from 'svelte'
@@ -102,7 +102,7 @@
           </p>
         {:else}
           <p class="text-[0.75rem] text-muted-foreground m-0 mt-0.5 break-words" data-testid="thread-parent">
-            <span style="color: {getSenderColor($threadData.parentMessage.from, THREAD_SENDER_OVERRIDES)}">{$threadData.parentMessage.from}</span>:
+            <span style="color: {getSenderColor($threadData.parentMessage.from, THREAD_SENDER_OVERRIDES, $daemonStatus?.user_display_name)}">{$threadData.parentMessage.from}</span>:
             {$threadData.parentMessage.content || ''}
           </p>
         {/if}
@@ -128,7 +128,7 @@
           {#if senderChanged($threadData.messages, i)}
             {#if i > 0}<div class="h-[0.8em]"></div>{/if}
             <div class="whitespace-nowrap overflow-hidden text-ellipsis flex items-center gap-[7px] mb-[2px]">
-              <span class="font-bold text-[0.93rem]" style="color: {getSenderColor(msg.from, THREAD_SENDER_OVERRIDES)}">{msg.from}</span>
+              <span class="font-bold text-[0.93rem]" style="color: {getSenderColor(msg.from, THREAD_SENDER_OVERRIDES, $daemonStatus?.user_display_name)}">{msg.from}</span>
               <span class="text-muted-foreground/50 text-[0.72rem] select-none">{formatTime(msg.timestamp)}</span>
             </div>
           {/if}
@@ -189,7 +189,7 @@
           </p>
         {:else}
           <p class="text-[0.75rem] text-muted-foreground m-0 mt-0.5 break-words">
-            <span style="color: {getSenderColor($threadData.parentMessage.from, THREAD_SENDER_OVERRIDES)}">{$threadData.parentMessage.from}</span>:
+            <span style="color: {getSenderColor($threadData.parentMessage.from, THREAD_SENDER_OVERRIDES, $daemonStatus?.user_display_name)}">{$threadData.parentMessage.from}</span>:
             {$threadData.parentMessage.content || ''}
           </p>
         {/if}
@@ -209,7 +209,7 @@
           {#if senderChanged($threadData.messages, i)}
             {#if i > 0}<div class="h-[0.8em]"></div>{/if}
             <div class="whitespace-nowrap overflow-hidden text-ellipsis flex items-center gap-[7px] mb-[2px]">
-              <span class="font-bold text-[0.93rem]" style="color: {getSenderColor(msg.from, THREAD_SENDER_OVERRIDES)}">{msg.from}</span>
+              <span class="font-bold text-[0.93rem]" style="color: {getSenderColor(msg.from, THREAD_SENDER_OVERRIDES, $daemonStatus?.user_display_name)}">{msg.from}</span>
               <span class="text-muted-foreground/50 text-[0.72rem] select-none">{formatTime(msg.timestamp)}</span>
             </div>
           {/if}

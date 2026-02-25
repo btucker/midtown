@@ -661,7 +661,7 @@
             >
               <span
                 class="font-mono font-semibold text-[0.93rem]"
-                style="color: {getSenderColor(msg.from)}"
+                style="color: {getSenderColor(msg.from, null, $daemonStatus?.user_display_name)}"
                 data-testid="message-sender"
               >
                 {msg.from}
@@ -682,8 +682,8 @@
             <!-- Action message: gutter shows time only on minute change, then * content -->
             <div class="flex gap-0 break-words">
               <span class="text-muted-foreground/50 flex-shrink-0 w-[3.7em] text-right mr-[0.5em] select-none text-[0.78rem]">{timeChanged(channelMessages, i) ? formatTime(msg.timestamp) : ''}</span>
-              <span class="flex-shrink-0 mr-[0.3em]" style="color: {getSenderColor(msg.from)}">*</span>
-              <span class="action-text flex-1 min-w-0" style="color: {getSenderColor(msg.from)}">{@html renderContent(getActionContent(msg), getApiBase())}</span>
+              <span class="flex-shrink-0 mr-[0.3em]" style="color: {getSenderColor(msg.from, null, $daemonStatus?.user_display_name)}">*</span>
+              <span class="action-text flex-1 min-w-0" style="color: {getSenderColor(msg.from, null, $daemonStatus?.user_display_name)}">{@html renderContent(getActionContent(msg), getApiBase())}</span>
             </div>
           {:else if isAction(msg) && hasMermaid(msg.content)}
             <!-- Action message with mermaid diagram(s): gutter shows time only on minute change -->
@@ -696,12 +696,12 @@
                 <div class="flex gap-0 break-words">
                   {#if si === 0}
                     <span class="text-muted-foreground/50 flex-shrink-0 w-[3.7em] text-right mr-[0.5em] select-none text-[0.78rem]">{timeChanged(channelMessages, i) ? formatTime(msg.timestamp) : ''}</span>
-                    <span class="flex-shrink-0 mr-[0.3em]" style="color: {getSenderColor(msg.from)}">*</span>
+                    <span class="flex-shrink-0 mr-[0.3em]" style="color: {getSenderColor(msg.from, null, $daemonStatus?.user_display_name)}">*</span>
                   {:else}
                     <span class="flex-shrink-0 w-[3.7em] mr-[0.5em]"></span>
                     <span class="flex-shrink-0 mr-[0.3em] invisible">*</span>
                   {/if}
-                  <span class="action-text flex-1 min-w-0" style="color: {getSenderColor(msg.from)}">{@html renderContent(segment.content, getApiBase())}</span>
+                  <span class="action-text flex-1 min-w-0" style="color: {getSenderColor(msg.from, null, $daemonStatus?.user_display_name)}">{@html renderContent(segment.content, getApiBase())}</span>
                 </div>
               {/if}
             {/each}
