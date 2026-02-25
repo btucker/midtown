@@ -205,13 +205,19 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
     let request_id_for_cache = request.id.clone();
     let request_method = request.method.clone();
 
-    // Methods with their own domain-specific caching should skip the RPC idempotency cache.
-    // kanban.data, prs.status, and coworkers.status all use TTL caches or serve live data —
-    // the idempotency cache (keyed by request ID) would shadow them incorrectly because the
-    // web server reuses id=1 for repeated polls.
+    // Methods that must bypass the RPC idempotency cache fall into two categories:
+    //
+    // 1. Read methods with their own domain-specific caching (kanban.data, prs.status,
+    //    coworkers.status) — the idempotency cache would shadow their own TTL caches
+    //    because the web server reuses id=1 for repeated polls.
+    //
+    // 2. Mutating methods (auth.switch, auth.pool-toggle) — the web layer sends id=1
+    //    for every call, so two successive requests with different params (e.g., enable
+    //    then disable within 60s) would share the same cache key and the second call
+    //    would incorrectly return the first call's cached response without executing.
     let skip_rpc_cache = matches!(
         request_method.as_str(),
-        "kanban.data" | "prs.status" | "coworkers.status"
+        "kanban.data" | "prs.status" | "coworkers.status" | "auth.switch" | "auth.pool-toggle"
     );
 
     // Check cache for idempotent response (within 60 second TTL)
