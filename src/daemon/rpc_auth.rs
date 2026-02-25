@@ -92,8 +92,9 @@ fn execution_role_for_coworker(
     coworker: &crate::coworker::Coworker,
     reviewer_pr_by_name: &HashMap<String, u64>,
     channel_lead_session_names: &HashSet<String>,
+    repo_name: &str,
 ) -> crate::config::ExecutionRole {
-    if coworker.name.eq_ignore_ascii_case("lead") {
+    if super::helpers::is_project_lead(&coworker.name, repo_name) {
         crate::config::ExecutionRole::Lead
     } else if reviewer_pr_by_name.contains_key(&coworker.name) {
         crate::config::ExecutionRole::Reviewer
@@ -251,15 +252,15 @@ pub(super) async fn handle_auth_switch(
     let running_coworkers: Vec<crate::coworker::Coworker> =
         filter_coworkers_by_provider(&state.coworkers.list(), provider)
             .into_iter()
-            .filter(|cw| !cw.name.eq_ignore_ascii_case("lead"))
+            .filter(|cw| !super::helpers::is_project_lead(&cw.name, &state.repo_name))
             .collect();
 
-    let current_lead_provider = state
+    let current_lead = state
         .coworkers
         .list()
         .into_iter()
-        .find(|cw| cw.name.eq_ignore_ascii_case("lead"))
-        .map(|cw| cw.provider);
+        .find(|cw| super::helpers::is_project_lead(&cw.name, &state.repo_name));
+    let current_lead_provider = current_lead.as_ref().map(|cw| cw.provider);
 
     let shutdown_count = running_coworkers.len();
     for coworker in &running_coworkers {
@@ -317,10 +318,14 @@ pub(super) async fn handle_auth_switch(
         crate::config::ExecutionRole::Lead,
     );
     let lead_relaunch_status = if current_lead_provider == Some(provider) {
-        // Shut down the existing headless lead session if running
-        if state.session_manager.is_alive("lead").await {
-            let _ = state.session_manager.shutdown("lead").await;
-            state.coworkers.deregister("lead");
+        // Shut down the existing headless lead session if running.
+        // Use the actual registered name (canonical repo name or legacy "lead").
+        if let Some(lead) = current_lead.as_ref() {
+            let lead_name = lead.name.as_str();
+            if state.session_manager.is_alive(lead_name).await {
+                let _ = state.session_manager.shutdown(lead_name).await;
+                state.coworkers.deregister(lead_name);
+            }
         }
         let mut lead_config = crate::launch::LaunchConfig::lead(&state.repo_name, None);
         lead_config.auth_provider = configured_lead_provider;
@@ -359,6 +364,7 @@ pub(super) async fn handle_auth_switch(
             coworker,
             &reviewer_pr_by_name,
             &channel_lead_session_names,
+            &state.repo_name,
         );
         let target_provider =
             crate::config::get_execution_provider_for_role(&state.repo_name, role);

@@ -1316,3 +1316,64 @@ async fn bind_coworker_to_worktree_collision_does_not_drop_subsequent_effects() 
          BindCoworkerToWorktree is blocked by the collision guard"
     );
 }
+
+// ============================================================================
+// auto_detach_suffix_message — legacy "lead" name coverage
+// ============================================================================
+
+/// The legacy "lead" session name must produce the same respawn suffix as the
+/// canonical repo name.
+///
+/// Regression: before the fix, `auto_detach_suffix_message` only checked
+/// `eq_ignore_ascii_case(repo_name)`, so a session named "lead" got the
+/// "Session will be reassigned via normal task dispatch." suffix instead of
+/// the correct "Headless session will respawn on the next tick." suffix.
+#[test]
+fn test_auto_detach_suffix_legacy_lead_gets_respawn_message() {
+    // Legacy name
+    assert_eq!(
+        auto_detach_suffix_message("lead", "midtown", false),
+        " Headless session will respawn on the next tick.",
+        "legacy 'lead' session must get the respawn suffix"
+    );
+    // Case-insensitive variants
+    assert_eq!(
+        auto_detach_suffix_message("Lead", "midtown", false),
+        " Headless session will respawn on the next tick."
+    );
+    assert_eq!(
+        auto_detach_suffix_message("LEAD", "midtown", false),
+        " Headless session will respawn on the next tick."
+    );
+}
+
+/// Canonical repo-named session must produce the respawn suffix.
+#[test]
+fn test_auto_detach_suffix_canonical_name_gets_respawn_message() {
+    assert_eq!(
+        auto_detach_suffix_message("midtown", "midtown", false),
+        " Headless session will respawn on the next tick."
+    );
+    assert_eq!(
+        auto_detach_suffix_message("Midtown", "midtown", false),
+        " Headless session will respawn on the next tick."
+    );
+}
+
+/// Regular coworker sessions must produce the task-dispatch suffix.
+#[test]
+fn test_auto_detach_suffix_coworker_gets_task_dispatch_message() {
+    assert_eq!(
+        auto_detach_suffix_message("lexington", "midtown", false),
+        " Session will be reassigned via normal task dispatch."
+    );
+}
+
+/// Channel-lead sessions must produce the channel-respawn suffix.
+#[test]
+fn test_auto_detach_suffix_channel_lead_gets_channel_message() {
+    assert_eq!(
+        auto_detach_suffix_message("auth", "midtown", true),
+        " Channel lead session will be respawned for its channel."
+    );
+}
