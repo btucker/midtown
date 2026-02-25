@@ -130,6 +130,34 @@ fn test_is_lead_health_active_returns_false_when_absent() {
 }
 
 #[test]
+fn test_is_lead_health_active_both_keys_stale_repo_name_active_legacy() {
+    // Regression: if repo_name entry is stale/dead but "lead" entry is active,
+    // we must still report the lead as active. The or_else() approach would
+    // stop at the dead repo_name entry and miss the active "lead" entry.
+    let mut health = HashMap::new();
+    health.insert(
+        "midtown".to_string(),
+        ProcessHealth {
+            is_alive: false, // stale/dead entry for repo_name
+            last_event_at: Some(Utc::now()),
+            ..Default::default()
+        },
+    );
+    health.insert(
+        "lead".to_string(),
+        ProcessHealth {
+            is_alive: true,
+            last_event_at: Some(Utc::now()),
+            ..Default::default()
+        },
+    );
+    assert!(
+        is_lead_health_active(&health, "midtown"),
+        "Should detect activity via legacy 'lead' key even when repo-name key is stale"
+    );
+}
+
+#[test]
 fn test_lead_activity_detection_no_health() {
     assert!(!is_session_actively_working(None));
 }

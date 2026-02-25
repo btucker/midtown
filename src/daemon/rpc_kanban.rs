@@ -360,10 +360,10 @@ pub(crate) fn is_lead_health_active(
     health: &std::collections::HashMap<String, ProcessHealth>,
     repo_name: &str,
 ) -> bool {
-    // Modern lead sessions are keyed by repo name (e.g., "midtown").
-    // Legacy sessions used the literal "lead" key — check both for compatibility.
-    let lead_health = health.get(repo_name).or_else(|| health.get("lead"));
-    is_session_actively_working(lead_health)
+    // Check both keys: modern sessions use repo_name, legacy use "lead".
+    // Either being active counts — handles stale entries or in-flight transitions.
+    is_session_actively_working(health.get(repo_name))
+        || is_session_actively_working(health.get("lead"))
 }
 
 /// Core logic for activity detection: returns `true` when a session is alive
