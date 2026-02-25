@@ -611,6 +611,32 @@ impl GitHubState {
     pub fn remove_pr_author_session(&mut self, pr_number: u64) -> Option<PrAuthorSession> {
         self.pr_author_sessions.remove(&pr_number)
     }
+
+    /// Maps PR number → task ID for all author sessions that have a task ID.
+    pub fn pr_to_task_map(&self) -> HashMap<u64, String> {
+        self.pr_author_sessions
+            .iter()
+            .filter_map(|(pr_number, session)| {
+                session
+                    .task_id
+                    .as_ref()
+                    .map(|task_id| (*pr_number, task_id.clone()))
+            })
+            .collect()
+    }
+
+    /// Maps task ID → PR number for all author sessions that have a task ID.
+    pub fn task_to_pr_map(&self) -> HashMap<String, u64> {
+        self.pr_author_sessions
+            .iter()
+            .filter_map(|(pr_number, session)| {
+                session
+                    .task_id
+                    .as_ref()
+                    .map(|task_id| (task_id.clone(), *pr_number))
+            })
+            .collect()
+    }
 }
 
 /// Load GitHub state for a specific repository (legacy file).

@@ -180,9 +180,9 @@ pub(super) async fn route_mentions(state: &DaemonState, msg: &Message) {
         owner
     });
 
-    let channel_lead_names: std::collections::HashSet<String> = {
+    let channel_lead_names = {
         let ps = state.persistent_state.lock().await;
-        ps.channel_lead_sessions.keys().cloned().collect()
+        ps.channel_lead_names()
     };
 
     let mut task_rerouted = false;

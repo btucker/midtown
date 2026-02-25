@@ -112,17 +112,7 @@ fn resolve_pr_owner_from_session(
 /// Callers should fall back to branch-name parsing when this returns `None`.
 async fn resolve_pr_owner_via_session(state: &DaemonState, pr_number: u64) -> Option<String> {
     let ps = state.persistent_state.lock().await;
-    let pr_task_associations: HashMap<u64, String> = ps
-        .github
-        .pr_author_sessions
-        .iter()
-        .filter_map(|(pr_num, session)| {
-            session
-                .task_id
-                .as_ref()
-                .map(|task_id| (*pr_num, task_id.clone()))
-        })
-        .collect();
+    let pr_task_associations = ps.github.pr_to_task_map();
 
     // Build task_id → session_id reverse index from sessions map
     let session_task_map: HashMap<String, String> = ps
@@ -168,17 +158,7 @@ impl PrContext {
     /// channel routing data (shared across all PRs) and session context
     /// (specific to `pr_number`) in a single pass.
     fn from_persistent_state(ps: &super::state::DaemonPersistentState, pr_number: u64) -> Self {
-        let pr_task_associations: HashMap<u64, String> = ps
-            .github
-            .pr_author_sessions
-            .iter()
-            .filter_map(|(pr_num, session)| {
-                session
-                    .task_id
-                    .as_ref()
-                    .map(|task_id| (*pr_num, task_id.clone()))
-            })
-            .collect();
+        let pr_task_associations = ps.github.pr_to_task_map();
 
         let session_context =
             ps.github
@@ -208,20 +188,8 @@ impl PrContext {
 
     /// Extract only channel routing data (when session context isn't needed).
     fn routing_only(ps: &super::state::DaemonPersistentState) -> Self {
-        let pr_task_associations: HashMap<u64, String> = ps
-            .github
-            .pr_author_sessions
-            .iter()
-            .filter_map(|(pr_num, session)| {
-                session
-                    .task_id
-                    .as_ref()
-                    .map(|task_id| (*pr_num, task_id.clone()))
-            })
-            .collect();
-
         Self {
-            pr_task_associations,
+            pr_task_associations: ps.github.pr_to_task_map(),
             task_channel: ps.task_channel.clone(),
             session_context: None,
             task_session_id: None,
@@ -903,9 +871,10 @@ pub(super) async fn poll_prs_for_issues(
             // Extract all decision context from persistent state in one lock
             let (pr_ctx, channel_lead_names) = {
                 let ps = state.persistent_state.lock().await;
-                let cl_names: std::collections::HashSet<String> =
-                    ps.channel_lead_sessions.keys().cloned().collect();
-                (PrContext::from_persistent_state(&ps, pr_number), cl_names)
+                (
+                    PrContext::from_persistent_state(&ps, pr_number),
+                    ps.channel_lead_names(),
+                )
             };
 
             // Decide action using pure decision function with handoff support
@@ -1112,9 +1081,10 @@ async fn collect_green_with_feedback_effects(
         // Extract all decision context from persistent state in one lock
         let (pr_ctx, channel_lead_names) = {
             let ps = state.persistent_state.lock().await;
-            let cl_names: std::collections::HashSet<String> =
-                ps.channel_lead_sessions.keys().cloned().collect();
-            (PrContext::from_persistent_state(&ps, pr_number), cl_names)
+            (
+                PrContext::from_persistent_state(&ps, pr_number),
+                ps.channel_lead_names(),
+            )
         };
 
         // Decide action using handoff-aware decision function (matches webhook path)
@@ -1427,9 +1397,7 @@ async fn collect_stuck_condition_effects(
                     let (is_assigned, channel_lead_names) = {
                         let ps = state.persistent_state.lock().await;
                         let assigned = ps.github.is_assigned(pr_number);
-                        let cl_names: std::collections::HashSet<String> =
-                            ps.channel_lead_sessions.keys().cloned().collect();
-                        (assigned, cl_names)
+                        (assigned, ps.channel_lead_names())
                     };
                     let has_available_slots =
                         state.has_available_coworker_slot(&channel_lead_names);
@@ -1906,9 +1874,10 @@ async fn collect_comment_notification_effects(
         // Extract all decision context from persistent state in one lock
         let (pr_ctx, channel_lead_names) = {
             let ps = state.persistent_state.lock().await;
-            let cl_names: std::collections::HashSet<String> =
-                ps.channel_lead_sessions.keys().cloned().collect();
-            (PrContext::from_persistent_state(&ps, pr_number), cl_names)
+            (
+                PrContext::from_persistent_state(&ps, pr_number),
+                ps.channel_lead_names(),
+            )
         };
 
         // If the linked task is completed, create a follow-up task rather than
@@ -2329,9 +2298,7 @@ pub(crate) async fn collect_reviewer_effects_with_source(
 
                     let (channel_lead_names, pr_ctx) = {
                         let ps = state.persistent_state.lock().await;
-                        let cl_names: std::collections::HashSet<String> =
-                            ps.channel_lead_sessions.keys().cloned().collect();
-                        (cl_names, PrContext::routing_only(&ps))
+                        (ps.channel_lead_names(), PrContext::routing_only(&ps))
                     };
 
                     let action = crate::rules::decide_review_complete_action(
@@ -2484,9 +2451,9 @@ pub(crate) async fn collect_reviewer_effects_with_source(
         }
 
         // Extract channel lead names for coworker limit check
-        let channel_lead_names: std::collections::HashSet<String> = {
+        let channel_lead_names = {
             let ps = state.persistent_state.lock().await;
-            ps.channel_lead_sessions.keys().cloned().collect()
+            ps.channel_lead_names()
         };
 
         // Check max coworkers limit before spawning
@@ -3473,9 +3440,10 @@ pub(super) async fn handle_pr_comment_nudge(
     // Extract all decision context from persistent state in one lock
     let (pr_ctx, channel_lead_names) = {
         let ps = state.persistent_state.lock().await;
-        let cl_names: std::collections::HashSet<String> =
-            ps.channel_lead_sessions.keys().cloned().collect();
-        (PrContext::from_persistent_state(&ps, pr_number), cl_names)
+        (
+            PrContext::from_persistent_state(&ps, pr_number),
+            ps.channel_lead_names(),
+        )
     };
 
     // Decide action using pure decision function with handoff support
@@ -3589,9 +3557,10 @@ pub(super) async fn handle_webhook_review_state_change(
     // Extract all decision context from persistent state in one lock
     let (pr_ctx, channel_lead_names) = {
         let ps = state.persistent_state.lock().await;
-        let cl_names: std::collections::HashSet<String> =
-            ps.channel_lead_sessions.keys().cloned().collect();
-        (PrContext::from_persistent_state(&ps, pr_number), cl_names)
+        (
+            PrContext::from_persistent_state(&ps, pr_number),
+            ps.channel_lead_names(),
+        )
     };
 
     let action = crate::rules::decide_pr_issue_action_with_handoff(
@@ -3674,9 +3643,10 @@ pub(super) async fn handle_webhook_ci_failure(
     // Extract all decision context from persistent state in one lock
     let (pr_ctx, channel_lead_names) = {
         let ps = state.persistent_state.lock().await;
-        let cl_names: std::collections::HashSet<String> =
-            ps.channel_lead_sessions.keys().cloned().collect();
-        (PrContext::from_persistent_state(&ps, pr_number), cl_names)
+        (
+            PrContext::from_persistent_state(&ps, pr_number),
+            ps.channel_lead_names(),
+        )
     };
 
     let action = crate::rules::decide_pr_issue_action_with_handoff(

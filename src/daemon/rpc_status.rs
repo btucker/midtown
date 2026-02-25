@@ -61,8 +61,7 @@ pub(super) async fn handle_status(id: RequestId, state: &DaemonState) -> Respons
                 Some((coworker.clone(), pr_number))
             })
             .collect();
-        let channel_leads: std::collections::HashSet<String> =
-            ps.channel_lead_sessions.keys().cloned().collect();
+        let channel_leads = ps.channel_lead_names();
         let msg_ids = ps.task_message_id.clone();
         (
             rev_map,

@@ -186,8 +186,7 @@ async fn build_coworkers_data(
                     Some((coworker.clone(), pr_number))
                 })
                 .collect();
-            let cl_names: std::collections::HashSet<String> =
-                ps.channel_lead_sessions.keys().cloned().collect();
+            let cl_names = ps.channel_lead_names();
             (assignments, wt_map, cl_names)
         })
         .unwrap_or_default();
