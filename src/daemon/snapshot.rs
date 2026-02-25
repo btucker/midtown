@@ -224,6 +224,11 @@ pub struct WorldSnapshot {
     // ── Reviewer state ──────────────────────────────────────────────────
     /// Currently active reviewers (from both in-memory tracker and persistent state).
     pub active_reviewers: HashSet<String>,
+    /// Coworkers currently in `WorkflowPhase::Reviewing` (lowercase names).
+    /// Defense-in-depth guard for idle shutdown: protects reviewers when their
+    /// assignment timestamp has expired but their session is still working.
+    #[serde(default)]
+    pub reviewing_phase_coworkers: HashSet<String>,
     /// Reviewer → assigned PR number mapping (from github-state.json).
     pub reviewer_pr_assignments: HashMap<String, u64>,
     /// Placeholder comment IDs for PRs with an unupdated "Review in progress" comment.
@@ -672,7 +677,7 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
     // ── Reviewer state ──────────────────────────────────────────────────
     let (active_reviewers, reviewer_pr_assignments, reviewer_restart_counts) = {
         let ps = state.persistent_state.lock().await;
-        let reviewers = ps.github.active_reviewers();
+        let reviewers = compute_active_reviewers_with_health(&ps.github, &headless_process_health);
         // Build reviewer → PR assignments from persistent state so that dead
         // reviewers (absent from active_coworkers) are still included.
         // This is required for decide_dead_reviewer_respawns to detect and
@@ -687,6 +692,21 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
             .map(|(pr, a)| (*pr, a.restart_count))
             .collect();
         (reviewers, assignments, restart_counts)
+    };
+
+    // ── Reviewing-phase coworkers (defense-in-depth idle-shutdown guard) ─
+    let reviewing_phase_coworkers: HashSet<String> = {
+        let records = state.coworker_records.read().await;
+        records
+            .iter()
+            .filter(|(_, rec)| {
+                matches!(
+                    rec.workflow_phase,
+                    Some(crate::coworker_state::WorkflowPhase::Reviewing)
+                )
+            })
+            .map(|(name, _)| name.to_lowercase())
+            .collect()
     };
 
     // ── Reviewer escalation tracking ──────────────────────────────────
@@ -1051,6 +1071,7 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
         tasks_with_open_prs,
         pr_task_associations,
         active_reviewers,
+        reviewing_phase_coworkers,
         reviewer_pr_assignments,
         reviewer_in_progress_comment_ids,
         reviewed_prs,
@@ -1143,6 +1164,7 @@ pub(super) fn minimal_snapshot_for_test() -> WorldSnapshot {
         tasks_with_open_prs: HashMap::new(),
         pr_task_associations: HashMap::new(),
         active_reviewers: HashSet::new(),
+        reviewing_phase_coworkers: HashSet::new(),
         reviewer_pr_assignments: HashMap::new(),
         reviewer_in_progress_comment_ids: HashMap::new(),
         reviewed_prs: HashSet::new(),
@@ -1187,6 +1209,31 @@ pub(super) fn minimal_snapshot_for_test() -> WorldSnapshot {
         session_profile_map: HashMap::new(),
         limited_pool_profiles: HashSet::new(),
     }
+}
+
+/// Compute the active reviewers set, augmented with alive-but-expired reviewers.
+///
+/// `active_reviewers()` only returns reviewers whose assignment is within the
+/// 600-second timeout window. However, there is a race condition between
+/// `SessionMonitorTick` (idle shutdown, every 30s) and `PrPollTick` (which refreshes
+/// assignment timestamps, also every 30s): when both fire at T=600s, if the idle
+/// check fires first, a still-running reviewer loses their protection.
+///
+/// This function adds a secondary protection: if a coworker's process is alive
+/// in `process_health` AND they have ANY assignment in `pr_reviewers` (even expired),
+/// they are included in the result. This closes the race window without false positives
+/// because the `is_alive` check is independent of the GitHub-state timeout.
+pub(crate) fn compute_active_reviewers_with_health(
+    github: &crate::github_state::GitHubState,
+    process_health: &HashMap<String, ProcessHealth>,
+) -> std::collections::HashSet<String> {
+    let mut reviewers = github.active_reviewers();
+    for (name, health) in process_health {
+        if health.is_alive && github.pr_for_reviewer(name).is_some() {
+            reviewers.insert(name.clone());
+        }
+    }
+    reviewers
 }
 
 /// Build the reviewer → PR number assignment map from persistent GitHub state.

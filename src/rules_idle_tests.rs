@@ -33,6 +33,7 @@ fn idle_shutdown_skips_coworker_in_startup_window() {
         minimum_lifetime: Duration::from_secs(90),
         repo_name: "test-repo",
         channel_lead_names: &HashSet::new(),
+        reviewing_phase_coworkers: &HashSet::new(),
     };
     let decisions = decide_idle_shutdowns(&ctx);
     assert!(
@@ -69,6 +70,7 @@ fn idle_shutdown_triggers_after_90s_threshold() {
         minimum_lifetime: Duration::from_secs(90),
         repo_name: "test-repo",
         channel_lead_names: &HashSet::new(),
+        reviewing_phase_coworkers: &HashSet::new(),
     };
     let decisions = decide_idle_shutdowns(&ctx);
     assert_eq!(

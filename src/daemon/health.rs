@@ -107,6 +107,7 @@ pub fn check_and_shutdown_idle_coworkers(snap: &snapshot::WorldSnapshot) -> Vec<
             minimum_lifetime: MINIMUM_COWORKER_LIFETIME,
             repo_name: &snap.repo_name,
             channel_lead_names: &channel_lead_names,
+            reviewing_phase_coworkers: &snap.reviewing_phase_coworkers,
         };
         crate::rules::decide_idle_shutdowns(&idle_ctx)
     };

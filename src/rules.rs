@@ -340,6 +340,12 @@ pub(crate) struct IdleShutdownContext<'a> {
     /// Names of active channel lead sessions (lowercase). Channel leads maintain
     /// domain context for topic channels and must not be idle-shutdown.
     pub channel_lead_names: &'a HashSet<String>,
+    /// Coworkers currently in `WorkflowPhase::Reviewing` (lowercase names).
+    /// Defense-in-depth guard: coworkers who have explicitly reported they are
+    /// reviewing a PR are protected from idle shutdown even when their reviewer
+    /// assignment timestamp has expired (e.g., due to the race between
+    /// `SessionMonitorTick` and `PrPollTick` at the 600-second boundary).
+    pub reviewing_phase_coworkers: &'a HashSet<String>,
 }
 
 /// Decide which coworkers should be shut down due to idleness.
@@ -404,6 +410,7 @@ pub(crate) fn decide_idle_shutdowns(ctx: &IdleShutdownContext<'_>) -> Vec<Shutdo
                 || hashset_contains_icase(ctx.pending_task_owners, name)
                 || protected_by_open_pr
                 || hashset_contains_icase(ctx.active_reviewers, name)
+                || hashset_contains_icase(ctx.reviewing_phase_coworkers, name)
                 || hashset_contains_icase(ctx.coworkers_with_unblocked_deps, name)
                 || hashset_contains_icase(ctx.usage_limited_coworkers, name)
                 || hashset_contains_icase(ctx.api_error_coworkers, name)
@@ -1561,6 +1568,7 @@ mod tests {
         review_feedback: HashSet<String>,
         active_tools: HashSet<String>,
         channel_leads: HashSet<String>,
+        reviewing_phase: HashSet<String>,
         minimum_lifetime: Duration,
         repo_name: String,
     }
@@ -1581,6 +1589,7 @@ mod tests {
                 review_feedback: HashSet::new(),
                 active_tools: HashSet::new(),
                 channel_leads: HashSet::new(),
+                reviewing_phase: HashSet::new(),
                 minimum_lifetime: Duration::default(),
                 repo_name: "test-repo".to_string(),
             }
@@ -1660,6 +1669,11 @@ mod tests {
             self
         }
 
+        fn reviewing_phase(mut self, names: &[&str]) -> Self {
+            self.reviewing_phase = set(names);
+            self
+        }
+
         fn run(&self) -> Vec<ShutdownDecision> {
             let ctx = IdleShutdownContext {
                 coworkers: &self.coworkers,
@@ -1678,6 +1692,7 @@ mod tests {
                 minimum_lifetime: self.minimum_lifetime,
                 repo_name: &self.repo_name,
                 channel_lead_names: &self.channel_leads,
+                reviewing_phase_coworkers: &self.reviewing_phase,
             };
             decide_idle_shutdowns(&ctx)
         }
@@ -1929,6 +1944,43 @@ mod tests {
             decisions.len(),
             1,
             "Sessions not in channel_lead_names are eligible for idle shutdown"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Regression tests for reviewer idle-shutdown bug (!1818)
+    // -----------------------------------------------------------------------
+
+    /// Regression test: a coworker that self-reported WorkflowPhase::Reviewing
+    /// must never be idle-shutdown, even if their reviewer assignment expired.
+    ///
+    /// Bug: the 10-minute assignment timeout caused active reviewers to lose
+    /// their protection when the SessionMonitorTick fired before the PrPollTick
+    /// could refresh the assignment timestamp. Using WorkflowPhase as a secondary
+    /// guard prevents this race condition.
+    #[test]
+    fn idle_shutdown_skips_coworker_in_reviewing_phase() {
+        // No entry in active_reviewers (assignment expired), but coworker
+        // is actively reviewing (self-reported via WorkflowPhase).
+        let decisions = IdleShutdownCtx::one("amsterdam")
+            .reviewing_phase(&["amsterdam"])
+            .run();
+        assert!(
+            decisions.is_empty(),
+            "coworker in Reviewing workflow phase must be protected from idle shutdown \
+             even when their reviewer assignment has expired"
+        );
+    }
+
+    /// The WorkflowPhase guard must be case-insensitive (names normalized to lowercase).
+    #[test]
+    fn idle_shutdown_reviewing_phase_guard_is_case_insensitive() {
+        let decisions = IdleShutdownCtx::one("Amsterdam")
+            .reviewing_phase(&["amsterdam"])
+            .run();
+        assert!(
+            decisions.is_empty(),
+            "WorkflowPhase::Reviewing guard must be case-insensitive"
         );
     }
 

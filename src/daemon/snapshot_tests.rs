@@ -77,6 +77,7 @@ fn test_world_snapshot_has_coworker_stop_times() {
         tasks_with_open_prs: HashMap::new(),
         pr_task_associations: HashMap::new(),
         active_reviewers: HashSet::new(),
+        reviewing_phase_coworkers: HashSet::new(),
         reviewer_pr_assignments: HashMap::new(),
         reviewer_in_progress_comment_ids: HashMap::new(),
         reviewed_prs: HashSet::new(),
@@ -194,6 +195,7 @@ fn test_snapshot_debug_context_empty_by_default() {
         tasks_with_open_prs: HashMap::new(),
         pr_task_associations: HashMap::new(),
         active_reviewers: HashSet::new(),
+        reviewing_phase_coworkers: HashSet::new(),
         reviewer_pr_assignments: HashMap::new(),
         reviewer_in_progress_comment_ids: HashMap::new(),
         reviewed_prs: HashSet::new(),
@@ -455,6 +457,7 @@ fn test_sessions_for_name() {
         tasks_with_open_prs: HashMap::new(),
         pr_task_associations: HashMap::new(),
         active_reviewers: HashSet::new(),
+        reviewing_phase_coworkers: HashSet::new(),
         reviewer_pr_assignments: HashMap::new(),
         reviewer_in_progress_comment_ids: HashMap::new(),
         reviewed_prs: HashSet::new(),
@@ -556,6 +559,7 @@ fn test_active_session_ids_in_snapshot() {
         tasks_with_open_prs: HashMap::new(),
         pr_task_associations: HashMap::new(),
         active_reviewers: HashSet::new(),
+        reviewing_phase_coworkers: HashSet::new(),
         reviewer_pr_assignments: HashMap::new(),
         reviewer_in_progress_comment_ids: HashMap::new(),
         reviewed_prs: HashSet::new(),
@@ -650,6 +654,7 @@ fn test_snapshot_includes_session_fields() {
         tasks_with_open_prs: HashMap::new(),
         pr_task_associations: HashMap::new(),
         active_reviewers: HashSet::new(),
+        reviewing_phase_coworkers: HashSet::new(),
         reviewer_pr_assignments: HashMap::new(),
         reviewer_in_progress_comment_ids: HashMap::new(),
         reviewed_prs: HashSet::new(),
@@ -902,6 +907,80 @@ fn test_build_reviewer_pr_assignments_prefers_newest_when_duplicate_reviewer() {
         assignments.get("park"),
         Some(&1520),
         "should keep the most recently assigned PR (1520), not the stale one (1515)"
+    );
+}
+
+/// Regression test for !1818: An alive reviewer whose assignment has expired must still
+/// appear in the snapshot's `active_reviewers` set, preventing idle-shutdown.
+///
+/// Bug: `active_reviewers()` filters by the 600-second timeout. When SessionMonitorTick
+/// fires before PrPollTick refreshes the timestamp, the reviewer is unprotected.
+/// Fix: `compute_active_reviewers_with_health` includes alive reviewers even when their
+/// assignment has expired.
+#[test]
+fn alive_reviewer_with_expired_assignment_protected_from_idle_shutdown() {
+    use crate::github_state::{AssignmentSource, GitHubState, PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS};
+    use std::collections::HashMap;
+
+    let mut github = GitHubState::default();
+    github.assign_reviewer(1553, "amsterdam", AssignmentSource::Webhook);
+    // Expire the assignment by backdating past the timeout.
+    if let Some(a) = github.pr_reviewers.get_mut(&1553) {
+        a.assigned_at = chrono::Utc::now()
+            - chrono::Duration::seconds(PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS as i64 + 60);
+    }
+
+    // active_reviewers() (old path) does NOT include amsterdam — assignment expired.
+    assert!(
+        !github.active_reviewers().contains("amsterdam"),
+        "active_reviewers() must exclude expired assignments"
+    );
+
+    // Simulate amsterdam's process being alive in headless_process_health.
+    let mut process_health: HashMap<String, ProcessHealth> = HashMap::new();
+    process_health.insert(
+        "amsterdam".to_string(),
+        ProcessHealth {
+            is_alive: true,
+            ..Default::default()
+        },
+    );
+
+    // The augmented function must include amsterdam even though the assignment expired.
+    let active = super::compute_active_reviewers_with_health(&github, &process_health);
+    assert!(
+        active.contains("amsterdam"),
+        "compute_active_reviewers_with_health must include alive reviewers \
+         even when their assignment has expired (bug !1818 regression)"
+    );
+}
+
+/// Dead reviewers (is_alive=false) must NOT be added by compute_active_reviewers_with_health.
+#[test]
+fn dead_reviewer_with_expired_assignment_not_in_active_reviewers() {
+    use crate::github_state::{AssignmentSource, GitHubState, PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS};
+    use std::collections::HashMap;
+
+    let mut github = GitHubState::default();
+    github.assign_reviewer(1553, "amsterdam", AssignmentSource::Webhook);
+    if let Some(a) = github.pr_reviewers.get_mut(&1553) {
+        a.assigned_at = chrono::Utc::now()
+            - chrono::Duration::seconds(PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS as i64 + 60);
+    }
+
+    let mut process_health: HashMap<String, ProcessHealth> = HashMap::new();
+    process_health.insert(
+        "amsterdam".to_string(),
+        ProcessHealth {
+            is_alive: false, // dead — shut down or never started
+            ..Default::default()
+        },
+    );
+
+    let active = super::compute_active_reviewers_with_health(&github, &process_health);
+    assert!(
+        !active.contains("amsterdam"),
+        "dead reviewers must NOT be protected by compute_active_reviewers_with_health"
     );
 }
 
