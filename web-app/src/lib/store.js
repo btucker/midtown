@@ -125,6 +125,10 @@ export const isWideScreen = writable(false)
 // Whether to show archived channels in the channel list (default: false)
 export const showArchivedChannels = writable(false)
 
+// Active tab per channel: { [channelName]: 'messages' | 'prs' | 'notes' }
+// Keyed by channel name so switching channels preserves tab position.
+export const activeChannelTab = writable({})
+
 // Recent tool call activity keyed by channel name.
 // 'midtown' holds the main lead's tool calls; topic channel names hold their channel lead's tool calls.
 // Format: { 'midtown': [{ item_id, kind, content, status, timestamp }, ...], 'web': [...], ... }

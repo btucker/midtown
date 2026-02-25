@@ -1,14 +1,17 @@
 <script>
   import { onDestroy } from 'svelte'
   import { fade } from 'svelte/transition'
-  import { activeChannel, kanbanData, daemonStatus, repoStatus, repoStatuses } from './store.js'
-  import { getChannelTaskCount, getChannelPrs } from './channelUtils.js'
+  import { activeChannel, kanbanData, daemonStatus, repoStatus, repoStatuses, activeChannelTab } from './store.js'
   import { formatRelativeTime } from './utils.js'
 
-  let channelCounts = $derived(getChannelTaskCount($activeChannel, $kanbanData))
-  let channelPrs = $derived(getChannelPrs($activeChannel, $kanbanData))
-  let totalTasks = $derived(channelCounts.inProgress + channelCounts.pending + channelCounts.review)
   let isMultiRepo = $derived($repoStatuses.length > 1)
+
+  // Active tab for the current channel — defaults to 'messages' if not set
+  let currentTab = $derived($activeChannelTab[$activeChannel] || 'messages')
+
+  function setTab(tab) {
+    activeChannelTab.update((tabs) => ({ ...tabs, [$activeChannel]: tab }))
+  }
 
   function ciInfo(status) {
     switch (status) {
@@ -87,32 +90,11 @@
 </script>
 
 <div class="hidden md:block bg-card border-b-2 border-border shrink-0">
-  <div class="flex items-center justify-between px-4 py-3">
-    <!-- Left: channel name + task/PR badges -->
-    <div class="flex items-center gap-3 flex-1 min-w-0">
-      <div class="flex items-baseline gap-1 shrink-0">
-        <span class="text-[1.2rem] text-muted-foreground font-bold">#</span>
-        <span class="text-[1.1rem] font-bold font-mono text-foreground">{$activeChannel}</span>
-      </div>
-      {#if totalTasks > 0 || channelPrs.length > 0}
-        <div class="flex items-center gap-1.5 flex-wrap">
-          {#if channelPrs.length > 0}
-            <span class="text-[0.75rem] px-2 py-[3px] rounded-xl font-semibold whitespace-nowrap bg-blue-100 dark:bg-blue-950/80 text-link-pr" title="{channelPrs.length} active PR{channelPrs.length === 1 ? '' : 's'}">
-              {channelPrs.length} PR{channelPrs.length === 1 ? '' : 's'}
-            </span>
-          {/if}
-          {#if channelCounts.inProgress > 0}
-            <span class="text-[0.75rem] px-2 py-[3px] rounded-xl font-semibold whitespace-nowrap bg-green-100 dark:bg-green-950/80 text-link-default" title="{channelCounts.inProgress} in progress">
-              {channelCounts.inProgress} in progress
-            </span>
-          {/if}
-          {#if channelCounts.pending > 0}
-            <span class="text-[0.75rem] px-2 py-[3px] rounded-xl font-semibold whitespace-nowrap bg-purple-100 dark:bg-purple-950/80 text-link-task" title="{channelCounts.pending} pending">
-              {channelCounts.pending} pending
-            </span>
-          {/if}
-        </div>
-      {/if}
+  <div class="flex items-center justify-between px-4 py-2">
+    <!-- Left: channel name -->
+    <div class="flex items-baseline gap-1 shrink-0">
+      <span class="text-[1.2rem] text-muted-foreground font-bold">#</span>
+      <span class="text-[1.1rem] font-bold font-mono text-foreground">{$activeChannel}</span>
     </div>
 
     <!-- Center: just-merged banner (fades out after 2 min) -->
@@ -177,6 +159,19 @@
       </div>
     {/each}
   {/if}
+
+  <!-- Tab bar: Messages | PRs | Notes -->
+  <div class="tab-bar">
+    <button class="tab" class:active={currentTab === 'messages'} onclick={() => setTab('messages')}>
+      Messages
+    </button>
+    <button class="tab" class:active={currentTab === 'prs'} onclick={() => setTab('prs')}>
+      PRs
+    </button>
+    <button class="tab" class:active={currentTab === 'notes'} onclick={() => setTab('notes')}>
+      Notes
+    </button>
+  </div>
 </div>
 
 <style>
@@ -201,5 +196,33 @@
 
   .just-merged a:hover {
     text-decoration: underline;
+  }
+
+  .tab-bar {
+    display: flex;
+    gap: 0;
+    border-top: 1px solid hsl(var(--border));
+  }
+
+  .tab {
+    padding: 6px 16px;
+    font-size: 0.8rem;
+    font-weight: 500;
+    background: none;
+    border: none;
+    border-bottom: 2px solid transparent;
+    color: hsl(var(--muted-foreground));
+    cursor: pointer;
+    transition: color 0.15s, border-color 0.15s;
+    margin-bottom: -2px;
+  }
+
+  .tab:hover {
+    color: hsl(var(--foreground));
+  }
+
+  .tab.active {
+    color: hsl(var(--foreground));
+    border-bottom-color: hsl(var(--primary));
   }
 </style>
