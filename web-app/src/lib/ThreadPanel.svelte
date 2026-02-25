@@ -252,7 +252,6 @@
         <div class="text-center text-muted-foreground py-4 text-[1rem]">No replies yet</div>
       {:else}
         {#each $threadData.messages as msg, i}
-          <div class:opacity-60={msg.pending}>
           <MessageRow
             {msg}
             msgs={$threadData.messages}
@@ -262,6 +261,7 @@
             senderSpacing="0.8em"
             senderClass="mb-[2px]"
             channelName={$threadData?.channelName}
+            class:opacity-60={msg.pending}
           >
             {#if isAction(msg) && !hasMermaid(msg.content)}
               <div class="flex gap-0 break-words">
@@ -332,7 +332,6 @@
               </div>
             {/if}
           </MessageRow>
-          </div>
         {/each}
       {/if}
     </div>
@@ -393,7 +392,6 @@
         <div class="text-center text-muted-foreground py-4 text-[1rem]">No replies yet</div>
       {:else}
         {#each $threadData.messages as msg, i}
-          <div class:opacity-60={msg.pending}>
           <MessageRow
             {msg}
             msgs={$threadData.messages}
@@ -403,6 +401,7 @@
             senderSpacing="0.8em"
             senderClass="mb-[2px]"
             channelName={$threadData?.channelName}
+            class:opacity-60={msg.pending}
           >
             {#if isAction(msg) && !hasMermaid(msg.content)}
               <div class="flex gap-0 break-words">
@@ -473,7 +472,6 @@
               </div>
             {/if}
           </MessageRow>
-          </div>
         {/each}
       {/if}
     </div>
