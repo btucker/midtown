@@ -924,10 +924,11 @@ fn alive_reviewer_with_expired_assignment_protected_from_idle_shutdown() {
 
     let mut github = GitHubState::default();
     github.assign_reviewer(1553, "amsterdam", AssignmentSource::Webhook);
-    // Expire the assignment by backdating past the timeout.
+    // Expire the assignment by 15s — within the 30s grace window that covers the
+    // race between SessionMonitorTick and PrPollTick.
     if let Some(a) = github.pr_reviewers.get_mut(&1553) {
         a.assigned_at = chrono::Utc::now()
-            - chrono::Duration::seconds(PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS as i64 + 60);
+            - chrono::Duration::seconds(PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS as i64 + 15);
     }
 
     // active_reviewers() (old path) does NOT include amsterdam — assignment expired.
@@ -946,12 +947,45 @@ fn alive_reviewer_with_expired_assignment_protected_from_idle_shutdown() {
         },
     );
 
-    // The augmented function must include amsterdam even though the assignment expired.
+    // The augmented function must include amsterdam — alive within the grace window.
     let active = super::compute_active_reviewers_with_health(&github, &process_health);
     assert!(
         active.contains("amsterdam"),
         "compute_active_reviewers_with_health must include alive reviewers \
-         even when their assignment has expired (bug !1818 regression)"
+         within the grace window even when their assignment has just expired (bug !1818 regression)"
+    );
+}
+
+/// An alive session with a TRULY STALE assignment (well past the grace window) must NOT
+/// be kept in active_reviewers. This prevents a coworker name reused for a different
+/// task from being incorrectly protected by a historical reviewer assignment.
+#[test]
+fn alive_coworker_with_truly_stale_assignment_not_protected() {
+    use crate::github_state::{AssignmentSource, GitHubState, PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS};
+    use std::collections::HashMap;
+
+    let mut github = GitHubState::default();
+    github.assign_reviewer(1553, "amsterdam", AssignmentSource::Webhook);
+    // Backdate far past the grace window (120s = 4 poll cycles past the timeout).
+    if let Some(a) = github.pr_reviewers.get_mut(&1553) {
+        a.assigned_at = chrono::Utc::now()
+            - chrono::Duration::seconds(PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS as i64 + 120);
+    }
+
+    let mut process_health: HashMap<String, ProcessHealth> = HashMap::new();
+    process_health.insert(
+        "amsterdam".to_string(),
+        ProcessHealth {
+            is_alive: true,
+            ..Default::default()
+        },
+    );
+
+    let active = super::compute_active_reviewers_with_health(&github, &process_health);
+    assert!(
+        !active.contains("amsterdam"),
+        "truly stale assignments must NOT protect an alive session — \
+         prevents false positives when a coworker name is reused"
     );
 }
 
@@ -965,7 +999,7 @@ fn dead_reviewer_with_expired_assignment_not_in_active_reviewers() {
     github.assign_reviewer(1553, "amsterdam", AssignmentSource::Webhook);
     if let Some(a) = github.pr_reviewers.get_mut(&1553) {
         a.assigned_at = chrono::Utc::now()
-            - chrono::Duration::seconds(PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS as i64 + 60);
+            - chrono::Duration::seconds(PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS as i64 + 15);
     }
 
     let mut process_health: HashMap<String, ProcessHealth> = HashMap::new();

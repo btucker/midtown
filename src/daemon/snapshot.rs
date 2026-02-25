@@ -1211,7 +1211,16 @@ pub(super) fn minimal_snapshot_for_test() -> WorldSnapshot {
     }
 }
 
-/// Compute the active reviewers set, augmented with alive-but-expired reviewers.
+/// Extra seconds beyond the assignment timeout that an alive reviewer is still protected.
+///
+/// Both `SessionMonitorTick` and `PrPollTick` fire every 30 seconds. At the 600-second
+/// expiry boundary, if the idle check fires just before the poll tick refreshes the
+/// assignment timestamp, the reviewer loses protection. A 30-second grace window covers
+/// this race without promoting truly stale assignments (e.g., from a session that ended
+/// long before a new session with the same name was spawned).
+const REVIEWER_ALIVE_GRACE_SECS: u64 = 30;
+
+/// Compute the active reviewers set, augmented with alive-but-recently-expired reviewers.
 ///
 /// `active_reviewers()` only returns reviewers whose assignment is within the
 /// 600-second timeout window. However, there is a race condition between
@@ -1220,16 +1229,18 @@ pub(super) fn minimal_snapshot_for_test() -> WorldSnapshot {
 /// check fires first, a still-running reviewer loses their protection.
 ///
 /// This function adds a secondary protection: if a coworker's process is alive
-/// in `process_health` AND they have ANY assignment in `pr_reviewers` (even expired),
-/// they are included in the result. This closes the race window without false positives
-/// because the `is_alive` check is independent of the GitHub-state timeout.
+/// in `process_health` AND their assignment is within the extended window
+/// (`PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS + REVIEWER_ALIVE_GRACE_SECS`), they are
+/// included in the result. The time bound prevents truly stale historical assignments
+/// (from a previous session with the same name) from providing false protection.
 pub(crate) fn compute_active_reviewers_with_health(
     github: &crate::github_state::GitHubState,
     process_health: &HashMap<String, ProcessHealth>,
 ) -> std::collections::HashSet<String> {
     let mut reviewers = github.active_reviewers();
     for (name, health) in process_health {
-        if health.is_alive && github.pr_for_reviewer(name).is_some() {
+        if health.is_alive && github.reviewer_has_recent_assignment(name, REVIEWER_ALIVE_GRACE_SECS)
+        {
             reviewers.insert(name.clone());
         }
     }

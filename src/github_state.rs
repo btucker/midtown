@@ -290,6 +290,20 @@ impl GitHubState {
             .map(|(pr_number, _)| *pr_number)
     }
 
+    /// Returns true if the reviewer has an assignment whose timestamp falls within
+    /// `PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS + extra_secs`.
+    ///
+    /// Used by `compute_active_reviewers_with_health` to protect alive reviewers
+    /// during the race window between `SessionMonitorTick` and `PrPollTick` without
+    /// promoting truly stale assignments from sessions that ended long ago.
+    pub fn reviewer_has_recent_assignment(&self, reviewer: &str, extra_secs: u64) -> bool {
+        let limit =
+            chrono::Duration::seconds((PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS + extra_secs) as i64);
+        self.pr_reviewers.iter().any(|(_, a)| {
+            a.reviewer == reviewer && Utc::now().signed_duration_since(a.assigned_at) < limit
+        })
+    }
+
     /// Remove a reviewer assignment by coworker name (e.g., when coworker session ends).
     ///
     /// Returns the removed assignment if found.
