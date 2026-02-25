@@ -2219,9 +2219,13 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 ) {
                     Ok(task_id) => {
                         info!("Created task !{}: {}", task_id, subject);
-                        // Post channel notification
-                        let msg =
-                            crate::message::Message::system(format!("created task: {}", subject));
+                        // Post channel notification attributed to the project lead.
+                        // Effect-created tasks always go to the main channel (no channel
+                        // routing needed here — channel=None routes to the default).
+                        let msg = crate::message::Message::text(
+                            "lead",
+                            format!("created task: {}", subject),
+                        );
                         if let Err(e) = state.send_and_broadcast_async(&msg).await {
                             warn!("Failed to post task creation message: {}", e);
                         }

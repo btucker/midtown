@@ -167,6 +167,20 @@ fn apply_task_channel_mapping(
     }
 }
 
+/// Determine the `from` author for a "created task:" channel notification.
+///
+/// Returns "lead" when the task is in the main channel (i.e., `task_channel`
+/// matches `main_channel`), because the project lead owns the main channel.
+/// Returns the channel name for topic channels, because channel leads have the
+/// same session name as their channel (`channel_lead_session_name` is identity).
+pub(crate) fn task_created_message_author(task_channel: &str, main_channel: &str) -> String {
+    if task_channel == main_channel {
+        "lead".to_string()
+    } else {
+        task_channel.to_string()
+    }
+}
+
 // ============================================================================
 // Handlers
 // ============================================================================
@@ -301,10 +315,17 @@ pub(super) async fn handle_task_create(
         }
     }
 
-    // Post to channel so team is aware; capture message ID for task-as-thread feature.
+    // Post to the task's channel so the right team sees it, attributed to the
+    // channel lead. Capture message ID for task-as-thread feature.
     // Only store the mapping if the write succeeds — a failed write means no channel
     // message exists, so storing the ID would create an orphan thread root.
-    let msg = Message::text("lead", format!("created task: {}", subject));
+    let author = task_created_message_author(task_channel, &state.repo_name);
+    let msg = Message::for_channel(
+        task_channel,
+        author,
+        format!("created task: {}", subject),
+        MessageType::Text,
+    );
     let message_id = msg.id.clone();
     match state.send_and_broadcast_async(&msg).await {
         Ok(()) => {
