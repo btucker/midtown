@@ -551,6 +551,7 @@ fn test_session_dispatch_skips_active_reviewer() {
         // columbus is active (running as reviewer in a separate session)
         active_names: ["columbus".to_string()].into_iter().collect(),
         active_reviewers: ["columbus".to_string()].into_iter().collect(),
+        reviewing_phase_coworkers: HashSet::new(),
         reviewer_pr_assignments: [("columbus".to_string(), 1384_u64)].into_iter().collect(),
         sessions: [("sess-task-1675".to_string(), task_session)]
             .into_iter()

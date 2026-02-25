@@ -290,6 +290,20 @@ impl GitHubState {
             .map(|(pr_number, _)| *pr_number)
     }
 
+    /// Returns true if the reviewer has an assignment whose timestamp falls within
+    /// `PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS + extra_secs`.
+    ///
+    /// Used by `compute_active_reviewers_with_health` to protect alive reviewers
+    /// during the race window between `SessionMonitorTick` and `PrPollTick` without
+    /// promoting truly stale assignments from sessions that ended long ago.
+    pub fn reviewer_has_recent_assignment(&self, reviewer: &str, extra_secs: u64) -> bool {
+        let limit =
+            chrono::Duration::seconds((PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS + extra_secs) as i64);
+        self.pr_reviewers.iter().any(|(_, a)| {
+            a.reviewer == reviewer && Utc::now().signed_duration_since(a.assigned_at) < limit
+        })
+    }
+
     /// Remove a reviewer assignment by coworker name (e.g., when coworker session ends).
     ///
     /// Returns the removed assignment if found.
@@ -1342,5 +1356,40 @@ mod tests {
         assert_eq!(extract_task_id_from_title("No task marker"), None);
         assert_eq!(extract_task_id_from_title("[Midtown !]"), None);
         assert_eq!(extract_task_id_from_title("[Midtown !abc]"), None);
+    }
+
+    /// Regression test for !1818: When a reviewer is shut down mid-review and their
+    /// assignment expires, `cleanup_expired_preserving` must remove the stale
+    /// assignment (since the reviewer is no longer running). This opens the re-spawn
+    /// path in `collect_reviewer_effects_with_source` — `is_assigned()` returns false,
+    /// so a new reviewer gets spawned on the next PR poll.
+    #[test]
+    fn test_expired_assignment_removed_when_reviewer_not_running_enables_respawn() {
+        let mut state = GitHubState::default();
+        state.assign_reviewer(1553, "amsterdam", AssignmentSource::Webhook);
+
+        // Expire the assignment (simulate >10 minutes of reviewing).
+        if let Some(a) = state.pr_reviewers.get_mut(&1553) {
+            a.assigned_at = Utc::now()
+                - chrono::Duration::seconds(PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS as i64 + 120);
+        }
+
+        // Precondition: `is_assigned()` returns false (expired).
+        assert!(
+            !state.is_assigned(1553),
+            "expired assignment must not appear as active"
+        );
+
+        // Amsterdam was shut down — not in running_coworkers.
+        let running: std::collections::HashSet<String> = std::collections::HashSet::new();
+        state.cleanup_expired_preserving(&running, None);
+
+        // Assignment must be fully removed, making pr_number 1553 eligible
+        // for a fresh reviewer spawn on the next PR poll.
+        assert!(
+            !state.pr_reviewers.contains_key(&1553),
+            "expired assignment for shut-down reviewer must be removed by \
+             cleanup_expired_preserving to open the re-spawn path"
+        );
     }
 }

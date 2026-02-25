@@ -3,7 +3,7 @@
 //! These tests verify that the dev spawn cap equals max_coworkers and that
 //! REVIEW_HEADROOM allows reviewers to exceed max_coworkers (not reduce dev slots).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::daemon::constants::REVIEW_HEADROOM;
 
@@ -163,6 +163,7 @@ fn make_dev_limit_snapshot(
         tasks_with_open_prs: std::collections::HashMap::new(),
         pr_task_associations: std::collections::HashMap::new(),
         active_reviewers: std::collections::HashSet::new(),
+        reviewing_phase_coworkers: HashSet::new(),
         reviewer_pr_assignments: std::collections::HashMap::new(),
         reviewer_in_progress_comment_ids: std::collections::HashMap::new(),
         reviewed_prs: std::collections::HashSet::new(),

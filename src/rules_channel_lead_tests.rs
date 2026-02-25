@@ -50,6 +50,7 @@ fn channel_lead_is_not_idle_shutdown() {
         minimum_lifetime: Duration::from_secs(300),
         repo_name: "test-repo",
         channel_lead_names: &leads,
+        reviewing_phase_coworkers: &empty,
     };
     let result = decide_idle_shutdowns(&ctx);
     assert!(
