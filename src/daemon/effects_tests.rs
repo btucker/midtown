@@ -1164,3 +1164,84 @@ async fn emit_workflow_event_no_error_message_on_success() {
         "no channel message should be written on successful script exit"
     );
 }
+
+// ---------------------------------------------------------------------------
+// CreateTask dedup guard tests
+//
+// The `create_task_duplicate_exists` helper is used inside the `for effect in
+// effects` loop in `execute_effects`.  The caller uses `continue` (not
+// `return`) so that only the duplicate CreateTask is skipped and subsequent
+// effects in the batch still execute.
+// ---------------------------------------------------------------------------
+
+fn mk_task(pr: Option<u64>, status: crate::tasks::TaskStatus) -> crate::tasks::Task {
+    crate::tasks::Task {
+        id: "1".to_string(),
+        subject: "test task".to_string(),
+        status,
+        owner: None,
+        description: None,
+        blocked_by: vec![],
+        channel: None,
+        pr,
+        created_at: None,
+    }
+}
+
+#[test]
+fn create_task_duplicate_exists_returns_false_for_empty_list() {
+    assert!(
+        !super::create_task_duplicate_exists(&[], 42),
+        "no tasks → not a duplicate"
+    );
+}
+
+#[test]
+fn create_task_duplicate_exists_returns_false_when_only_completed_tasks() {
+    let tasks = vec![
+        mk_task(Some(42), crate::tasks::TaskStatus::Completed),
+        mk_task(Some(42), crate::tasks::TaskStatus::Completed),
+    ];
+    assert!(
+        !super::create_task_duplicate_exists(&tasks, 42),
+        "only completed tasks for this PR → allowed to create a new one"
+    );
+}
+
+#[test]
+fn create_task_duplicate_exists_returns_true_for_pending_task() {
+    let tasks = vec![mk_task(Some(42), crate::tasks::TaskStatus::Pending)];
+    assert!(
+        super::create_task_duplicate_exists(&tasks, 42),
+        "pending task for PR → skip creation"
+    );
+}
+
+#[test]
+fn create_task_duplicate_exists_returns_true_for_in_progress_task() {
+    let tasks = vec![mk_task(Some(42), crate::tasks::TaskStatus::InProgress)];
+    assert!(
+        super::create_task_duplicate_exists(&tasks, 42),
+        "in-progress task for PR → skip creation"
+    );
+}
+
+#[test]
+fn create_task_duplicate_exists_ignores_other_pr_numbers() {
+    // Task exists for PR 99, not PR 42 — must not block PR 42.
+    let tasks = vec![mk_task(Some(99), crate::tasks::TaskStatus::Pending)];
+    assert!(
+        !super::create_task_duplicate_exists(&tasks, 42),
+        "task for a different PR → not a duplicate"
+    );
+}
+
+#[test]
+fn create_task_duplicate_exists_ignores_tasks_without_pr() {
+    // Task with no associated PR must not block a PR-specific CreateTask.
+    let tasks = vec![mk_task(None, crate::tasks::TaskStatus::Pending)];
+    assert!(
+        !super::create_task_duplicate_exists(&tasks, 42),
+        "task with no PR → not a duplicate"
+    );
+}
