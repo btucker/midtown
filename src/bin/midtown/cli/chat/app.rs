@@ -173,6 +173,8 @@ pub struct RepoStatus {
 pub struct KanbanTask {
     pub id: String,
     pub subject: String,
+    /// Long-form task description (reserved for future detailed views)
+    #[allow(dead_code)]
     pub description: Option<String>,
     pub owner: Option<String>,
     pub status: TaskStatus,
@@ -182,6 +184,8 @@ pub struct KanbanTask {
     pub channel: Option<String>,
     /// Task IDs this task is blocked by
     pub blocked_by: Vec<String>,
+    /// ID of the channel message that created this task (used to root thread view)
+    pub message_id: Option<String>,
 }
 
 /// Task status for kanban columns
@@ -484,13 +488,25 @@ pub struct App {
     pub kill_ring: Option<String>,
     /// Whether the previous command was a kill — consecutive kills append to the kill ring
     pub last_was_kill: bool,
-    /// Currently open task detail panel task ID (mutually exclusive with thread_parent_id)
-    pub open_task_id: Option<String>,
-    /// When the thread was opened via a task click, stores the task ID.
-    /// Used to render task metadata in the thread header instead of raw message content.
-    pub thread_task_id: Option<String>,
+    /// Task IDs explicitly associated with the current thread view.
+    /// Set when opening a thread via a task click (one task per click).
+    /// Multiple tasks can accumulate when multiple tasks share the same thread parent.
+    pub thread_task_ids: Vec<String>,
     /// Currently open thread parent message ID
     pub thread_parent_id: Option<String>,
+    /// Thread panel width as a percentage of the chat+thread area (20–80, default 40).
+    pub thread_panel_pct: u16,
+    /// X column of the thread panel left edge (set each render pass; None when panel is closed).
+    /// Used to detect thread divider clicks for resize.
+    pub thread_divider_x: Option<u16>,
+    /// Whether the user is currently dragging the thread panel divider.
+    pub dragging_thread_divider: bool,
+    /// X coordinate where the chat+thread area starts (set each render pass).
+    /// Used for thread panel resize calculations.
+    pub right_panel_x: u16,
+    /// Width of the chat+thread area (set each render pass).
+    /// Used for thread panel resize calculations.
+    pub right_panel_width: u16,
     /// Thread reply messages (messages with thread_parent_id matching the open thread)
     pub thread_messages: Vec<midtown::Message>,
     /// Thread input text (separate from main input)
@@ -713,9 +729,13 @@ impl App {
             main_area_bottom: u16::MAX,
             kill_ring: None,
             last_was_kill: false,
-            open_task_id: None,
-            thread_task_id: None,
+            thread_task_ids: Vec::new(),
             thread_parent_id: None,
+            thread_panel_pct: 40,
+            thread_divider_x: None,
+            dragging_thread_divider: false,
+            right_panel_x: 0,
+            right_panel_width: 0,
             thread_messages: Vec::new(),
             thread_input_text: String::new(),
             thread_input_cursor: 0,
@@ -1353,7 +1373,7 @@ impl App {
             FocusedPane::Board => FocusedPane::Chat,
             FocusedPane::Chat => FocusedPane::InputBar,
             FocusedPane::InputBar => {
-                if self.thread_parent_id.is_some() {
+                if self.is_thread_panel_open() {
                     FocusedPane::Thread
                 } else {
                     FocusedPane::Board
@@ -1375,9 +1395,7 @@ impl App {
             return;
         }
 
-        // Opening thread closes task panel (mutually exclusive)
-        self.open_task_id = None;
-        self.thread_task_id = None;
+        self.thread_task_ids.clear();
         self.thread_parent_id = Some(parent_id.to_string());
 
         // Collect existing thread replies from loaded messages
@@ -1400,9 +1418,7 @@ impl App {
     /// present in the loaded message list — task metadata is rendered directly
     /// from the task record. Any existing thread replies are collected normally.
     pub fn open_task_as_thread(&mut self, task_id: &str, message_id: &str) {
-        // Opening thread closes task detail panel (mutually exclusive)
-        self.open_task_id = None;
-        self.thread_task_id = Some(task_id.to_string());
+        self.thread_task_ids = vec![task_id.to_string()];
         self.thread_parent_id = Some(message_id.to_string());
 
         // Collect existing thread replies from loaded messages
@@ -1422,37 +1438,61 @@ impl App {
     /// Close the thread view and return focus to the main input bar.
     pub fn close_thread(&mut self) {
         self.thread_parent_id = None;
-        self.thread_task_id = None;
+        self.thread_task_ids.clear();
         self.thread_messages.clear();
         self.thread_input_text.clear();
         self.thread_input_cursor = 0;
         self.thread_input_area = None;
         self.thread_scroll_offset = 0;
         self.thread_panel_x = None;
+        self.thread_divider_x = None;
         self.focused_pane = FocusedPane::InputBar;
     }
 
-    /// Open the task detail panel for the given task ID.
+    /// Open a task in the thread panel when the task has no creation message.
     ///
-    /// The task panel and thread panel are mutually exclusive — opening one closes the other.
-    pub fn open_task(&mut self, task_id: &str) {
-        // Opening task panel closes thread (mutually exclusive)
+    /// Shows the task card at the top of the thread panel. Replies are posted to
+    /// the main channel (no thread_parent_id) since there is no anchor message.
+    pub fn open_task_without_message(&mut self, task_id: &str) {
+        self.thread_task_ids = vec![task_id.to_string()];
         self.thread_parent_id = None;
         self.thread_messages.clear();
         self.thread_input_text.clear();
         self.thread_input_cursor = 0;
-        self.thread_input_area = None;
-        self.open_task_id = Some(task_id.to_string());
-        // If thread was focused, reset to InputBar so keystrokes go to the right buffer
-        if self.focused_pane == FocusedPane::Thread {
-            self.focused_pane = FocusedPane::InputBar;
-        }
+        self.thread_scroll_offset = 0;
+        self.focused_pane = FocusedPane::Thread;
     }
 
-    /// Close the task detail panel.
-    pub fn close_task(&mut self) {
-        self.open_task_id = None;
-        self.focused_pane = FocusedPane::InputBar;
+    /// Whether the thread panel is currently open (task card or thread view).
+    pub fn is_thread_panel_open(&self) -> bool {
+        self.thread_parent_id.is_some() || !self.thread_task_ids.is_empty()
+    }
+
+    /// Returns tasks associated with the current thread by scanning message_id.
+    ///
+    /// When a thread is opened by clicking a message, this finds any tasks whose
+    /// creation message matches the thread parent ID, so their cards appear at top.
+    pub fn find_tasks_for_thread(&self, parent_id: &str) -> Vec<&KanbanTask> {
+        self.tasks
+            .iter()
+            .filter(|t| t.message_id.as_deref() == Some(parent_id))
+            .collect()
+    }
+
+    /// Resize the thread panel by dragging its left edge.
+    ///
+    /// `mouse_x` is the absolute terminal column of the drag position.
+    /// The thread panel occupies the right portion of the chat+thread area.
+    pub fn resize_thread_panel_to(&mut self, mouse_x: u16) {
+        if self.right_panel_width == 0 {
+            return;
+        }
+        let right_end = self.right_panel_x + self.right_panel_width;
+        let thread_width = right_end.saturating_sub(mouse_x);
+        let pct = (thread_width as u32 * 100 / self.right_panel_width as u32).clamp(20, 80) as u16;
+        self.thread_panel_pct = pct;
+        // Invalidate message render cache since layout changed
+        self.message_render_cache = None;
     }
 
     /// Post a thread reply message to the channel via daemon RPC with fallback.
@@ -1681,7 +1721,6 @@ impl App {
                 self.history_fully_loaded = start_pos == 0;
                 self.scroll_offset = 0;
                 self.thread_scroll_offset = 0;
-                self.open_task_id = None;
 
                 // Update the channel reference for future refresh
                 self.channel = Some(channel);
@@ -3002,6 +3041,13 @@ fn fetch_tasks() -> Vec<KanbanTask> {
                 })
                 .unwrap_or_default();
 
+            // ID of the channel message that created this task
+            let message_id = task_data
+                .get("message_id")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(String::from);
+
             if !id.is_empty() {
                 tasks.push(KanbanTask {
                     id,
@@ -3012,6 +3058,7 @@ fn fetch_tasks() -> Vec<KanbanTask> {
                     modified_at,
                     channel,
                     blocked_by,
+                    message_id,
                 });
             }
         }
@@ -4061,9 +4108,13 @@ pub(super) mod tests {
             main_area_bottom: u16::MAX,
             kill_ring: None,
             last_was_kill: false,
-            open_task_id: None,
-            thread_task_id: None,
+            thread_task_ids: Vec::new(),
             thread_parent_id: None,
+            thread_panel_pct: 40,
+            thread_divider_x: None,
+            dragging_thread_divider: false,
+            right_panel_x: 0,
+            right_panel_width: 0,
             thread_messages: Vec::new(),
             thread_input_text: String::new(),
             thread_input_cursor: 0,
@@ -4176,6 +4227,7 @@ pub(super) mod tests {
             channel: None,
             description: None,
             blocked_by: vec![],
+            message_id: None,
         };
         let cloned = task.clone();
         assert_eq!(cloned.id, "1");
@@ -4197,6 +4249,7 @@ pub(super) mod tests {
                     channel: None,
                     description: None,
                     blocked_by: vec![],
+                    message_id: None,
                 },
                 KanbanTask {
                     id: "2".to_string(),
@@ -4207,6 +4260,7 @@ pub(super) mod tests {
                     channel: None,
                     description: None,
                     blocked_by: vec![],
+                    message_id: None,
                 },
                 KanbanTask {
                     id: "3".to_string(),
@@ -4217,6 +4271,7 @@ pub(super) mod tests {
                     channel: None,
                     description: None,
                     blocked_by: vec![],
+                    message_id: None,
                 },
             ],
             ..test_app()
@@ -4690,6 +4745,7 @@ pub(super) mod tests {
                     channel: Some("midtown".to_string()),
                     description: None,
                     blocked_by: vec![],
+                    message_id: None,
                 },
                 KanbanTask {
                     id: "2".to_string(),
@@ -4700,6 +4756,7 @@ pub(super) mod tests {
                     channel: Some("midtown".to_string()),
                     description: None,
                     blocked_by: vec![],
+                    message_id: None,
                 },
                 KanbanTask {
                     id: "3".to_string(),
@@ -4710,6 +4767,7 @@ pub(super) mod tests {
                     channel: Some("features".to_string()),
                     description: None,
                     blocked_by: vec![],
+                    message_id: None,
                 },
             ],
             available_channels: vec![
@@ -4783,6 +4841,7 @@ pub(super) mod tests {
                     channel: Some("midtown".to_string()),
                     description: None,
                     blocked_by: vec![],
+                    message_id: None,
                 },
                 KanbanTask {
                     id: "2".to_string(),
@@ -4793,6 +4852,7 @@ pub(super) mod tests {
                     channel: Some("features".to_string()),
                     description: None,
                     blocked_by: vec![],
+                    message_id: None,
                 },
             ],
             ..test_app()

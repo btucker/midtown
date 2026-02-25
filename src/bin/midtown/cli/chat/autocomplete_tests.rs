@@ -328,6 +328,7 @@ fn test_task_autocomplete_uses_prefix_matching() {
             channel: None,
             description: None,
             blocked_by: Vec::new(),
+            message_id: None,
         },
         KanbanTask {
             id: "1234".to_string(),
@@ -338,6 +339,7 @@ fn test_task_autocomplete_uses_prefix_matching() {
             channel: None,
             description: None,
             blocked_by: Vec::new(),
+            message_id: None,
         },
         KanbanTask {
             id: "2245".to_string(),
@@ -348,6 +350,7 @@ fn test_task_autocomplete_uses_prefix_matching() {
             channel: None,
             description: None,
             blocked_by: Vec::new(),
+            message_id: None,
         },
     ];
 
@@ -389,6 +392,7 @@ fn test_task_autocomplete_empty_query_shows_in_progress_first() {
             channel: None,
             description: None,
             blocked_by: Vec::new(),
+            message_id: None,
         },
         KanbanTask {
             id: "200".to_string(),
@@ -399,6 +403,7 @@ fn test_task_autocomplete_empty_query_shows_in_progress_first() {
             channel: None,
             description: None,
             blocked_by: Vec::new(),
+            message_id: None,
         },
         KanbanTask {
             id: "300".to_string(),
@@ -409,6 +414,7 @@ fn test_task_autocomplete_empty_query_shows_in_progress_first() {
             channel: None,
             description: None,
             blocked_by: Vec::new(),
+            message_id: None,
         },
         KanbanTask {
             id: "400".to_string(),
@@ -419,6 +425,7 @@ fn test_task_autocomplete_empty_query_shows_in_progress_first() {
             channel: None,
             description: None,
             blocked_by: Vec::new(),
+            message_id: None,
         },
     ];
 
