@@ -1,4 +1,4 @@
-// Shared utilities for channel filtering and task counting
+// Shared utilities for channel filtering, task counting, and sidebar expansion state
 
 /**
  * Build a map of task_id → channel from the kanban task lists.

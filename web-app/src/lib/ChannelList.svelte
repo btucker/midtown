@@ -5,7 +5,6 @@
   import {
     getChannelTaskCount,
     getChannelCiStatus,
-    getChannelHasActiveTasks,
     computeExpandedAfterTriangleClick,
     computeExpandedAfterChannelNameClick,
   } from './channelUtils.js'
@@ -139,9 +138,13 @@
   function handleTriangleClick(channelName) {
     // Capture the desired toggle state before selectChannel potentially auto-expands.
     const next = computeExpandedAfterTriangleClick(channelName, expandedChannels)
-    // Select the channel (handles thread close, unread clear, message fetch).
-    selectChannel(channelName)
-    // Override expansion to the toggle result — undoes any auto-expand from selectChannel.
+    // Only call selectChannel when switching to a different channel.
+    // Calling it on the already-active channel would invoke closeThread() as a side
+    // effect, closing any open thread panel just because the user toggled the task list.
+    if (channelName !== $activeChannel) {
+      selectChannel(channelName)
+    }
+    // Apply the toggle result (overrides any auto-expand from selectChannel).
     if (next.has(channelName)) {
       expandedChannels.add(channelName)
     } else {
