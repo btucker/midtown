@@ -1,9 +1,9 @@
 <script>
   import { threadData } from './store.js'
-  import { sendMessage, closeThread, getApiBase } from './api.js'
-  import { renderContent } from './markdown.js'
+  import { sendMessage, closeThread } from './api.js'
   import { tick, onMount } from 'svelte'
-  import { getSenderColor, isDimSender, formatTime, senderChanged, timeChanged } from './messageUtils.js'
+  import { getSenderColor } from './messageUtils.js'
+  import MessageRow from './MessageRow.svelte'
 
   const THREAD_SENDER_OVERRIDES = {
     midtown: '#585858',
@@ -125,17 +125,17 @@
         <div class="text-center text-muted-foreground py-4 text-[1rem]">No replies yet</div>
       {:else}
         {#each $threadData.messages as msg, i}
-          {#if senderChanged($threadData.messages, i)}
-            {#if i > 0}<div class="h-[0.8em]"></div>{/if}
-            <div class="whitespace-nowrap overflow-hidden text-ellipsis flex items-center gap-[7px] mb-[2px]">
-              <span class="font-bold text-[0.93rem]" style="color: {getSenderColor(msg.from, THREAD_SENDER_OVERRIDES)}">{msg.from}</span>
-              <span class="text-muted-foreground/50 text-[0.72rem] select-none">{formatTime(msg.timestamp)}</span>
-            </div>
-          {/if}
-          <div class="flex gap-0 break-words">
-            <span class="text-muted-foreground/50 flex-shrink-0 w-[3.2em] text-right mr-[0.4em] select-none text-[0.78rem]">{timeChanged($threadData.messages, i) ? formatTime(msg.timestamp) : ''}</span>
-            <span class="flex-1 min-w-0 {isDimSender(msg.from, THREAD_DIM_SENDERS) ? 'text-muted-foreground' : 'text-foreground'}">{@html renderContent(msg.content || '', getApiBase())}</span>
-          </div>
+          <MessageRow
+            {msg}
+            msgs={$threadData.messages}
+            index={i}
+            senderOverrides={THREAD_SENDER_OVERRIDES}
+            dimSenders={THREAD_DIM_SENDERS}
+            gutterWidth="3.2em"
+            gutterMarginRight="0.4em"
+            senderSpacing="0.8em"
+            senderClass="mb-[2px]"
+          />
         {/each}
       {/if}
     </div>
@@ -206,17 +206,17 @@
         <div class="text-center text-muted-foreground py-4 text-[1rem]">No replies yet</div>
       {:else}
         {#each $threadData.messages as msg, i}
-          {#if senderChanged($threadData.messages, i)}
-            {#if i > 0}<div class="h-[0.8em]"></div>{/if}
-            <div class="whitespace-nowrap overflow-hidden text-ellipsis flex items-center gap-[7px] mb-[2px]">
-              <span class="font-bold text-[0.93rem]" style="color: {getSenderColor(msg.from, THREAD_SENDER_OVERRIDES)}">{msg.from}</span>
-              <span class="text-muted-foreground/50 text-[0.72rem] select-none">{formatTime(msg.timestamp)}</span>
-            </div>
-          {/if}
-          <div class="flex gap-0 break-words">
-            <span class="text-muted-foreground/50 flex-shrink-0 w-[3.2em] text-right mr-[0.4em] select-none text-[0.78rem]">{timeChanged($threadData.messages, i) ? formatTime(msg.timestamp) : ''}</span>
-            <span class="flex-1 min-w-0 {isDimSender(msg.from, THREAD_DIM_SENDERS) ? 'text-muted-foreground' : 'text-foreground'}">{@html renderContent(msg.content || '', getApiBase())}</span>
-          </div>
+          <MessageRow
+            {msg}
+            msgs={$threadData.messages}
+            index={i}
+            senderOverrides={THREAD_SENDER_OVERRIDES}
+            dimSenders={THREAD_DIM_SENDERS}
+            gutterWidth="3.2em"
+            gutterMarginRight="0.4em"
+            senderSpacing="0.8em"
+            senderClass="mb-[2px]"
+          />
         {/each}
       {/if}
     </div>

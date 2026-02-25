@@ -13,12 +13,14 @@ test.describe('Channel messaging', () => {
   })
 
   test('displays sender names with color', async ({ page }) => {
-    const leadSender = page.getByTestId('message-sender').filter({ hasText: 'lead' })
+    const channel = page.locator('.channel-main')
+    const leadSender = channel.getByTestId('message-sender').filter({ hasText: 'lead' })
     await expect(leadSender.first()).toBeVisible()
   })
 
   test('groups consecutive messages from same sender', async ({ page }) => {
-    const amsterdamHeaders = page.getByTestId('message-sender').filter({ hasText: 'amsterdam' })
+    const channel = page.locator('.channel-main')
+    const amsterdamHeaders = channel.getByTestId('message-sender').filter({ hasText: 'amsterdam' })
     await expect(amsterdamHeaders).toHaveCount(1)
   })
 
@@ -46,7 +48,8 @@ test.describe('Channel messaging', () => {
   })
 
   test('shows timestamps in HH:MM format', async ({ page }) => {
-    const timestamp = page.getByTestId('message-time').first()
+    const channel = page.locator('.channel-main')
+    const timestamp = channel.getByTestId('message-time').first()
     await expect(timestamp).toHaveText(/\b\d{2}:\d{2}\b/)
   })
 
