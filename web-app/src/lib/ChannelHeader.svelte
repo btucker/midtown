@@ -82,7 +82,7 @@
   })
 </script>
 
-<div class="hidden md:block bg-card border-b-2 border-border shrink-0">
+<div class="hidden md:block bg-card shrink-0">
   <div class="flex items-center justify-between px-4 py-2">
     <!-- Left: channel name -->
     <div class="flex items-baseline gap-1 shrink-0">

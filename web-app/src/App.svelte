@@ -414,6 +414,13 @@
     margin-bottom: -1px;
   }
 
+  /* Mobile: equal-width tabs for full-width touch targets */
+  @media (max-width: 767px) {
+    .channel-tab {
+      flex: 1;
+    }
+  }
+
   .channel-tab:hover {
     color: hsl(var(--foreground));
   }
