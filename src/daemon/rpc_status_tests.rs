@@ -181,6 +181,27 @@ fn test_tag_channel_leads_preserves_existing_fields() {
     assert_eq!(tagged[0]["is_channel_lead"], false);
 }
 
+// ─── Tests for legacy "lead" string guard ───
+
+#[test]
+fn test_filter_lead_session_removes_legacy_lead_string() {
+    // Legacy sessions may use the literal name "lead" instead of the repo name.
+    // Both must be filtered from the coworkers list.
+    let coworkers = vec![
+        serde_json::json!({"name": "lead", "status": "running"}),
+        serde_json::json!({"name": "amsterdam", "status": "running"}),
+    ];
+
+    let filtered = filter_lead_session(coworkers, "midtown");
+
+    assert_eq!(
+        filtered.len(),
+        1,
+        "Legacy 'lead' session should be excluded from coworkers list"
+    );
+    assert_eq!(filtered[0]["name"], "amsterdam");
+}
+
 // ─── Tests for resolve_pr_number (PR number resolution priority chain) ───
 
 #[test]
