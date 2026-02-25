@@ -1,9 +1,104 @@
 //! Tests for auth RPC handlers.
 
 use std::collections::{HashMap, HashSet};
+use std::process::Command;
 
 use super::*;
 use crate::auth::AuthProvider;
+
+// ============================================================================
+// Integration test helper
+// ============================================================================
+
+/// Build a minimal DaemonState wired to a temp directory.
+///
+/// Returns:
+/// - `DaemonState` — the state to pass to handlers under test
+/// - `tempfile::TempDir` — the git repo root; keep alive for the test
+/// - `tempfile::TempDir` — the midtown base dir; keep alive for the test
+/// - `crate::paths::TestMidtownBaseDirGuard` — resets the override on drop
+fn make_pool_toggle_test_state(
+    repo_name: &str,
+) -> (
+    DaemonState,
+    tempfile::TempDir,
+    tempfile::TempDir,
+    crate::paths::TestMidtownBaseDirGuard,
+) {
+    // Point all auth/config filesystem reads to a fresh temp directory.
+    let midtown_dir = tempfile::tempdir().expect("midtown temp dir");
+    let _guard = crate::paths::set_test_midtown_base_dir(midtown_dir.path().to_path_buf());
+
+    // Minimal git repo so DaemonState::new succeeds.
+    let repo_dir = tempfile::tempdir().expect("repo temp dir");
+    Command::new("git")
+        .args(["init"])
+        .current_dir(repo_dir.path())
+        .output()
+        .expect("git init");
+    Command::new("git")
+        .args(["config", "user.email", "test@example.com"])
+        .current_dir(repo_dir.path())
+        .output()
+        .expect("git config email");
+    Command::new("git")
+        .args(["config", "user.name", "Test"])
+        .current_dir(repo_dir.path())
+        .output()
+        .expect("git config name");
+    Command::new("git")
+        .args(["commit", "--allow-empty", "-m", "init"])
+        .current_dir(repo_dir.path())
+        .output()
+        .expect("git commit");
+
+    let wm =
+        crate::worktree::WorktreeManager::new(repo_dir.path().to_path_buf()).expect("worktree mgr");
+    let cm = crate::coworker::CoworkerManager::new(wm);
+    let channel_router = crate::ChannelRouter::new(repo_dir.path(), "midtown");
+    let (shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(1);
+
+    let state = DaemonState::new(
+        "/tmp/test.sock".into(),
+        cm,
+        repo_name.to_string(),
+        vec![repo_dir.path().to_path_buf()],
+        channel_router,
+        None,
+        10,
+        None,
+        "main".to_string(),
+        shutdown_tx,
+    )
+    .expect("daemon state");
+
+    (state, repo_dir, midtown_dir, _guard)
+}
+
+/// Create a real profile directory so `profile_exists_for` returns `true`.
+///
+/// For Claude, the profile directory is `<midtown_base>/auth/<name>/claude/`.
+fn create_profile_dir(midtown_dir: &tempfile::TempDir, provider: AuthProvider, name: &str) {
+    let base = midtown_dir.path().join("auth");
+    let dir = match provider {
+        AuthProvider::Claude => base.join(name).join("claude"),
+        AuthProvider::Codex => base
+            .join("providers")
+            .join("codex")
+            .join("profiles")
+            .join(name),
+        AuthProvider::Zai => base
+            .join("providers")
+            .join("zai")
+            .join("profiles")
+            .join(name),
+    };
+    std::fs::create_dir_all(&dir).expect("create profile dir");
+}
+
+// ============================================================================
+// handle_auth_pool_toggle integration tests
+// ============================================================================
 
 // ============================================================================
 // Pool toggle config logic tests
@@ -146,6 +241,261 @@ fn test_pool_toggle_config_round_trip() {
     let profiles = reloaded.execution.coworker_profiles.unwrap_or_default();
     assert!(profiles.contains(&"alice@example.com".to_string()));
     assert!(profiles.contains(&"bob@example.com".to_string()));
+}
+
+// ============================================================================
+// handle_auth_pool_toggle integration tests
+// ============================================================================
+//
+// These tests call the production function with a real DaemonState and verify
+// the full round-trip: request validation → config mutation → disk persistence
+// → ops-channel broadcast → JSON response shape.
+
+/// Enable a profile that exists → success response + persisted config.
+#[tokio::test]
+async fn test_pool_toggle_enable_adds_profile_full_round_trip() {
+    let (state, _repo, midtown_dir, _guard) = make_pool_toggle_test_state("test-repo");
+    create_profile_dir(&midtown_dir, AuthProvider::Claude, "alice@example.com");
+
+    let resp = handle_auth_pool_toggle(
+        crate::rpc::RequestId::Number(1),
+        AuthProvider::Claude,
+        "alice@example.com",
+        true,
+        &state,
+    )
+    .await;
+
+    // Response must be success with the expected shape.
+    let result = resp.result.expect("expected success, got error");
+    assert_eq!(result["success"], true);
+    assert_eq!(result["profile"], "alice@example.com");
+    assert_eq!(result["provider"], "claude");
+    assert_eq!(result["enabled"], true);
+    let profiles = result["coworker_profiles"]
+        .as_array()
+        .expect("coworker_profiles must be an array");
+    assert_eq!(profiles.len(), 1);
+    assert_eq!(profiles[0], "alice@example.com");
+
+    // Config must be persisted to disk.
+    let config_path = crate::config::project_config_path("test-repo");
+    let saved = crate::config::FullProjectConfig::load_from(&config_path)
+        .expect("config must have been saved");
+    assert_eq!(
+        saved.execution.coworker_profiles,
+        Some(vec!["alice@example.com".to_string()])
+    );
+}
+
+/// Disable a profile that's in the list → removed from config on disk.
+#[tokio::test]
+async fn test_pool_toggle_disable_removes_profile_full_round_trip() {
+    let (state, _repo, _midtown_dir, _guard) = make_pool_toggle_test_state("test-repo");
+
+    // Pre-populate config with alice in the pool.
+    let config_path = crate::config::project_config_path("test-repo");
+    std::fs::create_dir_all(config_path.parent().unwrap()).expect("create config dir");
+    let mut config = crate::config::FullProjectConfig::default();
+    config.execution.coworker_profiles = Some(vec!["alice@example.com".to_string()]);
+    config.save_to(&config_path).expect("pre-populate config");
+
+    // Disable does not check profile existence — no need to create a profile dir.
+    let resp = handle_auth_pool_toggle(
+        crate::rpc::RequestId::Number(2),
+        AuthProvider::Claude,
+        "alice@example.com",
+        false,
+        &state,
+    )
+    .await;
+
+    let result = resp.result.expect("expected success, got error");
+    assert_eq!(result["success"], true);
+    assert_eq!(result["enabled"], false);
+    let profiles = result["coworker_profiles"]
+        .as_array()
+        .expect("coworker_profiles array");
+    assert!(
+        profiles.is_empty(),
+        "alice should have been removed from the pool"
+    );
+
+    // Disk must reflect the removal.
+    let saved =
+        crate::config::FullProjectConfig::load_from(&config_path).expect("saved config exists");
+    assert_eq!(
+        saved.execution.coworker_profiles,
+        Some(vec![]),
+        "alice must be gone from the persisted pool"
+    );
+}
+
+/// P1 regression: disabling when coworker_profiles is None must not write
+/// `Some([])` to disk, which would shadow inherited global pool entries.
+#[tokio::test]
+async fn test_pool_toggle_disable_on_unset_does_not_persist_empty_list() {
+    let (state, _repo, _midtown_dir, _guard) = make_pool_toggle_test_state("test-repo");
+
+    let resp = handle_auth_pool_toggle(
+        crate::rpc::RequestId::Number(3),
+        AuthProvider::Claude,
+        "nobody@example.com",
+        false,
+        &state,
+    )
+    .await;
+
+    // Handler should succeed (removing a non-existent entry is idempotent).
+    resp.result.expect("expected success, got error");
+
+    // No config file should have been written yet (or, if it was, the field is absent / None).
+    let config_path = crate::config::project_config_path("test-repo");
+    if config_path.exists() {
+        let saved = crate::config::FullProjectConfig::load_from(&config_path).unwrap();
+        assert!(
+            saved.execution.coworker_profiles.is_none(),
+            "coworker_profiles must remain None — not Some([]) — after disabling a non-existent entry"
+        );
+    }
+}
+
+/// Enabling a profile that does not exist on disk → -32602 error.
+#[tokio::test]
+async fn test_pool_toggle_enable_nonexistent_profile_returns_error() {
+    let (state, _repo, _midtown_dir, _guard) = make_pool_toggle_test_state("test-repo");
+    // Intentionally do NOT create the profile directory.
+
+    let resp = handle_auth_pool_toggle(
+        crate::rpc::RequestId::Number(4),
+        AuthProvider::Claude,
+        "ghost@example.com",
+        true,
+        &state,
+    )
+    .await;
+
+    let err = resp.error.expect("expected error for nonexistent profile");
+    assert_eq!(err.code, -32602, "invalid params error code");
+    assert!(
+        err.message.contains("ghost@example.com"),
+        "error message should name the missing profile"
+    );
+}
+
+/// Invalid profile name (path traversal) → -32602 error, no disk write.
+#[tokio::test]
+async fn test_pool_toggle_invalid_profile_name_returns_error() {
+    let (state, _repo, _midtown_dir, _guard) = make_pool_toggle_test_state("test-repo");
+
+    let resp = handle_auth_pool_toggle(
+        crate::rpc::RequestId::Number(5),
+        AuthProvider::Claude,
+        "../etc/passwd",
+        true,
+        &state,
+    )
+    .await;
+
+    let err = resp.error.expect("expected error for invalid profile name");
+    assert_eq!(err.code, -32602);
+    assert!(
+        err.message.contains("Invalid profile name"),
+        "error should mention invalid name, got: {}",
+        err.message
+    );
+}
+
+/// Enabling the same profile twice → profile appears only once in the list.
+#[tokio::test]
+async fn test_pool_toggle_enable_is_idempotent_via_handler() {
+    let (state, _repo, midtown_dir, _guard) = make_pool_toggle_test_state("test-repo");
+    create_profile_dir(&midtown_dir, AuthProvider::Claude, "alice@example.com");
+
+    // Enable alice twice.
+    for req_id in [10i64, 11] {
+        handle_auth_pool_toggle(
+            crate::rpc::RequestId::Number(req_id),
+            AuthProvider::Claude,
+            "alice@example.com",
+            true,
+            &state,
+        )
+        .await
+        .result
+        .expect("enable should succeed");
+    }
+
+    let config_path = crate::config::project_config_path("test-repo");
+    let saved =
+        crate::config::FullProjectConfig::load_from(&config_path).expect("config was saved");
+    let profiles = saved.execution.coworker_profiles.unwrap_or_default();
+    assert_eq!(
+        profiles
+            .iter()
+            .filter(|p| *p == "alice@example.com")
+            .count(),
+        1,
+        "alice must appear exactly once after two enable calls"
+    );
+}
+
+/// After a successful toggle, the handler broadcasts to the ops channel so web
+/// UI clients receive the update without polling.
+#[tokio::test]
+async fn test_pool_toggle_broadcasts_to_ops_channel() {
+    let (state, repo_dir, midtown_dir, _guard) = make_pool_toggle_test_state("test-repo");
+    create_profile_dir(&midtown_dir, AuthProvider::Claude, "alice@example.com");
+
+    handle_auth_pool_toggle(
+        crate::rpc::RequestId::Number(20),
+        AuthProvider::Claude,
+        "alice@example.com",
+        true,
+        &state,
+    )
+    .await
+    .result
+    .expect("toggle should succeed");
+
+    // The ChannelRouter was created with repo_dir as base_dir; read the ops channel.
+    let router = crate::ChannelRouter::new(repo_dir.path(), "midtown");
+    let ops = router.get_channel("ops").expect("ops channel exists");
+    let messages = ops.read_all().expect("read ops channel");
+
+    let found = messages
+        .iter()
+        .any(|m| m.content.contains("alice@example.com") && m.content.contains("coworker pool"));
+    assert!(
+        found,
+        "ops channel must contain a broadcast about alice@example.com joining the pool; messages: {:?}",
+        messages.iter().map(|m| &m.content).collect::<Vec<_>>()
+    );
+}
+
+/// Codex provider: enabling a profile creates the correct provider-scoped
+/// directory path and the response returns `"provider": "codex"`.
+#[tokio::test]
+async fn test_pool_toggle_codex_provider_enable() {
+    let (state, _repo, midtown_dir, _guard) = make_pool_toggle_test_state("test-repo");
+    create_profile_dir(&midtown_dir, AuthProvider::Codex, "codex-user@example.com");
+
+    let resp = handle_auth_pool_toggle(
+        crate::rpc::RequestId::Number(30),
+        AuthProvider::Codex,
+        "codex-user@example.com",
+        true,
+        &state,
+    )
+    .await;
+
+    let result = resp.result.expect("codex enable should succeed");
+    assert_eq!(result["provider"], "codex");
+    assert_eq!(result["enabled"], true);
+    let profiles = result["coworker_profiles"]
+        .as_array()
+        .expect("coworker_profiles array");
+    assert!(profiles.iter().any(|p| p == "codex-user@example.com"));
 }
 
 #[test]
