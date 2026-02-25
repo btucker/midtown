@@ -2168,6 +2168,15 @@ impl DaemonState {
         self.task_to_session.lock().unwrap().get(task_id).cloned()
     }
 
+    /// Returns the name of the default (main) channel for this repo.
+    ///
+    /// Use this — rather than `repo_name` — when checking whether a task channel
+    /// is the main channel versus a topic channel. The default channel is always
+    /// "midtown" regardless of the repository name.
+    pub(crate) fn default_channel_name(&self) -> &str {
+        self.channel_router.default_channel_name()
+    }
+
     /// Send a WebUpdate to all connected WebSocket clients (no-op if web is disabled).
     pub(crate) fn broadcast_web_update(&self, update: WebUpdate) {
         if let Some(ref tx) = self.web_updates_tx {

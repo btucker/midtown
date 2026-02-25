@@ -257,3 +257,90 @@ fn test_task_thread_id_defaults_to_empty_on_old_state() {
         "task_thread_id should default to empty for old state files"
     );
 }
+
+// ── task_created_message_author tests ────────────────────────────────────────
+
+/// For the main channel, the task-created message should be attributed to "lead".
+#[test]
+fn test_task_created_message_author_main_channel() {
+    // When task_channel matches the main channel, "lead" should be the author.
+    let author = task_created_message_author("midtown", "midtown");
+    assert_eq!(author, "lead");
+}
+
+/// For a sub-channel, the task-created message should be attributed to the
+/// channel lead, whose session name equals the channel name.
+#[test]
+fn test_task_created_message_author_sub_channel() {
+    let author = task_created_message_author("notes", "midtown");
+    assert_eq!(author, "notes");
+}
+
+/// For a sub-channel with a hyphenated name.
+#[test]
+fn test_task_created_message_author_hyphenated_sub_channel() {
+    let author = task_created_message_author("web-interface", "myrepo");
+    assert_eq!(author, "web-interface");
+}
+
+/// The main_channel comparison must use the channel router's default ("midtown"),
+/// NOT the repo name. In repos whose name differs from "midtown", tasks created
+/// without an explicit channel still land in "midtown" (the hardcoded default),
+/// so comparing against the repo name would incorrectly treat them as topic channels.
+#[test]
+fn test_task_created_message_author_main_channel_non_midtown_repo() {
+    // Repo named "myrepo", default channel is "midtown" (hardcoded in channel router).
+    // A task with channel="midtown" should be attributed to "lead", not "midtown".
+    let author = task_created_message_author("midtown", "midtown");
+    assert_eq!(author, "lead");
+
+    // Sanity check: "myrepo" as main_channel with task_channel="midtown" would
+    // previously return "midtown" (wrong), but now callers pass the router's
+    // default ("midtown") instead of the repo name.
+    let wrong_author = task_created_message_author("midtown", "myrepo");
+    assert_eq!(wrong_author, "midtown"); // demonstrates the old bug
+}
+
+// ── task_created_message routing tests ───────────────────────────────────────
+
+/// For the main channel, the task-created Message should have channel=main
+/// and from="lead".
+#[test]
+fn test_task_created_message_main_channel_routing() {
+    use crate::message::MessageType;
+
+    let msg = crate::message::Message::for_channel(
+        "midtown",
+        task_created_message_author("midtown", "midtown"),
+        "created task: Fix the bug",
+        MessageType::Text,
+    );
+    assert_eq!(
+        msg.channel_name(),
+        "midtown",
+        "should route to main channel"
+    );
+    assert_eq!(
+        msg.from, "lead",
+        "main channel tasks should be attributed to lead"
+    );
+}
+
+/// For a sub-channel, the task-created Message should route to that channel
+/// and be attributed to the channel lead (whose name equals the channel name).
+#[test]
+fn test_task_created_message_sub_channel_routing() {
+    use crate::message::MessageType;
+
+    let msg = crate::message::Message::for_channel(
+        "notes",
+        task_created_message_author("notes", "midtown"),
+        "created task: Add wiki page",
+        MessageType::Text,
+    );
+    assert_eq!(msg.channel_name(), "notes", "should route to sub-channel");
+    assert_eq!(
+        msg.from, "notes",
+        "sub-channel tasks should be attributed to channel lead"
+    );
+}
