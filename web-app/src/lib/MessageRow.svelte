@@ -16,6 +16,7 @@
     senderClass = '',
     currentTask = undefined,
     channelName = undefined,
+    class: extraClass = '',
     children = undefined,
   } = $props()
 
@@ -25,7 +26,7 @@
 </script>
 
 {#if senderChanged(msgs, index)}
-  <div class="flex items-start gap-[0.5rem] pt-[3px] {senderClass}" style={index > 0 ? `margin-top: ${senderSpacing}` : ''}>
+  <div class="flex items-start gap-[0.5rem] pt-[3px] {senderClass} {extraClass}" style={index > 0 ? `margin-top: ${senderSpacing}` : ''}>
     <!-- Avatar -->
     <div
       class="flex-shrink-0 rounded-md flex items-center justify-center text-white font-bold text-[1rem] select-none mt-[0.15rem]"
@@ -56,7 +57,7 @@
   </div>
 {:else}
   <!-- Continuation: gutter sits in the avatar column, text aligns under username -->
-  <div class="flex gap-[0.5rem] mt-[0.5em]">
+  <div class="flex gap-[0.5rem] mt-[0.5em] {extraClass}">
     <span
       class="text-muted-foreground/70 flex-shrink-0 text-right select-none text-[0.7rem] leading-[1.55rem]"
       style="width: {AVATAR_SIZE}"

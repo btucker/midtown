@@ -223,7 +223,18 @@ export async function fetchHistory(channelName = null) {
         // Merge rather than replace: preserve messages for channels not in this
         // response (e.g. channels with no recent history). Using .set() would
         // wipe them on WS reconnect, causing blank channels until re-tapped.
-        messagesByChannel.update((existing) => ({ ...existing, ...byChannel }))
+        //
+        // Pre-merge: strip any pending (optimistic) messages from existing channels.
+        // If the WS echo was lost during a disconnect, a pending message in a
+        // low-traffic channel would survive the merge as a "ghost" forever. Clearing
+        // pending entries first is safe — if the message actually sent, it comes back
+        // clean in byChannel (for its channel) or is simply gone (network loss).
+        messagesByChannel.update((existing) => {
+          const withoutPending = Object.fromEntries(
+            Object.entries(existing).map(([ch, msgs]) => [ch, msgs.filter((m) => !m.pending)])
+          )
+          return { ...withoutPending, ...byChannel }
+        })
 
         // Channels are already populated by fetchChannels() which calls the
         // backend's Channel::list(). We no longer derive channels from message

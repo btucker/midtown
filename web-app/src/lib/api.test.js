@@ -55,6 +55,66 @@ describe('fetchHistory', () => {
     expect(store['channel-a']).toHaveLength(1)
     expect(store['channel-a'][0].content).toBe('fresh message')
   })
+
+  it('clears ghost pending messages from channels absent in the history response', async () => {
+    // Regression: if the WS echo was lost during a disconnect, a pending optimistic
+    // message can survive in a low-traffic channel that doesn't appear in the bulk
+    // history response. The merge-not-replace strategy preserves the channel, so the
+    // pending message lingers forever as a "ghost".
+    //
+    // Fix: strip pending messages from all existing channels before merging, so
+    // only confirmed (non-pending) messages remain for channels not in the response.
+    messagesByChannel.set({
+      midtown: [],
+      'web': [
+        { id: 'real-1', content: 'existing confirmed', channel: 'web', from: 'coworker' },
+        { id: 'pending-ghost', content: 'my unsent msg', channel: 'web', from: 'user', pending: true },
+      ],
+    })
+
+    // Bulk fetch only returns midtown — 'web' is low-traffic, not in response
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => [
+        { id: 99, content: 'midtown msg', channel: 'midtown', timestamp: '2026-01-01T00:00:00Z' },
+      ],
+    })
+
+    await fetchHistory()
+
+    const store = get(messagesByChannel)
+    expect(store['midtown']).toHaveLength(1)
+    // The confirmed message should still be there
+    expect(store['web'].find((m) => m.id === 'real-1')).toBeTruthy()
+    // The pending ghost must be gone
+    expect(store['web'].some((m) => m.pending)).toBe(false)
+    expect(store['web'].find((m) => m.id === 'pending-ghost')).toBeUndefined()
+  })
+
+  it('does not leave pending messages when the channel is included in the history response', async () => {
+    // When a channel IS in the bulk response, its data replaces existing entirely.
+    // Pending messages in existing are discarded because the whole channel array
+    // is overwritten — this is the already-correct baseline behavior.
+    messagesByChannel.set({
+      midtown: [
+        { id: 'pending-mt', content: 'hello', channel: 'midtown', from: 'user', pending: true },
+      ],
+    })
+
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => [
+        { id: 50, content: 'confirmed midtown', channel: 'midtown', timestamp: '2026-01-01T00:00:00Z' },
+      ],
+    })
+
+    await fetchHistory()
+
+    const store = get(messagesByChannel)
+    expect(store['midtown']).toHaveLength(1)
+    expect(store['midtown'][0].id).toBe(50)
+    expect(store['midtown'].some((m) => m.pending)).toBe(false)
+  })
 })
 
 describe('handleUpdate — optimistic message deduplication', () => {
