@@ -920,14 +920,32 @@ pub fn check_for_usage_limits(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
         detected_coworker, nudge_time
     );
 
-    vec![
+    let mut effects = vec![
         Effect::SetUsageLimitNudge { at: nudge_time },
         Effect::PostToChannel {
             sender: "midtown".to_string(),
             message,
             channel: Some(OPS_CHANNEL.to_string()),
         },
-    ]
+    ];
+
+    // If this coworker was spawned from a pool profile, mark it usage-limited
+    // so future spawns skip it until the limit clears.
+    if let Some(profile_email) = snap
+        .session_profile_map
+        .get(&detected_coworker.to_lowercase())
+    {
+        info!(
+            "Marking pool profile '{}' as usage-limited (via {})",
+            profile_email, detected_coworker
+        );
+        effects.push(Effect::MarkProfileLimited {
+            profile_email: profile_email.clone(),
+            reset_at: reset_time_utc,
+        });
+    }
+
+    effects
 }
 
 /// Check if a scheduled usage limit nudge is due, and if so, nudge all running coworkers.
@@ -953,30 +971,43 @@ pub fn maybe_nudge_usage_limit_expiry(snap: &snapshot::WorldSnapshot) -> Vec<Eff
         })
         .collect();
 
+    let mut effects = vec![Effect::ClearUsageLimitNudge];
+
     if eligible_session_ids.is_empty() {
         info!("Usage limit expired — no running sessions to nudge");
-        return vec![Effect::ClearUsageLimitNudge];
-    }
+    } else {
+        info!(
+            "Usage limit expired — nudging {} running sessions",
+            eligible_session_ids.len()
+        );
 
-    info!(
-        "Usage limit expired — nudging {} running sessions",
-        eligible_session_ids.len()
-    );
-
-    let mut effects = vec![
-        Effect::ClearUsageLimitNudge,
-        Effect::PostToChannel {
+        effects.push(Effect::PostToChannel {
             sender: "midtown".to_string(),
             message: format!(
                 "🔔 Usage limit expired — nudging {} running sessions to resume work",
                 eligible_session_ids.len()
             ),
             channel: Some(OPS_CHANNEL.to_string()),
-        },
-    ];
+        });
 
-    for session_id in eligible_session_ids {
-        effects.push(Effect::nudge_session(session_id, "continue"));
+        for session_id in eligible_session_ids {
+            effects.push(Effect::nudge_session(session_id, "continue"));
+        }
+    }
+
+    // Clear profile-level limits for any pool profiles that were associated
+    // with usage-limited coworkers. The usage limit has now expired, so these
+    // profiles are available for future coworker spawns again.
+    for (coworker_name, profile_email) in &snap.session_profile_map {
+        if snap.usage_limited_coworkers.contains(coworker_name) {
+            info!(
+                "Clearing usage-limit on pool profile '{}' (coworker: {})",
+                profile_email, coworker_name
+            );
+            effects.push(Effect::ClearProfileLimit {
+                profile_email: profile_email.clone(),
+            });
+        }
     }
 
     effects

@@ -118,6 +118,7 @@ fn test_usage_limit_nudge_only_targets_running_coworkers() {
         spawn_failure_cooldown_names: std::collections::HashSet::new(),
         recently_recovered_session_ids: std::collections::HashSet::new(),
         stale_working_dir_sessions: std::collections::HashSet::new(),
+        session_profile_map: HashMap::new(),
     };
 
     let effects = maybe_nudge_usage_limit_expiry(&snap);
@@ -263,6 +264,7 @@ fn test_usage_limit_nudge_includes_reviewers_and_leads_with_sessions() {
         spawn_failure_cooldown_names: std::collections::HashSet::new(),
         recently_recovered_session_ids: std::collections::HashSet::new(),
         stale_working_dir_sessions: std::collections::HashSet::new(),
+        session_profile_map: HashMap::new(),
     };
 
     let effects = maybe_nudge_usage_limit_expiry(&snap);
@@ -435,6 +437,7 @@ fn test_check_for_usage_limits_with_reset_time() {
         spawn_failure_cooldown_names: std::collections::HashSet::new(),
         recently_recovered_session_ids: std::collections::HashSet::new(),
         stale_working_dir_sessions: std::collections::HashSet::new(),
+        session_profile_map: HashMap::new(),
     };
 
     let effects = check_for_usage_limits(&snap);
@@ -534,6 +537,7 @@ fn test_check_for_usage_limits_already_scheduled() {
         spawn_failure_cooldown_names: std::collections::HashSet::new(),
         recently_recovered_session_ids: std::collections::HashSet::new(),
         stale_working_dir_sessions: std::collections::HashSet::new(),
+        session_profile_map: HashMap::new(),
     };
 
     let effects = check_for_usage_limits(&snap);
@@ -668,6 +672,7 @@ fn empty_snap() -> snapshot::WorldSnapshot {
         spawn_failure_cooldown_names: std::collections::HashSet::new(),
         recently_recovered_session_ids: std::collections::HashSet::new(),
         stale_working_dir_sessions: std::collections::HashSet::new(),
+        session_profile_map: HashMap::new(),
     }
 }
 
@@ -1611,6 +1616,7 @@ fn test_idle_shutdown_emits_shutdown_session_when_mapping_exists() {
         spawn_failure_cooldown_names: std::collections::HashSet::new(),
         recently_recovered_session_ids: std::collections::HashSet::new(),
         stale_working_dir_sessions: std::collections::HashSet::new(),
+        session_profile_map: HashMap::new(),
     };
 
     let effects = check_and_shutdown_idle_coworkers(&snap);
@@ -1749,6 +1755,7 @@ fn test_idle_shutdown_falls_back_to_shutdown_coworker_without_mapping() {
         spawn_failure_cooldown_names: std::collections::HashSet::new(),
         recently_recovered_session_ids: std::collections::HashSet::new(),
         stale_working_dir_sessions: std::collections::HashSet::new(),
+        session_profile_map: HashMap::new(),
     };
 
     let effects = check_and_shutdown_idle_coworkers(&snap);
@@ -2557,4 +2564,253 @@ fn test_stuck_reviewer_restart_emits_coworker_stuck_workflow_event() {
     assert_eq!(ch, "proj-reviews");
     assert_eq!(tid, Some("55".to_string()));
     assert_eq!(cw, "amsterdam");
+}
+
+// ── Auth profile pool: usage-limit marking ────────────────────────────────────
+
+#[test]
+fn usage_limit_marks_pool_profile_limited() {
+    // When a coworker with a usage limit is mapped to a pool profile,
+    // check_for_usage_limits() should emit MarkProfileLimited for that profile.
+    use crate::coworker::{Coworker, CoworkerStatus};
+    use std::collections::{HashMap, HashSet};
+
+    let reset_time = chrono::Utc::now() + chrono::Duration::hours(2);
+    let mut health = HashMap::new();
+    health.insert(
+        "lexington".to_string(),
+        snapshot::ProcessHealth {
+            is_alive: true,
+            last_event_at: Some(chrono::Utc::now()),
+            has_usage_limit: true,
+            usage_limit_reset_at: Some(reset_time),
+            has_api_error: false,
+            has_auth_error: false,
+            has_running_subagent: false,
+            has_pending_tool: false,
+            has_tool_name_conflict: false,
+            has_pending_api_call: false,
+            exit_code: None,
+        },
+    );
+
+    let coworker = Coworker {
+        slot_id: uuid::Uuid::new_v4().to_string(),
+        name: "lexington".to_string(),
+        status: CoworkerStatus::Running,
+        working_dir: "/tmp/test".to_string(),
+        started_at: chrono::Utc::now(),
+        current_task: None,
+        session_id: None,
+        model: "sonnet".to_string(),
+        provider: crate::auth::AuthProvider::Claude,
+        profile: crate::auth::DEFAULT_PROFILE.to_string(),
+    };
+
+    let mut profile_map = HashMap::new();
+    profile_map.insert("lexington".to_string(), "alice@example.com".to_string());
+
+    let snap = snapshot::minimal_snapshot_for_test();
+    let snap = snapshot::WorldSnapshot {
+        active_coworkers: vec![coworker],
+        headless_process_health: health,
+        active_names: HashSet::from(["lexington".to_string()]),
+        usage_limited_coworkers: HashSet::from(["lexington".to_string()]),
+        session_profile_map: profile_map,
+        ..snap
+    };
+
+    let effects = check_for_usage_limits(&snap);
+
+    assert!(!effects.is_empty(), "Should produce effects");
+
+    let has_mark_limited = effects.iter().any(|e| {
+        matches!(e, Effect::MarkProfileLimited { profile_email, .. } if profile_email == "alice@example.com")
+    });
+    assert!(
+        has_mark_limited,
+        "Should emit MarkProfileLimited for alice@example.com, got: {:#?}",
+        effects
+    );
+}
+
+#[test]
+fn usage_limit_without_profile_map_skips_mark_limited() {
+    // When a coworker hits a usage limit but is NOT in session_profile_map
+    // (single-profile mode, no pool), check_for_usage_limits() should NOT
+    // emit MarkProfileLimited.
+    use crate::coworker::{Coworker, CoworkerStatus};
+    use std::collections::{HashMap, HashSet};
+
+    let mut health = HashMap::new();
+    health.insert(
+        "lexington".to_string(),
+        snapshot::ProcessHealth {
+            is_alive: true,
+            last_event_at: Some(chrono::Utc::now()),
+            has_usage_limit: true,
+            usage_limit_reset_at: None,
+            has_api_error: false,
+            has_auth_error: false,
+            has_running_subagent: false,
+            has_pending_tool: false,
+            has_tool_name_conflict: false,
+            has_pending_api_call: false,
+            exit_code: None,
+        },
+    );
+
+    let coworker = Coworker {
+        slot_id: uuid::Uuid::new_v4().to_string(),
+        name: "lexington".to_string(),
+        status: CoworkerStatus::Running,
+        working_dir: "/tmp/test".to_string(),
+        started_at: chrono::Utc::now(),
+        current_task: None,
+        session_id: None,
+        model: "sonnet".to_string(),
+        provider: crate::auth::AuthProvider::Claude,
+        profile: crate::auth::DEFAULT_PROFILE.to_string(),
+    };
+
+    let snap = snapshot::minimal_snapshot_for_test();
+    let snap = snapshot::WorldSnapshot {
+        active_coworkers: vec![coworker],
+        headless_process_health: health,
+        active_names: HashSet::from(["lexington".to_string()]),
+        usage_limited_coworkers: HashSet::from(["lexington".to_string()]),
+        session_profile_map: HashMap::new(), // no pool mapping
+        ..snap
+    };
+
+    let effects = check_for_usage_limits(&snap);
+
+    assert!(
+        !effects.is_empty(),
+        "Should produce SetUsageLimitNudge and PostToChannel effects"
+    );
+
+    let has_mark_limited = effects
+        .iter()
+        .any(|e| matches!(e, Effect::MarkProfileLimited { .. }));
+    assert!(
+        !has_mark_limited,
+        "Should NOT emit MarkProfileLimited when no profile is mapped"
+    );
+}
+
+#[test]
+fn maybe_nudge_usage_limit_expiry_clears_pool_profile_limit() {
+    // When the usage limit reset fires, maybe_nudge_usage_limit_expiry() should
+    // emit ClearProfileLimit for profiles mapped to usage-limited coworkers.
+    use std::collections::{HashMap, HashSet};
+
+    let past_instant = tokio::time::Instant::now()
+        .checked_sub(std::time::Duration::from_secs(1))
+        .unwrap_or_else(tokio::time::Instant::now);
+
+    let mut profile_map = HashMap::new();
+    profile_map.insert("lexington".to_string(), "alice@example.com".to_string());
+    profile_map.insert("amsterdam".to_string(), "bob@example.com".to_string());
+
+    let snap = snapshot::minimal_snapshot_for_test();
+    let snap = snapshot::WorldSnapshot {
+        // At least one running coworker so eligibility check passes
+        running_coworkers: vec![crate::coworker::Coworker {
+            slot_id: uuid::Uuid::new_v4().to_string(),
+            name: "lexington".to_string(),
+            status: crate::coworker::CoworkerStatus::Running,
+            working_dir: "/tmp/test".to_string(),
+            started_at: chrono::Utc::now(),
+            current_task: None,
+            session_id: None,
+            model: "sonnet".to_string(),
+            provider: crate::auth::AuthProvider::Claude,
+            profile: crate::auth::DEFAULT_PROFILE.to_string(),
+        }],
+        usage_limit_nudge_scheduled: true,
+        usage_limit_nudge_at: Some(past_instant),
+        // Both coworkers were usage-limited, but only lexington has a profile map entry
+        usage_limited_coworkers: HashSet::from(["lexington".to_string(), "amsterdam".to_string()]),
+        session_profile_map: profile_map,
+        ..snap
+    };
+
+    let effects = maybe_nudge_usage_limit_expiry(&snap);
+
+    assert!(!effects.is_empty(), "Should produce effects");
+
+    let has_clear_alice = effects.iter().any(|e| {
+        matches!(e, Effect::ClearProfileLimit { profile_email } if profile_email == "alice@example.com")
+    });
+    assert!(
+        has_clear_alice,
+        "Should emit ClearProfileLimit for alice@example.com, got: {:#?}",
+        effects
+    );
+
+    let has_clear_bob = effects.iter().any(|e| {
+        matches!(e, Effect::ClearProfileLimit { profile_email } if profile_email == "bob@example.com")
+    });
+    assert!(
+        has_clear_bob,
+        "Should emit ClearProfileLimit for bob@example.com, got: {:#?}",
+        effects
+    );
+}
+
+#[test]
+fn maybe_nudge_usage_limit_expiry_no_clear_for_non_limited_profiles() {
+    // Profiles mapped to coworkers that are NOT usage-limited should not get
+    // ClearProfileLimit — only limited coworkers have profiles to clear.
+    use std::collections::{HashMap, HashSet};
+
+    let past_instant = tokio::time::Instant::now()
+        .checked_sub(std::time::Duration::from_secs(1))
+        .unwrap_or_else(tokio::time::Instant::now);
+
+    let mut profile_map = HashMap::new();
+    // lexington is usage-limited (has profile alice)
+    profile_map.insert("lexington".to_string(), "alice@example.com".to_string());
+    // amsterdam is NOT usage-limited (has profile bob — should not be cleared)
+    profile_map.insert("amsterdam".to_string(), "bob@example.com".to_string());
+
+    let snap = snapshot::minimal_snapshot_for_test();
+    let snap = snapshot::WorldSnapshot {
+        running_coworkers: vec![crate::coworker::Coworker {
+            slot_id: uuid::Uuid::new_v4().to_string(),
+            name: "lexington".to_string(),
+            status: crate::coworker::CoworkerStatus::Running,
+            working_dir: "/tmp/test".to_string(),
+            started_at: chrono::Utc::now(),
+            current_task: None,
+            session_id: None,
+            model: "sonnet".to_string(),
+            provider: crate::auth::AuthProvider::Claude,
+            profile: crate::auth::DEFAULT_PROFILE.to_string(),
+        }],
+        usage_limit_nudge_scheduled: true,
+        usage_limit_nudge_at: Some(past_instant),
+        usage_limited_coworkers: HashSet::from(["lexington".to_string()]), // only lexington
+        session_profile_map: profile_map,
+        ..snap
+    };
+
+    let effects = maybe_nudge_usage_limit_expiry(&snap);
+
+    let has_clear_alice = effects.iter().any(|e| {
+        matches!(e, Effect::ClearProfileLimit { profile_email } if profile_email == "alice@example.com")
+    });
+    assert!(
+        has_clear_alice,
+        "Should clear alice (lexington was limited)"
+    );
+
+    let has_clear_bob = effects.iter().any(|e| {
+        matches!(e, Effect::ClearProfileLimit { profile_email } if profile_email == "bob@example.com")
+    });
+    assert!(
+        !has_clear_bob,
+        "Should NOT clear bob (amsterdam was not usage-limited)"
+    );
 }

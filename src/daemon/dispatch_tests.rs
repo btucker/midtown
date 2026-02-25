@@ -1290,6 +1290,7 @@ fn test_spawn_for_pending_tasks_generates_registry_effects_new_task() {
         spawn_failure_cooldown_names: std::collections::HashSet::new(),
         recently_recovered_session_ids: std::collections::HashSet::new(),
         stale_working_dir_sessions: std::collections::HashSet::new(),
+        session_profile_map: HashMap::new(),
     };
 
     let (state, _tmp, _guard) = make_test_state();
@@ -1455,6 +1456,7 @@ fn test_spawn_for_pending_tasks_reuses_worktree_for_owned_task() {
         spawn_failure_cooldown_names: std::collections::HashSet::new(),
         recently_recovered_session_ids: std::collections::HashSet::new(),
         stale_working_dir_sessions: std::collections::HashSet::new(),
+        session_profile_map: HashMap::new(),
     };
 
     let (state, _tmp, _guard) = make_test_state();
@@ -1595,6 +1597,7 @@ fn test_spawn_for_pending_tasks_skips_when_owner_has_pending_task() {
         spawn_failure_cooldown_names: std::collections::HashSet::new(),
         recently_recovered_session_ids: std::collections::HashSet::new(),
         stale_working_dir_sessions: std::collections::HashSet::new(),
+        session_profile_map: HashMap::new(),
     };
 
     let (state, _tmp, _guard) = make_test_state();
@@ -1705,6 +1708,7 @@ fn test_spawn_owner_includes_record_task_assignment_for_cross_tick_dedup() {
         spawn_failure_cooldown_names: std::collections::HashSet::new(),
         recently_recovered_session_ids: std::collections::HashSet::new(),
         stale_working_dir_sessions: std::collections::HashSet::new(),
+        session_profile_map: HashMap::new(),
     };
 
     let (state, _tmp, _guard) = make_test_state();
@@ -1819,6 +1823,7 @@ fn test_cross_tick_dedup_skips_in_flight_owned_task() {
         spawn_failure_cooldown_names: std::collections::HashSet::new(),
         recently_recovered_session_ids: std::collections::HashSet::new(),
         stale_working_dir_sessions: std::collections::HashSet::new(),
+        session_profile_map: HashMap::new(),
     };
 
     let (state, _tmp, _guard) = make_test_state();
@@ -1962,6 +1967,7 @@ fn test_cross_case_dedup_prevents_same_coworker_from_case1_and_case2() {
         spawn_failure_cooldown_names: std::collections::HashSet::new(),
         recently_recovered_session_ids: std::collections::HashSet::new(),
         stale_working_dir_sessions: std::collections::HashSet::new(),
+        session_profile_map: HashMap::new(),
     };
 
     let (state, _tmp, _guard) = make_test_state();
@@ -2082,6 +2088,7 @@ fn test_spawn_for_pending_tasks_skips_via_snapshot_assignment_check() {
         spawn_failure_cooldown_names: std::collections::HashSet::new(),
         recently_recovered_session_ids: std::collections::HashSet::new(),
         stale_working_dir_sessions: std::collections::HashSet::new(),
+        session_profile_map: HashMap::new(),
     };
 
     let (state, _tmp, _guard) = make_test_state();
@@ -2185,6 +2192,7 @@ fn test_orphan_recovery_reuses_existing_task_worktree() {
         spawn_failure_cooldown_names: std::collections::HashSet::new(),
         recently_recovered_session_ids: std::collections::HashSet::new(),
         stale_working_dir_sessions: std::collections::HashSet::new(),
+        session_profile_map: HashMap::new(),
     };
 
     let (state, _tmp, _guard) = make_test_state();
@@ -2346,6 +2354,7 @@ fn test_orphan_recovery_creates_new_worktree_when_none_exists() {
         spawn_failure_cooldown_names: std::collections::HashSet::new(),
         recently_recovered_session_ids: std::collections::HashSet::new(),
         stale_working_dir_sessions: std::collections::HashSet::new(),
+        session_profile_map: HashMap::new(),
     };
 
     let (state, _tmp, _guard) = make_test_state();
@@ -2530,6 +2539,7 @@ fn test_spawn_for_pending_unowned_reuses_existing_worktree() {
         spawn_failure_cooldown_names: std::collections::HashSet::new(),
         recently_recovered_session_ids: std::collections::HashSet::new(),
         stale_working_dir_sessions: std::collections::HashSet::new(),
+        session_profile_map: HashMap::new(),
     };
 
     let (state, _tmp, _guard) = make_test_state();
@@ -2695,6 +2705,7 @@ fn make_reconcile_snapshot(
         spawn_failure_cooldown_names: HashSet::new(),
         recently_recovered_session_ids: HashSet::new(),
         stale_working_dir_sessions: HashSet::new(),
+        session_profile_map: HashMap::new(),
     }
 }
 
@@ -3333,6 +3344,7 @@ fn test_spawn_for_pending_tasks_when_all_coworkers_are_gone() {
         spawn_failure_cooldown_names: std::collections::HashSet::new(),
         recently_recovered_session_ids: std::collections::HashSet::new(),
         stale_working_dir_sessions: std::collections::HashSet::new(),
+        session_profile_map: HashMap::new(),
     };
 
     let (state, _tmp, _guard) = make_test_state();
@@ -4010,6 +4022,7 @@ fn test_spawn_extracts_model_alias_from_provider_model_format() {
         spawn_failure_cooldown_names: std::collections::HashSet::new(),
         recently_recovered_session_ids: std::collections::HashSet::new(),
         stale_working_dir_sessions: std::collections::HashSet::new(),
+        session_profile_map: HashMap::new(),
     };
 
     let (state, _tmp, _guard) = make_test_state();
@@ -4130,6 +4143,7 @@ fn test_orphan_recovery_marks_task_in_flight() {
         spawn_failure_cooldown_names: std::collections::HashSet::new(),
         recently_recovered_session_ids: std::collections::HashSet::new(),
         stale_working_dir_sessions: std::collections::HashSet::new(),
+        session_profile_map: HashMap::new(),
     };
 
     let (state, _tmp, _guard) = make_test_state();
@@ -4423,6 +4437,7 @@ fn test_stale_task_cleanup_false_positive_task_about_merged_pr() {
         spawn_failure_cooldown_names: std::collections::HashSet::new(),
         recently_recovered_session_ids: std::collections::HashSet::new(),
         stale_working_dir_sessions: std::collections::HashSet::new(),
+        session_profile_map: HashMap::new(),
     };
 
     let (state, _tmp, _guard) = make_test_state();
@@ -4537,6 +4552,7 @@ fn test_stale_task_cleanup_correct_behavior_with_explicit_pr_field() {
         spawn_failure_cooldown_names: std::collections::HashSet::new(),
         recently_recovered_session_ids: std::collections::HashSet::new(),
         stale_working_dir_sessions: std::collections::HashSet::new(),
+        session_profile_map: HashMap::new(),
     };
 
     let (state, _tmp, _guard) = make_test_state();
@@ -4816,6 +4832,7 @@ fn make_session_dispatch_snapshot(
         spawn_failure_cooldown_names: HashSet::new(),
         recently_recovered_session_ids: HashSet::new(),
         stale_working_dir_sessions: HashSet::new(),
+        session_profile_map: HashMap::new(),
     }
 }
 
