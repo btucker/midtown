@@ -108,6 +108,41 @@ export function getChannelHasActiveTasks(channelName, kanban) {
 }
 
 /**
+ * Compute the expanded channels set after clicking the triangle (▶/▼) on channelName.
+ * The triangle always toggles: collapsed → expanded, expanded → collapsed.
+ * Returns a new Set; does not mutate the input.
+ */
+export function computeExpandedAfterTriangleClick(channelName, expandedChannels) {
+  const next = new Set(expandedChannels)
+  if (next.has(channelName)) {
+    next.delete(channelName)
+  } else {
+    next.add(channelName)
+  }
+  return next
+}
+
+/**
+ * Compute the expanded channels set after clicking the channel name.
+ * - Switching to an inactive channel: auto-expand if it has active tasks.
+ * - Re-clicking the already-active channel: toggle expand/collapse.
+ * Returns a new Set; does not mutate the input.
+ */
+export function computeExpandedAfterChannelNameClick(channelName, expandedChannels, activeChannel, kanban) {
+  const next = new Set(expandedChannels)
+  if (channelName === activeChannel) {
+    if (next.has(channelName)) {
+      next.delete(channelName)
+    } else {
+      next.add(channelName)
+    }
+  } else if (getChannelHasActiveTasks(channelName, kanban)) {
+    next.add(channelName)
+  }
+  return next
+}
+
+/**
  * Get active PRs for a channel, using task_id → channel lookup.
  * Main channel shows all PRs, topic channels filter by task channel.
  */
