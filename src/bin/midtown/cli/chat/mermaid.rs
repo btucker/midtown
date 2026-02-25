@@ -8,7 +8,8 @@ use std::collections::HashMap;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread;
 
-/// A segment of message content: either plain text, a mermaid diagram, or a fenced code block
+/// A segment of message content: either plain text, a mermaid diagram, a fenced code block,
+/// or an insight block
 #[derive(Debug, Clone, PartialEq)]
 pub enum ContentSegment {
     /// Regular text content (may contain newlines)
@@ -17,6 +18,8 @@ pub enum ContentSegment {
     Mermaid(String),
     /// Non-mermaid fenced code block with language tag and source
     CodeBlock { language: String, source: String },
+    /// Insight content (from 💡 prefix or ★ Insight blocks)
+    Insight(String),
 }
 
 /// Parse message content into segments, extracting mermaid code fences and fenced code blocks.
@@ -24,12 +27,25 @@ pub enum ContentSegment {
 /// Detects ```mermaid ... ``` blocks and splits the content into
 /// Text, Mermaid, and CodeBlock segments.
 pub fn parse_content_segments(content: &str) -> Vec<ContentSegment> {
+    // Format 1: whole-message insight (coworker 💡 prefix)
+    let trimmed_content = content.trim_start();
+    if trimmed_content.starts_with('💡') {
+        let stripped = trimmed_content
+            .trim_start_matches('💡')
+            .trim_start()
+            .to_string();
+        return vec![ContentSegment::Insight(stripped)];
+    }
+
     let mut segments = Vec::new();
     let mut current_text = String::new();
     let mut in_mermaid = false;
     let mut mermaid_source = String::new();
     // State for a non-mermaid fence: (language, buffered_source)
     let mut other_fence: Option<(String, String)> = None;
+    // State for ★ Insight block
+    let mut in_insight = false;
+    let mut insight_source = String::new();
 
     for line in content.split('\n') {
         if in_mermaid {
@@ -64,6 +80,26 @@ pub fn parse_content_segments(content: &str) -> Vec<ContentSegment> {
                 }
                 source_buf.push_str(line);
             }
+        } else if in_insight {
+            // End marker: line of 10+ dashes with optional backtick wrapping
+            let trimmed_line = line.trim();
+            let inner = trimmed_line
+                .strip_prefix('`')
+                .and_then(|s| s.strip_suffix('`'))
+                .unwrap_or(trimmed_line);
+            if inner.len() >= 10 && inner.chars().all(|c| c == '─') {
+                let trimmed = insight_source.trim().to_string();
+                if !trimmed.is_empty() {
+                    segments.push(ContentSegment::Insight(trimmed));
+                }
+                insight_source.clear();
+                in_insight = false;
+            } else {
+                if !insight_source.is_empty() {
+                    insight_source.push('\n');
+                }
+                insight_source.push_str(line);
+            }
         } else {
             let trimmed = line.trim_start();
             if trimmed.starts_with("```mermaid") {
@@ -78,6 +114,14 @@ pub fn parse_content_segments(content: &str) -> Vec<ContentSegment> {
                 // Start of non-mermaid fence — extract the language tag
                 let lang = trimmed.trim_start_matches('`').trim().to_string();
                 other_fence = Some((lang, String::new()));
+            } else if line.contains("★ Insight") {
+                // Start of ★ Insight block
+                if !current_text.is_empty() {
+                    segments.push(ContentSegment::Text(current_text.clone()));
+                    current_text.clear();
+                }
+                in_insight = true;
+                insight_source.clear();
             } else {
                 if !current_text.is_empty() {
                     current_text.push('\n');
@@ -106,6 +150,14 @@ pub fn parse_content_segments(content: &str) -> Vec<ContentSegment> {
         if !source_buf.is_empty() {
             current_text.push('\n');
             current_text.push_str(&source_buf);
+        }
+    }
+
+    // Handle unclosed insight block: emit what we have
+    if in_insight && !insight_source.is_empty() {
+        let trimmed = insight_source.trim().to_string();
+        if !trimmed.is_empty() {
+            segments.push(ContentSegment::Insight(trimmed));
         }
     }
 
@@ -427,6 +479,59 @@ mod tests {
     fn test_parse_empty_content() {
         let segments = parse_content_segments("");
         assert_eq!(segments, vec![ContentSegment::Text(String::new())]);
+    }
+
+    #[test]
+    fn test_parse_lightbulb_insight() {
+        let content = "💡 This is an insight from a coworker";
+        let segments = parse_content_segments(content);
+        assert_eq!(
+            segments,
+            vec![ContentSegment::Insight(
+                "This is an insight from a coworker".into()
+            )]
+        );
+    }
+
+    #[test]
+    fn test_parse_star_insight_block() {
+        let content = "Some text\n`★ Insight ─────────────────────────────────────`\nKey point here\n`─────────────────────────────────────────────────`\nMore text";
+        let segments = parse_content_segments(content);
+        assert_eq!(
+            segments,
+            vec![
+                ContentSegment::Text("Some text".into()),
+                ContentSegment::Insight("Key point here".into()),
+                ContentSegment::Text("More text".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_parse_star_insight_no_backticks() {
+        let content = "Before\n★ Insight ─────────────────────────────────────\nInsight content\n─────────────────────────────────────────────────\nAfter";
+        let segments = parse_content_segments(content);
+        assert_eq!(
+            segments,
+            vec![
+                ContentSegment::Text("Before".into()),
+                ContentSegment::Insight("Insight content".into()),
+                ContentSegment::Text("After".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_parse_insight_unclosed() {
+        let content = "Text\n★ Insight ─────\nUnclosed insight content";
+        let segments = parse_content_segments(content);
+        assert_eq!(
+            segments,
+            vec![
+                ContentSegment::Text("Text".into()),
+                ContentSegment::Insight("Unclosed insight content".into()),
+            ]
+        );
     }
 
     #[test]

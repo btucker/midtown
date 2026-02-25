@@ -1,8 +1,8 @@
 <script>
   import { coworkers, maxCoworkers, repoStatus, kanbanData, isWideScreen } from './store.js'
-  import { onMount, onDestroy } from 'svelte'
   import { detailPanelData } from './store.js'
   import { closeThread } from './api.js'
+  import { getSenderColor } from './messageUtils.js'
 
   // Filter to only active coworkers (matching TUI logic - skip idle/completed).
   // Phase may be missing (freshly spawned / not reporting), null (serialized absent
@@ -22,21 +22,9 @@
     })
   )
 
-  // Braille spinner animation
-  const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
-  let spinnerFrame = $state(0)
-  let spinnerInterval
-
-  onMount(() => {
-    // Faster spinner animation (100ms per frame instead of default)
-    spinnerInterval = setInterval(() => {
-      spinnerFrame = (spinnerFrame + 1) % SPINNER_FRAMES.length
-    }, 100)
-  })
-
-  onDestroy(() => {
-    if (spinnerInterval) clearInterval(spinnerInterval)
-  })
+  function avatarLetter(name) {
+    return (name || '?')[0].toUpperCase()
+  }
 
   function getHealthColor(health) {
     switch (health?.toLowerCase()) {
@@ -49,10 +37,6 @@
       default:
         return 'hsl(var(--status-green))'
     }
-  }
-
-  function getSpinner() {
-    return SPINNER_FRAMES[spinnerFrame]
   }
 
   function getPrUrl(prNumber) {
@@ -93,8 +77,8 @@
 </script>
 
 {#if activeCoworkers.length > 0}
-  <div class="overflow-hidden rounded-md border-2 border-sidebar-border bg-sidebar">
-    <div class="border-b border-sidebar-border px-3 py-2">
+  <div class="overflow-hidden rounded-md bg-sidebar">
+    <div class="px-3 py-2">
       <span class="text-[0.75rem] font-bold tracking-wide text-sidebar-primary">
         Coworkers ({activeCoworkers.length}/{$maxCoworkers})
       </span>
@@ -103,7 +87,13 @@
       {#each activeCoworkers as cw}
         <div class="flex flex-col gap-0.5 px-1.5 py-1 font-mono text-sm leading-normal">
           <div class="flex items-center gap-1.5">
-            <span class="shrink-0 text-base leading-none text-status-amber">{getSpinner()}</span>
+            <span class="relative shrink-0 w-5 h-5">
+              <span
+                class="flex items-center justify-center w-5 h-5 rounded text-[0.6rem] font-bold text-white select-none"
+                style="background-color: {getSenderColor(cw.name)}"
+              >{avatarLetter(cw.name)}</span>
+              <span class="absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full bg-status-green border-2 border-sidebar"></span>
+            </span>
             <span class="shrink-0 font-medium lowercase" style="color: {getHealthColor(cw.health)}">{cw.name}</span>
             {#if cw.phase}
               <span class="hidden text-[0.75rem] text-muted-foreground sm:inline">{cw.phase}</span>
@@ -133,7 +123,7 @@
             {/if}
           </div>
           {#if cw.progress !== undefined && cw.progress !== null}
-            <div class="ml-[26px] flex items-center gap-1.5">
+            <div class="ml-[26px] flex items-center gap-1.5" style="margin-left: calc(1.25rem + 0.375rem)">
               <div class="flex-1 h-1 bg-sidebar-accent rounded-full overflow-hidden">
                 <div
                   class="h-full bg-accent-teal rounded-full transition-all duration-500"
