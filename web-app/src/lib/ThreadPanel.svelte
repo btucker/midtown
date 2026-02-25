@@ -195,12 +195,13 @@
             dimSenders={THREAD_DIM_SENDERS}
             senderSpacing="0.8em"
             senderClass="mb-[2px]"
+            channelName={$threadData?.channelName}
           >
             {#if isAction(msg) && !hasMermaid(msg.content)}
               <div class="flex gap-0 break-words">
                 <span class="text-muted-foreground/50 flex-shrink-0 w-[3.2em] text-right mr-[0.4em] select-none text-[0.78rem]">{timeChanged($threadData.messages, i) ? formatTime(msg.timestamp) : ''}</span>
-                <span class="flex-shrink-0 mr-[0.3em]" style="color: {getSenderColor(msg.from, THREAD_SENDER_OVERRIDES)}">*</span>
-                <span class="action-text flex-1 min-w-0" style="color: {getSenderColor(msg.from, THREAD_SENDER_OVERRIDES)}">{@html renderContent(getActionContent(msg), getApiBase())}</span>
+                <span class="flex-shrink-0 mr-[0.3em]" style="color: {getSenderColor(msg.from, THREAD_SENDER_OVERRIDES, $threadData?.channelName)}">*</span>
+                <span class="action-text flex-1 min-w-0" style="color: {getSenderColor(msg.from, THREAD_SENDER_OVERRIDES, $threadData?.channelName)}">{@html renderContent(getActionContent(msg), getApiBase())}</span>
               </div>
             {:else if isAction(msg) && hasMermaid(msg.content)}
               {#each parseSegments(getActionContent(msg)) as segment, si}
@@ -212,12 +213,12 @@
                   <div class="flex gap-0 break-words">
                     {#if si === 0}
                       <span class="text-muted-foreground/50 flex-shrink-0 w-[3.2em] text-right mr-[0.4em] select-none text-[0.78rem]">{timeChanged($threadData.messages, i) ? formatTime(msg.timestamp) : ''}</span>
-                      <span class="flex-shrink-0 mr-[0.3em]" style="color: {getSenderColor(msg.from, THREAD_SENDER_OVERRIDES)}">*</span>
+                      <span class="flex-shrink-0 mr-[0.3em]" style="color: {getSenderColor(msg.from, THREAD_SENDER_OVERRIDES, $threadData?.channelName)}">*</span>
                     {:else}
                       <span class="flex-shrink-0 w-[3.2em] mr-[0.4em]"></span>
                       <span class="flex-shrink-0 mr-[0.3em] invisible">*</span>
                     {/if}
-                    <span class="action-text flex-1 min-w-0" style="color: {getSenderColor(msg.from, THREAD_SENDER_OVERRIDES)}">{@html renderContent(segment.content, getApiBase())}</span>
+                    <span class="action-text flex-1 min-w-0" style="color: {getSenderColor(msg.from, THREAD_SENDER_OVERRIDES, $threadData?.channelName)}">{@html renderContent(segment.content, getApiBase())}</span>
                   </div>
                 {/if}
               {/each}
@@ -346,12 +347,13 @@
             dimSenders={THREAD_DIM_SENDERS}
             senderSpacing="0.8em"
             senderClass="mb-[2px]"
+            channelName={$threadData?.channelName}
           >
             {#if isAction(msg) && !hasMermaid(msg.content)}
               <div class="flex gap-0 break-words">
                 <span class="text-muted-foreground/50 flex-shrink-0 w-[3.2em] text-right mr-[0.4em] select-none text-[0.78rem]">{timeChanged($threadData.messages, i) ? formatTime(msg.timestamp) : ''}</span>
-                <span class="flex-shrink-0 mr-[0.3em]" style="color: {getSenderColor(msg.from, THREAD_SENDER_OVERRIDES)}">*</span>
-                <span class="action-text flex-1 min-w-0" style="color: {getSenderColor(msg.from, THREAD_SENDER_OVERRIDES)}">{@html renderContent(getActionContent(msg), getApiBase())}</span>
+                <span class="flex-shrink-0 mr-[0.3em]" style="color: {getSenderColor(msg.from, THREAD_SENDER_OVERRIDES, $threadData?.channelName)}">*</span>
+                <span class="action-text flex-1 min-w-0" style="color: {getSenderColor(msg.from, THREAD_SENDER_OVERRIDES, $threadData?.channelName)}">{@html renderContent(getActionContent(msg), getApiBase())}</span>
               </div>
             {:else if isAction(msg) && hasMermaid(msg.content)}
               {#each parseSegments(getActionContent(msg)) as segment, si}
@@ -363,12 +365,12 @@
                   <div class="flex gap-0 break-words">
                     {#if si === 0}
                       <span class="text-muted-foreground/50 flex-shrink-0 w-[3.2em] text-right mr-[0.4em] select-none text-[0.78rem]">{timeChanged($threadData.messages, i) ? formatTime(msg.timestamp) : ''}</span>
-                      <span class="flex-shrink-0 mr-[0.3em]" style="color: {getSenderColor(msg.from, THREAD_SENDER_OVERRIDES)}">*</span>
+                      <span class="flex-shrink-0 mr-[0.3em]" style="color: {getSenderColor(msg.from, THREAD_SENDER_OVERRIDES, $threadData?.channelName)}">*</span>
                     {:else}
                       <span class="flex-shrink-0 w-[3.2em] mr-[0.4em]"></span>
                       <span class="flex-shrink-0 mr-[0.3em] invisible">*</span>
                     {/if}
-                    <span class="action-text flex-1 min-w-0" style="color: {getSenderColor(msg.from, THREAD_SENDER_OVERRIDES)}">{@html renderContent(segment.content, getApiBase())}</span>
+                    <span class="action-text flex-1 min-w-0" style="color: {getSenderColor(msg.from, THREAD_SENDER_OVERRIDES, $threadData?.channelName)}">{@html renderContent(segment.content, getApiBase())}</span>
                   </div>
                 {/if}
               {/each}

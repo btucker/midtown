@@ -44,8 +44,11 @@ function getOverride(overrides, key) {
   return undefined
 }
 
-export function getSenderColor(name, overrides) {
+export function getSenderColor(name, overrides, channelName) {
   const normalized = normalizeName(name)
+  if (channelName && normalized === normalizeName(channelName)) {
+    return AVENUE_COLORS.lead
+  }
   return getOverride(overrides, normalized) || AVENUE_COLORS[normalized] || '#d0d0d0'
 }
 

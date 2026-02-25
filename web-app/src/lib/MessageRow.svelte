@@ -15,6 +15,7 @@
     senderSpacing = '1.5em',
     senderClass = '',
     currentTask = undefined,
+    channelName = undefined,
     children = undefined,
   } = $props()
 
@@ -28,7 +29,7 @@
     <!-- Avatar -->
     <div
       class="flex-shrink-0 rounded-md flex items-center justify-center text-white font-bold text-[1rem] select-none mt-[0.15rem]"
-      style="width: {AVATAR_SIZE}; height: {AVATAR_SIZE}; background-color: {getSenderColor(msg.from, senderOverrides)}"
+      style="width: {AVATAR_SIZE}; height: {AVATAR_SIZE}; background-color: {getSenderColor(msg.from, senderOverrides, channelName)}"
     >{avatarLetter(msg.from)}</div>
     <!-- Header + content -->
     <div class="flex-1 min-w-0">
