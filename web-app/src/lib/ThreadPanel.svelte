@@ -252,6 +252,7 @@
         <div class="text-center text-muted-foreground py-4 text-[1rem]">No replies yet</div>
       {:else}
         {#each $threadData.messages as msg, i}
+          <div class:opacity-60={msg.pending}>
           <MessageRow
             {msg}
             msgs={$threadData.messages}
@@ -331,6 +332,7 @@
               </div>
             {/if}
           </MessageRow>
+          </div>
         {/each}
       {/if}
     </div>
@@ -391,6 +393,7 @@
         <div class="text-center text-muted-foreground py-4 text-[1rem]">No replies yet</div>
       {:else}
         {#each $threadData.messages as msg, i}
+          <div class:opacity-60={msg.pending}>
           <MessageRow
             {msg}
             msgs={$threadData.messages}
@@ -470,6 +473,7 @@
               </div>
             {/if}
           </MessageRow>
+          </div>
         {/each}
       {/if}
     </div>

@@ -411,8 +411,9 @@ export function clearErrorCallback(id) {
   errorCallbacks.delete(id)
 }
 
-// Handle incoming WebSocket updates
-function handleUpdate(update) {
+// Handle incoming WebSocket updates.
+// Exported for testing only — production code uses this via the WS onmessage handler.
+export function handleUpdate(update) {
   switch (update.type) {
     case 'channel_message': {
       const msg = update.data
@@ -424,7 +425,12 @@ function handleUpdate(update) {
         // main channel timeline.
         threadData.update((td) => {
           if (td && td.parentMessage?.id === msg.thread_parent_id) {
-            return { ...td, messages: [...td.messages, msg] }
+            // Remove any pending optimistic reply with matching content before
+            // appending the real server-confirmed message.
+            const withoutPending = td.messages.filter(
+              (m) => !(m.pending && m.content === msg.content)
+            )
+            return { ...td, messages: [...withoutPending, msg] }
           }
           return td
         })
@@ -448,17 +454,25 @@ function handleUpdate(update) {
           }
         })
       } else {
-        // Top-level message — existing behavior
+        // Top-level message — add to stores, removing any matching pending optimistic message first.
         // Add to legacy messages array
         messages.update((msgs) => [...msgs, msg])
 
-        // Add to channel-specific messages
+        // Add to channel-specific messages, deduplicating pending optimistic entries.
+        // If the user sent this message optimistically, a pending placeholder with the
+        // same content will be in the list. Remove the first such match before appending
+        // the server-confirmed message.
         messagesByChannel.update((byChannel) => {
           const channelMsgs = byChannel[channelName] || []
-          return {
-            ...byChannel,
-            [channelName]: [...channelMsgs, msg],
-          }
+          let deduplicated = false
+          const withoutPending = channelMsgs.filter((m) => {
+            if (!deduplicated && m.pending && m.content === msg.content) {
+              deduplicated = true
+              return false
+            }
+            return true
+          })
+          return { ...byChannel, [channelName]: [...withoutPending, msg] }
         })
 
         // Update channel list - increment unread if not viewing this channel.
@@ -565,6 +579,33 @@ export function sendMessage(content, channel = null, threadParentId = null) {
       message.thread_parent_id = threadParentId
     }
     ws.send(JSON.stringify(message))
+
+    // Optimistically add the message to the store immediately so the user sees
+    // their message without waiting for the server round-trip.
+    const channelName = channel || 'midtown'
+    const tempId = 'pending-' + crypto.randomUUID()
+    const optimisticMsg = {
+      id: tempId,
+      from: 'user',
+      content,
+      channel: channelName,
+      timestamp: new Date().toISOString(),
+      pending: true,
+    }
+
+    if (threadParentId) {
+      // Thread reply: add to threadData if the panel is open for this parent
+      threadData.update((td) => {
+        if (!td) return td
+        return { ...td, messages: [...td.messages, optimisticMsg] }
+      })
+    } else {
+      // Top-level message: add to channel message list
+      messagesByChannel.update((byChannel) => {
+        const channelMsgs = byChannel[channelName] || []
+        return { ...byChannel, [channelName]: [...channelMsgs, optimisticMsg] }
+      })
+    }
   } else {
     console.error('WebSocket not connected')
   }
