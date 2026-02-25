@@ -709,9 +709,6 @@
                       <span class="flex-shrink-0 mr-[0.3em]" style="color: {getSenderColor(msg.from)}">*</span>
                     {:else}
                       <span class="flex-shrink-0 mr-[0.3em] invisible">*</span>
-=======
-                      <div class="message-text text-foreground">{@html renderContent(segment.content, getApiBase())}</div>
->>>>>>> a0bfc8d (fix(web): pass getApiBase() to renderContent in insight message path)
                     {/if}
                     <span class="action-text flex-1 min-w-0" style="color: {getSenderColor(msg.from)}">{@html renderContent(segment.content, getApiBase())}</span>
                   </div>
