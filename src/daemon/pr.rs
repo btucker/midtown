@@ -382,16 +382,6 @@ fn compute_time_aware_hash(data: &str, bucket_secs: u64) -> u64 {
 
 /// Internal function for computing time-aware hash with explicit timestamp.
 /// Used by `compute_time_aware_hash` and tests.
-#[cfg(test)]
-fn compute_time_aware_hash_at(data: &str, bucket_secs: u64, timestamp_secs: u64) -> u64 {
-    let time_bucket = timestamp_secs / bucket_secs;
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    data.hash(&mut hasher);
-    time_bucket.hash(&mut hasher);
-    hasher.finish()
-}
-
-#[cfg(not(test))]
 fn compute_time_aware_hash_at(data: &str, bucket_secs: u64, timestamp_secs: u64) -> u64 {
     let time_bucket = timestamp_secs / bucket_secs;
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -474,7 +464,74 @@ pub(super) fn detect_abandoned_pr_tasks(
     effects
 }
 
+/// Resolve the owner of a PR from snapshot data.
+///
+/// Tries session-based resolution first (PR# → task → session → current_name),
+/// then falls back to branch-name parsing. Returns `None` if neither path yields an owner.
+fn resolve_pr_owner(pr_number: u64, head_ref: &str, snap: &WorldSnapshot) -> Option<String> {
+    resolve_pr_owner_from_session(
+        pr_number,
+        &snap.pr_task_associations,
+        &snap.session_task_map,
+        &snap.sessions,
+    )
+    .or_else(|| coworker_from_branch_with_map(head_ref, Some(&snap.worktree_branch_owners)))
+}
+
 // ============================================================================
+
+/// Collect warning effects for an orphaned PR with critical issues.
+///
+/// Called for two cases:
+/// - Owner known but has no active worktree (`owner = Some(name)`)
+/// - Owner completely unresolvable (`owner = None`)
+///
+/// Only emits effects for `MergeConflict` and `CiFailed` — skips approval/review
+/// workflow issues that require active ownership to resolve.
+async fn collect_orphaned_pr_effects(
+    pr_number: u64,
+    title: &str,
+    head_ref: &str,
+    owner: Option<&str>,
+    issues: &[PrIssueType],
+    state: &DaemonState,
+) -> Vec<Effect> {
+    let owner_desc = match owner {
+        Some(o) => format!("owner: {}, branch: {}", o, head_ref),
+        None => format!("no owner, branch: {}", head_ref),
+    };
+    let mut effects = Vec::new();
+    for issue_type in issues {
+        match issue_type {
+            PrIssueType::MergeConflict | PrIssueType::CiFailed => {
+                let should_nudge = {
+                    let tracker = state.pr_issue_tracker.lock().await;
+                    tracker.should_nudge(pr_number, *issue_type)
+                };
+                if should_nudge {
+                    let warning = format!(
+                        "@ops Orphaned PR #{} ({}) - {}: {} ({})",
+                        pr_number,
+                        truncate_str(title, 40),
+                        issue_type,
+                        get_issue_action(*issue_type),
+                        owner_desc
+                    );
+                    effects.push(Effect::PostSystemMessage {
+                        message: format!("⚠️ {}", warning),
+                        channel: Some(OPS_CHANNEL.to_string()),
+                    });
+                    effects.push(Effect::RecordPrNudge {
+                        pr_number,
+                        issue_type: *issue_type,
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+    effects
+}
 
 /// Poll all open PRs and return effects for actionable issues.
 ///
@@ -766,18 +823,8 @@ pub(super) async fn poll_prs_for_issues(
         let head_ref = pr.get("headRefName").and_then(|s| s.as_str()).unwrap_or("");
         let title = pr.get("title").and_then(|s| s.as_str()).unwrap_or("");
 
-        // Try session-based owner resolution first:
-        // PR number → task_id → session_id → session.current_name
-        // Falls back to branch-based resolution if no session record exists.
-        let session_owner = resolve_pr_owner_from_session(
-            pr_number,
-            &snap.pr_task_associations,
-            &snap.session_task_map,
-            &snap.sessions,
-        );
-        let owner_opt = session_owner.or_else(|| {
-            coworker_from_branch_with_map(head_ref, Some(&snap.worktree_branch_owners))
-        });
+        // Session-first, branch fallback: PR# → task → session → name, else branch prefix.
+        let owner_opt = resolve_pr_owner(pr_number, head_ref, snap);
 
         // Check for actionable issues
         let issues = detect_pr_issues(pr);
@@ -796,44 +843,17 @@ pub(super) async fn poll_prs_for_issues(
 
             // If the owner has no active worktree, treat this as an orphaned PR
             if !has_active_worktree && !issues.is_empty() {
-                for issue_type in &issues {
-                    // Only handle critical issues for orphaned PRs (merge conflicts, CI failures)
-                    // Skip workflow issues like approval status that require active ownership
-                    match issue_type {
-                        PrIssueType::MergeConflict | PrIssueType::CiFailed => {
-                            // Check if we should nudge for this issue
-                            let should_nudge = {
-                                let tracker = state.pr_issue_tracker.lock().await;
-                                tracker.should_nudge(pr_number, *issue_type)
-                            };
-
-                            if should_nudge {
-                                // Post a system message warning about the orphaned PR issue
-                                let warning = format!(
-                                    "@ops Orphaned PR #{} ({}) - {}: {} (owner: {}, branch: {})",
-                                    pr_number,
-                                    truncate_str(title, 40),
-                                    issue_type,
-                                    get_issue_action(*issue_type),
-                                    owner,
-                                    head_ref
-                                );
-                                effects.push(Effect::PostSystemMessage {
-                                    message: format!("⚠️ {}", warning),
-                                    channel: Some(OPS_CHANNEL.to_string()),
-                                });
-                                // Record the nudge to prevent repeated warnings on subsequent ticks
-                                effects.push(Effect::RecordPrNudge {
-                                    pr_number,
-                                    issue_type: *issue_type,
-                                });
-                            }
-                        }
-                        _ => {
-                            // Skip non-critical issues for orphaned PRs
-                        }
-                    }
-                }
+                effects.extend(
+                    collect_orphaned_pr_effects(
+                        pr_number,
+                        title,
+                        head_ref,
+                        Some(owner),
+                        &issues,
+                        state,
+                    )
+                    .await,
+                );
                 // Continue to skip the normal PR processing for this orphaned PR
                 continue;
             }
@@ -842,43 +862,9 @@ pub(super) async fn poll_prs_for_issues(
         // Handle PRs with no determinable owner (not in worktree_branch_owners and
         // doesn't match coworker/branch pattern) that have critical issues
         if owner_opt.is_none() && !issues.is_empty() {
-            for issue_type in &issues {
-                // Only handle critical issues for PRs with no owner (merge conflicts, CI failures)
-                // Skip workflow issues like approval status that require active ownership
-                match issue_type {
-                    PrIssueType::MergeConflict | PrIssueType::CiFailed => {
-                        // Check if we should nudge for this issue
-                        let should_nudge = {
-                            let tracker = state.pr_issue_tracker.lock().await;
-                            tracker.should_nudge(pr_number, *issue_type)
-                        };
-
-                        if should_nudge {
-                            // Post a system message warning about the fully orphaned PR issue
-                            // (no extractable owner at all, not even from branch name)
-                            let warning = format!(
-                                "@ops Orphaned PR #{} ({}) - {}: {} (no owner, branch: {})",
-                                pr_number,
-                                truncate_str(title, 40),
-                                issue_type,
-                                get_issue_action(*issue_type),
-                                head_ref
-                            );
-                            effects.push(Effect::PostSystemMessage {
-                                message: format!("⚠️ {}", warning),
-                                channel: Some(OPS_CHANNEL.to_string()),
-                            });
-                            effects.push(Effect::RecordPrNudge {
-                                pr_number,
-                                issue_type: *issue_type,
-                            });
-                        }
-                    }
-                    _ => {
-                        // Skip non-critical issues for PRs with no owner
-                    }
-                }
-            }
+            effects.extend(
+                collect_orphaned_pr_effects(pr_number, title, head_ref, None, &issues, state).await,
+            );
             // Continue to skip normal PR processing for this fully orphaned PR
             continue;
         }
@@ -1084,14 +1070,7 @@ async fn collect_green_with_feedback_effects(
         let title = pr.get("title").and_then(|s| s.as_str()).unwrap_or("");
 
         // Only process coworker-owned PRs — session-first, branch fallback.
-        let owner = match resolve_pr_owner_from_session(
-            pr_number,
-            &snap.pr_task_associations,
-            &snap.session_task_map,
-            &snap.sessions,
-        )
-        .or_else(|| coworker_from_branch_with_map(head_ref, Some(&snap.worktree_branch_owners)))
-        {
+        let owner = match resolve_pr_owner(pr_number, head_ref, snap) {
             Some(o) => o,
             None => continue, // Not a coworker PR (e.g., dependabot, btucker/*)
         };
