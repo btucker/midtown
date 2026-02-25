@@ -1444,9 +1444,16 @@ pub(super) fn check_for_stale_worktrees(
 /// worktree-setup → launch-config → spawn sequence; only the reason string
 /// embedded in an abandoned "Review in progress" comment differs.
 ///
-/// The caller is responsible for any additional effects that follow the spawn
-/// (e.g. the workflow event for stuck reviewers, or the channel message for
-/// dead reviewers).
+/// ## Caller responsibilities
+///
+/// **Pre-spawn (asymmetric):** `check_and_restart_stuck_reviewers` must push a
+/// [`shutdown_effect`] *before* calling this helper — the reviewer process is
+/// still alive and must be killed first.  `check_and_restart_dead_reviewers`
+/// must *not* — the process has already exited, so no shutdown is needed.
+///
+/// **Post-spawn:** each caller appends its own trailing effects after this
+/// helper returns (e.g. the `CoworkerStuck` workflow event for stuck reviewers,
+/// or the ops-channel message for dead reviewers).
 fn build_reviewer_respawn_effects(
     snap: &snapshot::WorldSnapshot,
     name: &str,
