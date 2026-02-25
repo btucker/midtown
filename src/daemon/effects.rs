@@ -537,6 +537,18 @@ impl Effect {
     }
 }
 
+/// Returns true if a non-completed task already exists for the given PR number.
+///
+/// Used by the `CreateTask` handler in `execute_effects` to skip duplicate task
+/// creation when multiple review comments arrive in quick succession.  The caller
+/// must pass `continue` (not `return`) after this returns `true` so that remaining
+/// effects in the batch are still processed.
+pub(crate) fn create_task_duplicate_exists(tasks: &[crate::tasks::Task], pr_num: u64) -> bool {
+    tasks
+        .iter()
+        .any(|t| t.pr == Some(pr_num) && t.status != crate::tasks::TaskStatus::Completed)
+}
+
 /// Deduplicate nudge effects targeting the same session within a single batch.
 ///
 /// When multiple PR issue types (CI green, review complete, merge conflict)
@@ -2177,15 +2189,12 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 // a daemon restart resets the in-memory cooldown).
                 if let Some(pr_num) = pr {
                     let existing = crate::tasks::read_tasks_for_repo(Some(&repo_name));
-                    let already_has_task = existing.iter().any(|t| {
-                        t.pr == Some(pr_num) && t.status != crate::tasks::TaskStatus::Completed
-                    });
-                    if already_has_task {
+                    if create_task_duplicate_exists(&existing, pr_num) {
                         debug!(
                             "Skipping CreateTask for PR #{}: non-completed task already exists",
                             pr_num
                         );
-                        return;
+                        continue;
                     }
                 }
 
