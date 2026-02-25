@@ -1,17 +1,10 @@
 <script>
   import { onDestroy } from 'svelte'
   import { fade } from 'svelte/transition'
-  import { activeChannel, kanbanData, daemonStatus, repoStatus, repoStatuses, activeChannelTab } from './store.js'
+  import { activeChannel, kanbanData, daemonStatus, repoStatus, repoStatuses } from './store.js'
   import { formatRelativeTime } from './utils.js'
 
   let isMultiRepo = $derived($repoStatuses.length > 1)
-
-  // Active tab for the current channel — defaults to 'messages' if not set
-  let currentTab = $derived($activeChannelTab[$activeChannel] || 'messages')
-
-  function setTab(tab) {
-    activeChannelTab.update((tabs) => ({ ...tabs, [$activeChannel]: tab }))
-  }
 
   function ciInfo(status) {
     switch (status) {
@@ -89,7 +82,7 @@
   })
 </script>
 
-<div class="hidden md:block bg-card border-b-2 border-border shrink-0">
+<div class="hidden md:block bg-card shrink-0">
   <div class="flex items-center justify-between px-4 py-2">
     <!-- Left: channel name -->
     <div class="flex items-baseline gap-1 shrink-0">
@@ -160,18 +153,6 @@
     {/each}
   {/if}
 
-  <!-- Tab bar: Messages | PRs | Notes -->
-  <div class="tab-bar">
-    <button class="tab" class:active={currentTab === 'messages'} onclick={() => setTab('messages')}>
-      Messages
-    </button>
-    <button class="tab" class:active={currentTab === 'prs'} onclick={() => setTab('prs')}>
-      PRs
-    </button>
-    <button class="tab" class:active={currentTab === 'notes'} onclick={() => setTab('notes')}>
-      Notes
-    </button>
-  </div>
 </div>
 
 <style>
@@ -204,31 +185,4 @@
     text-decoration: underline;
   }
 
-  .tab-bar {
-    display: flex;
-    gap: 0;
-    border-top: 1px solid hsl(var(--border));
-  }
-
-  .tab {
-    padding: 6px 16px;
-    font-size: 0.8rem;
-    font-weight: 500;
-    background: none;
-    border: none;
-    border-bottom: 2px solid transparent;
-    color: hsl(var(--muted-foreground));
-    cursor: pointer;
-    transition: color 0.15s, border-color 0.15s;
-    margin-bottom: -2px;
-  }
-
-  .tab:hover {
-    color: hsl(var(--foreground));
-  }
-
-  .tab.active {
-    color: hsl(var(--foreground));
-    border-bottom-color: hsl(var(--primary));
-  }
 </style>
