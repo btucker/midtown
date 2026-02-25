@@ -415,6 +415,16 @@ pub struct WorldSnapshot {
     /// pool profiles and emit `MarkProfileLimited` effects.
     #[serde(default)]
     pub session_profile_map: HashMap<String, String>,
+
+    /// Pool profile emails that are currently marked `is_usage_limited=true`.
+    ///
+    /// Populated from `DaemonPersistentState::profile_pool_state` during snapshot
+    /// collection. Used by `maybe_nudge_usage_limit_expiry()` to clear ALL limited
+    /// profiles on expiry, regardless of whether the associated coworker session
+    /// is still running. Unlike `session_profile_map` (ephemeral, cleared on coworker
+    /// stop), this is derived from persistent state and survives daemon restarts.
+    #[serde(default)]
+    pub limited_pool_profiles: HashSet<String>,
 }
 
 /// Read the last N lines from the daemon log file.
@@ -999,6 +1009,19 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
         map.clone()
     };
 
+    // Snapshot the set of pool profiles currently marked is_usage_limited so
+    // maybe_nudge_usage_limit_expiry() can clear them directly from persistent
+    // state on expiry — without depending on session_profile_map entries that
+    // disappear when coworkers stop.
+    let limited_pool_profiles: HashSet<String> = {
+        let ps = state.persistent_state.lock().await;
+        ps.profile_pool_state
+            .iter()
+            .filter(|(_, s)| s.is_usage_limited)
+            .map(|(email, _)| email.clone())
+            .collect()
+    };
+
     let snapshot = WorldSnapshot {
         active_coworkers,
         running_coworkers,
@@ -1074,6 +1097,7 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
         recently_recovered_session_ids,
         stale_working_dir_sessions,
         session_profile_map,
+        limited_pool_profiles,
     };
 
     // Log full snapshot at trace level for debugging and test case generation
@@ -1165,6 +1189,7 @@ pub(super) fn minimal_snapshot_for_test() -> WorldSnapshot {
         recently_recovered_session_ids: HashSet::new(),
         stale_working_dir_sessions: HashSet::new(),
         session_profile_map: HashMap::new(),
+        limited_pool_profiles: HashSet::new(),
     }
 }
 
