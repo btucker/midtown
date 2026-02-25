@@ -712,6 +712,7 @@ mod tests {
             modified_at: None,
             channel: None,
             blocked_by: blocked_by.into_iter().map(|s| s.to_string()).collect(),
+            message_id: None,
         }
     }
 
@@ -917,6 +918,7 @@ mod tests {
                 channel: None,
                 description: None,
                 blocked_by: vec![],
+                message_id: None,
             },
             KanbanTask {
                 id: "43".to_string(),
@@ -927,6 +929,7 @@ mod tests {
                 channel: None,
                 description: None,
                 blocked_by: vec![],
+                message_id: None,
             },
         ];
 

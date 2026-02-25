@@ -663,10 +663,6 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                         app.input_text.clear();
                         app.input_cursor = 0;
                         EventResult::Continue
-                    // Esc closes task detail panel if open
-                    } else if app.open_task_id.is_some() {
-                        app.close_task();
-                        EventResult::Continue
                     } else if app.focused_pane == FocusedPane::InputBar {
                         // Esc with empty input: no-op (stay in InputBar)
                         EventResult::Continue
@@ -786,11 +782,23 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                         }
                         EventResult::Continue
                     } else if app.focused_pane == FocusedPane::Board {
-                        // When board is focused and Enter is pressed, open task detail panel
-                        if let Some(app::BoardSelection::Task(_channel, task_id)) =
+                        // When board is focused and Enter is pressed, open task as thread
+                        if let Some(app::BoardSelection::Task(_channel, ref task_id)) =
                             app.board_selection.clone()
                         {
-                            app.open_task(&task_id);
+                            let task_id = task_id.clone();
+                            if let Some((message_id, task_channel)) = get_task_thread_info(&task_id)
+                            {
+                                if let Some(ch) = task_channel
+                                    && ch != app.selected_channel
+                                {
+                                    app.board_selection = Some(app::BoardSelection::Channel(ch));
+                                    app.update_selected_channel();
+                                }
+                                app.open_task_as_thread(&task_id, &message_id);
+                            } else {
+                                app.open_task_without_message(&task_id);
+                            }
                             return EventResult::Continue;
                         }
                         // If no task selected, focus InputBar
@@ -1053,6 +1061,16 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                     return EventResult::Continue;
                 }
 
+                // Check if click is on the thread panel divider (left edge of thread panel)
+                if let Some(thread_div_x) = app.thread_divider_x
+                    && x == thread_div_x
+                    && y >= app.main_area_y
+                    && y < app.main_area_bottom
+                {
+                    app.dragging_thread_divider = true;
+                    return EventResult::Continue;
+                }
+
                 // Check if click is in the input area
                 if let Some(input_rect) = app.input_area
                     && x >= input_rect.x
@@ -1141,7 +1159,8 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                             }
                             app.open_task_as_thread(&task_id, &message_id);
                         } else {
-                            app.open_task(&task_id);
+                            // Task has no creation message — still show it in the thread panel
+                            app.open_task_without_message(&task_id);
                         }
                         return EventResult::Continue;
                     }
@@ -1156,11 +1175,14 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
             MouseEventKind::Drag(crossterm::event::MouseButton::Left) => {
                 if app.dragging_divider {
                     app.resize_sidebar_to(mouse.column, app.layout_width);
+                } else if app.dragging_thread_divider {
+                    app.resize_thread_panel_to(mouse.column);
                 }
                 EventResult::Continue
             }
             MouseEventKind::Up(crossterm::event::MouseButton::Left) => {
                 app.dragging_divider = false;
+                app.dragging_thread_divider = false;
                 EventResult::Continue
             }
             _ => EventResult::Continue,
@@ -2338,6 +2360,7 @@ mod tests {
                 channel: Some("midtown".to_string()),
                 description: None,
                 blocked_by: vec![],
+                message_id: None,
             },
             KanbanTask {
                 id: "2".to_string(),
@@ -2348,6 +2371,7 @@ mod tests {
                 channel: Some("feature-x".to_string()),
                 description: None,
                 blocked_by: vec![],
+                message_id: None,
             },
         ];
         app.selected_channel = "midtown".to_string();
@@ -2427,6 +2451,7 @@ mod tests {
             channel: Some("midtown".to_string()),
             description: None,
             blocked_by: vec![],
+            message_id: None,
         }];
         app.selected_channel = "midtown".to_string();
         app.board_selection = Some(BoardSelection::Channel("midtown".to_string()));
@@ -2660,6 +2685,7 @@ mod tests {
             channel: Some("midtown".to_string()),
             description: None,
             blocked_by: vec![],
+            message_id: None,
         }];
         app.selected_channel = "midtown".to_string();
         app.board_selection = None;

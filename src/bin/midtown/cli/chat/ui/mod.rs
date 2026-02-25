@@ -7,9 +7,8 @@
 //! - `messages`: Message rendering (sender headers, timestamps, content layout)
 //! - `messages_mermaid`: Mermaid diagram rendering within messages
 //! - `styles`: Shared color and sender classification helpers
-//! - `task_panel`: Task detail panel (subject, status, description, metadata)
 //! - `text`: Markdown parsing and line wrapping utilities
-//! - `thread`: Thread reply panel
+//! - `thread`: Unified thread panel (task cards + parent message + replies)
 //! - `usage`: Inline usage spans for the repo status bar
 
 mod board;
@@ -18,7 +17,6 @@ mod highlight;
 pub mod messages;
 pub mod messages_mermaid;
 pub mod styles;
-mod task_panel;
 pub mod text;
 mod thread;
 mod usage;
@@ -106,27 +104,31 @@ pub fn draw(f: &mut Frame, app: &mut App) -> Vec<Hyperlink> {
     // Store tasks area for click detection (task_line_map line numbers are relative to this area)
     app.board_area = Some(tasks_area);
 
-    // When task panel is open, split chat area 60/40: channel | task detail
-    // When thread is open, split chat area 60/40: channel | thread
-    // Task panel and thread panel are mutually exclusive.
-    if app.open_task_id.is_some() {
+    // Track right panel geometry for thread resize calculations
+    let right_area = horizontal_chunks[1];
+    app.right_panel_x = right_area.x;
+    app.right_panel_width = right_area.width;
+
+    // When the thread panel is open, split chat+thread area dynamically.
+    // thread_panel_pct controls the thread panel width (default 40%).
+    if app.is_thread_panel_open() {
+        let chat_pct = 100u16.saturating_sub(app.thread_panel_pct);
         let chat_chunks = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
-            .split(horizontal_chunks[1]);
-        chat::draw_chat_panel(f, app, chat_chunks[0]);
-        task_panel::draw_task_panel(f, app, chat_chunks[1]);
-    } else if app.thread_parent_id.is_some() {
-        let chat_chunks = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
-            .split(horizontal_chunks[1]);
+            .constraints([
+                Constraint::Percentage(chat_pct),
+                Constraint::Percentage(app.thread_panel_pct),
+            ])
+            .split(right_area);
+        // Record thread divider: left edge of thread panel = right edge of chat panel
+        app.thread_divider_x = Some(chat_chunks[0].x + chat_chunks[0].width.saturating_sub(1));
         app.thread_panel_x = Some(chat_chunks[1].x);
         chat::draw_chat_panel(f, app, chat_chunks[0]);
         thread::draw_thread_panel(f, app, chat_chunks[1]);
     } else {
         app.thread_panel_x = None;
-        chat::draw_chat_panel(f, app, horizontal_chunks[1]);
+        app.thread_divider_x = None;
+        chat::draw_chat_panel(f, app, right_area);
     }
 
     // Draw channel switcher overlay last so it appears on top

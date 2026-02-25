@@ -22,6 +22,7 @@ fn test_task_line_map_registers_continuation_line_with_phase_label() {
         modified_at: None,
         channel: None,
         blocked_by: vec![],
+        message_id: None,
     }];
 
     let backend = TestBackend::new(30, 40);
