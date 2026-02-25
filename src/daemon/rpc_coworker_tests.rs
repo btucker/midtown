@@ -320,8 +320,78 @@ async fn test_coworker_questions_returns_pending_questions() {
 }
 
 // ============================================================================
-// handle_coworker_list — channel lead tagging
+// handle_coworker_list — lead session filtering + channel lead tagging
 // ============================================================================
+
+#[tokio::test]
+async fn test_coworker_list_excludes_lead_session() {
+    // The lead session is named after the repo (state.repo_name = "test-repo").
+    // handle_coworker_list must not include it in the response.
+    let (state, _tmp, _guard) = make_test_state();
+
+    // Register the lead session (name matches repo_name)
+    let inserted_lead = state
+        .coworkers
+        .insert_for_testing(crate::coworker::Coworker {
+            slot_id: uuid::Uuid::new_v4().to_string(),
+            name: "test-repo".to_string(),
+            status: crate::coworker::CoworkerStatus::Running,
+            working_dir: "/tmp".to_string(),
+            started_at: chrono::Utc::now(),
+            current_task: None,
+            session_id: None,
+            model: "claude-sonnet-4-6".to_string(),
+            provider: crate::auth::AuthProvider::Claude,
+            profile: crate::auth::DEFAULT_PROFILE.to_string(),
+        });
+    assert!(inserted_lead, "lead coworker should be inserted");
+
+    // Register a regular coworker
+    let inserted_cw = state
+        .coworkers
+        .insert_for_testing(crate::coworker::Coworker {
+            slot_id: uuid::Uuid::new_v4().to_string(),
+            name: "park".to_string(),
+            status: crate::coworker::CoworkerStatus::Running,
+            working_dir: "/tmp".to_string(),
+            started_at: chrono::Utc::now(),
+            current_task: None,
+            session_id: None,
+            model: "claude-sonnet-4-6".to_string(),
+            provider: crate::auth::AuthProvider::Claude,
+            profile: crate::auth::DEFAULT_PROFILE.to_string(),
+        });
+    assert!(inserted_cw, "coworker should be inserted");
+
+    let response = handle_coworker_list(RequestId::Number(1), &state).await;
+    assert!(!response.is_error(), "coworker.list should succeed");
+
+    let result = response.result.expect("should have result");
+    let coworkers = result["coworkers"]
+        .as_array()
+        .expect("should have coworkers array");
+
+    let names: Vec<&str> = coworkers
+        .iter()
+        .map(|cw| cw["name"].as_str().unwrap_or(""))
+        .collect();
+
+    assert!(
+        !names.contains(&"test-repo"),
+        "lead session should be excluded from coworker.list, got: {:?}",
+        names
+    );
+    assert!(
+        names.contains(&"park"),
+        "regular coworker should appear in coworker.list, got: {:?}",
+        names
+    );
+    assert_eq!(
+        coworkers.len(),
+        1,
+        "only the regular coworker should appear"
+    );
+}
 
 #[tokio::test]
 async fn test_coworker_list_tags_channel_leads() {

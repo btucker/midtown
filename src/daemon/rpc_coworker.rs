@@ -243,6 +243,7 @@ pub(super) async fn handle_coworker_list(id: RequestId, state: &DaemonState) -> 
         .coworkers
         .list()
         .iter()
+        .filter(|cw| !cw.name.eq_ignore_ascii_case(&state.repo_name))
         .map(|cw| {
             // Look up current task from task storage (case-insensitive)
             let current_task = coworker_tasks.get(&cw.name.to_lowercase()).cloned();
