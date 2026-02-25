@@ -23,6 +23,7 @@ export const AVENUE_COLORS = {
   system: '#585858',      // DarkGray
   daemon: '#585858',      // DarkGray
   midtown: '#E3BD3F',     // Gold/Amber (project lead)
+  user: 'hsl(var(--foreground))', // Human user — always use the foreground color (black in light, white in dark)
 }
 
 // Senders whose content is rendered in DarkGray (system infrastructure actors)
