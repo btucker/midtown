@@ -799,12 +799,11 @@ fn reviewer_pr_assignments_includes_dead_reviewers() {
     );
 }
 
-/// `build_reviewer_pr_assignments` must apply the same timeout filter as
-/// `active_reviewers()` so that stale assignments are excluded from both.
+/// `build_reviewer_pr_assignments` must include ALL assignments, even expired ones,
+/// so that `decide_dead_reviewer_respawns` can detect and respawn dead reviewers.
 ///
-/// An expired assignment (assigned_at older than PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS)
-/// must NOT appear in the result — consistent with `active_reviewers()` which
-/// also excludes expired entries.
+/// `active_reviewers()` (display/logging) still applies the timeout filter, but
+/// the snapshot-level assignments must not drop entries based on age.
 #[test]
 fn build_reviewer_pr_assignments_excludes_expired_entries() {
     use crate::github_state::{AssignmentSource, GitHubState, PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS};
@@ -834,15 +833,51 @@ fn build_reviewer_pr_assignments_excludes_expired_entries() {
         "non-expired reviewer 'riverside' must appear in active_reviewers"
     );
 
-    // Expired assignment must be excluded from both (consistent behavior).
-    assert!(
-        !assignments.contains_key("broadway"),
-        "expired reviewer 'broadway' must NOT appear in build_reviewer_pr_assignments"
-    );
+    // active_reviewers() still excludes expired entries (used for display/logging).
     assert!(
         !active.contains("broadway"),
         "expired reviewer 'broadway' must NOT appear in active_reviewers"
     );
+
+    // build_reviewer_pr_assignments includes expired entries so that
+    // decide_dead_reviewer_respawns can detect and respawn dead reviewers whose
+    // assignment timed out before respawn could run.
+    assert!(
+        assignments.contains_key("broadway"),
+        "expired reviewer 'broadway' MUST appear in build_reviewer_pr_assignments \
+         so decide_dead_reviewer_respawns can find and respawn them"
+    );
+}
+
+/// Issue 2: A dead reviewer with an expired assignment must still be detectable
+/// by decide_dead_reviewer_respawns via reviewer_pr_assignments.
+///
+/// Regression test for: reviewer assignment dropped when PR flagged as orphaned.
+/// When a reviewer dies after the 10-minute assignment timeout window,
+/// build_reviewer_pr_assignments used to exclude their assignment (timeout filter),
+/// so decide_dead_reviewer_respawns could never match them and the review was lost.
+#[test]
+fn test_build_reviewer_pr_assignments_includes_expired_for_dead_reviewer_respawn() {
+    use crate::github_state::{AssignmentSource, GitHubState, PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS};
+
+    let mut github = GitHubState::default();
+    github.assign_reviewer(1515, "park", AssignmentSource::PollingFallback);
+    // Backdate park's assignment well past the timeout (simulating a long review or
+    // a reviewer that died without the timestamp being refreshed).
+    if let Some(assignment) = github.pr_reviewers.get_mut(&1515) {
+        assignment.assigned_at = chrono::Utc::now()
+            - chrono::Duration::seconds(PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS as i64 * 2);
+    }
+
+    let assignments = super::build_reviewer_pr_assignments(&github);
+
+    // park must appear so that decide_dead_reviewer_respawns can detect and respawn them.
+    assert!(
+        assignments.contains_key("park"),
+        "park's expired assignment must appear in reviewer_pr_assignments \
+         so decide_dead_reviewer_respawns can respawn the dead reviewer"
+    );
+    assert_eq!(assignments["park"], 1515);
 }
 
 /// Test that recently_recovered_session_ids is correctly populated from CooldownTracker.
