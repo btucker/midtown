@@ -504,16 +504,16 @@ cd web-app && npm install && npx playwright install chromium
 cd web-app && npm run dev &
 
 # 2. Take a screenshot of the running app
-REPO=$(midtown channel read 2>/dev/null | head -1 | true; git rev-parse --show-toplevel | xargs basename)
+REPO=$(git worktree list --porcelain | awk '/^worktree/{print $2; exit}' | xargs basename)
 npx playwright screenshot --browser chromium http://localhost:5173 /tmp/screenshot.png
 
 # 3. Save to the shared per-project assets directory
 ASSETS=~/.midtown/projects/$REPO/assets
 mkdir -p "$ASSETS"
-cp /tmp/screenshot.png "$ASSETS/screenshot-$(date +%s).png"
+FILENAME="screenshot-$(date +%s).png"
+cp /tmp/screenshot.png "$ASSETS/$FILENAME"
 
 # 4. Post inline to the channel — the web UI renders markdown images
-FILENAME=$(basename /tmp/screenshot.png)
 midtown channel post "/me here's the result: ![screenshot](http://localhost:47022/api/projects/$REPO/assets/$FILENAME)"
 ```
 
