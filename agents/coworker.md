@@ -223,6 +223,38 @@ git push --force origin HEAD:$PR_BRANCH
 
 **Always include the task number in the PR title** using `[Midtown !XXX]` at the end. This makes it easy to trace PRs back to tasks.
 
+### Screenshots for Visual Changes
+
+When your PR includes visual changes to the web UI, include before/after screenshots. Take them with Playwright, then upload via the API:
+
+```bash
+# 1. Take a screenshot with Playwright
+node -e "
+const { chromium } = require('playwright');
+(async () => {
+  const b = await chromium.launch();
+  const p = await b.newPage();
+  await p.goto('http://localhost:47022');
+  await p.screenshot({ path: '/tmp/before.png' });
+  await b.close();
+})();
+"
+
+# 2. Upload and capture the returned path
+RESULT=$(curl -s -F "file=@/tmp/before.png" "http://localhost:${MIDTOWN_WEBHOOK_PORT}/api/upload")
+BEFORE_PATH=$(echo "$RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin)['path'])")
+
+# 3. Post to channel using [Attached: /path] — the web UI renders it as an inline image
+midtown channel post "Before: [Attached: $BEFORE_PATH]"
+```
+
+**Rules:**
+- Upload endpoint: `POST http://localhost:${MIDTOWN_WEBHOOK_PORT}/api/upload` (multipart `file` field)
+- Response: `{"path": "/absolute/path/to/file.png", "filename": "timestamp-name.png"}`
+- Always use the `path` value from the response — never invent or hardcode URLs
+- Reference in messages as `[Attached: /absolute/path]` so the web UI renders it inline
+- Post screenshots to the channel for lead review before opening the PR
+
 Example PR creation:
 ```bash
 gh pr create --title "feat: Add auth endpoint [Midtown !42]" --body "$(cat <<'EOF'
