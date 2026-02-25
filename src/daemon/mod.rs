@@ -2744,7 +2744,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
     // Derive project name: explicit --project flag > config.toml [project].name > repo name.
     // Create channel router for the repo
     let channel_base_dir = crate::paths::projects_dir_for_repo(&repo_name);
-    let channel_router = crate::ChannelRouter::new(&channel_base_dir, "midtown");
+    let channel_router = crate::ChannelRouter::new(&channel_base_dir, &repo_name);
     info!("Channel base: {}", channel_base_dir.display());
 
     // Create seed channels if configured

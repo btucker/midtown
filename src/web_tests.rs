@@ -383,7 +383,7 @@ fn test_task_1191_channel_switching_requirements() {
     // This unit test only verifies the backend data structures.
 
     // Requirement 2: WebSocket broadcasts include channel field
-    // ChannelMessageData includes a channel field that defaults to "midtown"
+    // ChannelMessageData includes a channel field set from the repo/project name
     let msg_with_channel = ChannelMessageData {
         id: "test-id-1".to_string(),
         from: "park".to_string(),
@@ -402,20 +402,20 @@ fn test_task_1191_channel_switching_requirements() {
     let json = serde_json::to_string(&msg_with_channel).unwrap();
     assert!(json.contains("\"channel\":\"auth-refactor\""));
 
-    // Default channel behavior
+    // Channel field can be set to any channel name
     let msg_default = ChannelMessageData {
         id: "test-id-2".to_string(),
         from: "test".to_string(),
         content: "hello".to_string(),
         timestamp: "2024-01-01T00:00:00Z".to_string(),
         msg_type: "text".to_string(),
-        channel: default_channel(),
+        channel: "myproject".to_string(),
 
         thread_parent_id: None,
         reply_count: None,
         last_reply: None,
     };
-    assert_eq!(msg_default.channel, "midtown");
+    assert_eq!(msg_default.channel, "myproject");
 
     // Requirement 3: Web UI can switch channels and load channel-specific messages
     // This is implemented in web-app/src/lib/ChannelList.svelte::selectChannel()

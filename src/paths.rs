@@ -331,13 +331,14 @@ pub fn task_list_id() -> String {
     task_list_id_for_repo(&repo)
 }
 
-/// Get the active channel file path for the default "midtown" channel.
+/// Get the active channel file path for the default channel of a repository.
 ///
-/// Returns `~/.midtown/projects/<repo>/channels/midtown/history/current.jsonl`.
+/// Returns `~/.midtown/projects/<repo>/channels/<repo>/history/current.jsonl`.
+/// The channel name matches the repo name so each project has its own default channel.
 pub fn channel_file_for_repo(repo: &str) -> PathBuf {
     projects_dir_for_repo(repo)
         .join("channels")
-        .join("midtown")
+        .join(repo)
         .join("history")
         .join("current.jsonl")
 }

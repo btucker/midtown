@@ -241,8 +241,6 @@ pub struct ChannelMessageData {
     pub timestamp: String,
     #[serde(rename = "type")]
     pub msg_type: String,
-    /// Channel name (defaults to "midtown" for backward compat)
-    #[serde(default = "default_channel")]
     pub channel: String,
     /// Optional thread parent message ID. When set, this message is a reply
     /// in a thread started by the message with this ID.
@@ -254,11 +252,6 @@ pub struct ChannelMessageData {
     /// Last reply metadata for this message's thread (top-level history only).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_reply: Option<ThreadReplySummary>,
-}
-
-#[allow(dead_code)] // Used by serde default attribute
-fn default_channel() -> String {
-    "midtown".to_string()
 }
 
 #[derive(Debug, Clone, Serialize)]
