@@ -11,6 +11,7 @@
 //! - `GET /api/projects/:name/channel` - Proxy to per-project channel data
 //! - `GET /api/projects/:name/zellij-web-url` - Get Zellij web client URL for project
 //! - `GET /api/projects/:name/assets/*path` - Serve per-project asset files (screenshots, videos)
+//! - `GET /api/projects/:name/channels/:channel_name/notes` - List channel notes (markdown files)
 //! - `GET /api/health` - Health check
 //! - `GET /` - Serve static web UI (SPA)
 
@@ -368,6 +369,100 @@ async fn project_zellij_web_url(Path(name): Path<String>) -> Json<serde_json::Va
     }))
 }
 
+/// List markdown notes for a channel.
+///
+/// Path: `/api/projects/:name/channels/:channel_name/notes`
+///
+/// Reads `~/.midtown/projects/<name>/channels/<channel_name>/notes/*.md` and
+/// returns an array of `{ filename, title, content }` objects sorted
+/// alphabetically by filename.  Returns an empty array when the notes
+/// directory does not exist (no notes yet for that channel).
+///
+/// The title is taken from the first `# Heading` line in the file, falling
+/// back to the filename stem (`.md` stripped, `-` replaced with spaces,
+/// title-cased).
+/// Return true if a name is safe to embed in a filesystem path.
+///
+/// Allows alphanumeric characters, hyphens, and underscores only.
+/// This matches the channel name rules enforced by `Channel::new` and
+/// prevents path traversal attacks via either path segment.
+fn is_valid_path_segment(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+}
+
+async fn project_channel_notes(
+    Path((name, channel_name)): Path<(String, String)>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    // Validate both path segments to prevent path traversal attacks.
+    if !is_valid_path_segment(&name) || !is_valid_path_segment(&channel_name) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    let notes_dir = crate::paths::projects_dir_for_repo(&name)
+        .join("channels")
+        .join(&channel_name)
+        .join("notes");
+
+    if !notes_dir.exists() {
+        return Ok(Json(serde_json::Value::Array(vec![])));
+    }
+
+    let mut entries: Vec<_> = std::fs::read_dir(&notes_dir)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("md"))
+        .collect();
+
+    entries.sort_by_key(|e| e.file_name());
+
+    let notes: Vec<serde_json::Value> = entries
+        .iter()
+        .filter_map(|entry| {
+            let filename = entry.file_name().to_string_lossy().to_string();
+            let content = std::fs::read_to_string(entry.path()).ok()?;
+            let title = extract_note_title(&filename, &content);
+            Some(serde_json::json!({
+                "filename": filename,
+                "title": title,
+                "content": content,
+            }))
+        })
+        .collect();
+
+    Ok(Json(serde_json::Value::Array(notes)))
+}
+
+/// Derive a display title from a note file's content and filename.
+///
+/// Returns the text of the first `# Heading` found in the file, or a
+/// title-cased version of the filename stem if no heading is present.
+fn extract_note_title(filename: &str, content: &str) -> String {
+    for line in content.lines() {
+        if let Some(rest) = line.trim().strip_prefix("# ") {
+            let title = rest.trim();
+            if !title.is_empty() {
+                return title.to_string();
+            }
+        }
+    }
+
+    let stem = filename.strip_suffix(".md").unwrap_or(filename);
+    stem.replace('-', " ")
+        .split_whitespace()
+        .map(|word| {
+            let mut chars = word.chars();
+            match chars.next() {
+                None => String::new(),
+                Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// Run the standalone webserver.
 pub async fn run(config: WebserverConfig) -> std::result::Result<(), Box<dyn std::error::Error>> {
     let state = WebserverState::new();
@@ -397,7 +492,11 @@ pub async fn run(config: WebserverConfig) -> std::result::Result<(), Box<dyn std
             "/projects/{name}/zellij-web-url",
             get(project_zellij_web_url),
         )
-        .route("/projects/{name}/assets/{*path}", get(project_asset));
+        .route("/projects/{name}/assets/{*path}", get(project_asset))
+        .route(
+            "/projects/{name}/channels/{channel_name}/notes",
+            get(project_channel_notes),
+        );
 
     let mut app = Router::new().nest("/api", api).layer(cors);
 
@@ -671,5 +770,163 @@ mod tests {
             result.headers().get(header::CONTENT_TYPE).unwrap(),
             "image/png"
         );
+    }
+
+    // --- extract_note_title tests ---
+
+    #[test]
+    fn test_extract_note_title_uses_first_h1() {
+        let content = "# My Great Note\n\nSome body text.";
+        assert_eq!(extract_note_title("my-note.md", content), "My Great Note");
+    }
+
+    #[test]
+    fn test_extract_note_title_falls_back_to_filename() {
+        let content = "No heading here, just plain text.";
+        assert_eq!(
+            extract_note_title("quick-start-guide.md", content),
+            "Quick Start Guide"
+        );
+    }
+
+    #[test]
+    fn test_extract_note_title_filename_without_md_extension() {
+        let content = "";
+        assert_eq!(
+            extract_note_title("architecture-overview.md", content),
+            "Architecture Overview"
+        );
+    }
+
+    #[test]
+    fn test_extract_note_title_skips_empty_h1() {
+        let content = "#\n\n## Actually a heading\n\nBody.";
+        // Empty H1 should be skipped — no fallback-worthy H1 found, use filename
+        assert_eq!(
+            extract_note_title("fallback-name.md", content),
+            "Fallback Name"
+        );
+    }
+
+    #[test]
+    fn test_extract_note_title_ignores_h2_and_below() {
+        let content = "## Section\n\nBody text without a top-level heading.";
+        assert_eq!(extract_note_title("my-doc.md", content), "My Doc");
+    }
+
+    // --- project_channel_notes handler tests ---
+
+    #[test]
+    fn test_is_valid_path_segment() {
+        assert!(is_valid_path_segment("midtown"));
+        assert!(is_valid_path_segment("my-project"));
+        assert!(is_valid_path_segment("my_channel"));
+        assert!(is_valid_path_segment("abc123"));
+        assert!(!is_valid_path_segment(""));
+        assert!(!is_valid_path_segment(".."));
+        assert!(!is_valid_path_segment("../etc"));
+        assert!(!is_valid_path_segment("foo/bar"));
+        assert!(!is_valid_path_segment("foo bar"));
+    }
+
+    #[tokio::test]
+    async fn test_channel_notes_rejects_invalid_channel_name() {
+        let result =
+            project_channel_notes(Path(("myproject".to_string(), "../etc/passwd".to_string())))
+                .await;
+        assert_eq!(result.unwrap_err(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_channel_notes_rejects_invalid_project_name() {
+        let result =
+            project_channel_notes(Path(("../../../etc".to_string(), "mychannel".to_string())))
+                .await;
+        assert_eq!(result.unwrap_err(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_channel_notes_returns_empty_for_missing_dir() {
+        use crate::paths::set_test_midtown_base_dir;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let _guard = set_test_midtown_base_dir(tmp.path().to_path_buf());
+
+        let result = project_channel_notes(Path(("test-proj".to_string(), "web".to_string())))
+            .await
+            .unwrap();
+
+        assert_eq!(result.0, serde_json::Value::Array(vec![]));
+    }
+
+    #[tokio::test]
+    async fn test_channel_notes_returns_sorted_notes() {
+        use crate::paths::set_test_midtown_base_dir;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let _guard = set_test_midtown_base_dir(tmp.path().to_path_buf());
+
+        let notes_dir = tmp
+            .path()
+            .join("projects")
+            .join("test-proj")
+            .join("channels")
+            .join("web")
+            .join("notes");
+        std::fs::create_dir_all(&notes_dir).unwrap();
+
+        std::fs::write(
+            notes_dir.join("b-second.md"),
+            "# Second Note\n\nContent for second note.",
+        )
+        .unwrap();
+        std::fs::write(
+            notes_dir.join("a-first.md"),
+            "# First Note\n\nContent for first note.",
+        )
+        .unwrap();
+        // Non-.md file should be ignored
+        std::fs::write(notes_dir.join("ignored.txt"), "ignored").unwrap();
+
+        let result = project_channel_notes(Path(("test-proj".to_string(), "web".to_string())))
+            .await
+            .unwrap();
+
+        let notes = result.0.as_array().unwrap();
+        assert_eq!(notes.len(), 2);
+        assert_eq!(notes[0]["filename"], "a-first.md");
+        assert_eq!(notes[0]["title"], "First Note");
+        assert_eq!(notes[1]["filename"], "b-second.md");
+        assert_eq!(notes[1]["title"], "Second Note");
+    }
+
+    #[tokio::test]
+    async fn test_channel_notes_title_falls_back_to_filename() {
+        use crate::paths::set_test_midtown_base_dir;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let _guard = set_test_midtown_base_dir(tmp.path().to_path_buf());
+
+        let notes_dir = tmp
+            .path()
+            .join("projects")
+            .join("test-proj")
+            .join("channels")
+            .join("auth")
+            .join("notes");
+        std::fs::create_dir_all(&notes_dir).unwrap();
+        std::fs::write(
+            notes_dir.join("getting-started.md"),
+            "No heading — just a paragraph.",
+        )
+        .unwrap();
+
+        let result = project_channel_notes(Path(("test-proj".to_string(), "auth".to_string())))
+            .await
+            .unwrap();
+
+        let notes = result.0.as_array().unwrap();
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0]["title"], "Getting Started");
     }
 }
