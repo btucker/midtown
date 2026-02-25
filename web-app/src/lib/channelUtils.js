@@ -1,4 +1,4 @@
-// Shared utilities for channel filtering and task counting
+// Shared utilities for channel filtering, task counting, and sidebar expansion state
 
 /**
  * Build a map of task_id → channel from the kanban task lists.
@@ -105,6 +105,41 @@ export function getChannelCiStatus(channelName, kanban) {
 export function getChannelHasActiveTasks(channelName, kanban) {
   const counts = getChannelTaskCount(channelName, kanban)
   return counts.inProgress > 0 || counts.pending > 0
+}
+
+/**
+ * Compute the expanded channels set after clicking the triangle (▶/▼) on channelName.
+ * The triangle always toggles: collapsed → expanded, expanded → collapsed.
+ * Returns a new Set; does not mutate the input.
+ */
+export function computeExpandedAfterTriangleClick(channelName, expandedChannels) {
+  const next = new Set(expandedChannels)
+  if (next.has(channelName)) {
+    next.delete(channelName)
+  } else {
+    next.add(channelName)
+  }
+  return next
+}
+
+/**
+ * Compute the expanded channels set after clicking the channel name.
+ * - Switching to an inactive channel: auto-expand if it has active tasks.
+ * - Re-clicking the already-active channel: toggle expand/collapse.
+ * Returns a new Set; does not mutate the input.
+ */
+export function computeExpandedAfterChannelNameClick(channelName, expandedChannels, activeChannel, kanban) {
+  const next = new Set(expandedChannels)
+  if (channelName === activeChannel) {
+    if (next.has(channelName)) {
+      next.delete(channelName)
+    } else {
+      next.add(channelName)
+    }
+  } else if (getChannelHasActiveTasks(channelName, kanban)) {
+    next.add(channelName)
+  }
+  return next
 }
 
 /**

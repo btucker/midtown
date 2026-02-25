@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest'
-import { getChannelTaskCount, getChannelCiStatus, getChannelPrs } from './channelUtils.js'
+import {
+  getChannelTaskCount,
+  getChannelCiStatus,
+  getChannelPrs,
+  computeExpandedAfterTriangleClick,
+  computeExpandedAfterChannelNameClick,
+} from './channelUtils.js'
 
 describe('getChannelTaskCount', () => {
   const mockKanban = {
@@ -214,5 +220,69 @@ describe('getChannelPrs', () => {
     const prs = getChannelPrs('special-channel', kanban)
     expect(prs).toHaveLength(1)
     expect(prs[0].number).toBe(99)
+  })
+})
+
+describe('computeExpandedAfterTriangleClick', () => {
+  it('expands a collapsed channel', () => {
+    const result = computeExpandedAfterTriangleClick('web', new Set())
+    expect(result.has('web')).toBe(true)
+  })
+
+  it('collapses an expanded channel', () => {
+    const result = computeExpandedAfterTriangleClick('web', new Set(['web']))
+    expect(result.has('web')).toBe(false)
+  })
+
+  it('does not affect other channels', () => {
+    const result = computeExpandedAfterTriangleClick('web', new Set(['auth', 'web']))
+    expect(result.has('auth')).toBe(true)
+    expect(result.has('web')).toBe(false)
+  })
+
+  it('returns a new set (does not mutate the original)', () => {
+    const original = new Set(['web'])
+    const result = computeExpandedAfterTriangleClick('web', original)
+    expect(original.has('web')).toBe(true)
+    expect(result.has('web')).toBe(false)
+  })
+})
+
+describe('computeExpandedAfterChannelNameClick', () => {
+  const mockKanban = {
+    inProgress: [{ id: 1, title: 'Build feature', channel: 'web' }],
+    backlog: [],
+    review: [],
+  }
+
+  it('auto-expands when switching to inactive channel with active tasks', () => {
+    const result = computeExpandedAfterChannelNameClick('web', new Set(), 'midtown', mockKanban)
+    expect(result.has('web')).toBe(true)
+  })
+
+  it('does not expand when switching to inactive channel without tasks', () => {
+    const result = computeExpandedAfterChannelNameClick('empty', new Set(), 'midtown', mockKanban)
+    expect(result.has('empty')).toBe(false)
+  })
+
+  it('expands already-active collapsed channel (toggle)', () => {
+    const result = computeExpandedAfterChannelNameClick('web', new Set(), 'web', mockKanban)
+    expect(result.has('web')).toBe(true)
+  })
+
+  it('collapses already-active expanded channel (toggle)', () => {
+    const result = computeExpandedAfterChannelNameClick('web', new Set(['web']), 'web', mockKanban)
+    expect(result.has('web')).toBe(false)
+  })
+
+  it('keeps expanded state when switching to already-expanded inactive channel', () => {
+    const result = computeExpandedAfterChannelNameClick('web', new Set(['web']), 'midtown', mockKanban)
+    expect(result.has('web')).toBe(true)
+  })
+
+  it('does not collapse other expanded channels when switching', () => {
+    const result = computeExpandedAfterChannelNameClick('web', new Set(['auth']), 'midtown', mockKanban)
+    expect(result.has('auth')).toBe(true)
+    expect(result.has('web')).toBe(true)
   })
 })

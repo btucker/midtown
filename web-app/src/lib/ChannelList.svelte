@@ -2,7 +2,12 @@
   import { SvelteSet } from 'svelte/reactivity'
   import { channels, activeChannel, kanbanData, activeProject, messagesByChannel, showArchivedChannels } from './store.js'
   import { fetchHistory, fetchChannels, getApiBase, closeThread } from './api.js'
-  import { getChannelTaskCount, getChannelCiStatus, getChannelHasActiveTasks } from './channelUtils.js'
+  import {
+    getChannelTaskCount,
+    getChannelCiStatus,
+    computeExpandedAfterTriangleClick,
+    computeExpandedAfterChannelNameClick,
+  } from './channelUtils.js'
   import TaskList from './TaskList.svelte'
   import ArchiveIcon from '@lucide/svelte/icons/archive'
 
@@ -31,11 +36,20 @@
     // channel-scoped and should not carry over to a different channel.
     closeThread()
 
-    // Auto-expand task list only when switching to a different channel that has
-    // active tasks. Guard against re-click of the already-active channel, which
-    // would override a manual collapse the user performed.
-    if (channelName !== $activeChannel && getChannelHasActiveTasks(channelName, $kanbanData)) {
+    // Compute and apply the new expanded state for this channel.
+    // computeExpandedAfterChannelNameClick handles two cases:
+    //   - Switching to a new channel: auto-expand if it has active tasks
+    //   - Re-clicking the already-active channel: toggle expand/collapse
+    const next = computeExpandedAfterChannelNameClick(
+      channelName,
+      expandedChannels,
+      $activeChannel,
+      $kanbanData
+    )
+    if (next.has(channelName)) {
       expandedChannels.add(channelName)
+    } else {
+      expandedChannels.delete(channelName)
     }
 
     activeChannel.set(channelName)
@@ -121,14 +135,20 @@
     }
   }
 
-  function toggleChannelTasks(channelName, event) {
-    // Stop event from bubbling to channel selection
-    event.stopPropagation()
-
-    if (expandedChannels.has(channelName)) {
-      expandedChannels.delete(channelName)
-    } else {
+  function handleTriangleClick(channelName) {
+    // Capture the desired toggle state before selectChannel potentially auto-expands.
+    const next = computeExpandedAfterTriangleClick(channelName, expandedChannels)
+    // Only call selectChannel when switching to a different channel.
+    // Calling it on the already-active channel would invoke closeThread() as a side
+    // effect, closing any open thread panel just because the user toggled the task list.
+    if (channelName !== $activeChannel) {
+      selectChannel(channelName)
+    }
+    // Apply the toggle result (overrides any auto-expand from selectChannel).
+    if (next.has(channelName)) {
       expandedChannels.add(channelName)
+    } else {
+      expandedChannels.delete(channelName)
     }
   }
 </script>
@@ -206,7 +226,7 @@
             <button
               type="button"
               class="w-[28px] h-[28px] p-0 border-none bg-transparent text-muted-foreground text-[0.65rem] leading-none cursor-pointer flex items-center justify-center transition-colors duration-150 hover:text-sidebar-foreground"
-              onclick={(e) => toggleChannelTasks(channel.name, e)}
+              onclick={() => handleTriangleClick(channel.name)}
               title={isExpanded ? 'Collapse tasks' : 'Expand tasks'}
             >
               {isExpanded ? '▼' : '▶'}
