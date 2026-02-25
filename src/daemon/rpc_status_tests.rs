@@ -1,6 +1,70 @@
 //! Tests for status RPC handler.
 
-use super::{filter_lead_session, resolve_pr_number, tag_channel_leads_and_count};
+use crate::rpc::RequestId;
+
+use super::super::DaemonState;
+use super::{filter_lead_session, handle_status, resolve_pr_number, tag_channel_leads_and_count};
+
+// ============================================================================
+// Integration test helper
+// ============================================================================
+
+fn make_test_state() -> (
+    DaemonState,
+    tempfile::TempDir,
+    crate::paths::TestMidtownBaseDirGuard,
+) {
+    use std::process::Command;
+    use tempfile::TempDir;
+
+    let midtown_dir = TempDir::new().expect("midtown temp dir");
+    let _guard = crate::paths::set_test_midtown_base_dir(midtown_dir.path().to_path_buf());
+
+    let temp_dir = TempDir::new().expect("temp dir");
+    Command::new("git")
+        .args(["init"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("git init");
+    Command::new("git")
+        .args(["config", "user.email", "test@example.com"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("git config");
+    Command::new("git")
+        .args(["config", "user.name", "Test"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("git config");
+    Command::new("git")
+        .args(["commit", "--allow-empty", "-m", "init"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("git commit");
+
+    let wm = crate::worktree::WorktreeManager::new(temp_dir.path().to_path_buf())
+        .expect("worktree manager");
+    let cm = crate::coworker::CoworkerManager::new(wm);
+
+    let base_dir = temp_dir.path().to_path_buf();
+
+    let channel_router = crate::ChannelRouter::new(&base_dir, "midtown");
+    let (shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(1);
+    let state = DaemonState::new(
+        "/tmp/test-rpc-status.sock".into(),
+        cm,
+        "test-repo".to_string(),
+        vec![base_dir],
+        channel_router,
+        None,
+        10,
+        None,
+        "main".to_string(),
+        shutdown_tx,
+    )
+    .expect("daemon state");
+    (state, temp_dir, _guard)
+}
 
 #[test]
 fn test_current_task_includes_id_and_title() {
@@ -200,6 +264,49 @@ fn test_filter_lead_session_removes_legacy_lead_string() {
         "Legacy 'lead' session should be excluded from coworkers list"
     );
     assert_eq!(filtered[0]["name"], "amsterdam");
+}
+
+// Integration test: handle_status excludes legacy "lead" session
+#[tokio::test]
+async fn test_handle_status_excludes_legacy_lead_session() {
+    // Verify that handle_status() does not include a session named "lead" in
+    // the coworkers list. This exercises the inline filter in the production
+    // code path that codecov needs covered.
+    let (state, _tmp, _guard) = make_test_state();
+
+    let inserted = state
+        .coworkers
+        .insert_for_testing(crate::coworker::Coworker {
+            slot_id: uuid::Uuid::new_v4().to_string(),
+            name: "lead".to_string(),
+            status: crate::coworker::CoworkerStatus::Running,
+            working_dir: "/tmp".to_string(),
+            started_at: chrono::Utc::now(),
+            current_task: None,
+            session_id: None,
+            model: "claude-sonnet-4-5".to_string(),
+            provider: crate::auth::AuthProvider::Claude,
+            profile: crate::auth::DEFAULT_PROFILE.to_string(),
+        });
+    assert!(inserted, "legacy lead coworker should be inserted for test");
+
+    let response = handle_status(RequestId::Number(1), &state).await;
+    assert!(!response.is_error(), "status should succeed");
+
+    let result = response.result.expect("should have result");
+    let coworkers = result["coworkers"]
+        .as_array()
+        .expect("should have coworkers array");
+
+    let names: Vec<&str> = coworkers
+        .iter()
+        .filter_map(|cw| cw.get("name").and_then(|n| n.as_str()))
+        .collect();
+
+    assert!(
+        !names.contains(&"lead"),
+        "legacy 'lead' session should be excluded from handle_status coworkers list"
+    );
 }
 
 // ─── Tests for resolve_pr_number (PR number resolution priority chain) ───
