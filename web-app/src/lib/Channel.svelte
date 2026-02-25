@@ -354,6 +354,11 @@
     return msg.content.replace(/^\/me\s*/, '')
   }
 
+  // NOTE: Any new link type added to markdown.js (channel/task/PR/coworker/etc.) must be
+  // handled in BOTH handleLinkClick (desktop — fires on the scroll viewport) AND here in
+  // handleMessageTap (mobile — fires on the message row div). handleMessageTap calls
+  // stopPropagation(), so handleLinkClick never runs on mobile. They are NOT redundant;
+  // they are two separate entry points for the same click on different platforms.
   function handleMessageTap(event, msg) {
     // Mobile-only affordance: tap a top-level message to open its thread view.
     if ($isWideScreen || msg.thread_parent_id) return
