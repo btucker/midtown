@@ -12,7 +12,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::time::{Duration, Instant};
 
-use tracing::{debug, error, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::rpc::{RequestId, Response, RpcError};
 
@@ -538,6 +538,175 @@ impl PrsCache {
     }
 }
 
+// ============================================================================
+// PR review handler
+// ============================================================================
+
+/// Handle `pr.review` RPC method — manually trigger a reviewer spawn for a PR.
+///
+/// Bypasses the auto-review delay (PR age check) and webhook deference, but still
+/// respects the coworker limit and review mode configuration.
+///
+/// Returns a message indicating:
+/// - "Reviewer assigned: <name>" on success
+/// - "PR #N already has a completed review" if reviewed
+/// - "PR #N already assigned to reviewer <name>" if assignment exists
+/// - An error if the PR is not open, not found, or no slots are available
+pub(super) async fn handle_pr_review(
+    id: RequestId,
+    pr_number: u64,
+    state: &DaemonState,
+) -> Response {
+    info!("Manual review requested for PR #{}", pr_number);
+
+    // Check if already reviewed.
+    if state.is_pr_reviewed(pr_number).await {
+        return Response::success(
+            id,
+            serde_json::json!({
+                "message": format!("PR #{} already has a completed review", pr_number)
+            }),
+        );
+    }
+
+    // Check if already assigned.
+    {
+        let ps = state.persistent_state.lock().await;
+        if let Some(reviewer) = ps.github.get_reviewer(pr_number) {
+            return Response::success(
+                id,
+                serde_json::json!({
+                    "message": format!(
+                        "PR #{} already assigned to reviewer {}",
+                        pr_number, reviewer
+                    )
+                }),
+            );
+        }
+    }
+
+    // Fetch the PR from GitHub to validate it exists and is open.
+    let pr_json = match fetch_pr_json_for_review(pr_number, state).await {
+        Ok(pr) => pr,
+        Err(msg) => return Response::error(id, RpcError::new(-32603, msg)),
+    };
+
+    // Collect a world snapshot so collect_reviewer_effects_with_source has
+    // the worktree registry, active coworker names, and branch owner map.
+    let snap = super::snapshot::collect_world_snapshot(state).await;
+
+    // Call the shared reviewer selection logic.
+    // We use AssignmentSource::Manual which:
+    //   - bypasses the webhook-deference guard (only active for PollingFallback)
+    //   - is recorded in the assignment for observability
+    // We pass None for branch_owners_map to prevent orphan-skipping based on
+    // branch prefix: for a manual trigger the user wants a reviewer regardless.
+    let effects = super::pr::collect_reviewer_effects_with_source(
+        None,
+        &snap.worktree_registry,
+        &snap.active_names,
+        state,
+        &[pr_json],
+        crate::github_state::AssignmentSource::Manual,
+    )
+    .await;
+
+    if effects.is_empty() {
+        return Response::error(
+            id,
+            RpcError::new(
+                -32603,
+                format!(
+                    "Could not assign reviewer for PR #{}: no available coworker slots or review mode disabled",
+                    pr_number
+                ),
+            ),
+        );
+    }
+
+    // Extract the reviewer name from the AssignReviewer effect for the response message.
+    let reviewer_name = effects
+        .iter()
+        .find_map(|e| {
+            if let super::effects::Effect::AssignReviewer { reviewer_name, .. } = e {
+                Some(reviewer_name.clone())
+            } else {
+                None
+            }
+        })
+        .unwrap_or_else(|| "unknown".to_string());
+
+    super::effects::execute_effects(effects, state).await;
+
+    Response::success(
+        id,
+        serde_json::json!({
+            "message": format!("Reviewer assigned: {} (PR #{})", reviewer_name, pr_number)
+        }),
+    )
+}
+
+/// Fetch a minimal PR JSON for use with `collect_reviewer_effects_with_source`.
+///
+/// Uses `gh pr view` to verify the PR exists and is open, then returns a JSON
+/// object with the fields the reviewer selection logic needs. `createdAt` is
+/// intentionally omitted so the PR age check is bypassed for manual triggers.
+async fn fetch_pr_json_for_review(
+    pr_number: u64,
+    state: &DaemonState,
+) -> Result<serde_json::Value, String> {
+    let repo_path = state
+        .all_repo_paths
+        .first()
+        .ok_or_else(|| "No repository path configured".to_string())?
+        .clone();
+
+    let output = tokio::task::spawn_blocking(move || {
+        std::process::Command::new("gh")
+            .current_dir(&repo_path)
+            .args([
+                "pr",
+                "view",
+                &pr_number.to_string(),
+                "--json",
+                "number,title,headRefName,isDraft,state,author",
+            ])
+            .output()
+    })
+    .await
+    .map_err(|e| format!("spawn_blocking error: {}", e))?
+    .map_err(|e| format!("Failed to run gh pr view: {}", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!(
+            "PR #{} not found or not accessible: {}",
+            pr_number,
+            stderr.trim()
+        ));
+    }
+
+    let pr: serde_json::Value = serde_json::from_slice(&output.stdout)
+        .map_err(|e| format!("Failed to parse gh pr view output: {}", e))?;
+
+    let state_str = pr
+        .get("state")
+        .and_then(|v| v.as_str())
+        .unwrap_or("UNKNOWN");
+    if state_str != "OPEN" {
+        return Err(format!(
+            "PR #{} is {} (must be OPEN to request a review)",
+            pr_number, state_str
+        ));
+    }
+
+    Ok(pr)
+}
+
 #[path = "rpc_prs_tests.rs"]
 #[cfg(test)]
 mod tests;
+
+#[path = "rpc_pr_review_tests.rs"]
+#[cfg(test)]
+mod pr_review_tests;
