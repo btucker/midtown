@@ -1245,3 +1245,74 @@ fn create_task_duplicate_exists_ignores_tasks_without_pr() {
         "task with no PR → not a duplicate"
     );
 }
+
+// ---------------------------------------------------------------------------
+// BindCoworkerToWorktree collision guard — batch-level regression test
+//
+// When a worktree collision is detected (the target worktree is already bound
+// to a different ACTIVE coworker), the guard must skip only the colliding
+// effect and continue processing the remaining effects in the batch.  Using
+// `return` instead of `continue` would silently drop every subsequent effect.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn bind_coworker_to_worktree_collision_does_not_drop_subsequent_effects() {
+    let (state, _project_dir, _guard) = make_workflow_test_state("myrepo-collision");
+
+    // Register a worktree and bind it to "old-coworker".
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.worktree_registry
+            .assign_worktree(crate::worktree_registry::WorktreeAssignment {
+                worktree_id: "wt-collision-test".to_string(),
+                branch_name: "old-coworker/task-1".to_string(),
+                task_id: None,
+                current_coworker: None,
+                pr_number: None,
+                created_at: chrono::Utc::now(),
+                completed_at: None,
+            })
+            .expect("assign worktree");
+        ps.worktree_registry
+            .bind_coworker("wt-collision-test", "old-coworker")
+            .expect("bind old-coworker");
+    }
+
+    // Make the session manager report "old-coworker" as alive so the collision
+    // guard fires.
+    state
+        .session_manager
+        .set_test_is_alive_hook(Some(std::sync::Arc::new(|name: &str| {
+            name == "old-coworker"
+        })));
+
+    // Batch: first effect will be blocked (collision), second must still run.
+    let sentinel_channel = "sentinel-ch".to_string();
+    let sentinel_session = "sess-sentinel-99".to_string();
+    execute_effects(
+        vec![
+            Effect::BindCoworkerToWorktree {
+                worktree_id: "wt-collision-test".to_string(),
+                coworker: "new-coworker".to_string(),
+            },
+            Effect::SaveChannelLeadSession {
+                channel_name: sentinel_channel.clone(),
+                session_id: sentinel_session.clone(),
+            },
+        ],
+        &state,
+    )
+    .await;
+
+    // The SaveChannelLeadSession effect must have executed — if the collision
+    // guard used `return` instead of `continue`, this would be None.
+    let ps = state.persistent_state.lock().await;
+    assert_eq!(
+        ps.channel_lead_sessions
+            .get(&sentinel_channel)
+            .map(String::as_str),
+        Some(sentinel_session.as_str()),
+        "SaveChannelLeadSession must execute even when a preceding \
+         BindCoworkerToWorktree is blocked by the collision guard"
+    );
+}
