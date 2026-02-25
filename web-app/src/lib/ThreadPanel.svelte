@@ -89,12 +89,19 @@
       <div class="flex-1 min-w-0">
         <h2 class="text-[0.85rem] font-bold text-foreground m-0">Thread</h2>
         {#if $threadData.task}
-          <p class="text-[0.75rem] text-muted-foreground m-0 mt-0.5 break-words">
+          <p class="text-[0.75rem] text-muted-foreground m-0 mt-0.5 break-words" data-testid="thread-parent">
             <span class="text-[hsl(var(--link-task))] font-bold">!{$threadData.task.id}</span>
             <span class="text-foreground"> {$threadData.task.subject}</span>
+            {#if $threadData.task.status}
+              <span class="text-muted-foreground/60"> ·</span>
+              <span class={$threadData.task.status === 'pending' ? 'text-[#d7d787]' : $threadData.task.status === 'in_progress' ? 'text-[#5fafaf]' : 'text-[#5faf5f]'}> {$threadData.task.status}</span>
+            {/if}
+            {#if $threadData.task.assignee}
+              <span class="text-muted-foreground/60"> · {$threadData.task.assignee}</span>
+            {/if}
           </p>
         {:else}
-          <p class="text-[0.75rem] text-muted-foreground m-0 mt-0.5 break-words">
+          <p class="text-[0.75rem] text-muted-foreground m-0 mt-0.5 break-words" data-testid="thread-parent">
             <span style="color: {getSenderColor($threadData.parentMessage.from, THREAD_SENDER_OVERRIDES)}">{$threadData.parentMessage.from}</span>:
             {$threadData.parentMessage.content || ''}
           </p>
@@ -172,6 +179,13 @@
           <p class="text-[0.75rem] text-muted-foreground m-0 mt-0.5 break-words">
             <span class="text-[hsl(var(--link-task))] font-bold">!{$threadData.task.id}</span>
             <span class="text-foreground"> {$threadData.task.subject}</span>
+            {#if $threadData.task.status}
+              <span class="text-muted-foreground/60"> ·</span>
+              <span class={$threadData.task.status === 'pending' ? 'text-[#d7d787]' : $threadData.task.status === 'in_progress' ? 'text-[#5fafaf]' : 'text-[#5faf5f]'}> {$threadData.task.status}</span>
+            {/if}
+            {#if $threadData.task.assignee}
+              <span class="text-muted-foreground/60"> · {$threadData.task.assignee}</span>
+            {/if}
           </p>
         {:else}
           <p class="text-[0.75rem] text-muted-foreground m-0 mt-0.5 break-words">
