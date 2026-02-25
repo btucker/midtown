@@ -1070,12 +1070,7 @@ fn stuck_coworker_restart_propagates_session_id_to_shutdown_effect() {
 
     // We can't call check_and_restart_stuck_coworkers directly because it needs DaemonState,
     // but we can verify the pure decision layer populates session_id correctly.
-    let exemptions = crate::rules::StuckExemptions {
-        usage_limited: &snap.usage_limited_coworkers,
-        api_error: &snap.api_error_coworkers,
-        auth_error: &snap.auth_error_coworkers,
-        attached: &snap.attached_coworkers,
-    };
+    let exemptions = snap.stuck_exemptions();
     let restarts = crate::rules::decide_stuck_coworker_restarts(
         &snap.headless_process_health,
         &snap.in_progress_tasks,
@@ -1175,12 +1170,7 @@ fn stuck_reviewer_restart_propagates_session_id() {
     snap.name_session_map
         .insert("amsterdam".to_string(), "session-rev-999".to_string());
 
-    let exemptions = crate::rules::StuckExemptions {
-        usage_limited: &snap.usage_limited_coworkers,
-        api_error: &snap.api_error_coworkers,
-        auth_error: &snap.auth_error_coworkers,
-        attached: &snap.attached_coworkers,
-    };
+    let exemptions = snap.stuck_exemptions();
     let restarts = crate::rules::decide_stuck_reviewer_restarts(
         &snap.headless_process_health,
         &snap.reviewer_pr_assignments,
@@ -1239,12 +1229,7 @@ fn session_id_is_none_when_no_session_mapping_exists() {
 
     // No name_session_map entry for broadway
 
-    let exemptions = crate::rules::StuckExemptions {
-        usage_limited: &snap.usage_limited_coworkers,
-        api_error: &snap.api_error_coworkers,
-        auth_error: &snap.auth_error_coworkers,
-        attached: &snap.attached_coworkers,
-    };
+    let exemptions = snap.stuck_exemptions();
     let restarts = crate::rules::decide_stuck_coworker_restarts(
         &snap.headless_process_health,
         &snap.in_progress_tasks,
@@ -1374,12 +1359,7 @@ fn pending_api_call_exempts_coworker_from_stuck_detection() {
         "lexington".to_string(),
     ));
 
-    let exemptions = crate::rules::StuckExemptions {
-        usage_limited: &snap.usage_limited_coworkers,
-        api_error: &snap.api_error_coworkers,
-        auth_error: &snap.auth_error_coworkers,
-        attached: &snap.attached_coworkers,
-    };
+    let exemptions = snap.stuck_exemptions();
 
     let restarts = crate::rules::decide_stuck_coworker_restarts(
         &snap.headless_process_health,
@@ -1430,12 +1410,7 @@ fn stale_pending_api_call_no_heartbeat_is_restarted() {
         "lexington".to_string(),
     ));
 
-    let exemptions = crate::rules::StuckExemptions {
-        usage_limited: &snap.usage_limited_coworkers,
-        api_error: &snap.api_error_coworkers,
-        auth_error: &snap.auth_error_coworkers,
-        attached: &snap.attached_coworkers,
-    };
+    let exemptions = snap.stuck_exemptions();
 
     let restarts = crate::rules::decide_stuck_coworker_restarts(
         &snap.headless_process_health,
@@ -1481,12 +1456,7 @@ fn pending_api_call_exempts_reviewer_from_stuck_detection() {
     snap.reviewer_pr_assignments
         .insert("amsterdam".to_string(), 1329);
 
-    let exemptions = crate::rules::StuckExemptions {
-        usage_limited: &snap.usage_limited_coworkers,
-        api_error: &snap.api_error_coworkers,
-        auth_error: &snap.auth_error_coworkers,
-        attached: &snap.attached_coworkers,
-    };
+    let exemptions = snap.stuck_exemptions();
 
     let restarts = crate::rules::decide_stuck_reviewer_restarts(
         &snap.headless_process_health,

@@ -227,17 +227,11 @@ pub fn check_and_shutdown_idle_coworkers(snap: &snapshot::WorldSnapshot) -> Vec<
             current_task: None,
         });
         // Prefer session-centric shutdown when session mapping exists.
-        if let Some(session_id) = snap.name_session_map.get(name) {
-            effects.push(Effect::ShutdownSession {
-                session_id: session_id.clone(),
-                reason: format!("idle shutdown: {}", name),
-            });
-        } else {
-            effects.push(Effect::ShutdownCoworker {
-                name: name.clone(),
-                message: String::new(),
-            });
-        }
+        effects.push(shutdown_effect(
+            name,
+            snap.name_session_map.get(name),
+            format!("idle shutdown: {}", name),
+        ));
         // Clean the coworker's target/ directory to reclaim disk space.
         // Resolve working_dir from the snapshot so we target the actual
         // directory (task-based worktree), not the legacy coworker-named path.
@@ -275,12 +269,7 @@ pub(super) async fn check_and_restart_stuck_coworkers(
         return vec![];
     }
 
-    let exemptions = crate::rules::StuckExemptions {
-        usage_limited: &snap.usage_limited_coworkers,
-        api_error: &snap.api_error_coworkers,
-        auth_error: &snap.auth_error_coworkers,
-        attached: &snap.attached_coworkers,
-    };
+    let exemptions = snap.stuck_exemptions();
     let restarts = crate::rules::decide_stuck_coworker_restarts(
         &snap.headless_process_health,
         &snap.in_progress_tasks,
@@ -387,20 +376,14 @@ pub(super) async fn check_and_restart_stuck_coworkers(
         // Apply task model if available (sets both provider and model)
         config.apply_task_model(&snap.task_model_map, &restart.task_id);
 
-        if let Some(session_id) = snap.name_session_map.get(&restart.name) {
-            effects.push(Effect::ShutdownSession {
-                session_id: session_id.clone(),
-                reason: format!(
-                    "stuck coworker: {} (task !{})",
-                    restart.name, restart.task_id
-                ),
-            });
-        } else {
-            effects.push(Effect::ShutdownCoworker {
-                name: restart.name.clone(),
-                message: String::new(),
-            });
-        }
+        effects.push(shutdown_effect(
+            &restart.name,
+            snap.name_session_map.get(&restart.name),
+            format!(
+                "stuck coworker: {} (task !{})",
+                restart.name, restart.task_id
+            ),
+        ));
         effects.push(Effect::SpawnCoworker(config));
         effects.push(Effect::PostToChannel {
             sender: "midtown".to_string(),
@@ -429,12 +412,7 @@ pub fn check_and_restart_stuck_reviewers(snap: &snapshot::WorldSnapshot) -> Vec<
         return vec![];
     }
 
-    let exemptions = crate::rules::StuckExemptions {
-        usage_limited: &snap.usage_limited_coworkers,
-        api_error: &snap.api_error_coworkers,
-        auth_error: &snap.auth_error_coworkers,
-        attached: &snap.attached_coworkers,
-    };
+    let exemptions = snap.stuck_exemptions();
     let prs_with_in_progress_comment: std::collections::HashSet<u64> = snap
         .reviewer_in_progress_comment_ids
         .keys()
@@ -474,104 +452,23 @@ pub fn check_and_restart_stuck_reviewers(snap: &snapshot::WorldSnapshot) -> Vec<
         );
 
         // Shut down the stuck reviewer
-        if let Some(session_id) = snap.name_session_map.get(&restart.name) {
-            effects.push(Effect::ShutdownSession {
-                session_id: session_id.clone(),
-                reason: format!(
-                    "stuck reviewer: {} (PR #{})",
-                    restart.name, restart.pr_number
-                ),
-            });
-        } else {
-            effects.push(Effect::ShutdownCoworker {
-                name: restart.name.clone(),
-                message: String::new(),
-            });
-        }
+        effects.push(shutdown_effect(
+            &restart.name,
+            snap.name_session_map.get(&restart.name),
+            format!(
+                "stuck reviewer: {} (PR #{})",
+                restart.name, restart.pr_number
+            ),
+        ));
 
         // Respawn with incremented restart count
-        let worktree_id = crate::worktree_registry::review_slug_for_pr(restart.pr_number);
-        let wt_path = crate::paths::worktrees_dir_for_repo(&snap.repo_name).join(&worktree_id);
-
-        // If there's a dangling "Review in progress" placeholder, mark it as abandoned.
-        if let Some(&comment_id) = snap
-            .reviewer_in_progress_comment_ids
-            .get(&restart.pr_number)
-        {
-            let repo_full_name = format!(
-                "{}/{}",
-                snap.repo_owner.as_deref().unwrap_or("unknown"),
-                snap.repo_name
-            );
-            let abandoned_body = format!(
-                "<!-- midtown: midtown -->\n\n\
-                 ## Review Status\n\n\
-                 ⚠️ Previous reviewer `{}` timed out without completing the review \
-                 (attempt {}/{}).\n\
-                 A replacement reviewer has been assigned.\n\n\
-                 🌃 Co-built with [Midtown](https://github.com/btucker/midtown)",
-                restart.name, new_restart_count, MAX_REVIEWER_RESTARTS
-            );
-            effects.push(Effect::UpdatePrComment {
-                comment_id,
-                repo_full_name,
-                new_body: abandoned_body,
-            });
-        }
-
-        let reviewer_provider = crate::config::get_execution_provider_for_role(
-            &snap.repo_name,
-            crate::config::ExecutionRole::Reviewer,
-        );
-        let mut config = crate::launch::LaunchConfig::reviewer(
-            restart.name.clone(),
+        effects.extend(build_reviewer_respawn_effects(
+            snap,
+            &restart.name,
             restart.pr_number,
             new_restart_count,
-            reviewer_provider,
-        );
-        config.model =
-            super::helpers::default_model_for_provider_role(config.auth_provider, &config.role)
-                .to_string();
-        config.working_dir = Some(wt_path.clone());
-
-        effects.push(Effect::EnsureWorktree {
-            worktree_id: worktree_id.clone(),
-            path: wt_path,
-        });
-
-        let on_success = vec![
-            Effect::BindCoworkerToWorktree {
-                worktree_id,
-                coworker: restart.name.clone(),
-            },
-            Effect::BroadcastCoworkerUpdate {
-                name: restart.name.clone(),
-                status: "running".to_string(),
-                current_task: Some(format!("reviewing PR #{}", restart.pr_number)),
-            },
-            Effect::AssignReviewer {
-                pr_number: restart.pr_number,
-                reviewer_name: restart.name.clone(),
-                source: crate::github_state::AssignmentSource::Manual,
-                restart_count: new_restart_count,
-                reviewer_session_id: None,
-            },
-        ];
-
-        let on_failure = vec![Effect::PostToChannel {
-            sender: "midtown".to_string(),
-            message: format!(
-                "⚠️ Failed to respawn reviewer {} for PR #{} (attempt {}/{})",
-                restart.name, restart.pr_number, new_restart_count, MAX_REVIEWER_RESTARTS,
-            ),
-            channel: Some(OPS_CHANNEL.to_string()),
-        }];
-
-        effects.push(Effect::SpawnCoworkerWithCallbacks {
-            config,
-            on_success,
-            on_failure,
-        });
+            "timed out without completing the review",
+        ));
 
         // Emit a workflow event so channel scripts can react to the stuck reviewer.
         // Look up the PR's task and channel so the event is routed correctly.
@@ -731,88 +628,13 @@ pub fn check_and_restart_dead_reviewers(snap: &snapshot::WorldSnapshot) -> Vec<E
         );
 
         // Respawn the reviewer with an incremented restart count.
-        let worktree_id = crate::worktree_registry::review_slug_for_pr(restart.pr_number);
-        let wt_path = crate::paths::worktrees_dir_for_repo(&snap.repo_name).join(&worktree_id);
-
-        // If there's a dangling "Review in progress" placeholder, mark it as abandoned.
-        if let Some(&comment_id) = snap
-            .reviewer_in_progress_comment_ids
-            .get(&restart.pr_number)
-        {
-            let repo_full_name = format!(
-                "{}/{}",
-                snap.repo_owner.as_deref().unwrap_or("unknown"),
-                snap.repo_name
-            );
-            let abandoned_body = format!(
-                "<!-- midtown: midtown -->\n\n\
-                 ## Review Status\n\n\
-                 ⚠️ Previous reviewer `{}` exited without completing the review \
-                 (attempt {}/{}).\n\
-                 A replacement reviewer has been assigned.\n\n\
-                 🌃 Co-built with [Midtown](https://github.com/btucker/midtown)",
-                restart.name, new_restart_count, MAX_REVIEWER_RESTARTS
-            );
-            effects.push(Effect::UpdatePrComment {
-                comment_id,
-                repo_full_name,
-                new_body: abandoned_body,
-            });
-        }
-
-        let reviewer_provider = crate::config::get_execution_provider_for_role(
-            &snap.repo_name,
-            crate::config::ExecutionRole::Reviewer,
-        );
-        let mut config = crate::launch::LaunchConfig::reviewer(
-            restart.name.clone(),
+        effects.extend(build_reviewer_respawn_effects(
+            snap,
+            &restart.name,
             restart.pr_number,
             new_restart_count,
-            reviewer_provider,
-        );
-        config.model =
-            super::helpers::default_model_for_provider_role(config.auth_provider, &config.role)
-                .to_string();
-        config.working_dir = Some(wt_path.clone());
-
-        effects.push(Effect::EnsureWorktree {
-            worktree_id: worktree_id.clone(),
-            path: wt_path,
-        });
-
-        let on_success = vec![
-            Effect::BindCoworkerToWorktree {
-                worktree_id,
-                coworker: restart.name.clone(),
-            },
-            Effect::BroadcastCoworkerUpdate {
-                name: restart.name.clone(),
-                status: "running".to_string(),
-                current_task: Some(format!("reviewing PR #{}", restart.pr_number)),
-            },
-            Effect::AssignReviewer {
-                pr_number: restart.pr_number,
-                reviewer_name: restart.name.clone(),
-                source: crate::github_state::AssignmentSource::Manual,
-                restart_count: new_restart_count,
-                reviewer_session_id: None,
-            },
-        ];
-
-        let on_failure = vec![Effect::PostToChannel {
-            sender: "midtown".to_string(),
-            message: format!(
-                "⚠️ Failed to respawn reviewer {} for PR #{} (attempt {}/{})",
-                restart.name, restart.pr_number, new_restart_count, MAX_REVIEWER_RESTARTS,
-            ),
-            channel: Some(OPS_CHANNEL.to_string()),
-        }];
-
-        effects.push(Effect::SpawnCoworkerWithCallbacks {
-            config,
-            on_success,
-            on_failure,
-        });
+            "exited without completing the review",
+        ));
 
         effects.push(Effect::PostToChannel {
             sender: "midtown".to_string(),
@@ -1220,18 +1042,12 @@ pub fn check_and_restart_tool_name_conflicts(snap: &snapshot::WorldSnapshot) -> 
             .name_session_map
             .iter()
             .find(|(n, _)| n.eq_ignore_ascii_case(name))
-            .map(|(_, sid)| sid.clone());
-        if let Some(session_id) = session_id {
-            effects.push(Effect::ShutdownSession {
-                session_id,
-                reason: "unrecoverable session error".to_string(),
-            });
-        } else {
-            effects.push(Effect::ShutdownCoworker {
-                name: name.clone(),
-                message: String::new(),
-            });
-        }
+            .map(|(_, sid)| sid);
+        effects.push(shutdown_effect(
+            name,
+            session_id,
+            "unrecoverable session error".to_string(),
+        ));
         // Restart the project lead immediately (don't wait for ensure_lead_alive
         // cooldown), so the user-facing lead recovers within the same tick.
         if name.eq_ignore_ascii_case(&snap.repo_name) {
@@ -1619,6 +1435,126 @@ pub(super) fn check_for_stale_worktrees(
     }
 
     effects
+}
+
+/// Build the effects needed to respawn a reviewer for a given PR.
+///
+/// Shared by `check_and_restart_stuck_reviewers` and
+/// `check_and_restart_dead_reviewers`.  Both functions need the same
+/// worktree-setup → launch-config → spawn sequence; only the reason string
+/// embedded in an abandoned "Review in progress" comment differs.
+///
+/// The caller is responsible for any additional effects that follow the spawn
+/// (e.g. the workflow event for stuck reviewers, or the channel message for
+/// dead reviewers).
+fn build_reviewer_respawn_effects(
+    snap: &snapshot::WorldSnapshot,
+    name: &str,
+    pr_number: u64,
+    new_restart_count: u32,
+    abandoned_reason: &str,
+) -> Vec<Effect> {
+    let mut effects = Vec::new();
+
+    let worktree_id = crate::worktree_registry::review_slug_for_pr(pr_number);
+    let wt_path = crate::paths::worktrees_dir_for_repo(&snap.repo_name).join(&worktree_id);
+
+    // If there's a dangling "Review in progress" placeholder, mark it as abandoned.
+    if let Some(&comment_id) = snap.reviewer_in_progress_comment_ids.get(&pr_number) {
+        let repo_full_name = format!(
+            "{}/{}",
+            snap.repo_owner.as_deref().unwrap_or("unknown"),
+            snap.repo_name
+        );
+        let abandoned_body = format!(
+            "<!-- midtown: midtown -->\n\n\
+             ## Review Status\n\n\
+             ⚠️ Previous reviewer `{}` {} \
+             (attempt {}/{}).\n\
+             A replacement reviewer has been assigned.\n\n\
+             🌃 Co-built with [Midtown](https://github.com/btucker/midtown)",
+            name, abandoned_reason, new_restart_count, MAX_REVIEWER_RESTARTS
+        );
+        effects.push(Effect::UpdatePrComment {
+            comment_id,
+            repo_full_name,
+            new_body: abandoned_body,
+        });
+    }
+
+    let reviewer_provider = crate::config::get_execution_provider_for_role(
+        &snap.repo_name,
+        crate::config::ExecutionRole::Reviewer,
+    );
+    let mut config = crate::launch::LaunchConfig::reviewer(
+        name.to_string(),
+        pr_number,
+        new_restart_count,
+        reviewer_provider,
+    );
+    config.model =
+        super::helpers::default_model_for_provider_role(config.auth_provider, &config.role)
+            .to_string();
+    config.working_dir = Some(wt_path.clone());
+
+    effects.push(Effect::EnsureWorktree {
+        worktree_id: worktree_id.clone(),
+        path: wt_path,
+    });
+
+    let on_success = vec![
+        Effect::BindCoworkerToWorktree {
+            worktree_id,
+            coworker: name.to_string(),
+        },
+        Effect::BroadcastCoworkerUpdate {
+            name: name.to_string(),
+            status: "running".to_string(),
+            current_task: Some(format!("reviewing PR #{}", pr_number)),
+        },
+        Effect::AssignReviewer {
+            pr_number,
+            reviewer_name: name.to_string(),
+            source: crate::github_state::AssignmentSource::Manual,
+            restart_count: new_restart_count,
+            reviewer_session_id: None,
+        },
+    ];
+
+    let on_failure = vec![Effect::PostToChannel {
+        sender: "midtown".to_string(),
+        message: format!(
+            "⚠️ Failed to respawn reviewer {} for PR #{} (attempt {}/{})",
+            name, pr_number, new_restart_count, MAX_REVIEWER_RESTARTS,
+        ),
+        channel: Some(OPS_CHANNEL.to_string()),
+    }];
+
+    effects.push(Effect::SpawnCoworkerWithCallbacks {
+        config,
+        on_success,
+        on_failure,
+    });
+
+    effects
+}
+
+/// Return the appropriate shutdown [`Effect`] for a coworker.
+///
+/// Prefers session-centric `ShutdownSession` when `session_id` is provided,
+/// falling back to name-based `ShutdownCoworker` otherwise.
+fn shutdown_effect(name: &str, session_id: Option<&String>, reason: String) -> Effect {
+    if let Some(sid) = session_id {
+        Effect::ShutdownSession {
+            session_id: sid.clone(),
+            reason,
+        }
+    } else {
+        Effect::ShutdownCoworker {
+            name: name.to_string(),
+            message: String::new(),
+        }
+    }
 }
 
 #[path = "health_tests.rs"]
