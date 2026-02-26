@@ -538,7 +538,7 @@ mod tests {
     fn test_webserver_config_default() {
         let config = WebserverConfig::default();
         assert_eq!(config.port, 47022);
-        // static_dir should auto-resolve and actually exist on disk
+        // static_dir should auto-resolve to the web-app/dist path
         assert!(config.static_dir.is_some(), "static_dir should not be None");
         let dir = config.static_dir.unwrap();
         assert!(
@@ -546,16 +546,8 @@ mod tests {
             "static_dir should end with 'web-app/dist', got: {:?}",
             dir
         );
-        assert!(
-            dir.exists(),
-            "static_dir should point to an existing directory, got: {:?}",
-            dir
-        );
-        assert!(
-            dir.join("index.html").exists(),
-            "static_dir should contain index.html, got: {:?}",
-            dir
-        );
+        // Note: dist/ is not committed to git and is built by `midtown start`,
+        // so we only verify the path structure, not that it exists on disk.
     }
 
     #[test]
