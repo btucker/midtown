@@ -87,7 +87,34 @@ Capture:
 - Files changed
 - Scope of the change
 
+### Step 3b: Fetch Existing Reviews
+
+Before reviewing, fetch all existing review comments so you don't duplicate findings or miss context:
+
+```bash
+REPO=$(gh repo view --json nameWithOwner --jq '.nameWithOwner')
+
+# Inline review comments (line-level, from Codex or other reviewers)
+gh api --paginate "repos/$REPO/pulls/<PR_NUMBER>/comments" \
+  --jq '.[] | "[\(.user.login) on \(.path):\(.line // .original_line)]: \(.body)"'
+
+# Top-level review bodies (summary reviews with optional state)
+gh pr view <PR_NUMBER> --json reviews \
+  --jq '.reviews[] | select(.body != "") | "[\(.author.login) (\(.state))]: \(.body)"'
+
+# Issue comments (coworker reviews posted as PR comments with <!-- midtown: --> frontmatter)
+gh api --paginate "repos/$REPO/issues/<PR_NUMBER>/comments" \
+  --jq '.[] | select(.body | contains("<!-- midtown:") or startswith("## Code Review")) | "[\(.user.login)]: \(.body[:500])"'
+```
+
+Capture:
+- All inline comments: reviewer, file path, line number, and body
+- All top-level review summaries: reviewer name, approval state, and body
+- Any comment-based reviews from coworkers (contain `<!-- midtown:` or start with `## Code Review`)
+
 ### Step 4: Run Five Review Passes
+
+**Before starting any pass**, read all existing reviews captured in Step 3b. Note which issues have already been flagged so you can acknowledge them without duplicating them. If you agree with an existing finding, reference it rather than repeating it. If you disagree, note why.
 
 For each pass, examine the changes and note any issues found:
 
