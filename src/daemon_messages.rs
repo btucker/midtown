@@ -27,12 +27,26 @@ pub fn called_in_reviewer(name: &str, pr_number: u64) -> String {
     format!("\u{1f50d} Called in {} to review PR #{}", name, pr_number)
 }
 
-/// Warning sent to PR author when a reviewer is spawned for their PR.
+/// Warning sent to PR author immediately when their PR is opened.
 ///
-/// The author must not enable auto-merge until the review is complete.
+/// Sent as soon as the PR-opened webhook fires, before a reviewer is assigned.
+/// This ensures the author knows not to enable auto-merge even if the reviewer
+/// spawn is delayed (e.g., coworker limit temporarily hit).
+pub fn pr_opened_author_warning(pr_number: u64) -> String {
+    format!(
+        "\u{26a0}\u{fe0f} PR #{} is queued for code review. Do NOT enable auto-merge until you receive a ReviewComplete notification from the daemon.",
+        pr_number
+    )
+}
+
+/// Notification sent to PR author when a reviewer is assigned to their PR.
+///
+/// The early `pr_opened_author_warning` already told the author not to enable
+/// auto-merge; this message is informational — it names the reviewer so the
+/// author knows who is working on the review and when to expect feedback.
 pub fn reviewer_spawned_author_warning(reviewer_name: &str, pr_number: u64) -> String {
     format!(
-        "\u{26a0}\u{fe0f} {} is now reviewing your PR #{}. Do NOT enable auto-merge (`gh pr merge --auto --squash`) until the review is complete.",
+        "\u{1f50d} {} is now reviewing your PR #{}. Wait for the ReviewComplete nudge before enabling auto-merge.",
         reviewer_name, pr_number
     )
 }
@@ -171,6 +185,12 @@ mod tests {
         assert!(
             msg.contains("columbus") && msg.contains("1523"),
             "reviewer warning must contain reviewer name and PR number: {msg}"
+        );
+
+        let msg = pr_opened_author_warning(42);
+        assert!(
+            msg.contains("42") && msg.contains("ReviewComplete"),
+            "PR opened warning must contain PR number and ReviewComplete keyword: {msg}"
         );
     }
 }
