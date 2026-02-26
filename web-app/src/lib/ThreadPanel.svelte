@@ -261,7 +261,7 @@
             senderSpacing="0.8em"
             senderClass="mb-[2px]"
             channelName={$threadData?.channelName}
-            class:opacity-60={msg.pending}
+            class={msg.pending ? 'opacity-60' : ''}
           >
             {#if isAction(msg) && !hasMermaid(msg.content)}
               <div class="flex gap-0 break-words">
@@ -401,7 +401,7 @@
             senderSpacing="0.8em"
             senderClass="mb-[2px]"
             channelName={$threadData?.channelName}
-            class:opacity-60={msg.pending}
+            class={msg.pending ? 'opacity-60' : ''}
           >
             {#if isAction(msg) && !hasMermaid(msg.content)}
               <div class="flex gap-0 break-words">
