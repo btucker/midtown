@@ -433,6 +433,19 @@ fn test_coworker_nudge_prompt_is_brief() {
 }
 
 #[test]
+fn test_coworker_prompt_uses_task_flag_for_threading() {
+    let prompt = coworker_system_prompt("park", "midtown");
+    assert!(
+        prompt.contains("--task"),
+        "Coworker prompt should document --task flag for auto-threading task-related posts"
+    );
+    assert!(
+        prompt.contains("--task 5"),
+        "Coworker prompt should show --task flag usage example with a task ID"
+    );
+}
+
+#[test]
 fn test_reviewer_launch_prompt_first_attempt_is_simple() {
     // restart_count=0: first attempt — simple "Review PR #N" command, no context
     let prompt = reviewer_launch_prompt(99, 0, AuthProvider::Claude);

@@ -502,11 +502,21 @@ pub(super) async fn handle_task_done(
 ///
 /// Returns channel and model mappings stored in DaemonPersistentState.
 /// These are stored separately from Claude Code's native task storage.
+/// Returns an error if the task does not exist in native task storage.
 pub(super) async fn handle_task_metadata(
     id: RequestId,
     task_id: &str,
     state: &DaemonState,
 ) -> Response {
+    // Verify the task exists in native task storage before returning metadata.
+    let tasks = crate::tasks::read_tasks();
+    if !tasks.iter().any(|t| t.id == task_id) {
+        return Response::error(
+            id,
+            RpcError::new(-32602, format!("Task !{} not found", task_id)),
+        );
+    }
+
     let ps = state.persistent_state.lock().await;
     let channel = ps.task_channel.get(task_id).cloned();
     let model = ps.task_model.get(task_id).cloned();

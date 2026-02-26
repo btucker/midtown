@@ -202,8 +202,9 @@ impl DaemonClient {
     /// Post a message threaded to a task's announcement message.
     ///
     /// Resolves the task's announcement message ID via `task.metadata`, then
-    /// posts as a thread reply. Returns an error if the task is unknown or has
-    /// no announcement message (e.g. created before threading was added).
+    /// posts as a thread reply. Returns an error if the task is not found
+    /// (daemon returns RPC error) or if the task has no announcement message
+    /// (e.g. created before threading was added).
     pub fn channel_post_for_task(
         &self,
         message: &str,
