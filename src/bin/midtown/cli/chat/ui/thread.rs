@@ -258,13 +258,19 @@ fn draw_thread_content(f: &mut Frame, app: &mut App, area: Rect, palette: ThemeP
             separator,
             Style::default().fg(palette.muted),
         )));
-        all_lines.push(Line::from(""));
+        // No trailing blank here: when replies follow, push_sender_header adds a blank
+        // line for different-sender transitions, which provides the visual separation.
+        // When the first reply is from the same sender as the parent, the sender header
+        // is suppressed (show_sender=false) and no blank is needed.
     }
 
     // ── Thread replies ──────────────────────────────────────────────────────────
     for (idx, msg) in thread_messages.iter().enumerate() {
-        // For the first reply, pass the parent sender as `prev` so the sender header
-        // is suppressed when the first reply is from the same person as the parent.
+        // Pass parent_sender as prev for the first reply so same-sender grouping works
+        // across the parent/reply boundary (suppresses the sender header when the first
+        // reply is from the same person as the parent). The separator has no trailing
+        // blank, so push_sender_header's blank-line logic (which fires for different
+        // senders) provides exactly one blank line — no double-blank-line collision.
         let prev = if idx > 0 {
             Some(thread_messages[idx - 1].from.as_str())
         } else {

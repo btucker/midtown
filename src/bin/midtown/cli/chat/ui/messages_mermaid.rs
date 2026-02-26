@@ -11,7 +11,8 @@ use crate::cli::chat::mermaid::{ContentSegment, MermaidCache};
 
 use super::highlight::highlight_code;
 use super::messages::{
-    MessageRenderContext, build_continuation_line, build_first_content_line, push_sender_header,
+    MessageRenderContext, apply_mention_highlights, build_continuation_line,
+    build_first_content_line, push_sender_header,
 };
 use super::text::wrap_content;
 
@@ -53,15 +54,17 @@ pub fn render_message_with_mermaid(
         match segment {
             ContentSegment::Text(text) => {
                 let content_lines = wrap_content(text, content_width);
+                let mut segment_lines: Vec<Line<'static>> = Vec::new();
                 for content in &content_lines {
                     let parsed = minimad_ratatui::inline(content, ctx.content_style);
                     if is_first_content_line {
-                        lines.push(build_first_content_line(msg, &ctx, parsed));
+                        segment_lines.push(build_first_content_line(msg, &ctx, parsed));
                         is_first_content_line = false;
                     } else {
-                        lines.push(build_continuation_line(&ctx, parsed));
+                        segment_lines.push(build_continuation_line(&ctx, parsed));
                     }
                 }
+                lines.extend(apply_mention_highlights(segment_lines));
             }
             ContentSegment::Mermaid(source) => {
                 render_mermaid_segment(
@@ -90,15 +93,17 @@ pub fn render_message_with_mermaid(
             ContentSegment::Insight(text) => {
                 let insight_style = Style::default().fg(Color::Magenta);
                 let content_lines = wrap_content(text, content_width);
+                let mut segment_lines: Vec<Line<'static>> = Vec::new();
                 for content in &content_lines {
                     let parsed = minimad_ratatui::inline(content, insight_style);
                     if is_first_content_line {
-                        lines.push(build_first_content_line(msg, &ctx, parsed));
+                        segment_lines.push(build_first_content_line(msg, &ctx, parsed));
                         is_first_content_line = false;
                     } else {
-                        lines.push(build_continuation_line(&ctx, parsed));
+                        segment_lines.push(build_continuation_line(&ctx, parsed));
                     }
                 }
+                lines.extend(apply_mention_highlights(segment_lines));
             }
         }
     }
