@@ -54,6 +54,24 @@
           </span>
         {/if}
       </div>
+      {#if task.description}
+        <details class="mt-1.5">
+          <summary class="text-[0.72rem] text-muted-foreground/60 cursor-pointer select-none list-none flex items-center gap-1">
+            <span class="disclosure-triangle">▶</span>
+            <span>Description</span>
+          </summary>
+          <p class="text-[0.75rem] text-muted-foreground mt-1 whitespace-pre-wrap break-words leading-snug">
+            {task.description}
+          </p>
+        </details>
+      {/if}
     </div>
   </div>
 </div>
+
+<style>
+  details[open] .disclosure-triangle {
+    display: inline-block;
+    transform: rotate(90deg);
+  }
+</style>
