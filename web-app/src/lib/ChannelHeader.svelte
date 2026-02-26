@@ -1,10 +1,15 @@
 <script>
   import { onDestroy } from 'svelte'
   import { fade } from 'svelte/transition'
-  import { activeChannel, kanbanData, daemonStatus, repoStatus, repoStatuses } from './store.js'
+  import { activeChannel, channels, kanbanData, daemonStatus, repoStatus, repoStatuses } from './store.js'
   import { formatRelativeTime } from './utils.js'
 
   let isMultiRepo = $derived($repoStatuses.length > 1)
+
+  // DM channel detection: use is_dm field from store, or dm- name prefix as fallback
+  let activeChannelMeta = $derived($channels.find((ch) => ch.name === $activeChannel) ?? null)
+  let isDm = $derived(activeChannelMeta?.is_dm ?? $activeChannel.startsWith('dm-'))
+  let dmPeerName = $derived($activeChannel.startsWith('dm-') ? $activeChannel.slice(3) : $activeChannel)
 
   function ciInfo(status) {
     switch (status) {
@@ -86,8 +91,14 @@
   <div class="flex items-center justify-between px-4 py-2">
     <!-- Left: channel name -->
     <div class="flex items-baseline gap-1 shrink-0">
-      <span class="text-[1.2rem] text-muted-foreground font-bold">#</span>
-      <span class="text-[1.1rem] font-bold font-mono text-foreground">{$activeChannel}</span>
+      {#if isDm}
+        <span class="text-[1.2rem] text-muted-foreground font-bold">@</span>
+        <span class="text-[1.1rem] font-bold font-mono text-foreground">{dmPeerName}</span>
+        <span class="text-[0.7rem] text-muted-foreground font-normal ml-1">Direct Message</span>
+      {:else}
+        <span class="text-[1.2rem] text-muted-foreground font-bold">#</span>
+        <span class="text-[1.1rem] font-bold font-mono text-foreground">{$activeChannel}</span>
+      {/if}
     </div>
 
     <!-- Center: just-merged banner (fades out after 5 min) -->

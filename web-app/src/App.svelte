@@ -14,7 +14,7 @@
   import AccountPanel from '$lib/AccountPanel.svelte'
   import CelebrationEffects from '$lib/CelebrationEffects.svelte'
   import SwipeGestures from '$lib/SwipeGestures.svelte'
-  import { messages, connected, coworkers, projects, activeProject, activeChannel, activeChannelTab, threadData, isWideScreen } from '$lib/store.js'
+  import { messages, connected, coworkers, projects, activeProject, activeChannel, channels, activeChannelTab, threadData, isWideScreen } from '$lib/store.js'
   import { connectWebSocket, fetchHistory, fetchStatus, fetchProjects, switchProject } from '$lib/api.js'
   import { theme, toggleTheme } from '$lib/theme.js'
   import { Sun, Moon } from 'lucide-svelte'
@@ -29,6 +29,10 @@
 
   let activeView = $state('board') // 'board' (channel list + chat) or 'status' or 'tmux'
   let projectDropdownOpen = $state(false)
+
+  // DM channel detection for tab bar filtering
+  let activeChannelMeta = $derived($channels.find((ch) => ch.name === $activeChannel) ?? null)
+  let isActiveDm = $derived(activeChannelMeta?.is_dm ?? $activeChannel.startsWith('dm-'))
 
   function toggleProjectDropdown() {
     projectDropdownOpen = !projectDropdownOpen
@@ -180,7 +184,11 @@
           <SidebarTrigger />
           <span class="ml-2 text-sm text-muted-foreground">{$activeProject}</span>
           <div class="mobile-channel active-channel-display ml-4">
-            <span class="channel-hash">#</span>{$activeChannel}
+            {#if isActiveDm}
+              <span class="channel-hash">@</span>{$activeChannel.slice(3)}
+            {:else}
+              <span class="channel-hash">#</span>{$activeChannel}
+            {/if}
           </div>
         </header>
 
@@ -188,17 +196,19 @@
           <div class="board-content flex flex-1 min-h-0 overflow-hidden" class:thread-open-mobile={!!$threadData}>
             <div class="channel-main">
               <ChannelHeader />
-              <div class="channel-tab-bar">
-                {#each [['messages', 'Messages'], ['prs', 'PRs'], ['notes', 'Notes']] as [tab, label]}
-                  {@const isActive = ($activeChannelTab[$activeChannel] || 'messages') === tab}
-                  <button
-                    class="channel-tab"
-                    class:active={isActive}
-                    onclick={() => activeChannelTab.update((t) => ({ ...t, [$activeChannel]: tab }))}
-                  >{label}</button>
-                {/each}
-              </div>
-              {#if ($activeChannelTab[$activeChannel] || 'messages') === 'messages'}
+              {#if !isActiveDm}
+                <div class="channel-tab-bar">
+                  {#each [['messages', 'Messages'], ['prs', 'PRs'], ['notes', 'Notes']] as [tab, label]}
+                    {@const isActive = ($activeChannelTab[$activeChannel] || 'messages') === tab}
+                    <button
+                      class="channel-tab"
+                      class:active={isActive}
+                      onclick={() => activeChannelTab.update((t) => ({ ...t, [$activeChannel]: tab }))}
+                    >{label}</button>
+                  {/each}
+                </div>
+              {/if}
+              {#if isActiveDm || ($activeChannelTab[$activeChannel] || 'messages') === 'messages'}
                 <PendingQuestions />
                 <Channel />
               {:else if ($activeChannelTab[$activeChannel] || 'messages') === 'prs'}

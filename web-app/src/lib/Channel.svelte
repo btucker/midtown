@@ -1,5 +1,5 @@
 <script>
-  import { messages, messagesByChannel, activeChannel, channels, coworkers, kanbanData, repoStatus, repoStatuses, daemonStatus, isWideScreen, agentToolItems, threadData } from './store.js'
+  import { messages, messagesByChannel, activeChannel, channels as channelsStore, coworkers, kanbanData, repoStatus, repoStatuses, daemonStatus, isWideScreen, agentToolItems, threadData } from './store.js'
   import { sendMessage, uploadFile, closeThread, openThread, openTaskThread, getApiBase } from './api.js'
   import { AVENUE_COLORS, getSenderColor, isDimSender, formatTime, timeChanged, parseInsightSegments } from './messageUtils.js'
   import { tick, onMount } from 'svelte'
@@ -30,6 +30,11 @@
   let autocompletePosition = $state({ top: 0, left: 0 })
   let autocompleteSelectedIndex = $state(0)
   let autocompleteStartPos = $state(0)
+
+  // DM channel detection: use is_dm field or dm- prefix fallback
+  let activeChannelMeta = $derived($channelsStore.find((ch) => ch.name === $activeChannel) ?? null)
+  let isDm = $derived(activeChannelMeta?.is_dm ?? $activeChannel.startsWith('dm-'))
+  let dmPeerName = $derived($activeChannel.startsWith('dm-') ? $activeChannel.slice(3) : $activeChannel)
 
   // Filter messages by active channel
   let channelMessages = $derived($messagesByChannel[$activeChannel] || [])
@@ -142,7 +147,7 @@
         title: pr.title,
         status: pr.status
       }))
-      const channelList = $channels.map(ch => ({
+      const channelList = $channelsStore.map(ch => ({
         type: 'channel',
         name: ch.name
       }))
@@ -317,7 +322,7 @@
       if (target.classList.contains('channel-link')) {
         e.preventDefault()
         const channelName = target.dataset.channel
-        if ($channels.some((ch) => ch.name === channelName)) {
+        if ($channelsStore.some((ch) => ch.name === channelName)) {
           activeChannel.set(channelName)
         }
       } else if (target.classList.contains('task-link')) {
@@ -636,8 +641,8 @@
   >
       {#if channelMessages.length === 0}
         <div class="text-center text-muted-foreground py-[50px] px-[22px] font-sans">
-          <p>No messages in #{$activeChannel}</p>
-          <p class="text-[0.9rem] mt-[10px]">Messages posted to this channel will appear here</p>
+          <p>No messages {isDm ? `with @${dmPeerName}` : `in #${$activeChannel}`}</p>
+          <p class="text-[0.9rem] mt-[10px]">{isDm ? `Send a message to start a conversation` : `Messages posted to this channel will appear here`}</p>
         </div>
       {:else}
         {#each channelMessages as msg, i}
@@ -758,7 +763,7 @@
           <span class="dot w-[5px] h-[5px] rounded-full" style="background-color: {AVENUE_COLORS.lead}"></span>
         </span>
       {/if}
-      <span class="font-mono font-semibold" style="color: {AVENUE_COLORS.lead}">{$activeChannel}</span>
+      <span class="font-mono font-semibold" style="color: {AVENUE_COLORS.lead}">{isDm ? `@${dmPeerName}` : $activeChannel}</span>
       {#if mostRecentToolCallEntry}
         <span class="text-muted-foreground/60 select-none">{getToolCallStatusIcon(mostRecentToolCallEntry)}</span>
         <span class="font-mono text-muted-foreground truncate">{describeToolCall(mostRecentToolCallEntry)}</span>
@@ -818,7 +823,7 @@
           data-testid="channel-input"
           bind:this={textareaElement}
           bind:value={inputText}
-          placeholder="Message to #{$activeChannel}..."
+          placeholder={isDm ? `Message @${dmPeerName}...` : `Message to #${$activeChannel}...`}
           rows="1"
           class="flex-1 py-[13px] px-[17px] border-2 border-border rounded-[18px] bg-card text-foreground text-[1.02rem] font-inherit outline-none resize-none min-h-[1.6em] max-h-[9em] overflow-y-auto focus:border-primary placeholder:text-muted-foreground"
           onkeydown={handleKeyDown}
