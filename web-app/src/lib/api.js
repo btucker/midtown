@@ -531,22 +531,21 @@ export function handleUpdate(update) {
         // activity strip resets. Only applies to top-level messages; a thread
         // reply mid-task should not clear the coworker's tool activity.
         //
-        // agentToolItems is keyed by channel name. For a channel lead named 'web'
-        // posting to channel 'web', msg.from.toLowerCase() === 'web' === channel key.
+        // Key by channelName (not msg.from): agentToolItems is channel-keyed, so
+        // the correct key to delete is the channel the message was posted to.
         if (msg.from && msg.from.toLowerCase() !== 'lead' && msg.from.toLowerCase() !== 'midtown') {
-          const senderKey = msg.from.toLowerCase()
-          if (agentClearTimeouts.has(senderKey)) {
-            clearTimeout(agentClearTimeouts.get(senderKey))
+          if (agentClearTimeouts.has(channelName)) {
+            clearTimeout(agentClearTimeouts.get(channelName))
           }
           const timeout = setTimeout(() => {
-            agentClearTimeouts.delete(senderKey)
+            agentClearTimeouts.delete(channelName)
             agentToolItems.update((byAgent) => {
               const updated = { ...byAgent }
-              delete updated[senderKey]
+              delete updated[channelName]
               return updated
             })
           }, TOOL_ITEMS_CLEAR_DELAY_MS)
-          agentClearTimeouts.set(senderKey, timeout)
+          agentClearTimeouts.set(channelName, timeout)
           // Note: pending questions are NOT cleared on channel messages. A coworker
           // posting a /me status update does not mean their question was answered.
           // Questions are cleared by: (1) the daemon via nudge delivery, (2) optimistic

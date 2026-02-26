@@ -458,17 +458,20 @@ describe('handleUpdate — agentToolItems persistence after channel lead message
     expect(get(agentToolItems)['web'].length).toBeGreaterThan(0)
   })
 
-  it('still immediately clears tool items for non-channel-lead coworkers (keyed by channel)', () => {
-    // Coworker 'manhattan' posts to 'midtown' — their items are NOT stored under 'manhattan'
-    // so the delete('manhattan') call is a no-op, but the 'midtown' key is unaffected
+  it('clears midtown tool items after delay when a coworker posts to midtown', () => {
+    // agentToolItems is channel-keyed: a coworker posting to 'midtown' schedules
+    // a delayed clear for the 'midtown' key, not a no-op on their sender name.
     handleUpdate({ type: 'universal_items', data: { channel: null, agent_name: 'lead', items: [sampleItem] } })
     expect(get(agentToolItems)['midtown']).toHaveLength(1)
 
-    // A non-lead, non-midtown sender posting to midtown schedules a delayed clear for 'manhattan'
-    // (which doesn't exist), so midtown items are unaffected
     handleUpdate({ type: 'channel_message', data: { id: 'msg-2', from: 'manhattan', content: 'hi', channel: 'midtown', timestamp: '2026-01-01T00:00:00Z' } })
-    vi.advanceTimersByTime(5000)
-    // midtown items were not deleted — 'manhattan' key didn't exist in the store
+
+    // Items still present before the delay
+    vi.advanceTimersByTime(3999)
     expect(get(agentToolItems)['midtown']).toHaveLength(1)
+
+    // Items cleared after the delay
+    vi.advanceTimersByTime(1)
+    expect(get(agentToolItems)['midtown']).toBeUndefined()
   })
 })
