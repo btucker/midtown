@@ -27,6 +27,15 @@ import {
 // Maximum number of tool call items retained per agent in the activity store.
 const MAX_TOOL_ITEMS_PER_AGENT = 20
 
+// How long (ms) to keep tool call items visible after a channel lead posts a message.
+// This prevents the activity strip from vanishing the instant the lead's response arrives.
+const TOOL_ITEMS_CLEAR_DELAY_MS = 4000
+
+// Pending clear timeouts keyed by the agentToolItems channel key.
+// Allows the universal_items handler to cancel a pending clear if new tool
+// activity arrives before the delay expires (agent is still working).
+const agentClearTimeouts = new Map()
+
 let ws = null
 let reconnectTimeout = null
 let statusPollInterval = null
@@ -516,16 +525,28 @@ export function handleUpdate(update) {
           return channelList
         })
 
-        // Clear tool activity for the sender when they post a message —
-        // their work phase is done and the activity strip should reset.
-        // Only for top-level messages; a thread reply mid-task should not
-        // clear the coworker's tool activity.
+        // Schedule a delayed clear of tool activity when a sender posts a message.
+        // Using a delay (rather than clearing immediately) keeps recently completed
+        // tool calls visible long enough for the user to read them before the
+        // activity strip resets. Only applies to top-level messages; a thread
+        // reply mid-task should not clear the coworker's tool activity.
+        //
+        // agentToolItems is keyed by channel name. For a channel lead named 'web'
+        // posting to channel 'web', msg.from.toLowerCase() === 'web' === channel key.
         if (msg.from && msg.from.toLowerCase() !== 'lead' && msg.from.toLowerCase() !== 'midtown') {
-          agentToolItems.update((byAgent) => {
-            const updated = { ...byAgent }
-            delete updated[msg.from.toLowerCase()]
-            return updated
-          })
+          const senderKey = msg.from.toLowerCase()
+          if (agentClearTimeouts.has(senderKey)) {
+            clearTimeout(agentClearTimeouts.get(senderKey))
+          }
+          const timeout = setTimeout(() => {
+            agentClearTimeouts.delete(senderKey)
+            agentToolItems.update((byAgent) => {
+              const updated = { ...byAgent }
+              delete updated[senderKey]
+              return updated
+            })
+          }, TOOL_ITEMS_CLEAR_DELAY_MS)
+          agentClearTimeouts.set(senderKey, timeout)
           // Note: pending questions are NOT cleared on channel messages. A coworker
           // posting a /me status update does not mean their question was answered.
           // Questions are cleared by: (1) the daemon via nudge delivery, (2) optimistic
@@ -552,18 +573,25 @@ export function handleUpdate(update) {
       })
       break
     }
-    case 'universal_items':
+    case 'universal_items': {
       // Tool call activity keyed by channel.
       // data: { agent_name: string, channel: string|null, items: UniversalItem[] }
       // channel is null for the main lead (store under 'midtown'), or a topic channel name
       // for channel leads (store under that channel name).
+      const channelKey = update.data.channel ?? 'midtown'
+      // If a delayed clear is pending for this channel, cancel it — new tool activity
+      // means the agent is still working and the strip should not reset yet.
+      if (agentClearTimeouts.has(channelKey)) {
+        clearTimeout(agentClearTimeouts.get(channelKey))
+        agentClearTimeouts.delete(channelKey)
+      }
       agentToolItems.update((byChannel) => {
-        const channelKey = update.data.channel ?? 'midtown'
         const existing = byChannel[channelKey] || []
         const merged = [...existing, ...update.data.items].slice(-MAX_TOOL_ITEMS_PER_AGENT)
         return { ...byChannel, [channelKey]: merged }
       })
       break
+    }
     case 'coworker_question':
       pendingQuestions.update((qs) => {
         // Replace existing question from same coworker (only one question per coworker at a time)

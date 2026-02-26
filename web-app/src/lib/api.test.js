@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { get } from 'svelte/store'
-import { messagesByChannel, threadData, channels, activeChannel } from './store.js'
+import { messagesByChannel, threadData, channels, activeChannel, agentToolItems } from './store.js'
 import { fetchHistory, handleUpdate, fetchChannels, selectDm } from './api.js'
 
 describe('fetchHistory', () => {
@@ -401,5 +401,74 @@ describe('selectDm', () => {
     const createCall = globalThis.fetch.mock.calls[0]
     expect(createCall[0]).toContain('/channels/create')
     expect(JSON.parse(createCall[1].body).name).toBe('dm-bob')
+  })
+})
+
+describe('handleUpdate — agentToolItems persistence after channel lead message', () => {
+  const sampleItem = {
+    status: 'Completed',
+    content: [{ ToolCall: { call_id: 'abc', name: 'Read', semantic_header: 'Read file.txt' } }],
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+    agentToolItems.set({})
+    messagesByChannel.set({ midtown: [], web: [] })
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('does not immediately clear tool items when a channel lead posts a message', () => {
+    // Simulate tool activity arriving for the 'web' channel lead
+    handleUpdate({ type: 'universal_items', data: { channel: 'web', agent_name: 'web', items: [sampleItem] } })
+    expect(get(agentToolItems)['web']).toHaveLength(1)
+
+    // Channel lead posts a message — items should still be visible immediately after
+    handleUpdate({ type: 'channel_message', data: { id: 'msg-1', from: 'web', content: 'done!', channel: 'web', timestamp: '2026-01-01T00:00:00Z' } })
+    expect(get(agentToolItems)['web']).toHaveLength(1)
+  })
+
+  it('clears tool items after the persistence delay expires', () => {
+    handleUpdate({ type: 'universal_items', data: { channel: 'web', agent_name: 'web', items: [sampleItem] } })
+    handleUpdate({ type: 'channel_message', data: { id: 'msg-1', from: 'web', content: 'done!', channel: 'web', timestamp: '2026-01-01T00:00:00Z' } })
+
+    // Items should still be present before the delay expires
+    vi.advanceTimersByTime(3999)
+    expect(get(agentToolItems)['web']).toHaveLength(1)
+
+    // Items should be cleared after the delay
+    vi.advanceTimersByTime(1)
+    expect(get(agentToolItems)['web']).toBeUndefined()
+  })
+
+  it('cancels the clear timeout when new tool activity arrives before the delay', () => {
+    handleUpdate({ type: 'universal_items', data: { channel: 'web', agent_name: 'web', items: [sampleItem] } })
+    handleUpdate({ type: 'channel_message', data: { id: 'msg-1', from: 'web', content: 'status update', channel: 'web', timestamp: '2026-01-01T00:00:00Z' } })
+
+    // New tool activity arrives within the delay window (agent is still working)
+    vi.advanceTimersByTime(2000)
+    const newItem = { ...sampleItem, content: [{ ToolCall: { call_id: 'def', name: 'Write', semantic_header: 'Write file.txt' } }] }
+    handleUpdate({ type: 'universal_items', data: { channel: 'web', agent_name: 'web', items: [newItem] } })
+
+    // Advance past the original delay — items should still be present because timeout was cancelled
+    vi.advanceTimersByTime(3000)
+    expect(get(agentToolItems)['web']).toBeDefined()
+    expect(get(agentToolItems)['web'].length).toBeGreaterThan(0)
+  })
+
+  it('still immediately clears tool items for non-channel-lead coworkers (keyed by channel)', () => {
+    // Coworker 'manhattan' posts to 'midtown' — their items are NOT stored under 'manhattan'
+    // so the delete('manhattan') call is a no-op, but the 'midtown' key is unaffected
+    handleUpdate({ type: 'universal_items', data: { channel: null, agent_name: 'lead', items: [sampleItem] } })
+    expect(get(agentToolItems)['midtown']).toHaveLength(1)
+
+    // A non-lead, non-midtown sender posting to midtown schedules a delayed clear for 'manhattan'
+    // (which doesn't exist), so midtown items are unaffected
+    handleUpdate({ type: 'channel_message', data: { id: 'msg-2', from: 'manhattan', content: 'hi', channel: 'midtown', timestamp: '2026-01-01T00:00:00Z' } })
+    vi.advanceTimersByTime(5000)
+    // midtown items were not deleted — 'manhattan' key didn't exist in the store
+    expect(get(agentToolItems)['midtown']).toHaveLength(1)
   })
 })
