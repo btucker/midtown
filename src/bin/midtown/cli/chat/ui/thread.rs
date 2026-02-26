@@ -198,12 +198,8 @@ fn draw_thread_content(f: &mut Frame, app: &mut App, area: Rect, palette: ThemeP
     // ── Parent message ──────────────────────────────────────────────────────────
     // Rendered via render_message / render_message_with_mermaid (same as replies).
     // prev = None so the sender header is always shown for the parent.
-    let mut parent_sender: Option<String> = None;
-
     if let Some(ref parent_id) = app.thread_parent_id.clone() {
         if let Some(parent_msg) = app.messages.iter().find(|m| m.id == *parent_id).cloned() {
-            parent_sender = Some(parent_msg.from.clone());
-
             let segments = mermaid::parse_content_segments(&parent_msg.content);
             let has_special = segments
                 .iter()
@@ -263,12 +259,14 @@ fn draw_thread_content(f: &mut Frame, app: &mut App, area: Rect, palette: ThemeP
 
     // ── Thread replies ──────────────────────────────────────────────────────────
     for (idx, msg) in thread_messages.iter().enumerate() {
-        // For the first reply, pass the parent sender as `prev` so the sender header
-        // is suppressed when the first reply is from the same person as the parent.
+        // For the first reply pass None (not parent_sender): the separator already
+        // provides visual separation with its trailing blank line, and passing the
+        // parent sender would cause push_sender_header to add a second blank line
+        // when the first reply is from a different sender.
         let prev = if idx > 0 {
             Some(thread_messages[idx - 1].from.as_str())
         } else {
-            parent_sender.as_deref()
+            None
         };
         let segments = mermaid::parse_content_segments(&msg.content);
         let has_special = segments

@@ -937,3 +937,58 @@ fn test_code_block_empty_lang_first_line_not_double_indented() {
         );
     }
 }
+
+/// `render_message_with_mermaid` must apply @mention highlights to text segments.
+///
+/// Bug: the mermaid path built text lines one-by-one without calling
+/// `apply_mention_highlights`, so @mention spans never received the bold modifier.
+/// The plain-text path (`render_message`) did call it via `apply_mention_highlights`.
+///
+/// Fix: collect text-segment lines and run `apply_mention_highlights` on them before
+/// appending to the output.
+#[test]
+fn test_render_message_with_mermaid_applies_mention_highlights() {
+    use ratatui::style::Modifier;
+
+    // Message with text containing @mention followed by a code block
+    let msg = test_message("Hello @alice, see code:\n```rust\nfn foo() {}\n```");
+    let segments = mermaid::parse_content_segments(&msg.content);
+    let cache = MermaidCache::new();
+    let current_tasks = HashMap::new();
+    let mut lines = Vec::new();
+    let mut diagram_sources = Vec::new();
+    let mut mermaid_to_render = Vec::new();
+
+    render_message_with_mermaid(
+        &msg,
+        &segments,
+        80,
+        None,
+        &current_tasks,
+        None,
+        &[],
+        &cache,
+        &mut lines,
+        &mut diagram_sources,
+        &mut mermaid_to_render,
+        false,
+    );
+
+    // The @alice span must have the BOLD modifier
+    let mention_span = lines
+        .iter()
+        .flat_map(|l| &l.spans)
+        .find(|s| s.content.contains("@alice"));
+
+    assert!(
+        mention_span.is_some(),
+        "@alice must appear in the rendered output"
+    );
+    let span = mention_span.unwrap();
+    assert!(
+        span.style.add_modifier.contains(Modifier::BOLD),
+        "@alice span must have BOLD modifier from apply_mention_highlights, \
+         got style={:?}",
+        span.style
+    );
+}

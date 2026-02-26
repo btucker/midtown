@@ -436,6 +436,89 @@ fn test_thread_separator_no_replies() {
     );
 }
 
+/// There must be exactly one blank line between the separator and the first reply's
+/// sender header when parent and first reply have different senders.
+///
+/// Bug: passing `parent_sender` as `prev` to the first reply caused `push_sender_header`
+/// to add a blank line (its "different sender" spacing logic), while the separator
+/// already ends with its own blank line — producing a double blank line.
+///
+/// Fix: pass `None` as `prev` for the first reply so `push_sender_header` does not
+/// add a blank line.
+#[test]
+fn test_first_reply_has_single_blank_line_after_separator() {
+    use midtown::MessageType;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use ratatui::layout::Rect;
+
+    let mut app = test_app();
+
+    // Parent from "alice", reply from "bob" — different senders triggers the bug
+    let parent_msg = midtown::Message::text("alice", "parent message");
+    let parent_id = parent_msg.id.clone();
+    app.messages.push_back(parent_msg);
+    app.thread_parent_id = Some(parent_id.clone());
+
+    app.thread_messages.push(midtown::Message {
+        id: "reply-1".to_string(),
+        from: "bob".to_string(),
+        content: "first reply".to_string(),
+        timestamp: chrono::Utc::now(),
+        message_type: MessageType::Text,
+        channel: None,
+        session_id: None,
+        thread_parent_id: Some(parent_id),
+    });
+
+    let backend = TestBackend::new(80, 30);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|f| {
+            let area = Rect::new(0, 0, 80, 30);
+            draw_thread_panel(f, &mut app, area);
+        })
+        .unwrap();
+
+    let buf = terminal.backend().buffer();
+    // Extract only the inner area cells (cols 1..79, rows 1..26) to exclude border chars.
+    // The Thread block renders at (0,0) with full width/height; inner starts at (1,1).
+    let rows: Vec<String> = (1..26_u16)
+        .map(|row| {
+            (1..79_u16)
+                .filter_map(|col| buf.cell((col, row)).map(|c| c.symbol().to_string()))
+                .collect::<String>()
+        })
+        .collect();
+
+    // Find the separator row (contains "1 reply")
+    let sep_row = rows
+        .iter()
+        .position(|r| r.contains("1 reply"))
+        .expect("separator '1 reply' not found in rendered output");
+
+    // Count blank rows immediately after the separator (blank = all spaces)
+    let blank_count = rows[sep_row + 1..]
+        .iter()
+        .take_while(|r| r.trim().is_empty())
+        .count();
+
+    assert_eq!(
+        blank_count,
+        1,
+        "Expected exactly 1 blank line between separator and first reply sender header, \
+         got {blank_count}. Rows after separator:\n{}",
+        rows[sep_row + 1..sep_row + 5].join("\n")
+    );
+
+    // Also assert "bob" appears after the blank line
+    let bob_row = rows.iter().position(|r| r.contains("bob"));
+    assert!(
+        bob_row.is_some(),
+        "Expected 'bob' sender header to appear in rendered output"
+    );
+}
+
 /// The parent message must be rendered using render_message formatting
 /// (sender header + timestamp gutter), not a flat content-only approach.
 #[test]
