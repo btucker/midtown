@@ -247,11 +247,29 @@
         {/each}
       {/if}
 
+      <!-- Parent message as first item in stream -->
+      {#if $threadData.parentMessage}
+        <MessageRow
+          msg={$threadData.parentMessage}
+          msgs={[$threadData.parentMessage]}
+          index={0}
+          senderOverrides={THREAD_SENDER_OVERRIDES}
+          dimSenders={THREAD_DIM_SENDERS}
+          senderSpacing="0.8em"
+          senderClass="mb-[2px]"
+          channelName={$threadData?.channelName}
+        />
+      {/if}
+
+      <!-- Separator with reply count -->
+      <div class="flex items-center gap-2 py-3 text-muted-foreground/50 text-[0.72rem]">
+        <div class="flex-1 h-px bg-border/60"></div>
+        <span>{$threadData.messages.length === 0 ? 'no replies yet' : $threadData.messages.length === 1 ? '1 reply' : `${$threadData.messages.length} replies`}</span>
+        <div class="flex-1 h-px bg-border/60"></div>
+      </div>
+
       <!-- Thread replies -->
-      {#if $threadData.messages.length === 0}
-        <div class="text-center text-muted-foreground py-4 text-[1rem]">No replies yet</div>
-      {:else}
-        {#each $threadData.messages as msg, i}
+      {#each $threadData.messages as msg, i}
           <MessageRow
             {msg}
             msgs={$threadData.messages}
@@ -333,7 +351,6 @@
             {/if}
           </MessageRow>
         {/each}
-      {/if}
     </div>
 
     <!-- Activity drawer: slides up from the input when lead is working -->
@@ -387,11 +404,29 @@
         {/each}
       {/if}
 
+      <!-- Parent message as first item in stream -->
+      {#if $threadData.parentMessage}
+        <MessageRow
+          msg={$threadData.parentMessage}
+          msgs={[$threadData.parentMessage]}
+          index={0}
+          senderOverrides={THREAD_SENDER_OVERRIDES}
+          dimSenders={THREAD_DIM_SENDERS}
+          senderSpacing="0.8em"
+          senderClass="mb-[2px]"
+          channelName={$threadData?.channelName}
+        />
+      {/if}
+
+      <!-- Separator with reply count -->
+      <div class="flex items-center gap-2 py-3 text-muted-foreground/50 text-[0.72rem]">
+        <div class="flex-1 h-px bg-border/60"></div>
+        <span>{$threadData.messages.length === 0 ? 'no replies yet' : $threadData.messages.length === 1 ? '1 reply' : `${$threadData.messages.length} replies`}</span>
+        <div class="flex-1 h-px bg-border/60"></div>
+      </div>
+
       <!-- Replies -->
-      {#if $threadData.messages.length === 0}
-        <div class="text-center text-muted-foreground py-4 text-[1rem]">No replies yet</div>
-      {:else}
-        {#each $threadData.messages as msg, i}
+      {#each $threadData.messages as msg, i}
           <MessageRow
             {msg}
             msgs={$threadData.messages}
@@ -473,7 +508,6 @@
             {/if}
           </MessageRow>
         {/each}
-      {/if}
     </div>
 
     <!-- Activity drawer: slides up from the input when lead is working -->
