@@ -668,7 +668,12 @@ fn is_dist_fresh(web_app_dir: &Path, dist_index: &Path) -> bool {
         }
     }
 
-    for file_name in &["package.json", "vite.config.js", "svelte.config.js"] {
+    for file_name in &[
+        "index.html",
+        "package.json",
+        "vite.config.js",
+        "svelte.config.js",
+    ] {
         let path = web_app_dir.join(file_name);
         if path
             .metadata()
@@ -724,9 +729,29 @@ fn build_web_app_if_needed() {
         return;
     }
 
-    emit_startup_progress(30, "building web app");
+    emit_startup_progress(25, "installing web app dependencies");
 
-    let output = match Command::new("npm")
+    let install = Command::new("npm")
+        .args(["install", "--prefer-offline"])
+        .current_dir(&web_app_dir)
+        .output();
+
+    match install {
+        Err(e) => {
+            eprintln!("Warning: Failed to run npm install for web-app: {e}");
+            return;
+        }
+        Ok(o) if !o.status.success() => {
+            let stderr = String::from_utf8_lossy(&o.stderr);
+            eprintln!("Warning: npm install for web-app failed:\n{stderr}");
+            return;
+        }
+        Ok(_) => {}
+    }
+
+    emit_startup_progress(35, "building web app");
+
+    let build = match Command::new("npm")
         .args(["run", "build"])
         .current_dir(&web_app_dir)
         .output()
@@ -738,8 +763,8 @@ fn build_web_app_if_needed() {
         }
     };
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+    if !build.status.success() {
+        let stderr = String::from_utf8_lossy(&build.stderr);
         eprintln!("Warning: web-app build failed:\n{stderr}");
     }
 }
