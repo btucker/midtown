@@ -238,22 +238,26 @@ Channel leads can fork themselves into thread-specific sessions via the `session
 
 **Root session as router:** The root session stays lightweight — it handles top-level messages and decides when to fork. Once a fork exists for a thread, subsequent replies in that thread bypass the root session entirely and route directly to the fork.
 
-**Instant ack + fork pattern:** The channel lead prompt (`agents/channel-lead.md`) instructs the root session to always post a brief thread acknowledgment *before* calling `session fork`. This ensures the user sees immediate feedback even though `session fork` blocks for a few seconds while the daemon spawns the new session. For simple questions that don't need a fork, the ack is the complete response. For deeper work, the ack comes first, then the fork takes over.
+**Daemon auto-fork (primary path):** When a user posts a new top-level message to a topic channel, `handle_channel_post` calls `create_fork_session` before sending the nudge. The fork is bound to the message's thread anchor ID so the channel lead receives the nudge already inside the fork session — it just replies directly. `create_fork_session` is a `pub(super)` shared helper in `rpc_session.rs`, callable from both `handle_session_fork` (explicit CLI call) and `handle_channel_post` (auto-fork path). The `channel_hint` parameter lets the auto-fork path supply the known channel name even when session records are stale. `create_fork_session` uses `try_lock()` on `persistent_state` internally to avoid blocking the channel post path when the lock is held.
 
-**Thread routing priority:** When a message arrives with `thread_parent_id` set, `handle_channel_post` checks `topic_sessions[thread_parent_id]` first. If a fork exists, it receives the message. If no fork exists, the message routes to the root channel lead session — spawning it on-demand if it isn't already running (standard channel lead lifecycle).
+**Graceful fallback:** If no channel lead session is registered (first message to a new channel), or if `persistent_state.try_lock()` is contended, auto-fork is skipped and `NudgeChannelLead` spawns the channel lead as before. The next user message will succeed once the lead is running. `session fork` is still documented in `channel-lead.md` as a fallback for when the daemon was not running when the message arrived.
+
+**Thread routing priority:** When a message arrives with `thread_parent_id` set, `handle_channel_post` checks `topic_sessions[thread_parent_id]` first. "pending" entries are filtered out (a concurrent auto-fork is in progress but not yet ready) — the reply falls back to `NudgeChannelLead` rather than producing a nudge with an invalid session ID. Once the fork completes, subsequent replies route to the real fork session.
+
+**`session fork` during auto-fork spawn window:** If the channel lead calls `midtown session fork` while the daemon's auto-fork is still spawning (the "pending" sentinel is set), `handle_session_fork` returns `{pending: true, thread_parent_id: "..."}` instead of an error, so the lead can distinguish "retry shortly" from a hard spawn failure.
 
 **Data flow:**
-- `topic_sessions` (in-memory `Mutex<HashMap<String, String>>`) maps `thread_parent_id → fork_session_id`. Used by `handle_channel_post` to route thread replies to the fork instead of the root channel lead.
+- `topic_sessions` (in-memory `Mutex<HashMap<String, String>>`) maps `thread_parent_id → fork_session_id`. Entries are "pending" (spawn in progress) or a real session ID. Used by both auto-fork and thread-reply routing in `handle_channel_post`.
 - `fork_bound_threads` (in-memory `Mutex<HashMap<String, String>>`) maps `fork_name → thread_parent_id`. Used by the output binding path in `handle_channel_post` to auto-tag forked session posts with their bound thread (avoids the async `persistent_state` lock on the hot path).
 - `DaemonPersistentState.task_thread_id` maps `task_id → thread_parent_id`. When `midtown task create` is called with `--thread-id` (the CLI defaults to `$MIDTOWN_BOUND_THREAD_ID` inside fork sessions), `handle_task_create` stores the binding so `SpawnSession` can attach future coworkers to the same thread.
 - `SessionRecord.bound_thread_id` (persisted) stores the binding on each session so restarts can rebuild the cache.
-- `name_to_session` / `session_to_name` reverse maps are backfilled in `handle_session_fork` since `spawn_fork` consumes the init event before the event loop sees it.
+- `name_to_session` / `session_to_name` reverse maps are backfilled in `create_fork_session` since `spawn_fork` consumes the init event before the event loop sees it.
 
 **Architectural invariants:**
 - Fork sessions are NOT registered in `CoworkerManager`. They bypass `spawn_coworker()` entirely, which means they are excluded from idle-shutdown evaluation, orphan recovery, and coworker status tracking.
-- The `topic_sessions` guard uses an atomic check-and-reserve pattern (inserting a "pending" sentinel) to prevent duplicate forks for the same thread.
+- The `topic_sessions` guard uses an atomic check-and-reserve pattern (inserting a "pending" sentinel) to prevent duplicate forks for the same thread. On spawn failure, the sentinel is removed so the slot is available for retry.
 - `topic_sessions` is cleared on daemon restart, so fork sessions themselves do not survive across daemon lifetimes.
-- `fork_bound_threads` is rebuilt on startup from persisted `SessionRecord.bound_thread_id` entries, which keeps thread-bound coworkers routed correctly across restarts (including auto-binding spawned tasks via `task_thread_id`). Entries created directly by `handle_session_fork` remain ephemeral.
+- `fork_bound_threads` is rebuilt on startup from persisted `SessionRecord.bound_thread_id` entries, which keeps thread-bound coworkers routed correctly across restarts (including auto-binding spawned tasks via `task_thread_id`). Entries created directly by `create_fork_session` remain ephemeral.
 
 ## Channel Storage Layout
 

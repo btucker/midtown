@@ -1883,6 +1883,47 @@ async fn test_user_message_to_topic_channel_without_lead_skips_fork() {
     );
 }
 
+/// When a thread reply arrives while the auto-fork is still spawning ("pending"
+/// sentinel in topic_sessions), the reply must NOT produce a NudgeSession with
+/// session_id="pending" — that would silently drop the message. The handler
+/// should filter out "pending" and fall back to NudgeChannelLead instead.
+#[tokio::test]
+async fn test_thread_reply_during_pending_fork_does_not_route_to_pending_session() {
+    let (state, _tmp, _guard) = make_test_state("midtown-test-pending-thread-reply");
+
+    let thread_parent_id = "top-level-msg-pending-fork";
+    // Simulate auto-fork in progress: sentinel is "pending", not a real session
+    state
+        .topic_sessions
+        .lock()
+        .unwrap()
+        .insert(thread_parent_id.to_string(), "pending".to_string());
+
+    // Thread reply arrives during the spawn window
+    let response = handle_channel_post(
+        1_i64.into(),
+        "user",
+        "follow-up reply while fork is spawning",
+        Some("web"),
+        Some(thread_parent_id),
+        &state,
+    )
+    .await;
+    assert!(
+        response.error.is_none(),
+        "thread reply should succeed even with pending fork"
+    );
+
+    // The "pending" sentinel must not have been removed or changed — it belongs to
+    // the spawning fork, not this thread reply.
+    let topic = state.topic_sessions.lock().unwrap();
+    assert_eq!(
+        topic.get(thread_parent_id).map(String::as_str),
+        Some("pending"),
+        "pending sentinel should be untouched by a thread reply"
+    );
+}
+
 /// Verify the DmFromUser wake reason encodes the correct reply instruction
 /// for a channel.post to a dm- channel.
 #[test]

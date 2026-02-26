@@ -1086,6 +1086,7 @@ pub(super) async fn create_fork_session(
     thread_parent_id: &str,
     calling_session_id: &str,
     channel_hint: Option<&str>,
+    caller: &str,
     state: &DaemonState,
 ) -> Result<(String, bool), String> {
     // Atomic guard: check-and-reserve the topic_sessions slot in a single lock
@@ -1137,8 +1138,8 @@ pub(super) async fn create_fork_session(
             }
             None => {
                 warn!(
-                    "session.fork: could not find session info for calling_session_id={}",
-                    calling_session_id
+                    "{}: could not find session info for calling_session_id={}",
+                    caller, calling_session_id
                 );
                 // Fall back to repo root and no channel
                 (None, None, crate::auth::AuthProvider::Claude)
@@ -1221,7 +1222,7 @@ pub(super) async fn create_fork_session(
                 .lock()
                 .unwrap()
                 .remove(thread_parent_id);
-            warn!("session.fork: failed to spawn fork session: {}", e);
+            warn!("{}: failed to spawn fork session: {}", caller, e);
             return Err(format!("Failed to fork session: {}", e));
         }
     };
@@ -1286,7 +1287,7 @@ pub(super) async fn create_fork_session(
             },
         );
         if let Err(e) = ps.save_for_repo(repo_name) {
-            warn!("session.fork: failed to persist session record: {}", e);
+            warn!("{}: failed to persist session record: {}", caller, e);
         }
     }
 
@@ -1318,7 +1319,8 @@ pub(super) async fn create_fork_session(
     }
 
     info!(
-        "session.fork: forked {} (parent={}) → thread={}, new_session={}",
+        "{}: forked {} (parent={}) → thread={}, new_session={}",
+        caller,
         calling_session_id,
         caller_name.as_deref().unwrap_or("?"),
         thread_parent_id,
@@ -1350,7 +1352,15 @@ pub(super) async fn handle_session_fork(
     calling_session_id: &str,
     state: &DaemonState,
 ) -> crate::rpc::Response {
-    match create_fork_session(thread_parent_id, calling_session_id, None, state).await {
+    match create_fork_session(
+        thread_parent_id,
+        calling_session_id,
+        None,
+        "session.fork",
+        state,
+    )
+    .await
+    {
         Ok((sid, true)) => crate::rpc::Response::success(
             id,
             serde_json::json!({
@@ -1365,6 +1375,19 @@ pub(super) async fn handle_session_fork(
                 "thread_parent_id": thread_parent_id,
             }),
         ),
+        Err(ref e) if e.starts_with("fork in progress") => {
+            // The daemon's auto-fork path already reserved this slot.
+            // Return a distinct pending response so the channel lead can
+            // distinguish "retry shortly" from a hard spawn failure.
+            crate::rpc::Response::success(
+                id,
+                serde_json::json!({
+                    "pending": true,
+                    "thread_parent_id": thread_parent_id,
+                    "message": "fork in progress — retry shortly",
+                }),
+            )
+        }
         Err(e) => crate::rpc::Response::error(id, crate::rpc::RpcError::new(-32603, e)),
     }
 }

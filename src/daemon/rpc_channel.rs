@@ -83,9 +83,12 @@ fn parse_duration(s: &str) -> Option<Duration> {
 /// For coworkers, the action text is also reflected in the web UI status.
 ///
 /// Also detects feedback requests from coworkers and nudges the Lead.
-/// For topic channels, nudges the active channel lead session (if any)
-/// instead of the main Lead. @mentions are not routed in topic channels
-/// since the channel lead owns all routing in its domain.
+/// For topic channels, auto-forks the channel lead session when a new top-level
+/// user message arrives — the fork is bound to the message thread so replies
+/// stay in context. Thread replies route to the existing fork session (if any).
+/// Falls back to nudging the channel lead directly when no lead session is
+/// registered. @mentions are not routed in topic channels since the channel
+/// lead owns all routing in its domain.
 ///
 /// Accepts an optional `channel` parameter to post to topic channels.
 /// If not provided, defaults to the main channel.
@@ -165,7 +168,7 @@ pub(super) async fn handle_channel_post(
         }
     }
 
-    // Task 3: Output binding — if the sender is a forked topic session with a bound
+    // Output binding — if the sender is a forked topic session with a bound
     // thread, auto-apply the bound thread_parent_id so their posts appear in the
     // correct thread without the session needing to pass it explicitly.
     // Uses the in-memory fork_bound_threads cache (sync Mutex) instead of the async
@@ -251,22 +254,33 @@ pub(super) async fn handle_channel_post(
             //   and context isolation reliable without relying on the lead to fork manually.
             let topic_session_id = if let Some(parent_id) = thread_parent_id {
                 // Thread reply: route to existing fork session (if any).
-                state.topic_sessions.lock().unwrap().get(parent_id).cloned()
+                // Filter out "pending" — a concurrent auto-fork is in progress but not yet
+                // ready. Treating "pending" as None falls back to NudgeChannelLead rather
+                // than producing a NudgeSession with an invalid "pending" session_id.
+                state
+                    .topic_sessions
+                    .lock()
+                    .unwrap()
+                    .get(parent_id)
+                    .filter(|s| s.as_str() != "pending")
+                    .cloned()
             } else {
                 // New top-level message: auto-fork from the channel lead session.
                 // Look up the channel lead's session ID from persistent state.
-                let lead_session_id = {
-                    let ps = state.persistent_state.lock().await;
+                // Use try_lock to avoid blocking the channel post path — if persistent_state
+                // is momentarily held, fall through to NudgeChannelLead rather than queuing.
+                let lead_session_id = state.persistent_state.try_lock().ok().and_then(|ps| {
                     ps.channel_lead_sessions
                         .get(channel_name)
                         .filter(|s| !s.is_empty())
                         .cloned()
-                };
+                });
                 if let Some(lead_sid) = lead_session_id {
                     match super::rpc_session::create_fork_session(
                         &wake_msg_id,
                         &lead_sid,
                         Some(channel_name),
+                        "channel.post",
                         state,
                     )
                     .await

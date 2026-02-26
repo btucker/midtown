@@ -72,7 +72,7 @@ The daemon now **automatically forks** your session when a new top-level user me
    midtown session fork <message-id>
    ```
 
-   `session fork` is idempotent — calling it when a fork already exists just returns the existing session ID.
+   `session fork` is idempotent — calling it when a fork already exists returns `{already_exists: true, session_id: ...}`. During the daemon's auto-fork spawn window (~30s), it may return `{pending: true}` instead — this means the daemon is already creating the fork. Retry once after a brief wait.
 
 **After forking (or in an auto-forked session):**
 - All your text output is automatically posted to the thread — no `--thread` flag needed.

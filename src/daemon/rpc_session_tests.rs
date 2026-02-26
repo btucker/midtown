@@ -535,7 +535,7 @@ async fn test_create_fork_session_returns_existing_when_already_present() {
         .unwrap()
         .insert(thread_id.to_string(), existing_sid.clone());
 
-    let result = create_fork_session(thread_id, "any-calling-session", None, &state).await;
+    let result = create_fork_session(thread_id, "any-calling-session", None, "test", &state).await;
 
     assert!(result.is_ok(), "should succeed when fork already exists");
     let (returned_sid, already_existed) = result.unwrap();
@@ -564,7 +564,7 @@ async fn test_create_fork_session_returns_err_when_pending() {
         .unwrap()
         .insert(thread_id.to_string(), "pending".to_string());
 
-    let result = create_fork_session(thread_id, "any-calling-session", None, &state).await;
+    let result = create_fork_session(thread_id, "any-calling-session", None, "test", &state).await;
 
     assert!(
         result.is_err(),
@@ -617,7 +617,8 @@ async fn test_create_fork_session_cleans_up_sentinel_on_spawn_failure() {
         .insert(calling_session_id.to_string(), "web".to_string());
 
     // spawn_fork will fail since there's no real claude process
-    let result = create_fork_session(thread_id, calling_session_id, Some("web"), &state).await;
+    let result =
+        create_fork_session(thread_id, calling_session_id, Some("web"), "test", &state).await;
 
     assert!(result.is_err(), "should fail when spawn_fork fails");
 
@@ -655,5 +656,38 @@ async fn test_handle_session_fork_already_exists_response() {
     assert!(
         result["already_exists"].as_bool().unwrap(),
         "already_exists should be true"
+    );
+}
+
+/// When the daemon auto-fork has reserved the slot with "pending", calling
+/// `handle_session_fork` should return `{pending: true}` instead of an error,
+/// so the channel lead can distinguish "retry shortly" from a hard spawn failure.
+#[tokio::test]
+async fn test_handle_session_fork_returns_pending_during_spawn_window() {
+    let (state, _tmp, _guard) = make_test_state();
+
+    let thread_id = "thread-rpc-pending-fork";
+    state
+        .topic_sessions
+        .lock()
+        .unwrap()
+        .insert(thread_id.to_string(), "pending".to_string());
+
+    let resp = handle_session_fork(RequestId::Number(2), thread_id, "any-caller", &state).await;
+    let json = serde_json::to_value(&resp).unwrap();
+
+    assert!(
+        json.get("error").is_none(),
+        "should not return an error when fork is in progress"
+    );
+    let result = json["result"].as_object().unwrap();
+    assert!(
+        result["pending"].as_bool().unwrap_or(false),
+        "result should have pending: true"
+    );
+    assert_eq!(
+        result["thread_parent_id"].as_str().unwrap(),
+        thread_id,
+        "result should echo thread_parent_id"
     );
 }
