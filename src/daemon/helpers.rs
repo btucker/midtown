@@ -431,8 +431,14 @@ pub fn get_issue_action(issue_type: PrIssueType) -> &'static str {
 /// Check if text contains a coworker review signature.
 ///
 /// Coworker reviews are identified by:
-/// - The "🤖 Reviewed by" or "Reviewed by" signature (legacy formal reviews)
+/// - The "🤖 Reviewed by" signature (legacy formal reviews)
+/// - "Reviewed by" (case-sensitive, capital R) anywhere in the text
 /// - The "# Code Review by" header at any heading level (case-insensitive)
+///
+/// The "Reviewed by" check is case-sensitive (capital R) which avoids false
+/// positives on prose like "This was reviewed by the security team" where
+/// "reviewed" is lowercase. The capital-R form is only used deliberately in
+/// review signatures (e.g., "LGTM! Reviewed by york", "Reviewed by lexington").
 ///
 /// Note: We do NOT check for "<!-- midtown:" frontmatter alone, as ALL coworker
 /// GitHub comments include this frontmatter. Checking for it would cause false
@@ -471,6 +477,82 @@ fn text_has_code_review_header(text: &str) -> bool {
         }
     }
     false
+}
+
+/// Format review content from a PR's `reviews` and `comments` JSON fields.
+///
+/// Extracts all feedback the PR author needs to address:
+/// - Formal GitHub reviews with non-empty bodies (e.g., Codex reviews)
+/// - Issue comments containing a review signature (Midtown coworker reviews)
+///
+/// Returns `None` if no review content is found. This is a pure function to
+/// allow unit testing without shell subprocess calls.
+///
+/// # Arguments
+/// * `data` - Parsed JSON from `gh pr view --json reviews,comments`
+pub fn format_review_content(data: &serde_json::Value) -> Option<String> {
+    let mut sections: Vec<String> = Vec::new();
+
+    // Formal GitHub reviews (e.g., Codex or other app reviews)
+    if let Some(reviews) = data.get("reviews").and_then(|r| r.as_array()) {
+        for review in reviews {
+            let body = review
+                .get("body")
+                .and_then(|b| b.as_str())
+                .unwrap_or("")
+                .trim();
+            if body.is_empty() {
+                continue;
+            }
+            let author = review
+                .get("author")
+                .and_then(|a| a.get("login"))
+                .and_then(|l| l.as_str())
+                .unwrap_or("unknown");
+            let state = review.get("state").and_then(|s| s.as_str()).unwrap_or("");
+            let header = if state.is_empty() {
+                format!("Formal review from {}", author)
+            } else {
+                format!("Formal review from {} ({})", author, state)
+            };
+            sections.push(format!("### {}\n\n{}", header, truncate_str(body, 2000)));
+        }
+    }
+
+    // Issue comments with review signatures (Midtown coworker reviews).
+    // These are posted as issue comments, not formal reviews, so they don't
+    // appear in `gh pr view --json reviews`. Coworkers must see them explicitly.
+    if let Some(comments) = data.get("comments").and_then(|c| c.as_array()) {
+        for comment in comments {
+            let body = comment
+                .get("body")
+                .and_then(|b| b.as_str())
+                .unwrap_or("")
+                .trim();
+            if !text_contains_review_signature(body) {
+                continue;
+            }
+            let author = comment
+                .get("author")
+                .and_then(|a| a.get("login"))
+                .and_then(|l| l.as_str())
+                .unwrap_or("unknown");
+            sections.push(format!(
+                "### Review comment from {}\n\n{}",
+                author,
+                truncate_str(body, 2000)
+            ));
+        }
+    }
+
+    if sections.is_empty() {
+        return None;
+    }
+
+    Some(format!(
+        "\n\n---\n## Review Content\n\n{}",
+        sections.join("\n\n---\n\n")
+    ))
 }
 
 /// Get the creation time of a PR to enforce review delay.

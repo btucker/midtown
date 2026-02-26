@@ -137,4 +137,158 @@ mod tests {
             _ => panic!("Expected SpawnOwner for inactive owner, got {:?}", action),
         }
     }
+
+    /// Test that format_review_content returns None when there are no reviews
+    /// or issue comments with review signatures.
+    #[test]
+    fn test_format_review_content_empty() {
+        use crate::daemon::helpers::format_review_content;
+
+        let data = serde_json::json!({
+            "reviews": [],
+            "comments": []
+        });
+        assert!(format_review_content(&data).is_none());
+    }
+
+    /// Test that format_review_content includes a formal review with a non-empty body.
+    #[test]
+    fn test_format_review_content_formal_review() {
+        use crate::daemon::helpers::format_review_content;
+
+        let data = serde_json::json!({
+            "reviews": [
+                {
+                    "author": {"login": "app/codex"},
+                    "state": "CHANGES_REQUESTED",
+                    "body": "Please add error handling here."
+                }
+            ],
+            "comments": []
+        });
+
+        let result = format_review_content(&data).expect("should have content");
+        assert!(result.contains("Please add error handling here."));
+        assert!(result.contains("app/codex"));
+        assert!(result.contains("CHANGES_REQUESTED"));
+    }
+
+    /// Test that format_review_content skips formal reviews with empty bodies
+    /// (e.g., a pure "Approve" review with no comment).
+    #[test]
+    fn test_format_review_content_skips_empty_review_body() {
+        use crate::daemon::helpers::format_review_content;
+
+        let data = serde_json::json!({
+            "reviews": [
+                {
+                    "author": {"login": "app/codex"},
+                    "state": "APPROVED",
+                    "body": ""
+                }
+            ],
+            "comments": []
+        });
+        assert!(format_review_content(&data).is_none());
+    }
+
+    /// Test that format_review_content includes Midtown coworker issue comments
+    /// (posted with <!-- midtown: --> frontmatter and a Code Review header).
+    /// These are the reviews that were being silently missed before the fix.
+    #[test]
+    fn test_format_review_content_coworker_issue_comment() {
+        use crate::daemon::helpers::format_review_content;
+
+        let review_body = "<!-- midtown: park -->\n## Code Review by park\n\nFound a potential null dereference on line 42.\n\n🌃 Co-built with Midtown";
+        let data = serde_json::json!({
+            "reviews": [],
+            "comments": [
+                {
+                    "author": {"login": "btucker"},
+                    "body": review_body
+                }
+            ]
+        });
+
+        let result = format_review_content(&data).expect("should have content");
+        assert!(
+            result.contains("null dereference"),
+            "should include review body"
+        );
+        assert!(result.contains("btucker"), "should include commenter login");
+    }
+
+    /// Test that format_review_content skips issue comments that are not reviews
+    /// (e.g., a status update with <!-- midtown: --> but no Code Review header).
+    #[test]
+    fn test_format_review_content_skips_non_review_comments() {
+        use crate::daemon::helpers::format_review_content;
+
+        let data = serde_json::json!({
+            "reviews": [],
+            "comments": [
+                {
+                    "author": {"login": "btucker"},
+                    "body": "<!-- midtown: park -->\nCI is now passing. The build is green."
+                }
+            ]
+        });
+        // This comment has midtown frontmatter but no review signature — should be skipped
+        assert!(format_review_content(&data).is_none());
+    }
+
+    /// Test that format_review_content includes both formal reviews and coworker
+    /// issue comment reviews when both are present (the mixed case).
+    #[test]
+    fn test_format_review_content_both_types() {
+        use crate::daemon::helpers::format_review_content;
+
+        let data = serde_json::json!({
+            "reviews": [
+                {
+                    "author": {"login": "app/codex"},
+                    "state": "CHANGES_REQUESTED",
+                    "body": "Fix the type error in auth.rs."
+                }
+            ],
+            "comments": [
+                {
+                    "author": {"login": "btucker"},
+                    "body": "<!-- midtown: park -->\n## Code Review by park\n\nAlso check the null case in parser.rs.\n\n🌃 Co-built with Midtown"
+                }
+            ]
+        });
+
+        let result = format_review_content(&data).expect("should have content");
+        assert!(
+            result.contains("Fix the type error in auth.rs."),
+            "should include formal review"
+        );
+        assert!(
+            result.contains("null case in parser.rs"),
+            "should include coworker review"
+        );
+    }
+
+    /// Test that format_review_content does not embed a comment where "reviewed by"
+    /// appears only as inline prose (false-positive guard for the hardened
+    /// `text_contains_review_signature` check).
+    #[test]
+    fn test_format_review_content_rejects_inline_reviewed_by_prose() {
+        use crate::daemon::helpers::format_review_content;
+
+        let data = serde_json::json!({
+            "reviews": [],
+            "comments": [
+                {
+                    "author": {"login": "btucker"},
+                    "body": "This change was reviewed by the platform team last week."
+                }
+            ]
+        });
+        assert!(
+            format_review_content(&data).is_none(),
+            "inline 'reviewed by' in prose should not be treated as a review"
+        );
+    }
 }

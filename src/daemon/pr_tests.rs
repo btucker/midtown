@@ -514,6 +514,7 @@ async fn test_lead_pr_without_task_id_should_not_be_orphaned() {
         &state,
         &[pr],
         crate::github_state::AssignmentSource::PollingFallback,
+        &std::collections::HashMap::new(),
     )
     .await;
 
@@ -855,6 +856,7 @@ async fn test_reviewer_spawns_when_worktree_exists_but_no_current_coworker() {
         &state,
         &[pr_json],
         crate::github_state::AssignmentSource::PollingFallback,
+        &std::collections::HashMap::new(),
     )
     .await;
 
@@ -916,6 +918,7 @@ async fn test_completed_worktree_with_open_pr_gets_reviewer() {
         &state,
         &[pr_json],
         crate::github_state::AssignmentSource::PollingFallback,
+        &std::collections::HashMap::new(),
     )
     .await;
 
@@ -991,6 +994,7 @@ async fn test_completed_worktree_with_snapshot_data() {
         &state,
         &[pr_json], // Synthetic PR that extracts task ID 1323 from title
         crate::github_state::AssignmentSource::PollingFallback,
+        &std::collections::HashMap::new(),
     )
     .await;
 
@@ -1069,6 +1073,7 @@ async fn test_lead_pr_with_non_standard_branch_gets_reviewer() {
         &state,
         &[pr_json],
         crate::github_state::AssignmentSource::PollingFallback,
+        &std::collections::HashMap::new(),
     )
     .await;
 
@@ -1808,6 +1813,7 @@ async fn test_active_coworker_pr_without_worktree_is_not_orphaned() {
         &state,
         &[pr],
         crate::github_state::AssignmentSource::PollingFallback,
+        &std::collections::HashMap::new(),
     )
     .await;
 
@@ -1870,6 +1876,7 @@ async fn test_headless_only_coworker_pr_is_not_orphaned() {
         &state,
         &[pr],
         crate::github_state::AssignmentSource::PollingFallback,
+        &std::collections::HashMap::new(),
     )
     .await;
 
@@ -2360,6 +2367,7 @@ async fn test_reviewer_not_assigned_to_pr_author() {
         &state,
         &[pr],
         crate::github_state::AssignmentSource::PollingFallback,
+        &std::collections::HashMap::new(),
     )
     .await;
 
@@ -2448,6 +2456,7 @@ async fn test_reviewer_spawn_aborted_on_worktree_collision_with_active_coworker(
         &state,
         &[pr_json],
         crate::github_state::AssignmentSource::PollingFallback,
+        &std::collections::HashMap::new(),
     )
     .await;
 
@@ -2515,6 +2524,7 @@ async fn test_reviewer_spawn_aborted_on_worktree_collision_mixed_case() {
         &state,
         &[pr_json],
         crate::github_state::AssignmentSource::PollingFallback,
+        &std::collections::HashMap::new(),
     )
     .await;
 
@@ -2581,6 +2591,7 @@ async fn test_reviewer_spawn_blocked_by_stale_active_names_retries_next_tick() {
         &state,
         std::slice::from_ref(&pr_json),
         crate::github_state::AssignmentSource::PollingFallback,
+        &std::collections::HashMap::new(),
     )
     .await;
 
@@ -2609,6 +2620,7 @@ async fn test_reviewer_spawn_blocked_by_stale_active_names_retries_next_tick() {
         &state,
         &[pr_json],
         crate::github_state::AssignmentSource::PollingFallback,
+        &std::collections::HashMap::new(),
     )
     .await;
 
@@ -2669,6 +2681,7 @@ async fn test_reviewer_spawn_proceeds_when_previous_reviewer_is_dead() {
         &state,
         &[pr_json],
         crate::github_state::AssignmentSource::PollingFallback,
+        &std::collections::HashMap::new(),
     )
     .await;
 
@@ -2717,6 +2730,7 @@ async fn test_review_mode_github_app_disables_local_reviewer_spawn() {
         &state,
         &[pr_json],
         crate::github_state::AssignmentSource::PollingFallback,
+        &std::collections::HashMap::new(),
     )
     .await;
 
@@ -2763,6 +2777,7 @@ async fn test_review_mode_both_allows_local_reviewer_spawn() {
         &state,
         &[pr_json],
         crate::github_state::AssignmentSource::PollingFallback,
+        &std::collections::HashMap::new(),
     )
     .await;
 
@@ -2816,6 +2831,7 @@ async fn test_reviewer_spawn_warns_pr_author_via_mailbox() {
         &state,
         &[pr_json],
         crate::github_state::AssignmentSource::PollingFallback,
+        &std::collections::HashMap::new(),
     )
     .await;
 

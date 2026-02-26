@@ -306,6 +306,8 @@ Nudge decisions are made in `src/rules.rs` (`decide_interrupt_nudges`, `decide_p
 - **Project Lead nudges**: Delivered through headed intercom queues (`headed.register/poll/ack`) with tmux fallback
 - **Coworker nudges**: JSON streaming via `SessionManager` for headless sessions
 
+**Review content embedding**: PR feedback nudges (GreenWithFeedback, ReviewComplete, ChangesRequested, Approved, ReviewComment) embed the full review body inline via `format_review_content()` in `helpers.rs`. This fetches both formal GitHub reviews and Midtown coworker issue-comment reviews (detected by `text_contains_review_signature()`), so the nudged coworker sees all feedback without running extra `gh` commands. On the polling path (`poll_prs_for_issues`), review content is pre-fetched in bulk before decision functions to keep I/O out of the decision phase. Webhook handlers call `fetch_review_content()` directly since they're already event-driven I/O paths.
+
 ## Mailbox Messaging
 
 In addition to the shared channel, the daemon can deliver targeted messages to individual coworkers via the Claude Code agent teams mailbox protocol. Messages are written as JSON to `~/.claude/teams/{team-name}/inboxes/{agent-name}.json` using atomic file operations with mkdir-based locking for safe concurrent access.
