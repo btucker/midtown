@@ -130,6 +130,8 @@ export function switchProject(projectName, webhookPort) {
   })
   repoStatuses.set([])
   usageData.set([])
+  agentClearTimeouts.forEach((t) => clearTimeout(t))
+  agentClearTimeouts.clear()
   agentToolItems.set({})
   threadData.set(null)
   connected.set(false)
@@ -533,7 +535,12 @@ export function handleUpdate(update) {
         //
         // Key by channelName (not msg.from): agentToolItems is channel-keyed, so
         // the correct key to delete is the channel the message was posted to.
-        if (msg.from && msg.from.toLowerCase() !== 'lead' && msg.from.toLowerCase() !== 'midtown') {
+        // Exception: skip when the main lead posts to the main channel — deleting
+        // 'midtown' tool items on every lead response would clear in-progress activity.
+        const fromLower = msg.from ? msg.from.toLowerCase() : ''
+        const isMainLeadOnMainChannel =
+          channelName === 'midtown' && (fromLower === 'lead' || fromLower === 'midtown')
+        if (msg.from && !isMainLeadOnMainChannel) {
           if (agentClearTimeouts.has(channelName)) {
             clearTimeout(agentClearTimeouts.get(channelName))
           }
