@@ -2956,6 +2956,41 @@ fn test_collect_pr_task_link_effects_ignores_pr_without_task_marker() {
     );
 }
 
+/// A completed task with an open PR and no task.pr link should NOT emit SetTaskPr.
+///
+/// Scenario: Task !400 is completed but its PR is still open (e.g., task was
+/// manually closed early). Emitting SetTaskPr on every tick for completed tasks
+/// would cause redundant disk writes with no benefit.
+#[test]
+fn test_collect_pr_task_link_effects_skips_completed_task() {
+    use super::super::snapshot::minimal_snapshot_for_test;
+    use crate::tasks::{Task, TaskStatus};
+
+    let task = Task {
+        id: "400".to_string(),
+        subject: "Old work".to_string(),
+        status: TaskStatus::Completed,
+        owner: Some("york".to_string()),
+        description: None,
+        blocked_by: vec![],
+        channel: None,
+        pr: None, // never linked
+        created_at: None,
+    };
+
+    let mut snap = minimal_snapshot_for_test();
+    snap.all_tasks = vec![task];
+    snap.github_open_pr_task_ids.insert("400".to_string(), 88);
+
+    let effects = collect_pr_task_link_effects(&snap);
+
+    assert!(
+        effects.is_empty(),
+        "Expected no effects for completed task, got: {:#?}",
+        effects
+    );
+}
+
 /// A mismatched PR number (task.pr points to a different PR) should emit SetTaskPr
 /// to correct the link.
 #[test]

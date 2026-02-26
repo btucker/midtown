@@ -4036,8 +4036,11 @@ pub fn collect_pr_task_link_effects(snap: &WorldSnapshot) -> Vec<Effect> {
         // Find the task by ID
         let task = snap.all_tasks.iter().find(|t| &t.id == task_id_str);
 
-        // Only emit if the link is missing or points to the wrong PR
+        // Only emit if the link is missing or points to the wrong PR.
+        // Skip completed tasks — their PR may still be open (e.g., manual close),
+        // but emitting SetTaskPr on every tick would cause unnecessary disk writes.
         let needs_link = match task {
+            Some(t) if t.status == crate::tasks::TaskStatus::Completed => false,
             Some(t) => t.pr != Some(pr_number),
             None => false, // task not found — skip, nothing to link
         };
