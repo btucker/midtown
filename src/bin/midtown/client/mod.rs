@@ -219,8 +219,24 @@ impl DaemonClient {
                     "Task !{} has no announcement message (may have been created before threading was added)",
                     task_id
                 )
-            })?;
-        self.channel_post_in_thread(message, channel, thread_parent_id)
+            })?
+            .to_string();
+
+        // Channel resolution priority:
+        // 1. Explicit --channel flag (highest)
+        // 2. MIDTOWN_CHANNEL env var (coworker context sets this to the task's topic channel)
+        // 3. Task's channel from metadata (fallback for non-coworker contexts)
+        let env_channel = std::env::var("MIDTOWN_CHANNEL").ok();
+        let task_channel = metadata
+            .get("channel")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let effective_channel = channel
+            .map(|s| s.to_string())
+            .or(env_channel)
+            .or(task_channel);
+
+        self.channel_post_in_thread(message, effective_channel.as_deref(), &thread_parent_id)
     }
 
     /// Post a message as a thread reply.
