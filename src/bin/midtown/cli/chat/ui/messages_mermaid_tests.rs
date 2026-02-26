@@ -992,3 +992,53 @@ fn test_render_message_with_mermaid_applies_mention_highlights() {
         span.style
     );
 }
+
+/// `render_message_with_mermaid` must apply @mention highlights to insight segments,
+/// matching the fix applied to text segments.
+///
+/// Bug: the `ContentSegment::Insight` arm had the same missing `apply_mention_highlights`
+/// call as the `Text` arm — spans with `@mention` never received the BOLD modifier.
+#[test]
+fn test_render_message_with_mermaid_applies_mention_highlights_in_insight() {
+    use ratatui::style::Modifier;
+
+    // Insight message (💡 prefix) with @mention followed by a code block
+    let msg = test_message("💡 Hey @bob, check this:\n```rust\nfn foo() {}\n```");
+    let segments = mermaid::parse_content_segments(&msg.content);
+    let cache = MermaidCache::new();
+    let current_tasks = HashMap::new();
+    let mut lines = Vec::new();
+    let mut diagram_sources = Vec::new();
+    let mut mermaid_to_render = Vec::new();
+
+    render_message_with_mermaid(
+        &msg,
+        &segments,
+        80,
+        None,
+        &current_tasks,
+        None,
+        &[],
+        &cache,
+        &mut lines,
+        &mut diagram_sources,
+        &mut mermaid_to_render,
+        false,
+    );
+
+    let mention_span = lines
+        .iter()
+        .flat_map(|l| &l.spans)
+        .find(|s| s.content.contains("@bob"));
+
+    assert!(
+        mention_span.is_some(),
+        "@bob must appear in the rendered output"
+    );
+    let span = mention_span.unwrap();
+    assert!(
+        span.style.add_modifier.contains(Modifier::BOLD),
+        "@bob span in insight segment must have BOLD modifier, got style={:?}",
+        span.style
+    );
+}
