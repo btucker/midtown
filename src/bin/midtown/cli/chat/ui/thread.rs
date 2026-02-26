@@ -15,8 +15,8 @@ use ratatui_themes::ThemePalette;
 use super::super::app::{App, FocusedPane, KanbanTask, TaskStatus};
 use super::chat::calculate_input_bar_height;
 use super::format_relative_time;
-use super::messages::{apply_mention_highlights, render_content_lines, render_message};
-use super::messages_mermaid::{render_header_content_segments, render_message_with_mermaid};
+use super::messages::render_message;
+use super::messages_mermaid::render_message_with_mermaid;
 use crate::cli::chat::mermaid;
 
 /// Draw the thread panel showing task cards, parent message, and thread replies.
@@ -141,7 +141,18 @@ fn draw_thread_content(f: &mut Frame, app: &mut App, area: Rect, palette: ThemeP
     let inner = block.inner(area);
     let content_width = inner.width as usize;
 
+    // ── Shared render state ──────────────────────────────────────────────────────
+    let current_tasks = app.current_tasks().clone();
+    let user_display_name = app.user_display_name.clone();
+    let use_light_theme = app.theme.palette().is_light();
+    let lead_names: Vec<String> = std::iter::once(app.project_name.clone())
+        .chain(app.channel_lead_names.iter().cloned())
+        .collect();
+    let thread_messages = app.thread_messages.clone();
+
     let mut all_lines: Vec<Line<'static>> = Vec::new();
+    let mut mermaid_to_render: Vec<String> = Vec::new();
+    let mut diagram_sources: Vec<String> = Vec::new();
 
     // ── Task cards ──────────────────────────────────────────────────────────────
     //
@@ -185,95 +196,25 @@ fn draw_thread_content(f: &mut Frame, app: &mut App, area: Rect, palette: ThemeP
     }
 
     // ── Parent message ──────────────────────────────────────────────────────────
+    // Rendered via render_message / render_message_with_mermaid (same as replies).
+    // prev = None so the sender header is always shown for the parent.
+    let mut parent_sender: Option<String> = None;
+
     if let Some(ref parent_id) = app.thread_parent_id.clone() {
-        let use_light_theme = app.theme.palette().is_light();
-        let content_style = Style::default().fg(palette.fg);
-
         if let Some(parent_msg) = app.messages.iter().find(|m| m.id == *parent_id).cloned() {
-            // Sender header line
-            all_lines.push(Line::from(Span::styled(
-                parent_msg.from.clone(),
-                Style::default()
-                    .fg(palette.warning)
-                    .add_modifier(Modifier::BOLD),
-            )));
+            parent_sender = Some(parent_msg.from.clone());
 
-            // Message content (with mermaid/code block support)
-            if content_width > 0 {
-                let segments = mermaid::parse_content_segments(&parent_msg.content);
-                let has_special = segments
-                    .iter()
-                    .any(|s| !matches!(s, mermaid::ContentSegment::Text(_)));
-
-                let content_lines = if has_special {
-                    apply_mention_highlights(render_header_content_segments(
-                        &segments,
-                        content_width,
-                        content_style,
-                        use_light_theme,
-                    ))
-                } else {
-                    apply_mention_highlights(render_content_lines(
-                        &parent_msg.content,
-                        content_width,
-                        content_style,
-                    ))
-                };
-                all_lines.extend(content_lines);
-            }
-        } else if task_cards.is_empty() {
-            // No parent message and no task cards — show placeholder
-            all_lines.push(Line::from(Span::styled(
-                "(parent message not in history)",
-                Style::default().fg(palette.muted),
-            )));
-        }
-
-        // Separator between parent message and replies
-        let sep_width = content_width.min(60);
-        all_lines.push(Line::from(""));
-        all_lines.push(Line::from(Span::styled(
-            "─".repeat(sep_width),
-            Style::default().fg(palette.muted),
-        )));
-        all_lines.push(Line::from(""));
-    }
-
-    // ── Thread replies ──────────────────────────────────────────────────────────
-    if app.thread_messages.is_empty() && app.thread_parent_id.is_some() {
-        all_lines.push(Line::from(Span::styled(
-            "No replies yet",
-            Style::default().fg(palette.muted),
-        )));
-    } else {
-        let current_tasks = app.current_tasks().clone();
-        let user_display_name = app.user_display_name.clone();
-        let use_light_theme = app.theme.palette().is_light();
-        let lead_names: Vec<String> = std::iter::once(app.project_name.clone())
-            .chain(app.channel_lead_names.iter().cloned())
-            .collect();
-        let thread_messages = app.thread_messages.clone();
-
-        let mut mermaid_to_render: Vec<String> = Vec::new();
-        let mut diagram_sources: Vec<String> = Vec::new();
-
-        for (idx, msg) in thread_messages.iter().enumerate() {
-            let prev = if idx > 0 {
-                Some(thread_messages[idx - 1].from.as_str())
-            } else {
-                None
-            };
-            let segments = mermaid::parse_content_segments(&msg.content);
+            let segments = mermaid::parse_content_segments(&parent_msg.content);
             let has_special = segments
                 .iter()
                 .any(|s| !matches!(s, mermaid::ContentSegment::Text(_)));
 
             if has_special {
                 render_message_with_mermaid(
-                    msg,
+                    &parent_msg,
                     &segments,
                     content_width,
-                    prev,
+                    None,
                     &current_tasks,
                     user_display_name.as_deref(),
                     &lead_names,
@@ -285,20 +226,85 @@ fn draw_thread_content(f: &mut Frame, app: &mut App, area: Rect, palette: ThemeP
                 );
             } else {
                 let msg_lines = render_message(
-                    msg,
+                    &parent_msg,
                     content_width,
-                    prev,
+                    None,
                     &current_tasks,
                     user_display_name.as_deref(),
                     &lead_names,
                 );
                 all_lines.extend(msg_lines);
             }
+        } else if task_cards.is_empty() {
+            // No parent message and no task cards — show placeholder
+            all_lines.push(Line::from(Span::styled(
+                "(parent message not in history)",
+                Style::default().fg(palette.muted),
+            )));
         }
 
-        for source in mermaid_to_render {
-            app.mermaid_cache.get_or_render(&source);
+        // Separator with reply count
+        let reply_count = thread_messages.len();
+        let sep_label = if reply_count == 0 {
+            "no replies yet".to_string()
+        } else if reply_count == 1 {
+            "1 reply".to_string()
+        } else {
+            format!("{reply_count} replies")
+        };
+        let separator = format!("─── {sep_label} ───");
+        all_lines.push(Line::from(""));
+        all_lines.push(Line::from(Span::styled(
+            separator,
+            Style::default().fg(palette.muted),
+        )));
+        all_lines.push(Line::from(""));
+    }
+
+    // ── Thread replies ──────────────────────────────────────────────────────────
+    for (idx, msg) in thread_messages.iter().enumerate() {
+        // For the first reply, pass the parent sender as `prev` so the sender header
+        // is suppressed when the first reply is from the same person as the parent.
+        let prev = if idx > 0 {
+            Some(thread_messages[idx - 1].from.as_str())
+        } else {
+            parent_sender.as_deref()
+        };
+        let segments = mermaid::parse_content_segments(&msg.content);
+        let has_special = segments
+            .iter()
+            .any(|s| !matches!(s, mermaid::ContentSegment::Text(_)));
+
+        if has_special {
+            render_message_with_mermaid(
+                msg,
+                &segments,
+                content_width,
+                prev,
+                &current_tasks,
+                user_display_name.as_deref(),
+                &lead_names,
+                &app.mermaid_cache,
+                &mut all_lines,
+                &mut diagram_sources,
+                &mut mermaid_to_render,
+                use_light_theme,
+            );
+        } else {
+            let msg_lines = render_message(
+                msg,
+                content_width,
+                prev,
+                &current_tasks,
+                user_display_name.as_deref(),
+                &lead_names,
+            );
+            all_lines.extend(msg_lines);
         }
+    }
+
+    for source in mermaid_to_render {
+        app.mermaid_cache.get_or_render(&source);
     }
 
     // ── Scroll and render ────────────────────────────────────────────────────────

@@ -343,3 +343,138 @@ fn test_thread_panel_renders_code_block_with_syntax_highlighting_borders() {
         all_text
     );
 }
+
+/// The separator between parent message and replies must show the reply count.
+/// With 2 replies: "─── 2 replies ───"
+/// With 1 reply:   "─── 1 reply ───"
+/// With 0 replies: "─── no replies yet ───"
+#[test]
+fn test_thread_separator_shows_reply_count() {
+    use midtown::MessageType;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use ratatui::layout::Rect;
+
+    let mut app = test_app();
+
+    let parent_msg = midtown::Message::text("park", "parent message");
+    let parent_id = parent_msg.id.clone();
+    app.messages.push_back(parent_msg);
+    app.thread_parent_id = Some(parent_id.clone());
+
+    // Add two replies
+    for i in 0..2 {
+        app.thread_messages.push(midtown::Message {
+            id: format!("reply-{i}"),
+            from: "madison".to_string(),
+            content: format!("reply {i}"),
+            timestamp: chrono::Utc::now(),
+            message_type: MessageType::Text,
+            channel: None,
+            session_id: None,
+            thread_parent_id: Some(parent_id.clone()),
+        });
+    }
+
+    let backend = TestBackend::new(80, 30);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|f| {
+            let area = Rect::new(0, 0, 80, 30);
+            draw_thread_panel(f, &mut app, area);
+        })
+        .unwrap();
+
+    let buf = terminal.backend().buffer();
+    let all_text: String = (0..30)
+        .flat_map(|row| {
+            (0..80).filter_map(move |col| buf.cell((col, row)).map(|c| c.symbol().to_string()))
+        })
+        .collect();
+
+    assert!(
+        all_text.contains("2 replies"),
+        "Separator should show '2 replies' for 2 replies, got:\n{}",
+        all_text
+    );
+}
+
+/// With zero replies, the separator reads "no replies yet".
+#[test]
+fn test_thread_separator_no_replies() {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use ratatui::layout::Rect;
+
+    let mut app = test_app();
+    let parent_msg = midtown::Message::text("park", "hello");
+    let parent_id = parent_msg.id.clone();
+    app.messages.push_back(parent_msg);
+    app.thread_parent_id = Some(parent_id);
+    // No replies
+
+    let backend = TestBackend::new(80, 20);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|f| {
+            let area = Rect::new(0, 0, 80, 20);
+            draw_thread_panel(f, &mut app, area);
+        })
+        .unwrap();
+
+    let buf = terminal.backend().buffer();
+    let all_text: String = (0..20)
+        .flat_map(|row| {
+            (0..80).filter_map(move |col| buf.cell((col, row)).map(|c| c.symbol().to_string()))
+        })
+        .collect();
+
+    assert!(
+        all_text.contains("no replies yet"),
+        "Separator should show 'no replies yet' when there are no replies, got:\n{}",
+        all_text
+    );
+}
+
+/// The parent message must be rendered using render_message formatting
+/// (sender header + timestamp gutter), not a flat content-only approach.
+#[test]
+fn test_thread_parent_message_rendered_with_sender_header() {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use ratatui::layout::Rect;
+
+    let mut app = test_app();
+    let parent_msg = midtown::Message::text("parkavenue", "content from parent");
+    let parent_id = parent_msg.id.clone();
+    app.messages.push_back(parent_msg);
+    app.thread_parent_id = Some(parent_id);
+
+    let backend = TestBackend::new(80, 20);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|f| {
+            let area = Rect::new(0, 0, 80, 20);
+            draw_thread_panel(f, &mut app, area);
+        })
+        .unwrap();
+
+    let buf = terminal.backend().buffer();
+    let all_text: String = (0..20)
+        .flat_map(|row| {
+            (0..80).filter_map(move |col| buf.cell((col, row)).map(|c| c.symbol().to_string()))
+        })
+        .collect();
+
+    // render_message shows sender name followed by content on the same/next line
+    assert!(
+        all_text.contains("parkavenue"),
+        "Thread must show parent message sender 'parkavenue', got:\n{}",
+        all_text
+    );
+    assert!(
+        all_text.contains("content from parent"),
+        "Thread must show parent message content, got:\n{}",
+        all_text
+    );
+}
