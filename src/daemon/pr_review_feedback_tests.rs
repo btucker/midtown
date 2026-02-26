@@ -269,4 +269,26 @@ mod tests {
             "should include coworker review"
         );
     }
+
+    /// Test that format_review_content does not embed a comment where "reviewed by"
+    /// appears only as inline prose (false-positive guard for the hardened
+    /// `text_contains_review_signature` check).
+    #[test]
+    fn test_format_review_content_rejects_inline_reviewed_by_prose() {
+        use crate::daemon::helpers::format_review_content;
+
+        let data = serde_json::json!({
+            "reviews": [],
+            "comments": [
+                {
+                    "author": {"login": "btucker"},
+                    "body": "This change was reviewed by the platform team last week."
+                }
+            ]
+        });
+        assert!(
+            format_review_content(&data).is_none(),
+            "inline 'reviewed by' in prose should not be treated as a review"
+        );
+    }
 }

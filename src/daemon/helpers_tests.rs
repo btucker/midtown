@@ -609,6 +609,29 @@ fn review_signature_requires_review_header_with_frontmatter() {
     ));
 }
 
+#[test]
+fn review_signature_rejects_lowercase_reviewed_by() {
+    // Lowercase "reviewed by" in prose should NOT match — the case-sensitive check
+    // for "Reviewed by" (capital R) prevents false positives from natural English.
+    assert!(!text_contains_review_signature(
+        "This change was reviewed by the platform team last week."
+    ));
+    assert!(!text_contains_review_signature(
+        "The code was reviewed by security before release."
+    ));
+}
+
+#[test]
+fn review_signature_matches_capital_reviewed_by_anywhere() {
+    // "Reviewed by" with capital R is a deliberate signature and should match
+    // regardless of position in the text (start of line, mid-line after "!", etc.)
+    assert!(text_contains_review_signature(
+        "Some intro text\nReviewed by lexington\nFooter"
+    ));
+    assert!(text_contains_review_signature("  Reviewed by madison"));
+    assert!(text_contains_review_signature("LGTM! Reviewed by york"));
+}
+
 // -------------------------------------------------------------------------
 // @mention extraction
 // -------------------------------------------------------------------------

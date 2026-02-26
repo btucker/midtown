@@ -431,8 +431,14 @@ pub fn get_issue_action(issue_type: PrIssueType) -> &'static str {
 /// Check if text contains a coworker review signature.
 ///
 /// Coworker reviews are identified by:
-/// - The "🤖 Reviewed by" or "Reviewed by" signature (legacy formal reviews)
+/// - The "🤖 Reviewed by" signature (legacy formal reviews)
+/// - "Reviewed by" (case-sensitive, capital R) anywhere in the text
 /// - The "# Code Review by" header at any heading level (case-insensitive)
+///
+/// The "Reviewed by" check is case-sensitive (capital R) which avoids false
+/// positives on prose like "This was reviewed by the security team" where
+/// "reviewed" is lowercase. The capital-R form is only used deliberately in
+/// review signatures (e.g., "LGTM! Reviewed by york", "Reviewed by lexington").
 ///
 /// Note: We do NOT check for "<!-- midtown:" frontmatter alone, as ALL coworker
 /// GitHub comments include this frontmatter. Checking for it would cause false

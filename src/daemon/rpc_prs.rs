@@ -608,6 +608,7 @@ pub(super) async fn handle_pr_review(
         state,
         &[pr_json],
         crate::github_state::AssignmentSource::Manual,
+        &std::collections::HashMap::new(), // RPC path: spawning reviewers, not nudging authors
     )
     .await;
 

@@ -859,13 +859,24 @@ pub(super) async fn poll_prs_for_issues(
             // with the agent who has full context of the PR and review feedback.
             use crate::rules::decide_pr_issue_action_with_handoff;
 
+            // Embed review content for issue types that involve review feedback.
+            // ChangesRequested/Approved carry a formal review; the coworker needs
+            // to see what was said without running extra `gh` commands.
+            let review_content = match issue_type {
+                PrIssueType::ChangesRequested | PrIssueType::Approved => {
+                    fetch_review_content(pr_number).await
+                }
+                _ => None,
+            };
+
             // Format the nudge message
             let message = format!(
-                "PR #{} ({}) - {}: {}",
+                "PR #{} ({}) - {}: {}{}",
                 pr_number,
                 truncate_str(title, 40),
                 issue_type,
-                get_issue_action(issue_type)
+                get_issue_action(issue_type),
+                review_content.as_deref().unwrap_or("")
             );
 
             // Extract all decision context from persistent state in one lock
@@ -899,10 +910,7 @@ pub(super) async fn poll_prs_for_issues(
             .await,
     );
 
-    // Auto-spawn reviewers for PRs that need review
-    effects.extend(collect_reviewer_effects(snap, state, &prs).await);
-
-    // Pre-collect review status for all PRs before stuck detection (pure decision logic
+    // Pre-collect review status for all PRs before decision functions (pure decision logic
     // should not make async API calls). Coworkers can't submit formal GitHub reviews
     // since they share the same user as PR authors, so we check for comment-based reviews.
     let reviewed_prs: HashSet<u64> = {
@@ -916,6 +924,14 @@ pub(super) async fn poll_prs_for_issues(
         }
         reviewed
     };
+
+    // Pre-fetch review content for all reviewed PRs. This keeps subprocess I/O here
+    // (the polling entry point) instead of inside decision functions — CLAUDE.md:
+    // "Decision functions are pure: must not perform I/O."
+    let pre_fetched_review_content = pre_fetch_review_content_for_prs(&prs, &reviewed_prs).await;
+
+    // Auto-spawn reviewers for PRs that need review
+    effects.extend(collect_reviewer_effects(snap, state, &prs, &pre_fetched_review_content).await);
 
     // Compute prs_needing_review and update cache (must happen here, not in effect
     // collection functions which should be pure). This value is used by task dispatch
@@ -972,6 +988,7 @@ pub(super) async fn poll_prs_for_issues(
             &reviewed_prs,
             &active_coworkers,
             &idle_coworkers,
+            &pre_fetched_review_content,
         )
         .await,
     );
@@ -1007,6 +1024,7 @@ async fn collect_green_with_feedback_effects(
     reviewed_prs: &HashSet<u64>,
     active_coworkers: &[String],
     idle_coworkers: &[String],
+    pre_fetched_review_content: &HashMap<u64, String>,
 ) -> Vec<Effect> {
     let mut effects = Vec::new();
 
@@ -1070,17 +1088,19 @@ async fn collect_green_with_feedback_effects(
             continue;
         }
 
-        // Fetch all review content to embed in the nudge — same rationale as
-        // handle_pr_comment_nudge: coworkers need to see Midtown coworker reviews
-        // (issue comments) as well as formal GitHub reviews.
-        let review_content = fetch_review_content(pr_number).await;
+        // Use pre-fetched review content (fetched at the top of poll_prs_for_issues
+        // to keep this function free of I/O — CLAUDE.md: "Decision functions are pure").
+        let review_suffix = pre_fetched_review_content
+            .get(&pr_number)
+            .map(|s| s.as_str())
+            .unwrap_or("");
         let message = format!(
             "PR #{} ({}) - {}: {}{}",
             pr_number,
             truncate_str(title, 40),
             PrIssueType::GreenWithFeedback,
             get_issue_action(PrIssueType::GreenWithFeedback),
-            review_content.as_deref().unwrap_or("")
+            review_suffix
         );
 
         // Extract all decision context from persistent state in one lock
@@ -1744,6 +1764,31 @@ async fn fetch_review_content(pr_number: u64) -> Option<String> {
     format_review_content(&data)
 }
 
+/// Pre-fetch review content for all reviewed PRs in one batch.
+///
+/// Called at the top of `poll_prs_for_issues` to collect all review content
+/// upfront, keeping subprocess I/O out of inner decision functions.
+/// Returns a map of PR number → formatted review content string.
+async fn pre_fetch_review_content_for_prs(
+    prs: &[serde_json::Value],
+    reviewed_prs: &HashSet<u64>,
+) -> HashMap<u64, String> {
+    let mut result = HashMap::new();
+
+    for pr in prs {
+        let pr_number = match pr.get("number").and_then(|n| n.as_u64()) {
+            Some(n) if reviewed_prs.contains(&n) => n,
+            _ => continue,
+        };
+
+        if let Some(content) = fetch_review_content(pr_number).await {
+            result.insert(pr_number, content);
+        }
+    }
+
+    result
+}
+
 /// Polling fallback for review comment notifications.
 ///
 /// When webhooks are degraded, this detects new review comments by comparing
@@ -1899,10 +1944,13 @@ async fn collect_comment_notification_effects(
             continue;
         }
 
+        // Embed review content so the coworker sees all feedback inline
+        let review_content = fetch_review_content(pr_number).await;
         let nudge_msg = format!(
-            "Your PR #{} ({}) has new review comments — please address feedback.",
+            "Your PR #{} ({}) has new review comments — please address feedback.{}",
             pr_number,
-            truncate_str(title, 40)
+            truncate_str(title, 40),
+            review_content.as_deref().unwrap_or("")
         );
 
         debug!(
@@ -2214,6 +2262,7 @@ async fn collect_reviewer_effects(
     snap: &WorldSnapshot,
     state: &DaemonState,
     prs: &[serde_json::Value],
+    pre_fetched_review_content: &HashMap<u64, String>,
 ) -> Vec<Effect> {
     collect_reviewer_effects_with_source(
         Some(&snap.worktree_branch_owners),
@@ -2222,6 +2271,7 @@ async fn collect_reviewer_effects(
         state,
         prs,
         crate::github_state::AssignmentSource::PollingFallback,
+        pre_fetched_review_content,
     )
     .await
 }
@@ -2233,6 +2283,7 @@ pub(crate) async fn collect_reviewer_effects_with_source(
     state: &DaemonState,
     prs: &[serde_json::Value],
     source: crate::github_state::AssignmentSource,
+    pre_fetched_review_content: &HashMap<u64, String>,
 ) -> Vec<Effect> {
     let mut effects: Vec<Effect> = Vec::new();
     let review_mode = crate::config::get_review_mode_for_repo(&state.repo_name);
@@ -2316,14 +2367,17 @@ pub(crate) async fn collect_reviewer_effects_with_source(
                 };
 
                 if should_nudge {
-                    // Embed review content so the coworker sees all feedback
-                    // (both formal reviews and Midtown coworker issue comments)
-                    let review_content = fetch_review_content(pr_number).await;
+                    // Use pre-fetched review content (fetched at the top of poll_prs_for_issues
+                    // to keep this function free of I/O — CLAUDE.md: "Decision functions are pure").
+                    let review_suffix = pre_fetched_review_content
+                        .get(&pr_number)
+                        .map(|s| s.as_str())
+                        .unwrap_or("");
                     let nudge_msg = format!(
                         "Your PR #{} ({}) has a completed review — please address any feedback and merge if appropriate.{}",
                         pr_number,
                         truncate_str(title, 40),
-                        review_content.as_deref().unwrap_or("")
+                        review_suffix
                     );
 
                     let active_coworkers: Vec<String> = state
@@ -2903,6 +2957,7 @@ pub(super) async fn process_pending_review_spawns(
             state,
             &[pr],
             crate::github_state::AssignmentSource::Webhook,
+            &HashMap::new(), // Webhook path: spawning reviewers, not nudging authors
         )
         .await;
         all_effects.extend(effects);
@@ -3042,6 +3097,7 @@ pub(super) async fn handle_ci_completion_for_review_spawn(
         state,
         &[pr],
         crate::github_state::AssignmentSource::Webhook,
+        &HashMap::new(), // Webhook path: spawning reviewers, not nudging authors
     )
     .await;
 
@@ -3583,11 +3639,15 @@ pub(super) async fn handle_webhook_review_state_change(
         return;
     };
 
+    // Embed review content so the coworker sees the full review body
+    // (both formal reviews and Midtown coworker issue comments).
+    let review_content = fetch_review_content(pr_number).await;
     let nudge_msg = format!(
-        "PR #{} — {}: {}",
+        "PR #{} — {}: {}{}",
         pr_number,
         issue_type,
-        get_issue_action(issue_type)
+        get_issue_action(issue_type),
+        review_content.as_deref().unwrap_or("")
     );
 
     // Get active and idle coworkers for the decision function
