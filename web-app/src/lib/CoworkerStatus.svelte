@@ -30,9 +30,11 @@
   }
 
   // Record last-active timestamp whenever a coworker is in a non-idle state.
+  // On first sight of an idle coworker (e.g. after page reload), initialize to now
+  // so they get the full 10-minute grace window instead of disappearing immediately.
   $effect(() => {
     for (const cw of $coworkers) {
-      if (!isIdleOrStopped(cw)) {
+      if (!isIdleOrStopped(cw) || !lastSeenActive.has(cw.name)) {
         lastSeenActive.set(cw.name, Date.now())
       }
     }
