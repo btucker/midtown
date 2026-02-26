@@ -651,6 +651,124 @@ fn ensure_required_plugins() {
     }
 }
 
+/// Returns true if `dist/index.html` is newer than all tracked source files.
+///
+/// Checked source dirs/files: `src/`, `public/`, `package.json`, `vite.config.js`,
+/// `svelte.config.js`. Returns false if dist doesn't exist.
+fn is_dist_fresh(web_app_dir: &Path, dist_index: &Path) -> bool {
+    let dist_mtime = match dist_index.metadata().and_then(|m| m.modified()) {
+        Ok(t) => t,
+        Err(_) => return false,
+    };
+
+    for dir_name in &["src", "public"] {
+        let source_dir = web_app_dir.join(dir_name);
+        if source_dir.exists() && dir_has_newer_file(&source_dir, dist_mtime) {
+            return false;
+        }
+    }
+
+    for file_name in &[
+        "index.html",
+        "package.json",
+        "vite.config.js",
+        "svelte.config.js",
+    ] {
+        let path = web_app_dir.join(file_name);
+        if path
+            .metadata()
+            .and_then(|m| m.modified())
+            .is_ok_and(|mtime| mtime > dist_mtime)
+        {
+            return false;
+        }
+    }
+
+    true
+}
+
+/// Returns true if any file under `dir` has an mtime newer than `than`.
+fn dir_has_newer_file(dir: &Path, than: std::time::SystemTime) -> bool {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            if dir_has_newer_file(&path, than) {
+                return true;
+            }
+        } else if path
+            .metadata()
+            .and_then(|m| m.modified())
+            .is_ok_and(|mtime| mtime > than)
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// Build the web-app if the source tree is available and the dist is stale.
+///
+/// Skips silently when:
+/// - `web-app/package.json` doesn't exist (production install without source)
+/// - `npm` isn't on `PATH`
+/// - The existing `dist/index.html` is already newer than all source files
+///
+/// Non-blocking: logs warnings on failure but never aborts startup.
+fn build_web_app_if_needed() {
+    let web_app_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("web-app");
+
+    if !web_app_dir.join("package.json").exists() {
+        return;
+    }
+
+    let dist_index = web_app_dir.join("dist").join("index.html");
+    if is_dist_fresh(&web_app_dir, &dist_index) {
+        return;
+    }
+
+    emit_startup_progress(25, "installing web app dependencies");
+
+    let install = Command::new("npm")
+        .args(["install", "--prefer-offline"])
+        .current_dir(&web_app_dir)
+        .output();
+
+    match install {
+        Err(e) => {
+            eprintln!("Warning: Failed to run npm install for web-app: {e}");
+            return;
+        }
+        Ok(o) if !o.status.success() => {
+            let stderr = String::from_utf8_lossy(&o.stderr);
+            eprintln!("Warning: npm install for web-app failed:\n{stderr}");
+            return;
+        }
+        Ok(_) => {}
+    }
+
+    emit_startup_progress(35, "building web app");
+
+    let build = match Command::new("npm")
+        .args(["run", "build"])
+        .current_dir(&web_app_dir)
+        .output()
+    {
+        Ok(o) => o,
+        Err(e) => {
+            eprintln!("Warning: Failed to run npm build for web-app: {e}");
+            return;
+        }
+    };
+
+    if !build.status.success() {
+        let stderr = String::from_utf8_lossy(&build.stderr);
+        eprintln!("Warning: web-app build failed:\n{stderr}");
+    }
+}
+
 /// Handle `midtown start` command.
 ///
 /// Starts Midtown services for the current project (daemon + shared webserver).
@@ -674,6 +792,9 @@ pub fn handle_start(project: Option<String>, repos: Vec<PathBuf>) -> Result<Resp
 
     // Check and install required plugins before starting daemon
     ensure_required_plugins();
+
+    // Build web-app if source is available and dist is stale
+    build_web_app_if_needed();
 
     let mut messages = Vec::new();
 

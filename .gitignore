@@ -38,6 +38,9 @@ docs/plans/
 # Node.js dependencies
 web-app/node_modules/
 
+# Web app built assets (auto-built by `midtown start`)
+web-app/dist/
+
 # Legacy coworker state file (runtime state, not source code)
 state.json
 
