@@ -39,12 +39,14 @@ pub fn pr_opened_author_warning(pr_number: u64) -> String {
     )
 }
 
-/// Warning sent to PR author when a reviewer is spawned for their PR.
+/// Notification sent to PR author when a reviewer is assigned to their PR.
 ///
-/// The author must not enable auto-merge until the review is complete.
+/// The early `pr_opened_author_warning` already told the author not to enable
+/// auto-merge; this message is informational — it names the reviewer so the
+/// author knows who is working on the review and when to expect feedback.
 pub fn reviewer_spawned_author_warning(reviewer_name: &str, pr_number: u64) -> String {
     format!(
-        "\u{26a0}\u{fe0f} {} is now reviewing your PR #{}. Do NOT enable auto-merge (`gh pr merge --auto --squash`) until the review is complete.",
+        "\u{1f50d} {} is now reviewing your PR #{}. Wait for the ReviewComplete nudge before enabling auto-merge.",
         reviewer_name, pr_number
     )
 }

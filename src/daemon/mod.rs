@@ -3193,25 +3193,21 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                             );
                         }
 
-                        // Warn the author immediately not to enable auto-merge.
-                        // A reviewer will be assigned ~45s after PR open, but if the
-                        // spawn is delayed (coworker limit), the author won't get the
-                        // reviewer_spawned_author_warning. This early warning ensures the
-                        // author knows to wait for the ReviewComplete nudge regardless.
-                        pr_effects.push(effects::Effect::DeliverMailboxMessage {
-                            name: author.clone(),
-                            message: crate::daemon_messages::pr_opened_author_warning(
+                        // Warn the author immediately not to enable auto-merge — but only
+                        // when a review will actually be queued (non-draft PRs). Draft PRs
+                        // don't get a reviewer, so the warning would be misleading.
+                        // Gating on needs_review mirrors the exact condition used to queue
+                        // the pending_review_spawn (webhook.rs: "opened" if !draft).
+                        if webhook_event.needs_review == Some(pr_opened.pr_number) {
+                            pr_effects.push(pr::build_pr_opened_author_warning_effect(
+                                author,
                                 pr_opened.pr_number,
-                            ),
-                            summary: Some(format!(
-                                "PR #{} queued for review — hold auto-merge",
-                                pr_opened.pr_number
-                            )),
-                        });
-                        info!(
-                            "Warned PR #{} author {} not to enable auto-merge",
-                            pr_opened.pr_number, author
-                        );
+                            ));
+                            info!(
+                                "Warned PR #{} author {} not to enable auto-merge (review queued)",
+                                pr_opened.pr_number, author
+                            );
+                        }
                     }
 
                     // Auto-set task PR association when PR title contains [Midtown !XX]

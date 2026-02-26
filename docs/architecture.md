@@ -312,6 +312,14 @@ In addition to the shared channel, the daemon can deliver targeted messages to i
 
 **Inbox lifecycle**: Inboxes are cleared at two points to prevent message bleed across sessions: (1) when a name is allocated from the `NamePool` during `SpawnSession` (before the new session starts), and (2) when a session releases its name on shutdown. This ensures a newly-allocated name never inherits stale unread messages from a previous session that held the same name. All inbox operations — writes, reads, and clears — acquire the same mkdir-based lock (`{agent-name}.json.lock`) to prevent races.
 
+**PR review gate warnings**: Two mailbox messages are sent to PR authors to prevent premature auto-merge:
+
+1. **PR-opened warning** (`pr_opened_author_warning`): Delivered immediately via the `pr_opened` webhook handler when a non-draft PR is opened. Sent before a reviewer is assigned, ensuring the author is warned even when the reviewer spawn is delayed (e.g., coworker limit temporarily hit). Gated on `needs_review.is_some()` so draft PRs don't receive it.
+
+2. **Reviewer-spawned notification** (`reviewer_spawned_author_warning`): Delivered via `SpawnCoworkerWithCallbacks.on_success` in `collect_reviewer_effects_with_source` when the reviewer actually spawns. Identifies the reviewer by name and reinforces the hold on auto-merge. This fires only on successful spawn, while the PR-opened warning covers the gap when spawn is delayed.
+
+Together these create a layered defence: the early warning reaches the author at PR creation time, and the spawn notification confirms who is reviewing.
+
 ## Worktree Lifecycle
 
 When a coworker is called in, midtown creates a detached git worktree at the current HEAD. The coworker creates a feature branch and works independently. When the coworker shuts down, worktrees with no commits and no uncommitted changes are automatically cleaned up along with their branches. Worktrees with work in progress are preserved.

@@ -358,6 +358,26 @@ fn compute_time_aware_hash_at(data: &str, bucket_secs: u64, timestamp_secs: u64)
     hasher.finish()
 }
 
+/// Build the effect that warns a PR author not to enable auto-merge before review completes.
+///
+/// Sent immediately when a non-draft PR is opened (from the `pr_opened` webhook handler),
+/// before a reviewer is assigned. This ensures the author is warned even if the reviewer
+/// spawn is temporarily blocked (e.g., coworker limit), because without this early warning
+/// the only notification is `reviewer_spawned_author_warning` which fires only after a
+/// successful spawn — never reaching the author when spawn fails.
+///
+/// Only call this for non-draft PRs where a review will actually be queued.
+pub(super) fn build_pr_opened_author_warning_effect(author: &str, pr_number: u64) -> Effect {
+    Effect::DeliverMailboxMessage {
+        name: author.to_string(),
+        message: crate::daemon_messages::pr_opened_author_warning(pr_number),
+        summary: Some(format!(
+            "PR #{} queued for review — hold auto-merge",
+            pr_number
+        )),
+    }
+}
+
 /// Detect tasks linked to abandoned PRs (closed without merge) and return reset effects.
 ///
 /// Pure decision function that takes snapshot data and returns effects for tasks
