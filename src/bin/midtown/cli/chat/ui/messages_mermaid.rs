@@ -12,7 +12,6 @@ use crate::cli::chat::mermaid::{ContentSegment, MermaidCache};
 use super::highlight::highlight_code;
 use super::messages::{
     MessageRenderContext, build_continuation_line, build_first_content_line, push_sender_header,
-    render_content_lines,
 };
 use super::text::wrap_content;
 
@@ -239,67 +238,6 @@ fn render_code_block_segment(
             lines.push(Line::from(spans));
         }
     }
-}
-
-/// Render content segments as flat lines with no message framing.
-///
-/// Used by the thread header to render the parent message content without
-/// sender prefix or continuation-line indentation. Handles text, code blocks,
-/// and mermaid placeholders.
-pub fn render_header_content_segments(
-    segments: &[ContentSegment],
-    content_width: usize,
-    content_style: Style,
-    use_light_theme: bool,
-) -> Vec<Line<'static>> {
-    let mut lines = Vec::new();
-
-    for segment in segments {
-        match segment {
-            ContentSegment::Text(text) => {
-                // Use render_content_lines to preserve block-level table detection:
-                // text segments can contain markdown tables (|...|), and the line-by-line
-                // table parser in render_content_lines must see them as a contiguous block.
-                lines.extend(render_content_lines(text, content_width, content_style));
-            }
-            ContentSegment::CodeBlock { language, source } => {
-                // Language label: bare name in dim color (e.g. "rust").
-                // Omitted entirely when language is empty, matching render_code_block_segment.
-                if !language.is_empty() {
-                    lines.push(Line::from(Span::styled(
-                        language.to_string(),
-                        Style::default().fg(Color::DarkGray),
-                    )));
-                }
-                let highlighted = highlight_code(language, source, use_light_theme);
-                for hl_line in highlighted {
-                    let mut truncated_spans = Vec::new();
-                    let mut remaining = content_width;
-                    for span in hl_line.spans {
-                        if remaining == 0 {
-                            break;
-                        }
-                        let text: String = span.content.chars().take(remaining).collect();
-                        remaining = remaining.saturating_sub(span.content.chars().count());
-                        truncated_spans.push(Span::styled(text, span.style));
-                    }
-                    lines.push(Line::from(truncated_spans));
-                }
-            }
-            ContentSegment::Mermaid(_) => {
-                lines.push(Line::from(Span::styled(
-                    "[diagram]",
-                    Style::default().fg(Color::DarkGray),
-                )));
-            }
-            ContentSegment::Insight(text) => {
-                let insight_style = Style::default().fg(Color::Magenta);
-                lines.extend(render_content_lines(text, content_width, insight_style));
-            }
-        }
-    }
-
-    lines
 }
 
 #[path = "messages_mermaid_tests.rs"]
