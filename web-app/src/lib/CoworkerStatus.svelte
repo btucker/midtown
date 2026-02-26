@@ -1,26 +1,56 @@
 <script>
+  import { onMount, onDestroy } from 'svelte'
   import { coworkers, maxCoworkers, repoStatus, kanbanData } from './store.js'
   import { openTaskThread } from './api.js'
   import { getSenderColor } from './messageUtils.js'
   import * as Tooltip from '$lib/components/ui/tooltip/index.js'
 
-  // Filter to only active coworkers (matching TUI logic - skip idle/completed).
-  // Phase may be missing (freshly spawned / not reporting), null (serialized absent
-  // phase from /status), or a string abbreviation.
+  const OFFLINE_GRACE_MS = 10 * 60 * 1000
+
+  // Map of coworker name → timestamp of last seen active (not $state; read via `now` tick)
+  let lastSeenActive = new Map()
+  let now = $state(Date.now())
+  let interval
+
+  onMount(() => {
+    interval = setInterval(() => {
+      now = Date.now()
+    }, 30_000)
+  })
+
+  onDestroy(() => clearInterval(interval))
+
+  function isIdleOrStopped(cw) {
+    if (typeof cw.phase === 'string' && cw.phase.length > 0) {
+      const phase = cw.phase.toLowerCase()
+      return phase === 'idle' || phase === 'done'
+    }
+    const status = (cw.status || '').toLowerCase()
+    return status === 'idle' || status === 'stopped'
+  }
+
+  // Record last-active timestamp whenever a coworker is in a non-idle state.
+  $effect(() => {
+    for (const cw of $coworkers) {
+      if (!isIdleOrStopped(cw)) {
+        lastSeenActive.set(cw.name, Date.now())
+      }
+    }
+  })
+
+  // Show coworkers that are active, OR went idle within the last 10 minutes.
   let activeCoworkers = $derived(
     $coworkers.filter((cw) => {
-      // If phase is present as a non-empty string, filter idle/completed out.
-      if (typeof cw.phase === 'string' && cw.phase.length > 0) {
-        const phase = cw.phase.toLowerCase()
-        return phase !== 'idle' && phase !== 'done'
-      }
-
-      // Otherwise filter by status (status is typically present on websocket status
-      // updates but not always included in /status payloads).
-      const status = (cw.status || '').toLowerCase()
-      return status !== 'idle' && status !== 'stopped'
+      if (!isIdleOrStopped(cw)) return true
+      // `now` is a $state tick — ensures this re-evaluates on the 30-second interval.
+      const seen = lastSeenActive.get(cw.name)
+      return seen !== undefined && now - seen < OFFLINE_GRACE_MS
     })
   )
+
+  function isOffline(cw) {
+    return isIdleOrStopped(cw)
+  }
 
   function avatarLetter(name) {
     return (name || '?')[0].toUpperCase()
@@ -69,7 +99,7 @@
     </div>
     <div class="p-1.5">
       {#each activeCoworkers as cw}
-        <div class="flex flex-col gap-0.5 px-1.5 py-1 font-mono text-sm leading-normal">
+        <div class="flex flex-col gap-0.5 px-1.5 py-1 font-mono text-sm leading-normal {isOffline(cw) ? 'opacity-50' : ''}">
           <div class="flex items-center gap-1.5">
             <Tooltip.Root>
               <Tooltip.Trigger>
@@ -78,8 +108,12 @@
                     class="flex items-center justify-center w-5 h-5 rounded text-[0.6rem] font-bold text-white select-none"
                     style="background-color: {getSenderColor(cw.name)}"
                   >{avatarLetter(cw.name)}</span>
-                  <span class="absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full border-2 border-sidebar"
-                    style="background-color: {getHealthColor(cw.health)}"></span>
+                  {#if isOffline(cw)}
+                    <span class="absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full border-2 border-sidebar bg-muted-foreground/40"></span>
+                  {:else}
+                    <span class="absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full border-2 border-sidebar"
+                      style="background-color: {getHealthColor(cw.health)}"></span>
+                  {/if}
                 </span>
               </Tooltip.Trigger>
               <Tooltip.Content side="top">{cw.name}</Tooltip.Content>
