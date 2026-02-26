@@ -402,4 +402,75 @@ describe('selectDm', () => {
     expect(createCall[0]).toContain('/channels/create')
     expect(JSON.parse(createCall[1].body).name).toBe('dm-bob')
   })
+
+  it('still navigates to DM channel when backend creation returns an error', async () => {
+    // Regression: selectDm used to call `return` after a non-ok response, leaving
+    // activeChannel unchanged and giving the user no visible feedback.
+    channels.set([{ name: 'midtown', unread: 0, has_pr: false, ci_status: null, is_dm: false }])
+
+    globalThis.fetch = vi.fn().mockResolvedValueOnce({
+      ok: false,
+      json: async () => ({ error: 'internal server error' }),
+    })
+
+    await selectDm('carol')
+
+    // Despite the backend failure, the user should land on the DM channel
+    expect(get(activeChannel)).toBe('dm-carol')
+    // The channel should be in the sidebar as a DM
+    const ch = get(channels).find((c) => c.name === 'dm-carol')
+    expect(ch).toBeTruthy()
+    expect(ch.is_dm).toBe(true)
+  })
+
+  it('still navigates to DM channel when fetchChannels fails after creation', async () => {
+    // Regression: selectDm used to call `return` inside the catch block when
+    // fetchChannels threw, leaving activeChannel unchanged.
+    channels.set([{ name: 'midtown', unread: 0, has_pr: false, ci_status: null, is_dm: false }])
+
+    globalThis.fetch = vi.fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => ({}) }) // create succeeds
+      .mockRejectedValueOnce(new Error('network error')) // fetchChannels fails
+
+    await selectDm('dave')
+
+    expect(get(activeChannel)).toBe('dm-dave')
+    const ch = get(channels).find((c) => c.name === 'dm-dave')
+    expect(ch).toBeTruthy()
+    expect(ch.is_dm).toBe(true)
+  })
+})
+
+describe('fetchChannels — is_dm name-prefix fallback', () => {
+  let originalFetch
+
+  beforeEach(() => {
+    originalFetch = globalThis.fetch
+    channels.set([{ name: 'midtown', unread: 0, has_pr: false, ci_status: null }])
+  })
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch
+  })
+
+  it('marks dm- prefixed channels as DMs when is_dm field is absent from API response', async () => {
+    // Regression: if the backend omits is_dm (or sends undefined) for a dm-* channel,
+    // fetchChannels stored is_dm=undefined (falsy), and ChannelList filtered it out
+    // so the DM section never appeared.
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        channels: [
+          { name: 'midtown', is_archived: false, is_dm: false },
+          { name: 'dm-eve', is_archived: false }, // no is_dm field
+        ],
+      }),
+    })
+
+    await fetchChannels()
+
+    const ch = get(channels).find((c) => c.name === 'dm-eve')
+    expect(ch).toBeTruthy()
+    expect(ch.is_dm).toBe(true)
+  })
 })
