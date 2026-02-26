@@ -1070,12 +1070,17 @@ async fn collect_green_with_feedback_effects(
             continue;
         }
 
+        // Fetch all review content to embed in the nudge — same rationale as
+        // handle_pr_comment_nudge: coworkers need to see Midtown coworker reviews
+        // (issue comments) as well as formal GitHub reviews.
+        let review_content = fetch_review_content(pr_number).await;
         let message = format!(
-            "PR #{} ({}) - {}: {}",
+            "PR #{} ({}) - {}: {}{}",
             pr_number,
             truncate_str(title, 40),
             PrIssueType::GreenWithFeedback,
-            get_issue_action(PrIssueType::GreenWithFeedback)
+            get_issue_action(PrIssueType::GreenWithFeedback),
+            review_content.as_deref().unwrap_or("")
         );
 
         // Extract all decision context from persistent state in one lock
@@ -1705,6 +1710,40 @@ async fn fetch_pr_comments(
     Ok(pr_data)
 }
 
+/// Fetch and format all review content for a PR.
+///
+/// Retrieves both formal GitHub reviews (e.g., Codex formal reviews) and
+/// Midtown coworker reviews (posted as issue comments with review signatures).
+/// Returns a formatted string to append to nudge messages so coworkers see
+/// all feedback without needing to run extra `gh` commands.
+///
+/// Returns `None` if the fetch fails or no review content is found.
+async fn fetch_review_content(pr_number: u64) -> Option<String> {
+    let output = tokio::process::Command::new("gh")
+        .args([
+            "pr",
+            "view",
+            &pr_number.to_string(),
+            "--json",
+            "reviews,comments",
+        ])
+        .output()
+        .await
+        .ok()?;
+
+    if !output.status.success() {
+        debug!(
+            "fetch_review_content: gh pr view failed for PR #{}",
+            pr_number
+        );
+        return None;
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let data: serde_json::Value = serde_json::from_str(&stdout).ok()?;
+    format_review_content(&data)
+}
+
 /// Polling fallback for review comment notifications.
 ///
 /// When webhooks are degraded, this detects new review comments by comparing
@@ -2277,10 +2316,14 @@ pub(crate) async fn collect_reviewer_effects_with_source(
                 };
 
                 if should_nudge {
+                    // Embed review content so the coworker sees all feedback
+                    // (both formal reviews and Midtown coworker issue comments)
+                    let review_content = fetch_review_content(pr_number).await;
                     let nudge_msg = format!(
-                        "Your PR #{} ({}) has a completed review — please address any feedback and merge if appropriate.",
+                        "Your PR #{} ({}) has a completed review — please address any feedback and merge if appropriate.{}",
                         pr_number,
-                        truncate_str(title, 40)
+                        truncate_str(title, 40),
+                        review_content.as_deref().unwrap_or("")
                     );
 
                     let active_coworkers: Vec<String> = state
@@ -3418,9 +3461,16 @@ pub(super) async fn handle_pr_comment_nudge(
         }
     }
 
+    // Fetch all review content to embed in the nudge so the coworker sees both
+    // formal GitHub reviews (e.g., Codex) and Midtown coworker reviews (issue
+    // comments). Without this, coworkers running `gh pr view --json reviews`
+    // would only see formal reviews and miss coworker issue-comment reviews.
+    let review_content = fetch_review_content(pr_number).await;
     let nudge_msg = format!(
-        "Your PR #{} has review feedback from {}. Please address it and merge if appropriate.",
-        pr_number, activity.actor
+        "Your PR #{} has review feedback from {}. Please address it and merge if appropriate.{}",
+        pr_number,
+        activity.actor,
+        review_content.as_deref().unwrap_or("")
     );
 
     // Get active and idle coworkers for the decision function
