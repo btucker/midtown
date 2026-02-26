@@ -859,7 +859,11 @@ export function openTaskThread(task, channelName) {
   // Always include the clicked task even if not found above
   if (!tasks.find((t) => t.id === task.id)) tasks.unshift(task)
 
-  const parentMessage = { id: parentMessageId, from: 'lead', content: task.subject }
+  // Use the real channel message if available so the MessageRow gets correct
+  // timestamp, sender, and content.  Fall back to a synthetic stub only when
+  // the message hasn't loaded yet (rare edge case).
+  const parentMessage = channelMsgs.find((m) => m.id === parentMessageId)
+    ?? { id: parentMessageId, from: 'lead', content: task.subject }
   threadData.set({ parentMessage, channelName, messages: [], tasks })
   fetchThread(channelName, parentMessageId).then((replies) => {
     threadData.update((td) => {
