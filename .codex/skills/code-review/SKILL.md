@@ -95,7 +95,7 @@ Before reviewing, fetch all existing review comments so you don't duplicate find
 REPO=$(gh repo view --json nameWithOwner --jq '.nameWithOwner')
 
 # Inline review comments (line-level, from Codex or other reviewers)
-gh api "repos/$REPO/pulls/<PR_NUMBER>/comments" \
+gh api --paginate "repos/$REPO/pulls/<PR_NUMBER>/comments" \
   --jq '.[] | "[\(.user.login) on \(.path):\(.line // .original_line)]: \(.body)"'
 
 # Top-level review bodies (summary reviews with optional state)
@@ -103,7 +103,7 @@ gh pr view <PR_NUMBER> --json reviews \
   --jq '.reviews[] | select(.body != "") | "[\(.author.login) (\(.state))]: \(.body)"'
 
 # Issue comments (coworker reviews posted as PR comments with <!-- midtown: --> frontmatter)
-gh api "repos/$REPO/issues/<PR_NUMBER>/comments" \
+gh api --paginate "repos/$REPO/issues/<PR_NUMBER>/comments" \
   --jq '.[] | select(.body | contains("<!-- midtown:") or startswith("## Code Review")) | "[\(.user.login)]: \(.body[:500])"'
 ```
 
