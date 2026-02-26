@@ -199,6 +199,30 @@ impl DaemonClient {
         self.channel_post_as(message, &from, channel, None)
     }
 
+    /// Post a message threaded to a task's announcement message.
+    ///
+    /// Resolves the task's announcement message ID via `task.metadata`, then
+    /// posts as a thread reply. Returns an error if the task is unknown or has
+    /// no announcement message (e.g. created before threading was added).
+    pub fn channel_post_for_task(
+        &self,
+        message: &str,
+        channel: Option<&str>,
+        task_id: &str,
+    ) -> Result<Response, String> {
+        let metadata = self.task_metadata(task_id)?;
+        let thread_parent_id = metadata
+            .get("message_id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| {
+                format!(
+                    "Task !{} has no announcement message (may have been created before threading was added)",
+                    task_id
+                )
+            })?;
+        self.channel_post_in_thread(message, channel, thread_parent_id)
+    }
+
     /// Post a message as a thread reply.
     ///
     /// Like `channel_post`, but attaches a `thread_parent_id` so the message

@@ -58,6 +58,11 @@ Use threads for follow-up discussions on specific messages. This keeps the main 
 midtown channel post "reply text" --thread <parent-message-id>
 ```
 
+**Task shorthand:** For task-related posts, use `--task <id>` instead of `--thread`. This automatically resolves the task's announcement message and threads your post under it:
+```bash
+midtown channel post "found the root cause in auth.rs" --task 42
+```
+
 In the TUI, use `/thread` to pick a message and open the thread panel.
 
 **Thread notifications:** When a new reply is added to a thread, all thread participants (original message author and authors of existing replies) are automatically notified via nudge. You do not need to @mention them manually.
