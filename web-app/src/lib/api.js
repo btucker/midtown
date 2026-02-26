@@ -68,6 +68,7 @@ export async function fetchChannels(includeArchived = false) {
         has_pr: false,
         ci_status: null,
         is_archived: typeof ch === 'object' && ch.is_archived,
+        is_dm: typeof ch === 'object' && !!ch.is_dm,
       }))
       // Backend already returns channels sorted with main project channel first
       channels.set(channelList)
@@ -873,4 +874,47 @@ export function openTaskThread(task, channelName) {
 // Close the thread panel
 export function closeThread() {
   threadData.set(null)
+}
+
+// Select (or create-then-select) a DM channel for the given coworker name.
+// DM channels are named `dm-<coworkerName>` on the backend.
+// If the channel doesn't exist yet, it's created first, then selected.
+export async function selectDm(coworkerName) {
+  const channelName = `dm-${coworkerName}`
+
+  closeThread()
+
+  const currentChannels = get(channels)
+  const exists = currentChannels.some((ch) => ch.name === channelName)
+
+  if (!exists) {
+    try {
+      const res = await fetch(`${getApiBase()}/channels/create`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: channelName }),
+      })
+      if (!res.ok) {
+        const errorData = await res.json()
+        console.error('Failed to create DM channel:', errorData.error)
+        return
+      }
+      // Refresh channel list so the new DM channel appears in the sidebar
+      await fetchChannels(get(showArchivedChannels))
+    } catch (err) {
+      console.error('Failed to create DM channel:', err)
+      return
+    }
+  }
+
+  activeChannel.set(channelName)
+
+  channels.update((channelList) =>
+    channelList.map((ch) => (ch.name === channelName ? { ...ch, unread: 0 } : ch))
+  )
+
+  const currentMessages = get(messagesByChannel)[channelName]
+  if (!currentMessages || currentMessages.length === 0) {
+    fetchHistory(channelName)
+  }
 }

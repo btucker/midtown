@@ -1,7 +1,7 @@
 <script>
   import { SvelteSet } from 'svelte/reactivity'
   import { channels, activeChannel, kanbanData, activeProject, messagesByChannel, showArchivedChannels } from './store.js'
-  import { fetchHistory, fetchChannels, getApiBase, closeThread } from './api.js'
+  import { fetchHistory, fetchChannels, getApiBase, closeThread, selectDm } from './api.js'
   import {
     getChannelTaskCount,
     getChannelCiStatus,
@@ -20,6 +20,9 @@
   $: {
     fetchChannels($showArchivedChannels)
   }
+
+  $: regularChannels = $channels.filter((ch) => !ch.is_dm)
+  $: dmChannels = $channels.filter((ch) => ch.is_dm)
 
   // Track which channels have their task lists expanded (default: collapsed)
   // Using SvelteSet for reactivity — plain Set mutations don't trigger re-renders in Svelte 5
@@ -68,6 +71,10 @@
 
   function formatChannelName(name) {
     return `#${name}`
+  }
+
+  function formatDmName(name) {
+    return `@${name.replace(/^dm-/, '')}`
   }
 
   function toggleCreateInput() {
@@ -210,7 +217,7 @@
     </div>
   {/if}
 
-  {#each $channels as channel}
+  {#each regularChannels as channel}
     {@const counts = getChannelTaskCount(channel.name, $kanbanData)}
     {@const ciStatus = getChannelCiStatus(channel.name, $kanbanData)}
     {@const isActive = $activeChannel === channel.name}
@@ -260,4 +267,29 @@
       {/if}
     </div>
   {/each}
+
+  {#if dmChannels.length > 0}
+    <div class="flex items-center px-3 pt-3 pb-1">
+      <div class="text-xs font-bold text-muted-foreground uppercase tracking-wide">Direct Messages</div>
+    </div>
+    {#each dmChannels as channel}
+      {@const isActive = $activeChannel === channel.name}
+      {@const hasUnread = channel.unread > 0}
+      <div class="mb-0.5">
+        <div class="flex items-center rounded-md {isActive ? 'bg-accent text-primary' : 'text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground'}">
+          <!-- Fixed-width gutter (no triangle for DMs — they have no tasks) -->
+          <div class="w-[28px] ml-1 shrink-0"></div>
+          <button
+            class="flex items-center flex-1 min-w-0 pl-1 pr-3 py-2 border-none bg-transparent text-sm font-mono cursor-pointer transition-all duration-150 text-left text-inherit"
+            aria-label="Open DM with {channel.name.replace(/^dm-/, '')}"
+            onclick={() => selectChannel(channel.name)}
+          >
+            <div class="flex-1 overflow-hidden text-ellipsis whitespace-nowrap {hasUnread ? 'font-bold' : ''}">
+              {formatDmName(channel.name)}
+            </div>
+          </button>
+        </div>
+      </div>
+    {/each}
+  {/if}
 </div>
