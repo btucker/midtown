@@ -1,5 +1,6 @@
 <script>
-  import { onMount, onDestroy } from 'svelte'
+  import { onMount, onDestroy, untrack } from 'svelte'
+  import { SvelteMap } from 'svelte/reactivity'
   import { coworkers, maxCoworkers, repoStatus, kanbanData } from './store.js'
   import { openTaskThread, selectDm } from './api.js'
   import { getSenderColor } from './messageUtils.js'
@@ -7,8 +8,10 @@
 
   const OFFLINE_GRACE_MS = 10 * 60 * 1000
 
-  // Map of coworker name → timestamp of last seen active (not $state; read via `now` tick)
-  let lastSeenActive = new Map()
+  // Map of coworker name → timestamp of last seen active.
+  // SvelteMap so that .set() invalidates $derived(activeCoworkers) immediately,
+  // rather than waiting up to 30s for the `now` tick.
+  let lastSeenActive = new SvelteMap()
   let now = $state(Date.now())
   let interval
 
@@ -32,9 +35,11 @@
   // Record last-active timestamp whenever a coworker is in a non-idle state.
   // On first sight of an idle coworker (e.g. after page reload), initialize to now
   // so they get the full 10-minute grace window instead of disappearing immediately.
+  // untrack() prevents reading lastSeenActive.has() from making the map a $effect
+  // dependency (which would re-trigger the effect on every map mutation).
   $effect(() => {
     for (const cw of $coworkers) {
-      if (!isIdleOrStopped(cw) || !lastSeenActive.has(cw.name)) {
+      if (!isIdleOrStopped(cw) || untrack(() => !lastSeenActive.has(cw.name))) {
         lastSeenActive.set(cw.name, Date.now())
       }
     }
