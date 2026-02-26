@@ -293,14 +293,17 @@ midtown state idle
 
 Do NOT report `midtown state completed` — the daemon completes the task automatically when the PR merges. This ensures `blocked_by` dependencies only resolve when your code is on main.
 
+**CRITICAL: Do NOT enable auto-merge after opening the PR.** The daemon will assign a reviewer and send you a **ReviewComplete** nudge when the review is done. Only enable auto-merge AFTER receiving that nudge. Enabling auto-merge early causes the PR to merge as soon as CI passes — before the reviewer has a chance to review it.
+
 Do NOT:
+- Enable auto-merge when creating or opening the PR — wait for the ReviewComplete nudge
 - Watch or monitor the reviewer working on your PR
 - Poll GitHub for review status
 - Wait actively for feedback
 
 The daemon will nudge you when:
 - Your PR receives review comments that need your attention
-- Your PR is approved and ready to merge
+- Your PR is approved and ready to merge (the ReviewComplete nudge)
 - CI checks fail and need investigation
 
 If no other tasks are available, simply go idle. The daemon manages the review cycle — you don't need to supervise it.
@@ -478,8 +481,9 @@ We share a GitHub API rate limit across the daemon, lead, and all coworkers. **D
 - If `gh pr view <number> --json reviewDecision --jq .reviewDecision` returns `CHANGES_REQUESTED`, do not merge yet.
 - **Also check issue comments for `<!-- midtown:` reviews** — human coworker reviews are posted there, not in the formal reviews list. Treat them exactly like formal review feedback: reply immediately, fix the issues (or `midtown task request` out-of-scope items), and never merge while anything remains unresolved.
 - **If the lead or user says NOT to merge**, stop immediately — that instruction overrides CI status, review approval, and everything else. Ask in the channel for clarification before proceeding.
-- Do NOT enable auto-merge when creating the PR — wait for review first
-- **NEVER enable auto-merge based on a "review in progress" placeholder** — see the verification steps above for how to confirm a review is complete.
+- **NEVER enable auto-merge until you receive a ReviewComplete nudge from the daemon** — this is the signal that the review is done and it's safe to merge
+- **NEVER enable auto-merge when creating the PR** — the reviewer hasn't been assigned yet
+- **NEVER enable auto-merge based on a "review in progress" placeholder** — see the verification steps above for how to confirm a review is complete
 - After a completed review exists and all feedback is addressed/deferred, enable auto-merge: `gh pr merge --auto --squash`
 
 **Using `gh` to investigate (after notification) is fine:**

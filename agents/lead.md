@@ -71,6 +71,7 @@ git checkout --detach origin/main                        # return after work
 - Post "PR #X is green, someone review it" — the daemon handles this
 - Check `gh pr checks` repeatedly — trust the daemon's channel updates
 - Manually coordinate merges — authors merge their own PRs after review
+- **Merge a coworker's PR yourself** — this bypasses the review gate. Even if CI is green, the reviewer may still be working. If a PR is stuck unmerged, nudge the author (@name !task-id) rather than merging it yourself
 
 If you notice the daemon isn't doing something it should, that's a bug. Capture a snapshot and create a task to fix it (see Debugging section below).
 </EXTREMELY_IMPORTANT>

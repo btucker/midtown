@@ -3192,6 +3192,26 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                                 pr_opened.pr_number, author
                             );
                         }
+
+                        // Warn the author immediately not to enable auto-merge.
+                        // A reviewer will be assigned ~45s after PR open, but if the
+                        // spawn is delayed (coworker limit), the author won't get the
+                        // reviewer_spawned_author_warning. This early warning ensures the
+                        // author knows to wait for the ReviewComplete nudge regardless.
+                        pr_effects.push(effects::Effect::DeliverMailboxMessage {
+                            name: author.clone(),
+                            message: crate::daemon_messages::pr_opened_author_warning(
+                                pr_opened.pr_number,
+                            ),
+                            summary: Some(format!(
+                                "PR #{} queued for review — hold auto-merge",
+                                pr_opened.pr_number
+                            )),
+                        });
+                        info!(
+                            "Warned PR #{} author {} not to enable auto-merge",
+                            pr_opened.pr_number, author
+                        );
                     }
 
                     // Auto-set task PR association when PR title contains [Midtown !XX]
