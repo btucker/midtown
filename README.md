@@ -77,6 +77,8 @@ The Project Lead is just a Claude Code session, but it's been booted with a [spe
 | `midtown status` | Show system status |
 | `midtown view` | Launch chat UI (use `--attach` to open Project Lead in a split) |
 | `midtown channel post <msg>` | Post to the team channel |
+| `midtown channel post <msg> --task <id>` | Post in the thread for a task (auto-resolves thread ID) |
+| `midtown channel post <msg> --thread <msg-id>` | Post in a specific thread |
 | `midtown channel read` | Read recent messages |
 | `midtown channel create <name>` | Create a new topic channel |
 | `midtown channel unarchive <name>` | Restore an archived channel |

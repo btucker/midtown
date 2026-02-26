@@ -46,18 +46,20 @@ midtown state <phase> [--task <id>]
 
 **Always run `midtown state` when your phase changes.** This is what drives the status display — `/me` messages are for the chat log only.
 
-**Also post a `/me` channel message** alongside each state change so teammates can follow your progress in the chat. These messages are freeform — no keyword requirements:
+**Also post a `/me` channel message** alongside each state change so teammates can follow your progress in the chat. These messages are freeform — no keyword requirements.
+
+**Use `--task <id>` for task-related posts** to auto-thread them under the task's announcement message. This keeps all task discussion in one place without manually tracking thread IDs.
 
 ```bash
 # Update structured state AND post to channel:
 midtown state claiming --task 5
-midtown channel post "/me claimed task 5"
+midtown channel post "/me claimed task 5"  # claim goes in main channel (new event)
 
 midtown state developing --task 5
-midtown channel post "/me working on task 5"
+midtown channel post "/me working on task 5" --task 5  # progress threads under task
 
 midtown state pull-request --task 5 --pr <PR_NUMBER>
-midtown channel post "/me opened PR for task 5"
+midtown channel post "/me opened PR for task 5" --task 5  # PR update threads under task
 midtown state idle  # daemon completes the task when PR merges
 ```
 
@@ -82,11 +84,17 @@ midtown state pull-request --task 5 --pr <PR_NUMBER> --progress 90 # PR opened
 These are approximate — use your judgment based on task complexity. Update progress when crossing major milestones, not continuously.
 
 ### Other Updates
-Channel messages are freeform:
-- Progress milestones: `/me found the root cause in auth.rs`
-- Blocked: `blocked on task 3, need API spec clarified`
-- Domain questions: `@channel-lead should this handle the edge case?`
-- Coordination questions: `@{project_name} is task 3 a blocker here, or can I proceed?`
+Channel messages are freeform. Use `--task <id>` for task-specific updates so they thread under the task announcement:
+```bash
+midtown channel post "/me found the root cause in auth.rs" --task 42
+midtown channel post "blocked on API spec — need clarification" --task 42
+midtown channel post "@channel-lead should this handle the edge case?" --task 42
+```
+
+For project-wide coordination (not tied to a specific task), post without `--task`:
+```bash
+midtown channel post "@{project_name} is task 3 a blocker here, or can I proceed?"
+```
 
 ### Replying to Messages
 When replying to someone's channel message, **always @mention them** so the daemon can notify them of your response. This is especially important when answering questions from the lead or other coworkers.

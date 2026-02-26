@@ -199,6 +199,47 @@ impl DaemonClient {
         self.channel_post_as(message, &from, channel, None)
     }
 
+    /// Post a message threaded to a task's announcement message.
+    ///
+    /// Resolves the task's announcement message ID via `task.metadata`, then
+    /// posts as a thread reply. Returns an error if the task is not found
+    /// (daemon returns RPC error) or if the task has no announcement message
+    /// (e.g. created before threading was added).
+    pub fn channel_post_for_task(
+        &self,
+        message: &str,
+        channel: Option<&str>,
+        task_id: &str,
+    ) -> Result<Response, String> {
+        let metadata = self.task_metadata(task_id)?;
+        let thread_parent_id = metadata
+            .get("message_id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| {
+                format!(
+                    "Task !{} has no announcement message (may have been created before threading was added)",
+                    task_id
+                )
+            })?
+            .to_string();
+
+        // Channel resolution priority:
+        // 1. Explicit --channel flag (highest)
+        // 2. MIDTOWN_CHANNEL env var (coworker context sets this to the task's topic channel)
+        // 3. Task's channel from metadata (fallback for non-coworker contexts)
+        let env_channel = std::env::var("MIDTOWN_CHANNEL").ok();
+        let task_channel = metadata
+            .get("channel")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let effective_channel = channel
+            .map(|s| s.to_string())
+            .or(env_channel)
+            .or(task_channel);
+
+        self.channel_post_in_thread(message, effective_channel.as_deref(), &thread_parent_id)
+    }
+
     /// Post a message as a thread reply.
     ///
     /// Like `channel_post`, but attaches a `thread_parent_id` so the message

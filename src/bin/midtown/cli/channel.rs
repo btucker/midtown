@@ -13,8 +13,11 @@ pub enum ChannelCommand {
         #[arg(long)]
         channel: Option<String>,
         /// Reply in a thread (specify parent message ID)
-        #[arg(long = "thread")]
+        #[arg(long = "thread", conflicts_with = "task")]
         thread_parent_id: Option<String>,
+        /// Auto-thread to the task's announcement message (specify task ID)
+        #[arg(long = "task", conflicts_with = "thread_parent_id")]
+        task: Option<String>,
     },
     /// Read messages from the channel
     Read {
@@ -61,12 +64,16 @@ pub fn handle(cmd: &ChannelCommand, client: &DaemonClient) -> Result<Response, S
             message,
             channel,
             thread_parent_id,
-        } => match thread_parent_id {
-            Some(parent_id) => {
+            task,
+        } => {
+            if let Some(task_id) = task {
+                client.channel_post_for_task(message, channel.as_deref(), task_id)
+            } else if let Some(parent_id) = thread_parent_id {
                 client.channel_post_in_thread(message, channel.as_deref(), parent_id)
+            } else {
+                client.channel_post(message, channel.as_deref())
             }
-            None => client.channel_post(message, channel.as_deref()),
-        },
+        }
         ChannelCommand::Read {
             all,
             last,
