@@ -68,7 +68,7 @@ export async function fetchChannels(includeArchived = false) {
         has_pr: false,
         ci_status: null,
         is_archived: typeof ch === 'object' && ch.is_archived,
-        is_dm: typeof ch === 'object' && !!ch.is_dm,
+        is_dm: typeof ch === 'object' ? ch.is_dm : (typeof ch === 'string' && ch.startsWith('dm-')),
       }))
       // Backend already returns channels sorted with main project channel first
       channels.set(channelList)
