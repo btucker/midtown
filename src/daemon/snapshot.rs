@@ -203,8 +203,10 @@ pub struct WorldSnapshot {
     /// Task IDs that have open PRs (derived from PR titles in `open_prs_data`).
     /// Maps task_id → pr_number. Complements `tasks_with_open_prs` (from pr_author_sessions)
     /// by catching cases where pr_author_sessions is stale after a daemon restart but the
-    /// PR title contains `[Midtown !{task_id}]`. Used by orphan recovery to prevent
-    /// spawning duplicate coworkers.
+    /// PR title contains `[Midtown !{task_id}]`. Used by:
+    /// - Orphan recovery (`dispatch.rs`): prevent spawning duplicate coworkers.
+    /// - PR→task auto-link repair (`pr.rs`): emit `SetTaskPr` as a polling fallback
+    ///   when webhooks missed the PR open event (see `collect_pr_task_link_effects`).
     #[serde(default)]
     pub github_open_pr_task_ids: HashMap<String, u64>,
     /// Coworkers who have pending tasks assigned to them (task.owner set, status=pending).

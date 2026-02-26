@@ -137,6 +137,10 @@ pub async fn evaluate_tick(
             // Always run merged PR cleanup (pure function, no API calls)
             effects.extend(super::pr::collect_merged_pr_cleanup_effects(snap));
 
+            // Polling fallback for PR→task auto-link: repair missing SetTaskPr links
+            // that webhooks may have missed (no API calls, pure snapshot comparison)
+            effects.extend(super::pr::collect_pr_task_link_effects(snap));
+
             // Clean up stale worktrees (completed tasks older than retention period)
             {
                 let daemon_config = crate::config::get_project_daemon_config(&state.repo_name);
