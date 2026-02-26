@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { get } from 'svelte/store'
 import { messagesByChannel, threadData, channels, activeChannel, agentToolItems } from './store.js'
-import { fetchHistory, handleUpdate, fetchChannels, selectDm } from './api.js'
+import { fetchHistory, handleUpdate, fetchChannels, selectDm, switchProject } from './api.js'
 
 describe('fetchHistory', () => {
   let originalFetch
@@ -473,5 +473,60 @@ describe('handleUpdate — agentToolItems persistence after channel lead message
     // Items cleared after the delay
     vi.advanceTimersByTime(1)
     expect(get(agentToolItems)['midtown']).toBeUndefined()
+  })
+
+  it('clears topic channel tool items when the main lead posts to that channel', () => {
+    // Regression: the original guard blocked the clear when msg.from was 'lead' or
+    // 'midtown', regardless of which channel the message was posted to. A lead
+    // posting to 'web' should still schedule a clear for 'web' tool items.
+    handleUpdate({ type: 'universal_items', data: { channel: 'web', agent_name: 'web', items: [sampleItem] } })
+    expect(get(agentToolItems)['web']).toHaveLength(1)
+
+    handleUpdate({ type: 'channel_message', data: { id: 'msg-3', from: 'lead', content: 'hi', channel: 'web', timestamp: '2026-01-01T00:00:00Z' } })
+
+    // Items present before delay
+    vi.advanceTimersByTime(3999)
+    expect(get(agentToolItems)['web']).toHaveLength(1)
+
+    // Items cleared after delay
+    vi.advanceTimersByTime(1)
+    expect(get(agentToolItems)['web']).toBeUndefined()
+  })
+
+  it('does not clear tool items for an unrelated channel when another channel gets a message', () => {
+    // Channel isolation: clearing 'web' must not affect 'staging'.
+    handleUpdate({ type: 'universal_items', data: { channel: 'web', agent_name: 'web', items: [sampleItem] } })
+    handleUpdate({ type: 'universal_items', data: { channel: 'staging', agent_name: 'staging', items: [sampleItem] } })
+
+    // Message arrives only on 'web'
+    handleUpdate({ type: 'channel_message', data: { id: 'msg-4', from: 'web', content: 'done', channel: 'web', timestamp: '2026-01-01T00:00:00Z' } })
+
+    // Advance past the clear delay
+    vi.advanceTimersByTime(5000)
+
+    // 'web' items cleared, 'staging' items untouched
+    expect(get(agentToolItems)['web']).toBeUndefined()
+    expect(get(agentToolItems)['staging']).toHaveLength(1)
+  })
+
+  it('cancels pending clear timeouts when switching projects', () => {
+    // Regression: pending setTimeout handles in agentClearTimeouts were not
+    // cancelled on switchProject(), so a delayed clear could fire against the
+    // new project's agentToolItems store after the switch.
+    handleUpdate({ type: 'universal_items', data: { channel: 'web', agent_name: 'web', items: [sampleItem] } })
+    handleUpdate({ type: 'channel_message', data: { id: 'msg-5', from: 'web', content: 'done', channel: 'web', timestamp: '2026-01-01T00:00:00Z' } })
+
+    // Switch projects while the 4-second clear is still pending
+    vi.advanceTimersByTime(1000)
+    switchProject('other-project', null)
+
+    // Simulate new tool items arriving in the new project
+    handleUpdate({ type: 'universal_items', data: { channel: 'web', agent_name: 'web', items: [sampleItem] } })
+
+    // Advance past the original delay — the stale timeout must NOT fire
+    vi.advanceTimersByTime(5000)
+
+    // New project's 'web' tool items must not have been cleared by the old timeout
+    expect(get(agentToolItems)['web']).toHaveLength(1)
   })
 })
