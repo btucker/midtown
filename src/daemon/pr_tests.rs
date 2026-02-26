@@ -2857,3 +2857,146 @@ async fn test_reviewer_spawn_warns_pr_author_via_mailbox() {
         on_success
     );
 }
+
+// ── collect_pr_task_link_effects tests ──────────────────────────────────────
+
+/// A task with an open PR title match but no task.pr set should emit SetTaskPr.
+///
+/// Scenario: PR #42 has title "Fix auth [Midtown !100]" so github_open_pr_task_ids
+/// maps "100" → 42. Task !100 exists but has pr = None. The polling fallback must
+/// emit SetTaskPr to repair the missing link.
+#[test]
+fn test_collect_pr_task_link_effects_links_unlinked_task() {
+    use super::super::snapshot::minimal_snapshot_for_test;
+    use crate::tasks::{Task, TaskStatus};
+
+    let task = Task {
+        id: "100".to_string(),
+        subject: "Fix auth".to_string(),
+        status: TaskStatus::InProgress,
+        owner: Some("york".to_string()),
+        description: None,
+        blocked_by: vec![],
+        channel: None,
+        pr: None, // not yet linked
+        created_at: None,
+    };
+
+    let mut snap = minimal_snapshot_for_test();
+    snap.all_tasks = vec![task];
+    snap.github_open_pr_task_ids.insert("100".to_string(), 42);
+
+    let effects = collect_pr_task_link_effects(&snap);
+
+    assert_eq!(
+        effects.len(),
+        1,
+        "Expected exactly one SetTaskPr effect, got: {:#?}",
+        effects
+    );
+    assert!(
+        matches!(
+            &effects[0],
+            Effect::SetTaskPr {
+                task_id,
+                pr_number: 42,
+                ..
+            } if task_id == "100"
+        ),
+        "Expected SetTaskPr for task 100 / PR 42, got: {:#?}",
+        effects[0]
+    );
+}
+
+/// A task already correctly linked to the PR should not emit any effect.
+#[test]
+fn test_collect_pr_task_link_effects_skips_already_linked_task() {
+    use super::super::snapshot::minimal_snapshot_for_test;
+    use crate::tasks::{Task, TaskStatus};
+
+    let task = Task {
+        id: "200".to_string(),
+        subject: "Add feature".to_string(),
+        status: TaskStatus::InProgress,
+        owner: Some("amsterdam".to_string()),
+        description: None,
+        blocked_by: vec![],
+        channel: None,
+        pr: Some(99), // already linked correctly
+        created_at: None,
+    };
+
+    let mut snap = minimal_snapshot_for_test();
+    snap.all_tasks = vec![task];
+    snap.github_open_pr_task_ids.insert("200".to_string(), 99);
+
+    let effects = collect_pr_task_link_effects(&snap);
+
+    assert!(
+        effects.is_empty(),
+        "Expected no effects for already-linked task, got: {:#?}",
+        effects
+    );
+}
+
+/// A PR with no [Midtown !XXX] task marker should produce no effects.
+#[test]
+fn test_collect_pr_task_link_effects_ignores_pr_without_task_marker() {
+    use super::super::snapshot::minimal_snapshot_for_test;
+
+    // github_open_pr_task_ids is empty (no Midtown marker found in any title)
+    let snap = minimal_snapshot_for_test();
+
+    let effects = collect_pr_task_link_effects(&snap);
+
+    assert!(
+        effects.is_empty(),
+        "Expected no effects when no PR has a task marker, got: {:#?}",
+        effects
+    );
+}
+
+/// A mismatched PR number (task.pr points to a different PR) should emit SetTaskPr
+/// to correct the link.
+#[test]
+fn test_collect_pr_task_link_effects_corrects_mismatched_pr() {
+    use super::super::snapshot::minimal_snapshot_for_test;
+    use crate::tasks::{Task, TaskStatus};
+
+    let task = Task {
+        id: "300".to_string(),
+        subject: "Refactor".to_string(),
+        status: TaskStatus::InProgress,
+        owner: Some("lexington".to_string()),
+        description: None,
+        blocked_by: vec![],
+        channel: None,
+        pr: Some(55), // stale/wrong PR number
+        created_at: None,
+    };
+
+    let mut snap = minimal_snapshot_for_test();
+    snap.all_tasks = vec![task];
+    snap.github_open_pr_task_ids.insert("300".to_string(), 77); // actual open PR
+
+    let effects = collect_pr_task_link_effects(&snap);
+
+    assert_eq!(
+        effects.len(),
+        1,
+        "Expected one SetTaskPr to fix mismatch, got: {:#?}",
+        effects
+    );
+    assert!(
+        matches!(
+            &effects[0],
+            Effect::SetTaskPr {
+                task_id,
+                pr_number: 77,
+                ..
+            } if task_id == "300"
+        ),
+        "Expected SetTaskPr for task 300 / PR 77, got: {:#?}",
+        effects[0]
+    );
+}

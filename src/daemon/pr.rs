@@ -4017,6 +4017,43 @@ pub fn reconcile_orphaned_prs(snap: &WorldSnapshot) -> Vec<Effect> {
     effects
 }
 
+/// Polling fallback for PR→task auto-link.
+///
+/// The webhook path in `mod.rs` emits `SetTaskPr` when a PR is opened with
+/// `[Midtown !XXX]` in the title. But if the webhook server was not running
+/// or missed the event, the task's `pr` field stays `None` and auto-completion
+/// never fires.
+///
+/// This pure function runs on every `PrPollTick` as a reconciliation pass:
+/// for every (task_id, pr_number) pair in `snap.github_open_pr_task_ids`
+/// (derived from open PR titles), it checks whether the corresponding task
+/// already has `task.pr` set correctly. If not, it emits `Effect::SetTaskPr`
+/// to repair the missing link.
+pub fn collect_pr_task_link_effects(snap: &WorldSnapshot) -> Vec<Effect> {
+    let mut effects = Vec::new();
+
+    for (task_id_str, &pr_number) in &snap.github_open_pr_task_ids {
+        // Find the task by ID
+        let task = snap.all_tasks.iter().find(|t| &t.id == task_id_str);
+
+        // Only emit if the link is missing or points to the wrong PR
+        let needs_link = match task {
+            Some(t) => t.pr != Some(pr_number),
+            None => false, // task not found — skip, nothing to link
+        };
+
+        if needs_link {
+            effects.push(Effect::SetTaskPr {
+                task_id: task_id_str.clone(),
+                pr_number,
+                repo_name: snap.repo_name.clone(),
+            });
+        }
+    }
+
+    effects
+}
+
 /// Generates CleanupMergedWorktree effects to remove the worktree directory and
 /// registry entry after the PR is merged.
 ///
