@@ -243,17 +243,58 @@ pub(super) async fn handle_channel_post(
                 );
             }
         } else if is_topic_channel {
-            // Task 2: Thread-aware routing — if there's a forked topic session for
-            // this thread, route directly to it instead of the channel lead.
-            // This lets thread-specific forks handle their own conversation slice
-            // without going through the root channel lead.
-            let topic_session_id = thread_parent_id
-                .and_then(|parent_id| state.topic_sessions.lock().unwrap().get(parent_id).cloned());
+            // Resolve the fork session for this message:
+            // - For thread replies: route to the existing fork session bound to that thread.
+            // - For new top-level messages: auto-fork the channel lead so every user
+            //   message immediately gets its own thread-scoped session. This ensures the
+            //   fork exists before the nudge arrives, making per-thread tool-call display
+            //   and context isolation reliable without relying on the lead to fork manually.
+            let topic_session_id = if let Some(parent_id) = thread_parent_id {
+                // Thread reply: route to existing fork session (if any).
+                state.topic_sessions.lock().unwrap().get(parent_id).cloned()
+            } else {
+                // New top-level message: auto-fork from the channel lead session.
+                // Look up the channel lead's session ID from persistent state.
+                let lead_session_id = {
+                    let ps = state.persistent_state.lock().await;
+                    ps.channel_lead_sessions
+                        .get(channel_name)
+                        .filter(|s| !s.is_empty())
+                        .cloned()
+                };
+                if let Some(lead_sid) = lead_session_id {
+                    match super::rpc_session::create_fork_session(
+                        &wake_msg_id,
+                        &lead_sid,
+                        Some(channel_name),
+                        state,
+                    )
+                    .await
+                    {
+                        Ok((fork_sid, _)) => {
+                            debug!(
+                                "channel.post: auto-forked for message {} → fork session {}",
+                                wake_msg_id, fork_sid
+                            );
+                            Some(fork_sid)
+                        }
+                        Err(e) => {
+                            debug!(
+                                "channel.post: auto-fork skipped ({}), nudging channel lead",
+                                e
+                            );
+                            None
+                        }
+                    }
+                } else {
+                    // No channel lead running yet — NudgeChannelLead will spawn one.
+                    None
+                }
+            };
             if let Some(fork_session_id) = topic_session_id.as_deref() {
                 debug!(
-                    "channel.post: routing thread reply to fork session {} (thread {})",
-                    fork_session_id,
-                    thread_parent_id.unwrap_or("?"),
+                    "channel.post: routing to fork session {} (thread anchor {})",
+                    fork_session_id, wake_msg_id,
                 );
             }
             let nudge_effect = build_topic_thread_nudge_effect(

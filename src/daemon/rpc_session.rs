@@ -1065,27 +1065,29 @@ pub(super) async fn handle_session_clear(
     }
 }
 
-/// Handle session.fork RPC method.
+/// Create a fork session bound to a thread, or return an existing one.
 ///
-/// Forks the calling session into a new independent session bound to a thread.
-/// The fork inherits the parent session's full context (conversation history,
-/// tool access, etc.) but creates a new session ID. Future channel posts from
-/// the forked session are automatically tagged with `thread_parent_id`.
+/// This is the shared implementation used by both `handle_session_fork` (explicit fork
+/// via `midtown session fork`) and the daemon's auto-fork path in `handle_channel_post`
+/// (automatic fork on new top-level user messages to topic channels).
 ///
-/// Thread replies in the channel are routed to the forked session (by
-/// `handle_channel_post`) rather than the root channel lead.
+/// Uses an atomic check-and-reserve on `topic_sessions` to prevent duplicate forks for
+/// the same thread: inserts a "pending" sentinel, then replaces it with the real
+/// session_id on success (or removes it on failure).
 ///
-/// Parameters:
-/// - `thread_parent_id`: The message ID of the thread root. Required.
-/// - `calling_session_id`: The session ID of the calling session. Required.
-///   The caller must pass its own session ID (from the `MIDTOWN_SESSION_ID`
-///   env var or the system init event).
-pub(super) async fn handle_session_fork(
-    id: RequestId,
+/// `channel_hint` lets callers provide a known channel name that takes priority over the
+/// session record's channel field. The auto-fork path uses this since `handle_channel_post`
+/// already knows the channel from the incoming message.
+///
+/// Returns `Ok((session_id, already_existed))` where `already_existed` is true when a
+/// fork was found in `topic_sessions` before this call. Returns `Err` if the slot holds
+/// "pending" (concurrent fork in progress) or spawn fails.
+pub(super) async fn create_fork_session(
     thread_parent_id: &str,
     calling_session_id: &str,
+    channel_hint: Option<&str>,
     state: &DaemonState,
-) -> crate::rpc::Response {
+) -> Result<(String, bool), String> {
     // Atomic guard: check-and-reserve the topic_sessions slot in a single lock
     // acquisition. This prevents the race where two concurrent fork requests for
     // the same thread_parent_id both pass the guard and spawn duplicate forks.
@@ -1094,13 +1096,11 @@ pub(super) async fn handle_session_fork(
     {
         let mut topic = state.topic_sessions.lock().unwrap();
         if let Some(existing_sid) = topic.get(thread_parent_id) {
-            return crate::rpc::Response::success(
-                id,
-                serde_json::json!({
-                    "session_id": existing_sid,
-                    "already_exists": true,
-                }),
-            );
+            if existing_sid == "pending" {
+                // Another concurrent fork is in progress — bail rather than duplicate.
+                return Err("fork in progress for this thread".to_string());
+            }
+            return Ok((existing_sid.clone(), true));
         }
         // Reserve the slot to prevent concurrent forks for the same thread.
         topic.insert(thread_parent_id.to_string(), "pending".to_string());
@@ -1146,9 +1146,13 @@ pub(super) async fn handle_session_fork(
         }
     };
 
-    // Determine channel for the fork — inherit from parent session or derive from
-    // the caller name (channel leads are named after their channel).
-    let fork_channel = channel.or_else(|| caller_name.clone());
+    // Determine channel for the fork — explicit hint takes priority (the auto-fork
+    // path knows the channel from the incoming message), then session record, then
+    // caller name (channel leads are named after their channel).
+    let fork_channel = channel_hint
+        .map(String::from)
+        .or(channel)
+        .or_else(|| caller_name.clone());
 
     // Build the HeadlessConfig for the fork.
     // Platform-specific launch paths translate this into a true fork:
@@ -1218,10 +1222,7 @@ pub(super) async fn handle_session_fork(
                 .unwrap()
                 .remove(thread_parent_id);
             warn!("session.fork: failed to spawn fork session: {}", e);
-            return crate::rpc::Response::error(
-                id,
-                crate::rpc::RpcError::new(-32603, format!("Failed to fork session: {}", e)),
-            );
+            return Err(format!("Failed to fork session: {}", e));
         }
     };
 
@@ -1308,12 +1309,12 @@ pub(super) async fn handle_session_fork(
         .lock()
         .unwrap()
         .insert(fork_name.clone(), thread_parent_id.to_string());
-    if let Some(fork_channel) = fork_channel {
+    if let Some(ref fork_ch) = fork_channel {
         state
             .fork_bound_channels
             .lock()
             .unwrap()
-            .insert(fork_name.clone(), fork_channel);
+            .insert(fork_name.clone(), fork_ch.clone());
     }
 
     info!(
@@ -1324,13 +1325,48 @@ pub(super) async fn handle_session_fork(
         fork_session_id
     );
 
-    crate::rpc::Response::success(
-        id,
-        serde_json::json!({
-            "session_id": fork_session_id,
-            "thread_parent_id": thread_parent_id,
-        }),
-    )
+    Ok((fork_session_id, false))
+}
+
+/// Handle session.fork RPC method.
+///
+/// Forks the calling session into a new independent session bound to a thread.
+/// The fork inherits the parent session's full context (conversation history,
+/// tool access, etc.) but creates a new session ID. Future channel posts from
+/// the forked session are automatically tagged with `thread_parent_id`.
+///
+/// Thread replies in the channel are routed to the forked session (by
+/// `handle_channel_post`) rather than the root channel lead.
+///
+/// Parameters:
+///
+/// - `thread_parent_id`: The message ID of the thread root. Required.
+/// - `calling_session_id`: The session ID of the calling session. Required.
+///   The caller must pass its own session ID (from the `MIDTOWN_SESSION_ID`
+///   env var or the system init event).
+pub(super) async fn handle_session_fork(
+    id: RequestId,
+    thread_parent_id: &str,
+    calling_session_id: &str,
+    state: &DaemonState,
+) -> crate::rpc::Response {
+    match create_fork_session(thread_parent_id, calling_session_id, None, state).await {
+        Ok((sid, true)) => crate::rpc::Response::success(
+            id,
+            serde_json::json!({
+                "session_id": sid,
+                "already_exists": true,
+            }),
+        ),
+        Ok((sid, false)) => crate::rpc::Response::success(
+            id,
+            serde_json::json!({
+                "session_id": sid,
+                "thread_parent_id": thread_parent_id,
+            }),
+        ),
+        Err(e) => crate::rpc::Response::error(id, crate::rpc::RpcError::new(-32603, e)),
+    }
 }
 
 // ============================================================================

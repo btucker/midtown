@@ -1767,6 +1767,122 @@ async fn test_dm_post_from_coworker_is_not_blocked() {
     );
 }
 
+// ============================================================================
+// Auto-fork tests
+// ============================================================================
+
+/// When a user posts a new top-level message to a topic channel that has a known
+/// channel lead session, an auto-fork is attempted. In tests the spawn fails
+/// (no real claude process), but the sentinel should be cleaned up and the
+/// overall channel.post should still succeed.
+#[tokio::test]
+async fn test_user_message_to_topic_channel_with_lead_cleans_up_sentinel_on_failed_fork() {
+    let (state, _tmp, _guard) = make_test_state("midtown-test-autofork-sentinel-cleanup");
+
+    // Register a fake channel lead session for the "web" topic channel
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.channel_lead_sessions
+            .insert("web".to_string(), "fake-lead-session-id".to_string());
+    }
+
+    let response = handle_channel_post(
+        1_i64.into(),
+        "user",
+        "new question about the web UI",
+        Some("web"),
+        None,
+        &state,
+    )
+    .await;
+    assert!(
+        response.error.is_none(),
+        "channel.post should succeed even when auto-fork spawn fails"
+    );
+
+    // The auto-fork attempt fails (no real claude process), so the pending sentinel
+    // must be removed. topic_sessions should have no "pending" entries.
+    let topic = state.topic_sessions.lock().unwrap();
+    assert!(
+        !topic.values().any(|v| v == "pending"),
+        "no pending sentinels should remain after failed auto-fork"
+    );
+}
+
+/// When a user posts a thread reply to a topic channel that already has a fork
+/// session registered in topic_sessions, the existing fork is used for routing
+/// (existing behavior preserved).
+#[tokio::test]
+async fn test_thread_reply_routes_to_existing_fork_session() {
+    let (state, _tmp, _guard) = make_test_state("midtown-test-thread-reply-routing");
+
+    // Pre-register a fork session for a specific thread
+    let thread_parent_id = "existing-thread-msg-id";
+    let fork_session_id = "existing-fork-session-id";
+    state
+        .topic_sessions
+        .lock()
+        .unwrap()
+        .insert(thread_parent_id.to_string(), fork_session_id.to_string());
+
+    // User posts a thread reply to this thread
+    let response = handle_channel_post(
+        1_i64.into(),
+        "user",
+        "follow-up question in thread",
+        Some("web"),
+        Some(thread_parent_id),
+        &state,
+    )
+    .await;
+    assert!(
+        response.error.is_none(),
+        "thread reply channel.post should succeed"
+    );
+
+    // topic_sessions should still contain the same fork (no new fork created)
+    let topic = state.topic_sessions.lock().unwrap();
+    assert_eq!(
+        topic.get(thread_parent_id).map(String::as_str),
+        Some(fork_session_id),
+        "existing fork session should remain unchanged"
+    );
+    // And no "pending" sentinels
+    assert!(
+        !topic.values().any(|v| v == "pending"),
+        "no pending sentinels from thread reply routing"
+    );
+}
+
+/// When no channel lead session is registered for a topic channel, auto-fork
+/// is skipped gracefully and channel.post succeeds.
+#[tokio::test]
+async fn test_user_message_to_topic_channel_without_lead_skips_fork() {
+    let (state, _tmp, _guard) = make_test_state("midtown-test-autofork-no-lead");
+
+    // No channel lead session registered for "feature-x"
+    let response = handle_channel_post(
+        1_i64.into(),
+        "user",
+        "question for the feature-x channel",
+        Some("feature-x"),
+        None,
+        &state,
+    )
+    .await;
+    assert!(
+        response.error.is_none(),
+        "channel.post should succeed when no channel lead exists"
+    );
+
+    // No fork should have been attempted (topic_sessions stays empty)
+    let topic = state.topic_sessions.lock().unwrap();
+    assert!(
+        topic.is_empty(),
+        "topic_sessions should be empty when no channel lead exists"
+    );
+}
+
 /// Verify the DmFromUser wake reason encodes the correct reply instruction
 /// for a channel.post to a dm- channel.
 #[test]
