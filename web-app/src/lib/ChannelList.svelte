@@ -21,8 +21,8 @@
     fetchChannels($showArchivedChannels)
   }
 
-  $: regularChannels = $channels.filter((ch) => !ch.is_dm)
-  $: dmChannels = $channels.filter((ch) => ch.is_dm)
+  $: regularChannels = $channels.filter((ch) => !ch.is_dm && !ch.name.startsWith('dm-'))
+  $: dmChannels = $channels.filter((ch) => ch.is_dm || ch.name.startsWith('dm-'))
 
   // Track which channels have their task lists expanded (default: collapsed)
   // Using SvelteSet for reactivity — plain Set mutations don't trigger re-renders in Svelte 5

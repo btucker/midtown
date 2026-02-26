@@ -77,7 +77,10 @@ export async function fetchChannels(includeArchived = false) {
         has_pr: false,
         ci_status: null,
         is_archived: typeof ch === 'object' && ch.is_archived,
-        is_dm: typeof ch === 'object' ? ch.is_dm : (typeof ch === 'string' && ch.startsWith('dm-')),
+        is_dm:
+          typeof ch === 'object'
+            ? ch.is_dm || ch.name.startsWith('dm-')
+            : ch.startsWith('dm-'),
       }))
       // Backend already returns channels sorted with main project channel first
       channels.set(channelList)
@@ -926,6 +929,13 @@ export async function selectDm(coworkerName) {
   const exists = currentChannels.some((ch) => ch.name === channelName)
 
   if (!exists) {
+    // Optimistically add the DM channel so the sidebar shows it immediately,
+    // regardless of whether the backend create or subsequent fetchChannels succeeds.
+    channels.update((list) => [
+      ...list,
+      { name: channelName, unread: 0, has_pr: false, ci_status: null, is_dm: true },
+    ])
+
     try {
       const res = await fetch(`${getApiBase()}/channels/create`, {
         method: 'POST',
@@ -935,13 +945,12 @@ export async function selectDm(coworkerName) {
       if (!res.ok) {
         const errorData = await res.json()
         console.error('Failed to create DM channel:', errorData.error)
-        return
+      } else {
+        // Refresh channel list so the sidebar reflects canonical backend state
+        await fetchChannels(get(showArchivedChannels))
       }
-      // Refresh channel list so the new DM channel appears in the sidebar
-      await fetchChannels(get(showArchivedChannels))
     } catch (err) {
       console.error('Failed to create DM channel:', err)
-      return
     }
   }
 
