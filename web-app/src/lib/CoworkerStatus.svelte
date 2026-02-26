@@ -1,6 +1,6 @@
 <script>
   import { coworkers, maxCoworkers, repoStatus, kanbanData } from './store.js'
-  import { openTaskThread } from './api.js'
+  import { openTaskThread, selectDm } from './api.js'
   import { getSenderColor } from './messageUtils.js'
   import * as Tooltip from '$lib/components/ui/tooltip/index.js'
 
@@ -84,6 +84,11 @@
               </Tooltip.Trigger>
               <Tooltip.Content side="top">{cw.name}</Tooltip.Content>
             </Tooltip.Root>
+            <button
+              class="bg-transparent border-none p-0 m-0 cursor-pointer text-inherit text-[0.75rem] font-mono hover:underline leading-none"
+              onclick={() => selectDm(cw.name)}
+              title="Open DM with {cw.name}"
+            >{cw.name}</button>
             {#if cw.phase}
               <span class="hidden text-[0.75rem] text-muted-foreground sm:inline">{cw.phase}</span>
             {/if}

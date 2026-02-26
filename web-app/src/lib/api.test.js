@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { get } from 'svelte/store'
-import { messagesByChannel, threadData } from './store.js'
-import { fetchHistory, handleUpdate } from './api.js'
+import { messagesByChannel, threadData, channels, activeChannel } from './store.js'
+import { fetchHistory, handleUpdate, fetchChannels, selectDm } from './api.js'
 
 describe('fetchHistory', () => {
   let originalFetch
@@ -290,5 +290,116 @@ describe('handleUpdate — optimistic message deduplication', () => {
     // Panel is for otherParentId — should be untouched
     expect(td.messages).toHaveLength(1)
     expect(td.messages[0].id).toBe('pending-reply-2')
+  })
+})
+
+describe('fetchChannels — is_dm field', () => {
+  let originalFetch
+
+  beforeEach(() => {
+    originalFetch = globalThis.fetch
+    channels.set([{ name: 'midtown', unread: 0, has_pr: false, ci_status: null }])
+  })
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch
+  })
+
+  it('propagates is_dm=true from the API response', async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        channels: [
+          { name: 'midtown', is_archived: false, is_dm: false },
+          { name: 'dm-alice', is_archived: false, is_dm: true },
+        ],
+      }),
+    })
+
+    await fetchChannels()
+
+    const ch = get(channels)
+    const dmChannel = ch.find((c) => c.name === 'dm-alice')
+    expect(dmChannel).toBeTruthy()
+    expect(dmChannel.is_dm).toBe(true)
+    expect(ch.find((c) => c.name === 'midtown').is_dm).toBe(false)
+  })
+
+  it('defaults is_dm to false for string-format channels (legacy API)', async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ channels: ['midtown', 'other'] }),
+    })
+
+    await fetchChannels()
+
+    const ch = get(channels)
+    expect(ch.every((c) => c.is_dm === false)).toBe(true)
+  })
+})
+
+describe('selectDm', () => {
+  let originalFetch
+
+  beforeEach(() => {
+    originalFetch = globalThis.fetch
+    channels.set([
+      { name: 'midtown', unread: 0, has_pr: false, ci_status: null, is_dm: false },
+      { name: 'dm-alice', unread: 3, has_pr: false, ci_status: null, is_dm: true },
+    ])
+    activeChannel.set('midtown')
+    messagesByChannel.set({ midtown: [], 'dm-alice': [{ id: 1, content: 'hey', channel: 'dm-alice' }] })
+  })
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch
+  })
+
+  it('switches to existing DM channel without creating it', async () => {
+    const fetchMock = vi.fn()
+    globalThis.fetch = fetchMock
+
+    await selectDm('alice')
+
+    // No create call should have been made
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(get(activeChannel)).toBe('dm-alice')
+  })
+
+  it('clears the unread count when switching to a DM channel', async () => {
+    globalThis.fetch = vi.fn()
+
+    await selectDm('alice')
+
+    const ch = get(channels).find((c) => c.name === 'dm-alice')
+    expect(ch.unread).toBe(0)
+  })
+
+  it('creates the DM channel if it does not exist, then switches to it', async () => {
+    channels.set([{ name: 'midtown', unread: 0, has_pr: false, ci_status: null, is_dm: false }])
+
+    globalThis.fetch = vi.fn()
+      // First call: POST create
+      .mockResolvedValueOnce({ ok: true, json: async () => ({}) })
+      // Second call: GET fetchChannels
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          channels: [
+            { name: 'midtown', is_archived: false, is_dm: false },
+            { name: 'dm-bob', is_archived: false, is_dm: true },
+          ],
+        }),
+      })
+      // Third call: GET fetchHistory for dm-bob
+      .mockResolvedValueOnce({ ok: true, json: async () => [] })
+
+    await selectDm('bob')
+
+    expect(get(activeChannel)).toBe('dm-bob')
+    // Create endpoint should have been called with the right name
+    const createCall = globalThis.fetch.mock.calls[0]
+    expect(createCall[0]).toContain('/channels/create')
+    expect(JSON.parse(createCall[1].body).name).toBe('dm-bob')
   })
 })
