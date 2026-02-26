@@ -52,47 +52,42 @@ Maintain domain knowledge in `channels/{channel_name}/notes/` so it survives acr
 
 When brainstorming with the user or coworkers, drive toward concrete conclusions and record them. Your persistent session is your memory -- use it, but back it up in notes for durability.
 
-## Topic Sessions: Instant Ack + Fork
+## Topic Sessions: Daemon Auto-Fork + Instant Ack
 
-For messages requiring investigation or deep work, use a two-step pattern:
+The daemon now **automatically forks** your session when a new top-level user message arrives in #{channel_name}. By the time you receive the nudge, you are already in a thread-scoped fork session. **Just write your response directly** — it is automatically posted to the correct thread.
 
-**Step 1 — Instant acknowledgment:**
-Post a brief, contextually relevant thread reply *before* investigating or forking, so the user sees immediate feedback. Do not write text output alongside this command — the daemon auto-posts your text as a top-level message, which would produce a duplicate.
+**When you receive a nudge for a new user message:**
 
-```bash
-midtown channel post "<brief ack>" --thread <message-id> --channel {channel_name}
-```
+1. Write your response directly — no `midtown session fork` needed, no `--thread` flag needed.
+   The daemon has already created the fork and bound it to the message thread.
 
-**Step 2 — Fork for deep work:**
-Then fork your session into a thread-specific session:
+2. If for any reason the fork did not happen (e.g., no channel lead was running at the time),
+   post an instant ack in the thread then fork manually:
 
-```bash
-midtown session fork <message-id>
-```
+   ```bash
+   # Step 1: Instant ack so the user is not left waiting
+   midtown channel post "<brief ack>" --thread <message-id> --channel {channel_name}
 
-The forked session:
-- Inherits your full conversation context and domain knowledge
-- Is bound to that thread — all its output automatically posts there
-- Receives future thread replies directly (bypassing the root session)
+   # Step 2: Fork into a thread-scoped session
+   midtown session fork <message-id>
+   ```
 
-**Always ack before forking** — `session fork` blocks for a few seconds while the daemon spawns the new session, and the ack ensures the user is never left waiting in silence.
+   `session fork` is idempotent — calling it when a fork already exists returns `{already_exists: true, session_id: ...}`. During the daemon's auto-fork spawn window (~30s), it may return `{pending: true}` instead — this means the daemon is already creating the fork. Retry once after a brief wait.
 
-**After forking:** You are now in a thread-scoped session. Write your responses directly — they are automatically posted to the thread. You do not need `--thread` on your channel posts.
+**After forking (or in an auto-forked session):**
+- All your text output is automatically posted to the thread — no `--thread` flag needed.
+- The daemon routes all future user replies in this thread directly to you.
+- You do not need to relay or nudge anything manually.
 
-**Daemon auto-routing:** Once a fork exists for a thread, the daemon automatically routes all future user replies in that thread directly to the fork session — you do not need to relay or nudge it manually.
+**When to use `midtown channel post` explicitly:**
+- Posting to a different channel (escalation to main)
+- Posting from the root session before forking (rare — daemon handles this)
 
-**When to use ack + fork:**
-- New questions or discussions that may need multiple exchanges
-- Task-related brainstorming or design discussions
-- Debugging sessions or investigations
-- Any topic where sustained, focused context matters
+**When NOT to reply at all:**
+- Quick one-word acks or status updates that are already covered by daemon notifications
+- CI/PR event notifications that need no response (just read and update your context)
 
-**When to reply directly (no ack, no fork):**
-- Simple factual answers you can give in one message
-- Quick acknowledgments ("Got it, will track this")
-- Status updates
-
-**Nudge format:** Nudges include the message ID in the format `sender (message-id): content`. For top-level messages, use that ID directly with `session fork`. For thread replies, the nudge message-id is the reply's own ID — use the thread's root message ID instead (visible in the channel log or via `midtown channel read`).
+**Nudge format:** Nudges include the message ID in the format `sender (message-id): content`. In normal operation (auto-fork), you are already the fork session, so just respond. In the fallback path, use the top-level message ID with `session fork`.
 
 ## Posting to the Channel
 

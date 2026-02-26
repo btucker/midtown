@@ -516,3 +516,178 @@ async fn test_session_clear_handles_channel_lead_metadata() {
         json
     );
 }
+
+// ============================================================================
+// create_fork_session tests
+// ============================================================================
+
+/// When `topic_sessions` already has a non-pending entry for the thread,
+/// `create_fork_session` returns `Ok((existing_sid, true))` without spawning.
+#[tokio::test]
+async fn test_create_fork_session_returns_existing_when_already_present() {
+    let (state, _tmp, _guard) = make_test_state();
+
+    let thread_id = "thread-already-exists-abc";
+    let existing_sid = "session-already-exists-xyz".to_string();
+    state
+        .topic_sessions
+        .lock()
+        .unwrap()
+        .insert(thread_id.to_string(), existing_sid.clone());
+
+    let result = create_fork_session(thread_id, "any-calling-session", None, "test", &state).await;
+
+    assert!(result.is_ok(), "should succeed when fork already exists");
+    let (returned_sid, already_existed) = result.unwrap();
+    assert_eq!(
+        returned_sid, existing_sid,
+        "should return existing session_id"
+    );
+    assert!(already_existed, "already_existed should be true");
+
+    // topic_sessions should still contain only the one entry (no sentinel added)
+    let topic = state.topic_sessions.lock().unwrap();
+    assert_eq!(topic.len(), 1);
+    assert_eq!(topic.get(thread_id).unwrap(), &existing_sid);
+}
+
+/// When `topic_sessions` has a "pending" entry (concurrent fork in progress),
+/// `create_fork_session` returns `Err` without spawning.
+#[tokio::test]
+async fn test_create_fork_session_returns_err_when_pending() {
+    let (state, _tmp, _guard) = make_test_state();
+
+    let thread_id = "thread-pending-fork-abc";
+    state
+        .topic_sessions
+        .lock()
+        .unwrap()
+        .insert(thread_id.to_string(), "pending".to_string());
+
+    let result = create_fork_session(thread_id, "any-calling-session", None, "test", &state).await;
+
+    assert!(
+        result.is_err(),
+        "should fail when fork slot is already 'pending'"
+    );
+
+    // topic_sessions should still contain only the "pending" entry from the other caller
+    let topic = state.topic_sessions.lock().unwrap();
+    assert_eq!(
+        topic.get(thread_id).map(String::as_str),
+        Some("pending"),
+        "pending sentinel should be untouched"
+    );
+}
+
+/// When spawn fails (no real claude process in tests), the pending sentinel is
+/// removed from `topic_sessions` so the slot is available for retry.
+#[tokio::test]
+async fn test_create_fork_session_cleans_up_sentinel_on_spawn_failure() {
+    let (state, _tmp, _guard) = make_test_state();
+
+    let thread_id = "thread-spawn-fail-abc";
+    let calling_session_id = "fake-session-for-spawn-test";
+
+    // Insert a parent session record so create_fork_session finds metadata
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.sessions.insert(
+            calling_session_id.to_string(),
+            crate::daemon::state::SessionRecord {
+                session_id: calling_session_id.to_string(),
+                current_name: Some("web".to_string()),
+                preferred_name: Some("web".to_string()),
+                working_dir: "/tmp/test".to_string(),
+                coworker_type: "channel-lead".to_string(),
+                channel: Some("web".to_string()),
+                ..Default::default()
+            },
+        );
+    }
+    state
+        .name_to_session
+        .lock()
+        .unwrap()
+        .insert("web".to_string(), calling_session_id.to_string());
+    state
+        .session_to_name
+        .lock()
+        .unwrap()
+        .insert(calling_session_id.to_string(), "web".to_string());
+
+    // spawn_fork will fail since there's no real claude process
+    let result =
+        create_fork_session(thread_id, calling_session_id, Some("web"), "test", &state).await;
+
+    assert!(result.is_err(), "should fail when spawn_fork fails");
+
+    // Sentinel should be cleaned up — the slot should be available for retry
+    let topic = state.topic_sessions.lock().unwrap();
+    assert!(
+        !topic.contains_key(thread_id),
+        "pending sentinel should be removed after spawn failure"
+    );
+}
+
+/// The `handle_session_fork` RPC handler returns `already_exists: true` when
+/// a fork exists, and a normal response for a new fork (or spawn error).
+#[tokio::test]
+async fn test_handle_session_fork_already_exists_response() {
+    let (state, _tmp, _guard) = make_test_state();
+
+    let thread_id = "thread-rpc-already-exists";
+    let existing_sid = "rpc-existing-session-xyz".to_string();
+    state
+        .topic_sessions
+        .lock()
+        .unwrap()
+        .insert(thread_id.to_string(), existing_sid.clone());
+
+    let resp = handle_session_fork(RequestId::Number(1), thread_id, "any-caller", &state).await;
+    let json = serde_json::to_value(&resp).unwrap();
+
+    assert!(
+        json.get("error").is_none(),
+        "should succeed for already-existing fork"
+    );
+    let result = json["result"].as_object().unwrap();
+    assert_eq!(result["session_id"].as_str().unwrap(), existing_sid);
+    assert!(
+        result["already_exists"].as_bool().unwrap(),
+        "already_exists should be true"
+    );
+}
+
+/// When the daemon auto-fork has reserved the slot with "pending", calling
+/// `handle_session_fork` should return `{pending: true}` instead of an error,
+/// so the channel lead can distinguish "retry shortly" from a hard spawn failure.
+#[tokio::test]
+async fn test_handle_session_fork_returns_pending_during_spawn_window() {
+    let (state, _tmp, _guard) = make_test_state();
+
+    let thread_id = "thread-rpc-pending-fork";
+    state
+        .topic_sessions
+        .lock()
+        .unwrap()
+        .insert(thread_id.to_string(), "pending".to_string());
+
+    let resp = handle_session_fork(RequestId::Number(2), thread_id, "any-caller", &state).await;
+    let json = serde_json::to_value(&resp).unwrap();
+
+    assert!(
+        json.get("error").is_none(),
+        "should not return an error when fork is in progress"
+    );
+    let result = json["result"].as_object().unwrap();
+    assert!(
+        result["pending"].as_bool().unwrap_or(false),
+        "result should have pending: true"
+    );
+    assert_eq!(
+        result["thread_parent_id"].as_str().unwrap(),
+        thread_id,
+        "result should echo thread_parent_id"
+    );
+}
