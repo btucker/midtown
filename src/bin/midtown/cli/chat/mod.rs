@@ -2344,10 +2344,12 @@ mod tests {
             ChannelInfo {
                 name: "midtown".to_string(),
                 is_archived: false,
+                is_dm: false,
             },
             ChannelInfo {
                 name: "feature-x".to_string(),
                 is_archived: false,
+                is_dm: false,
             },
         ];
         app.tasks = vec![
@@ -2441,6 +2443,7 @@ mod tests {
         app.available_channels = vec![ChannelInfo {
             name: "midtown".to_string(),
             is_archived: false,
+            is_dm: false,
         }];
         app.tasks = vec![KanbanTask {
             id: "1".to_string(),
@@ -2675,6 +2678,7 @@ mod tests {
         app.available_channels = vec![ChannelInfo {
             name: "midtown".to_string(),
             is_archived: false,
+            is_dm: false,
         }];
         app.tasks = vec![KanbanTask {
             id: "1".to_string(),

@@ -40,6 +40,15 @@ pub enum WakeReason {
     },
     /// Generic nudge (freeform message).
     Nudge { message: String },
+
+    // ── DM triggers ────────────────────────────────────────────────────
+    /// A direct message was sent to this coworker via their dm-<name> channel.
+    DmFromUser {
+        content: String,
+        msg_id: String,
+        /// The coworker's own name, used to format the reply instruction.
+        coworker_name: String,
+    },
 }
 
 impl WakeReason {
@@ -107,6 +116,16 @@ impl WakeReason {
                 format!("{from} mentioned you ({msg_id}): {content}")
             }
             Self::Nudge { message } => message.clone(),
+            Self::DmFromUser {
+                content,
+                msg_id,
+                coworker_name,
+            } => {
+                format!(
+                    "user ({msg_id}): {content}\n\n\
+                     Reply with: midtown channel post \"...\" --channel dm-{coworker_name}"
+                )
+            }
         }
     }
 

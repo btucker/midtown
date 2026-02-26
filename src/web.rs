@@ -449,8 +449,24 @@ fn validate_channel_name_for_history(
 /// - Be non-empty
 /// - Contain only alphanumeric characters, hyphens, and underscores
 /// - Not be "midtown" (reserved for the main channel)
+///
+/// DM channels (`dm-<coworker>`) are explicitly allowed. The coworker suffix must
+/// be non-empty and contain only alphanumeric characters and hyphens.
 fn validate_channel_name(name: &str) -> Result<(), (StatusCode, axum::Json<serde_json::Value>)> {
     validate_channel_name_for_history(name)?;
+
+    // DM channels (dm-<coworker>) are allowed — validate the coworker suffix.
+    if let Some(coworker) = name.strip_prefix("dm-") {
+        if coworker.is_empty() || !coworker.chars().all(|c| c.is_alphanumeric() || c == '-') {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                axum::Json(serde_json::json!({
+                    "error": "DM channel name must be 'dm-<coworker>' where coworker contains only alphanumeric characters and hyphens"
+                })),
+            ));
+        }
+        return Ok(());
+    }
 
     if name == "midtown" {
         return Err((

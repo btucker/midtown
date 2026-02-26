@@ -1682,3 +1682,36 @@ fn test_rename_channel_rejects_avenue_name() {
         err
     );
 }
+
+#[test]
+fn test_channel_info_is_dm_true_for_dm_prefix() {
+    let temp_dir = TempDir::new().unwrap();
+
+    // Create a DM channel and a regular channel
+    Channel::new(temp_dir.path(), "dm-madison").unwrap();
+    Channel::new(temp_dir.path(), "midtown").unwrap();
+    Channel::new(temp_dir.path(), "feature-x").unwrap();
+
+    let channels = Channel::list(temp_dir.path(), false, None).unwrap();
+
+    let dm_channel = channels.iter().find(|c| c.name == "dm-madison").unwrap();
+    assert!(dm_channel.is_dm, "dm-madison should have is_dm=true");
+
+    let midtown = channels.iter().find(|c| c.name == "midtown").unwrap();
+    assert!(!midtown.is_dm, "midtown should have is_dm=false");
+
+    let feature = channels.iter().find(|c| c.name == "feature-x").unwrap();
+    assert!(!feature.is_dm, "feature-x should have is_dm=false");
+}
+
+#[test]
+fn test_channel_info_is_dm_only_with_dm_prefix() {
+    let temp_dir = TempDir::new().unwrap();
+
+    // Create a channel that starts with "dm" but without the dash — should NOT be is_dm
+    Channel::new(temp_dir.path(), "dmz").unwrap();
+
+    let channels = Channel::list(temp_dir.path(), false, None).unwrap();
+    let dmz = channels.iter().find(|c| c.name == "dmz").unwrap();
+    assert!(!dmz.is_dm, "channel 'dmz' (no dash) should not be is_dm");
+}
