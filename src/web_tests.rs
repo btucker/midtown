@@ -847,3 +847,42 @@ fn test_validate_channel_name_for_history_allows_valid_names() {
     assert!(validate_channel_name_for_history("auth_refactor").is_ok());
     assert!(validate_channel_name_for_history("midtown").is_ok());
 }
+
+#[test]
+fn test_validate_channel_name_allows_dm_channels() {
+    // DM channels with valid coworker names should pass
+    assert!(
+        validate_channel_name("dm-madison").is_ok(),
+        "dm-madison should be a valid channel name"
+    );
+    assert!(
+        validate_channel_name("dm-amsterdam").is_ok(),
+        "dm-amsterdam should be valid"
+    );
+    assert!(
+        validate_channel_name("dm-channel-lead").is_ok(),
+        "dm-channel-lead (hyphenated coworker name) should be valid"
+    );
+}
+
+#[test]
+fn test_validate_channel_name_rejects_invalid_dm_channels() {
+    // dm- with empty suffix is invalid
+    assert!(
+        validate_channel_name("dm-").is_err(),
+        "dm- with empty coworker suffix should be invalid"
+    );
+    // dm- with underscore in coworker name is invalid (coworker names are alphanumeric/hyphens only)
+    assert!(
+        validate_channel_name("dm-foo_bar").is_err(),
+        "dm-foo_bar with underscore in suffix should be invalid"
+    );
+}
+
+#[test]
+fn test_validate_channel_name_still_rejects_midtown() {
+    assert!(
+        validate_channel_name("midtown").is_err(),
+        "midtown should still be rejected as a reserved channel name"
+    );
+}

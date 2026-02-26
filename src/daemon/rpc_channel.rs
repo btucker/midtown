@@ -141,6 +141,30 @@ pub(super) async fn handle_channel_post(
     // Use provided channel or default to main channel
     let channel_name = channel.unwrap_or_else(|| state.channel_router.default_channel_name());
 
+    // Validate DM channels: ensure the target coworker is an active session.
+    // This prevents posting to dm-<unknown> channels that have no one to receive the message.
+    if state.is_user_sender(from)
+        && let Some(coworker_name) = channel_name.strip_prefix("dm-")
+    {
+        let is_active = state
+            .name_to_session
+            .lock()
+            .unwrap()
+            .contains_key(coworker_name);
+        if !is_active {
+            return Response::error(
+                id,
+                RpcError::new(
+                    -32602,
+                    format!(
+                        "Cannot send DM to '{}': no active session found for this coworker",
+                        coworker_name
+                    ),
+                ),
+            );
+        }
+    }
+
     // Task 3: Output binding — if the sender is a forked topic session with a bound
     // thread, auto-apply the bound thread_parent_id so their posts appear in the
     // correct thread without the session needing to pass it explicitly.
@@ -187,11 +211,38 @@ pub(super) async fn handle_channel_post(
     // Nudge lead when user messages arrive (from web UI or TUI input)
     if state.is_user_sender(from) {
         let default_channel = state.channel_router.default_channel_name();
+        let is_dm_channel = channel_name.starts_with("dm-");
         let is_topic_channel = channel_name != default_channel;
 
         let wake_msg_id = msg.thread_anchor_id().to_string();
 
-        if is_topic_channel {
+        if is_dm_channel {
+            // DM channel: nudge the specific coworker directly instead of the channel lead.
+            // We already validated the coworker is active above, so this lookup should succeed.
+            let coworker_name = &channel_name["dm-".len()..];
+            let session_id = state
+                .name_to_session
+                .lock()
+                .unwrap()
+                .get(coworker_name)
+                .cloned();
+            if let Some(session_id) = session_id {
+                let nudge_effect = crate::daemon::effects::Effect::NudgeSession {
+                    session_id,
+                    reason: crate::daemon::wake_reason::WakeReason::DmFromUser {
+                        content: content.clone(),
+                        msg_id: wake_msg_id,
+                        coworker_name: coworker_name.to_string(),
+                    },
+                };
+                crate::daemon::effects::execute_effects(vec![nudge_effect], state).await;
+            } else {
+                warn!(
+                    "channel.post: DM to dm-{} but session lookup failed after validation passed",
+                    coworker_name
+                );
+            }
+        } else if is_topic_channel {
             // Task 2: Thread-aware routing — if there's a forked topic session for
             // this thread, route directly to it instead of the channel lead.
             // This lets thread-specific forks handle their own conversation slice

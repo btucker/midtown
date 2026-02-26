@@ -21,6 +21,8 @@ pub struct ChannelInfo {
     pub name: String,
     /// Whether this channel is archived
     pub is_archived: bool,
+    /// Whether this is a direct-message channel (name starts with "dm-")
+    pub is_dm: bool,
 }
 
 /// A channel for agent communication.
@@ -476,6 +478,7 @@ impl Channel {
                     .or_insert(ChannelInfo {
                         name: channel_name.clone(),
                         is_archived,
+                        is_dm: channel_name.starts_with("dm-"),
                     });
                 if is_archived {
                     entry.is_archived = true;

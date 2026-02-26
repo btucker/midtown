@@ -1647,3 +1647,147 @@ async fn test_channel_rename_reserved_avenue_name() {
         "renaming to a reserved avenue name should return an error"
     );
 }
+
+// ── DM channel routing tests ──────────────────────────────────────────────────
+
+/// Posting to dm-<coworker> when no active session exists returns an error.
+/// The channel directory is NOT created when validation fails.
+#[tokio::test]
+async fn test_dm_post_unknown_coworker_returns_error() {
+    let (state, _tmp, _guard) = make_test_state("midtown-test-dm-unknown-coworker");
+
+    // "york" has no entry in name_to_session — it's not an active coworker
+    let response = handle_channel_post(
+        1_i64.into(),
+        "user",
+        "Are you there?",
+        Some("dm-york"),
+        None,
+        &state,
+    )
+    .await;
+
+    assert!(
+        response.error.is_some(),
+        "posting to dm- channel with unknown coworker should return an error"
+    );
+    let err_msg = response.error.unwrap().message;
+    assert!(
+        err_msg.contains("york"),
+        "error should mention the unknown coworker name, got: {}",
+        err_msg
+    );
+}
+
+/// Posting to dm-<coworker> when a session is active routes via NudgeSession
+/// (not NudgeChannelLead), so the lead is NOT nudged.
+///
+/// Since `NudgeSession` fails gracefully when the headless session isn't live
+/// in tests, we verify the lead adapter receives NO messages (DM path was taken).
+#[tokio::test]
+async fn test_dm_post_active_coworker_does_not_nudge_lead() {
+    let (state, _tmp, _guard) = make_test_state("midtown-test-dm-active-coworker");
+
+    // Register the lead's headed adapter so we can verify it gets no nudge
+    let adapter_id = "test-dm-adapter";
+    state
+        .headed_register(
+            &state.repo_name,
+            adapter_id,
+            crate::auth::AuthProvider::Claude,
+        )
+        .await
+        .expect("register headed adapter");
+
+    // Register "amsterdam" as an active coworker in name_to_session
+    let coworker_session_id = "session-amsterdam-xyz";
+    state
+        .name_to_session
+        .lock()
+        .unwrap()
+        .insert("amsterdam".to_string(), coworker_session_id.to_string());
+
+    // User posts a DM to amsterdam
+    let response = handle_channel_post(
+        1_i64.into(),
+        "user",
+        "Hey amsterdam, can you help?",
+        Some("dm-amsterdam"),
+        None,
+        &state,
+    )
+    .await;
+    assert!(
+        response.error.is_none(),
+        "DM to active coworker should succeed"
+    );
+
+    // Lead should NOT be nudged — the DM was routed to the coworker's session
+    let (messages, _capture) = state
+        .headed_poll(&state.repo_name, adapter_id, 0, 10)
+        .await
+        .expect("poll headed queue");
+    assert!(
+        messages.is_empty(),
+        "Lead should not receive nudge when user sends DM to an active coworker"
+    );
+}
+
+/// A non-user sender posting to a dm- channel goes through normally
+/// without validation (DM validation only applies to user senders).
+#[tokio::test]
+async fn test_dm_post_from_coworker_is_not_blocked() {
+    let (state, _tmp, _guard) = make_test_state("midtown-test-dm-coworker-sender");
+
+    // Register the lead's headed adapter
+    let adapter_id = "test-dm-coworker-adapter";
+    state
+        .headed_register(
+            &state.repo_name,
+            adapter_id,
+            crate::auth::AuthProvider::Claude,
+        )
+        .await
+        .expect("register headed adapter");
+
+    // "amsterdam" posts to their own DM channel (replying to user)
+    // No session registered — but coworker senders skip DM validation
+    let response = handle_channel_post(
+        1_i64.into(),
+        "amsterdam",
+        "Sure, I can help with that!",
+        Some("dm-amsterdam"),
+        None,
+        &state,
+    )
+    .await;
+    assert!(
+        response.error.is_none(),
+        "Coworker posting to their own dm- channel should not be blocked"
+    );
+}
+
+/// Verify the DmFromUser wake reason encodes the correct reply instruction
+/// for a channel.post to a dm- channel.
+#[test]
+fn test_dm_from_user_wake_reason_reply_instruction() {
+    let reason = crate::daemon::wake_reason::WakeReason::DmFromUser {
+        content: "Can you look at the tests?".to_string(),
+        msg_id: "msg-dm-xyz".to_string(),
+        coworker_name: "amsterdam".to_string(),
+    };
+    let msg = reason.to_nudge_message();
+    assert!(msg.contains("msg-dm-xyz"), "should include msg_id");
+    assert!(
+        msg.contains("Can you look at the tests?"),
+        "should include message content"
+    );
+    assert!(
+        msg.contains("--channel dm-amsterdam"),
+        "reply instruction should reference the coworker's DM channel"
+    );
+    assert!(
+        msg.contains("midtown channel post"),
+        "reply instruction should include the midtown command"
+    );
+}

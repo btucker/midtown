@@ -124,3 +124,36 @@ fn nudge_passthrough() {
     let msg = reason.to_nudge_message();
     assert!(msg.contains("Check PR #99"));
 }
+
+#[test]
+fn dm_from_user_nudge_message_contains_content_and_reply_instruction() {
+    let reason = WakeReason::DmFromUser {
+        content: "Hey, can you check the auth module?".to_string(),
+        msg_id: "msg-dm-001".to_string(),
+        coworker_name: "madison".to_string(),
+    };
+    let msg = reason.to_nudge_message();
+    assert!(msg.contains("msg-dm-001"), "should contain msg_id");
+    assert!(
+        msg.contains("Hey, can you check the auth module?"),
+        "should contain message content"
+    );
+    assert!(
+        msg.contains("--channel dm-madison"),
+        "should include reply channel instruction"
+    );
+}
+
+#[test]
+fn dm_from_user_nudge_message_reply_instruction_uses_coworker_name() {
+    let reason = WakeReason::DmFromUser {
+        content: "quick question".to_string(),
+        msg_id: "msg-dm-002".to_string(),
+        coworker_name: "amsterdam".to_string(),
+    };
+    let msg = reason.to_nudge_message();
+    assert!(
+        msg.contains("dm-amsterdam"),
+        "reply instruction should reference the coworker's DM channel"
+    );
+}

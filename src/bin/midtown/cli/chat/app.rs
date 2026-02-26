@@ -4774,10 +4774,12 @@ pub(super) mod tests {
                 midtown::ChannelInfo {
                     name: "features".to_string(),
                     is_archived: false,
+                    is_dm: false,
                 },
                 midtown::ChannelInfo {
                     name: "midtown".to_string(),
                     is_archived: false,
+                    is_dm: false,
                 },
             ],
             ..test_app()
