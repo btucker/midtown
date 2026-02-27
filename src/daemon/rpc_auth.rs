@@ -377,6 +377,7 @@ pub(super) async fn handle_auth_switch(
                         // restart_count=0: auth rotation is not a restart, fresh context
                         crate::launch::LaunchConfig::reviewer(
                             coworker.name.clone(),
+                            &state.repo_name,
                             pr_number,
                             0,
                             target_provider,

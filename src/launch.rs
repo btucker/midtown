@@ -265,6 +265,10 @@ impl LaunchConfig {
             &repo,
             crate::config::ExecutionRole::Coworker,
         );
+        let model =
+            crate::config::get_model_for_role(&repo, crate::config::ExecutionRole::Coworker)
+                .map(|s| s.as_model_str().to_string())
+                .unwrap_or_else(|| "sonnet".to_string());
         LaunchConfig {
             name: name.into(),
             session_mode,
@@ -274,7 +278,7 @@ impl LaunchConfig {
             pr_number: None,
             team_name: Some(team),
             working_dir: None,
-            model: "sonnet".to_string(),
+            model,
             channel: None,
             auth_profile_dir: None,
             auth_provider,
@@ -293,10 +297,16 @@ impl LaunchConfig {
     /// instructs the reviewer to update the existing placeholder comment.
     pub fn reviewer(
         name: impl Into<String>,
+        repo_name: impl Into<String>,
         pr_number: u64,
         restart_count: u32,
         auth_provider: crate::auth::AuthProvider,
     ) -> Self {
+        let repo = repo_name.into();
+        let model =
+            crate::config::get_model_for_role(&repo, crate::config::ExecutionRole::Reviewer)
+                .map(|s| s.as_model_str().to_string())
+                .unwrap_or_else(|| "opus".to_string());
         LaunchConfig {
             name: name.into(),
             session_mode: SessionMode::Fresh,
@@ -310,7 +320,7 @@ impl LaunchConfig {
             pr_number: Some(pr_number),
             team_name: None, // Reviewers don't need mailbox (short-lived)
             working_dir: None,
-            model: "opus".to_string(),
+            model,
             channel: None,
             auth_profile_dir: None,
             auth_provider,
@@ -339,6 +349,10 @@ impl LaunchConfig {
                 &repo,
                 crate::config::ExecutionRole::Lead,
             );
+            let model =
+                crate::config::get_model_for_role(&repo, crate::config::ExecutionRole::Lead)
+                    .map(|s| s.as_model_str().to_string())
+                    .unwrap_or_else(|| "opus".to_string());
             LaunchConfig {
                 name: repo.clone(),
                 session_mode: SessionMode::Fresh,
@@ -348,7 +362,7 @@ impl LaunchConfig {
                 pr_number: None,
                 team_name: Some(team),
                 working_dir: None,
-                model: "opus".to_string(),
+                model,
                 channel: None,
                 auth_profile_dir: None,
                 auth_provider,
@@ -390,6 +404,12 @@ impl LaunchConfig {
             pr_number, original_author, branch, branch, original_author, pr_number
         );
 
+        // PR handoff uses the coworker model config but falls back to "opus" (not "sonnet")
+        // because handoffs deal with complex PR context that benefits from a larger model.
+        let model =
+            crate::config::get_model_for_role(&repo, crate::config::ExecutionRole::Coworker)
+                .map(|s| s.as_model_str().to_string())
+                .unwrap_or_else(|| "opus".to_string());
         LaunchConfig {
             name: name.into(),
             session_mode: SessionMode::ResumeSession(session_id),
@@ -399,7 +419,7 @@ impl LaunchConfig {
             pr_number: None,
             team_name: Some(team),
             working_dir: None,
-            model: "opus".to_string(),
+            model,
             channel: None,
             auth_profile_dir: None,
             auth_provider,
@@ -435,6 +455,7 @@ impl LaunchConfig {
             crate::config::ExecutionRole::ChannelLead,
         );
         let domain_ctx = domain_context.into();
+        let execution_fallback = crate::config::get_channel_lead_model_fallback(&repo);
         LaunchConfig {
             name: session_name,
             session_mode,
@@ -450,7 +471,7 @@ impl LaunchConfig {
             team_name: Some(team),
             working_dir: None,
             model: crate::config::get_channel_leads_config(&repo)
-                .model_for_channel(&channel_name_str),
+                .model_for_channel_with_fallback(&channel_name_str, execution_fallback),
             channel: Some(channel_name_str),
             auth_profile_dir: None,
             auth_provider,
@@ -745,7 +766,7 @@ mod tests {
 
     #[test]
     fn test_to_headless_config_reviewer_has_no_teams() {
-        let config = LaunchConfig::reviewer("york", 42, 0, AuthProvider::Claude);
+        let config = LaunchConfig::reviewer("york", "myrepo", 42, 0, AuthProvider::Claude);
         let headless = config.to_headless_config("midtown");
 
         assert!(headless.team_name.is_none());
@@ -756,7 +777,7 @@ mod tests {
 
     #[test]
     fn test_to_headless_config_reviewer_has_tools() {
-        let config = LaunchConfig::reviewer("york", 42, 0, AuthProvider::Claude);
+        let config = LaunchConfig::reviewer("york", "myrepo", 42, 0, AuthProvider::Claude);
         let headless = config.to_headless_config("midtown");
         assert!(headless.allow_tools);
     }
@@ -772,7 +793,7 @@ mod tests {
             "setting_sources should be None — handled by platform arg builder"
         );
 
-        let config = LaunchConfig::reviewer("york", 42, 0, AuthProvider::Claude);
+        let config = LaunchConfig::reviewer("york", "myrepo", 42, 0, AuthProvider::Claude);
         let headless = config.to_headless_config("midtown");
         assert_eq!(
             headless.setting_sources, None,
@@ -806,7 +827,8 @@ mod tests {
 
     #[test]
     fn test_launch_config_reviewer_factory() {
-        let config = LaunchConfig::reviewer("york".to_string(), 42, 0, AuthProvider::Claude);
+        let config =
+            LaunchConfig::reviewer("york".to_string(), "myrepo", 42, 0, AuthProvider::Claude);
         assert_eq!(config.name, "york");
         assert_eq!(config.pr_number, Some(42));
         assert_eq!(config.role, CoworkerRole::Reviewer);

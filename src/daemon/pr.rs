@@ -2636,13 +2636,16 @@ pub(crate) async fn collect_reviewer_effects_with_source(
         );
         let mut config = crate::launch::LaunchConfig::reviewer(
             reviewer_name.clone(),
+            &state.repo_name,
             pr_number,
             0,
             auth_provider,
         );
-        config.model =
-            super::helpers::default_model_for_provider_role(config.auth_provider, &config.role)
-                .to_string();
+        config.model = super::helpers::normalize_model_for_provider_role(
+            &config.model,
+            config.auth_provider,
+            &config.role,
+        );
         config.working_dir = Some(wt_path.clone());
 
         effects.push(Effect::EnsureWorktree {
