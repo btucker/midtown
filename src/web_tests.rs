@@ -852,15 +852,15 @@ fn test_validate_channel_name_for_history_allows_valid_names() {
 fn test_validate_channel_name_allows_dm_channels() {
     // DM channels with valid coworker names should pass
     assert!(
-        validate_channel_name("dm-madison").is_ok(),
+        validate_channel_name("dm-madison", "main").is_ok(),
         "dm-madison should be a valid channel name"
     );
     assert!(
-        validate_channel_name("dm-amsterdam").is_ok(),
+        validate_channel_name("dm-amsterdam", "main").is_ok(),
         "dm-amsterdam should be valid"
     );
     assert!(
-        validate_channel_name("dm-channel-lead").is_ok(),
+        validate_channel_name("dm-channel-lead", "main").is_ok(),
         "dm-channel-lead (hyphenated coworker name) should be valid"
     );
 }
@@ -869,20 +869,25 @@ fn test_validate_channel_name_allows_dm_channels() {
 fn test_validate_channel_name_rejects_invalid_dm_channels() {
     // dm- with empty suffix is invalid
     assert!(
-        validate_channel_name("dm-").is_err(),
+        validate_channel_name("dm-", "main").is_err(),
         "dm- with empty coworker suffix should be invalid"
     );
     // dm- with underscore in coworker name is invalid (coworker names are alphanumeric/hyphens only)
     assert!(
-        validate_channel_name("dm-foo_bar").is_err(),
+        validate_channel_name("dm-foo_bar", "main").is_err(),
         "dm-foo_bar with underscore in suffix should be invalid"
     );
 }
 
 #[test]
-fn test_validate_channel_name_still_rejects_midtown() {
+fn test_validate_channel_name_rejects_main_channel() {
+    // The main channel name (whatever it is) cannot be used for new channels
     assert!(
-        validate_channel_name("midtown").is_err(),
-        "midtown should still be rejected as a reserved channel name"
+        validate_channel_name("myproject", "myproject").is_err(),
+        "the main channel name should be rejected as reserved"
+    );
+    assert!(
+        validate_channel_name("offload", "offload").is_err(),
+        "the main channel name 'offload' should be rejected for a project named offload"
     );
 }

@@ -695,7 +695,7 @@ impl App {
             usage_last_refresh: Instant::now() - USAGE_REFRESH_INTERVAL, // Force initial refresh
             focused_pane: FocusedPane::Board,
             board_selection: None,
-            selected_channel: "midtown".to_string(),
+            selected_channel: channel_repo.clone(),
             selected_channel_archived: false,
             input_text: String::new(),
             input_cursor: 0,
@@ -1559,7 +1559,7 @@ impl App {
             .available_channels
             .first()
             .map(|c| c.name.as_str())
-            .unwrap_or("midtown");
+            .unwrap_or(self.project_name.as_str());
 
         // Group tasks by channel
         let mut tasks_by_channel: BTreeMap<String, Vec<&KanbanTask>> = BTreeMap::new();
@@ -4074,7 +4074,7 @@ pub(super) mod tests {
             usage_last_refresh: Instant::now(),
             focused_pane: FocusedPane::Board,
             board_selection: None,
-            selected_channel: "midtown".to_string(),
+            selected_channel: "test".to_string(),
             selected_channel_archived: false,
             input_text: String::new(),
             input_cursor: 0,
@@ -4860,8 +4860,8 @@ pub(super) mod tests {
             ..test_app()
         };
 
-        // Initial selected channel
-        assert_eq!(app.selected_channel, "midtown");
+        // Initial selected channel should be the project's main channel
+        assert_eq!(app.selected_channel, app.project_name);
 
         // Select a channel
         app.board_selection = Some(BoardSelection::Channel("features".to_string()));

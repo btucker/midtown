@@ -89,7 +89,7 @@ pub enum Effect {
     /// Channel routing follows a 3-step resolution:
     /// 1. If `channel` is explicitly provided, use that
     /// 2. Otherwise, extract task ID from message content (e.g., "!42") and route to that task's channel
-    /// 3. Fall back to the default "midtown" channel if no task ID is found
+    /// 3. Fall back to the default project channel if no task ID is found
     PostToChannel {
         sender: String,
         message: String,
@@ -355,7 +355,7 @@ pub enum Effect {
     /// Archive a topic channel by marking it as archived.
     ///
     /// Archived channels stop receiving new messages but keep history readable.
-    /// Cannot archive the main "midtown" channel.
+    /// Cannot archive the project's main channel.
     ArchiveChannel { name: String },
     /// Merge one channel into another.
     ///
@@ -1966,7 +1966,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
 
                 match crate::channel::Channel::new(&base_dir, &name) {
                     Ok(channel) => {
-                        if let Err(e) = channel.archive() {
+                        if let Err(e) = channel.archive(&state.repo_name) {
                             warn!("Failed to archive channel '{}': {}", name, e);
                         } else {
                             info!("Archived channel '{}'", name);
@@ -2097,7 +2097,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 // and then archive() would overwrite the real archived data.
                 let from_channel_dir = base_dir.join("channels").join(&from);
                 if from_channel_dir.exists() {
-                    if let Err(e) = from_channel.archive() {
+                    if let Err(e) = from_channel.archive(&state.repo_name) {
                         warn!(
                             "Failed to archive source channel '{}' after merge: {}",
                             from, e

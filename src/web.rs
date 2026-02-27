@@ -448,11 +448,14 @@ fn validate_channel_name_for_history(
 /// Channel names must:
 /// - Be non-empty
 /// - Contain only alphanumeric characters, hyphens, and underscores
-/// - Not be "midtown" (reserved for the main channel)
+/// - Not be the main channel name (reserved for the project's default channel)
 ///
 /// DM channels (`dm-<coworker>`) are explicitly allowed. The coworker suffix must
 /// be non-empty and contain only alphanumeric characters and hyphens.
-fn validate_channel_name(name: &str) -> Result<(), (StatusCode, axum::Json<serde_json::Value>)> {
+fn validate_channel_name(
+    name: &str,
+    main_channel_name: &str,
+) -> Result<(), (StatusCode, axum::Json<serde_json::Value>)> {
     validate_channel_name_for_history(name)?;
 
     // DM channels (dm-<coworker>) are allowed — validate the coworker suffix.
@@ -468,12 +471,12 @@ fn validate_channel_name(name: &str) -> Result<(), (StatusCode, axum::Json<serde
         return Ok(());
     }
 
-    if name == "midtown" {
+    if name == main_channel_name {
         return Err((
             StatusCode::BAD_REQUEST,
-            axum::Json(
-                serde_json::json!({ "error": "Cannot use reserved channel name 'midtown'" }),
-            ),
+            axum::Json(serde_json::json!({
+                "error": format!("Cannot use reserved channel name '{}'", main_channel_name)
+            })),
         ));
     }
 
@@ -490,7 +493,7 @@ async fn api_channels_create(
 ) -> Result<impl IntoResponse, (StatusCode, axum::Json<serde_json::Value>)> {
     let channel_name = body.name.trim();
 
-    validate_channel_name(channel_name)?;
+    validate_channel_name(channel_name, &state.config.repo)?;
 
     // Create the channel (idempotent - returns existing channel if it already exists)
     let base_dir = crate::paths::projects_dir_for_repo(&state.config.repo);

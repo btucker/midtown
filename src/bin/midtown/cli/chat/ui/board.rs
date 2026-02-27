@@ -72,8 +72,8 @@ pub fn draw_board_panel(f: &mut Frame, app: &mut App, area: Rect) -> (Vec<Hyperl
     let mut lines = Vec::new();
     let hyperlinks = Vec::new();
 
-    // Default channel matches the daemon's ChannelRouter default ("midtown")
-    let main_channel = "midtown";
+    // Default channel matches the daemon's ChannelRouter default (the project name)
+    let main_channel = app.project_name.as_str();
 
     // Clone task, PR, coworker, and channel data to avoid holding borrows on app
     // This allows us to mutate app.task_line_map later
@@ -107,7 +107,7 @@ pub fn draw_board_panel(f: &mut Frame, app: &mut App, area: Rect) -> (Vec<Hyperl
         }
     }
 
-    // If available_channels is empty (initial load), fall back to showing midtown
+    // If available_channels is empty (initial load), fall back to showing the main channel
     if channels_to_display.is_empty() {
         channels_to_display.insert(
             main_channel.to_string(),
@@ -816,7 +816,7 @@ mod tests {
         let indentation = HashMap::from([("42".to_string(), 0)]);
         let mut lines = Vec::new();
 
-        render_task_item(&app, &task, "midtown", &indentation, 80, &mut lines);
+        render_task_item(&app, &task, "test", &indentation, 80, &mut lines);
 
         // Pending task with no PR: only the title line (no label line)
         assert_eq!(lines.len(), 1);
@@ -836,7 +836,7 @@ mod tests {
         let indentation = HashMap::from([("7".to_string(), 1)]);
         let mut lines = Vec::new();
 
-        render_task_item(&app, &task, "midtown", &indentation, 80, &mut lines);
+        render_task_item(&app, &task, "test", &indentation, 80, &mut lines);
 
         // Pending task with no PR: only the title line (no label line)
         assert_eq!(lines.len(), 1);
@@ -856,7 +856,7 @@ mod tests {
         let indentation = HashMap::from([("99".to_string(), 3)]);
         let mut lines = Vec::new();
 
-        render_task_item(&app, &task, "midtown", &indentation, 80, &mut lines);
+        render_task_item(&app, &task, "test", &indentation, 80, &mut lines);
 
         // Pending task with no PR: only the title line (no label line)
         assert_eq!(lines.len(), 1);
@@ -874,7 +874,7 @@ mod tests {
         let indentation = HashMap::from([("1".to_string(), 0)]);
         let mut lines = Vec::new();
 
-        render_task_item(&app, &task, "midtown", &indentation, 80, &mut lines);
+        render_task_item(&app, &task, "test", &indentation, 80, &mut lines);
 
         // Pending task (no PR) should use muted theme color
         let bullet_style = lines[0].spans[0].style;
@@ -890,7 +890,7 @@ mod tests {
         let indentation = HashMap::from([("5".to_string(), 0)]);
         let mut lines = Vec::new();
 
-        render_task_item(&app, &task, "midtown", &indentation, 80, &mut lines);
+        render_task_item(&app, &task, "test", &indentation, 80, &mut lines);
 
         // InProgress task (no PR) should use warning for bullet, success for text
         let bullet_style = lines[0].spans[0].style;
@@ -1578,7 +1578,7 @@ mod tests {
         let indentation = HashMap::from([("5".to_string(), 0)]);
         let mut lines = Vec::new();
 
-        render_task_item(&app, &task, "midtown", &indentation, 80, &mut lines);
+        render_task_item(&app, &task, "test", &indentation, 80, &mut lines);
 
         // Second line is the phase label
         assert_eq!(lines.len(), 2);
@@ -1602,7 +1602,7 @@ mod tests {
         let indentation = HashMap::from([("3".to_string(), 0)]);
         let mut lines = Vec::new();
 
-        render_task_item(&app, &task, "midtown", &indentation, 80, &mut lines);
+        render_task_item(&app, &task, "test", &indentation, 80, &mut lines);
 
         assert_eq!(
             lines.len(),
@@ -1685,7 +1685,7 @@ mod tests {
         let indentation = HashMap::from([("5".to_string(), 0)]);
         let mut lines = Vec::new();
 
-        render_task_item(&app, &task, "midtown", &indentation, 80, &mut lines);
+        render_task_item(&app, &task, "test", &indentation, 80, &mut lines);
 
         // 2 lines: title + label (unchanged from current behavior for single-line title)
         assert_eq!(lines.len(), 2, "single-line title: title + label line");
@@ -1703,7 +1703,7 @@ mod tests {
         let mut lines = Vec::new();
 
         // Use a narrow wrap_width to force wrapping
-        render_task_item(&app, &task, "midtown", &indentation, 30, &mut lines);
+        render_task_item(&app, &task, "test", &indentation, 30, &mut lines);
 
         // With wrapping, the number of lines should equal the wrapped title lines count
         // (the label is merged INTO line[1], not appended as an extra line)
@@ -1732,7 +1732,7 @@ mod tests {
         let indentation = HashMap::from([("5".to_string(), 0)]);
         let mut lines = Vec::new();
 
-        render_task_item(&app, &task, "midtown", &indentation, 30, &mut lines);
+        render_task_item(&app, &task, "test", &indentation, 30, &mut lines);
 
         // line[1] should contain the "dev" label
         assert!(

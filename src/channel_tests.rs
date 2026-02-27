@@ -778,8 +778,8 @@ fn test_archived_channels_excluded_from_list() {
         "test2 should be in the list"
     );
 
-    // Archive test1
-    channel1.archive().unwrap();
+    // Archive test1 (main channel is "main", so test1 can be archived)
+    channel1.archive("main").unwrap();
 
     // Now only test2 should appear in the list
     let channels = Channel::list(temp_dir.path(), false, None).unwrap();
@@ -849,7 +849,7 @@ fn test_archived_channel_cannot_be_recreated_or_listed_as_active() {
 
     // Create a channel, then archive it
     let channel = Channel::new(temp_dir.path(), "tui").unwrap();
-    channel.archive().unwrap();
+    channel.archive("main").unwrap();
 
     // Attempting to create it again should fail with ChannelArchived
     let err = match Channel::new(temp_dir.path(), "tui") {
@@ -896,7 +896,7 @@ fn test_channel_list_removes_zombie_active_directory() {
 
     // Create and archive a channel.
     let channel = Channel::new(temp_dir.path(), "frontend").unwrap();
-    channel.archive().unwrap();
+    channel.archive("main").unwrap();
 
     // Recreate a zombie active directory manually.
     let zombie_history = temp_dir
@@ -941,7 +941,7 @@ fn test_archive_replaces_existing_archived_dir() {
     channel
         .send(&Message::text("agent1", "old message"))
         .unwrap();
-    channel.archive().unwrap();
+    channel.archive("main").unwrap();
 
     let channels_dir = temp_dir.path().join("channels");
     let archived_dir = channels_dir.join("test-channel.archived");
@@ -960,7 +960,7 @@ fn test_archive_replaces_existing_archived_dir() {
     std::fs::rename(&archived_backup, &archived_dir).unwrap();
 
     // Archiving again should succeed, replacing the old archive
-    channel2.archive().unwrap();
+    channel2.archive("main").unwrap();
 
     // The archived channel should contain the new message, not the old one
     let archived = Channel::open_archived(temp_dir.path(), "test-channel").unwrap();
@@ -1578,7 +1578,8 @@ fn test_rename_channel_success() {
     let base_dir = tmp.path();
 
     Channel::new(base_dir, "old-name").expect("create channel");
-    Channel::rename_channel(base_dir, "old-name", "new-name").expect("rename should succeed");
+    Channel::rename_channel(base_dir, "old-name", "new-name", "main")
+        .expect("rename should succeed");
 
     assert!(
         !base_dir.join("channels").join("old-name").exists(),
@@ -1591,16 +1592,17 @@ fn test_rename_channel_success() {
 }
 
 #[test]
-fn test_rename_channel_rejects_midtown() {
+fn test_rename_channel_rejects_main_channel() {
     let tmp = TempDir::new().unwrap();
     let base_dir = tmp.path();
 
-    let result = Channel::rename_channel(base_dir, "midtown", "new-name");
-    assert!(result.is_err(), "renaming 'midtown' should fail");
+    // The main channel (whatever name it has) cannot be renamed
+    let result = Channel::rename_channel(base_dir, "myproject", "new-name", "myproject");
+    assert!(result.is_err(), "renaming the main channel should fail");
     let err = result.unwrap_err().to_string();
     assert!(
-        err.contains("midtown"),
-        "error should mention midtown, got: {}",
+        err.contains("myproject"),
+        "error should mention the channel name, got: {}",
         err
     );
 }
@@ -1612,7 +1614,7 @@ fn test_rename_channel_rejects_invalid_new_name() {
 
     Channel::new(base_dir, "valid").expect("create channel");
 
-    let result = Channel::rename_channel(base_dir, "valid", "bad name!");
+    let result = Channel::rename_channel(base_dir, "valid", "bad name!", "main");
     assert!(result.is_err(), "invalid new name should fail");
 }
 
@@ -1622,7 +1624,7 @@ fn test_rename_channel_rejects_invalid_old_name() {
     let base_dir = tmp.path();
 
     // Path traversal attempt via old name
-    let result = Channel::rename_channel(base_dir, "../escape", "new-name");
+    let result = Channel::rename_channel(base_dir, "../escape", "new-name", "main");
     assert!(
         result.is_err(),
         "path traversal in old name should be rejected"
@@ -1634,7 +1636,7 @@ fn test_rename_channel_rejects_nonexistent_source() {
     let tmp = TempDir::new().unwrap();
     let base_dir = tmp.path();
 
-    let result = Channel::rename_channel(base_dir, "does-not-exist", "new-name");
+    let result = Channel::rename_channel(base_dir, "does-not-exist", "new-name", "main");
     assert!(result.is_err(), "renaming nonexistent channel should fail");
     let err = result.unwrap_err().to_string();
     assert!(
@@ -1652,7 +1654,7 @@ fn test_rename_channel_rejects_existing_target() {
     Channel::new(base_dir, "source").expect("create source");
     Channel::new(base_dir, "target").expect("create target");
 
-    let result = Channel::rename_channel(base_dir, "source", "target");
+    let result = Channel::rename_channel(base_dir, "source", "target", "main");
     assert!(result.is_err(), "renaming to existing channel should fail");
     let err = result.unwrap_err().to_string();
     assert!(
@@ -1670,7 +1672,7 @@ fn test_rename_channel_rejects_avenue_name() {
     Channel::new(base_dir, "my-channel").expect("create channel");
 
     // "park" is a reserved AVENUE_NAME
-    let result = Channel::rename_channel(base_dir, "my-channel", "park");
+    let result = Channel::rename_channel(base_dir, "my-channel", "park", "main");
     assert!(
         result.is_err(),
         "renaming to a reserved avenue name should fail"

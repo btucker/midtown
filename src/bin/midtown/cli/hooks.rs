@@ -1206,10 +1206,10 @@ Second insight
         let projects_dir = midtown::paths::projects_dir_for_repo(&repo);
         let _ = std::fs::remove_dir_all(&projects_dir);
 
-        // Default: no MIDTOWN_CHANNEL → opens "midtown" channel
+        // Default: no MIDTOWN_CHANNEL → opens the channel named after the repo
         unsafe { std::env::remove_var("MIDTOWN_CHANNEL") };
         let ch = open_channel_for_hook(&repo).expect("should open default channel");
-        assert_eq!(ch.channel_name(), "midtown");
+        assert_eq!(ch.channel_name(), repo.as_str());
 
         // With MIDTOWN_CHANNEL set → opens the named topic channel
         unsafe { std::env::set_var("MIDTOWN_CHANNEL", "tui") };
