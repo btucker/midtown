@@ -1966,7 +1966,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
 
                 match crate::channel::Channel::new(&base_dir, &name) {
                     Ok(channel) => {
-                        if let Err(e) = channel.archive() {
+                        if let Err(e) = channel.archive(&state.repo_name) {
                             warn!("Failed to archive channel '{}': {}", name, e);
                         } else {
                             info!("Archived channel '{}'", name);
@@ -2097,7 +2097,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 // and then archive() would overwrite the real archived data.
                 let from_channel_dir = base_dir.join("channels").join(&from);
                 if from_channel_dir.exists() {
-                    if let Err(e) = from_channel.archive() {
+                    if let Err(e) = from_channel.archive(&state.repo_name) {
                         warn!(
                             "Failed to archive source channel '{}' after merge: {}",
                             from, e

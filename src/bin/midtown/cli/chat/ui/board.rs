@@ -72,8 +72,8 @@ pub fn draw_board_panel(f: &mut Frame, app: &mut App, area: Rect) -> (Vec<Hyperl
     let mut lines = Vec::new();
     let hyperlinks = Vec::new();
 
-    // Default channel matches the daemon's ChannelRouter default ("midtown")
-    let main_channel = "midtown";
+    // Default channel matches the daemon's ChannelRouter default (the project name)
+    let main_channel = app.project_name.as_str();
 
     // Clone task, PR, coworker, and channel data to avoid holding borrows on app
     // This allows us to mutate app.task_line_map later

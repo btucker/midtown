@@ -23,8 +23,8 @@ fn test_archive_channel_renames_file_correctly() {
         .join("current.jsonl");
     assert!(channel_file.exists(), "Channel message file should exist");
 
-    // Archive the channel
-    channel.archive().unwrap();
+    // Archive the channel (main channel is "main", so "test-topic" can be archived)
+    channel.archive("main").unwrap();
 
     // Verify the channel directory was renamed
     assert!(
@@ -59,8 +59,8 @@ fn test_archive_channel_preserves_messages() {
     channel.send(&msg1).unwrap();
     channel.send(&msg2).unwrap();
 
-    // Archive the channel
-    channel.archive().unwrap();
+    // Archive the channel (main channel is "main", so "test-topic" can be archived)
+    channel.archive("main").unwrap();
 
     // Read the archived file directly to verify messages are preserved
     let archived_file = base_dir
@@ -80,17 +80,17 @@ fn test_archive_channel_preserves_messages() {
 }
 
 #[test]
-fn test_cannot_archive_midtown_channel() {
-    // Setup: Create a temporary directory
+fn test_cannot_archive_main_channel() {
+    // The main channel (project's default channel) cannot be archived
     let temp_dir = TempDir::new().unwrap();
     let base_dir = temp_dir.path();
 
-    // Try to archive the midtown channel
-    let channel = Channel::new(base_dir, "midtown").unwrap();
-    let result = channel.archive();
+    // The channel name matches the project name — it's the main channel
+    let channel = Channel::new(base_dir, "myproject").unwrap();
+    let result = channel.archive("myproject");
 
     // Should fail with an error
-    assert!(result.is_err(), "Archiving the midtown channel should fail");
+    assert!(result.is_err(), "Archiving the main channel should fail");
 }
 
 #[test]
@@ -102,11 +102,11 @@ fn test_list_archived_channels() {
     // Create and archive two channels
     let channel1 = Channel::new(base_dir, "test1").unwrap();
     channel1.send(&Message::text("agent", "msg1")).unwrap();
-    channel1.archive().unwrap();
+    channel1.archive("main").unwrap();
 
     let channel2 = Channel::new(base_dir, "test2").unwrap();
     channel2.send(&Message::text("agent", "msg2")).unwrap();
-    channel2.archive().unwrap();
+    channel2.archive("main").unwrap();
 
     // Create one non-archived channel
     let _channel3 = Channel::new(base_dir, "test3").unwrap();
@@ -134,7 +134,7 @@ fn test_unarchive_channel_restores_history() {
     channel
         .send(&Message::text("agent", "hello archived"))
         .unwrap();
-    channel.archive().unwrap();
+    channel.archive("main").unwrap();
 
     let archived_history = base_dir
         .join("channels")
@@ -206,7 +206,7 @@ fn test_open_archived_channel_for_reading() {
     channel
         .send(&Message::text("madison", "Tests passing"))
         .unwrap();
-    channel.archive().unwrap();
+    channel.archive("main").unwrap();
 
     // Should be able to open and read the archived channel
     let archived = Channel::open_archived(base_dir, "feature-complete").unwrap();
@@ -233,8 +233,8 @@ fn test_list_with_include_archived() {
     assert!(channels.iter().any(|c| c.name == "active2"));
     assert!(channels.iter().any(|c| c.name == "to-archive"));
 
-    // Archive one channel
-    channel3.archive().unwrap();
+    // Archive one channel (main channel is "main", so "to-archive" can be archived)
+    channel3.archive("main").unwrap();
 
     // With include_archived=false, should only see 2 active channels
     let channels_no_archived = Channel::list(temp_dir.path(), false, None).unwrap();
@@ -274,7 +274,7 @@ fn test_list_archived_channels_no_ghost_files() {
 
     // Create and archive a channel
     let channel = Channel::new(temp_dir.path(), "archived-channel").unwrap();
-    channel.archive().unwrap();
+    channel.archive("main").unwrap();
 
     // Verify the archived directory exists
     let archived_path = temp_dir

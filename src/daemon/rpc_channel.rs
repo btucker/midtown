@@ -506,7 +506,7 @@ pub(super) async fn handle_channel_archive(
             return Response::error(id, RpcError::new(-32603, e.to_string()));
         }
     };
-    match channel.archive() {
+    match channel.archive(state.channel_router.default_channel_name()) {
         Ok(()) => {
             // Shut down the channel lead session (if running) and clean up state.
             // This mirrors the cleanup in Effect::ArchiveChannel (effects.rs).
@@ -647,7 +647,12 @@ pub(super) async fn handle_channel_rename(
     }
 
     // Rename the directory on disk.
-    if let Err(e) = crate::Channel::rename_channel(base_dir, old, new) {
+    if let Err(e) = crate::Channel::rename_channel(
+        base_dir,
+        old,
+        new,
+        state.channel_router.default_channel_name(),
+    ) {
         error!("Failed to rename channel '{}' to '{}': {}", old, new, e);
         return Response::error(id, RpcError::new(-32603, e.to_string()));
     }

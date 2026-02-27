@@ -362,12 +362,13 @@ impl Channel {
         })
     }
 
-    /// Open the default "midtown" channel for a specific repository
+    /// Open the default channel for a specific repository
     ///
+    /// The default channel shares the repository name (e.g., "offload" for the offload project).
     /// Uses ~/.midtown/projects/<repo>/ as the base directory.
     pub fn for_repo(repo: &str) -> Result<Self> {
         let base_dir = crate::paths::projects_dir_for_repo(repo);
-        Self::new(base_dir, "midtown")
+        Self::new(base_dir, repo)
     }
 
     /// Open a named channel for a specific repository
@@ -588,15 +589,20 @@ impl Channel {
     /// This is a static method because the caller may not hold an open Channel instance.
     ///
     /// Returns an error if:
-    /// - `old` is "midtown" (the main channel cannot be renamed)
+    /// - `old` is `main_channel_name` (the main channel cannot be renamed)
     /// - `new` is an invalid channel name
     /// - `old` directory does not exist
     /// - `new` directory already exists
-    pub fn rename_channel(base_dir: impl Into<PathBuf>, old: &str, new: &str) -> Result<()> {
-        if old == "midtown" {
+    pub fn rename_channel(
+        base_dir: impl Into<PathBuf>,
+        old: &str,
+        new: &str,
+        main_channel_name: &str,
+    ) -> Result<()> {
+        if old == main_channel_name {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
-                "Cannot rename the 'midtown' channel",
+                format!("Cannot rename the '{}' channel", main_channel_name),
             )
             .into());
         }
@@ -695,12 +701,14 @@ impl Channel {
     /// Renames the channel directory from `channels/<name>/` to `channels/<name>.archived/`.
     /// Archived channels are excluded from the list() results.
     ///
-    /// Returns an error if trying to archive the "midtown" channel (not allowed).
-    pub fn archive(&self) -> Result<()> {
-        if self.channel_name == "midtown" {
+    /// Returns an error if trying to archive the main channel (not allowed).
+    /// The `main_channel_name` parameter identifies which channel is the main channel
+    /// for this project (e.g., "offload" for the offload project).
+    pub fn archive(&self, main_channel_name: &str) -> Result<()> {
+        if self.channel_name == main_channel_name {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
-                "Cannot archive the 'midtown' channel",
+                format!("Cannot archive the '{}' channel", main_channel_name),
             )
             .into());
         }
