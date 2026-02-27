@@ -23,6 +23,19 @@ pub fn handle_lead_boot(channel: Option<&str>) -> Result<(), String> {
     let repo_name = midtown::paths::detect_repo_name()
         .ok_or("Not in a git repository. Run from a git repo.")?;
 
+    // Warn if the daemon is already running a headless lead session
+    if let Ok(client) = crate::client::DaemonClient::connect()
+        && let Ok(super::Response::Message { message }) = client.status()
+        && message.contains("Lead:")
+        && !message.contains("Lead: not running")
+    {
+        eprintln!(
+            "Warning: A daemon-managed lead session is already running.\n\
+             This headed session will be independent. Use `midtown session attach lead`\n\
+             to attach to the daemon session instead, or proceed to start a separate one."
+        );
+    }
+
     let mut config = midtown::launch::LaunchConfig::lead(&repo_name, channel);
     config.session_mode = midtown::launch::SessionMode::Resume;
 
@@ -60,8 +73,33 @@ pub fn handle_lead_boot(channel: Option<&str>) -> Result<(), String> {
     let cwd =
         std::env::current_dir().map_err(|e| format!("Failed to get current directory: {}", e))?;
 
+    // Write initial prompt to temp file (gives lead its first instructions on fresh sessions)
+    let initial_prompt_file = if let Some(ref prompt_text) = config.initial_prompt {
+        let path =
+            std::env::temp_dir().join(format!("midtown-lead-initial-{}.md", std::process::id()));
+        std::fs::write(&path, prompt_text)
+            .map_err(|e| format!("Failed to write initial prompt: {}", e))?;
+        Some(path)
+    } else {
+        None
+    };
+
+    // Ensure plugins/skills are installed before launching
+    if let Err(e) = midtown::platform_launch::run_platform_prelaunch_hook(config.auth_provider) {
+        eprintln!(
+            "Warning: Platform pre-launch hook failed (continuing): {}",
+            e
+        );
+    }
+
     // Build the full shell command (env vars + sandbox + CLI args)
-    let launch = config.to_shell_command(&settings_file, &prompt_file, None, &cwd, &repo_name);
+    let launch = config.to_shell_command(
+        &settings_file,
+        &prompt_file,
+        initial_prompt_file.as_deref(),
+        &cwd,
+        &repo_name,
+    );
 
     // exec() replaces this process — this line never returns on success
     let err = std::process::Command::new("sh")

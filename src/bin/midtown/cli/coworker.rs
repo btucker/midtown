@@ -146,11 +146,28 @@ pub fn handle_coworker_boot(task_id: Option<&str>) -> Result<(), String> {
     let settings_file = midtown::settings::write_coworker_settings_file()
         .map_err(|e| format!("Failed to write settings: {}", e))?;
 
+    // Write task-specific initial prompt to temp file
+    let initial_prompt = midtown::agents::coworker_task_prompt(&task.id, &task.subject, "");
+    let initial_prompt_file = std::env::temp_dir().join(format!(
+        "midtown-coworker-initial-{}.md",
+        std::process::id()
+    ));
+    std::fs::write(&initial_prompt_file, &initial_prompt)
+        .map_err(|e| format!("Failed to write initial prompt: {}", e))?;
+
+    // Ensure plugins/skills are installed before launching
+    if let Err(e) = midtown::platform_launch::run_platform_prelaunch_hook(config.auth_provider) {
+        eprintln!(
+            "Warning: Platform pre-launch hook failed (continuing): {}",
+            e
+        );
+    }
+
     // Build the full shell command (env vars + sandbox + CLI args)
     let launch = config.to_shell_command(
         &settings_file,
         &prompt_file,
-        None,
+        Some(&initial_prompt_file),
         &worktree_path,
         &repo_name,
     );
@@ -222,9 +239,14 @@ fn select_task() -> Result<midtown::tasks::Task, String> {
             .map_err(|e| format!("Failed to flush: {}", e))?;
 
         let mut input = String::new();
-        std::io::stdin()
+        let bytes_read = std::io::stdin()
             .read_line(&mut input)
             .map_err(|e| format!("Failed to read input: {}", e))?;
+
+        // EOF (Ctrl+D, piped input ended) — exit rather than spinning forever
+        if bytes_read == 0 {
+            return Err("No input (EOF). Run with --task <id> to specify a task.".into());
+        }
 
         let trimmed = input.trim();
         if let Ok(index) = trimmed.parse::<usize>()

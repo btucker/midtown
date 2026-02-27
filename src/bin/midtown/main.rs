@@ -602,6 +602,15 @@ fn main() {
         return;
     }
 
+    // Warn if --task is given alongside a subcommand (it would be silently ignored)
+    if let Commands::Coworker {
+        task: Some(_),
+        command: Some(_),
+    } = &command
+    {
+        eprintln!("Warning: --task is ignored when a subcommand is provided");
+    }
+
     // Chat command (no daemon required - standalone TUI)
     if let Commands::Chat = &command {
         if let Err(e) = cli::handle_chat() {
