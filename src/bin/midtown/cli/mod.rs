@@ -184,6 +184,16 @@ pub fn handle_remind(
     lead::handle_remind(cmd, client)
 }
 
+/// Handle `midtown lead` (no subcommand) — boot a headed lead session.
+pub fn handle_lead_boot(channel: Option<&str>) -> Result<(), String> {
+    lead::handle_lead_boot(channel)
+}
+
+/// Handle `midtown coworker` (no subcommand) — boot a headed coworker session.
+pub fn handle_coworker_boot(task_id: Option<&str>) -> Result<(), String> {
+    coworker::handle_coworker_boot(task_id)
+}
+
 /// Handle `midtown config` subcommands (get/set/list) — no daemon required.
 pub fn handle_config(cmd: &ConfigCommand) -> Result<Response, String> {
     config::handle(cmd)

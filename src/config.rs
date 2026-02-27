@@ -65,6 +65,52 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use toml_edit::{Item, Table};
 
+/// Provider-agnostic model size.
+///
+/// These abstract size terms are resolved to concrete model names at launch time
+/// by `normalize_size_alias_for_provider()` in `daemon/helpers.rs`:
+/// - Claude/z.ai: small → haiku, medium → sonnet, large → opus
+/// - Codex: small → gpt-5.1-codex-mini, medium → gpt-5.3-codex-spark, large → gpt-5.3-codex
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ModelSize {
+    Small,
+    Medium,
+    Large,
+}
+
+impl ModelSize {
+    /// Return the size alias string that `normalize_size_alias_for_provider()` accepts.
+    pub fn as_model_str(&self) -> &'static str {
+        match self {
+            ModelSize::Small => "small",
+            ModelSize::Medium => "medium",
+            ModelSize::Large => "large",
+        }
+    }
+}
+
+impl std::fmt::Display for ModelSize {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_model_str())
+    }
+}
+
+impl std::str::FromStr for ModelSize {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().as_str() {
+            "small" => Ok(ModelSize::Small),
+            "medium" => Ok(ModelSize::Medium),
+            "large" => Ok(ModelSize::Large),
+            _ => Err(format!(
+                "Invalid model size '{}'. Valid values: small, medium, large",
+                s
+            )),
+        }
+    }
+}
+
 /// Chat layout mode for the Lead session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
 #[serde(rename_all = "lowercase")]
@@ -432,12 +478,26 @@ pub struct ChannelLeadsConfig {
 impl ChannelLeadsConfig {
     /// Get the model to use for a given channel.
     ///
-    /// Priority: per-channel override → default_model → ops-specific default ("haiku") → "sonnet".
+    /// Priority: per-channel override → default_model → execution_fallback → ops-specific default ("haiku") → "sonnet".
     pub fn model_for_channel(&self, channel_name: &str) -> String {
+        self.model_for_channel_with_fallback(channel_name, None)
+    }
+
+    /// Get the model for a channel with an optional execution-level fallback.
+    ///
+    /// Priority: per-channel override → `[channel_leads].default_model` →
+    /// `execution_fallback` (from `execution.channel_lead_model` / `execution.default_model`) →
+    /// ops-specific default ("haiku") → "sonnet".
+    pub fn model_for_channel_with_fallback(
+        &self,
+        channel_name: &str,
+        execution_fallback: Option<ModelSize>,
+    ) -> String {
         self.overrides
             .get(channel_name)
             .cloned()
             .or_else(|| self.default_model.clone())
+            .or_else(|| execution_fallback.map(|s| s.as_model_str().to_string()))
             .unwrap_or_else(|| {
                 if channel_name == "ops" {
                     "haiku".to_string()
@@ -561,6 +621,12 @@ impl DaemonSection {
 /// Role-specific execution provider settings.
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct ExecutionSection {
+    /// Default provider for all roles when no role-specific provider is set.
+    #[serde(default)]
+    pub default_provider: Option<crate::auth::AuthProvider>,
+    /// Default model size for all roles when no role-specific model is set.
+    #[serde(default)]
+    pub default_model: Option<ModelSize>,
     /// Default provider used for all lead roles (project lead and channel leads).
     #[serde(default)]
     pub lead_provider: Option<crate::auth::AuthProvider>,
@@ -588,6 +654,19 @@ pub struct ExecutionSection {
     /// Provider override for ad-hoc one-shot execution RPC (`oneshot.execute`).
     #[serde(default)]
     pub headless_execute_provider: Option<crate::auth::AuthProvider>,
+    /// Model size for coworker sessions (overrides default_model).
+    #[serde(default)]
+    pub coworker_model: Option<ModelSize>,
+    /// Model size for reviewer sessions (overrides default_model).
+    #[serde(default)]
+    pub reviewer_model: Option<ModelSize>,
+    /// Model size for the project lead session (overrides default_model).
+    #[serde(default)]
+    pub lead_model: Option<ModelSize>,
+    /// Model size for channel lead sessions (overrides default_model).
+    /// Acts as the base default when `[channel_leads].default_model` is not set.
+    #[serde(default)]
+    pub channel_lead_model: Option<ModelSize>,
     /// Pool of auth profile emails for coworker spawning.
     /// Takes precedence over `coworker_provider` when set.
     /// Example: ["alice@example.com", "bob@example.com"]
@@ -607,6 +686,8 @@ impl ExecutionSection {
     /// Merge another execution section into this one, with `other` taking precedence.
     pub fn merge(&self, other: &ExecutionSection) -> ExecutionSection {
         ExecutionSection {
+            default_provider: other.default_provider.or(self.default_provider),
+            default_model: other.default_model.or(self.default_model),
             lead_provider: other.lead_provider.or(self.lead_provider),
             project_lead_provider: other.project_lead_provider.or(self.project_lead_provider),
             coworker_provider: other.coworker_provider.or(self.coworker_provider),
@@ -617,6 +698,10 @@ impl ExecutionSection {
             headless_execute_provider: other
                 .headless_execute_provider
                 .or(self.headless_execute_provider),
+            coworker_model: other.coworker_model.or(self.coworker_model),
+            reviewer_model: other.reviewer_model.or(self.reviewer_model),
+            lead_model: other.lead_model.or(self.lead_model),
+            channel_lead_model: other.channel_lead_model.or(self.channel_lead_model),
             coworker_profiles: other
                 .coworker_profiles
                 .clone()
@@ -887,7 +972,11 @@ impl GlobalConfig {
 # github_user = ""
 
 [execution]
-# Default provider for all lead sessions (project lead + channel leads): "claude", "codex", or "zai"
+# Global default provider for all roles (unless overridden per-role): "claude", "codex", or "zai"
+# default_provider = "claude"
+# Global default model size for all roles (unless overridden per-role): "small", "medium", or "large"
+# default_model = "medium"
+# Default provider for all lead sessions (project lead + channel leads)
 # lead_provider = "claude"
 # Optional override for the main project lead only
 # project_lead_provider = "claude"
@@ -903,6 +992,11 @@ impl GlobalConfig {
 # specialized_provider = "claude"
 # Optional override provider for oneshot.execute RPC
 # headless_execute_provider = "claude"
+# Per-role model size overrides (small, medium, large)
+# coworker_model = "medium"
+# reviewer_model = "large"
+# lead_model = "large"
+# channel_lead_model = "medium"
 
 [providers.claude]
 # Auth profile (email address) to use for Claude Code sessions
@@ -1027,7 +1121,26 @@ fn resolve_execution_provider(
         ExecutionRole::HeadlessExecute => direct.or(execution.specialized_provider),
         _ => direct,
     };
-    configured.unwrap_or(crate::auth::AuthProvider::Claude)
+    configured
+        .or(execution.default_provider)
+        .unwrap_or(crate::auth::AuthProvider::Claude)
+}
+
+/// Get the configured model size for a role in a project.
+///
+/// Resolution order: role-specific `*_model` → `default_model` → `None`.
+/// When `None`, the caller should fall back to the hardcoded default for that role.
+pub fn get_model_for_role(project_name: &str, role: ExecutionRole) -> Option<ModelSize> {
+    let execution = get_project_execution_config(project_name);
+    let role_specific = match role {
+        ExecutionRole::Coworker => execution.coworker_model,
+        ExecutionRole::Reviewer => execution.reviewer_model,
+        ExecutionRole::Lead => execution.lead_model,
+        ExecutionRole::ChannelLead => execution.channel_lead_model,
+        // Specialized/HeadlessExecute don't have per-role model settings
+        ExecutionRole::Specialized | ExecutionRole::HeadlessExecute => None,
+    };
+    role_specific.or(execution.default_model)
 }
 
 /// Get the project-specific sandbox configuration, merged with global.
@@ -1052,6 +1165,15 @@ pub fn get_channel_leads_config(project_name: &str) -> ChannelLeadsConfig {
     FullProjectConfig::load(project_name)
         .map(|full| full.channel_leads)
         .unwrap_or_default()
+}
+
+/// Get the execution-level model fallback for channel leads.
+///
+/// This resolves `execution.channel_lead_model` → `execution.default_model` → None,
+/// providing the fallback that `ChannelLeadsConfig::model_for_channel_with_fallback()` uses
+/// when neither a per-channel override nor `[channel_leads].default_model` is set.
+pub fn get_channel_lead_model_fallback(project_name: &str) -> Option<ModelSize> {
+    get_model_for_role(project_name, ExecutionRole::ChannelLead)
 }
 
 /// Get the effective configuration for a project.

@@ -1496,13 +1496,16 @@ fn build_reviewer_respawn_effects(
     );
     let mut config = crate::launch::LaunchConfig::reviewer(
         name.to_string(),
+        &snap.repo_name,
         pr_number,
         new_restart_count,
         reviewer_provider,
     );
-    config.model =
-        super::helpers::default_model_for_provider_role(config.auth_provider, &config.role)
-            .to_string();
+    config.model = super::helpers::normalize_model_for_provider_role(
+        &config.model,
+        config.auth_provider,
+        &config.role,
+    );
     config.working_dir = Some(wt_path.clone());
 
     effects.push(Effect::EnsureWorktree {

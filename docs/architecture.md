@@ -112,6 +112,15 @@ Each coworker runs as:
 - With `--add-dir` worktrees for additional repos in multi-repo projects
 - Nudges are delivered via stdin JSON, and health is monitored via stdout stream events
 
+### Direct CLI Boot (Headed Sessions)
+
+In addition to daemon-managed headless sessions, users can launch **headed (interactive terminal) sessions** directly from the CLI:
+
+- `midtown lead [--channel <name>]` — boots a headed lead session via `exec()`, replacing the CLI process with the Claude TUI. Uses `LaunchConfig::lead()` to resolve model/provider/auth, writes system prompt and settings to temp files, then calls `to_shell_command()` to build the full `sh -lc` invocation.
+- `midtown coworker [--task <id>]` — boots a headed coworker session in a task worktree. If no `--task` is specified, presents a TUI picker for unresolved tasks. Creates/reuses worktrees via `WorktreeManager::create_task_worktree()`.
+
+Both use `SessionMode::Resume` (`--continue`) so they resume an existing Claude session or start fresh. The `exec()` pattern means the Midtown process is fully replaced — no parent process lingers. Initial prompts are written to temp files and passed as positional args via `$(cat /path)`.
+
 ### HeadlessSession I/O Architecture
 
 `HeadlessSession` (`src/headless.rs`) manages the child process and exposes a typed event stream. Claude sessions use a **background reader** pattern to avoid OS pipe-buffer stalls:

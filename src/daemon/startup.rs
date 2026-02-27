@@ -639,7 +639,7 @@ pub async fn recover_from_session_records(
                     crate::config::ExecutionRole::Reviewer,
                 );
                 // restart_count=0: we're recovering a session, not tracking restarts here
-                LaunchConfig::reviewer(name, pr_number, 0, reviewer_provider)
+                LaunchConfig::reviewer(name, repo_name, pr_number, 0, reviewer_provider)
             } else {
                 warn!("Reviewer session {} has no PR number, skipping", session_id);
                 continue;

@@ -132,8 +132,11 @@ enum Commands {
     },
     /// Coworker management commands
     Coworker {
+        /// Task ID to boot a headed coworker session for
+        #[arg(long)]
+        task: Option<String>,
         #[command(subcommand)]
-        command: CoworkerCommand,
+        command: Option<CoworkerCommand>,
     },
     /// Attach/detach headless coworker sessions
     #[command(alias = "sessions")]
@@ -577,13 +580,35 @@ fn main() {
             };
             handle_result(format, result);
         } else {
-            // No subcommand — print info about channel if specified
-            if let Some(ch) = channel {
-                println!("Channel lead mode: #{}", ch);
+            // No subcommand — boot a headed lead session
+            if let Err(e) = cli::handle_lead_boot(channel.as_deref()) {
+                eprintln!("Error: {}", e);
+                std::process::exit(1);
             }
-            // midtown lead without subcommand is a no-op (sessions are managed by daemon)
         }
         return;
+    }
+
+    // Coworker boot — headed session (no subcommand, uses exec)
+    if let Commands::Coworker {
+        task,
+        command: None,
+    } = &command
+    {
+        if let Err(e) = cli::handle_coworker_boot(task.as_deref()) {
+            eprintln!("Error: {}", e);
+            std::process::exit(1);
+        }
+        return;
+    }
+
+    // Warn if --task is given alongside a subcommand (it would be silently ignored)
+    if let Commands::Coworker {
+        task: Some(_),
+        command: Some(_),
+    } = &command
+    {
+        eprintln!("Warning: --task is ignored when a subcommand is provided");
     }
 
     // Chat command (no daemon required - standalone TUI)
@@ -938,7 +963,9 @@ fn main() {
 
     let result = match &command {
         Commands::Channel { command } => cli::handle_channel(command, &client),
-        Commands::Coworker { command } => cli::handle_coworker(command, &client),
+        Commands::Coworker {
+            command: Some(cmd), ..
+        } => cli::handle_coworker(cmd, &client),
         Commands::Session { command } => cli::handle_session(command, &client),
         Commands::Task { command } => cli::handle_task(command, &client),
         Commands::Status => cli::handle_status(&client),
@@ -972,6 +999,7 @@ fn main() {
         | Commands::Chat
         | Commands::E2e { .. }
         | Commands::Auth { .. }
+        | Commands::Coworker { command: None, .. }
         | Commands::Claude { .. }
         | Commands::State { .. }
         | Commands::Hook { .. }

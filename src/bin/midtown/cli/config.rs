@@ -61,6 +61,12 @@ const VALID_KEYS: &[&str] = &[
     "execution.channel_lead_provider",
     "execution.specialized_provider",
     "execution.headless_execute_provider",
+    "execution.default_provider",
+    "execution.default_model",
+    "execution.coworker_model",
+    "execution.reviewer_model",
+    "execution.lead_model",
+    "execution.channel_lead_model",
 ];
 
 /// Dispatch a `ConfigCommand` to the appropriate handler.
@@ -310,6 +316,14 @@ fn global_field_value(config: &midtown::config::GlobalConfig, key: &str) -> Stri
                 .headless_execute_provider
                 .map(|p| p.as_str()),
         ),
+        "execution.default_provider" => {
+            fmt_opt(config.execution.default_provider.map(|p| p.as_str()))
+        }
+        "execution.default_model" => fmt_opt(config.execution.default_model),
+        "execution.coworker_model" => fmt_opt(config.execution.coworker_model),
+        "execution.reviewer_model" => fmt_opt(config.execution.reviewer_model),
+        "execution.lead_model" => fmt_opt(config.execution.lead_model),
+        "execution.channel_lead_model" => fmt_opt(config.execution.channel_lead_model),
         // validate_key() is called before every read, so this arm is unreachable.
         // If it fires, a key was added to VALID_KEYS without adding a read arm here.
         _ => unreachable!(
@@ -363,6 +377,14 @@ fn project_field_value(config: &midtown::config::FullProjectConfig, key: &str) -
                 .headless_execute_provider
                 .map(|p| p.as_str()),
         ),
+        "execution.default_provider" => {
+            fmt_opt(config.execution.default_provider.map(|p| p.as_str()))
+        }
+        "execution.default_model" => fmt_opt(config.execution.default_model),
+        "execution.coworker_model" => fmt_opt(config.execution.coworker_model),
+        "execution.reviewer_model" => fmt_opt(config.execution.reviewer_model),
+        "execution.lead_model" => fmt_opt(config.execution.lead_model),
+        "execution.channel_lead_model" => fmt_opt(config.execution.channel_lead_model),
         // validate_key() is called before every read, so this arm is unreachable.
         // If it fires, a key was added to VALID_KEYS without adding a read arm here.
         _ => unreachable!(
@@ -444,6 +466,24 @@ fn apply_global_key(
         }
         "execution.headless_execute_provider" => {
             config.execution.headless_execute_provider = Some(parse_provider(key, value)?);
+        }
+        "execution.default_provider" => {
+            config.execution.default_provider = Some(parse_provider(key, value)?);
+        }
+        "execution.default_model" => {
+            config.execution.default_model = Some(parse_model_size(key, value)?);
+        }
+        "execution.coworker_model" => {
+            config.execution.coworker_model = Some(parse_model_size(key, value)?);
+        }
+        "execution.reviewer_model" => {
+            config.execution.reviewer_model = Some(parse_model_size(key, value)?);
+        }
+        "execution.lead_model" => {
+            config.execution.lead_model = Some(parse_model_size(key, value)?);
+        }
+        "execution.channel_lead_model" => {
+            config.execution.channel_lead_model = Some(parse_model_size(key, value)?);
         }
         // validate_key() is called before every write, so this arm is unreachable.
         // If it fires, a key was added to VALID_KEYS without adding a write arm here.
@@ -528,6 +568,24 @@ fn apply_project_key(
         "execution.headless_execute_provider" => {
             config.execution.headless_execute_provider = Some(parse_provider(key, value)?);
         }
+        "execution.default_provider" => {
+            config.execution.default_provider = Some(parse_provider(key, value)?);
+        }
+        "execution.default_model" => {
+            config.execution.default_model = Some(parse_model_size(key, value)?);
+        }
+        "execution.coworker_model" => {
+            config.execution.coworker_model = Some(parse_model_size(key, value)?);
+        }
+        "execution.reviewer_model" => {
+            config.execution.reviewer_model = Some(parse_model_size(key, value)?);
+        }
+        "execution.lead_model" => {
+            config.execution.lead_model = Some(parse_model_size(key, value)?);
+        }
+        "execution.channel_lead_model" => {
+            config.execution.channel_lead_model = Some(parse_model_size(key, value)?);
+        }
         // validate_key() is called before every write, so this arm is unreachable.
         // If it fires, a key was added to VALID_KEYS without adding a write arm here.
         _ => unreachable!(
@@ -569,6 +627,15 @@ fn parse_provider(key: &str, value: &str) -> Result<midtown::auth::AuthProvider,
     value.parse::<midtown::auth::AuthProvider>().map_err(|_| {
         format!(
             "Invalid provider value '{}' for '{}'. Valid values: claude, codex, zai.",
+            value, key
+        )
+    })
+}
+
+fn parse_model_size(key: &str, value: &str) -> Result<midtown::config::ModelSize, String> {
+    value.parse::<midtown::config::ModelSize>().map_err(|_| {
+        format!(
+            "Invalid model size '{}' for '{}'. Valid values: small, medium, large.",
             value, key
         )
     })

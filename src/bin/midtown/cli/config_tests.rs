@@ -651,6 +651,117 @@ fn get_project_webhook_secret_returns_masked_value() {
     assert_eq!(value, "****", "Expected secret to be masked, got: {value}");
 }
 
+// ──────────────────────────────────────────────────────────────────────────────
+// Model size config get/set
+// ──────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn set_and_get_global_default_model() {
+    let dir = TempDir::new().unwrap();
+    let config_path = temp_global_config(&dir);
+
+    set_global_key("execution.default_model", "medium", &config_path).unwrap();
+    let value = get_global_key("execution.default_model", &config_path).unwrap();
+    assert_eq!(value, "medium");
+}
+
+#[test]
+fn set_and_get_global_coworker_model() {
+    let dir = TempDir::new().unwrap();
+    let config_path = temp_global_config(&dir);
+
+    set_global_key("execution.coworker_model", "small", &config_path).unwrap();
+    let value = get_global_key("execution.coworker_model", &config_path).unwrap();
+    assert_eq!(value, "small");
+}
+
+#[test]
+fn set_and_get_global_reviewer_model() {
+    let dir = TempDir::new().unwrap();
+    let config_path = temp_global_config(&dir);
+
+    set_global_key("execution.reviewer_model", "large", &config_path).unwrap();
+    let value = get_global_key("execution.reviewer_model", &config_path).unwrap();
+    assert_eq!(value, "large");
+}
+
+#[test]
+fn set_and_get_project_lead_model() {
+    let dir = TempDir::new().unwrap();
+    let config_path = temp_project_config(&dir);
+
+    set_project_key("execution.lead_model", "large", &config_path).unwrap();
+    let value = get_project_key("execution.lead_model", &config_path).unwrap();
+    assert_eq!(value, "large");
+}
+
+#[test]
+fn set_and_get_project_channel_lead_model() {
+    let dir = TempDir::new().unwrap();
+    let config_path = temp_project_config(&dir);
+
+    set_project_key("execution.channel_lead_model", "medium", &config_path).unwrap();
+    let value = get_project_key("execution.channel_lead_model", &config_path).unwrap();
+    assert_eq!(value, "medium");
+}
+
+#[test]
+fn set_and_get_global_default_provider() {
+    let dir = TempDir::new().unwrap();
+    let config_path = temp_global_config(&dir);
+
+    set_global_key("execution.default_provider", "codex", &config_path).unwrap();
+    let value = get_global_key("execution.default_provider", &config_path).unwrap();
+    assert_eq!(value, "codex");
+}
+
+#[test]
+fn invalid_model_size_returns_error() {
+    let dir = TempDir::new().unwrap();
+    let config_path = temp_global_config(&dir);
+
+    let result = set_global_key("execution.default_model", "huge", &config_path);
+    assert!(result.is_err());
+    let msg = result.unwrap_err();
+    assert!(
+        msg.contains("small") && msg.contains("medium") && msg.contains("large"),
+        "Expected valid model size values in: {msg}"
+    );
+}
+
+#[test]
+fn list_global_includes_model_keys() {
+    let dir = TempDir::new().unwrap();
+    let config_path = temp_global_config(&dir);
+
+    set_global_key("execution.default_model", "medium", &config_path).unwrap();
+    let output = list_global_config(&config_path).unwrap();
+    assert!(
+        output.contains("execution.default_model"),
+        "Missing default_model: {output}"
+    );
+    assert!(
+        output.contains("execution.coworker_model"),
+        "Missing coworker_model: {output}"
+    );
+    assert!(
+        output.contains("execution.reviewer_model"),
+        "Missing reviewer_model: {output}"
+    );
+    assert!(
+        output.contains("execution.lead_model"),
+        "Missing lead_model: {output}"
+    );
+    assert!(
+        output.contains("execution.channel_lead_model"),
+        "Missing channel_lead_model: {output}"
+    );
+    assert!(
+        output.contains("execution.default_provider"),
+        "Missing default_provider: {output}"
+    );
+}
+
 #[test]
 fn multiple_sets_accumulate_correctly() {
     let dir = TempDir::new().unwrap();
