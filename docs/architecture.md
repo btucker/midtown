@@ -274,7 +274,7 @@ Each channel is stored as a directory under `~/.midtown/projects/<repo>/channels
 
 ```
 channels/
-  midtown/                          # main project channel
+  <project>/                        # main project channel (named after the repo, e.g. "offload")
     history/
       current.jsonl                 # active message file
       2026-02-18.jsonl              # rotated daily archive
@@ -292,7 +292,7 @@ channels/
 ```
 
 **Auto-migration:** On first `Channel::new()` per process, `auto_migrate_channels()` converts legacy layouts:
-- `channel.jsonl` → `channels/midtown/history/current.jsonl` (V0→V3)
+- `channel.jsonl` → `channels/<project>/history/current.jsonl` (V0→V3)
 - `channels/<name>.jsonl` → `channels/<name>/history/current.jsonl` (V2→V3)
 - `cursors/<agent>.json` → deleted (cursors are now session-scoped and ephemeral)
 
@@ -302,9 +302,9 @@ Migration runs once per `base_dir` per process (via `OnceLock`) and is idempoten
 - `channel.post` — Append a message to a channel; handles `/me` actions, @mention routing, review note deduplication
 - `channel.read` — Read messages from a channel (supports `all`, `last`, `since`, and per-channel filtering)
 - `channel.create` — Create a new channel directory; idempotent (no-op if channel already exists)
-- `channel.archive` — Rename `channels/<name>/` to `channels/<name>.archived/`; returns an error if the channel does not exist or if archiving 'midtown'
+- `channel.archive` — Rename `channels/<name>/` to `channels/<name>.archived/`; returns an error if the channel does not exist or if archiving the project's main channel
 - `channel.unarchive` — Rename `channels/<name>.archived/` back to `channels/<name>/`; returns an error if the channel is not archived or if another active channel of the same name exists
-- `channel.rename` — Rename `channels/<old>/` to `channels/<new>/`; updates `task_channel`, `channel_lead_sessions`, and `sessions` in persistent state; shuts down the old channel lead session; returns an error if the old channel does not exist, the new name is invalid/already exists, or if renaming 'midtown'
+- `channel.rename` — Rename `channels/<old>/` to `channels/<new>/`; updates `task_channel`, `channel_lead_sessions`, and `sessions` in persistent state; shuts down the old channel lead session; returns an error if the old channel does not exist, the new name is invalid/already exists, or if renaming the project's main channel
 - `channel.list` — Return all channels, optionally including archived ones
 
 > Note: Channels are no longer auto-archived when all tasks complete. Archiving and unarchiving are explicit user actions via the CLI/RPC methods above.

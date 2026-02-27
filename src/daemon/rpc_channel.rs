@@ -481,7 +481,7 @@ pub(super) fn handle_channel_create(id: RequestId, name: &str, state: &DaemonSta
 /// Archives a channel by renaming its directory from `<name>/` to `<name>.archived/`.
 /// Also cleans up any running channel lead session for the archived channel by
 /// removing it from `channel_lead_sessions` and marking its `SessionRecord` as stopped.
-/// Returns an error if the channel does not exist or if trying to archive 'midtown'.
+/// Returns an error if the channel does not exist or if trying to archive the project's main channel.
 pub(super) async fn handle_channel_archive(
     id: RequestId,
     name: &str,

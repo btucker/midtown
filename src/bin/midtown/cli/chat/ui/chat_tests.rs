@@ -187,7 +187,7 @@ fn test_draw_lead_indicator_agent_name_on_last_line() {
     let mut app = test_app();
     // Two entries: older completed, newer in-progress
     app.tool_activity = std::collections::HashMap::from([(
-        "midtown".to_string(),
+        "test".to_string(),
         vec![
             make_tool_entry("\u{2713} Read foo.rs", true), // older, completed
             make_tool_entry("\u{203a} Write bar.rs", false), // newer, in-progress
@@ -212,12 +212,12 @@ fn test_draw_lead_indicator_agent_name_on_last_line() {
     let row1 = buffer_row(buffer, 1, 20);
 
     assert!(
-        row1.contains("midtown"),
-        "Agent name 'midtown' should be on the LAST line (row 1), got row1={row1:?} row0={row0:?}",
+        row1.contains("test"),
+        "Agent name 'test' should be on the LAST line (row 1), got row1={row1:?} row0={row0:?}",
     );
     assert!(
-        !row0.contains("midtown"),
-        "Agent name 'midtown' should NOT be on the first line (row 0), got row0={row0:?}",
+        !row0.contains("test"),
+        "Agent name 'test' should NOT be on the first line (row 0), got row0={row0:?}",
     );
 }
 
@@ -234,7 +234,7 @@ fn test_draw_lead_indicator_older_entries_on_top() {
 
     let mut app = test_app();
     app.tool_activity = std::collections::HashMap::from([(
-        "midtown".to_string(),
+        "test".to_string(),
         vec![
             make_tool_entry("\u{2713} Read foo.rs", true), // older
             make_tool_entry("\u{203a} Write bar.rs", false), // newer
@@ -281,7 +281,7 @@ fn test_draw_lead_indicator_no_ellipsis_truncation() {
 
     let mut app = test_app();
     app.tool_activity = std::collections::HashMap::from([(
-        "midtown".to_string(),
+        "test".to_string(),
         vec![make_tool_entry("\u{203a} ABCDEFGHIJKLMNOPQRSTUVWXY", false)],
     )]);
     app.lead_working = true;
@@ -323,7 +323,7 @@ fn test_draw_lead_indicator_name_shown_without_lead_working() {
     let mut app = test_app();
     app.lead_working = false; // explicitly NOT working
     app.tool_activity = std::collections::HashMap::from([(
-        "midtown".to_string(),
+        "test".to_string(),
         vec![make_tool_entry("\u{203a} Read foo.rs", false)], // in-progress
     )]);
 
@@ -343,8 +343,8 @@ fn test_draw_lead_indicator_name_shown_without_lead_working() {
     let row = buffer_row(buffer, 0, 80);
 
     assert!(
-        row.contains("midtown"),
-        "Agent name 'midtown' should appear when tool entries are in-progress, even if lead_working=false. Got: {row:?}",
+        row.contains("test"),
+        "Agent name 'test' should appear when tool entries are in-progress, even if lead_working=false. Got: {row:?}",
     );
 }
 
@@ -498,8 +498,8 @@ fn test_draw_lead_indicator_shows_dim_placeholder_when_idle() {
     let row = buffer_row(buffer, 0, 80);
 
     assert!(
-        row.contains("midtown"),
-        "Idle indicator should show agent name 'midtown' as dim placeholder. Got: {row:?}",
+        row.contains("test"),
+        "Idle indicator should show agent name 'test' as dim placeholder. Got: {row:?}",
     );
 }
 
@@ -519,7 +519,7 @@ fn test_draw_lead_indicator_name_bold_when_only_completed_entries() {
 
     let mut app = test_app();
     app.tool_activity = std::collections::HashMap::from([(
-        "midtown".to_string(),
+        "test".to_string(),
         vec![make_tool_entry("\u{2713} Read foo.rs", true)], // completed — no in-progress
     )]);
 
@@ -540,8 +540,8 @@ fn test_draw_lead_indicator_name_bold_when_only_completed_entries() {
     // At frame 0 the static bold style and pulse_name_style both produce BOLD.
     // The key guard is in the code: has_in_progress=false → static style path taken.
     let name_start_col = (0u16..80)
-        .find(|&x| buffer.cell((x, 0)).map(|c| c.symbol()) == Some("m"))
-        .expect("'midtown' should appear in the buffer");
+        .find(|&x| buffer.cell((x, 0)).map(|c| c.symbol()) == Some("t"))
+        .expect("'test' should appear in the buffer");
 
     let cell = buffer.cell((name_start_col, 0)).unwrap();
     assert!(

@@ -89,7 +89,7 @@ pub enum Effect {
     /// Channel routing follows a 3-step resolution:
     /// 1. If `channel` is explicitly provided, use that
     /// 2. Otherwise, extract task ID from message content (e.g., "!42") and route to that task's channel
-    /// 3. Fall back to the default "midtown" channel if no task ID is found
+    /// 3. Fall back to the default project channel if no task ID is found
     PostToChannel {
         sender: String,
         message: String,
@@ -355,7 +355,7 @@ pub enum Effect {
     /// Archive a topic channel by marking it as archived.
     ///
     /// Archived channels stop receiving new messages but keep history readable.
-    /// Cannot archive the main "midtown" channel.
+    /// Cannot archive the project's main channel.
     ArchiveChannel { name: String },
     /// Merge one channel into another.
     ///

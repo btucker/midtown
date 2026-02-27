@@ -2171,8 +2171,8 @@ impl DaemonState {
     /// Returns the name of the default (main) channel for this repo.
     ///
     /// Use this — rather than `repo_name` — when checking whether a task channel
-    /// is the main channel versus a topic channel. The default channel is always
-    /// "midtown" regardless of the repository name.
+    /// is the main channel versus a topic channel. The default channel name matches
+    /// the repository name (e.g., "offload" for a project in the "offload" repo).
     pub(crate) fn default_channel_name(&self) -> &str {
         self.channel_router.default_channel_name()
     }

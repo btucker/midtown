@@ -41,7 +41,7 @@ fn make_test_state(
 
     let base_dir = temp_dir.path().to_path_buf();
 
-    let channel_router = crate::ChannelRouter::new(&base_dir, "midtown");
+    let channel_router = crate::ChannelRouter::new(&base_dir, repo_name);
     let (shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(1);
     let state = DaemonState::new(
         "/tmp/test.sock".into(),
@@ -1000,15 +1000,22 @@ async fn test_handle_channel_archive_nonexistent_channel() {
     );
 }
 
-/// Verify that channel.archive rejects archiving the 'midtown' channel.
+/// Verify that channel.archive rejects archiving the project's main channel.
+///
+/// The main channel name is dynamic — it matches the repo name — so this test
+/// verifies the guard works regardless of what the project is called.
 #[tokio::test]
-async fn test_handle_channel_archive_rejects_midtown() {
-    let (state, _tmp, _guard) = make_test_state("midtown-test-channel-archive-midtown");
+async fn test_handle_channel_archive_rejects_main_channel() {
+    let repo_name = "test-archive-guard-project";
+    let (state, _tmp, _guard) = make_test_state(repo_name);
 
-    let response = super::handle_channel_archive(1_i64.into(), "midtown", &state).await;
+    // The default (main) channel has the same name as the repo
+    let main_channel = state.channel_router.default_channel_name().to_string();
+    let response = super::handle_channel_archive(1_i64.into(), &main_channel, &state).await;
     assert!(
         response.error.is_some(),
-        "archiving 'midtown' channel should return an error"
+        "archiving the main channel '{}' should return an error",
+        main_channel
     );
 }
 

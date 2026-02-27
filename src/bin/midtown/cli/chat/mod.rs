@@ -861,7 +861,7 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                                     // waiting for the next tailf event or 1-second timer.
                                     app.refresh();
                                     // Set optimistic thinking state for topic channels
-                                    if channel_name != app.project_name && channel_name != "main" {
+                                    if channel_name != app.project_name {
                                         app.set_channel_lead_thinking(&channel_name);
                                     }
                                 }
@@ -2218,7 +2218,7 @@ mod tests {
         // Should NOT be treated as a channel create command
         // because /channel create is not at the start
         #[cfg(test)]
-        assert_eq!(app.last_posted_channel, Some("midtown".to_string()));
+        assert_eq!(app.last_posted_channel, Some("test".to_string()));
     }
 
     #[test]
