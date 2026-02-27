@@ -215,7 +215,10 @@ async fn test_resolve_attach_target_multi_match_error_uses_verb() {
 fn test_fork_channel_lead_model_is_provider_aware_for_codex() {
     let model =
         super::fork_channel_lead_model("test-repo", crate::auth::AuthProvider::Codex, Some("web"));
-    // Should be a valid Codex model (either config-resolved or hardcoded default)
+    // Must be a Codex-compatible model, never a Claude alias.
+    // The exact value depends on global config (e.g., default_model = "large" →
+    // "gpt-5.3-codex"); the hardcoded default is "gpt-5-codex".
+    // Exact default_model_for_provider_role assertions live in helpers_tests.rs.
     assert!(
         !model.contains("sonnet") && !model.contains("opus") && !model.contains("haiku"),
         "Codex channel lead model '{}' should not contain Claude aliases",
@@ -227,7 +230,10 @@ fn test_fork_channel_lead_model_is_provider_aware_for_codex() {
 fn test_fork_channel_lead_model_uses_default_for_claude() {
     let model =
         super::fork_channel_lead_model("test-repo", crate::auth::AuthProvider::Claude, None);
-    // Should be a valid Claude model (either config-resolved or hardcoded default)
+    // Must be a Claude-compatible model alias, never a Codex model.
+    // The exact value depends on global config (e.g., default_model = "large" →
+    // "opus"); the hardcoded default is "sonnet".
+    // Exact default_model_for_provider_role assertions live in helpers_tests.rs.
     assert!(
         ["haiku", "sonnet", "opus"].contains(&model.as_str()),
         "Claude channel lead model '{}' should be a valid Claude model alias",
