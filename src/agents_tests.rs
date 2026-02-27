@@ -433,6 +433,51 @@ fn test_coworker_nudge_prompt_is_brief() {
 }
 
 #[test]
+fn test_task_footer_contains_view_and_reply_instructions() {
+    let footer = task_footer("42");
+    assert!(
+        footer.contains("midtown task view 42"),
+        "Footer should contain task view command"
+    );
+    assert!(
+        footer.contains("--task 42"),
+        "Footer should contain --task reply instruction"
+    );
+    assert!(
+        footer.contains("midtown channel post"),
+        "Footer should contain channel post command"
+    );
+}
+
+#[test]
+fn test_all_task_prompts_include_reply_instruction() {
+    // Every task-related prompt should include the --task reply instruction
+    let task_prompt = coworker_task_prompt("7", "Build widget", "");
+    assert!(
+        task_prompt.contains("--task 7"),
+        "Task prompt should include --task reply instruction"
+    );
+
+    let claim_prompt = coworker_claim_prompt("7", "Build widget", "");
+    assert!(
+        claim_prompt.contains("--task 7"),
+        "Claim prompt should include --task reply instruction"
+    );
+
+    let recovery_prompt = coworker_recovery_prompt("7", "Build widget", "");
+    assert!(
+        recovery_prompt.contains("--task 7"),
+        "Recovery prompt should include --task reply instruction"
+    );
+
+    let nudge_prompt = coworker_nudge_prompt("7", "Build widget");
+    assert!(
+        nudge_prompt.contains("--task 7"),
+        "Nudge prompt should include --task reply instruction"
+    );
+}
+
+#[test]
 fn test_coworker_prompt_uses_task_flag_for_threading() {
     let prompt = coworker_system_prompt("park", "midtown");
     assert!(

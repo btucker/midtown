@@ -97,23 +97,26 @@ midtown channel post "@{project_name} is task 3 a blocker here, or can I proceed
 ```
 
 ### Replying to Messages
-When replying to someone's channel message, **always @mention them** so the daemon can notify them of your response. This is especially important when answering questions from the lead or other coworkers.
+When replying to someone's channel message, **always @mention them** and **always use `--task <id>`** when your reply is about a task. The @mention lets the daemon route your reply, and `--task` threads it under the task announcement.
 
 ```bash
-# Channel lead asked you a question → @mention them in your reply
-midtown channel post "@channel-lead yes, the tests cover that edge case"
+# Channel lead asked about your task → @mention + --task
+midtown channel post "@channel-lead yes, the tests cover that edge case" --task 42
 
-# Lead asked you a question → @mention them in your reply
-midtown channel post "@{project_name} yes, the auth module exports a validate function"
+# Lead asked about your task → @mention + --task
+midtown channel post "@{project_name} yes, the auth module exports a validate function" --task 42
 
-# Another coworker asked something → @mention them
-midtown channel post "@columbus the endpoint is at /api/v1/auth"
+# Another coworker asked about your task → @mention + --task
+midtown channel post "@columbus the endpoint is at /api/v1/auth" --task 42
 
-# The user (human) asked you something → @mention them
-midtown channel post "@user yes, the test suite covers that case"
+# The user (human) asked about your task → @mention + --task
+midtown channel post "@user yes, the test suite covers that case" --task 42
+
+# Non-task reply (rare — e.g., general coordination) → @mention only
+midtown channel post "@{project_name} yes, I can help with that"
 ```
 
-Without the @mention, the daemon cannot route your reply and the other person may never see it. Always reply to whoever messaged you — if the nudge says it came from the user, reply with `@user`.
+Without the @mention, the daemon cannot route your reply and the other person may never see it. Always reply to whoever messaged you — if the nudge says it came from the user, reply with `@user`. **Always include `--task` when your reply relates to a task** — without it, your message goes to the main channel instead of threading under the task.
 
 ### Idle Status (No Feedback Needed)
 When you become idle, report it without requesting feedback:

@@ -117,6 +117,46 @@ fn insight_posted_initial_prompt() {
 }
 
 #[test]
+fn task_nudges_include_reply_instruction() {
+    // All task-related wake reasons should include --task reply instruction
+    let assigned = WakeReason::TaskAssigned {
+        task_id: "7".to_string(),
+        subject: "Build widget".to_string(),
+    };
+    assert!(
+        assigned.to_nudge_message().contains("--task 7"),
+        "TaskAssigned nudge should include --task reply instruction"
+    );
+
+    let claimed = WakeReason::TaskClaimed {
+        task_id: "7".to_string(),
+        subject: "Build widget".to_string(),
+    };
+    assert!(
+        claimed.to_nudge_message().contains("--task 7"),
+        "TaskClaimed nudge should include --task reply instruction"
+    );
+
+    let recovery = WakeReason::SessionRecovery {
+        task_id: "7".to_string(),
+        subject: "Build widget".to_string(),
+    };
+    assert!(
+        recovery.to_nudge_message().contains("--task 7"),
+        "SessionRecovery nudge should include --task reply instruction"
+    );
+
+    let created = WakeReason::TaskCreated {
+        task_id: "7".to_string(),
+        subject: "Build widget".to_string(),
+    };
+    assert!(
+        created.to_nudge_message().contains("--task 7"),
+        "TaskCreated nudge should include --task reply instruction"
+    );
+}
+
+#[test]
 fn nudge_passthrough() {
     let reason = WakeReason::Nudge {
         message: "Check PR #99".to_string(),

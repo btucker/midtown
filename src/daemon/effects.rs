@@ -934,7 +934,26 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     state.resolve_message_channel(&message).await
                 };
 
-                let msg = if let Some(ch) = channel_name {
+                // Thread resolution: if the sender is a forked session with a bound
+                // thread, auto-apply the thread_parent_id so auto-posted output appears
+                // in the correct thread. Mirrors the RPC path in rpc_channel.rs.
+                let bound_thread: Option<String> = state
+                    .fork_bound_threads
+                    .lock()
+                    .unwrap()
+                    .get(&sender)
+                    .cloned();
+
+                let msg = if let Some(parent_id) = bound_thread {
+                    let ch = channel_name.unwrap_or_default();
+                    Message::thread_reply(
+                        &ch,
+                        &sender,
+                        &message,
+                        parent_id,
+                        crate::message::MessageType::Text,
+                    )
+                } else if let Some(ch) = channel_name {
                     Message::for_channel(&ch, &sender, &message, crate::message::MessageType::Text)
                 } else {
                     Message::text(&sender, &message)
