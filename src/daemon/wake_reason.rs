@@ -142,7 +142,8 @@ impl WakeReason {
                      Task !{task_id}: {subject}\n\n\
                      ## First Actions\n\
                      1. Read the task details: `midtown task view {task_id}`\n\
-                     2. Check recent messages in #{channel_name} for related context"
+                     2. Check recent messages in #{channel_name} for related context\n\n\
+                     Reply with: `midtown channel post \"...\" --task {task_id}`"
                 )
             }
             Self::UserMessage { content, .. } => {

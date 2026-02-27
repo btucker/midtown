@@ -86,10 +86,16 @@ pub enum Effect {
     },
     /// Post a message to the IRC-style channel (and broadcast to WebSocket clients).
     ///
-    /// Channel routing follows a 3-step resolution:
+    /// The executor resolves channel and thread in two phases:
+    ///
+    /// **Channel routing** (3-step):
     /// 1. If `channel` is explicitly provided, use that
     /// 2. Otherwise, extract task ID from message content (e.g., "!42") and route to that task's channel
     /// 3. Fall back to the default project channel if no task ID is found
+    ///
+    /// **Thread resolution**: If the sender has an entry in `fork_bound_threads`,
+    /// the message is posted as a thread reply under the bound thread parent.
+    /// This mirrors the RPC path in `rpc_channel.rs`.
     PostToChannel {
         sender: String,
         message: String,
@@ -945,7 +951,8 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     .cloned();
 
                 let msg = if let Some(parent_id) = bound_thread {
-                    let ch = channel_name.unwrap_or_default();
+                    let ch = channel_name
+                        .unwrap_or_else(|| state.channel_router.default_channel_name().to_string());
                     Message::thread_reply(
                         &ch,
                         &sender,

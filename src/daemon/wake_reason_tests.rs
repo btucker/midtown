@@ -22,6 +22,10 @@ fn task_created_initial_prompt() {
     assert!(prompt.contains("!42"));
     assert!(prompt.contains("Fix auth bug"));
     assert!(prompt.contains("midtown task view 42"));
+    assert!(
+        prompt.contains("--task 42"),
+        "TaskCreated initial prompt should include --task reply instruction"
+    );
 }
 
 #[test]
