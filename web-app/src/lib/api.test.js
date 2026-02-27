@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { get } from 'svelte/store'
-import { messagesByChannel, threadData, channels, activeChannel, agentToolItems } from './store.js'
+import { messagesByChannel, threadData, channels, activeChannel, activeProject, agentToolItems } from './store.js'
 import { fetchHistory, handleUpdate, fetchChannels, selectDm, switchProject } from './api.js'
 
 describe('fetchHistory', () => {
@@ -485,10 +485,14 @@ describe('handleUpdate — agentToolItems persistence after channel lead message
     vi.useFakeTimers()
     agentToolItems.set({})
     messagesByChannel.set({ midtown: [], web: [] })
+    // Tests in this block use 'midtown' as the active project so that
+    // universal_items with channel=null route to 'midtown' (not hardcoded).
+    activeProject.set('midtown')
   })
 
   afterEach(() => {
     vi.useRealTimers()
+    activeProject.set(null)
   })
 
   it('does not immediately clear tool items when a channel lead posts a message', () => {
@@ -599,5 +603,112 @@ describe('handleUpdate — agentToolItems persistence after channel lead message
 
     // New project's 'web' tool items must not have been cleared by the old timeout
     expect(get(agentToolItems)['web']).toHaveLength(1)
+  })
+})
+
+describe('switchProject — initial channel state uses project name, not hardcoded midtown', () => {
+  beforeEach(() => {
+    channels.set([])
+    activeChannel.set(null)
+    messagesByChannel.set({})
+  })
+
+  it('sets activeChannel to the project name', () => {
+    switchProject('my-project', null)
+    expect(get(activeChannel)).toBe('my-project')
+  })
+
+  it('initializes messagesByChannel keyed by project name', () => {
+    switchProject('my-project', null)
+    const store = get(messagesByChannel)
+    expect(Object.keys(store)).toContain('my-project')
+    expect(Object.keys(store)).not.toContain('midtown')
+  })
+
+  it('initializes channels list with the project name, not midtown', () => {
+    switchProject('my-project', null)
+    const ch = get(channels)
+    expect(ch.some((c) => c.name === 'my-project')).toBe(true)
+    expect(ch.some((c) => c.name === 'midtown')).toBe(false)
+  })
+})
+
+describe('fetchHistory — channelless messages use activeProject, not hardcoded midtown', () => {
+  let originalFetch
+
+  beforeEach(() => {
+    originalFetch = globalThis.fetch
+    activeProject.set('my-project')
+    messagesByChannel.set({ 'my-project': [] })
+  })
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch
+    activeProject.set(null)
+  })
+
+  it('buckets a message with no channel field under activeProject, not midtown', async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => [
+        { id: 1, content: 'hello', from: 'lead', timestamp: '2026-01-01T00:00:00Z' },
+      ],
+    })
+
+    await fetchHistory()
+
+    const store = get(messagesByChannel)
+    expect(store['my-project']).toHaveLength(1)
+    expect(store['midtown']).toBeUndefined()
+  })
+})
+
+describe('handleUpdate channel_message — channelless messages route to activeProject', () => {
+  beforeEach(() => {
+    activeProject.set('my-project')
+    messagesByChannel.set({ 'my-project': [] })
+    threadData.set(null)
+  })
+
+  afterEach(() => {
+    activeProject.set(null)
+  })
+
+  it('routes a message with no channel field to activeProject, not midtown', () => {
+    handleUpdate({
+      type: 'channel_message',
+      data: { id: 'msg-1', from: 'lead', content: 'hello', timestamp: '2026-01-01T00:00:00Z' },
+    })
+
+    const store = get(messagesByChannel)
+    expect(store['my-project']).toHaveLength(1)
+    expect(store['midtown']).toBeUndefined()
+  })
+})
+
+describe('handleUpdate universal_items — null channel uses activeProject, not hardcoded midtown', () => {
+  const sampleItem = { status: 'Completed', content: [] }
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+    agentToolItems.set({})
+    activeProject.set('my-project')
+    messagesByChannel.set({ 'my-project': [] })
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    activeProject.set(null)
+  })
+
+  it('stores tool items under activeProject when channel is null', () => {
+    handleUpdate({
+      type: 'universal_items',
+      data: { channel: null, agent_name: 'lead', items: [sampleItem] },
+    })
+
+    const items = get(agentToolItems)
+    expect(items['my-project']).toHaveLength(1)
+    expect(items['midtown']).toBeUndefined()
   })
 })

@@ -116,9 +116,9 @@ export function switchProject(projectName, webhookPort) {
 
   // Clear current state
   messages.set([])
-  messagesByChannel.set({ midtown: [] })
-  channels.set([{ name: 'midtown', unread: 0, has_pr: false, ci_status: null }])
-  activeChannel.set('midtown')
+  messagesByChannel.set({ [projectName]: [] })
+  channels.set([{ name: projectName, unread: 0, has_pr: false, ci_status: null }])
+  activeChannel.set(projectName)
   coworkers.set([])
   daemonStatus.set(null)
   kanbanData.set({ backlog: [], inProgress: [], review: [], done: [] })
@@ -216,7 +216,7 @@ export async function fetchHistory(channelName = null) {
         // Fetching all messages (initial load) - group by channel
         const byChannel = {}
         for (const msg of data) {
-          const name = msg.channel || 'midtown'
+          const name = msg.channel || get(activeProject)
           if (!byChannel[name]) {
             byChannel[name] = []
           }
@@ -443,7 +443,7 @@ export function handleUpdate(update) {
   switch (update.type) {
     case 'channel_message': {
       const msg = update.data
-      const channelName = msg.channel || 'midtown'
+      const channelName = msg.channel || get(activeProject)
 
       if (msg.thread_parent_id) {
         // Thread reply — update thread panel if open for this parent, and
@@ -585,9 +585,9 @@ export function handleUpdate(update) {
     case 'universal_items': {
       // Tool call activity keyed by channel.
       // data: { agent_name: string, channel: string|null, items: UniversalItem[] }
-      // channel is null for the main lead (store under 'midtown'), or a topic channel name
-      // for channel leads (store under that channel name).
-      const channelKey = update.data.channel ?? 'midtown'
+      // channel is null for the main lead (store under the active project name), or a topic
+      // channel name for channel leads (store under that channel name).
+      const channelKey = update.data.channel ?? get(activeProject)
       // If a delayed clear is pending for this channel, cancel it — new tool activity
       // means the agent is still working and the strip should not reset yet.
       if (agentClearTimeouts.has(channelKey)) {

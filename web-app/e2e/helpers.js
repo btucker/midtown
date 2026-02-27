@@ -325,6 +325,7 @@ export async function mockAllRoutes(page, overrides = {}) {
   const threadReplies = overrides.threadReplies
     ? { ...deepCopy(MOCK_THREAD_REPLIES), ...overrides.threadReplies }
     : deepCopy(MOCK_THREAD_REPLIES)
+  const projects = overrides.projects ?? MOCK_PROJECTS
 
   await page.addInitScript(() => {
     window.__mockWebSockets = []
@@ -379,7 +380,7 @@ export async function mockAllRoutes(page, overrides = {}) {
   })
 
   await page.route('**/api/projects', (route) =>
-    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(MOCK_PROJECTS) })
+    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(projects) })
   )
 
   await page.route('**/api/channels', (route) =>

@@ -54,9 +54,20 @@
   onMount(async () => {
     // Always in multi-project mode — served from shared gateway on port 47022
     const projectList = await fetchProjects()
-    const running = projectList.find(p => p.status === 'running' && p.webhook_port)
-    if (running) {
-      switchProject(running.name, running.webhook_port)
+
+    // Prefer the project named in the URL path (e.g. /my-project → 'my-project')
+    const rawSegment = window.location.pathname.split('/').filter(Boolean)[0] ?? null
+    const urlProjectName = rawSegment ? decodeURIComponent(rawSegment) : null
+    let targetProject = null
+    if (urlProjectName) {
+      targetProject = projectList.find(p => p.name === urlProjectName && p.status === 'running' && p.webhook_port)
+    }
+    if (!targetProject) {
+      targetProject = projectList.find(p => p.status === 'running' && p.webhook_port)
+    }
+    if (targetProject) {
+      switchProject(targetProject.name, targetProject.webhook_port)
+      history.replaceState(null, '', '/' + encodeURIComponent(targetProject.name))
     }
     // Refresh project list every 30s
     const projectInterval = setInterval(fetchProjects, 30000)
@@ -91,6 +102,7 @@
   function selectProject(project) {
     if (project.status === 'running' && project.webhook_port) {
       switchProject(project.name, project.webhook_port)
+      history.replaceState(null, '', '/' + encodeURIComponent(project.name))
       projectDropdownOpen = false
     }
   }
@@ -133,7 +145,7 @@
                         <span class="project-status-dot" class:running={project.status === 'running'}></span>
                         <span class="option-name">{project.name}</span>
                         {#if $activeProject === project.name}
-                          <span class="active-check">\u2713</span>
+                          <span class="active-check">✓</span>
                         {/if}
                       </button>
                     {/each}
