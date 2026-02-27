@@ -56,9 +56,10 @@ impl WakeReason {
     pub fn to_nudge_message(&self) -> String {
         match self {
             Self::TaskCreated { task_id, subject } => {
+                let footer = crate::agents::task_footer(task_id);
                 format!(
                     "A task was created in your channel:\n  Task !{task_id}: {subject}\n\n\
-                     Run `midtown task view {task_id}` for full details."
+                     {footer}"
                 )
             }
             Self::UserMessage { content, msg_id } => {
@@ -85,24 +86,27 @@ impl WakeReason {
                 )
             }
             Self::TaskAssigned { task_id, subject } => {
+                let footer = crate::agents::task_footer(task_id);
                 format!(
                     "You've been assigned task !{task_id}: {subject}. Get started!\n\n\
-                     Run `midtown task view {task_id}` for full details."
+                     {footer}"
                 )
             }
             Self::TaskClaimed { task_id, subject } => {
+                let footer = crate::agents::task_footer(task_id);
                 format!(
                     "You've been assigned task !{task_id}: {subject}. \
                      Run `midtown task claim {task_id}` to claim it, then get started!\n\n\
-                     Run `midtown task view {task_id}` for full details."
+                     {footer}"
                 )
             }
             Self::SessionRecovery { task_id, subject } => {
+                let footer = crate::agents::task_footer(task_id);
                 format!(
                     "You've been assigned task !{task_id}: {subject}. \
                      Your previous session was interrupted but your worktree and branch are still intact. \
                      Check your git status and get started!\n\n\
-                     Run `midtown task view {task_id}` for full details."
+                     {footer}"
                 )
             }
             Self::ReviewAssigned { pr_number } => {
@@ -138,7 +142,8 @@ impl WakeReason {
                      Task !{task_id}: {subject}\n\n\
                      ## First Actions\n\
                      1. Read the task details: `midtown task view {task_id}`\n\
-                     2. Check recent messages in #{channel_name} for related context"
+                     2. Check recent messages in #{channel_name} for related context\n\n\
+                     Reply with: `midtown channel post \"...\" --task {task_id}`"
                 )
             }
             Self::UserMessage { content, .. } => {

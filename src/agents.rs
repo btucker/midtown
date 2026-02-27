@@ -252,15 +252,27 @@ pub fn channel_lead_initial_prompt(channel_name: &str) -> String {
     )
 }
 
+/// Standard footer for task-related prompts and nudges.
+///
+/// Appended to every task prompt/nudge so agents know how to view the task
+/// and how to reply in the correct thread.
+pub fn task_footer(task_id: &str) -> String {
+    format!(
+        "Run `midtown task view {task_id}` for full details.\n\
+         Reply with: `midtown channel post \"...\" --task {task_id}`"
+    )
+}
+
 /// Build the initial prompt for a fresh coworker task assignment.
 ///
 /// Used when a coworker is spawned fresh to work on a task.
 /// The `plan_section` parameter is a pre-built string from `build_plan_prompt_section()`
 /// that may contain plan context and execution skill instructions (or be empty).
 pub fn coworker_task_prompt(task_id: &str, subject: &str, plan_section: &str) -> String {
+    let footer = task_footer(task_id);
     format!(
         "You've been assigned task !{task_id}: {subject}. Get started!{plan_section}\n\n\
-         Run `midtown task view {task_id}` for full details."
+         {footer}"
     )
 }
 
@@ -269,10 +281,11 @@ pub fn coworker_task_prompt(task_id: &str, subject: &str, plan_section: &str) ->
 /// Used when a running coworker is nudged to pick up a new task (e.g., grouped
 /// tasks from the same PR or blockedBy chain).
 pub fn coworker_claim_prompt(task_id: &str, subject: &str, plan_section: &str) -> String {
+    let footer = task_footer(task_id);
     format!(
         "You've been assigned task !{task_id}: {subject}. \
          Run `midtown task claim {task_id}` to claim it, then get started!{plan_section}\n\n\
-         Run `midtown task view {task_id}` for full details."
+         {footer}"
     )
 }
 
@@ -281,11 +294,12 @@ pub fn coworker_claim_prompt(task_id: &str, subject: &str, plan_section: &str) -
 /// Used when a coworker's previous session died and needs to be resumed or
 /// respawned. The worktree and branch from the previous run are intact.
 pub fn coworker_recovery_prompt(task_id: &str, subject: &str, plan_section: &str) -> String {
+    let footer = task_footer(task_id);
     format!(
         "You've been assigned task !{task_id}: {subject}. \
          Your previous session was interrupted but your worktree and branch are still intact. \
          Check your git status and get started!{plan_section}\n\n\
-         Run `midtown task view {task_id}` for full details."
+         {footer}"
     )
 }
 
@@ -294,9 +308,10 @@ pub fn coworker_recovery_prompt(task_id: &str, subject: &str, plan_section: &str
 /// Used when a coworker is idle and has a pending task to work on.
 /// Unlike other prompts, this is a brief reminder rather than a full assignment.
 pub fn coworker_nudge_prompt(task_id: &str, subject: &str) -> String {
+    let footer = task_footer(task_id);
     format!(
         "You have pending task !{task_id}: {subject}. Get started!\n\n\
-         Run `midtown task view {task_id}` for full details."
+         {footer}"
     )
 }
 

@@ -86,10 +86,16 @@ pub enum Effect {
     },
     /// Post a message to the IRC-style channel (and broadcast to WebSocket clients).
     ///
-    /// Channel routing follows a 3-step resolution:
+    /// The executor resolves channel and thread in two phases:
+    ///
+    /// **Channel routing** (3-step):
     /// 1. If `channel` is explicitly provided, use that
     /// 2. Otherwise, extract task ID from message content (e.g., "!42") and route to that task's channel
     /// 3. Fall back to the default project channel if no task ID is found
+    ///
+    /// **Thread resolution**: If the sender has an entry in `fork_bound_threads`,
+    /// the message is posted as a thread reply under the bound thread parent.
+    /// This mirrors the RPC path in `rpc_channel.rs`.
     PostToChannel {
         sender: String,
         message: String,
@@ -934,7 +940,27 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     state.resolve_message_channel(&message).await
                 };
 
-                let msg = if let Some(ch) = channel_name {
+                // Thread resolution: if the sender is a forked session with a bound
+                // thread, auto-apply the thread_parent_id so auto-posted output appears
+                // in the correct thread. Mirrors the RPC path in rpc_channel.rs.
+                let bound_thread: Option<String> = state
+                    .fork_bound_threads
+                    .lock()
+                    .unwrap()
+                    .get(&sender)
+                    .cloned();
+
+                let msg = if let Some(parent_id) = bound_thread {
+                    let ch = channel_name
+                        .unwrap_or_else(|| state.channel_router.default_channel_name().to_string());
+                    Message::thread_reply(
+                        &ch,
+                        &sender,
+                        &message,
+                        parent_id,
+                        crate::message::MessageType::Text,
+                    )
+                } else if let Some(ch) = channel_name {
                     Message::for_channel(&ch, &sender, &message, crate::message::MessageType::Text)
                 } else {
                     Message::text(&sender, &message)
