@@ -39,6 +39,18 @@ pub enum CoworkerRole {
     },
 }
 
+impl CoworkerRole {
+    /// Map to the corresponding config `ExecutionRole` for model/provider lookups.
+    pub fn execution_role(&self) -> crate::config::ExecutionRole {
+        match self {
+            CoworkerRole::Lead => crate::config::ExecutionRole::Lead,
+            CoworkerRole::Reviewer => crate::config::ExecutionRole::Reviewer,
+            CoworkerRole::ChannelLead { .. } => crate::config::ExecutionRole::ChannelLead,
+            CoworkerRole::Coworker => crate::config::ExecutionRole::Coworker,
+        }
+    }
+}
+
 /// All configuration needed to launch a Claude CLI process.
 ///
 /// This is the single source of truth for how Claude gets launched. All spawn
@@ -749,7 +761,11 @@ mod tests {
         assert_eq!(headless.agent_id, Some("park@midtown-myrepo".to_string()));
         assert_eq!(headless.agent_name, Some("park".to_string()));
         assert!(!headless.system_prompt.is_empty());
-        assert_eq!(headless.model, "sonnet");
+        let expected =
+            crate::config::get_model_for_role("myrepo", crate::config::ExecutionRole::Coworker)
+                .map(|s| s.as_model_str().to_string())
+                .unwrap_or_else(|| "sonnet".to_string());
+        assert_eq!(headless.model, expected);
     }
 
     #[test]
@@ -772,7 +788,11 @@ mod tests {
         assert!(headless.team_name.is_none());
         assert!(headless.agent_id.is_none());
         assert!(headless.agent_name.is_none());
-        assert_eq!(headless.model, "opus");
+        let expected =
+            crate::config::get_model_for_role("myrepo", crate::config::ExecutionRole::Reviewer)
+                .map(|s| s.as_model_str().to_string())
+                .unwrap_or_else(|| "opus".to_string());
+        assert_eq!(headless.model, expected);
     }
 
     #[test]
@@ -822,7 +842,11 @@ mod tests {
         assert_eq!(config.initial_prompt, Some("Do the thing".to_string()));
         assert!(config.pr_number.is_none());
         assert_eq!(config.team_name, Some("midtown-myrepo".to_string()));
-        assert_eq!(config.model, "sonnet");
+        let expected =
+            crate::config::get_model_for_role("myrepo", crate::config::ExecutionRole::Coworker)
+                .map(|s| s.as_model_str().to_string())
+                .unwrap_or_else(|| "sonnet".to_string());
+        assert_eq!(config.model, expected);
     }
 
     #[test]
@@ -833,7 +857,11 @@ mod tests {
         assert_eq!(config.pr_number, Some(42));
         assert_eq!(config.role, CoworkerRole::Reviewer);
         assert!(config.team_name.is_none());
-        assert_eq!(config.model, "opus");
+        let expected =
+            crate::config::get_model_for_role("myrepo", crate::config::ExecutionRole::Reviewer)
+                .map(|s| s.as_model_str().to_string())
+                .unwrap_or_else(|| "opus".to_string());
+        assert_eq!(config.model, expected);
     }
 
     #[test]
@@ -854,7 +882,12 @@ mod tests {
         assert!(config.initial_prompt.is_some());
         assert_eq!(config.team_name, Some("midtown-myrepo".to_string()));
         assert!(config.pr_number.is_none()); // Handoff is not a reviewer
-        assert_eq!(config.model, "opus");
+        // pr_handoff reads coworker config with "opus" as fallback
+        let expected =
+            crate::config::get_model_for_role("myrepo", crate::config::ExecutionRole::Coworker)
+                .map(|s| s.as_model_str().to_string())
+                .unwrap_or_else(|| "opus".to_string());
+        assert_eq!(config.model, expected);
     }
 
     #[test]
@@ -1188,7 +1221,11 @@ mod tests {
         );
         assert!(config.pr_number.is_none());
         assert_eq!(config.team_name, Some("midtown-myrepo".to_string()));
-        assert_eq!(config.model, "opus", "Lead must use Opus model");
+        let expected =
+            crate::config::get_model_for_role("myrepo", crate::config::ExecutionRole::Lead)
+                .map(|s| s.as_model_str().to_string())
+                .unwrap_or_else(|| "opus".to_string());
+        assert_eq!(config.model, expected, "Lead model should respect config");
     }
 
     #[test]
@@ -1214,7 +1251,11 @@ mod tests {
                 domain_context: "".to_string(),
             }
         );
-        assert_eq!(config.model, "sonnet");
+        let expected =
+            crate::config::get_model_for_role("myrepo", crate::config::ExecutionRole::ChannelLead)
+                .map(|s| s.as_model_str().to_string())
+                .unwrap_or_else(|| "sonnet".to_string());
+        assert_eq!(config.model, expected);
         assert_eq!(config.channel, Some("daemon-architecture".to_string()));
         assert_eq!(config.team_name, Some("midtown-myrepo".to_string()));
         assert!(config.initial_prompt.is_some());

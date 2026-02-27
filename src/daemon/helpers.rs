@@ -171,6 +171,26 @@ pub fn is_lead_branch(branch: &str) -> bool {
     branch.starts_with("lead/")
 }
 
+/// Resolve the model for a spawn, respecting `execution.default_model` from config.
+///
+/// Resolution order:
+/// 1. Role-specific `*_model` from config (e.g., `coworker_model = "large"`)
+/// 2. `execution.default_model` from config (e.g., `default_model = "large"`)
+/// 3. Hardcoded default via `default_model_for_provider_role()` (sonnet for coworkers, opus for leads)
+///
+/// The returned string is already normalized for the provider (e.g., "large" → "opus" for Claude).
+/// All spawn paths should use this instead of calling `default_model_for_provider_role()` directly.
+pub fn resolve_model_for_role(
+    repo_name: &str,
+    provider: crate::auth::AuthProvider,
+    role: &crate::launch::CoworkerRole,
+) -> String {
+    let execution_role = role.execution_role();
+    crate::config::get_model_for_role(repo_name, execution_role)
+        .map(|size| normalize_model_for_provider_role(size.as_model_str(), provider, role))
+        .unwrap_or_else(|| default_model_for_provider_role(provider, role).to_string())
+}
+
 /// Default model alias for a coworker role/provider pair.
 ///
 /// Claude/z.ai use "sonnet" for coworker/channel-lead and "opus" for lead/reviewer.

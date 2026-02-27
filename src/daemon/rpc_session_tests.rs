@@ -213,14 +213,26 @@ async fn test_resolve_attach_target_multi_match_error_uses_verb() {
 
 #[test]
 fn test_fork_channel_lead_model_is_provider_aware_for_codex() {
-    let model = super::fork_channel_lead_model(crate::auth::AuthProvider::Codex, Some("web"));
-    assert_eq!(model, "gpt-5-codex");
+    let model =
+        super::fork_channel_lead_model("test-repo", crate::auth::AuthProvider::Codex, Some("web"));
+    // Should be a valid Codex model (either config-resolved or hardcoded default)
+    assert!(
+        !model.contains("sonnet") && !model.contains("opus") && !model.contains("haiku"),
+        "Codex channel lead model '{}' should not contain Claude aliases",
+        model
+    );
 }
 
 #[test]
 fn test_fork_channel_lead_model_uses_default_for_claude() {
-    let model = super::fork_channel_lead_model(crate::auth::AuthProvider::Claude, None);
-    assert_eq!(model, "sonnet");
+    let model =
+        super::fork_channel_lead_model("test-repo", crate::auth::AuthProvider::Claude, None);
+    // Should be a valid Claude model (either config-resolved or hardcoded default)
+    assert!(
+        ["haiku", "sonnet", "opus"].contains(&model.as_str()),
+        "Claude channel lead model '{}' should be a valid Claude model alias",
+        model
+    );
 }
 
 // ============================================================================
