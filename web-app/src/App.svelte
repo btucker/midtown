@@ -56,7 +56,8 @@
     const projectList = await fetchProjects()
 
     // Prefer the project named in the URL path (e.g. /my-project → 'my-project')
-    const urlProjectName = window.location.pathname.split('/').filter(Boolean)[0] ?? null
+    const rawSegment = window.location.pathname.split('/').filter(Boolean)[0] ?? null
+    const urlProjectName = rawSegment ? decodeURIComponent(rawSegment) : null
     let targetProject = null
     if (urlProjectName) {
       targetProject = projectList.find(p => p.name === urlProjectName && p.status === 'running' && p.webhook_port)
@@ -66,7 +67,7 @@
     }
     if (targetProject) {
       switchProject(targetProject.name, targetProject.webhook_port)
-      history.replaceState(null, '', '/' + targetProject.name)
+      history.replaceState(null, '', '/' + encodeURIComponent(targetProject.name))
     }
     // Refresh project list every 30s
     const projectInterval = setInterval(fetchProjects, 30000)
@@ -101,7 +102,7 @@
   function selectProject(project) {
     if (project.status === 'running' && project.webhook_port) {
       switchProject(project.name, project.webhook_port)
-      history.replaceState(null, '', '/' + project.name)
+      history.replaceState(null, '', '/' + encodeURIComponent(project.name))
       projectDropdownOpen = false
     }
   }

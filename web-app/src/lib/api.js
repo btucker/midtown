@@ -585,8 +585,8 @@ export function handleUpdate(update) {
     case 'universal_items': {
       // Tool call activity keyed by channel.
       // data: { agent_name: string, channel: string|null, items: UniversalItem[] }
-      // channel is null for the main lead (store under 'midtown'), or a topic channel name
-      // for channel leads (store under that channel name).
+      // channel is null for the main lead (store under the active project name), or a topic
+      // channel name for channel leads (store under that channel name).
       const channelKey = update.data.channel ?? get(activeProject)
       // If a delayed clear is pending for this channel, cancel it — new tool activity
       // means the agent is still working and the strip should not reset yet.

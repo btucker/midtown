@@ -29,7 +29,7 @@ test.describe('Project switcher', () => {
     await page.goto('/')
 
     // Wait for app to fully initialize
-    await page.waitForSelector('.project-name', { timeout: 5000 })
+    await expect(page.locator('.project-name')).toBeVisible({ timeout: 5000 })
 
     // URL should now reflect the selected project
     await expect(page).toHaveURL(/\/test-project/)
@@ -40,7 +40,7 @@ test.describe('Project switcher', () => {
     await page.goto('/')
 
     // Wait for app to initialize
-    await page.waitForSelector('.project-name', { timeout: 5000 })
+    await expect(page.locator('.project-name')).toBeVisible({ timeout: 5000 })
 
     // Open dropdown and select other-project
     await page.locator('.project-trigger').click()
@@ -55,11 +55,10 @@ test.describe('Project switcher', () => {
     await page.goto('/other-project')
 
     // Wait for app to initialize
-    await page.waitForSelector('.project-name', { timeout: 5000 })
+    await expect(page.locator('.project-name')).toBeVisible({ timeout: 5000 })
 
     // The project name in the trigger should match the URL
-    const projectName = page.locator('.project-name')
-    await expect(projectName).toContainText('other-project')
+    await expect(page.locator('.project-name')).toContainText('other-project')
   })
 
   test('falls back to first running project when URL project not found', async ({ page }) => {
@@ -67,10 +66,28 @@ test.describe('Project switcher', () => {
     await page.goto('/nonexistent-project')
 
     // Wait for app to initialize
-    await page.waitForSelector('.project-name', { timeout: 5000 })
+    await expect(page.locator('.project-name')).toBeVisible({ timeout: 5000 })
 
     // Should fall back to 'test-project'
-    const projectName = page.locator('.project-name')
-    await expect(projectName).toContainText('test-project')
+    await expect(page.locator('.project-name')).toContainText('test-project')
+  })
+
+  test('URL-encodes project names with special characters', async ({ page }) => {
+    const specialProjects = [
+      { name: 'my project', status: 'running', webhook_port: 47099 },
+    ]
+    await mockAllRoutes(page, { projects: specialProjects })
+    await page.goto('/')
+
+    // Wait for app to initialize
+    await expect(page.locator('.project-name')).toBeVisible({ timeout: 5000 })
+
+    // URL should be percent-encoded
+    await expect(page).toHaveURL(/\/my%20project/)
+
+    // Navigating to the encoded URL should restore the correct project
+    await page.goto('/my%20project')
+    await expect(page.locator('.project-name')).toBeVisible({ timeout: 5000 })
+    await expect(page.locator('.project-name')).toContainText('my project')
   })
 })
