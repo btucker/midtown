@@ -74,11 +74,11 @@ pub(super) async fn handle_coworker_spawn(
         pr_number: None,
         team_name: Some(team),
         working_dir: None,
-        model: super::helpers::default_model_for_provider_role(
+        model: super::helpers::resolve_model_for_role(
+            &state.repo_name,
             provider,
             &crate::launch::CoworkerRole::Coworker,
-        )
-        .to_string(),
+        ),
         channel: None,
         auth_profile_dir: None,
         auth_provider: provider, // Resolved by spawn_coworker()
@@ -138,7 +138,7 @@ pub(super) async fn handle_lead_spawn(
 
     let mut config = crate::launch::LaunchConfig::lead(&state.repo_name, None);
     config.auth_provider = provider;
-    config.model = super::helpers::default_model_for_provider_role(provider, &config.role).into();
+    config.model = super::helpers::resolve_model_for_role(&state.repo_name, provider, &config.role);
 
     // Use the canonical lead worktree path so spawn_coworker uses it
     // instead of falling through to the legacy coworker-named path.

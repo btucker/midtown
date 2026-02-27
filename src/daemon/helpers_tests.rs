@@ -887,3 +887,66 @@ fn extract_task_id_from_lead_at_mention_pattern() {
     // No task ID in plain @mention
     assert_eq!(extract_task_id("@park check this out"), None);
 }
+
+#[test]
+fn resolve_model_for_role_respects_config_or_falls_back() {
+    // resolve_model_for_role reads from config. When config has a value,
+    // it normalizes it for the provider. When not set, it uses the hardcoded
+    // default from default_model_for_provider_role.
+    let repo = "nonexistent-test-repo";
+    let claude = crate::auth::AuthProvider::Claude;
+    let codex = crate::auth::AuthProvider::Codex;
+
+    // The result should match what get_model_for_role returns (config-aware),
+    // normalized for the provider, or the hardcoded default if no config.
+    let coworker_model =
+        resolve_model_for_role(repo, claude, &crate::launch::CoworkerRole::Coworker);
+    let lead_model = resolve_model_for_role(repo, claude, &crate::launch::CoworkerRole::Lead);
+
+    // Both should be valid Claude model names
+    assert!(
+        ["haiku", "sonnet", "opus"].contains(&coworker_model.as_str()),
+        "coworker model '{}' should be a valid Claude model alias",
+        coworker_model
+    );
+    assert!(
+        ["haiku", "sonnet", "opus"].contains(&lead_model.as_str()),
+        "lead model '{}' should be a valid Claude model alias",
+        lead_model
+    );
+
+    // With config set to "large", all roles should resolve to "opus" for Claude
+    if crate::config::get_model_for_role(repo, crate::config::ExecutionRole::Coworker)
+        == Some(crate::config::ModelSize::Large)
+    {
+        assert_eq!(coworker_model, "opus");
+        assert_eq!(lead_model, "opus");
+    }
+
+    // Codex should produce Codex-compatible model names
+    let codex_coworker =
+        resolve_model_for_role(repo, codex, &crate::launch::CoworkerRole::Coworker);
+    assert!(
+        !codex_coworker.contains("sonnet") && !codex_coworker.contains("opus"),
+        "Codex coworker model '{}' should not contain Claude aliases",
+        codex_coworker
+    );
+}
+
+#[test]
+fn resolve_model_for_role_matches_default_when_no_config() {
+    // When get_model_for_role returns None, resolve should match the hardcoded default.
+    let repo = "nonexistent-test-repo";
+    let claude = crate::auth::AuthProvider::Claude;
+
+    if crate::config::get_model_for_role(repo, crate::config::ExecutionRole::Coworker).is_none() {
+        assert_eq!(
+            resolve_model_for_role(repo, claude, &crate::launch::CoworkerRole::Coworker),
+            default_model_for_provider_role(claude, &crate::launch::CoworkerRole::Coworker)
+        );
+        assert_eq!(
+            resolve_model_for_role(repo, claude, &crate::launch::CoworkerRole::Lead),
+            default_model_for_provider_role(claude, &crate::launch::CoworkerRole::Lead)
+        );
+    }
+}

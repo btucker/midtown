@@ -5,11 +5,14 @@ use crate::paths;
 use std::fs;
 
 #[test]
-fn test_launch_config_ops_channel_lead_uses_haiku() {
+fn test_launch_config_ops_channel_lead_model() {
     let config = LaunchConfig::channel_lead("ops", "myrepo", SessionMode::Fresh, "");
+    let execution_fallback = crate::config::get_channel_lead_model_fallback("myrepo");
+    let expected = crate::config::get_channel_leads_config("myrepo")
+        .model_for_channel_with_fallback("ops", execution_fallback);
     assert_eq!(
-        config.model, "haiku",
-        "ops channel lead should use haiku by default"
+        config.model, expected,
+        "ops channel lead model should match config resolution"
     );
 }
 

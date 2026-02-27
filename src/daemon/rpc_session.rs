@@ -599,6 +599,7 @@ fn coworker_role_to_execution_role(
 }
 
 fn fork_channel_lead_model(
+    repo_name: &str,
     auth_provider: crate::auth::AuthProvider,
     fork_channel: Option<&str>,
 ) -> String {
@@ -607,9 +608,7 @@ fn fork_channel_lead_model(
         domain_context: String::new(),
     };
 
-    let configured_model =
-        super::helpers::default_model_for_provider_role(auth_provider, &fork_role);
-    super::helpers::normalize_model_for_provider_role(configured_model, auth_provider, &fork_role)
+    super::helpers::resolve_model_for_role(repo_name, auth_provider, &fork_role)
 }
 
 /// Resumes headless execution for a coworker that was previously attached.
@@ -706,7 +705,7 @@ pub(super) async fn handle_session_detach(
         });
         config.auth_provider = provider;
         config.model =
-            super::helpers::default_model_for_provider_role(provider, &config.role).to_string();
+            super::helpers::resolve_model_for_role(&state.repo_name, provider, &config.role);
     }
     // Don't restore auth_profile_dir from persisted profile name — let
     // spawn_coworker() re-resolve from project config (authoritative source).
@@ -1025,7 +1024,7 @@ pub(super) async fn handle_session_clear(
         });
         config.auth_provider = provider;
         config.model =
-            super::helpers::default_model_for_provider_role(provider, &config.role).to_string();
+            super::helpers::resolve_model_for_role(&state.repo_name, provider, &config.role);
     }
 
     match state.spawn_coworker(&config).await {
@@ -1187,7 +1186,7 @@ pub(super) async fn create_fork_session(
     );
 
     let headless_config = crate::headless::HeadlessConfig {
-        model: fork_channel_lead_model(auth_provider, fork_channel.as_deref()),
+        model: fork_channel_lead_model(repo_name, auth_provider, fork_channel.as_deref()),
         system_prompt: String::new(),
         json_schema: None,
         cwd: working_dir.clone(),

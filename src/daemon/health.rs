@@ -1053,9 +1053,11 @@ pub fn check_and_restart_tool_name_conflicts(snap: &snapshot::WorldSnapshot) -> 
         // cooldown), so the user-facing lead recovers within the same tick.
         if name.eq_ignore_ascii_case(&snap.repo_name) {
             let mut config = crate::launch::LaunchConfig::lead(&snap.repo_name, None);
-            config.model =
-                super::helpers::default_model_for_provider_role(config.auth_provider, &config.role)
-                    .to_string();
+            config.model = super::helpers::resolve_model_for_role(
+                &snap.repo_name,
+                config.auth_provider,
+                &config.role,
+            );
             let lead_wt = crate::paths::lead_worktree_path(&snap.repo_name);
             if lead_wt.exists() {
                 config.working_dir = Some(lead_wt);
@@ -1200,8 +1202,7 @@ pub fn ensure_lead_alive(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
 
     let mut config = crate::launch::LaunchConfig::lead(&snap.repo_name, None);
     config.model =
-        super::helpers::default_model_for_provider_role(config.auth_provider, &config.role)
-            .to_string();
+        super::helpers::resolve_model_for_role(&snap.repo_name, config.auth_provider, &config.role);
     let lead_wt = crate::paths::lead_worktree_path(&snap.repo_name);
     if lead_wt.exists() {
         config.working_dir = Some(lead_wt);

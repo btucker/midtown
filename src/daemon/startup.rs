@@ -679,8 +679,7 @@ pub async fn recover_from_session_records(
             );
         }
         config.model =
-            super::helpers::default_model_for_provider_role(config.auth_provider, &config.role)
-                .to_string();
+            super::helpers::resolve_model_for_role(repo_name, config.auth_provider, &config.role);
 
         recovered_session_ids.insert(session_id.clone());
         effects.push(Effect::ResumeCoworker {

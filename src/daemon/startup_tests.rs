@@ -563,7 +563,8 @@ async fn test_recover_from_session_records_uses_lead_config_for_lead() {
         "test-repo",
         crate::config::ExecutionRole::Lead,
     );
-    let expected_model = crate::daemon::helpers::default_model_for_provider_role(
+    let expected_model = crate::daemon::helpers::resolve_model_for_role(
+        "test-repo",
         expected_provider,
         &crate::launch::CoworkerRole::Lead,
     );
@@ -610,7 +611,8 @@ async fn test_recover_from_session_records_uses_lead_config_for_codex_lead_recor
         "test-repo",
         crate::config::ExecutionRole::Lead,
     );
-    let expected_model = crate::daemon::helpers::default_model_for_provider_role(
+    let expected_model = crate::daemon::helpers::resolve_model_for_role(
+        "test-repo",
         expected_provider,
         &crate::launch::CoworkerRole::Lead,
     );
