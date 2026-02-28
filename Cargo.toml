@@ -9,7 +9,7 @@ resolver = "2"
 
 [package]
 name = "midtown"
-version = "0.6.0"
+version = "0.6.1"
 edition = "2024"
 description = "Midtown - a multi-Claude Code workspace manager, inspired by Gastown"
 license = "MIT"
