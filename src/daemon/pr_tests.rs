@@ -3051,3 +3051,102 @@ fn test_collect_pr_task_link_effects_corrects_mismatched_pr() {
         effects[0]
     );
 }
+
+// ── is_pr_reviewed negative cache interaction tests ─────────────────────
+
+/// Regression test: when a review is cached (e.g. via webhook) but comment IDs
+/// are empty, the fast path falls through to backfill. If a stale negative cache
+/// entry exists for the same PR, it must not suppress the backfill by returning
+/// false.
+///
+/// Sequence that triggers the bug:
+///   1. Poll tick finds no review → negative cache populated
+///   2. Webhook caches review (mark_reviewed_pr) but no comment IDs recorded
+///   3. Next poll: fast path sees cached review, IDs empty → falls through
+///   4. BUG: negative cache hit → returns false (backfill never runs)
+#[tokio::test]
+async fn test_negative_cache_does_not_suppress_cached_review_backfill() {
+    let (state, _temp_dir, _guard) = make_test_state("neg-cache-test");
+    let pr_number = 77777u64;
+
+    // Step 1: Populate the negative cache (simulates a prior poll finding no review)
+    {
+        let mut neg_cache = state.pr_review_negative_cache.lock().unwrap();
+        neg_cache.insert(pr_number, std::time::Instant::now());
+    }
+
+    // Step 2: Webhook arrives and caches the review, but no comment IDs
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.github.mark_reviewed_pr(pr_number);
+        // Deliberately do NOT add any comment IDs — this is the scenario
+    }
+
+    // Step 3: Call is_pr_reviewed — should return true (review is cached)
+    let result = state.is_pr_reviewed(pr_number).await;
+    assert!(
+        result,
+        "is_pr_reviewed should return true for a cached review, \
+         even when a stale negative cache entry exists"
+    );
+}
+
+// ── extract_review_comment_ids_from_json tests ──────────────────────────
+
+#[test]
+fn extract_review_comment_ids_filters_review_comments() {
+    let comments: Vec<serde_json::Value> = serde_json::from_value(json!([
+        {"id": 1001, "body": "## Code Review by madison\n\nLooks good!"},
+        {"id": 1002, "body": "Just a regular comment"},
+        {"id": 1003, "body": "🤖 Reviewed by park\n\nAll checks pass."},
+    ]))
+    .unwrap();
+
+    let ids = extract_review_comment_ids_from_json(&comments);
+    assert_eq!(ids, vec![1001, 1003]);
+}
+
+#[test]
+fn extract_review_comment_ids_empty_on_no_reviews() {
+    let comments: Vec<serde_json::Value> = serde_json::from_value(json!([
+        {"id": 1, "body": "Nice work!"},
+        {"id": 2, "body": "LGTM"},
+    ]))
+    .unwrap();
+
+    let ids = extract_review_comment_ids_from_json(&comments);
+    assert!(ids.is_empty());
+}
+
+/// Demonstrates why `--slurp` is required: `gh api --paginate` without
+/// `--slurp` produces concatenated JSON arrays that fail to parse as a
+/// single `Vec<Value>`. With `--slurp`, gh merges pages into one array.
+#[test]
+fn concatenated_json_pages_fail_without_slurp() {
+    // This is what `gh api --paginate` produces without `--slurp`:
+    // two separate JSON arrays concatenated together.
+    let page1 = json!([
+        {"id": 1001, "body": "## Code Review by madison\n\nPage 1 review"},
+    ]);
+    let page2 = json!([
+        {"id": 1002, "body": "## Code Review by park\n\nPage 2 review"},
+    ]);
+    let concatenated = format!("{}{}", page1, page2);
+
+    // Without --slurp, serde_json cannot parse concatenated arrays
+    let parse_result: Result<Vec<serde_json::Value>, _> = serde_json::from_str(&concatenated);
+    assert!(
+        parse_result.is_err(),
+        "Concatenated JSON should fail to parse as Vec<Value> — \
+         this is why --slurp is required on gh api --paginate"
+    );
+
+    // With --slurp, gh merges into a single array that parses correctly
+    let slurped = json!([
+        {"id": 1001, "body": "## Code Review by madison\n\nPage 1 review"},
+        {"id": 1002, "body": "## Code Review by park\n\nPage 2 review"},
+    ]);
+    let comments: Vec<serde_json::Value> = serde_json::from_value(slurped).unwrap();
+    let ids = extract_review_comment_ids_from_json(&comments);
+    assert_eq!(ids, vec![1001, 1002]);
+}
